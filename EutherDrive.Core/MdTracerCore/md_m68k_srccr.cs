@@ -29,6 +29,8 @@ internal partial class md_m68k
         }
         set
         {
+            bool oldS = g_status_S;
+
             g_status_T  = (value & 0x8000) != 0;
             g_status_B1 = (value & 0x4000) != 0;
             g_status_S  = (value & 0x2000) != 0;
@@ -45,6 +47,9 @@ internal partial class md_m68k
             g_status_Z  = (value & 0x0004) != 0;
             g_status_V  = (value & 0x0002) != 0;
             g_status_C  = (value & 0x0001) != 0;
+
+            if (oldS != g_status_S)
+                SwapStacks();
         }
     }
 

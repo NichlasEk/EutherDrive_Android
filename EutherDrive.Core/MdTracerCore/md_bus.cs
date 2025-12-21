@@ -11,11 +11,43 @@ namespace EutherDrive.Core.MdTracerCore
         // READ
         // ------------------------------------------------------------
          public static MegaDriveBus? Current { get; set; }
+        private bool _z80BusGranted = true;
+        private bool _z80ForceGrant = true;
+        private bool _z80Reset;
+        private int _z80RegReadLogRemaining = 32;
+        private int _z80RegWriteLogRemaining = 32;
+
+        private static bool IsZ80BusReq(uint addr) => (addr & 0xFFFFFE) == 0xA11100;
+        private static bool IsZ80Reset(uint addr) => (addr & 0xFFFFFE) == 0xA11200;
+
+        public void Reset()
+        {
+            _z80BusGranted = true;
+            _z80ForceGrant = true;
+            _z80Reset = false;
+            _z80RegReadLogRemaining = 32;
+            _z80RegWriteLogRemaining = 32;
+        }
 
 
         public byte read8(uint in_address)
         {
             in_address &= 0x00FF_FFFF;
+
+            if (IsZ80BusReq(in_address))
+            {
+                // TODO: Implement riktig bus-arbitrering; just nu alltid "grant" för att komma förbi boot-loop.
+                byte val = 0x00;
+                LogZ80RegRead(in_address, val);
+                return val;
+            }
+
+            if (IsZ80Reset(in_address))
+            {
+                byte val = _z80Reset ? (byte)0x00 : (byte)0x01;
+                LogZ80RegRead(in_address, val);
+                return val;
+            }
 
             // 0x000000–0x3FFFFF  | ROM / cart
             if (in_address <= 0x3FFFFF)
@@ -38,9 +70,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (in_address == 0xA04000)
                 return 0xFF; // placeholder tills md_music/ym2612 är på plats
 
-                // 0xA11000–0xA1FFFF  | Control
-                if (in_address >= 0xA11000 && in_address <= 0xA1FFFF)
-                    return md_main.g_md_control != null ? md_main.g_md_control.read8(in_address) : (byte)0xFF;
+            // 0xA11000–0xA1FFFF  | Control
+            if (in_address >= 0xA11000 && in_address <= 0xA1FFFF)
+                return md_main.g_md_control != null ? md_main.g_md_control.read8(in_address) : (byte)0xFF;
 
             // 0xA00000–0xA0FFFF  | Z80 bus
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
@@ -54,6 +86,20 @@ namespace EutherDrive.Core.MdTracerCore
         public ushort read16(uint in_address)
         {
             in_address &= 0x00FF_FFFF;
+
+            if (IsZ80BusReq(in_address))
+            {
+                ushort val = 0x0000;
+                LogZ80RegRead(in_address, val);
+                return val;
+            }
+
+            if (IsZ80Reset(in_address))
+            {
+                ushort val = _z80Reset ? (ushort)0x0000 : (ushort)0x0001;
+                LogZ80RegRead(in_address, val);
+                return val;
+            }
 
             if (in_address <= 0x3FFFFF)
                 return md_m68k.read16(in_address);
@@ -80,6 +126,20 @@ namespace EutherDrive.Core.MdTracerCore
         public uint read32(uint in_address)
         {
             in_address &= 0x00FF_FFFF;
+
+            if (IsZ80BusReq(in_address))
+            {
+                uint val = 0x0000_0000u;
+                LogZ80RegRead(in_address, val);
+                return val;
+            }
+
+            if (IsZ80Reset(in_address))
+            {
+                uint val = _z80Reset ? 0x0000_0000u : 0x0000_0001u;
+                LogZ80RegRead(in_address, val);
+                return val;
+            }
 
             if (in_address <= 0x3FFFFF)
                 return md_m68k.read32(in_address);
@@ -109,6 +169,22 @@ namespace EutherDrive.Core.MdTracerCore
         public void write8(uint in_address, byte in_data)
         {
             in_address &= 0x00FF_FFFF;
+
+            if (IsZ80BusReq(in_address))
+            {
+                // 0 = request bus (grant), 1 = release (no grant)
+                _z80BusGranted = (in_data & 0x01) == 0;
+                _z80ForceGrant = false;
+                LogZ80RegWrite(in_address, in_data);
+                return;
+            }
+
+            if (IsZ80Reset(in_address))
+            {
+                _z80Reset = (in_data & 0x01) == 0;
+                LogZ80RegWrite(in_address, in_data);
+                return;
+            }
 
             if (in_address >= 0xFF0000)
             {
@@ -162,6 +238,21 @@ namespace EutherDrive.Core.MdTracerCore
         {
             in_address &= 0x00FF_FFFF;
 
+            if (IsZ80BusReq(in_address))
+            {
+                _z80BusGranted = (in_data & 0x0100) == 0;
+                _z80ForceGrant = false;
+                LogZ80RegWrite(in_address, in_data);
+                return;
+            }
+
+            if (IsZ80Reset(in_address))
+            {
+                _z80Reset = (in_data & 0x0100) == 0;
+                LogZ80RegWrite(in_address, in_data);
+                return;
+            }
+
             if (in_address >= 0xFF0000)
             {
                 md_m68k.write16(in_address, in_data);
@@ -199,6 +290,21 @@ namespace EutherDrive.Core.MdTracerCore
         {
             in_address &= 0x00FF_FFFF;
 
+            if (IsZ80BusReq(in_address))
+            {
+                _z80BusGranted = (in_data & 0x0100_0000u) == 0;
+                _z80ForceGrant = false;
+                LogZ80RegWrite(in_address, in_data);
+                return;
+            }
+
+            if (IsZ80Reset(in_address))
+            {
+                _z80Reset = (in_data & 0x0100_0000u) == 0;
+                LogZ80RegWrite(in_address, in_data);
+                return;
+            }
+
             if (in_address >= 0xFF0000)
             {
                 md_m68k.write32(in_address, in_data);
@@ -228,6 +334,22 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             Debug.WriteLine($"[BUS] write32 @0x{in_address:X6} = 0x{in_data:X8} (ignored)");
+        }
+
+        private void LogZ80RegRead(uint addr, uint val)
+        {
+            if (_z80RegReadLogRemaining <= 0)
+                return;
+            _z80RegReadLogRemaining--;
+            System.Console.WriteLine($"[md_bus] Z80 reg read 0x{addr:X6} -> 0x{val:X}");
+        }
+
+        private void LogZ80RegWrite(uint addr, uint val)
+        {
+            if (_z80RegWriteLogRemaining <= 0)
+                return;
+            _z80RegWriteLogRemaining--;
+            System.Console.WriteLine($"[md_bus] Z80 reg write 0x{addr:X6} <- 0x{val:X}");
         }
     }
 }

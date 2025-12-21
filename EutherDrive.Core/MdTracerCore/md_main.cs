@@ -101,7 +101,7 @@ namespace EutherDrive.Core.MdTracerCore
                 g_hard_reset_req = false;
             }
 
-            int lines = md_vdp.g_vertical_line_max;
+            int lines = g_md_vdp.g_vertical_line_max;
 
             for (int vline = 0; vline < lines; vline++)
             {

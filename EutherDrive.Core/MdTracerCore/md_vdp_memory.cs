@@ -65,6 +65,8 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 g_command_select = false;
                 w_out = get_vdp_status();
+                g_vdp_status_7_vinterrupt = 0; // ack on status read
+                md_m68k.g_interrupt_V_req = false;
             }
             else if (in_address <= 0xc0000e)
             {

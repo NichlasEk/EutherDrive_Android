@@ -121,6 +121,16 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock_total = 0;
             g_clock_now = 0;
             g_clock = 0;
+
+            _bootTraceEnabled = true;
+            _bootTraceRemaining = 200;
+            _bootTraceProbeRemaining = 16;
+            _btstLogRemaining = 16;
+            _bneLogRemaining = 32;
+            _d1LogRemaining = 64;
+            _d1LogLastPc = 0;
+            _pc466LogRemaining = 32;
+            Console.WriteLine("[md_m68k] Boot trace armed");
         }
 
         private void opcode_add(

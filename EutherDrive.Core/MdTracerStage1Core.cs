@@ -22,19 +22,26 @@ public sealed class MdTracerStage1Core : IEmulatorCore
     {
         _vdp.Reset(320, 224);
         _inited = true;
+        Console.WriteLine("[MdTracerStage1Core] Reset 320x224");
     }
 
     public void RunFrame()
     {
         if (!_inited) Reset();
+        if (_vdp.Width <= 0 || _vdp.Height <= 0)
+            _vdp.Reset(320, 224);
+        if (_vdp.GetFrame().Length == 0)
+            _vdp.Reset(320, 224);
         _vdp.RunFrame();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
+        if (!_inited) Reset();
         width = _vdp.Width;
         height = _vdp.Height;
         stride = _vdp.Stride;
+        Console.WriteLine($"[MdTracerStage1Core] GetFrameBuffer {width}x{height} stride={stride}");
         return _vdp.GetFrame();
     }
 

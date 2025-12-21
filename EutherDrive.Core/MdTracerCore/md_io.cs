@@ -22,9 +22,16 @@ namespace EutherDrive.Core.MdTracerCore
         // ------------------------------------------------------------
         public byte read8(uint in_address)
         {
-            // TODO: implementera riktig IO-map om/när du vill.
-            // Just nu: returnera "ingen data"
-            return 0;
+            uint addr = in_address & 0xFFFF;
+            switch (addr)
+            {
+                case 0xA10000:
+                    return 0x00;
+                case 0xA10001:
+                    return 0xA0; // Version register (NTSC, rev 0)
+                default:
+                    return 0x00;
+            }
         }
 
         public ushort read16(uint in_address)

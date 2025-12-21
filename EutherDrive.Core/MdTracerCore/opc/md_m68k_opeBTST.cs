@@ -22,6 +22,11 @@ namespace EutherDrive.Core.MdTracerCore
             adressing_func_address(g_op3, g_op4, 0);
             g_work_data.b0 = (byte)adressing_func_read(g_op3, g_op4, 0);
             g_status_Z = ((g_work_data.b0 & BITHIT[w_bit]) == 0);
+            if (g_analyze_address == 0x00A11100 && _btstLogRemaining > 0)
+            {
+                _btstLogRemaining--;
+                Console.WriteLine($"[m68k] BTST A11100 val=0x{g_work_data.b0:X2} bit={w_bit} Z={(g_status_Z ? 1 : 0)}");
+            }
         }
         private void analyse_BTST_static_long()
         {

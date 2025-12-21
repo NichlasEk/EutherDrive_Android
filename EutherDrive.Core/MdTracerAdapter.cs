@@ -7,10 +7,15 @@ namespace EutherDrive.Core;
 
 public sealed class MdTracerAdapter : IEmulatorCore
 {
+    private const int DefaultW = 320;
+    private const int DefaultH = 224;
     private readonly md_vdp _vdp = new md_vdp();
 
     private byte[] _frameBuffer = Array.Empty<byte>(); // BGRA till UI
     private int _fbW, _fbH, _fbStride;
+    private int _fbLogW = -1;
+    private int _fbLogH = -1;
+    private int _fbLogStride = -1;
 
     private int _tick;
     private const int VLINES_NTSC = 262;
@@ -31,6 +36,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
     {
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("ROM path is empty.", nameof(path));
+
+        Console.WriteLine($"[MdTracerAdapter] LoadRom: {path}");
 
         _rom = File.ReadAllBytes(path);
         _bus = new MegaDriveBus(_rom);
@@ -88,10 +95,12 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     public void Reset()
     {
+        Console.WriteLine("[MdTracerAdapter] Reset begin");
         _tick = 0;
 
         // Nollställ RAM
         _bus?.Reset();
+        md_main.g_md_bus?.Reset();
 
         // Stub (så VDP-testet fortsätter)
         md_main.EnsureCpuStubs();
@@ -107,44 +116,79 @@ public sealed class MdTracerAdapter : IEmulatorCore
             Console.WriteLine("Methods:\n" + _cpu.DebugApi);
         }
 
-        _vdp.SetFrameSize(320, 224);
+        _vdp.SetFrameSize(DefaultW, DefaultH);
+        EnsureFramebufferInitialized("Reset");
+        Console.WriteLine($"[MdTracerAdapter] Reset framebuffer { _fbW }x{ _fbH } stride={ _fbStride }");
+    }
 
-        _fbW = _vdp.FrameWidth;
-        _fbH = _vdp.FrameHeight;
-        _fbStride = _fbW * 4;
-        _frameBuffer = new byte[_fbStride * _fbH];
+    private void EnsureFramebufferInitialized(string reason)
+    {
+        int w = _vdp.FrameWidth;
+        int h = _vdp.FrameHeight;
+        if (w <= 0 || h <= 0)
+        {
+            w = DefaultW;
+            h = DefaultH;
+            _vdp.SetFrameSize(w, h);
+        }
+
+        int stride = Math.Max(4, w * 4);
+        int need = Math.Max(4, stride * h);
+        if (_frameBuffer.Length != need || _fbW != w || _fbH != h)
+        {
+            _fbW = w;
+            _fbH = h;
+            _fbStride = stride;
+            _frameBuffer = new byte[need];
+            Console.WriteLine($"[MdTracerAdapter] EnsureFramebufferInitialized({reason}) -> {_fbW}x{_fbH} stride={_fbStride}");
+        }
     }
 
     public void RunFrame()
     {
+        if (_tick == 0)
+            Console.WriteLine("[MdTracerAdapter] RunFrame start");
+
         _tick++;
 
-        // Kör CPU “lite grann”
-        // Budget är avsiktligt liten för att inte låsa UI.
+        uint pcAfter = md_m68k.g_reg_PC;
         if (_cpuReady && _cpu != null)
         {
-            uint pcBefore = md_m68k.g_reg_PC;
-            // Om din md_m68k har run(int cycles) blir detta “cycles-ish”.
-            // Om den bara har step() blir det “steps-ish”.
-            _cpu.RunSome(budget: 2000);
-            uint pcAfter = md_m68k.g_reg_PC;
-            if (pcAfter == pcBefore)
+            for (int v = 0; v < VLINES_NTSC; v++)
+            {
+                _vdp.run(v);
+                _cpu.RunSome(budget: 200);
+            }
+
+            pcAfter = md_m68k.g_reg_PC;
+            if (pcAfter == _lastPc)
                 _pcStallFrames++;
             else
                 _pcStallFrames = 0;
+            _lastPc = pcAfter;
 
             if ((_tick % 60) == 0)
-                Console.WriteLine($"m68k PC=0x{pcAfter:X6} stall={_pcStallFrames}");
+            {
+                ushort vdpStatus = md_main.g_md_vdp.read16(0xC00004);
+                ushort hv = md_main.g_md_vdp.read16(0xC00008);
+                ushort op0 = md_m68k.read16(pcAfter);
+                ushort op1 = md_m68k.read16(pcAfter + 2);
+                uint d1 = md_m68k.g_reg_data[1].l;
+                Console.WriteLine($"m68k PC=0x{pcAfter:X6} stall={_pcStallFrames} VDP=0x{vdpStatus:X4} HV=0x{hv:X4} D1=0x{d1:X8} OP=0x{op0:X4} NXT=0x{op1:X4}");
+            }
+        }
+        else
+        {
+            // Fortfarande VDP-test tills vi kopplar VDP-register/IO
+            for (int v = 0; v < VLINES_NTSC; v++)
+                _vdp.run(v);
         }
 
-        // Fortfarande VDP-test tills vi kopplar VDP-register/IO
-        for (int v = 0; v < VLINES_NTSC; v++)
-            _vdp.run(v);
-
         // RGBA -> BGRA
+        EnsureFramebufferInitialized("RunFrame");
         var src = _vdp.RgbaFrame; // RGBA
-        int w = _vdp.FrameWidth;
-        int h = _vdp.FrameHeight;
+        int w = _fbW;
+        int h = _fbH;
 
         int need = w * h * 4;
         if (w != _fbW || h != _fbH || _frameBuffer.Length != need)
@@ -172,9 +216,17 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
+        EnsureFramebufferInitialized("GetFrameBuffer");
         width = _fbW;
         height = _fbH;
         stride = _fbStride;
+        if (_fbLogW != width || _fbLogH != height || _fbLogStride != stride)
+        {
+            _fbLogW = width;
+            _fbLogH = height;
+            _fbLogStride = stride;
+            Console.WriteLine($"[MdTracerAdapter] GetFrameBuffer size={width}x{height} stride={stride} bytes={_frameBuffer.Length}");
+        }
         return _frameBuffer;
     }
 

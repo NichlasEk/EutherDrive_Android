@@ -22,8 +22,15 @@
         public md_vdp()
         {
             initialize();
-            EnsureFrameBuffer();
+            SyncFrameSizeFromVdp();
             dx_rendering_initialize(); // no-op stub just nu
+        }
+
+        private void SyncFrameSizeFromVdp()
+        {
+            FrameWidth = g_display_xsize;
+            FrameHeight = g_display_ysize;
+            EnsureFrameBuffer();
         }
 
         private void EnsureFrameBuffer()
@@ -44,9 +51,6 @@
         public void run(int in_vline)
         {
 
-            md_m68k.g_interrupt_V_req = true;
-            md_main.g_md_z80.irq_request(true);
-
             g_scanline = in_vline;
 
             if (g_scanline == 0)
@@ -66,9 +70,12 @@
                 interrupt_check();
 
                 g_vdp_status_3_vbrank = 1;
-                md_m68k.g_interrupt_V_req = true;
-                g_vdp_status_7_vinterrupt = 1;
-                md_main.g_md_z80.irq_request(true);
+                if (g_vdp_status_7_vinterrupt == 0)
+                {
+                    g_vdp_status_7_vinterrupt = 1;
+                    md_m68k.g_interrupt_V_req = true;
+                    md_main.g_md_z80.irq_request(true);
+                }
             }
             else if (g_scanline == g_vertical_line_max - 1) // också definierad i VDP
             {
@@ -156,36 +163,26 @@
             }
         }
 
-        // --------- Stubs (temporärt tills vi portar riktiga rendern) ----------
+        // --------- Render init ----------
         private void dx_rendering_initialize() { /* no-op i headless */ }
 
-        /// <summary>Fyll aktuell scanline i RgbaFrame med en testgradient.</summary>
-        private void rendering_line()
+        private void UpdateRgbaFrameFromGameScreen()
         {
-            // Skydda mot out-of-range om dina VDP-registrets storlekar ändras
-            int y = g_scanline;
-            if ((uint)y >= (uint)FrameHeight) return;
+            SyncFrameSizeFromVdp();
+            int pixels = FrameWidth * FrameHeight;
+            if (g_game_screen == null || g_game_screen.Length < pixels)
+                return;
 
-            int offset = y * Pitch;
-            // enkel färg: R=gradient över x, G=gradient över y, B=“frame parity”
-            byte g = (byte)((y * 255) / (FrameHeight - 1));
-            byte b = (byte)(g_vdp_status_4_frame == 0 ? 32 : 96);
-
-            for (int x = 0; x < FrameWidth; x++)
+            int di = 0;
+            for (int i = 0; i < pixels; i++)
             {
-                byte r = (byte)((x * 255) / (FrameWidth - 1));
-                RgbaFrame[offset + 0] = r;   // R
-                RgbaFrame[offset + 1] = g;   // G
-                RgbaFrame[offset + 2] = b;   // B
-                RgbaFrame[offset + 3] = 255; // A
-                offset += 4;
+                uint argb = g_game_screen[i];
+                RgbaFrame[di + 0] = (byte)(argb >> 16); // R
+                RgbaFrame[di + 1] = (byte)(argb >> 8);  // G
+                RgbaFrame[di + 2] = (byte)argb;         // B
+                RgbaFrame[di + 3] = (byte)(argb >> 24); // A
+                di += 4;
             }
-        }
-
-        /// <summary>Körs när vi passerar g_display_ysize; här kan man göra postprocessing om man vill.</summary>
-        private void rendering_frame()
-        {
-            // no-op: RgbaFrame är redan fylld rad för rad i rendering_line()
         }
 
 

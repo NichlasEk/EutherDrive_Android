@@ -8,12 +8,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Exkludera bara renderer/DirectX/WinForms-grejer -->
-    <Compile Remove="MdTracerCore/md_vdp_renderer*.cs" />
+    <!-- Exkludera bara DirectX/WinForms-grejer -->
     <Compile Remove="MdTracerCore/md_vdp_renderer_frame_directx*.cs" />
     <Compile Remove="MdTracerCore/md_vdp_renderer_frame_directx_sub.cs" />
-    <Compile Remove="MdTracerCore/md_vdp_renderer_data*.cs" />
-    <Compile Remove="MdTracerCore/md_vdp_renderer_snap*.cs" />
 
     <!-- Legacy WinForms entrypoint (ska inte ligga i Core) -->
     <Compile Remove="MdTracerCore/Program.cs" />
@@ -23,6 +20,7 @@
     <Compile Remove="MdTracerCore/MdMainStub.cs" />
     <Compile Remove="MdTracerCore/MdTracerMainStub.cs" />
     <Compile Remove="MdTracerCore/CpuStubs.cs" />
+
 
     <!-- Bara om den här faktiskt är en dublett/konflikt i din tree -->
     <Compile Remove="MdTracerCore/md_vdp.IO.cs" />

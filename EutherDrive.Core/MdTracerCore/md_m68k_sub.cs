@@ -8,6 +8,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly uint[] MASKBIT    = { 0xffu, 0xffffu, 0xffffffffu };
         private static readonly uint[] MOSTBIT    = { 0x80u, 0x8000u, 0x80000000u };
         private static readonly uint[] MASKNOTBIT = { 0xffff_ff00u, 0xffff_0000u, 0x0000_0000u };
+        private static uint _lastD1Value;
 
         private static readonly uint[] BITHIT =
         {
@@ -240,12 +241,34 @@ namespace EutherDrive.Core.MdTracerCore
                 case 1: g_reg_data[in_num].w  = (ushort)in_val; break;
                 default: g_reg_data[in_num].l = in_val;         break;
             }
+
+            if (in_num == 1)
+            {
+                uint newVal = g_reg_data[1].l;
+                if (newVal != _lastD1Value)
+                {
+                    _lastD1Value = newVal;
+                    if (_d1LogRemaining > 0)
+                    {
+                        _d1LogRemaining--;
+                        if (_d1LogLastPc != g_reg_PC)
+                            _d1LogLastPc = g_reg_PC;
+                        Console.WriteLine($"[md_m68k] D1=0x{newVal:X8} PC=0x{g_reg_PC:X6}");
+                    }
+                }
+            }
         }
 
         // ==========================================================
-        // stack helpers (FIX: skriv på korrekt adress när S==false)
-        // OBS: g_reg_addr_usp.l används som index => md_u32 behövs
+        // stack helpers (S-bit swap + korrekt USP-adress)
         // ==========================================================
+
+        private static void SwapStacks()
+        {
+            uint temp = g_reg_addr_usp.l;
+            g_reg_addr_usp.l = g_reg_addr[7].l;
+            g_reg_addr[7].l = temp;
+        }
 
         private static void stack_push32(uint in_val)
         {
@@ -256,8 +279,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else
             {
-                g_reg_addr[g_reg_addr_usp.l].l -= 4;
-                write32(g_reg_addr[g_reg_addr_usp.l].l, in_val);
+                g_reg_addr_usp.l -= 4;
+                write32(g_reg_addr_usp.l, in_val);
             }
         }
 
@@ -274,10 +297,10 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else
             {
-                uint sp = g_reg_addr[g_reg_addr_usp.l].l;
+                uint sp = g_reg_addr_usp.l;
                 w_val = read32(sp);
                 write32(sp, 0);
-                g_reg_addr[g_reg_addr_usp.l].l = sp + 4;
+                g_reg_addr_usp.l = sp + 4;
             }
 
             return w_val;
@@ -292,8 +315,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else
             {
-                g_reg_addr[g_reg_addr_usp.l].l -= 2;
-                write16(g_reg_addr[g_reg_addr_usp.l].l, in_val);
+                g_reg_addr_usp.l -= 2;
+                write16(g_reg_addr_usp.l, in_val);
             }
         }
 
@@ -310,10 +333,10 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else
             {
-                uint sp = g_reg_addr[g_reg_addr_usp.l].l;
+                uint sp = g_reg_addr_usp.l;
                 w_val = read16(sp);
                 write16(sp, 0);
-                g_reg_addr[g_reg_addr_usp.l].l = sp + 2;
+                g_reg_addr_usp.l = sp + 2;
             }
 
             return w_val;
