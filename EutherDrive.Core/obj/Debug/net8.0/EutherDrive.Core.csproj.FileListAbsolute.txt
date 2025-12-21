@@ -1,0 +1,4 @@
+/home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.GeneratedMSBuildEditorConfig.editorconfig
+/home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.AssemblyInfoInputs.cache
+/home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.AssemblyInfo.cs
+/home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.csproj.CoreCompileInputs.cache

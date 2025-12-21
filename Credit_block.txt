@@ -1,0 +1,9 @@
+/*
+ * This file incorporates or derives from code in:
+ *   MDTracer (c) 2023 sasayaki-japan, MIT License
+ *   https://github.com/sasayaki-japan/MDTracer
+ *
+ * Modifications for EutherDrive:
+ *   (c) 2025 Nichlas Eklöf and EutherDrive contributors, MIT License.
+ * See the repository LICENSE file for full terms.
+ */

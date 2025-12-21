@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EutherDrive.Core", "EutherDrive.Core\EutherDrive.Core.csproj", "{4A267244-A07E-449C-850C-EA28A1582C2F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EutherDrive.UI", "EutherDrive.UI\EutherDrive.UI.csproj", "{68F6E135-6705-4CC7-8BAD-9B80344A442D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4A267244-A07E-449C-850C-EA28A1582C2F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4A267244-A07E-449C-850C-EA28A1582C2F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4A267244-A07E-449C-850C-EA28A1582C2F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4A267244-A07E-449C-850C-EA28A1582C2F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{68F6E135-6705-4CC7-8BAD-9B80344A442D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{68F6E135-6705-4CC7-8BAD-9B80344A442D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{68F6E135-6705-4CC7-8BAD-9B80344A442D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{68F6E135-6705-4CC7-8BAD-9B80344A442D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

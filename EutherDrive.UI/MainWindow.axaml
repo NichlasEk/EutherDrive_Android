@@ -1,0 +1,56 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:imaging="clr-namespace:Avalonia.Media.Imaging;assembly=Avalonia"
+        mc:Ignorable="d"
+        x:Class="EutherDrive.UI.MainWindow">
+
+
+  <Grid RowDefinitions="Auto,*" ColumnDefinitions="Auto,*" Margin="12" RowSpacing="12" ColumnSpacing="12">
+
+    <!-- Controls -->
+    <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10">
+      <Button Content="Open ROM…" Click="OnOpenRom"/>
+      <Button Content="Start" Click="OnStart"/>
+      <Button Content="Stop" Click="OnStop"/>
+      <TextBlock Name="StatusText" VerticalAlignment="Center"/>
+    </StackPanel>
+
+    <!-- Left: info -->
+    <Border Grid.Row="1" Grid.Column="0" Padding="10" CornerRadius="8">
+      <StackPanel Spacing="8" Width="260">
+        <CheckBox Content="Use DummyCore" IsChecked="True" Name="UseDummyCoreCheck"/>
+        <TextBlock Text="Controls" FontWeight="Bold"/>
+        <TextBlock Name="KeysText"/>
+        <TextBlock Text="Arrows: D-pad"/>
+        <TextBlock Text="Z/X/C: A/B/C"/>
+        <TextBlock Text="Enter: Start"/>
+        <TextBlock Text="RightShift: Mode (optional)"/>
+        <Separator/>
+        <TextBlock Text="ROM" FontWeight="Bold"/>
+        <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
+        <TextBlock x:Name="RomInfoText" Opacity="0.85" FontSize="12" TextWrapping="Wrap"/>
+        <Separator/>
+        <TextBlock Text="Perf" FontWeight="Bold"/>
+        <TextBlock Name="FpsText" Text="FPS: -"/>
+      </StackPanel>
+    </Border>
+
+<!-- Right: framebuffer -->
+<Border Grid.Row="1" Grid.Column="1" Background="#111" CornerRadius="8" Padding="10">
+  <Border Name="InputSurface" Background="Transparent" Focusable="True">
+    <Viewbox Stretch="Uniform">
+      <Image Name="ScreenImage"
+             Width="320" Height="224"
+             Stretch="Fill"/>
+    </Viewbox>
+  </Border>
+</Border>
+
+
+
+
+
+  </Grid>
+</Window>
