@@ -14,6 +14,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     private int _tick;
     private const int VLINES_NTSC = 262;
+    private uint _lastPc;
+    private int _pcStallFrames;
 
     // ROM + BUS
     private byte[]? _rom;
@@ -35,8 +37,12 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
         // Koppla vår bus-bridge så MDTracer CPU-kod kan läsa/skriva
         md_bus.Current = _bus;
-
         EutherDrive.Core.MdTracerCore.md_bus.Current = _bus;
+
+        // Initiera MDTracer-kärnan så att g_md_* inte är null.
+        md_main.initialize();
+        md_main.g_md_vdp = _vdp;
+        md_main.g_md_cartridge?.load(path);
 
         // Steg A/B proof
         string header = TryReadSegaString(_bus);
@@ -97,7 +103,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
             _cpu.EnsureInitAndReset();
 
             // Bra att skriva en gång i terminalen (kan tas bort sen)
-            Console.WriteLine("m68k runner ok. Methods:\n" + _cpu.DebugApi);
+            Console.WriteLine("m68k runner ok. Runner: " + _cpu.SelectedRunApi);
+            Console.WriteLine("Methods:\n" + _cpu.DebugApi);
         }
 
         _vdp.SetFrameSize(320, 224);
@@ -116,9 +123,18 @@ public sealed class MdTracerAdapter : IEmulatorCore
         // Budget är avsiktligt liten för att inte låsa UI.
         if (_cpuReady && _cpu != null)
         {
+            uint pcBefore = md_m68k.g_reg_PC;
             // Om din md_m68k har run(int cycles) blir detta “cycles-ish”.
             // Om den bara har step() blir det “steps-ish”.
             _cpu.RunSome(budget: 2000);
+            uint pcAfter = md_m68k.g_reg_PC;
+            if (pcAfter == pcBefore)
+                _pcStallFrames++;
+            else
+                _pcStallFrames = 0;
+
+            if ((_tick % 60) == 0)
+                Console.WriteLine($"m68k PC=0x{pcAfter:X6} stall={_pcStallFrames}");
         }
 
         // Fortfarande VDP-test tills vi kopplar VDP-register/IO

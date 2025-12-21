@@ -141,6 +141,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = $"Start failed: {ex.Message}";
+            Console.WriteLine(ex.ToString());
         }
     }
 

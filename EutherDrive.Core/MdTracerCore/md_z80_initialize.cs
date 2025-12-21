@@ -312,6 +312,14 @@ namespace EutherDrive.Core.MdTracerCore
                 op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_HL, op_SET_b_r,
             };
 
+            g_operand      = EnsureOpcodeTableLength(g_operand);
+            g_operand_dd   = EnsureOpcodeTableLength(g_operand_dd);
+            g_operand_ddcb = EnsureOpcodeTableLength(g_operand_ddcb);
+            g_operand_fd   = EnsureOpcodeTableLength(g_operand_fd);
+            g_operand_fdcb = EnsureOpcodeTableLength(g_operand_fdcb);
+            g_operand_ed   = EnsureOpcodeTableLength(g_operand_ed);
+            g_operand_cb   = EnsureOpcodeTableLength(g_operand_cb);
+
             // Sanity checks – fångar fel om man råkar lägga till/ta bort poster
             ValidateOpcodeTable(g_operand,      nameof(g_operand));
             ValidateOpcodeTable(g_operand_dd,   nameof(g_operand_dd));
@@ -320,6 +328,20 @@ namespace EutherDrive.Core.MdTracerCore
             ValidateOpcodeTable(g_operand_fdcb, nameof(g_operand_fdcb));
             ValidateOpcodeTable(g_operand_ed,   nameof(g_operand_ed));
             ValidateOpcodeTable(g_operand_cb,   nameof(g_operand_cb));
+        }
+
+        private Action[] EnsureOpcodeTableLength(Action[] table)
+        {
+            if (table.Length == 256)
+                return table;
+
+            var fixedTable = new Action[256];
+            int count = Math.Min(table.Length, fixedTable.Length);
+            Array.Copy(table, fixedTable, count);
+            for (int i = count; i < fixedTable.Length; i++)
+                fixedTable[i] = op_NOP;
+
+            return fixedTable;
         }
 
         private static void ValidateOpcodeTable(Action[] table, string name)

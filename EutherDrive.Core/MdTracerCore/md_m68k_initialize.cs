@@ -136,7 +136,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_opcode_info ??= new OPINFO[65536];
 
-            var op = g_opcode_info[in_opnum];
+            var op = g_opcode_info[in_opnum] ??= new OPINFO();
 
             op.opcode     = in_func;
             op.opname_org = in_opname_org;
