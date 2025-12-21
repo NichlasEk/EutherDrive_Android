@@ -89,7 +89,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_status_B2 = (value & 0x1000) != 0;
             g_status_B3 = (value & 0x0800) != 0;
 
-            g_status_interrupt_mask = (value >> 8) & 0x07;
+            g_status_interrupt_mask = (byte)((value >> 8) & 0x07);
 
             g_status_B4 = (value & 0x0080) != 0;
             g_status_B5 = (value & 0x0040) != 0;
@@ -135,12 +135,12 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_reg_SR = value;
             UnpackSR(value);
-            g_status_CCR = PackCCR();
+            g_status_CCR = (byte)PackCCR();
         }
 
         private static void WriteCCR(ushort value)
         {
-            g_status_CCR = (ushort)(value & 0x00FF);
+            g_status_CCR = (byte)(value & 0x00FF);
             UnpackCCR(g_status_CCR);
 
             // uppdatera SR så att SR och flaggor matchar
@@ -148,7 +148,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private static void SyncSRFromFlags()  => g_reg_SR     = PackSR();
-        private static void SyncCCRFromFlags() => g_status_CCR = PackCCR();
+        private static void SyncCCRFromFlags() => g_status_CCR = (byte)PackCCR();
 
         // ==========================================================
         // Flag check table (g_flag_chack) — gör det till static

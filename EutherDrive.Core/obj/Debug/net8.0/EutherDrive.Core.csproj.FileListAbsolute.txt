@@ -2,3 +2,11 @@
 /home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.AssemblyInfoInputs.cache
 /home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.AssemblyInfo.cs
 /home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.csproj.CoreCompileInputs.cache
+/home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.sourcelink.json
+/home/nichlas/EutherDrive/EutherDrive.Core/bin/Debug/net8.0/EutherDrive.Core.deps.json
+/home/nichlas/EutherDrive/EutherDrive.Core/bin/Debug/net8.0/EutherDrive.Core.dll
+/home/nichlas/EutherDrive/EutherDrive.Core/bin/Debug/net8.0/EutherDrive.Core.pdb
+/home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.dll
+/home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/refint/EutherDrive.Core.dll
+/home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/EutherDrive.Core.pdb
+/home/nichlas/EutherDrive/EutherDrive.Core/obj/Debug/net8.0/ref/EutherDrive.Core.dll
