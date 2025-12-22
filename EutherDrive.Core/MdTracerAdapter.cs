@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using EutherDrive.Core.MdTracerCore;
@@ -11,7 +12,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private const int DefaultH = 224;
     private readonly md_vdp _vdp = new md_vdp();
 
-    private byte[] _frameBuffer = Array.Empty<byte>(); // BGRA till UI
+    private byte[] _frameBuffer = Array.Empty<byte>(); // RGBA till UI
     private int _fbW, _fbH, _fbStride;
     private int _fbLogW = -1;
     private int _fbLogH = -1;
@@ -29,6 +30,15 @@ public sealed class MdTracerAdapter : IEmulatorCore
     // CPU runner (MDTracer m68k via reflection)
     private MdTracerM68kRunner? _cpu;
     private bool _cpuReady;
+
+    // Simple perf tracking
+    private long _accCpuTicks;
+    private long _accVdpTicks;
+    private long _accFrameTicks;
+    private int _perfFrameCount;
+    private int _lastGc0;
+    private int _lastGc1;
+    private int _lastGc2;
 
     public string RomInfo { get; private set; } = "(no rom)";
 
@@ -112,8 +122,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
             _cpu.EnsureInitAndReset();
 
             // Bra att skriva en gång i terminalen (kan tas bort sen)
-            Console.WriteLine("m68k runner ok. Runner: " + _cpu.SelectedRunApi);
-            Console.WriteLine("Methods:\n" + _cpu.DebugApi);
+            MdTracerCore.MdLog.WriteLine("m68k runner ok. Runner: " + _cpu.SelectedRunApi);
+            MdTracerCore.MdLog.WriteLine("Methods:\n" + _cpu.DebugApi);
         }
 
         _vdp.SetFrameSize(DefaultW, DefaultH);
@@ -133,32 +143,48 @@ public sealed class MdTracerAdapter : IEmulatorCore
         }
 
         int stride = Math.Max(4, w * 4);
-        int need = Math.Max(4, stride * h);
-        if (_frameBuffer.Length != need || _fbW != w || _fbH != h)
+        if (_fbW != w || _fbH != h || _frameBuffer != _vdp.RgbaFrame)
         {
             _fbW = w;
             _fbH = h;
             _fbStride = stride;
-            _frameBuffer = new byte[need];
-            Console.WriteLine($"[MdTracerAdapter] EnsureFramebufferInitialized({reason}) -> {_fbW}x{_fbH} stride={_fbStride}");
+            _frameBuffer = _vdp.RgbaFrame;
+            MdTracerCore.MdLog.WriteLine($"[MdTracerAdapter] EnsureFramebufferInitialized({reason}) -> {_fbW}x{_fbH} stride={_fbStride}");
         }
     }
 
     public void RunFrame()
     {
         if (_tick == 0)
-            Console.WriteLine("[MdTracerAdapter] RunFrame start");
+        MdTracerCore.MdLog.WriteLine("[MdTracerAdapter] RunFrame start");
 
         _tick++;
+        long frameStart = Stopwatch.GetTimestamp();
 
         uint pcAfter = md_m68k.g_reg_PC;
+        var directCpu = md_main.g_md_m68k;
+        var cpuDirect = md_main.g_md_m68k;
         if (_cpuReady && _cpu != null)
         {
+            long vdpTicks = 0;
+            long cpuTicks = 0;
+
             for (int v = 0; v < VLINES_NTSC; v++)
             {
+                long start = Stopwatch.GetTimestamp();
                 _vdp.run(v);
-                _cpu.RunSome(budget: 200);
+                vdpTicks += Stopwatch.GetTimestamp() - start;
+
+                start = Stopwatch.GetTimestamp();
+                if (cpuDirect != null)
+                    cpuDirect.run(200);
+                else
+                    _cpu.RunSome(budget: 200);
+                cpuTicks += Stopwatch.GetTimestamp() - start;
             }
+
+            _accVdpTicks += vdpTicks;
+            _accCpuTicks += cpuTicks;
 
             pcAfter = md_m68k.g_reg_PC;
             if (pcAfter == _lastPc)
@@ -174,7 +200,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 ushort op0 = md_m68k.read16(pcAfter);
                 ushort op1 = md_m68k.read16(pcAfter + 2);
                 uint d1 = md_m68k.g_reg_data[1].l;
-                Console.WriteLine($"m68k PC=0x{pcAfter:X6} stall={_pcStallFrames} VDP=0x{vdpStatus:X4} HV=0x{hv:X4} D1=0x{d1:X8} OP=0x{op0:X4} NXT=0x{op1:X4}");
+                MdTracerCore.MdLog.WriteLine($"m68k PC=0x{pcAfter:X6} stall={_pcStallFrames} VDP=0x{vdpStatus:X4} HV=0x{hv:X4} D1=0x{d1:X8} OP=0x{op0:X4} NXT=0x{op1:X4}");
             }
         }
         else
@@ -184,34 +210,41 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 _vdp.run(v);
         }
 
-        // RGBA -> BGRA
+        if (_cpuReady && _cpu != null)
+        {
+            _accFrameTicks += Stopwatch.GetTimestamp() - frameStart;
+            _perfFrameCount++;
+            MaybeLogPerformance();
+        }
+
+        // RGBA direkt till UI (ingen konvertering)
         EnsureFramebufferInitialized("RunFrame");
-        var src = _vdp.RgbaFrame; // RGBA
-        int w = _fbW;
-        int h = _fbH;
+        _frameBuffer = _vdp.RgbaFrame;
+    }
 
-        int need = w * h * 4;
-        if (w != _fbW || h != _fbH || _frameBuffer.Length != need)
-        {
-            _fbW = w;
-            _fbH = h;
-            _fbStride = _fbW * 4;
-            _frameBuffer = new byte[need];
-        }
+    private void MaybeLogPerformance()
+    {
+        if (_perfFrameCount < 60)
+            return;
 
-        int n = Math.Min(src.Length, _frameBuffer.Length);
-        for (int i = 0; i < n; i += 4)
-        {
-            byte r = src[i + 0];
-            byte g = src[i + 1];
-            byte b = src[i + 2];
-            byte a = src[i + 3];
+        double invFreq = 1000.0 / Stopwatch.Frequency;
+        double avgCpuMs = (_accCpuTicks / (double)_perfFrameCount) * invFreq;
+        double avgVdpMs = (_accVdpTicks / (double)_perfFrameCount) * invFreq;
+        double avgFrameMs = (_accFrameTicks / (double)_perfFrameCount) * invFreq;
 
-            _frameBuffer[i + 0] = b;
-            _frameBuffer[i + 1] = g;
-            _frameBuffer[i + 2] = r;
-            _frameBuffer[i + 3] = a;
-        }
+        int gc0 = GC.CollectionCount(0);
+        int gc1 = GC.CollectionCount(1);
+        int gc2 = GC.CollectionCount(2);
+
+        Console.WriteLine($"[MdTracerAdapter] perf avg/frame={avgFrameMs:0.00}ms CPU={avgCpuMs:0.00}ms VDP={avgVdpMs:0.00}ms GC0={gc0 - _lastGc0} GC1={gc1 - _lastGc1} GC2={gc2 - _lastGc2}");
+
+        _accCpuTicks = 0;
+        _accVdpTicks = 0;
+        _accFrameTicks = 0;
+        _perfFrameCount = 0;
+        _lastGc0 = gc0;
+        _lastGc1 = gc1;
+        _lastGc2 = gc2;
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -225,7 +258,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
             _fbLogW = width;
             _fbLogH = height;
             _fbLogStride = stride;
-            Console.WriteLine($"[MdTracerAdapter] GetFrameBuffer size={width}x{height} stride={stride} bytes={_frameBuffer.Length}");
+            MdTracerCore.MdLog.WriteLine($"[MdTracerAdapter] GetFrameBuffer size={width}x{height} stride={stride} bytes={_frameBuffer.Length}");
         }
         return _frameBuffer;
     }
@@ -239,6 +272,17 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     public void SetInputState(bool up, bool down, bool left, bool right, bool a, bool b, bool c, bool start)
     {
-        // ännu ingen input wiring för CPU/IO
+        var io = md_main.g_md_io;
+        if (io == null)
+            return;
+
+        io._pad1.Up = up;
+        io._pad1.Down = down;
+        io._pad1.Left = left;
+        io._pad1.Right = right;
+        io._pad1.A = a;
+        io._pad1.B = b;
+        io._pad1.C = c;
+        io._pad1.Start = start;
     }
 }

@@ -38,6 +38,7 @@ namespace EutherDrive.Core.MdTracerCore
                 try
                 {
                     g_md_io = new md_io();
+                    md_io.Current = g_md_io;
                 }
                 catch
                 {

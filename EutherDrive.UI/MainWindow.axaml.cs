@@ -24,6 +24,8 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _timer;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
     private int _frames;
+    private long _lastStatusUpdateMs;
+    private string _lastStatusKeys = string.Empty;
 
     private string? _romPath;
 
@@ -155,7 +157,7 @@ public partial class MainWindow : Window
     {
         if (_core == null)
             return;
-        StatusText.Text = $"Core: {_core.GetType().Name}  Keys: {string.Join(", ", _keysDown)}";
+        MaybeUpdateStatusText();
 
         // input → core
         ApplyInputToCore(_core);
@@ -176,6 +178,27 @@ public partial class MainWindow : Window
         }
     }
 
+    private void MaybeUpdateStatusText()
+    {
+        if (_core == null)
+            return;
+
+        long now = _fpsSw.ElapsedMilliseconds;
+        if (now - _lastStatusUpdateMs < 250)
+            return;
+
+        string keys = _keysDown.Count == 0
+            ? "-"
+            : string.Join(", ", _keysDown.OrderBy(k => k.ToString()));
+
+        if (keys == _lastStatusKeys && now - _lastStatusUpdateMs < 1000)
+            return;
+
+        _lastStatusUpdateMs = now;
+        _lastStatusKeys = keys;
+        StatusText.Text = $"Core: {_core.GetType().Name}  Keys: {keys}";
+    }
+
     private void ApplyInputToCore(IEmulatorCore core)
     {
         bool up    = _keysDown.Contains(Key.Up)    || _keysDown.Contains(Key.W);
@@ -184,16 +207,15 @@ public partial class MainWindow : Window
         bool right = _keysDown.Contains(Key.Right) || _keysDown.Contains(Key.D);
 
         // Knappar: flera alternativ för att slippa layout-strul
-        bool a = _keysDown.Contains(Key.Z) || _keysDown.Contains(Key.J) || _keysDown.Contains(Key.Q);
+        bool a = _keysDown.Contains(Key.Z) || _keysDown.Contains(Key.J) || _keysDown.Contains(Key.Q) || _keysDown.Contains(Key.Space);
         bool b = _keysDown.Contains(Key.X) || _keysDown.Contains(Key.K) || _keysDown.Contains(Key.E);
         bool c = _keysDown.Contains(Key.C) || _keysDown.Contains(Key.L) || _keysDown.Contains(Key.R);
 
-        bool start = _keysDown.Contains(Key.Enter) || _keysDown.Contains(Key.Space);
+        bool start = _keysDown.Contains(Key.Enter);
 
         core.SetInputState(up, down, left, right, a, b, c, start);
 
-        // Debug: visa exakt vilka keys som ligger nere (sorterat)
-        StatusText.Text = "Keys: " + string.Join(", ", _keysDown.OrderBy(k => k.ToString()));
+        // StatusText uppdateras i Tick()
     }
 
 
@@ -210,7 +232,7 @@ public partial class MainWindow : Window
             _wb = new WriteableBitmap(
                 new PixelSize(w, h),
                                       new Vector(96, 96),
-                                      PixelFormat.Bgra8888,
+                                      PixelFormat.Rgba8888,
                                       AlphaFormat.Unpremul);
 
             ScreenImage.Source = _wb;

@@ -341,7 +341,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (_z80RegReadLogRemaining <= 0)
                 return;
             _z80RegReadLogRemaining--;
-            System.Console.WriteLine($"[md_bus] Z80 reg read 0x{addr:X6} -> 0x{val:X}");
+            MdLog.WriteLine($"[md_bus] Z80 reg read 0x{addr:X6} -> 0x{val:X}");
         }
 
         private void LogZ80RegWrite(uint addr, uint val)
@@ -349,7 +349,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (_z80RegWriteLogRemaining <= 0)
                 return;
             _z80RegWriteLogRemaining--;
-            System.Console.WriteLine($"[md_bus] Z80 reg write 0x{addr:X6} <- 0x{val:X}");
+            MdLog.WriteLine($"[md_bus] Z80 reg write 0x{addr:X6} <- 0x{val:X}");
         }
     }
 }

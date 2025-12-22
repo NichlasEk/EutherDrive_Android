@@ -318,7 +318,7 @@ public sealed class MegaDriveBus
         if (_ioReadLogged[off])
             return;
         _ioReadLogged[off] = true;
-        Console.WriteLine($"[MegaDriveBus] IO read 0x{addr:X6} -> 0x{val:X}");
+        MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] IO read 0x{addr:X6} -> 0x{val:X}");
     }
 
     private void LogIoWrite(uint addr, uint val)
@@ -329,7 +329,7 @@ public sealed class MegaDriveBus
         if (_ioWriteLogged[off])
             return;
         _ioWriteLogged[off] = true;
-        Console.WriteLine($"[MegaDriveBus] IO write 0x{addr:X6} <- 0x{val:X}");
+        MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] IO write 0x{addr:X6} <- 0x{val:X}");
     }
 
     private void LogZ80RegRead(uint addr, uint val)
@@ -337,7 +337,7 @@ public sealed class MegaDriveBus
         if (_z80RegReadLogRemaining <= 0)
             return;
         _z80RegReadLogRemaining--;
-        Console.WriteLine($"[MegaDriveBus] Z80 reg read 0x{addr:X6} -> 0x{val:X}");
+        MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] Z80 reg read 0x{addr:X6} -> 0x{val:X}");
     }
 
     private void LogZ80RegWrite(uint addr, uint val)
@@ -345,7 +345,7 @@ public sealed class MegaDriveBus
         if (_z80RegWriteLogRemaining <= 0)
             return;
         _z80RegWriteLogRemaining--;
-        Console.WriteLine($"[MegaDriveBus] Z80 reg write 0x{addr:X6} <- 0x{val:X}");
+        MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] Z80 reg write 0x{addr:X6} <- 0x{val:X}");
     }
 
     private void LogZ80WindowRead(uint addr, uint val)
@@ -353,7 +353,7 @@ public sealed class MegaDriveBus
         if (_z80WindowReadLogRemaining <= 0)
             return;
         _z80WindowReadLogRemaining--;
-        Console.WriteLine($"[MegaDriveBus] Z80 win read 0x{addr:X6} -> 0x{val:X}");
+        MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] Z80 win read 0x{addr:X6} -> 0x{val:X}");
     }
 
     private void LogZ80WindowWrite(uint addr, uint val)
@@ -361,6 +361,6 @@ public sealed class MegaDriveBus
         if (_z80WindowWriteLogRemaining <= 0)
             return;
         _z80WindowWriteLogRemaining--;
-        Console.WriteLine($"[MegaDriveBus] Z80 win write 0x{addr:X6} <- 0x{val:X}");
+        MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] Z80 win write 0x{addr:X6} <- 0x{val:X}");
     }
 }

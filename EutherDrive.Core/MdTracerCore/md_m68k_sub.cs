@@ -253,7 +253,7 @@ namespace EutherDrive.Core.MdTracerCore
                         _d1LogRemaining--;
                         if (_d1LogLastPc != g_reg_PC)
                             _d1LogLastPc = g_reg_PC;
-                        Console.WriteLine($"[md_m68k] D1=0x{newVal:X8} PC=0x{g_reg_PC:X6}");
+                        MdLog.WriteLine($"[md_m68k] D1=0x{newVal:X8} PC=0x{g_reg_PC:X6}");
                     }
                 }
             }

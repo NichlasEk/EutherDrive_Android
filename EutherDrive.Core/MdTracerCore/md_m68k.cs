@@ -59,16 +59,16 @@ namespace EutherDrive.Core.MdTracerCore
                     if (g_68k_stop) { g_clock_now = g_clock_total; break; }
 
                     if (_bootTraceEnabled && _bootTraceRemaining == 200)
-                        Console.WriteLine("[m68k boot] trace start");
+                        MdLog.WriteLine("[m68k boot] trace start");
 
                     if (_bootTraceEnabled && _bootTraceRemaining > 0)
                     {
-                        Console.WriteLine($"[m68k boot] PC=0x{g_reg_PC:X6} OP=0x{g_opcode:X4} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} A0=0x{g_reg_addr[0].l:X8} A1=0x{g_reg_addr[1].l:X8}");
+                        MdLog.WriteLine($"[m68k boot] PC=0x{g_reg_PC:X6} OP=0x{g_opcode:X4} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} A0=0x{g_reg_addr[0].l:X8} A1=0x{g_reg_addr[1].l:X8}");
                         if (g_opcode == 0x0111 && _bootTraceProbeRemaining > 0)
                         {
                             uint a1 = g_reg_addr[1].l;
                             byte val = md_main.g_md_bus != null ? md_main.g_md_bus.read8(a1) : read8(a1);
-                            Console.WriteLine($"[m68k boot] OP=0x0111 probe A1=0x{a1:X6} -> 0x{val:X2}");
+                            MdLog.WriteLine($"[m68k boot] OP=0x0111 probe A1=0x{a1:X6} -> 0x{val:X2}");
                             _bootTraceProbeRemaining--;
                         }
                         _bootTraceRemaining--;
@@ -82,7 +82,7 @@ namespace EutherDrive.Core.MdTracerCore
                         ushort op0 = g_opcode;
                         ushort op1 = read16(g_reg_PC + 2);
                         ushort op2 = read16(g_reg_PC + 4);
-                        Console.WriteLine($"[m68k] PC=0x{g_reg_PC:X6} OP=0x{op0:X4} N1=0x{op1:X4} N2=0x{op2:X4} SR=0x{g_reg_SR:X4} SP=0x{g_reg_addr[7].l:X8}");
+                        MdLog.WriteLine($"[m68k] PC=0x{g_reg_PC:X6} OP=0x{op0:X4} N1=0x{op1:X4} N2=0x{op2:X4} SR=0x{g_reg_SR:X4} SP=0x{g_reg_addr[7].l:X8}");
                     }
 
                     g_opcode_info[g_opcode].opcode();
@@ -107,7 +107,7 @@ namespace EutherDrive.Core.MdTracerCore
                 if (_intLogRemaining > 0)
                 {
                     _intLogRemaining--;
-                    Console.WriteLine($"[m68k int] HINT vec=0x0070 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
+                    MdLog.WriteLine($"[m68k int] HINT vec=0x0070 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
                 }
                 stack_push32(g_reg_PC);
                 // md_main.g_form_code_trace.CPU_Trace_push(...HINT...);
@@ -135,7 +135,7 @@ namespace EutherDrive.Core.MdTracerCore
                 if (_intLogRemaining > 0)
                 {
                     _intLogRemaining--;
-                    Console.WriteLine($"[m68k int] VINT vec=0x0078 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
+                    MdLog.WriteLine($"[m68k int] VINT vec=0x0078 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
                 }
                 stack_push32(g_reg_PC);
                 // md_main.g_form_code_trace.CPU_Trace_push(...VINT...);
@@ -161,7 +161,7 @@ namespace EutherDrive.Core.MdTracerCore
                 if (_intLogRemaining > 0)
                 {
                     _intLogRemaining--;
-                    Console.WriteLine($"[m68k int] EXT vec=0x0068 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
+                    MdLog.WriteLine($"[m68k int] EXT vec=0x0068 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
                 }
                 stack_push32(g_reg_PC);
                 // md_main.g_form_code_trace.CPU_Trace_push(...EXT...);

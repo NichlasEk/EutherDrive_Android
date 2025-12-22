@@ -130,7 +130,7 @@ namespace EutherDrive.Core.MdTracerCore
             _d1LogRemaining = 64;
             _d1LogLastPc = 0;
             _pc466LogRemaining = 32;
-            Console.WriteLine("[md_m68k] Boot trace armed");
+            MdLog.WriteLine("[md_m68k] Boot trace armed");
         }
 
         private void opcode_add(

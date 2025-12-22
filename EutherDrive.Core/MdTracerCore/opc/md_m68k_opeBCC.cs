@@ -24,7 +24,7 @@ namespace EutherDrive.Core.MdTracerCore
                if (_bneLogRemaining > 0)
                {
                    _bneLogRemaining--;
-                   Console.WriteLine($"[m68k] BNE disp=0x{(byte)g_opcode:X2} Z={(g_status_Z ? 1 : 0)} take={(take ? 1 : 0)}");
+                   MdLog.WriteLine($"[m68k] BNE disp=0x{(byte)g_opcode:X2} Z={(g_status_Z ? 1 : 0)} take={(take ? 1 : 0)}");
                }
            }
            if (take) g_reg_PC = w_next_pc_work;

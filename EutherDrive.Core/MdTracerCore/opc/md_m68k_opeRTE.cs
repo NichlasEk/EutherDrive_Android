@@ -23,7 +23,7 @@ internal partial class md_m68k
         if (_intLogRemaining > 0)
         {
             _intLogRemaining--;
-            Console.WriteLine($"[m68k int] RTE pc=0x{g_reg_PC:X6} sr=0x{newSr:X4} sp=0x{g_reg_addr[7].l:X8}");
+            MdLog.WriteLine($"[m68k int] RTE pc=0x{g_reg_PC:X6} sr=0x{newSr:X4} sp=0x{g_reg_addr[7].l:X8}");
         }
 
         // Trace (headless: bara om flaggan är på; stubben är no-op ändå)

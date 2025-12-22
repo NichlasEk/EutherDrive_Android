@@ -25,7 +25,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (g_analyze_address == 0x00A11100 && _btstLogRemaining > 0)
             {
                 _btstLogRemaining--;
-                Console.WriteLine($"[m68k] BTST A11100 val=0x{g_work_data.b0:X2} bit={w_bit} Z={(g_status_Z ? 1 : 0)}");
+                MdLog.WriteLine($"[m68k] BTST A11100 val=0x{g_work_data.b0:X2} bit={w_bit} Z={(g_status_Z ? 1 : 0)}");
             }
         }
         private void analyse_BTST_static_long()
