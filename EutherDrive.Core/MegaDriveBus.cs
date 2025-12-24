@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using EutherDrive.Core.MdTracerCore;
 
 namespace EutherDrive.Core;
@@ -23,6 +24,21 @@ public sealed class MegaDriveBus
     private int _z80RegWriteLogRemaining = 8;
     private int _z80WindowReadLogRemaining = 8;
     private int _z80WindowWriteLogRemaining = 8;
+    private int _vdpWriteLogRemaining = 10;
+    private int _vdpWriteTotal;
+    private int _vdpWriteRouted;
+    private int _vdpWriteElsewhere;
+    private int _z80WinLogRemaining = 64;
+    private bool _z80WinWarned;
+    private readonly long[] _vdpPortWriteCounts = new long[8 * 3];
+    private long _vdpLastSummaryTicks;
+    private bool _vdpNormalizeLogged;
+    private bool _vdpNotRoutedDataLogged;
+    private bool _vdpNotRoutedCtrlLogged;
+    private static readonly bool TraceBusAccess =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceZ80Win =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN"), "1", StringComparison.Ordinal);
 
     public MegaDriveBus(byte[] rom)
     {
@@ -39,6 +55,17 @@ public sealed class MegaDriveBus
         _z80RegWriteLogRemaining = 8;
         _z80WindowReadLogRemaining = 8;
         _z80WindowWriteLogRemaining = 8;
+        _vdpWriteLogRemaining = 10;
+        _vdpWriteTotal = 0;
+        _vdpWriteRouted = 0;
+        _vdpWriteElsewhere = 0;
+        _z80WinLogRemaining = 64;
+        _z80WinWarned = false;
+        Array.Clear(_vdpPortWriteCounts, 0, _vdpPortWriteCounts.Length);
+        _vdpLastSummaryTicks = 0;
+        _vdpNormalizeLogged = false;
+        _vdpNotRoutedDataLogged = false;
+        _vdpNotRoutedCtrlLogged = false;
     }
 
     private static bool IsVdpPort(uint addr) => (addr & 0xFFFFE0) == 0xC00000;
@@ -51,10 +78,27 @@ public sealed class MegaDriveBus
     // 68k WRAM:      0xFF0000..0xFFFFFF
     public byte Read8(uint addr)
     {
+        if (MegaDriveBusProfiler.Enabled)
+        {
+            long start = Stopwatch.GetTimestamp();
+            byte result = Read8Core(addr);
+            MegaDriveBusProfiler.AddReadTicks(Stopwatch.GetTimestamp() - start);
+            md_m68k.RecordBusAccess(addr, 1, false, result);
+            return result;
+        }
+
+        byte value = Read8Core(addr);
+        md_m68k.RecordBusAccess(addr, 1, false, value);
+        return value;
+    }
+
+    private byte Read8Core(uint addr)
+    {
         if (IsZ80BusReq(addr))
         {
             byte val = _z80BusRequested ? (byte)0x01 : (byte)0x00;
             LogZ80RegRead(addr, val);
+            LogBusAccess("busreq read8", addr, val);
             return val;
         }
 
@@ -62,6 +106,7 @@ public sealed class MegaDriveBus
         {
             byte val = _z80Reset ? (byte)0x00 : (byte)0x01;
             LogZ80RegRead(addr, val);
+            LogBusAccess("reset read8", addr, val);
             return val;
         }
 
@@ -105,6 +150,8 @@ public sealed class MegaDriveBus
         {
             ushort val = _z80BusRequested ? (ushort)0x0001 : (ushort)0x0000;
             LogZ80RegRead(addr, val);
+            LogBusAccess("busreq read16", addr, val);
+            md_m68k.RecordBusAccess(addr, 2, false, val);
             return val;
         }
 
@@ -112,29 +159,67 @@ public sealed class MegaDriveBus
         {
             ushort val = _z80Reset ? (ushort)0x0000 : (ushort)0x0001;
             LogZ80RegRead(addr, val);
+            LogBusAccess("reset read16", addr, val);
+            md_m68k.RecordBusAccess(addr, 2, false, val);
             return val;
         }
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
-            return md_main.g_md_vdp.read16(addr);
+        {
+            if (MegaDriveBusProfiler.Enabled)
+            {
+                long start = Stopwatch.GetTimestamp();
+                ushort val = md_main.g_md_vdp.read16(addr);
+                MegaDriveBusProfiler.AddReadTicks(Stopwatch.GetTimestamp() - start);
+                md_m68k.RecordBusAccess(addr, 2, false, val);
+                return val;
+            }
+            ushort vdpVal = md_main.g_md_vdp.read16(addr);
+            md_m68k.RecordBusAccess(addr, 2, false, vdpVal);
+            return vdpVal;
+        }
 
         if (IsIoPort(addr) && md_main.g_md_io != null)
         {
-            ushort val = md_main.g_md_io.read16(addr);
-            LogIoRead(addr, val);
-            return val;
+            ushort ioVal;
+            if (MegaDriveBusProfiler.Enabled)
+            {
+                long start = Stopwatch.GetTimestamp();
+                ioVal = md_main.g_md_io.read16(addr);
+                MegaDriveBusProfiler.AddReadTicks(Stopwatch.GetTimestamp() - start);
+                LogIoRead(addr, ioVal);
+                md_m68k.RecordBusAccess(addr, 2, false, ioVal);
+                return ioVal;
+            }
+            ioVal = md_main.g_md_io.read16(addr);
+            LogIoRead(addr, ioVal);
+            md_m68k.RecordBusAccess(addr, 2, false, ioVal);
+            return ioVal;
         }
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
-            ushort val = md_main.g_md_z80.read16(addr & 0xFFFF);
-            LogZ80WindowRead(addr, val);
-            return val;
+            ushort windowVal;
+            if (MegaDriveBusProfiler.Enabled)
+            {
+                long start = Stopwatch.GetTimestamp();
+                windowVal = md_main.g_md_z80.read16(addr & 0xFFFF);
+                MegaDriveBusProfiler.AddReadTicks(Stopwatch.GetTimestamp() - start);
+                LogZ80WindowRead(addr, windowVal);
+                md_m68k.RecordBusAccess(addr, 2, false, windowVal);
+                return windowVal;
+            }
+            windowVal = md_main.g_md_z80.read16(addr & 0xFFFF);
+            LogZ80WindowRead(addr, windowVal);
+            md_m68k.RecordBusAccess(addr, 2, false, windowVal);
+            return windowVal;
         }
 
-        int hi = Read8(addr);
-        int lo = Read8(addr + 1);
-        return (ushort)((hi << 8) | lo);
+        int hi = Read8Core(addr);
+        int lo = Read8Core(addr + 1);
+        ushort value = (ushort)((hi << 8) | lo);
+        md_m68k.RecordBusAccess(addr, 2, false, value);
+        return value;
     }
 
     public uint Read32(uint addr)
@@ -143,6 +228,8 @@ public sealed class MegaDriveBus
         {
             uint val = _z80BusRequested ? 0x0000_0001u : 0x0000_0000u;
             LogZ80RegRead(addr, val);
+            LogBusAccess("busreq read32", addr, val);
+            md_m68k.RecordBusAccess(addr, 4, false, val);
             return val;
         }
 
@@ -150,39 +237,94 @@ public sealed class MegaDriveBus
         {
             uint val = _z80Reset ? 0x0000_0000u : 0x0000_0001u;
             LogZ80RegRead(addr, val);
+            LogBusAccess("reset read32", addr, val);
+            md_m68k.RecordBusAccess(addr, 4, false, val);
             return val;
         }
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
-            return md_main.g_md_vdp.read32(addr);
+        {
+            if (MegaDriveBusProfiler.Enabled)
+            {
+                long start = Stopwatch.GetTimestamp();
+                uint val = md_main.g_md_vdp.read32(addr);
+                MegaDriveBusProfiler.AddReadTicks(Stopwatch.GetTimestamp() - start);
+                md_m68k.RecordBusAccess(addr, 4, false, val);
+                return val;
+            }
+            uint vdpVal = md_main.g_md_vdp.read32(addr);
+            md_m68k.RecordBusAccess(addr, 4, false, vdpVal);
+            return vdpVal;
+        }
 
         if (IsIoPort(addr) && md_main.g_md_io != null)
         {
-            uint val = md_main.g_md_io.read32(addr);
-            LogIoRead(addr, val);
-            return val;
+            uint ioVal;
+            if (MegaDriveBusProfiler.Enabled)
+            {
+                long start = Stopwatch.GetTimestamp();
+                ioVal = md_main.g_md_io.read32(addr);
+                MegaDriveBusProfiler.AddReadTicks(Stopwatch.GetTimestamp() - start);
+                LogIoRead(addr, ioVal);
+                md_m68k.RecordBusAccess(addr, 4, false, ioVal);
+                return ioVal;
+            }
+            ioVal = md_main.g_md_io.read32(addr);
+            LogIoRead(addr, ioVal);
+            md_m68k.RecordBusAccess(addr, 4, false, ioVal);
+            return ioVal;
         }
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
-            uint val = md_main.g_md_z80.read32(addr & 0xFFFF);
-            LogZ80WindowRead(addr, val);
-            return val;
+            uint windowVal;
+            if (MegaDriveBusProfiler.Enabled)
+            {
+                long start = Stopwatch.GetTimestamp();
+                windowVal = md_main.g_md_z80.read32(addr & 0xFFFF);
+                MegaDriveBusProfiler.AddReadTicks(Stopwatch.GetTimestamp() - start);
+                LogZ80WindowRead(addr, windowVal);
+                md_m68k.RecordBusAccess(addr, 4, false, windowVal);
+                return windowVal;
+            }
+            windowVal = md_main.g_md_z80.read32(addr & 0xFFFF);
+            LogZ80WindowRead(addr, windowVal);
+            md_m68k.RecordBusAccess(addr, 4, false, windowVal);
+            return windowVal;
         }
 
-        uint b0 = Read8(addr);
-        uint b1 = Read8(addr + 1);
-        uint b2 = Read8(addr + 2);
-        uint b3 = Read8(addr + 3);
-        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+        uint b0 = Read8Core(addr);
+        uint b1 = Read8Core(addr + 1);
+        uint b2 = Read8Core(addr + 2);
+        uint b3 = Read8Core(addr + 3);
+        uint value = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+        md_m68k.RecordBusAccess(addr, 4, false, value);
+        return value;
     }
 
     public void Write8(uint addr, byte value)
+    {
+        if (MegaDriveBusProfiler.Enabled)
+        {
+            long start = Stopwatch.GetTimestamp();
+            Write8Core(addr, value);
+            MegaDriveBusProfiler.AddWriteTicks(Stopwatch.GetTimestamp() - start);
+            return;
+        }
+
+        Write8Core(addr, value);
+    }
+
+    private void Write8Core(uint addr, byte value)
     {
         if (IsZ80BusReq(addr))
         {
             _z80BusRequested = (value & 0x01) != 0;
             LogZ80RegWrite(addr, value);
+            LogBusAccess("busreq write8", addr, value);
+            if (TraceZ80Win)
+                Console.WriteLine($"[Z80BUSREQ] write addr=0x{addr:X6} value=0x{value:X2}");
+            md_m68k.RecordBusAccess(addr, 1, true, value);
             return;
         }
 
@@ -190,38 +332,66 @@ public sealed class MegaDriveBus
         {
             _z80Reset = (value & 0x01) == 0;
             LogZ80RegWrite(addr, value);
+            LogBusAccess("reset write8", addr, value);
+            if (TraceZ80Win)
+                Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X2}");
+            md_m68k.RecordBusAccess(addr, 1, true, value);
             return;
         }
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
         {
+            LogVdpWrite(addr, addr, 8, value, "VDP");
             md_main.g_md_vdp.write8(addr, value);
+            md_m68k.RecordBusAccess(addr, 1, true, value);
             return;
         }
 
         if (IsIoPort(addr) && md_main.g_md_io != null)
         {
+            LogVdpWrite(addr, addr, 8, value, "IO");
             md_main.g_md_io.write8(addr, value);
             LogIoWrite(addr, value);
+            md_m68k.RecordBusAccess(addr, 1, true, value);
             return;
         }
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
+            LogVdpWrite(addr, addr, 8, value, "Z80");
+            uint z80Index = addr & 0x1FFF;
             md_main.g_md_z80.write8(addr & 0xFFFF, value);
             LogZ80WindowWrite(addr, value);
+            if (TraceZ80Win && _z80WinLogRemaining > 0)
+            {
+                _z80WinLogRemaining--;
+                int busReq = _z80BusRequested ? 1 : 0;
+                int reset = _z80Reset ? 1 : 0;
+                Console.WriteLine($"[Z80WIN] W8 addr=0x{addr:X6} -> z80[{z80Index:X4}]=0x{value:X2} busReq={busReq} reset={reset}");
+            }
+            if (TraceZ80Win && !_z80BusRequested && !_z80WinWarned)
+            {
+                _z80WinWarned = true;
+                int busReq = _z80BusRequested ? 1 : 0;
+                int reset = _z80Reset ? 1 : 0;
+                Console.WriteLine($"[Z80WIN][WARN] Write while bus not granted! addr=0x{addr:X6} val=0x{value:X2} busReq={busReq} reset={reset}");
+            }
+            md_m68k.RecordBusAccess(addr, 1, true, value);
             return;
         }
 
+        LogVdpWrite(addr, addr, 8, value, "WRAM/other");
         // Work RAM only (for now)
         if ((addr & 0xFF0000) == 0xFF0000)
         {
             int i = (int)(addr & 0xFFFF);
             _wram[i] = value;
+            md_m68k.RecordBusAccess(addr, 1, true, value);
             return;
         }
 
         // ignore writes elsewhere in Steg B
+        md_m68k.RecordBusAccess(addr, 1, true, value);
     }
 
     public void Write16(uint addr, ushort value)
@@ -230,6 +400,10 @@ public sealed class MegaDriveBus
         {
             _z80BusRequested = (value & 0x0100) != 0;
             LogZ80RegWrite(addr, value);
+            LogBusAccess("busreq write16", addr, value);
+            if (TraceZ80Win)
+                Console.WriteLine($"[Z80BUSREQ] write addr=0x{addr:X6} value=0x{value:X4}");
+            md_m68k.RecordBusAccess(addr, 2, true, value);
             return;
         }
 
@@ -237,32 +411,44 @@ public sealed class MegaDriveBus
         {
             _z80Reset = (value & 0x0100) == 0;
             LogZ80RegWrite(addr, value);
+            LogBusAccess("reset write16", addr, value);
+            if (TraceZ80Win)
+                Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X4}");
+            md_m68k.RecordBusAccess(addr, 2, true, value);
             return;
         }
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
         {
+            LogVdpWrite(addr, addr, 16, value, "VDP");
             md_main.g_md_vdp.write16(addr, value);
+            md_m68k.RecordBusAccess(addr, 2, true, value);
             return;
         }
 
         if (IsIoPort(addr) && md_main.g_md_io != null)
         {
+            LogVdpWrite(addr, addr, 16, value, "IO");
             md_main.g_md_io.write16(addr, value);
             LogIoWrite(addr, value);
+            md_m68k.RecordBusAccess(addr, 2, true, value);
             return;
         }
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
+            LogVdpWrite(addr, addr, 16, value, "Z80");
             md_main.g_md_z80.write16(addr & 0xFFFF, value);
             LogZ80WindowWrite(addr, value);
+            md_m68k.RecordBusAccess(addr, 2, true, value);
             return;
         }
 
+        LogVdpWrite(addr, addr, 16, value, "WRAM/other");
         // 68k big-endian writes
         Write8(addr, (byte)(value >> 8));
         Write8(addr + 1, (byte)(value & 0xFF));
+        md_m68k.RecordBusAccess(addr, 2, true, value);
     }
 
     public void Write32(uint addr, uint value)
@@ -271,6 +457,10 @@ public sealed class MegaDriveBus
         {
             _z80BusRequested = (value & 0x0100_0000u) != 0;
             LogZ80RegWrite(addr, value);
+            LogBusAccess("busreq write32", addr, value);
+            if (TraceZ80Win)
+                Console.WriteLine($"[Z80BUSREQ] write addr=0x{addr:X6} value=0x{value:X8}");
+            md_m68k.RecordBusAccess(addr, 4, true, value);
             return;
         }
 
@@ -278,33 +468,45 @@ public sealed class MegaDriveBus
         {
             _z80Reset = (value & 0x0100_0000u) == 0;
             LogZ80RegWrite(addr, value);
+            LogBusAccess("reset write32", addr, value);
+            if (TraceZ80Win)
+                Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X8}");
+            md_m68k.RecordBusAccess(addr, 4, true, value);
             return;
         }
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
         {
+            LogVdpWrite(addr, addr, 32, value, "VDP");
             md_main.g_md_vdp.write32(addr, value);
+            md_m68k.RecordBusAccess(addr, 4, true, value);
             return;
         }
 
         if (IsIoPort(addr) && md_main.g_md_io != null)
         {
+            LogVdpWrite(addr, addr, 32, value, "IO");
             md_main.g_md_io.write32(addr, value);
             LogIoWrite(addr, value);
+            md_m68k.RecordBusAccess(addr, 4, true, value);
             return;
         }
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
+            LogVdpWrite(addr, addr, 32, value, "Z80");
             md_main.g_md_z80.write32(addr & 0xFFFF, value);
             LogZ80WindowWrite(addr, value);
+            md_m68k.RecordBusAccess(addr, 4, true, value);
             return;
         }
 
+        LogVdpWrite(addr, addr, 32, value, "WRAM/other");
         Write8(addr,     (byte)(value >> 24));
         Write8(addr + 1, (byte)((value >> 16) & 0xFF));
         Write8(addr + 2, (byte)((value >> 8)  & 0xFF));
         Write8(addr + 3, (byte)(value & 0xFF));
+        md_m68k.RecordBusAccess(addr, 4, true, value);
     }
 
     public ReadOnlySpan<byte> GetRomSpan() => _rom;
@@ -362,5 +564,125 @@ public sealed class MegaDriveBus
             return;
         _z80WindowWriteLogRemaining--;
         MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] Z80 win write 0x{addr:X6} <- 0x{val:X}");
+    }
+
+    private void LogBusAccess(string label, uint addr, uint val)
+    {
+        if (!TraceBusAccess)
+            return;
+        string flags = $"grant={(_z80BusRequested ? 1 : 0)} reset={(_z80Reset ? 1 : 0)}";
+        Console.WriteLine($"[BUS] {label} 0x{addr:X6} val=0x{val:X8} {flags}");
+    }
+
+    private void LogVdpWrite(uint addr, uint normalized, int width, uint value, string routed)
+    {
+        if (!IsVdpPort(addr))
+        {
+            MaybeLogVdpSummary();
+            return;
+        }
+
+        _vdpWriteTotal++;
+        if (routed == "VDP")
+            _vdpWriteRouted++;
+        else
+            _vdpWriteElsewhere++;
+
+        if (!_vdpNormalizeLogged && addr != normalized)
+        {
+            _vdpNormalizeLogged = true;
+            MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] VDP write addr normalized 0x{addr:X6} -> 0x{normalized:X6}");
+        }
+
+        if (_vdpWriteLogRemaining > 0)
+        {
+            _vdpWriteLogRemaining--;
+            MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] VDP write w{width} addr=0x{addr:X6} norm=0x{normalized:X6} val=0x{value:X} routed={routed}");
+        }
+
+        if (routed != "VDP")
+        {
+            bool isData = (addr & 0x1F) == 0x00;
+            bool isCtrl = (addr & 0x1F) == 0x04;
+            if (isData && !_vdpNotRoutedDataLogged)
+            {
+                _vdpNotRoutedDataLogged = true;
+                MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] VDP data write NOT routed to VDP addr=0x{addr:X6} val=0x{value:X} routed={routed}");
+            }
+            else if (isCtrl && !_vdpNotRoutedCtrlLogged)
+            {
+                _vdpNotRoutedCtrlLogged = true;
+                MdTracerCore.MdLog.WriteLine($"[MegaDriveBus] VDP ctrl write NOT routed to VDP addr=0x{addr:X6} val=0x{value:X} routed={routed}");
+            }
+        }
+
+        int sizeIndex = width == 8 ? 0 : width == 16 ? 1 : 2;
+        int portIndex = (int)(addr & 0x7);
+        if ((uint)portIndex < 8u)
+            _vdpPortWriteCounts[(portIndex * 3) + sizeIndex]++;
+
+        MaybeLogVdpSummary();
+    }
+
+    private void MaybeLogVdpSummary()
+    {
+        if (!MdTracerCore.MdLog.Enabled)
+            return;
+
+        long now = Stopwatch.GetTimestamp();
+        if (now - _vdpLastSummaryTicks < Stopwatch.Frequency)
+            return;
+        _vdpLastSummaryTicks = now;
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"[MegaDriveBus] VDP writes summary total={_vdpWriteTotal} routedVDP={_vdpWriteRouted} routedElsewhere={_vdpWriteElsewhere}");
+        for (int port = 0; port < 8; port++)
+        {
+            int baseIdx = port * 3;
+            long c8 = _vdpPortWriteCounts[baseIdx];
+            long c16 = _vdpPortWriteCounts[baseIdx + 1];
+            long c32 = _vdpPortWriteCounts[baseIdx + 2];
+            if (c8 == 0 && c16 == 0 && c32 == 0)
+                continue;
+            sb.Append($" p{port:X1}[8={c8} 16={c16} 32={c32}]");
+        }
+        MdTracerCore.MdLog.WriteLine(sb.ToString());
+        _vdpWriteTotal = 0;
+        _vdpWriteRouted = 0;
+        _vdpWriteElsewhere = 0;
+        Array.Clear(_vdpPortWriteCounts, 0, _vdpPortWriteCounts.Length);
+    }
+}
+
+internal static class MegaDriveBusProfiler
+{
+    internal static readonly bool Enabled =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_PERF_STATS") == "1";
+
+    internal static long ReadTicks;
+    internal static long WriteTicks;
+    internal static int ReadCount;
+    internal static int WriteCount;
+
+    internal static void ResetFrame()
+    {
+        if (!Enabled)
+            return;
+        ReadTicks = 0;
+        WriteTicks = 0;
+        ReadCount = 0;
+        WriteCount = 0;
+    }
+
+    internal static void AddReadTicks(long ticks)
+    {
+        ReadTicks += ticks;
+        ReadCount++;
+    }
+
+    internal static void AddWriteTicks(long ticks)
+    {
+        WriteTicks += ticks;
+        WriteCount++;
     }
 }

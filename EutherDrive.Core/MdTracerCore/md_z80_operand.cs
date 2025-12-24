@@ -378,8 +378,9 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_POP_rp()
         {
-            ushort w_val = (ushort)(stack_pop() + (stack_pop() << 8));
-            write_rp(g_opcode1_54, w_val);
+            byte lo = stack_pop();
+            byte hi = stack_pop();
+            write_rp(g_opcode1_54, (ushort)((hi << 8) | lo));
             g_reg_PC += 1;
             g_clock = 10;
         }
@@ -1506,8 +1507,15 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_JR_e()
         {
-            g_reg_PC = (ushort)((int)g_reg_PC + (sbyte)g_opcode2);
-            g_reg_PC += 2;
+            ushort pcBefore = g_reg_PC;
+            ushort pcAfterDisp = (ushort)(pcBefore + 2);
+            sbyte disp = (sbyte)g_opcode2;
+            ushort target = unchecked((ushort)(pcAfterDisp + disp));
+            if (TraceBoot && pcBefore == 0x0006)
+            {
+                MdTracerCore.MdLog.WriteLine($"[JR] pc0=0006 disp=0x{g_opcode2:X2} pc_after_disp=0x{pcAfterDisp:X4} target=0x{target:X4}");
+            }
+            g_reg_PC = target;
             g_clock = 12;
         }
         private void op_JR_c_e()
@@ -1563,12 +1571,16 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_DJNZ()
         {
-            g_reg_B -= 1;
+            g_reg_B = (byte)(g_reg_B - 1);
+            ushort pcAfterDisp = (ushort)(g_reg_PC + 2);
             if (g_reg_B != 0)
             {
-                g_reg_PC = (ushort)((int)g_reg_PC + (sbyte)g_opcode2);
+                g_reg_PC = (ushort)(pcAfterDisp + (sbyte)g_opcode2);
             }
-            g_reg_PC += 2;
+            else
+            {
+                g_reg_PC = pcAfterDisp;
+            }
             g_clock = 13;
         }
         //--------------------------------------
@@ -1654,6 +1666,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_IFF1 = false;
             g_IFF2 = false;
+            SmsControlLog($"[md_z80 SMS irq_ctrl] DI at PC=0x{g_reg_PC:X4}");
             g_reg_PC += 1;
             g_clock = 4;
         }
@@ -1661,18 +1674,21 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_IFF1 = true;
             g_IFF2 = true;
+            SmsControlLog($"[md_z80 SMS irq_ctrl] EI at PC=0x{g_reg_PC:X4}");
             g_reg_PC += 1;
             g_clock = 4;
         }
         private void op_IM0()
         {
             g_interruptMode = 0;
+            SmsControlLog($"[md_z80 SMS irq_ctrl] IM0 at PC=0x{g_reg_PC:X4}");
             g_reg_PC += 2;
             g_clock = 8;
         }
         private void op_IM1()
         {
             g_interruptMode = 1;
+            SmsControlLog($"[md_z80 SMS irq_ctrl] IM1 at PC=0x{g_reg_PC:X4}");
             g_reg_PC += 2;
             g_clock = 8;
         }
@@ -1685,16 +1701,18 @@ namespace EutherDrive.Core.MdTracerCore
         //--------------------------------------
         private void op_IN_a_N()
         {
-            // Port-läsning saknas – returnera 0xFF som placeholder.
-            g_reg_A = 0xFF;
+            ushort port = g_opcode2;
+            g_reg_A = read8(port);
             g_reg_PC += 2;
             g_clock = 11;
         }
         private void op_IN_r_C()
         {
-            // Ej implementerad port-map här – håll timing.
-            g_clock = 12;
+            ushort port = g_reg_BC;
+            byte value = read8(port);
+            write_reg(g_opcode2_543, value);
             g_reg_PC += 2;
+            g_clock = 12;
         }
         private void op_INI()
         {
@@ -1720,20 +1738,32 @@ namespace EutherDrive.Core.MdTracerCore
         //--------------------------------------
         private void op_OUT_N_a()
         {
-            // Placeholder: skriv till host-konsol
-            Console.Write((char)g_reg_A);
+            ushort port = g_opcode2;
+            write8(port, g_reg_A);
             g_reg_PC += 2;
             g_clock = 11;
         }
         private void op_OUT_C_r()
         {
-            g_clock = 12;
+            ushort port = g_reg_BC;
+            byte value = read_reg(g_opcode2_543);
+            write8(port, value);
             g_reg_PC += 2;
+            g_clock = 12;
         }
         private void op_OUTI()
         {
-            g_clock = 16;
+            ushort port = g_reg_BC;
+            byte value = read_byte(g_reg_HL);
+            write8(port, value);
+            ushort newHL = (ushort)(g_reg_HL + 1);
+            g_reg_H = (byte)((newHL >> 8) & 0xFF);
+            g_reg_L = (byte)(newHL & 0xFF);
+            g_reg_B = (byte)(g_reg_B - 1);
             g_reg_PC += 2;
+            set_flag_z(g_reg_B == 0);
+            g_flag_N = 1;
+            g_clock = 16;
         }
         private void op_OUTIR()
         {

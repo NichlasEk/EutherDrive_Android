@@ -1427,6 +1427,7 @@
       "Avalonia.Desktop >= 11.3.2",
       "Avalonia.Diagnostics >= 11.3.2",
       "Avalonia.Fonts.Inter >= 11.3.2",
+      "Avalonia.Native >= 11.3.2",
       "Avalonia.Themes.Fluent >= 11.3.2",
       "EutherDrive.Core >= 1.0.0"
     ]
@@ -1492,6 +1493,10 @@
             "version": "[11.3.2, )"
           },
           "Avalonia.Fonts.Inter": {
+            "target": "Package",
+            "version": "[11.3.2, )"
+          },
+          "Avalonia.Native": {
             "target": "Package",
             "version": "[11.3.2, )"
           },

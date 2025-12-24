@@ -23,11 +23,11 @@
 
 
     <!-- Bara om den här faktiskt är en dublett/konflikt i din tree -->
-    <Compile Remove="MdTracerCore/md_vdp.IO.cs" />
     <Compile Remove="MdTracerCore/md_main_setting.cs" />
     <Compile Remove="MdTracerCore/MdBusBridge.cs" />
     <Compile Remove="MdTracerCore/md_m68k_missing_globals.cs" />
+    <Compile Remove="MdTracerCore/md_vdp.IO.cs" />
 
-  </ItemGroup>
+</ItemGroup>
 
 </Project>

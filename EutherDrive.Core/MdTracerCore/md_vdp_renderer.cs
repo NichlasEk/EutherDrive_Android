@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -16,23 +17,23 @@ namespace EutherDrive.Core.MdTracerCore
         private const int MAX_SPRITE       = 20;
 
         // Render-data
-        private bool[]         g_pattern_chk;
-        private uint[]         g_renderer_vram;
-        private VDP_LINE_SNAP[] g_line_snap;
-        private uint[]         g_game_cmap;
-        private uint[]         g_game_primap;
-        private uint[]         g_game_shadowmap;
+        private bool[]         g_pattern_chk = Array.Empty<bool>();
+        private uint[]         g_renderer_vram = Array.Empty<uint>();
+        private VDP_LINE_SNAP[] g_line_snap = Array.Empty<VDP_LINE_SNAP>();
+        private uint[]         g_game_cmap = Array.Empty<uint>();
+        private uint[]         g_game_primap = Array.Empty<uint>();
+        private uint[]         g_game_shadowmap = Array.Empty<uint>();
 
         // Snapshots (för “double buffering”/analys)
-        private VDP_REGISTER    g_snap_register;
-        private uint[]          g_snap_renderer_vram;
-        private VDP_LINE_SNAP[] g_snap_line_snap;
-        private uint[]          g_snap_color;
-        private uint[]          g_snap_color_shadow;
-        private uint[]          g_snap_color_highlight;
+        private VDP_REGISTER    g_snap_register = new VDP_REGISTER();
+        private uint[]          g_snap_renderer_vram = Array.Empty<uint>();
+        private VDP_LINE_SNAP[] g_snap_line_snap = Array.Empty<VDP_LINE_SNAP>();
+        private uint[]          g_snap_color = Array.Empty<uint>();
+        private uint[]          g_snap_color_shadow = Array.Empty<uint>();
+        private uint[]          g_snap_color_highlight = Array.Empty<uint>();
 
         // Framebuffer (ARGB32 per pixel)
-        public uint[] g_game_screen;
+        public uint[] g_game_screen = Array.Empty<uint>();
 
         // Geometri / storlek
         public  int g_display_xsize;
@@ -65,8 +66,17 @@ namespace EutherDrive.Core.MdTracerCore
         // Kör en scanline
         private void rendering_line()
         {
+            if (MdTracerCore.MdLog.Enabled && g_scanline == 0)
+                MdTracerCore.MdLog.WriteLine($"[VDP] frame={_frameCounter} display={g_vdp_reg_1_6_display}");
+
             if (g_vdp_reg_1_6_display == 1)
             {
+                if (md_main.g_masterSystemMode && !_smsFirstLineRendered && g_scanline == 0)
+                {
+                    _smsFirstLineRendered = true;
+                    if (MdTracerCore.MdLog.Enabled)
+                        MdTracerCore.MdLog.WriteLine("[SMS VDP] first scanline rendered");
+                }
                 // Ta snapshot av VDP-tillstånd för den här linjen
                 rendering_line_snap();
 
@@ -87,9 +97,15 @@ namespace EutherDrive.Core.MdTracerCore
         // Avsluta en frame (ingen separat render-tråd eller DX)
         private void rendering_frame()
         {
+            ForceVBlankForTest();
+            ForceMdVBlankForTest();
             // “Lås in” det som behövs för postprocess/analys
             rendering_frame_snap();
             UpdateRgbaFrameFromGameScreen();
+            SmsLogFrameHash();
+            _frameCounter++;
+            LogMdWriteSummary();
+            MaybeLogVdpTiming();
         }
 
         // --- Hjälp (valfritt) ---

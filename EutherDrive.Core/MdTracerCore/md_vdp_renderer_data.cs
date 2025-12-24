@@ -15,14 +15,14 @@ namespace EutherDrive.Core.MdTracerCore
         public const int SPRITE_TEX_WIDTH  = 512;
         public const int SPRITE_TEX_HEIGHT = 512;
 
-        public uint[] g_scrollA_pixels;   // 1024x1024
-        public uint[] g_scrollB_pixels;   // 1024x1024
-        public uint[] g_scrollW_pixels;   // 1024x1024
-        public uint[] g_scrollS_pixels;   // 512x512
-        public uint[] g_pattern_pixels;   // 128x1024
+        public uint[] g_scrollA_pixels = Array.Empty<uint>();   // 1024x1024
+        public uint[] g_scrollB_pixels = Array.Empty<uint>();   // 1024x1024
+        public uint[] g_scrollW_pixels = Array.Empty<uint>();   // 1024x1024
+        public uint[] g_scrollS_pixels = Array.Empty<uint>();   // 512x512
+        public uint[] g_pattern_pixels = Array.Empty<uint>();   // 128x1024
 
-        private uint[] MONOCOLOR_TABLE;   // 16 nyanser, fylls i initialize()
-        private bool[] g_sprite_enable;   // 80 flaggor, fylls i initialize()
+        private uint[] MONOCOLOR_TABLE = Array.Empty<uint>();   // 16 nyanser, fylls i initialize()
+        private bool[] g_sprite_enable = Array.Empty<bool>();   // 80 flaggor, fylls i initialize()
 
         /// <summary>
         /// Fyll debug-pixlar baserat på snapshot-data.

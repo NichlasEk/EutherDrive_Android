@@ -1,4 +1,5 @@
 ﻿using Avalonia;
+using Avalonia.Native;
 using System;
 
 namespace EutherDrive.UI;
@@ -17,5 +18,13 @@ class Program
         => AppBuilder.Configure<App>()
             .UsePlatformDetect()
             .WithInterFont()
+            .With(new AvaloniaNativePlatformOptions
+            {
+                RenderingMode = new[]
+                {
+                    AvaloniaNativeRenderingMode.OpenGl,
+                    AvaloniaNativeRenderingMode.Software
+                }
+            })
             .LogToTrace();
 }

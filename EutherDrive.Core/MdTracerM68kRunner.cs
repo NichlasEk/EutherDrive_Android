@@ -18,10 +18,13 @@ public sealed class MdTracerM68kRunner
     private MethodInfo? _initInstance;
     private MethodInfo? _resetInstance;
     private MethodInfo? _runIntInstance;
+    private Action<int>? _runIntStaticDelegate;
+    private Action<int>? _runIntInstanceDelegate;
     private MethodInfo? _runNoArgsInstance;
     private MethodInfo? _stepNoArgsInstance;
 
     private object? _instance;
+    private readonly object[] _singleIntArgs = new object[1];
 
     private bool _inited;
 
@@ -53,6 +56,11 @@ public sealed class MdTracerM68kRunner
         if (_initInstance != null || _resetInstance != null ||
             _runIntInstance != null || _runNoArgsInstance != null || _stepNoArgsInstance != null)
             _instance = Activator.CreateInstance(_t);
+
+        if (_runInt != null)
+            _runIntStaticDelegate = (Action<int>)Delegate.CreateDelegate(typeof(Action<int>), _runInt);
+        else if (_runIntInstance != null && _instance != null)
+            _runIntInstanceDelegate = (Action<int>)Delegate.CreateDelegate(typeof(Action<int>), _instance, _runIntInstance);
 
         SelectedRunApi = PickSelectedRunApi();
 
@@ -92,14 +100,14 @@ public sealed class MdTracerM68kRunner
     public void RunSome(int budget)
     {
         // 1) run(int)
-        if (_runInt != null)
+        if (_runIntStaticDelegate != null)
         {
-            _runInt.Invoke(null, new object[] { budget });
+            _runIntStaticDelegate(budget);
             return;
         }
-        if (_runIntInstance != null && _instance != null)
+        if (_runIntInstanceDelegate != null)
         {
-            _runIntInstance.Invoke(_instance, new object[] { budget });
+            _runIntInstanceDelegate(budget);
             return;
         }
 

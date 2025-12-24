@@ -17,11 +17,11 @@
         private const int NOISEINITIAL = 0xffff;
 
         //work
-        private float[] g_psg_clock;
-        private int[] g_channel_out;
-        private int[] g_freq;
-        private int[] g_vol;
-        private bool[] g_duty;
+        private float[] g_psg_clock = Array.Empty<float>();
+        private int[] g_channel_out = Array.Empty<int>();
+        private int[] g_freq = Array.Empty<int>();
+        private int[] g_vol = Array.Empty<int>();
+        private bool[] g_duty = Array.Empty<bool>();
         private bool g_noise_mode;
         private int g_write_num_bk;
         private int g_shift_reg;

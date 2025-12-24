@@ -5,17 +5,18 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_z80
     {
-        private Action[] g_operand;
-        private Action[] g_operand_dd;
-        private Action[] g_operand_ddcb;
-        private Action[] g_operand_fd;
-        private Action[] g_operand_fdcb;
-        private Action[] g_operand_ed;
-        private Action[] g_operand_cb;
+        private Action[] g_operand = Array.Empty<Action>();
+        private Action[] g_operand_dd = Array.Empty<Action>();
+        private Action[] g_operand_ddcb = Array.Empty<Action>();
+        private Action[] g_operand_fd = Array.Empty<Action>();
+        private Action[] g_operand_fdcb = Array.Empty<Action>();
+        private Action[] g_operand_ed = Array.Empty<Action>();
+        private Action[] g_operand_cb = Array.Empty<Action>();
 
         public void initialize()
         {
             g_ram = new byte[65536];
+            md_main.BeginZ80ResetCycle();
             reset();
 
             g_operand = new Action[]

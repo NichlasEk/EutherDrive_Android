@@ -1,4 +1,6 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
+using System.Globalization;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -36,9 +38,25 @@ namespace EutherDrive.Core.MdTracerCore
 
         // (valfritt) enkel indikator för UI
         private static int g_task_usage;
+        private static int _z80ResetCycleId;
+        internal static int Z80ResetCycleId => _z80ResetCycleId;
+        internal static void BeginZ80ResetCycle()
+        {
+            unchecked
+            {
+                _z80ResetCycleId++;
+            }
+        }
+        private static readonly double SmsCycleMultiplier = ParseSmsCycleMultiplier();
+        private static int SmsCyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * SmsCycleMultiplier));
+        private static readonly Stopwatch _smsCycleLogTimer = Stopwatch.StartNew();
+        private static long _smsCycleLogLastMs;
+        private static long _smsCycleLogAccumBudget;
+        private static long _smsCycleLogAccumActual;
+        private const int SmsCycleLogIntervalMs = 1000;
 
         // --- Kärnkomponenter ---
-        internal static md_vdp g_md_vdp;
+        internal static md_vdp g_md_vdp = new md_vdp();
 
 
         /// <summary>
@@ -102,21 +120,56 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             int lines = g_md_vdp.g_vertical_line_max;
+            int z80LineBudget = SmsCyclesPerLine;
 
             for (int vline = 0; vline < lines; vline++)
             {
                 g_md_vdp.run(vline);
 
                 // Kör CPU:erna scanline-vis
-                g_md_m68k.run(VDL_LINE_RENDER_MC68_CLOCK);
-                g_md_z80.run(VDL_LINE_RENDER_Z80_CLOCK);
+                if (!g_masterSystemMode)
+                    g_md_m68k.run(VDL_LINE_RENDER_MC68_CLOCK);
+                g_md_z80.run(z80LineBudget);
+            }
+
+            if (g_md_z80 != null)
+            {
+                var (actual, budget) = g_md_z80.ConsumeFrameCycleStats();
+                _smsCycleLogAccumActual += actual;
+                _smsCycleLogAccumBudget += budget;
+                long now = _smsCycleLogTimer.ElapsedMilliseconds;
+                if (now - _smsCycleLogLastMs >= SmsCycleLogIntervalMs)
+                {
+                    _smsCycleLogLastMs = now;
+                    ushort pc = g_md_z80.DebugPc;
+                    Console.WriteLine($"[SMS CYCLES] budget/sec={_smsCycleLogAccumBudget} actual/sec={_smsCycleLogAccumActual} pc=0x{pc:X4}");
+                    _smsCycleLogAccumBudget = 0;
+                    _smsCycleLogAccumActual = 0;
+                }
             }
         }
 
-        private static void SafeResetZ80()
+        private static double ParseSmsCycleMultiplier()
+        {
+            const double fallback = 1.0;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_CYCLES_MULT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+
+            if (double.TryParse(raw, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out double parsed) &&
+                parsed > 0.0)
+            {
+                return parsed;
+            }
+
+            return fallback;
+        }
+
+        internal static void SafeResetZ80()
         {
             try
             {
+                BeginZ80ResetCycle();
                 g_md_z80?.reset();
             }
             catch (System.Exception ex)

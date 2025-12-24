@@ -1,0 +1,9 @@
+[MdTracerAdapter] LoadRom request: path='/home/nichlas/Hämtningar/Sonic The Hedgehog 2 (World) (Rev A).md' ext='.md' thread=1
+[MdTracerAdapter] Vector check SP=0xFFFFFE00 PC=0x00000206
+[MdTracerAdapter] Reset begin
+[MdTracerAdapter] Reset framebuffer 320x224 stride=1280
+ROM bytes: 1048576 | Header@0x100: 'SEGA' | WRAM@FF0000: 0x1234ABCD | VEC SP=0xFFFFFE00 PC=0x00000206 OP@PC=0x4AB9 | CPU API ok
+[MainWindow] Early magenta ready after 202,5 ms
+[MdTracerAdapter] perf avg/frame=78,03ms CPU=75,47ms VDP=2,53ms GC0=815 GC1=65 GC2=8
+[MdTracerAdapter] perf avg/frame=64,64ms CPU=62,18ms VDP=2,42ms GC0=7 GC1=0 GC2=0
+[MdTracerAdapter] perf avg/frame=59,27ms CPU=54,91ms VDP=4,32ms GC0=7 GC1=1 GC2=1

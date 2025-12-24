@@ -82,7 +82,7 @@ namespace EutherDrive.Core.MdTracerCore
         //common
         private byte g_reg_addr1;
         private byte g_reg_addr2;
-        private byte[,] g_reg;
+        private byte[,] g_reg = new byte[0, 0];
         private int g_dac_high_level;
         private int g_com_lfo_cnt;
         private int g_com_lfo_env_cnt;
@@ -94,43 +94,43 @@ namespace EutherDrive.Core.MdTracerCore
         private byte g_com_status;
 
         //channel
-        private int[] g_ch_out;
-        private bool[] g_ch_reg_reflesh;
-        private double[] g_ch_pms_cnt;
+        private int[] g_ch_out = Array.Empty<int>();
+        private bool[] g_ch_reg_reflesh = Array.Empty<bool>();
+        private double[] g_ch_pms_cnt = Array.Empty<double>();
 
         //slot
-		private int[,] g_slot_key_scale;
-        private int[,] g_slot_fnum;
-        private int[,] g_slot_keycode;
-        private int[,] g_slot_freq_cnt;
-        private int[,] g_slot_op_calc;
-        private int[,] g_slot_phase_out;
-        private int[,] g_slot_phase_inc;
-        private ENV_COND[,] g_slot_env_cond;
-        private int[,] g_slot_env_incA;
-        private int[,] g_slot_env_incD;
-        private int[,] g_slot_env_incS;
-        private int[,] g_slot_env_incR;
-        private int[,] g_slot_env_cnt;
-        private int[,] g_slot_env_cmp;
-        private int[,] g_slot_env_out;
-        private int[,] g_slot_env_indexA;
-        private int[,] g_slot_env_indexD;
-        private int[,] g_slot_env_indexS;
-        private int[,] g_slot_env_indexR;
-        private int[,] g_slot_ams;
-        private bool[,] g_slot_CNT_MASK;
+        private int[,] g_slot_key_scale = new int[0, 0];
+        private int[,] g_slot_fnum = new int[0, 0];
+        private int[,] g_slot_keycode = new int[0, 0];
+        private int[,] g_slot_freq_cnt = new int[0, 0];
+        private int[,] g_slot_op_calc = new int[0, 0];
+        private int[,] g_slot_phase_out = new int[0, 0];
+        private int[,] g_slot_phase_inc = new int[0, 0];
+        private ENV_COND[,] g_slot_env_cond = new ENV_COND[0, 0];
+        private int[,] g_slot_env_incA = new int[0, 0];
+        private int[,] g_slot_env_incD = new int[0, 0];
+        private int[,] g_slot_env_incS = new int[0, 0];
+        private int[,] g_slot_env_incR = new int[0, 0];
+        private int[,] g_slot_env_cnt = new int[0, 0];
+        private int[,] g_slot_env_cmp = new int[0, 0];
+        private int[,] g_slot_env_out = new int[0, 0];
+        private int[,] g_slot_env_indexA = new int[0, 0];
+        private int[,] g_slot_env_indexD = new int[0, 0];
+        private int[,] g_slot_env_indexS = new int[0, 0];
+        private int[,] g_slot_env_indexR = new int[0, 0];
+        private int[,] g_slot_ams = new int[0, 0];
+        private bool[,] g_slot_CNT_MASK = new bool[0, 0];
         //table
-        private int[] LFO_FREQ_TABLE;
-        private int[] LFO_ENV_TABLE;
-        private int[] SIN_TABLE;
-        private int[] TL_TABLE;
-        private uint[] SL_TABLE;
-        private uint[] ENV_RATE_A_TABLE;
-        private uint[] ENV_RATE_D_TABLE;
-        private uint[] ENV_A_TABLE;
-        private uint[] ENV_TABLE;
-        private uint[] ENV_D2A;
+        private int[] LFO_FREQ_TABLE = Array.Empty<int>();
+        private int[] LFO_ENV_TABLE = Array.Empty<int>();
+        private int[] SIN_TABLE = Array.Empty<int>();
+        private int[] TL_TABLE = Array.Empty<int>();
+        private uint[] SL_TABLE = Array.Empty<uint>();
+        private uint[] ENV_RATE_A_TABLE = Array.Empty<uint>();
+        private uint[] ENV_RATE_D_TABLE = Array.Empty<uint>();
+        private uint[] ENV_A_TABLE = Array.Empty<uint>();
+        private uint[] ENV_TABLE = Array.Empty<uint>();
+        private uint[] ENV_D2A = Array.Empty<uint>();
         public void YM2612_Start()
         {
             //regster

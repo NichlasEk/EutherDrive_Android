@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Text;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -54,6 +55,8 @@ namespace EutherDrive.Core.MdTracerCore
             // Töm RAM
             Array.Clear(g_memory, 0, g_memory.Length);
 
+            bool traceRomCopy = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ROMCOPY"), "1", StringComparison.Ordinal);
+
             // Kopiera ROM till minnet från adress 0
             if (md_main.g_md_cartridge != null &&
                 md_main.g_md_cartridge.g_file != null &&
@@ -61,6 +64,31 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 int copySize = Math.Min(md_main.g_md_cartridge.g_file.Length, g_memory.Length);
                 Buffer.BlockCopy(md_main.g_md_cartridge.g_file, 0, g_memory, 0, copySize);
+
+                if (traceRomCopy)
+                {
+                    var rom = md_main.g_md_cartridge.g_file;
+                    var sb = new StringBuilder(64);
+                    int dumpLen = Math.Min(16, rom.Length);
+                    sb.Append("[ROM] src[0..15]=");
+                    for (int i = 0; i < dumpLen; i++)
+                    {
+                        if (i > 0) sb.Append(' ');
+                        sb.Append(rom[i].ToString("X2"));
+                    }
+                    MdLog.WriteLine($"[ROM] copy bytes={copySize}");
+                    MdLog.WriteLine(sb.ToString());
+
+                    int memDumpLen = 16;
+                    sb.Clear();
+                    sb.Append("[ROM] mem[0x200..0x20F]=");
+                    for (int i = 0; i < memDumpLen; i++)
+                    {
+                        if (i > 0) sb.Append(' ');
+                        sb.Append(g_memory[0x200 + i].ToString("X2"));
+                    }
+                    MdLog.WriteLine(sb.ToString());
+                }
             }
 
             // Init PC/SP från vektor-tabellen (0=initial SP, 4=initial PC)

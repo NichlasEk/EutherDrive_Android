@@ -16,23 +16,23 @@ namespace EutherDrive.Core.MdTracerCore
         private int g_reg_2a_dac_data;
         private int g_reg_2b_dac;
 
-        private double[,] g_reg_30_multi;
-        private int[,] g_reg_30_dt;
-        private int[,] g_reg_40_tl;
-        private int[,] g_reg_50_key_scale;
-        private int[,] g_reg_60_ams_enable;
-        private int[,] g_reg_80_sl;
-        private int[,] g_reg_90_ssg;
-        private int[,] g_reg_a0_fnum;
-        private int[,] g_reg_a4_fnum;
-        private int[,] g_reg_a4_block;
+        private double[,] g_reg_30_multi = new double[0, 0];
+        private int[,] g_reg_30_dt = new int[0, 0];
+        private int[,] g_reg_40_tl = new int[0, 0];
+        private int[,] g_reg_50_key_scale = new int[0, 0];
+        private int[,] g_reg_60_ams_enable = new int[0, 0];
+        private int[,] g_reg_80_sl = new int[0, 0];
+        private int[,] g_reg_90_ssg = new int[0, 0];
+        private int[,] g_reg_a0_fnum = new int[0, 0];
+        private int[,] g_reg_a4_fnum = new int[0, 0];
+        private int[,] g_reg_a4_block = new int[0, 0];
 
-        private byte[] g_reg_b0_fb;
-        private int[] g_reg_b0_algo;
-        private bool[] g_reg_b4_l;
-        private bool[] g_reg_b4_r;
-        private int[] g_reg_b4_ams;
-        public int[] g_reg_b4_pms;
+        private byte[] g_reg_b0_fb = Array.Empty<byte>();
+        private int[] g_reg_b0_algo = Array.Empty<int>();
+        private bool[] g_reg_b4_l = Array.Empty<bool>();
+        private bool[] g_reg_b4_r = Array.Empty<bool>();
+        private int[] g_reg_b4_ams = Array.Empty<int>();
+        public int[] g_reg_b4_pms = Array.Empty<int>();
 
         public byte read8(uint in_address)
         {

@@ -23,6 +23,8 @@ namespace EutherDrive.Core.MdTracerCore
         public uint g_extra_memory_start;
         public uint g_extra_memory_end;
         public string g_country = string.Empty;
+        public int g_smd_header_size;
+        public bool g_smd_deinterleaved;
 
         public bool load(string in_romname)
         {
@@ -78,6 +80,12 @@ namespace EutherDrive.Core.MdTracerCore
                     return false;
                 }
             }
+
+            var normalized = md_rom_utils.NormalizeMegaDriveRom(g_file);
+            g_file = normalized.Data;
+            g_file_size = g_file.Length;
+            g_smd_header_size = normalized.HeaderSize;
+            g_smd_deinterleaved = normalized.Deinterleaved;
 
             // Minimistorlek för att rymma headern vi läser (0x1F2)
             if (g_file_size < 0x1F3)

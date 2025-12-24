@@ -25,7 +25,7 @@ namespace EutherDrive.Core.MdTracerCore
         public bool g_vdp_c00008_hvcounter_latched;
 
         //VDP register
-        private byte[] g_vdp_reg;
+        private byte[] g_vdp_reg = Array.Empty<byte>();
         public byte g_vdp_reg_0_4_hinterrupt;
         public byte g_vdp_reg_0_1_hvcounter;
         public byte g_vdp_reg_1_6_display;
@@ -60,7 +60,7 @@ namespace EutherDrive.Core.MdTracerCore
         public byte g_vdp_reg_23_dma_mode;
         public byte g_vdp_reg_23_5_dma_high;
 
-        private ushort get_vdp_status()
+        private ushort build_vdp_status_word()
         {
             ushort w_out = 0;
             w_out = g_vdp_status_9_empl;
@@ -75,6 +75,12 @@ namespace EutherDrive.Core.MdTracerCore
             w_out = (ushort)((w_out << 1) | g_vdp_status_0_tvmode);
             return w_out;
         }
+
+        private ushort get_vdp_status() => build_vdp_status_word();
+
+        internal ushort PeekVdpStatus() => build_vdp_status_word();
+
+        internal ushort ReadStatusWord() => get_vdp_status();
 
         private ushort get_vdp_hvcounter()
         {
@@ -113,10 +119,19 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
 
                 case 1:
+                    byte prevDisplay = g_vdp_reg_1_6_display;
                     g_vdp_reg_1_6_display  = (byte)((in_data >> 6) & 0x01);
                     g_vdp_reg_1_5_vinterrupt = (byte)((in_data >> 5) & 0x01);
                     g_vdp_reg_1_4_dma      = (byte)((in_data >> 4) & 0x01);
                     g_vdp_reg_1_3_cellmode = (byte)((in_data >> 3) & 0x01);
+                    if (MdTracerCore.MdLog.Enabled && prevDisplay != g_vdp_reg_1_6_display)
+                    {
+                        MdTracerCore.MdLog.WriteLine($"[VDP] reg1 display {prevDisplay} -> {g_vdp_reg_1_6_display} data=0x{in_data:X2}");
+                    }
+                    if (MdTracerCore.MdLog.Enabled && prevDisplay == 0 && g_vdp_reg_1_6_display == 1)
+                    {
+                        MdTracerCore.MdLog.WriteLine("[VDP] display enabled (reg1 bit6)");
+                    }
                     if (g_vdp_reg_1_3_cellmode == 0)
                     {
                         g_display_ysize    = 224;

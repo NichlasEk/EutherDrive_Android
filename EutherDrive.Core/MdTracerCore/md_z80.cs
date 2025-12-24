@@ -11,6 +11,8 @@ namespace EutherDrive.Core.MdTracerCore
     internal partial class md_z80
     {
         public bool g_active;
+        internal ushort DebugPc => g_reg_PC;
+        internal ushort DebugBc => g_reg_BC;
 
         private ushort g_reg_PC;
         private byte   g_reg_A;
@@ -57,6 +59,11 @@ namespace EutherDrive.Core.MdTracerCore
         private bool g_interrupt_irq;
         private bool g_interrupt_nmi;
         private bool g_halt;
+        private static readonly bool TraceBoot =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BOOT"), "1", StringComparison.Ordinal);
+
+        private long _instrThrottleCounter;
+        private bool _pcLeftBootRangeSinceLastSummary;
 
         private ushort g_reg_BC => (ushort)((g_reg_B << 8) + g_reg_C);
         private ushort g_reg_DE => (ushort)((g_reg_D << 8) + g_reg_E);
@@ -96,6 +103,33 @@ namespace EutherDrive.Core.MdTracerCore
 
         private int g_clock;
         private int g_clock_total;
+        private int _smsInstructionLog;
+        private ushort _smsLoopPc;
+        private int _smsLoopCount;
+        private const int SmsInstructionLogLimit = 256;
+        private const int SmsLoopReportThreshold = 64;
+        private const int SmsControlLogLimit = 12;
+        private static int _smsControlLogCount;
+        private const int SmsLoopRegLogLimit = 4;
+        private static int _smsLoopRegLogCount;
+        private int _smsDelayTrace;
+        private const int SmsDelayTraceMask = 0x0FFF;
+        private const int DjnzLogLimit = 4;
+        private static readonly bool TraceSmsDelay =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_DELAY"), "1", StringComparison.Ordinal);
+        private static readonly bool SkipSmsDelay =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_SMS_DELAYS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80Console =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80"), "1", StringComparison.Ordinal);
+        private long _delayTraceFrame = -1;
+        private bool _delayEntryLogged;
+        private bool _delayExitLogged;
+        private int _djnzLogCount;
+        private int _cyclesBudgetAccum;
+        private int _cyclesActualAccum;
+        private int _resetCallsThisCycle;
+        private int _lastResetCycleId;
+        private bool _duplicateResetLogged;
 
         //----------------------------------------------------------------
         public md_z80()
@@ -113,17 +147,28 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (g_active == false) return;
 
+            int cyclesConsumed = 0;
+            long frameCounter = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (frameCounter != _delayTraceFrame)
+            {
+                _delayTraceFrame = frameCounter;
+                _delayEntryLogged = false;
+                _delayExitLogged = false;
+                _djnzLogCount = 0;
+            }
+
             g_clock_total += in_clock;
             while (g_clock_total >= 0)
             {
                 // IRQ (NMI-block ej aktiverad i originalet)
-                if (g_interrupt_irq)
+            if (g_interrupt_irq)
+            {
+                if (g_IFF1)
                 {
-                    if (g_IFF1)
-                    {
-                        if (g_halt) g_reg_PC += 1;
+                    SmsControlLog($"[md_z80 SMS irq] IM{g_interruptMode} pending PC=0x{g_reg_PC:X4}");
+                    if (g_halt) g_reg_PC += 1;
 
-                        g_interrupt_irq = false;
+                    g_interrupt_irq = false;
                         g_IFF1 = false;
                         g_IFF2 = false;
                         g_halt = false;
@@ -148,26 +193,176 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                 }
 
-                g_clock = 0;
-                g_operand[g_opcode1]();   // exekvera en instruktion
+            g_clock = 0;
 
-                #if DEBUG
-                //traceout();
-                //logout2();
-                #endif
-
-                g_reg_R = (byte)((g_reg_R + 1) & 0x7f);
-                g_clock_total -= g_clock;
+            ushort pcBefore = g_reg_PC;
+            if (TraceSmsDelay && pcBefore == 0x056B)
+            {
+                LogSmsDelayEntry(pcBefore);
+                if (SkipSmsDelay)
+                {
+                    g_reg_PC = 0x057A;
+                    continue;
+                }
             }
-        }
 
-        public void irq_request(bool in_val)
-        {
-            g_interrupt_irq = in_val;
+            byte opcode = g_opcode1;
+            bool log0576After = TraceSmsDelay && !_delayExitLogged && pcBefore == 0x0576;
+            bool djnzTracePending = TraceSmsDelay && opcode == 0x10 && _djnzLogCount < DjnzLogLimit;
+            byte djnzBefore = g_reg_B;
+            ushort djnzTarget = 0;
+            if (djnzTracePending)
+                djnzTarget = (ushort)((int)pcBefore + 2 + (sbyte)g_opcode2);
+
+            if (md_main.g_masterSystemMode && MdTracerCore.MdLog.TraceZ80InstructionLogging)
+            {
+                if (_smsInstructionLog < SmsInstructionLogLimit)
+                    MdTracerCore.MdLog.WriteLine($"[md_z80 SMS exec] PC=0x{g_reg_PC:X4} OPCODE=0x{opcode:X2}");
+
+                if (g_reg_PC == _smsLoopPc)
+                {
+                    _smsLoopCount++;
+                    if (_smsLoopCount == SmsLoopReportThreshold)
+                        MdTracerCore.MdLog.WriteLine($"[md_z80 SMS loop] PC=0x{g_reg_PC:X4} repeated {SmsLoopReportThreshold} times");
+                }
+                else
+                {
+                    _smsLoopPc = g_reg_PC;
+                    _smsLoopCount = 1;
+                }
+
+                _smsInstructionLog++;
+            }
+
+            ThrottleInstructionLog(opcode);
+            g_operand[opcode]();   // exekvera en instruktion
+            cyclesConsumed += g_clock;
+
+            if (log0576After)
+                LogSmsDelayExit(pcBefore);
+
+            if (djnzTracePending)
+            {
+                byte djnzAfter = g_reg_B;
+                bool taken = g_reg_PC != (ushort)(pcBefore + 2);
+                Console.WriteLine($"[SMS DJNZ] PC=0x{pcBefore:X4} B before=0x{djnzBefore:X2} after=0x{djnzAfter:X2} taken={(taken ? 1 : 0)} target=0x{djnzTarget:X4}");
+                _djnzLogCount++;
+            }
+            TrackPcBootRange();
+
+            if (md_main.g_masterSystemMode &&
+                (g_reg_PC == 0x0571 || g_reg_PC == 0x0572 || g_reg_PC == 0x0573 || g_reg_PC == 0x0574))
+            {
+                if ((_smsDelayTrace++ & SmsDelayTraceMask) == 0)
+                {
+                    bool zero = g_flag_Z != 0;
+                    MdTracerCore.MdLog.WriteLine($"[md_z80 SMS delay] PC=0x{g_reg_PC:X4} BC=0x{g_reg_BC:X4} Z={(zero ? 1 : 0)}");
+                }
+                LogSmsLoopRegs();
+            }
+
+        #if DEBUG
+        //traceout();
+        //logout2();
+        #endif
+
+            g_reg_R = (byte)((g_reg_R + 1) & 0x7f);
+            g_clock_total -= g_clock;
         }
+        AccumulateLineCycles(in_clock, cyclesConsumed);
+    }
+
+    private void ThrottleInstructionLog(byte opcode)
+    {
+        if (!TraceZ80Console)
+            return;
+
+        _instrThrottleCounter++;
+        if (_instrThrottleCounter >= 1_000_000)
+        {
+            _instrThrottleCounter = 0;
+            Console.WriteLine($"[Z80] PC=0x{g_reg_PC:X4} OP=0x{opcode:X2} bank=0x{g_bank_register:X6} SP=0x{g_reg_SP:X4}");
+        }
+    }
+
+    private void TrackPcBootRange()
+    {
+        if (g_reg_PC > 0x01FF)
+            _pcLeftBootRangeSinceLastSummary = true;
+    }
+
+    private void LogSmsDelayEntry(ushort pc)
+    {
+        if (_delayEntryLogged)
+            return;
+
+        ushort ret = PeekStackReturn();
+        Console.WriteLine($"[SMS DELAY] entry PC=0x{pc:X4} B=0x{g_reg_B:X2} BC=0x{g_reg_BC:X4} SP=0x{g_reg_SP:X4} ret=0x{ret:X4}");
+        _delayEntryLogged = true;
+        if (SkipSmsDelay)
+            Console.WriteLine("[SMS DELAY] skipping delay to 0x057A");
+    }
+
+    private void LogSmsDelayExit(ushort pc)
+    {
+        if (_delayExitLogged)
+            return;
+
+        Console.WriteLine($"[SMS DELAY] exit PC=0x{pc:X4} B=0x{g_reg_B:X2} C=0x{g_reg_C:X2} SP=0x{g_reg_SP:X4}");
+        _delayExitLogged = true;
+    }
+
+    private ushort PeekStackReturn()
+    {
+        byte lo = read_byte(g_reg_SP);
+        byte hi = read_byte((ushort)(g_reg_SP + 1));
+        return (ushort)((hi << 8) | lo);
+    }
+
+    private void AccumulateLineCycles(int budget, int consumed)
+    {
+        _cyclesBudgetAccum += budget;
+        _cyclesActualAccum += consumed;
+    }
+
+    internal (int actual, int budget) ConsumeFrameCycleStats()
+    {
+        int actual = _cyclesActualAccum;
+        int budget = _cyclesBudgetAccum;
+        _cyclesActualAccum = 0;
+        _cyclesBudgetAccum = 0;
+        return (actual, budget);
+    }
+
+    internal bool ConsumeBootRangeExitFlag()
+    {
+        bool result = _pcLeftBootRangeSinceLastSummary;
+        _pcLeftBootRangeSinceLastSummary = false;
+        return result;
+    }
+
+    public void irq_request(bool in_val)
+    {
+        g_interrupt_irq = in_val;
+    }
 
         public void reset()
         {
+            int cycleId = md_main.Z80ResetCycleId;
+            if (_lastResetCycleId != cycleId)
+            {
+                _lastResetCycleId = cycleId;
+                _resetCallsThisCycle = 0;
+                _duplicateResetLogged = false;
+            }
+
+            _resetCallsThisCycle++;
+            if (_resetCallsThisCycle > 1 && !_duplicateResetLogged)
+            {
+                _duplicateResetLogged = true;
+                Console.WriteLine($"[Z80] reset called again! cycle={cycleId} count={_resetCallsThisCycle}");
+                Console.WriteLine(new StackTrace(1, true));
+            }
             g_reg_PC = 0;
 
             g_reg_A = g_reg_B = g_reg_C = g_reg_D = g_reg_E = g_reg_H = g_reg_L = 0;
@@ -191,7 +386,13 @@ namespace EutherDrive.Core.MdTracerCore
             g_IFF1 = false;
             g_IFF2 = false;
 
-            g_bank_register = 0xff8000;   // bank default (definieras i annan partial)
+            g_bank_register = md_main.g_masterSystemMode ? 0u : 0xff8000u;
+            _smsBankSelect = 0;
+            _smsInstructionLog = 0;
+            _smsLoopPc = 0;
+            _smsLoopCount = 0;
+            _instrThrottleCounter = 0;
+            _pcLeftBootRangeSinceLastSummary = false;
         }
 
         // ---- Prefixgrenar -----------------------------------------------------
@@ -254,6 +455,26 @@ namespace EutherDrive.Core.MdTracerCore
             }
             g_operand_cb[g_opcode2]();
             g_reg_R += 1;
+        }
+
+        private void SmsControlLog(string message)
+        {
+            if (!md_main.g_masterSystemMode || !MdTracerCore.MdLog.Enabled)
+                return;
+            if (_smsControlLogCount >= SmsControlLogLimit)
+                return;
+            MdTracerCore.MdLog.WriteLine(message);
+            _smsControlLogCount++;
+        }
+
+        private void LogSmsLoopRegs()
+        {
+            if (!md_main.g_masterSystemMode || !MdTracerCore.MdLog.Enabled)
+                return;
+            if (_smsLoopRegLogCount >= SmsLoopRegLogLimit)
+                return;
+            MdTracerCore.MdLog.WriteLine($"[md_z80 SMS loop regs] PC=0x{g_reg_PC:X4} B=0x{g_reg_B:X2} C=0x{g_reg_C:X2}");
+            _smsLoopRegLogCount++;
         }
 
         // ---- Debughjälp (endast i DEBUG) -------------------------------------

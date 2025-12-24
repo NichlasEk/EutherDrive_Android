@@ -60,7 +60,5 @@ namespace EutherDrive.Core.MdTracerCore
             write16(addr + 2, (ushort)(val & 0xFFFF));
         }
 
-        // Säkerställ att reset() finns (om inte i annan partial)
-        public void reset() { /* nollställ state om du vill */ }
     }
 }

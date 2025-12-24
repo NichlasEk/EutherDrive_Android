@@ -20,7 +20,7 @@
     <!-- Left: info -->
     <Border Grid.Row="1" Grid.Column="0" Padding="10" CornerRadius="8">
       <StackPanel Spacing="8" Width="260">
-        <CheckBox Content="Use DummyCore" IsChecked="True" Name="UseDummyCoreCheck"/>
+        <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
         <TextBlock Text="Controls" FontWeight="Bold"/>
         <TextBlock Name="KeysText"/>
         <TextBlock Text="Arrows: D-pad"/>
@@ -34,6 +34,18 @@
         <Separator/>
         <TextBlock Text="Perf" FontWeight="Bold"/>
         <TextBlock Name="FpsText" Text="FPS: -"/>
+        <StackPanel Orientation="Horizontal" Spacing="4">
+          <TextBlock VerticalAlignment="Center" Text="Rate:"/>
+          <ComboBox Name="FrameRateCombo" SelectedIndex="0" SelectionChanged="OnFrameRateChanged">
+            <ComboBoxItem Tag="Auto">Auto (detect)</ComboBoxItem>
+            <ComboBoxItem Tag="Hz60">60 Hz</ComboBoxItem>
+            <ComboBoxItem Tag="Hz50">50 Hz</ComboBoxItem>
+          </ComboBox>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBox Name="CpuCyclesTextBox" Width="80" Text="220"/>
+          <Button Content="Set cycles/line" Click="OnApplyCpuCycles"/>
+        </StackPanel>
       </StackPanel>
     </Border>
 

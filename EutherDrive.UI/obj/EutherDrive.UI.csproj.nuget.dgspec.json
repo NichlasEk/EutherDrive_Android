@@ -131,6 +131,10 @@
               "target": "Package",
               "version": "[11.3.2, )"
             },
+            "Avalonia.Native": {
+              "target": "Package",
+              "version": "[11.3.2, )"
+            },
             "Avalonia.Themes.Fluent": {
               "target": "Package",
               "version": "[11.3.2, )"

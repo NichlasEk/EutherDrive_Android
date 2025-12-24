@@ -5,12 +5,12 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_vdp
     {
-        private byte[]   g_vram;
-        private ushort[] g_cram;
-        public  ushort[] g_vsram;
-        public  uint[]   g_color;
-        public  uint[]   g_color_shadow;
-        public  uint[]   g_color_highlight;
+        private byte[]   g_vram = Array.Empty<byte>();
+        private ushort[] g_cram = Array.Empty<ushort>();
+        public  ushort[] g_vsram = Array.Empty<ushort>();
+        public  uint[]   g_color = Array.Empty<uint>();
+        public  uint[]   g_color_shadow = Array.Empty<uint>();
+        public  uint[]   g_color_highlight = Array.Empty<uint>();
 
         private int    g_vdp_reg_code;
         private ushort g_vdp_reg_dest_address;
@@ -32,12 +32,47 @@ namespace EutherDrive.Core.MdTracerCore
         // ----------------------------------------------------------------
         public byte read8(uint in_address)
         {
+            if (md_main.g_masterSystemMode && (in_address & 0x00000E) == 0x00)
+            {
+                return SmsReadData();
+            }
+
             ushort w = read16(in_address);
             return ((in_address & 1) == 0) ? (byte)(w >> 8) : (byte)w;
         }
 
         public ushort read16(uint in_address)
         {
+            if (md_main.g_masterSystemMode)
+            {
+                uint port = in_address & 0x00000E;
+
+                if (port == 0x00)
+                {
+                    byte data = SmsReadData();
+                    return (ushort)((data << 8) | data);
+                }
+
+                if (port == 0x04)
+                {
+                    ushort status = get_vdp_status();
+                    md_m68k.RecordVdpStatusRead(status);
+                    ushort postStatus = (ushort)(status & ~VDP_STATUS_VBLANK_MASK);
+                    LogStatusRead(status, postStatus);
+                    g_vdp_status_7_vinterrupt = 0;
+                    md_m68k.g_interrupt_V_req = false;
+                    md_main.g_md_z80?.irq_request(false);
+                    return status;
+                }
+
+                if (port == 0x08)
+                {
+                    return get_vdp_hvcounter();
+                }
+
+                return 0xFFFF;
+            }
+
             ushort w_out = 0;
             in_address &= 0xfffffe;
 
@@ -65,8 +100,12 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 g_command_select = false;
                 w_out = get_vdp_status();
+                md_m68k.RecordVdpStatusRead(w_out);
+                ushort postStatus = (ushort)(w_out & ~VDP_STATUS_VBLANK_MASK);
+                LogStatusRead(w_out, postStatus);
                 g_vdp_status_7_vinterrupt = 0; // ack on status read
                 md_m68k.g_interrupt_V_req = false;
+                md_main.g_md_z80?.irq_request(false);
             }
             else if (in_address <= 0xc0000e)
             {
@@ -95,6 +134,21 @@ namespace EutherDrive.Core.MdTracerCore
         // ----------------------------------------------------------------
         public void write8(uint in_address, byte in_data)
         {
+            if (md_main.g_masterSystemMode)
+            {
+                uint port = in_address & 0x00000E;
+                if (port == 0x00)
+                {
+                    SmsWriteData(in_data);
+                    return;
+                }
+                if (port == 0x04)
+                {
+                    SmsWriteControl(in_data);
+                    return;
+                }
+            }
+
             // MD VDP-portarna är 16-bit, men 8-bitars writes mappas ofta som repeterat värde
             ushort w = (ushort)((in_data << 8) | in_data);
             write16(in_address, w);
@@ -102,10 +156,33 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void write16(uint in_address, ushort in_data)
         {
+            if (md_main.g_masterSystemMode)
+            {
+                uint port = in_address & 0x00000E;
+                if (port == 0x00)
+                {
+                    SmsWriteControl((byte)(in_data >> 8));
+                    SmsWriteData((byte)(in_data & 0xff));
+                    return;
+                }
+                if (port == 0x04)
+                {
+                    SmsWriteControl((byte)(in_data >> 8));
+                    SmsWriteControl((byte)(in_data & 0xff));
+                    return;
+                }
+            }
+
             in_address &= 0xfffffe;
 
             if (in_address <= 0xc00003)
             {
+                _mdDataWritesThisFrame++;
+                if (MdTracerCore.MdLog.Enabled && !_mdDataPortLogged)
+                {
+                    _mdDataPortLogged = true;
+                    MdTracerCore.MdLog.WriteLine($"[VDP] MD data port write addr=0x{in_address:X6}");
+                }
                 g_command_select = false;
 
                 if (g_dma_fill_req)
@@ -118,6 +195,7 @@ namespace EutherDrive.Core.MdTracerCore
                 switch (g_vdp_reg_code & 0x0f)
                 {
                     case 1: // VRAM write
+                        _mdVramWritesThisFrame++;
                         vram_write_w(g_vdp_reg_dest_address, in_data);
                         pattern_chk(g_vdp_reg_dest_address,   (byte)(in_data >> 8));
                         pattern_chk(g_vdp_reg_dest_address+1, (byte)(in_data & 0xff));
@@ -126,6 +204,7 @@ namespace EutherDrive.Core.MdTracerCore
 
                     case 3: // CRAM write
                     {
+                        _mdCramWritesThisFrame++;
                         int col = (g_vdp_reg_dest_address >> 1) & 0x3f;
                         cram_set(col, in_data);
                         g_vdp_reg_dest_address = (ushort)((g_vdp_reg_dest_address + g_vdp_reg_15_autoinc) & 0xffff);
@@ -147,6 +226,12 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else if (in_address <= 0xc00007)
             {
+                _mdCtrlWritesThisFrame++;
+                if (MdTracerCore.MdLog.Enabled && !_mdCtrlPortLogged)
+                {
+                    _mdCtrlPortLogged = true;
+                    MdTracerCore.MdLog.WriteLine($"[VDP] MD control port write addr=0x{in_address:X6}");
+                }
                 if (!g_command_select)
                 {
                     if ((in_data & 0xc000) == 0x8000)
@@ -193,6 +278,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void write32(uint in_address, uint in_data)
         {
+            if (md_main.g_masterSystemMode)
+            {
+                write16(in_address, (ushort)(in_data >> 16));
+                write16(in_address, (ushort)(in_data & 0xffff));
+                return;
+            }
+
             if (in_address <= 0xc00007)
             {
                 write16(in_address, (ushort)(in_data >> 16));
@@ -200,6 +292,104 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
             Error("write32: invalid address");
+        }
+
+        private byte SmsReadData()
+        {
+            byte value = _smsVram[_smsVdpAddr & 0x3FFF];
+            if (_smsVdpCode == 1)
+            {
+                _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
+            }
+            return value;
+        }
+
+        private void SmsWriteControl(byte value)
+        {
+            if (!_smsCommandPending)
+            {
+                _smsCommandLow = value;
+                _smsCommandPending = true;
+                return;
+            }
+
+            _smsCommandPending = false;
+            ushort cmd = (ushort)(_smsCommandLow | (value << 8));
+            SmsLogControl(_smsCommandLow, value, cmd);
+            SmsDecodeCommand(cmd);
+        }
+
+        private void SmsWriteData(byte value)
+        {
+            switch (_smsVdpCode)
+            {
+                case 0:
+                case 1:
+                    _smsVramWritesTotal++;
+                    _smsVram[_smsVdpAddr & 0x3FFF] = value;
+                    _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
+                    return;
+
+                case 3:
+                    _smsCramWritesTotal++;
+                    if (!_smsCramWriteLogged)
+                    {
+                        _smsCramWriteLogged = true;
+                        SmsLog("[SMS VDP] CRAM writes currently stubbed");
+                    }
+                    return;
+
+                default:
+                    if (!_smsDataIgnoredLogged || _smsVdpCode != 0)
+                    {
+                        _smsDataIgnoredLogged = true;
+                        SmsLog($"[SMS VDP] data write ignored code={_smsVdpCode} val=0x{value:X2}");
+                    }
+                    return;
+            }
+        }
+
+        private void SmsDecodeCommand(ushort cmd)
+        {
+            int code = (cmd >> 14) & 0x3;
+
+            if (code == 2)
+            {
+                int reg = (cmd >> 8) & 0x0F;
+                byte data = (byte)(cmd & 0xFF);
+                _smsRegs[reg] = data;
+                if (reg == 1 && !_smsDisplayOnLogged && (data & 0x40) != 0)
+                {
+                    _smsDisplayOnLogged = true;
+                    MdTracerCore.MdLog.WriteLine("[SMS VDP] display enabled (reg1 bit6)");
+                }
+                SmsLog($"[SMS VDP] REG r{reg:X}={data:X2}", reg == 1);
+                return;
+            }
+
+            _smsVdpCode = code;
+            _smsVdpAddr = cmd & 0x3FFF;
+            SmsLog($"[SMS VDP] CMD code={code} addr=0x{_smsVdpAddr:X4} raw=0x{cmd:X4}");
+        }
+
+        private void SmsLogControl(byte low, byte high, ushort cmd)
+        {
+            int code = (cmd >> 14) & 0x3;
+            int addr = cmd & 0x3FFF;
+            SmsLog($"[SMS VDP] CTL lo=0x{low:X2} hi=0x{high:X2} => cmd=0x{cmd:X4} code={code} addr=0x{addr:X4}");
+        }
+
+        private void SmsLog(string message, bool bypassLimit = false)
+        {
+            if (!md_main.g_masterSystemMode || !MdTracerCore.MdLog.Enabled)
+                return;
+
+            if (!bypassLimit && _smsCommandLogCount >= SmsCommandLogLimit)
+                return;
+
+            MdTracerCore.MdLog.WriteLine(message);
+            if (!bypassLimit)
+                _smsCommandLogCount++;
         }
 
         // ----------------------------------------------------------------
