@@ -131,6 +131,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 md_main.g_masterSystemMode = true;
                 md_main.g_masterSystemRom = smsRom;
                 md_main.g_masterSystemRomSize = smsRom.Length;
+                if (md_main.g_md_io != null)
+                    md_main.g_md_io.SetRomRegionHint(null);
                 if (md_main.g_md_cartridge != null)
                 {
                     md_main.g_md_cartridge.g_file = Array.Empty<byte>();
@@ -179,6 +181,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 RomInfo.RegionHeaderRaw = regionRaw;
                 string regionLabel = regionHint?.ToString() ?? ConsoleRegion.Auto.ToString();
                 Console.WriteLine($"[MdTracerAdapter] Detected ROM region: {regionLabel} (raw='{regionRaw}')");
+                if (md_main.g_md_io != null)
+                    md_main.g_md_io.SetRomRegionHint(regionHint);
 
                 uint sp = ReadBe32(vecRom, 0x000000);
                 uint pc = ReadBe32(vecRom, 0x000004);

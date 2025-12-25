@@ -4,6 +4,8 @@ General
 - EUTHERDRIVE_DUMP_VECTORS=1: dump initial vector bytes on load.
 - EUTHERDRIVE_FB_TRACE=1: framebuffer identity/sample tracing.
 - EUTHERDRIVE_PERF_STATS=1: bus perf stats.
+- EUTHERDRIVE_REGION=auto|jp|us|eu: force console region (defaults to auto).
+- EUTHERDRIVE_TRACE_IO=1: log IO reads (0xA10001, 0xA10003..0xA1001F).
 
 UI
 - EUTHERDRIVE_UI_HEARTBEAT=1: UI heartbeat log.

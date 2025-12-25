@@ -16,10 +16,14 @@ namespace EutherDrive.Core.MdTracerCore
         private PadHandshake _pad2Handshake;
         private PadType _pad1Type = PadType.SixButton;
         private PadType _pad2Type = PadType.ThreeButton;
+        private readonly ConsoleIdentity _identity = new ConsoleIdentity();
+        private ConsoleRegion? _romRegionHint;
         private int _ioReadLogRemaining = 64;
         private long _ioReadLastTicks;
         private static readonly bool TraceIo =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_IO"), "1", StringComparison.Ordinal);
+        private static readonly ConsoleRegion? RegionOverrideEnv = ParseRegionOverrideEnv();
+        private const byte VersionBits = 0x20;
 
         // Global pekare (som md_bus.Current)
         public static md_io? Current { get; set; }
@@ -46,7 +50,7 @@ namespace EutherDrive.Core.MdTracerCore
                     result = 0x00;
                     break;
                 case 0xA10001:
-                    result = 0xA0; // Version register (NTSC, rev 0)
+                    result = ReadIoVersion();
                     break;
                 case 0xA10002:
                 case 0xA10003:
@@ -180,6 +184,32 @@ namespace EutherDrive.Core.MdTracerCore
             _pad2Handshake.LastThHigh = _pad2Th;
         }
 
+        internal void SetRomRegionHint(ConsoleRegion? hint)
+        {
+            _romRegionHint = hint;
+        }
+
+        private byte ReadIoVersion()
+        {
+            ConsoleRegion effective = GetEffectiveRegion();
+            byte value = VersionBits;
+            if (effective == ConsoleRegion.JP)
+                value |= 0x40;
+            if (effective == ConsoleRegion.EU)
+                value |= 0x80;
+            return value;
+        }
+
+        private ConsoleRegion GetEffectiveRegion()
+        {
+            ConsoleRegion overrideRegion = RegionOverrideEnv ?? _identity.RegionOverride;
+            if (overrideRegion != ConsoleRegion.Auto)
+                return overrideRegion;
+            if (_romRegionHint.HasValue)
+                return _romRegionHint.Value;
+            return ConsoleRegion.US;
+        }
+
         private void MaybeLogIoRead(uint addr, uint value, int widthBits)
         {
             if (!TraceIo)
@@ -201,7 +231,32 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             string val = widthBits == 8 ? value.ToString("X2") : value.ToString("X4");
-            Console.WriteLine($"[IOREAD] pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{val} w={widthBits}");
+            string region = addr == 0xA10001 ? $" region={GetEffectiveRegion()}" : string.Empty;
+            Console.WriteLine($"[IOREAD] pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{val} w={widthBits}{region}");
+        }
+
+        private static ConsoleRegion? ParseRegionOverrideEnv()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_REGION");
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
+
+            switch (raw.Trim().ToLowerInvariant())
+            {
+                case "jp":
+                case "japan":
+                    return ConsoleRegion.JP;
+                case "us":
+                case "usa":
+                    return ConsoleRegion.US;
+                case "eu":
+                case "europe":
+                    return ConsoleRegion.EU;
+                case "auto":
+                    return null;
+                default:
+                    return null;
+            }
         }
 
         private static byte ReadPadData(MdPadState pad, bool thHigh, ref PadHandshake handshake, PadType padType)
