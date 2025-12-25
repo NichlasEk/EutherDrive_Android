@@ -37,6 +37,7 @@
           </ComboBox>
         </StackPanel>
         <TextBlock x:Name="RomRegionHintText" Opacity="0.85" FontSize="12"/>
+        <Button Content="Use ROM region" Click="OnUseRomRegion" HorizontalAlignment="Left"/>
         <TextBlock Text="Controls" FontWeight="Bold"/>
         <TextBlock Name="KeysText"/>
         <TextBlock Text="Arrows: D-pad"/>

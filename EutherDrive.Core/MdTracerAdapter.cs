@@ -153,6 +153,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 RomInfo.Summary = $"SMS ROM bytes: {smsRom.Length}";
                 RomInfo.RegionHint = null;
                 RomInfo.RegionHeaderRaw = string.Empty;
+                RomInfo.SerialNumber = string.Empty;
             }
             else
             {
@@ -185,6 +186,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 ConsoleRegion? regionHint = md_rom_utils.DetectRegionFromHeader(vecRom, out string regionRaw);
                 RomInfo.RegionHint = regionHint;
                 RomInfo.RegionHeaderRaw = regionRaw;
+                RomInfo.SerialNumber = md_main.g_md_cartridge?.g_serial_number ?? string.Empty;
                 string regionLabel = regionHint?.ToString() ?? ConsoleRegion.Auto.ToString();
                 Console.WriteLine($"[MdTracerAdapter] Detected ROM region: {regionLabel} (raw='{regionRaw}')");
                 if (md_main.g_md_io != null)

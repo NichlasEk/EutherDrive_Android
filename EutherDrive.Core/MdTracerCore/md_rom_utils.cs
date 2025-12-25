@@ -67,6 +67,10 @@ internal static class md_rom_utils
         bool hasU = upper.Contains('U');
         bool hasE = upper.Contains('E');
 
+        int matches = (hasJ ? 1 : 0) + (hasU ? 1 : 0) + (hasE ? 1 : 0);
+        if (matches > 1)
+            return ConsoleRegion.US;
+
         if (hasJ)
             return ConsoleRegion.JP;
         if (hasU)

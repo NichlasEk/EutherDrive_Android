@@ -63,7 +63,11 @@ public partial class MainWindow : Window
     private double _audioFrameAccumulator;
     private long _audioLastDropLogTicks;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
+    private ConsoleRegion _defaultRegionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
+    private readonly Dictionary<string, ConsoleRegion> _romRegionOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private string? _romRegionKey;
+    private bool _regionOverrideUpdating;
     private const string RegionSettingsFileName = "eutherdrive_region.txt";
 
     // UI heartbeat
@@ -146,11 +150,14 @@ public partial class MainWindow : Window
 
     private void OnRegionOverrideChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (_regionOverrideUpdating)
+            return;
+
         if (RegionOverrideCombo?.SelectedItem is not ComboBoxItem item)
             return;
 
         string tag = item.Tag?.ToString() ?? "Auto";
-        RegionOverride = tag switch
+        ConsoleRegion region = tag switch
         {
             "JP" => ConsoleRegion.JP,
             "US" => ConsoleRegion.US,
@@ -158,8 +165,19 @@ public partial class MainWindow : Window
             _ => ConsoleRegion.Auto
         };
 
-        SaveRegionOverrideSetting();
-        ApplyRegionOverrideToCore(resetIfRunning: true);
+        SetRegionOverride(region, resetIfRunning: true, persist: true);
+    }
+
+    private void OnUseRomRegion(object? sender, RoutedEventArgs e)
+    {
+        if (RomRegionHint == ConsoleRegion.Auto)
+        {
+            StatusText.Text = "ROM region hint unavailable.";
+            return;
+        }
+
+        SetRegionOverride(RomRegionHint, resetIfRunning: true, persist: true);
+        StatusText.Text = $"Region override set to ROM hint ({RomRegionHint}).";
     }
 
     private void HookInput()
@@ -256,12 +274,10 @@ public partial class MainWindow : Window
                         m.PowerCycleAndLoadRom(_romPath);
 
                         // Visa i UI direkt (snabbast att se)
-                        RomInfoText.Text = m.RomInfo.Summary;
-                        UpdateRomRegionHint(m.RomInfo.RegionHint);
+                        UpdateRomInfo(m.RomInfo);
 
                         // OCH i terminal (om du kör från terminal)
                         Console.WriteLine(m.RomInfo.Summary);
-                        ApplyRegionOverrideToCore(resetIfRunning: false);
                     }
                     else
                     {
@@ -321,10 +337,53 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SetRegionOverride(ConsoleRegion region, bool resetIfRunning, bool persist)
+    {
+        RegionOverride = region;
+        UpdateRegionOverrideCombo();
+
+        if (persist)
+        {
+            if (!string.IsNullOrWhiteSpace(_romRegionKey))
+            {
+                if (region == ConsoleRegion.Auto)
+                    _romRegionOverrides.Remove(_romRegionKey);
+                else
+                    _romRegionOverrides[_romRegionKey] = region;
+            }
+            else
+            {
+                _defaultRegionOverride = region;
+            }
+
+            SaveRegionOverrideSetting();
+        }
+
+        ApplyRegionOverrideToCore(resetIfRunning);
+    }
+
     private void UpdateRomRegionHint(ConsoleRegion? hint)
     {
         RomRegionHint = hint ?? ConsoleRegion.Auto;
         UpdateRomRegionHintText();
+    }
+
+    private void UpdateRomInfo(RomInfo info)
+    {
+        if (RomInfoText != null)
+            RomInfoText.Text = info.Summary;
+
+        UpdateRomRegionHint(info.RegionHint);
+        _romRegionKey = GetRomRegionKey(info);
+
+        ConsoleRegion target = _defaultRegionOverride;
+        if (!string.IsNullOrWhiteSpace(_romRegionKey) &&
+            _romRegionOverrides.TryGetValue(_romRegionKey, out var perRom))
+        {
+            target = perRom;
+        }
+
+        SetRegionOverride(target, resetIfRunning: false, persist: false);
     }
 
     private void UpdateRomRegionHintText()
@@ -333,18 +392,34 @@ public partial class MainWindow : Window
             RomRegionHintText.Text = $"ROM suggests: {RomRegionHint}";
     }
 
+    private static string? GetRomRegionKey(RomInfo info)
+    {
+        string serial = info.SerialNumber?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(serial))
+            return null;
+        return $"serial:{serial}";
+    }
+
     private void UpdateRegionOverrideCombo()
     {
         if (RegionOverrideCombo == null)
             return;
 
-        foreach (var item in RegionOverrideCombo.Items.Cast<ComboBoxItem>())
+        _regionOverrideUpdating = true;
+        try
         {
-            if (string.Equals(item.Tag?.ToString(), RegionOverride.ToString(), StringComparison.OrdinalIgnoreCase))
+            foreach (var item in RegionOverrideCombo.Items.Cast<ComboBoxItem>())
             {
-                RegionOverrideCombo.SelectedItem = item;
-                return;
+                if (string.Equals(item.Tag?.ToString(), RegionOverride.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    RegionOverrideCombo.SelectedItem = item;
+                    return;
+                }
             }
+        }
+        finally
+        {
+            _regionOverrideUpdating = false;
         }
     }
 
@@ -354,15 +429,48 @@ public partial class MainWindow : Window
         if (!File.Exists(path))
             return;
 
-        string raw = File.ReadAllText(path).Trim();
-        if (Enum.TryParse(raw, ignoreCase: true, out ConsoleRegion region))
-            RegionOverride = region;
+        _romRegionOverrides.Clear();
+        _defaultRegionOverride = ConsoleRegion.Auto;
+
+        foreach (string rawLine in File.ReadAllLines(path))
+        {
+            string raw = rawLine.Trim();
+            if (raw.Length == 0 || raw.StartsWith("#", StringComparison.Ordinal))
+                continue;
+
+            int equals = raw.IndexOf('=');
+            if (equals < 0)
+            {
+                if (Enum.TryParse(raw, ignoreCase: true, out ConsoleRegion region))
+                    _defaultRegionOverride = region;
+                continue;
+            }
+
+            string key = raw[..equals].Trim();
+            string value = raw[(equals + 1)..].Trim();
+            if (!Enum.TryParse(value, ignoreCase: true, out ConsoleRegion parsed))
+                continue;
+
+            if (key.Equals("default", StringComparison.OrdinalIgnoreCase))
+            {
+                _defaultRegionOverride = parsed;
+                continue;
+            }
+
+            if (key.StartsWith("serial:", StringComparison.OrdinalIgnoreCase))
+                _romRegionOverrides[key] = parsed;
+        }
+
+        RegionOverride = _defaultRegionOverride;
     }
 
     private void SaveRegionOverrideSetting()
     {
         string path = GetRegionSettingsPath();
-        File.WriteAllText(path, RegionOverride.ToString());
+        var lines = new List<string> { $"default={_defaultRegionOverride}" };
+        foreach (var entry in _romRegionOverrides.OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase))
+            lines.Add($"{entry.Key}={entry.Value}");
+        File.WriteAllLines(path, lines);
     }
 
     private static string GetRegionSettingsPath()
