@@ -18,8 +18,13 @@ namespace EutherDrive.Core.MdTracerCore
         private int _z80RegWriteLogRemaining = 32;
         private int _z80WinLogRemaining = 64;
         private bool _z80WinWarned;
+        private int _ymWriteLogRemaining = 64;
         private static readonly bool TraceZ80Win =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN"), "1", StringComparison.Ordinal);
+        private static bool _ymEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYm =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM"), "1", StringComparison.Ordinal);
 
         private static bool IsZ80BusReq(uint addr) => (addr & 0xFFFFFE) == 0xA11100;
         private static bool IsZ80Reset(uint addr) => (addr & 0xFFFFFE) == 0xA11200;
@@ -37,6 +42,11 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal bool Z80BusGranted => _z80BusGranted;
         internal bool Z80Reset => _z80Reset;
+
+        internal static void SetYmEnabled(bool enabled)
+        {
+            _ymEnabled = enabled;
+        }
 
 
         public byte read8(uint in_address)
@@ -74,10 +84,11 @@ namespace EutherDrive.Core.MdTracerCore
             if (in_address >= 0xA10000 && in_address <= 0xA10FFF)
                 return md_main.g_md_io != null ? md_main.g_md_io.read8(in_address) : (byte)0xFF;
 
-            // 0xA04000            | YM2612 (read)
-            // Om/ när ljudet kopplas in: exponera wrappers i md_music istället
-            if (in_address == 0xA04000)
-                return 0xFF; // placeholder tills md_music/ym2612 är på plats
+            // 0xA04000–0xA04003   | YM2612 (read)
+            if (in_address >= 0xA04000 && in_address <= 0xA04003)
+                return _ymEnabled && md_main.g_md_music != null
+                    ? md_main.g_md_music.g_md_ym2612.read8(in_address)
+                    : (byte)0xFF;
 
             // 0xA11000–0xA1FFFF  | Control
             if (in_address >= 0xA11000 && in_address <= 0xA1FFFF)
@@ -225,10 +236,18 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
 
-            // 0xA04000–0xA04003 YM2612 – tills ljud kopplas in, ignorera
+            // 0xA04000–0xA04003 YM2612
             if (in_address >= 0xA04000 && in_address <= 0xA04003)
             {
-                // TODO: md_music.WriteYM2612(in_address, in_data);
+                if (_ymEnabled)
+                {
+                    md_main.g_md_music?.g_md_ym2612.write8(in_address, in_data);
+                    if (TraceYm && _ymWriteLogRemaining > 0)
+                    {
+                        _ymWriteLogRemaining--;
+                        Console.WriteLine($"[YMTRACE] 68K pc=0x{md_m68k.g_reg_PC:X6} addr=0x{in_address:X6} val=0x{in_data:X2}");
+                    }
+                }
                 return;
             }
 

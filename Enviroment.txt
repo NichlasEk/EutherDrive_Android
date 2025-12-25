@@ -8,6 +8,8 @@ General
 UI
 - EUTHERDRIVE_UI_HEARTBEAT=1: UI heartbeat log.
 - EUTHERDRIVE_TRACE_TICK=1: per-tick log.
+- EUTHERDRIVE_AUDIO=1: enable audio output (pw-cat).
+- EUTHERDRIVE_AUDIO_TIMED=1: time-based audio fill (helps when FPS is low).
 
 VDP
 - EUTHERDRIVE_TRACE_VDP=1: VDP log (general).
@@ -47,8 +49,18 @@ Pads
 - EUTHERDRIVE_PAD_SELFTEST=1: pad self-test logs.
 - EUTHERDRIVE_PAD_TYPE=ThreeButton|SixButton: pad type override.
 
+Audio / PSG / YM
+- EUTHERDRIVE_TRACE_AUDIO=1: audio min/max log (per second).
+- EUTHERDRIVE_TRACE_PSG=1: PSG write log.
+- EUTHERDRIVE_DISABLE_PSG=1: disable PSG mix.
+- EUTHERDRIVE_YM=1: enable YM2612 access/mix.
+- EUTHERDRIVE_TRACE_YM=1: YM write log (first N writes).
+
 SMS timing
 - EUTHERDRIVE_SMS_CYCLES_MULT=<int>: SMS cycles multiplier.
+
+Bus
+- EUTHERDRIVE_TRACE_BUS=1: bus address routing trace.
 
 Stubs enabled by default
 - TRAP stub at 0xFF0500 (RTS) is installed and pointers 0xFF0556/0xFF055A/0xFF0562/0xFF0566/0xFF056A are set to it.

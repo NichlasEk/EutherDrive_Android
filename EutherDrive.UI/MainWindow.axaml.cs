@@ -51,9 +51,17 @@ public partial class MainWindow : Window
     private const int AudioSampleRate = 44100;
     private const int AudioChannels = 2;
     private static readonly bool AudioEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO") == "1";
+    private static readonly bool AudioTimedEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED") == "1";
+    private static readonly bool YmEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") == "1";
+    private const int AudioMaxFramesPerTick = 4096;
     private TextWriter? _originalConsoleOut;
     private StreamWriter? _romLogWriter;
     private bool _toneTestRunning;
+    private bool _psgBlipRunning;
+    private bool _audioTimedEnabled;
+    private long _audioLastTicks;
+    private double _audioFrameAccumulator;
+    private long _audioLastDropLogTicks;
 
     // UI heartbeat
     private readonly bool _heartbeatEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HEARTBEAT") == "1";
@@ -77,6 +85,7 @@ public partial class MainWindow : Window
         _audioEnabled = AudioEnvEnabled;
         if (AudioEnabledCheck != null)
             AudioEnabledCheck.IsChecked = _audioEnabled;
+        _audioTimedEnabled = AudioTimedEnvEnabled || _audioEnabled;
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16.666) };
         _timer.Tick += (_, _) => Tick();
@@ -121,28 +130,8 @@ public partial class MainWindow : Window
     {
         Focusable = true;
 
-        KeyDown += (_, e) =>
-        {
-            if (e.Source is TextBox)
-                return;
-
-            if (e.Key == Key.T && e.KeyModifiers.HasFlag(KeyModifiers.Control))
-            {
-                _ = RunToneTestAsync();
-            }
-
-            _keysDown.Add(e.Key);
-            e.Handled = true;
-        };
-
-        KeyUp += (_, e) =>
-        {
-            if (e.Source is TextBox)
-                return;
-
-            _keysDown.Remove(e.Key);
-            e.Handled = true;
-        };
+        AddHandler(KeyDownEvent, HandleKeyDown, RoutingStrategies.Tunnel, handledEventsToo: true);
+        AddHandler(KeyUpEvent, HandleKeyUp, RoutingStrategies.Tunnel, handledEventsToo: true);
 
         // klick var som helst (utom textfält) => ta tillbaka fokus
         PointerPressed += (_, args) =>
@@ -151,6 +140,29 @@ public partial class MainWindow : Window
                 return;
             Focus();
         };
+    }
+
+    private void HandleKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Source is TextBox)
+            return;
+
+        if (e.Key == Key.T && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            _ = RunToneTestAsync();
+        }
+
+        _keysDown.Add(e.Key);
+        e.Handled = true;
+    }
+
+    private void HandleKeyUp(object? sender, KeyEventArgs e)
+    {
+        if (e.Source is TextBox)
+            return;
+
+        _keysDown.Remove(e.Key);
+        e.Handled = true;
     }
 
     private async void OnOpenRom(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -278,6 +290,11 @@ public partial class MainWindow : Window
         _ = RunToneTestAsync();
     }
 
+    private void OnPsgBlipClick(object? sender, RoutedEventArgs e)
+    {
+        _ = RunPsgBlipAsync();
+    }
+
     private async Task RunToneTestAsync()
     {
         if (_toneTestRunning)
@@ -308,16 +325,61 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task RunPsgBlipAsync()
+    {
+        if (_psgBlipRunning)
+            return;
+
+        _psgBlipRunning = true;
+        try
+        {
+            if (_core is not MdTracerAdapter adapter)
+            {
+                StatusText.Text = "PSG blip: core not ready";
+                return;
+            }
+
+            StatusText.Text = "PSG blip: playing...";
+
+            const int tone = 0x100;
+            byte low = (byte)(tone & 0x0F);
+            byte high = (byte)((tone >> 4) & 0x3F);
+
+            if (!adapter.WritePsg((byte)(0x80 | low)))
+            {
+                StatusText.Text = "PSG blip: bus unavailable";
+                return;
+            }
+
+            adapter.WritePsg(high);
+            adapter.WritePsg(0x90);
+            await Task.Delay(150);
+            adapter.WritePsg(0x9F);
+
+            StatusText.Text = "PSG blip: done";
+        }
+        finally
+        {
+            _psgBlipRunning = false;
+        }
+    }
+
     private void StartAudioEngineIfEnabled()
     {
         StopAudioEngine();
         _audioEnabled = AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled;
+        _audioTimedEnabled = AudioTimedEnvEnabled || (AudioEnabledCheck?.IsChecked == true);
+        ApplyAudioOptionsToCore();
         if (!_audioEnabled)
+        {
+            ResetAudioTiming();
             return;
+        }
 
         _audioEngine = new AudioEngine(new PwCatAudioSink(), AudioSampleRate, AudioChannels);
         _audioEngine.Start();
         _audioFormatMismatchLogged = false;
+        ResetAudioTiming();
     }
 
     private void StopAudioEngine()
@@ -327,12 +389,63 @@ public partial class MainWindow : Window
 
         _audioEngine.Stop();
         _audioEngine = null;
+        ResetAudioTiming();
     }
 
     private void ProducePsgForFrame()
     {
         if (_audioEngine == null || _core == null)
             return;
+
+        if (_audioTimedEnabled && _core is MdTracerAdapter adapter)
+        {
+            long now = Stopwatch.GetTimestamp();
+            if (_audioLastTicks == 0)
+            {
+                _audioLastTicks = now;
+                return;
+            }
+
+            double elapsed = (now - _audioLastTicks) / (double)Stopwatch.Frequency;
+            _audioLastTicks = now;
+            _audioFrameAccumulator += elapsed * AudioSampleRate;
+            int frames = (int)_audioFrameAccumulator;
+            if (frames <= 0)
+                return;
+
+            if (frames > AudioMaxFramesPerTick)
+            {
+                frames = AudioMaxFramesPerTick;
+                _audioFrameAccumulator = 0;
+                long logNow = now;
+                if (logNow - _audioLastDropLogTicks > Stopwatch.Frequency)
+                {
+                    _audioLastDropLogTicks = logNow;
+                    Console.WriteLine($"[AudioEngine] timed audio clamped to {AudioMaxFramesPerTick} frames.");
+                }
+            }
+            else
+            {
+                _audioFrameAccumulator -= frames;
+            }
+
+            var timed = adapter.GetAudioBufferForFrames(frames, out int timedRate, out int timedChannels);
+            if (timed.IsEmpty)
+                return;
+
+            if (timedRate != AudioSampleRate || timedChannels != AudioChannels)
+            {
+                if (!_audioFormatMismatchLogged)
+                {
+                    _audioFormatMismatchLogged = true;
+                    Console.WriteLine($"[AudioEngine] core audio format mismatch: {timedRate} Hz, {timedChannels} ch (expected {AudioSampleRate} Hz, {AudioChannels} ch)");
+                }
+                return;
+            }
+
+            _audioEngine.Submit(timed);
+            return;
+        }
 
         var audio = _core.GetAudioBuffer(out int sampleRate, out int channels);
         if (audio.IsEmpty)
@@ -349,6 +462,27 @@ public partial class MainWindow : Window
         }
 
         _audioEngine.Submit(audio);
+    }
+
+    private void ResetAudioTiming()
+    {
+        _audioLastTicks = 0;
+        _audioFrameAccumulator = 0;
+        _audioLastDropLogTicks = 0;
+    }
+
+    private void ApplyAudioOptionsToCore()
+    {
+        if (_core is not MdTracerAdapter adapter)
+            return;
+
+        bool wantYm = YmEnvEnabled || (AudioEnabledCheck?.IsChecked == true);
+        adapter.SetYmEnabled(wantYm);
+    }
+
+    private void OnAudioToggle(object? sender, RoutedEventArgs e)
+    {
+        StartAudioEngineIfEnabled();
     }
 
     private void Tick()
@@ -438,16 +572,17 @@ public partial class MainWindow : Window
 
     private void ApplyInputToCore(IEmulatorCore core)
     {
-        bool up    = _keysDown.Contains(Key.Up)    || _keysDown.Contains(Key.W);
-        bool down  = _keysDown.Contains(Key.Down)  || _keysDown.Contains(Key.S);
-        bool left  = _keysDown.Contains(Key.Left)  || _keysDown.Contains(Key.A);
-        bool right = _keysDown.Contains(Key.Right) || _keysDown.Contains(Key.D);
+        bool up    = _keysDown.Contains(Key.Up);
+        bool down  = _keysDown.Contains(Key.Down);
+        bool left  = _keysDown.Contains(Key.Left);
+        bool right = _keysDown.Contains(Key.Right);
 
         // Knappar: flera alternativ för att slippa layout-strul
-        bool a = _keysDown.Contains(Key.Z) || _keysDown.Contains(Key.J) || _keysDown.Contains(Key.Q) || _keysDown.Contains(Key.Space);
-        bool b = _keysDown.Contains(Key.X) || _keysDown.Contains(Key.K) || _keysDown.Contains(Key.E);
-        bool c = _keysDown.Contains(Key.C) || _keysDown.Contains(Key.L) || _keysDown.Contains(Key.R);
-        bool start = _keysDown.Contains(Key.Enter);
+        bool a = _keysDown.Contains(Key.Z);
+        bool b = _keysDown.Contains(Key.X);
+        bool c = _keysDown.Contains(Key.C);
+        bool start = _keysDown.Contains(Key.Enter)
+            || _keysDown.Contains(Key.Return);
         bool x = _keysDown.Contains(Key.A);
         bool y = _keysDown.Contains(Key.S);
         bool z = _keysDown.Contains(Key.D);

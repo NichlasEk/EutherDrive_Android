@@ -26,6 +26,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private long _lastVdpLogTicks;
     private long _lastPresentLogTicks;
     private long _lastSampleLogTicks;
+    private long _lastAudioLogTicks;
 
     private int _tick;
     private const int VLINES_NTSC = 262;
@@ -38,6 +39,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_VECTORS"), "1", StringComparison.Ordinal);
     private static readonly bool FrameBufferTraceEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_TRACE"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceAudioEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO"), "1", StringComparison.Ordinal);
 
     // ROM + BUS
     private byte[]? _rom;
@@ -59,14 +62,23 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     private const int PsgSampleRate = 44100;
     private const int PsgChannels = 2;
+    private bool _ymEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM"), "1", StringComparison.Ordinal);
     private readonly bool _psgDisabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_PSG"), "1", StringComparison.Ordinal);
     private double _psgFrameAccumulator;
     private short[] _psgFrameBuffer = Array.Empty<short>();
+    private short[] _ymFrameBuffer = Array.Empty<short>();
     private int _psgFrameSamples;
     private long _psgLastFrame = -1;
 
     public string RomInfo { get; private set; } = "(no rom)";
+
+    public void SetYmEnabled(bool enabled)
+    {
+        _ymEnabled = enabled;
+        md_bus.SetYmEnabled(enabled);
+    }
 
     public void LoadRom(string path)
     {
@@ -647,11 +659,13 @@ public sealed class MdTracerAdapter : IEmulatorCore
         sampleRate = PsgSampleRate;
         channels = PsgChannels;
 
-        if (_psgDisabled)
-            return ReadOnlySpan<short>.Empty;
-
         var music = md_main.g_md_music;
         if (music == null)
+            return ReadOnlySpan<short>.Empty;
+
+        bool wantPsg = !_psgDisabled;
+        bool wantYm = _ymEnabled;
+        if (!wantPsg && !wantYm)
             return ReadOnlySpan<short>.Empty;
 
         long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
@@ -672,20 +686,221 @@ public sealed class MdTracerAdapter : IEmulatorCore
         if (_psgFrameBuffer.Length < samples)
             _psgFrameBuffer = new short[samples];
 
-        var psg = music.g_md_sn76489;
-        for (int i = 0; i < frames; i++)
+        int psgMin = 0;
+        int psgMax = 0;
+        bool psgMinMaxInit = false;
+        if (wantPsg)
         {
-            int s = psg.SN76489_Update();
-            if (s > short.MaxValue) s = short.MaxValue;
-            else if (s < short.MinValue) s = short.MinValue;
-            short sample = (short)s;
-            int idx = i * PsgChannels;
-            _psgFrameBuffer[idx] = sample;
-            _psgFrameBuffer[idx + 1] = sample;
+            var psg = music.g_md_sn76489;
+            for (int i = 0; i < frames; i++)
+            {
+                int s = psg.SN76489_Update();
+                if (s > short.MaxValue) s = short.MaxValue;
+                else if (s < short.MinValue) s = short.MinValue;
+                short sample = (short)s;
+                if (!psgMinMaxInit)
+                {
+                    psgMinMaxInit = true;
+                    psgMin = sample;
+                    psgMax = sample;
+                }
+                else
+                {
+                    if (sample < psgMin) psgMin = sample;
+                    if (sample > psgMax) psgMax = sample;
+                }
+                int idx = i * PsgChannels;
+                _psgFrameBuffer[idx] = sample;
+                _psgFrameBuffer[idx + 1] = sample;
+            }
+        }
+        else
+        {
+            Array.Clear(_psgFrameBuffer, 0, samples);
+        }
+
+        int ymMin = 0;
+        int ymMax = 0;
+        bool ymMinMaxInit = false;
+        if (wantYm)
+        {
+            if (_ymFrameBuffer.Length < samples)
+                _ymFrameBuffer = new short[samples];
+
+            music.g_md_ym2612.YM2612_UpdateBatch(_ymFrameBuffer, frames);
+
+            int mixMin = 0;
+            int mixMax = 0;
+            bool mixMinMaxInit = false;
+            for (int i = 0; i < samples; i++)
+            {
+                int ymSample = _ymFrameBuffer[i];
+                if (!ymMinMaxInit)
+                {
+                    ymMinMaxInit = true;
+                    ymMin = ymSample;
+                    ymMax = ymSample;
+                }
+                else
+                {
+                    if (ymSample < ymMin) ymMin = ymSample;
+                    if (ymSample > ymMax) ymMax = ymSample;
+                }
+
+                int mixed = _psgFrameBuffer[i] + _ymFrameBuffer[i];
+                if (mixed > short.MaxValue) mixed = short.MaxValue;
+                else if (mixed < short.MinValue) mixed = short.MinValue;
+                _psgFrameBuffer[i] = (short)mixed;
+
+                if (!mixMinMaxInit)
+                {
+                    mixMinMaxInit = true;
+                    mixMin = mixed;
+                    mixMax = mixed;
+                }
+                else
+                {
+                    if (mixed < mixMin) mixMin = mixed;
+                    if (mixed > mixMax) mixMax = mixed;
+                }
+            }
+
+            if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
+            {
+                Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax} samples={samples}");
+            }
+        }
+        else if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
+        {
+            Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin=NA ymMax=NA mixMin=NA mixMax=NA samples={samples}");
         }
 
         _psgFrameSamples = samples;
         return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
+    }
+
+    public ReadOnlySpan<short> GetAudioBufferForFrames(int frames, out int sampleRate, out int channels)
+    {
+        sampleRate = PsgSampleRate;
+        channels = PsgChannels;
+
+        if (frames <= 0)
+            return ReadOnlySpan<short>.Empty;
+
+        var music = md_main.g_md_music;
+        if (music == null)
+            return ReadOnlySpan<short>.Empty;
+
+        bool wantPsg = !_psgDisabled;
+        bool wantYm = _ymEnabled;
+        if (!wantPsg && !wantYm)
+            return ReadOnlySpan<short>.Empty;
+
+        int samples = frames * PsgChannels;
+        if (_psgFrameBuffer.Length < samples)
+            _psgFrameBuffer = new short[samples];
+
+        int psgMin = 0;
+        int psgMax = 0;
+        bool psgMinMaxInit = false;
+        if (wantPsg)
+        {
+            var psg = music.g_md_sn76489;
+            for (int i = 0; i < frames; i++)
+            {
+                int s = psg.SN76489_Update();
+                if (s > short.MaxValue) s = short.MaxValue;
+                else if (s < short.MinValue) s = short.MinValue;
+                short sample = (short)s;
+                if (!psgMinMaxInit)
+                {
+                    psgMinMaxInit = true;
+                    psgMin = sample;
+                    psgMax = sample;
+                }
+                else
+                {
+                    if (sample < psgMin) psgMin = sample;
+                    if (sample > psgMax) psgMax = sample;
+                }
+                int idx = i * PsgChannels;
+                _psgFrameBuffer[idx] = sample;
+                _psgFrameBuffer[idx + 1] = sample;
+            }
+        }
+        else
+        {
+            Array.Clear(_psgFrameBuffer, 0, samples);
+        }
+
+        int ymMin = 0;
+        int ymMax = 0;
+        bool ymMinMaxInit = false;
+        int mixMin = 0;
+        int mixMax = 0;
+        bool mixMinMaxInit = false;
+        if (wantYm)
+        {
+            if (_ymFrameBuffer.Length < samples)
+                _ymFrameBuffer = new short[samples];
+
+            music.g_md_ym2612.YM2612_UpdateBatch(_ymFrameBuffer, frames);
+
+            for (int i = 0; i < samples; i++)
+            {
+                int ymSample = _ymFrameBuffer[i];
+                if (!ymMinMaxInit)
+                {
+                    ymMinMaxInit = true;
+                    ymMin = ymSample;
+                    ymMax = ymSample;
+                }
+                else
+                {
+                    if (ymSample < ymMin) ymMin = ymSample;
+                    if (ymSample > ymMax) ymMax = ymSample;
+                }
+
+                int mixed = _psgFrameBuffer[i] + _ymFrameBuffer[i];
+                if (mixed > short.MaxValue) mixed = short.MaxValue;
+                else if (mixed < short.MinValue) mixed = short.MinValue;
+                _psgFrameBuffer[i] = (short)mixed;
+
+                if (!mixMinMaxInit)
+                {
+                    mixMinMaxInit = true;
+                    mixMin = mixed;
+                    mixMax = mixed;
+                }
+                else
+                {
+                    if (mixed < mixMin) mixMin = mixed;
+                    if (mixed > mixMax) mixMax = mixed;
+                }
+            }
+
+            if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
+            {
+                Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax} samples={samples}");
+            }
+        }
+        else if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
+        {
+            Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin=NA ymMax=NA mixMin=NA mixMax=NA samples={samples}");
+        }
+
+        _psgFrameSamples = samples;
+        return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
+    }
+
+    public bool WritePsg(byte value)
+    {
+        var bus = md_main.g_md_bus;
+        if (bus == null)
+            return false;
+
+        bus.write8(0xC00011, value);
+        return true;
     }
 
     public void SetInputState(

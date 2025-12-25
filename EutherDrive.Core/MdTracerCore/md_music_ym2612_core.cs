@@ -36,6 +36,30 @@ namespace EutherDrive.Core.MdTracerCore
             timer_control();
             return (w_out_l, w_out_r);
         }
+
+        public void YM2612_UpdateBatch(Span<short> dst, int frames)
+        {
+            int maxFrames = dst.Length / 2;
+            if (frames < maxFrames)
+                maxFrames = frames;
+
+            for (int i = 0; i < maxFrames; i++)
+            {
+                var (outL, outR) = YM2612_Update();
+                if (outL > short.MaxValue) outL = short.MaxValue;
+                else if (outL < short.MinValue) outL = short.MinValue;
+                if (outR > short.MaxValue) outR = short.MaxValue;
+                else if (outR < short.MinValue) outR = short.MinValue;
+
+                int idx = i * 2;
+                dst[idx] = (short)outL;
+                dst[idx + 1] = (short)outR;
+            }
+
+            int written = maxFrames * 2;
+            if (written < dst.Length)
+                dst.Slice(written).Clear();
+        }
         private void lfo_calc()
         {
             if (g_reg_22_lfo_enable == true)

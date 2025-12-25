@@ -23,8 +23,11 @@ namespace EutherDrive.Core.MdTracerCore
         private static bool _smsFirstBfWriteLogged;
         private static long _smsStatusPollFrame = -1;
         private static bool _forceStatus7Logged;
+        private int _ymWriteLogRemaining = 64;
         private static readonly bool ForceSmsStatus7 =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_SMS_STATUS7"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYm =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM"), "1", StringComparison.Ordinal);
 
         //----------------------------------------------------------------
         // read
@@ -120,6 +123,11 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 // YM2612
                 md_main.g_md_music.g_md_ym2612.write8(a, in_data);
+                if (TraceYm && _ymWriteLogRemaining > 0)
+                {
+                    _ymWriteLogRemaining--;
+                    Console.WriteLine($"[YMTRACE] Z80 pc=0x{DebugPc:X4} addr=0x{a:X4} val=0x{in_data:X2}");
+                }
             }
             else if (a >= 0x6000 && a <= 0x60FF)
             {
