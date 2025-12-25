@@ -62,6 +62,9 @@ public partial class MainWindow : Window
     private long _audioLastTicks;
     private double _audioFrameAccumulator;
     private long _audioLastDropLogTicks;
+    private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
+    private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
+    private const string RegionSettingsFileName = "eutherdrive_region.txt";
 
     // UI heartbeat
     private readonly bool _heartbeatEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HEARTBEAT") == "1";
@@ -86,10 +89,25 @@ public partial class MainWindow : Window
         if (AudioEnabledCheck != null)
             AudioEnabledCheck.IsChecked = _audioEnabled;
         _audioTimedEnabled = AudioTimedEnvEnabled || _audioEnabled;
+        LoadRegionOverrideSetting();
+        UpdateRegionOverrideCombo();
+        UpdateRomRegionHintText();
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16.666) };
         _timer.Tick += (_, _) => Tick();
         _presentOnUiAction = PresentPendingFrame;
+    }
+
+    public ConsoleRegion RegionOverride
+    {
+        get => _regionOverride;
+        private set => _regionOverride = value;
+    }
+
+    public ConsoleRegion RomRegionHint
+    {
+        get => _romRegionHint;
+        private set => _romRegionHint = value;
     }
 
     private void OnFrameRateChanged(object? sender, SelectionChangedEventArgs e)
@@ -124,6 +142,24 @@ public partial class MainWindow : Window
         {
             StatusText.Text = "Invalid cycles value";
         }
+    }
+
+    private void OnRegionOverrideChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (RegionOverrideCombo?.SelectedItem is not ComboBoxItem item)
+            return;
+
+        string tag = item.Tag?.ToString() ?? "Auto";
+        RegionOverride = tag switch
+        {
+            "JP" => ConsoleRegion.JP,
+            "US" => ConsoleRegion.US,
+            "EU" => ConsoleRegion.EU,
+            _ => ConsoleRegion.Auto
+        };
+
+        SaveRegionOverrideSetting();
+        ApplyRegionOverrideToCore(resetIfRunning: true);
     }
 
     private void HookInput()
@@ -221,9 +257,11 @@ public partial class MainWindow : Window
 
                         // Visa i UI direkt (snabbast att se)
                         RomInfoText.Text = m.RomInfo.Summary;
+                        UpdateRomRegionHint(m.RomInfo.RegionHint);
 
                         // OCH i terminal (om du kör från terminal)
                         Console.WriteLine(m.RomInfo.Summary);
+                        ApplyRegionOverrideToCore(resetIfRunning: false);
                     }
                     else
                     {
@@ -269,6 +307,66 @@ public partial class MainWindow : Window
             Console.WriteLine(ex.ToString());
         }
     }
+
+    private void ApplyRegionOverrideToCore(bool resetIfRunning)
+    {
+        if (_core is not MdTracerAdapter adapter)
+            return;
+
+        adapter.SetRegionOverride(RegionOverride);
+        if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
+        {
+            adapter.Reset();
+            StatusText.Text = $"Region override set to {RegionOverride}. Reset applied.";
+        }
+    }
+
+    private void UpdateRomRegionHint(ConsoleRegion? hint)
+    {
+        RomRegionHint = hint ?? ConsoleRegion.Auto;
+        UpdateRomRegionHintText();
+    }
+
+    private void UpdateRomRegionHintText()
+    {
+        if (RomRegionHintText != null)
+            RomRegionHintText.Text = $"ROM suggests: {RomRegionHint}";
+    }
+
+    private void UpdateRegionOverrideCombo()
+    {
+        if (RegionOverrideCombo == null)
+            return;
+
+        foreach (var item in RegionOverrideCombo.Items.Cast<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), RegionOverride.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                RegionOverrideCombo.SelectedItem = item;
+                return;
+            }
+        }
+    }
+
+    private void LoadRegionOverrideSetting()
+    {
+        string path = GetRegionSettingsPath();
+        if (!File.Exists(path))
+            return;
+
+        string raw = File.ReadAllText(path).Trim();
+        if (Enum.TryParse(raw, ignoreCase: true, out ConsoleRegion region))
+            RegionOverride = region;
+    }
+
+    private void SaveRegionOverrideSetting()
+    {
+        string path = GetRegionSettingsPath();
+        File.WriteAllText(path, RegionOverride.ToString());
+    }
+
+    private static string GetRegionSettingsPath()
+        => Path.Combine(Directory.GetCurrentDirectory(), RegionSettingsFileName);
 
     private void OnStop(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {

@@ -189,6 +189,11 @@ namespace EutherDrive.Core.MdTracerCore
             _romRegionHint = hint;
         }
 
+        internal void SetRegionOverride(ConsoleRegion region)
+        {
+            _identity.RegionOverride = region;
+        }
+
         private byte ReadIoVersion()
         {
             ConsoleRegion effective = GetEffectiveRegion();

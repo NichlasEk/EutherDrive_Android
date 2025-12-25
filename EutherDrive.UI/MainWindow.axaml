@@ -22,9 +22,21 @@
       <StackPanel Spacing="8" Width="260">
         <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
         <CheckBox Content="Use 3-button pad" IsChecked="False" Name="ThreeButtonPadCheck"/>
-        <CheckBox Content="Enable audio" IsChecked="False" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
+        <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
         <Button Content="Play 440 Hz tone" Click="OnToneTestClick" HorizontalAlignment="Stretch"/>
         <Button Content="PSG blip" Click="OnPsgBlipClick" HorizontalAlignment="Stretch"/>
+        <Separator/>
+        <TextBlock Text="Region" FontWeight="Bold"/>
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <TextBlock VerticalAlignment="Center" Text="Override:"/>
+          <ComboBox Name="RegionOverrideCombo" Width="120" SelectionChanged="OnRegionOverrideChanged">
+            <ComboBoxItem Tag="Auto">Auto</ComboBoxItem>
+            <ComboBoxItem Tag="JP">JP</ComboBoxItem>
+            <ComboBoxItem Tag="US">US</ComboBoxItem>
+            <ComboBoxItem Tag="EU">EU</ComboBoxItem>
+          </ComboBox>
+        </StackPanel>
+        <TextBlock x:Name="RomRegionHintText" Opacity="0.85" FontSize="12"/>
         <TextBlock Text="Controls" FontWeight="Bold"/>
         <TextBlock Name="KeysText"/>
         <TextBlock Text="Arrows: D-pad"/>

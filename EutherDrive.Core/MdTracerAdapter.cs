@@ -80,6 +80,12 @@ public sealed class MdTracerAdapter : IEmulatorCore
         md_bus.SetYmEnabled(enabled);
     }
 
+    public void SetRegionOverride(ConsoleRegion region)
+    {
+        if (md_main.g_md_io != null)
+            md_main.g_md_io.SetRegionOverride(region);
+    }
+
     public void LoadRom(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
