@@ -1,3 +1,5 @@
+using System;
+using System.Diagnostics;
 using EutherDrive.Core;
 
 namespace EutherDrive.Core.MdTracerCore
@@ -14,6 +16,10 @@ namespace EutherDrive.Core.MdTracerCore
         private PadHandshake _pad2Handshake;
         private PadType _pad1Type = PadType.SixButton;
         private PadType _pad2Type = PadType.ThreeButton;
+        private int _ioReadLogRemaining = 64;
+        private long _ioReadLastTicks;
+        private static readonly bool TraceIo =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_IO"), "1", StringComparison.Ordinal);
 
         // Global pekare (som md_bus.Current)
         public static md_io? Current { get; set; }
@@ -33,54 +39,78 @@ namespace EutherDrive.Core.MdTracerCore
         public byte read8(uint in_address)
         {
             uint addr = in_address & 0xFFFFFF;
+            byte result;
             switch (addr)
             {
                 case 0xA10000:
-                    return 0x00;
+                    result = 0x00;
+                    break;
                 case 0xA10001:
-                    return 0xA0; // Version register (NTSC, rev 0)
+                    result = 0xA0; // Version register (NTSC, rev 0)
+                    break;
                 case 0xA10002:
                 case 0xA10003:
-                    return ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type);
+                    result = ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type);
+                    break;
                 case 0xA10004:
                 case 0xA10005:
-                    return ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type);
+                    result = ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type);
+                    break;
                 case 0xA10008:
                 case 0xA10009:
-                    return (byte)(_pad1Th ? 0x40 : 0x00);
+                    result = (byte)(_pad1Th ? 0x40 : 0x00);
+                    break;
                 case 0xA1000A:
                 case 0xA1000B:
-                    return (byte)(_pad2Th ? 0x40 : 0x00);
+                    result = (byte)(_pad2Th ? 0x40 : 0x00);
+                    break;
                 default:
-                    return 0x00;
+                    result = 0x00;
+                    break;
             }
+
+            MaybeLogIoRead(addr, result, 8);
+            return result;
         }
 
         public ushort read16(uint in_address)
         {
             // Big-endian 16-bit read via två 8-bit (om du vill hålla det enkelt)
             uint addr = in_address & 0xFFFFFF;
+            ushort result;
+            bool direct = true;
             switch (addr)
             {
                 case 0xA10002:
                 case 0xA10003:
-                    return (ushort)(0xFF00 | ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type));
+                    result = (ushort)(0xFF00 | ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type));
+                    break;
                 case 0xA10004:
                 case 0xA10005:
-                    return (ushort)(0xFF00 | ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type));
+                    result = (ushort)(0xFF00 | ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type));
+                    break;
                 case 0xA10008:
                 case 0xA10009:
-                    return (ushort)(0xFF00 | (_pad1Th ? 0x40 : 0x00));
+                    result = (ushort)(0xFF00 | (_pad1Th ? 0x40 : 0x00));
+                    break;
                 case 0xA1000A:
                 case 0xA1000B:
-                    return (ushort)(0xFF00 | (_pad2Th ? 0x40 : 0x00));
+                    result = (ushort)(0xFF00 | (_pad2Th ? 0x40 : 0x00));
+                    break;
                 default:
                 {
                     byte hi = read8(in_address);
                     byte lo = read8(in_address + 1);
-                    return (ushort)((hi << 8) | lo);
+                    result = (ushort)((hi << 8) | lo);
+                    direct = false;
+                    break;
                 }
             }
+
+            if (direct)
+                MaybeLogIoRead(addr, result, 16);
+
+            return result;
         }
 
         public uint read32(uint in_address)
@@ -148,6 +178,30 @@ namespace EutherDrive.Core.MdTracerCore
 
             _pad2Handshake.Stage = 0;
             _pad2Handshake.LastThHigh = _pad2Th;
+        }
+
+        private void MaybeLogIoRead(uint addr, uint value, int widthBits)
+        {
+            if (!TraceIo)
+                return;
+
+            if (addr != 0xA10001 && (addr < 0xA10003 || addr > 0xA1001F))
+                return;
+
+            if (_ioReadLogRemaining > 0)
+            {
+                _ioReadLogRemaining--;
+            }
+            else
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (now - _ioReadLastTicks < Stopwatch.Frequency)
+                    return;
+                _ioReadLastTicks = now;
+            }
+
+            string val = widthBits == 8 ? value.ToString("X2") : value.ToString("X4");
+            Console.WriteLine($"[IOREAD] pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{val} w={widthBits}");
         }
 
         private static byte ReadPadData(MdPadState pad, bool thHigh, ref PadHandshake handshake, PadType padType)
