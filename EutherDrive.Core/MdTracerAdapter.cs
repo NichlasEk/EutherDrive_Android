@@ -72,7 +72,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private int _psgFrameSamples;
     private long _psgLastFrame = -1;
 
-    public string RomInfo { get; private set; } = "(no rom)";
+    public RomInfo RomInfo { get; private set; } = new RomInfo();
 
     public void SetYmEnabled(bool enabled)
     {
@@ -142,7 +142,9 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 _cpuReady = false;
                 _cpu = null;
 
-                RomInfo = $"SMS ROM bytes: {smsRom.Length}";
+                RomInfo.Summary = $"SMS ROM bytes: {smsRom.Length}";
+                RomInfo.RegionHint = null;
+                RomInfo.RegionHeaderRaw = string.Empty;
             }
             else
             {
@@ -172,6 +174,11 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 string header = TryReadSegaString(vecRom);
                 _bus.Write32(0xFF0000, 0x1234ABCD);
                 uint wramProbe = _bus.Read32(0xFF0000);
+                ConsoleRegion? regionHint = md_rom_utils.DetectRegionFromHeader(vecRom, out string regionRaw);
+                RomInfo.RegionHint = regionHint;
+                RomInfo.RegionHeaderRaw = regionRaw;
+                string regionLabel = regionHint?.ToString() ?? ConsoleRegion.Auto.ToString();
+                Console.WriteLine($"[MdTracerAdapter] Detected ROM region: {regionLabel} (raw='{regionRaw}')");
 
                 uint sp = ReadBe32(vecRom, 0x000000);
                 uint pc = ReadBe32(vecRom, 0x000004);
@@ -192,12 +199,12 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 {
                     _cpuReady = false;
                     _cpu = null;
-                    RomInfo = $"ROM bytes: {_rom.Length} | {header} | WRAM@FF0000: 0x{wramProbe:X8} | VEC SP=0x{sp:X8} PC=0x{pc:X8} OP@PC=0x{op:X4} | CPU: {ex.Message}";
+                    RomInfo.Summary = $"ROM bytes: {_rom.Length} | {header} | WRAM@FF0000: 0x{wramProbe:X8} | VEC SP=0x{sp:X8} PC=0x{pc:X8} OP@PC=0x{op:X4} | CPU: {ex.Message}";
                     Reset();
                     return;
                 }
 
-                RomInfo =
+                RomInfo.Summary =
                 $"ROM bytes: {_rom.Length} | {header} | WRAM@FF0000: 0x{wramProbe:X8} | " +
                 $"VEC SP=0x{sp:X8} PC=0x{pc:X8} OP@PC=0x{op:X4} | CPU API ok";
             }

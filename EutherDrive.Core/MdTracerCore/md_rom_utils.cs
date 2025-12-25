@@ -1,4 +1,6 @@
 using System;
+using System.Text;
+using EutherDrive.Core;
 
 namespace EutherDrive.Core.MdTracerCore;
 
@@ -7,6 +9,8 @@ internal readonly record struct RomNormalizationResult(byte[] Data, int HeaderSi
 internal static class md_rom_utils
 {
     private const int SmdBlockSize = 0x4000;
+    private const int RegionHeaderOffset = 0x1F0;
+    private const int RegionHeaderLength = 0x10;
 
     public static RomNormalizationResult NormalizeMegaDriveRom(byte[] data)
     {
@@ -42,6 +46,35 @@ internal static class md_rom_utils
                data[0x101] == (byte)'E' &&
                data[0x102] == (byte)'G' &&
                data[0x103] == (byte)'A';
+    }
+
+    internal static ConsoleRegion? DetectRegionFromHeader(byte[] rom, out string rawHeader)
+    {
+        rawHeader = string.Empty;
+        if (rom.Length < RegionHeaderOffset + RegionHeaderLength)
+            return null;
+
+        Span<byte> span = stackalloc byte[RegionHeaderLength];
+        for (int i = 0; i < RegionHeaderLength; i++)
+            span[i] = rom[RegionHeaderOffset + i];
+
+        rawHeader = Encoding.ASCII.GetString(span).TrimEnd('\0', ' ');
+        if (rawHeader.Length == 0)
+            return null;
+
+        string upper = rawHeader.ToUpperInvariant();
+        bool hasJ = upper.Contains('J');
+        bool hasU = upper.Contains('U');
+        bool hasE = upper.Contains('E');
+
+        if (hasJ)
+            return ConsoleRegion.JP;
+        if (hasU)
+            return ConsoleRegion.US;
+        if (hasE)
+            return ConsoleRegion.EU;
+
+        return null;
     }
 
     private static int DetectSmdHeaderSize(byte[] data)

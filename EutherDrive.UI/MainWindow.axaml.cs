@@ -220,10 +220,10 @@ public partial class MainWindow : Window
                         m.PowerCycleAndLoadRom(_romPath);
 
                         // Visa i UI direkt (snabbast att se)
-                        RomInfoText.Text = m.RomInfo;
+                        RomInfoText.Text = m.RomInfo.Summary;
 
                         // OCH i terminal (om du kör från terminal)
-                        Console.WriteLine(m.RomInfo);
+                        Console.WriteLine(m.RomInfo.Summary);
                     }
                     else
                     {
