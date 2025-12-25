@@ -37,6 +37,8 @@ public partial class MainWindow : Window
     private long _presentedFrames;
     private static readonly bool FrameBufferTraceEnabled =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_TRACE") == "1";
+    private static readonly bool SkipUiBlitEnabled =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_UI_BLIT") == "1";
     private readonly Action _presentOnUiAction;
     private IEmulatorCore? _pendingPresentCore;
 
@@ -831,14 +833,28 @@ public partial class MainWindow : Window
         if (src.IsEmpty || srcStride <= 0 || w <= 0 || h <= 0)
             return;
 
+        if (SkipUiBlitEnabled)
+        {
+            if (!_earlyMagentaReported && _earlyMagentaTimer.IsRunning)
+            {
+                _earlyMagentaReported = true;
+                _earlyMagentaTimer.Stop();
+                Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
+            }
+            return;
+        }
+
         using var fb = _wb.Lock();
         int dstStride = fb.RowBytes;
 
         int copyBytesPerRow = Math.Min(w * 4, Math.Min(srcStride, dstStride));
+        if (copyBytesPerRow <= 0)
+            return;
 
         fixed (byte* pSrc0 = src)
         {
             byte* pDst0 = (byte*)fb.Address.ToPointer();
+            long blitStart = Stopwatch.GetTimestamp();
 
             if (FrameBufferTraceEnabled)
             {
@@ -846,12 +862,22 @@ public partial class MainWindow : Window
                 Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} srcPtr=0x{(nint)pSrc0:X} size={w}x{h} stride={srcStride} bytes={src.Length}");
             }
 
-            for (int y = 0; y < h; y++)
+            if (copyBytesPerRow == srcStride && copyBytesPerRow == dstStride)
             {
-                byte* pSrcRow = pSrc0 + (y * srcStride);
-                byte* pDstRow = pDst0 + (y * dstStride);
-                Buffer.MemoryCopy(pSrcRow, pDstRow, dstStride, copyBytesPerRow);
+                long totalBytes = (long)copyBytesPerRow * h;
+                Buffer.MemoryCopy(pSrc0, pDst0, totalBytes, totalBytes);
             }
+            else
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    byte* pSrcRow = pSrc0 + (y * srcStride);
+                    byte* pDstRow = pDst0 + (y * dstStride);
+                    Buffer.MemoryCopy(pSrcRow, pDstRow, dstStride, copyBytesPerRow);
+                }
+            }
+
+            PerfHotspots.Add(PerfHotspot.UiBlit, Stopwatch.GetTimestamp() - blitStart);
         }
 
         // VIKTIGT: tvinga repaint

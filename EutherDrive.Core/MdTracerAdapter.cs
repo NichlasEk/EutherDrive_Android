@@ -41,6 +41,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_TRACE"), "1", StringComparison.Ordinal);
     private static readonly bool TraceAudioEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO"), "1", StringComparison.Ordinal);
+    private static readonly bool SkipVdpRenderEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
 
     // ROM + BUS
     private byte[]? _rom;
@@ -59,6 +61,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private int _lastGc0;
     private int _lastGc1;
     private int _lastGc2;
+    private readonly long[] _hotspotTicks = new long[(int)PerfHotspot.Count];
 
     private const int PsgSampleRate = 44100;
     private const int PsgChannels = 2;
@@ -418,19 +421,24 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
             for (int v = 0; v < VLINES_NTSC; v++)
             {
-                long start = Stopwatch.GetTimestamp();
-                _vdp.run(v);
-                vdpTicks += Stopwatch.GetTimestamp() - start;
+                if (!SkipVdpRenderEnabled)
+                {
+                    long start = Stopwatch.GetTimestamp();
+                    _vdp.run(v);
+                    vdpTicks += Stopwatch.GetTimestamp() - start;
+                }
 
-                start = Stopwatch.GetTimestamp();
+                long cpuStart = Stopwatch.GetTimestamp();
                 _cpu.RunSome(budget: md_main.VDL_LINE_RENDER_MC68_CLOCK);
-                cpuTicks += Stopwatch.GetTimestamp() - start;
+                cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
 
                 md_main.g_md_z80?.run(z80Budget);
             }
 
             _accCpuTicks += cpuTicks;
             _accVdpTicks += vdpTicks;
+            PerfHotspots.Add(PerfHotspot.CpuStep, cpuTicks);
+            PerfHotspots.Add(PerfHotspot.VdpRender, vdpTicks);
 
             pcAfter = md_m68k.g_reg_PC;
             if (pcAfter == _lastPc)
@@ -452,8 +460,11 @@ public sealed class MdTracerAdapter : IEmulatorCore
         else
         {
             // Fortfarande VDP-test tills vi kopplar VDP-register/IO
-            for (int v = 0; v < VLINES_NTSC; v++)
-                _vdp.run(v);
+            if (!SkipVdpRenderEnabled)
+            {
+                for (int v = 0; v < VLINES_NTSC; v++)
+                    _vdp.run(v);
+            }
         }
         }
 
@@ -480,7 +491,9 @@ public sealed class MdTracerAdapter : IEmulatorCore
             }
 
             ReadOnlySpan<uint> vdpSpan = vdpBuffer;
+            long blitStart = Stopwatch.GetTimestamp();
             BlitArgbToBgra8888(vdpSpan, _frameBuffer, srcStridePixels: 320);
+            PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
         }
     }
 
@@ -499,6 +512,63 @@ public sealed class MdTracerAdapter : IEmulatorCore
         int gc2 = GC.CollectionCount(2);
 
         Console.WriteLine($"[MdTracerAdapter] perf avg/frame={avgFrameMs:0.00}ms CPU={avgCpuMs:0.00}ms VDP={avgVdpMs:0.00}ms GC0={gc0 - _lastGc0} GC1={gc1 - _lastGc1} GC2={gc2 - _lastGc2}");
+        PerfHotspots.SnapshotAndReset(_hotspotTicks);
+        const int maxTop = 5;
+        Span<int> topIdx = stackalloc int[maxTop];
+        Span<long> topTicks = stackalloc long[maxTop];
+        for (int i = 0; i < maxTop; i++)
+        {
+            topIdx[i] = -1;
+            topTicks[i] = 0;
+        }
+
+        for (int i = 0; i < _hotspotTicks.Length; i++)
+        {
+            long ticks = _hotspotTicks[i];
+            if (ticks <= 0)
+                continue;
+
+            for (int slot = 0; slot < maxTop; slot++)
+            {
+                if (ticks <= topTicks[slot])
+                    continue;
+
+                for (int shift = maxTop - 1; shift > slot; shift--)
+                {
+                    topTicks[shift] = topTicks[shift - 1];
+                    topIdx[shift] = topIdx[shift - 1];
+                }
+
+                topTicks[slot] = ticks;
+                topIdx[slot] = i;
+                break;
+            }
+        }
+
+        var sb = new StringBuilder(96);
+        bool anyHotspot = false;
+        for (int i = 0; i < maxTop; i++)
+        {
+            int idx = topIdx[i];
+            if (idx < 0)
+                continue;
+
+            double ms = (topTicks[i] / (double)_perfFrameCount) * invFreq;
+            if (!anyHotspot)
+            {
+                sb.Append("[MdTracerAdapter] hotspots");
+                anyHotspot = true;
+            }
+
+            sb.Append(' ');
+            sb.Append(PerfHotspots.GetName((PerfHotspot)idx));
+            sb.Append('=');
+            sb.Append(ms.ToString("0.00"));
+            sb.Append("ms");
+        }
+
+        if (anyHotspot)
+            Console.WriteLine(sb.ToString());
 
         _accCpuTicks = 0;
         _accVdpTicks = 0;
@@ -620,31 +690,33 @@ public sealed class MdTracerAdapter : IEmulatorCore
         int srcWidth = 320;
         int copyHeight = Math.Min(_fbH, 224);
         int copyWidth = Math.Min(_fbW, srcWidth);
-        int dstStride = 1280;
+        int dstStride = _fbStride;
+        int srcStrideBytes = srcStridePixels * 4;
+        int copyBytesPerRow = copyWidth * 4;
 
         int requiredSrc = srcStridePixels * copyHeight;
-        int requiredDst = (copyHeight - 1) * dstStride + (copyWidth * 4);
+        int requiredDst = (copyHeight - 1) * dstStride + copyBytesPerRow;
         if (vdpSrc.Length < requiredSrc || dst.Length < requiredDst)
             return;
 
         bool logSamples = FrameBufferTraceEnabled && ShouldLogPerSecond(ref _lastSampleLogTicks);
+        ReadOnlySpan<byte> srcBytes = MemoryMarshal.AsBytes(vdpSrc);
+        int requiredSrcBytes = srcStrideBytes * copyHeight;
+        if (srcBytes.Length < requiredSrcBytes)
+            return;
 
-        for (int y = 0; y < copyHeight; y++)
+        if (srcStrideBytes == copyBytesPerRow && dstStride == copyBytesPerRow)
         {
-            int srcRow = y * srcStridePixels;
-            int dstRow = y * dstStride;
-            for (int x = 0; x < copyWidth; x++)
+            int totalBytes = copyBytesPerRow * copyHeight;
+            srcBytes.Slice(0, totalBytes).CopyTo(dst);
+        }
+        else
+        {
+            for (int y = 0; y < copyHeight; y++)
             {
-                uint argb = vdpSrc[srcRow + x];
-                byte r8 = (byte)(argb >> 16);
-                byte g8 = (byte)(argb >> 8);
-                byte b8 = (byte)argb;
-
-                int di = dstRow + (x * 4);
-                dst[di + 0] = b8;
-                dst[di + 1] = g8;
-                dst[di + 2] = r8;
-                dst[di + 3] = 255;
+                int srcRow = y * srcStrideBytes;
+                int dstRow = y * dstStride;
+                srcBytes.Slice(srcRow, copyBytesPerRow).CopyTo(dst.Slice(dstRow, copyBytesPerRow));
             }
         }
 
