@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <DisableWorkloadResolverRoot>$(MSBuildThisFileDirectory)</DisableWorkloadResolverRoot>
+    <!-- point the resolver sentinel to a repo-local file and disable the resolver so we don't rely on /usr/share/dotnet permissions -->
+    <__DisableWorkloadResolverSentinelPath>$(DisableWorkloadResolverRoot)workloadResolver.sentinel</__DisableWorkloadResolverSentinelPath>
+    <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+  </PropertyGroup>
+</Project>

@@ -1,9 +1,10 @@
 using System;
 using System.Runtime.InteropServices;
+using EutherDrive.Audio;
 
 namespace EutherDrive.UI.Audio;
 
-internal sealed class OpenAlAudioOutput : IDisposable
+internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
 {
     private const string LibOpenAl = "openal";
     private const int AL_FORMAT_STEREO16 = 0x1103;
@@ -19,6 +20,9 @@ internal sealed class OpenAlAudioOutput : IDisposable
     private readonly int[] _scratch = new int[1];
     private byte[] _tempBuffer = Array.Empty<byte>();
     private int _nextBuffer;
+    private int _sampleRate;
+    private int _channels = 2;
+    private bool _started;
 
     public static OpenAlAudioOutput? TryCreate()
     {
@@ -69,12 +73,20 @@ internal sealed class OpenAlAudioOutput : IDisposable
         Array.Copy(buffers, _buffers, Math.Min(buffers.Length, _buffers.Length));
     }
 
-    public void Submit(ReadOnlySpan<short> samples, int sampleRate, int channels)
+    public void Start(int sampleRate, int channels)
     {
-        if (samples.Length == 0)
+        _sampleRate = sampleRate;
+        _channels = Math.Max(1, channels);
+        _started = true;
+    }
+
+    public void Submit(ReadOnlySpan<short> samples)
+    {
+        if (!_started || samples.Length == 0)
             return;
 
-        if (channels < 2)
+        ReadOnlySpan<short> span = samples;
+        if (_channels < 2)
         {
             var expanded = new short[samples.Length * 2];
             for (int i = 0, j = 0; i < samples.Length; i++, j += 2)
@@ -83,20 +95,19 @@ internal sealed class OpenAlAudioOutput : IDisposable
                 expanded[j + 0] = sample;
                 expanded[j + 1] = sample;
             }
-            Submit(expanded, sampleRate, 2);
-            return;
+            span = expanded;
         }
 
-        int bytes = samples.Length * sizeof(short);
+        int bytes = span.Length * sizeof(short);
         EnsureTempBuffer(bytes);
 
         unsafe
         {
             fixed (byte* dest = _tempBuffer)
-            fixed (short* src = samples)
+            fixed (short* src = span)
             {
                 Buffer.MemoryCopy(src, dest, bytes, bytes);
-                alBufferData(_buffers[_nextBuffer], AL_FORMAT_STEREO16, (IntPtr)dest, bytes, sampleRate);
+                alBufferData(_buffers[_nextBuffer], AL_FORMAT_STEREO16, (IntPtr)dest, bytes, _sampleRate);
                 LogAlError("alBufferData");
 
                 _scratch[0] = _buffers[_nextBuffer];
@@ -119,6 +130,16 @@ internal sealed class OpenAlAudioOutput : IDisposable
         }
     }
 
+    public void Stop()
+    {
+        if (!_started)
+            return;
+
+        _started = false;
+        alSourceStop(_source);
+        ProcessBuffers();
+    }
+
     private void EnsureTempBuffer(int bytes)
     {
         if (_tempBuffer.Length < bytes)
@@ -137,7 +158,7 @@ internal sealed class OpenAlAudioOutput : IDisposable
 
     public void Dispose()
     {
-        alSourceStop(_source);
+        Stop();
         alSourcei(_source, AL_BUFFER, 0);
         alDeleteSources(1, new[] { _source });
 

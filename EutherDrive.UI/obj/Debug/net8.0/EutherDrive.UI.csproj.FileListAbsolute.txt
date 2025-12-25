@@ -69,9 +69,11 @@
 /home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/EutherDrive.UI.AssemblyInfo.cs
 /home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/EutherDrive.UI.csproj.CoreCompileInputs.cache
 /home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/EutherDrive.UI.sourcelink.json
-/home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/EutherDr.4452C692.Up2Date
 /home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/EutherDrive.UI.dll
 /home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/refint/EutherDrive.UI.dll
 /home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/EutherDrive.UI.pdb
 /home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/EutherDrive.UI.genruntimeconfig.cache
 /home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/ref/EutherDrive.UI.dll
+/home/nichlas/EutherDrive/EutherDrive.UI/bin/Debug/net8.0/EutherDrive.Audio.dll
+/home/nichlas/EutherDrive/EutherDrive.UI/bin/Debug/net8.0/EutherDrive.Audio.pdb
+/home/nichlas/EutherDrive/EutherDrive.UI/obj/Debug/net8.0/EutherDrive.UI.csproj.CopyComplete

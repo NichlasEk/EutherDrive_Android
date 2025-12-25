@@ -1,30 +1,18 @@
-[MdTracerAdapter] LoadRom request: path='/home/nichlas/Hämtningar/Contra - Hard Corps/Contra - Hard Corps.smd' ext='.smd' thread=1
-[MdTracerAdapter] Vector check SP=0xFFFFFF00 PC=0x00000200
+[MdTracerAdapter] LoadRom request: path='/home/nichlas/Hämtningar/Columns (World) (v1.1).md' ext='.md' thread=1
+[MdTracerAdapter] Vector check SP=0xFFFF83FC PC=0x0000021E
 [MdTracerAdapter] Reset begin
 [MdTracerAdapter] Reset framebuffer 320x224 stride=1280
-ROM bytes: 2097152 | Header@0x100: 'SEGA' | WRAM@FF0000: 0x1234ABCD | VEC SP=0xFFFFFF00 PC=0x00000200 OP@PC=0x4AB9 | CPU API ok
-[MainWindow] Early magenta ready after 263,5 ms
-[MdTracerAdapter] perf avg/frame=62,76ms CPU=56,21ms VDP=6,52ms GC0=165 GC1=18 GC2=5
-[MdTracerAdapter] perf avg/frame=59,93ms CPU=53,51ms VDP=6,39ms GC0=6 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=57,47ms CPU=51,32ms VDP=6,11ms GC0=7 GC1=1 GC2=1
-[MdTracerAdapter] perf avg/frame=46,45ms CPU=39,77ms VDP=6,65ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=48,03ms CPU=41,17ms VDP=6,82ms GC0=5 GC1=1 GC2=0
-[MdTracerAdapter] perf avg/frame=46,94ms CPU=40,30ms VDP=6,61ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=46,21ms CPU=39,58ms VDP=6,59ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=54,60ms CPU=47,66ms VDP=6,90ms GC0=5 GC1=1 GC2=0
-[MdTracerAdapter] perf avg/frame=47,82ms CPU=41,03ms VDP=6,75ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=45,85ms CPU=39,26ms VDP=6,55ms GC0=5 GC1=1 GC2=0
-[MdTracerAdapter] perf avg/frame=45,29ms CPU=38,77ms VDP=6,48ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=45,72ms CPU=39,20ms VDP=6,48ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=48,56ms CPU=43,17ms VDP=5,34ms GC0=5 GC1=1 GC2=0
-[MdTracerAdapter] perf avg/frame=48,95ms CPU=42,96ms VDP=5,95ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=54,36ms CPU=48,38ms VDP=5,94ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=45,46ms CPU=39,89ms VDP=5,53ms GC0=5 GC1=1 GC2=0
-[MdTracerAdapter] perf avg/frame=46,66ms CPU=40,98ms VDP=5,64ms GC0=4 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=46,04ms CPU=40,53ms VDP=5,48ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=46,50ms CPU=40,88ms VDP=5,58ms GC0=5 GC1=1 GC2=0
-[MdTracerAdapter] perf avg/frame=46,76ms CPU=41,05ms VDP=5,67ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=45,06ms CPU=40,47ms VDP=4,55ms GC0=5 GC1=1 GC2=0
-[MdTracerAdapter] perf avg/frame=48,88ms CPU=41,56ms VDP=7,28ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=55,17ms CPU=47,08ms VDP=8,04ms GC0=5 GC1=0 GC2=0
-[MdTracerAdapter] perf avg/frame=48,50ms CPU=40,90ms VDP=7,56ms GC0=5 GC1=1 GC2=0
+ROM bytes: 131072 | Header@0x100: 'SEGA' | WRAM@FF0000: 0x1234ABCD | VEC SP=0xFFFF83FC PC=0x0000021E OP@PC=0x0839 | CPU API ok
+[PwCatAudioSink] stopped (overflows=0).
+[PwCatAudioSink] Starting pw-cat session.
+[MainWindow] Early magenta ready after 2241,0 ms
+[MdTracerAdapter] perf avg/frame=56,62ms CPU=51,55ms VDP=5,04ms GC0=378 GC1=36 GC2=5
+[MdTracerAdapter] perf avg/frame=54,91ms CPU=49,28ms VDP=5,59ms GC0=6 GC1=0 GC2=0
+[MdTracerAdapter] perf avg/frame=60,03ms CPU=56,84ms VDP=3,15ms GC0=8 GC1=1 GC2=1
+[MdTracerAdapter] perf avg/frame=54,38ms CPU=47,52ms VDP=6,82ms GC0=5 GC1=0 GC2=0
+[MdTracerAdapter] perf avg/frame=52,41ms CPU=45,62ms VDP=6,75ms GC0=6 GC1=0 GC2=0
+[MdTracerAdapter] perf avg/frame=51,57ms CPU=44,88ms VDP=6,65ms GC0=5 GC1=1 GC2=0
+[MdTracerAdapter] perf avg/frame=52,49ms CPU=45,70ms VDP=6,76ms GC0=6 GC1=0 GC2=0
+[MdTracerAdapter] perf avg/frame=52,57ms CPU=45,78ms VDP=6,76ms GC0=5 GC1=1 GC2=0
+[MdTracerAdapter] perf avg/frame=51,63ms CPU=44,91ms VDP=6,68ms GC0=6 GC1=0 GC2=0
+[MdTracerAdapter] perf avg/frame=53,49ms CPU=46,53ms VDP=6,92ms GC0=5 GC1=0 GC2=0

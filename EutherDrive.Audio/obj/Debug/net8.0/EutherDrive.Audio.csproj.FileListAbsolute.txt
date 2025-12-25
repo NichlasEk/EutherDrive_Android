@@ -1,0 +1,12 @@
+/home/nichlas/EutherDrive/EutherDrive.Audio/obj/Debug/net8.0/EutherDrive.Audio.GeneratedMSBuildEditorConfig.editorconfig
+/home/nichlas/EutherDrive/EutherDrive.Audio/obj/Debug/net8.0/EutherDrive.Audio.AssemblyInfoInputs.cache
+/home/nichlas/EutherDrive/EutherDrive.Audio/obj/Debug/net8.0/EutherDrive.Audio.AssemblyInfo.cs
+/home/nichlas/EutherDrive/EutherDrive.Audio/obj/Debug/net8.0/EutherDrive.Audio.csproj.CoreCompileInputs.cache
+/home/nichlas/EutherDrive/EutherDrive.Audio/obj/Debug/net8.0/EutherDrive.Audio.sourcelink.json
+/home/nichlas/EutherDrive/EutherDrive.Audio/bin/Debug/net8.0/EutherDrive.Audio.deps.json
+/home/nichlas/EutherDrive/EutherDrive.Audio/bin/Debug/net8.0/EutherDrive.Audio.dll
+/home/nichlas/EutherDrive/EutherDrive.Audio/bin/Debug/net8.0/EutherDrive.Audio.pdb
+/home/nichlas/EutherDrive/EutherDrive.Audio/obj/Debug/net8.0/EutherDrive.Audio.dll
+/home/nichlas/EutherDrive/EutherDrive.Audio/obj/Debug/net8.0/refint/EutherDrive.Audio.dll
+/home/nichlas/EutherDrive/EutherDrive.Audio/obj/Debug/net8.0/EutherDrive.Audio.pdb
+/home/nichlas/EutherDrive/EutherDrive.Audio/obj/Debug/net8.0/ref/EutherDrive.Audio.dll

@@ -583,6 +583,16 @@
           "lib/net8.0/Tmds.DBus.Protocol.dll": {}
         }
       },
+      "EutherDrive.Audio/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v8.0",
+        "compile": {
+          "bin/placeholder/EutherDrive.Audio.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/EutherDrive.Audio.dll": {}
+        }
+      },
       "EutherDrive.Core/1.0.0": {
         "type": "project",
         "framework": ".NETCoreApp,Version=v8.0",
@@ -1415,6 +1425,11 @@
         "tmds.dbus.protocol.nuspec"
       ]
     },
+    "EutherDrive.Audio/1.0.0": {
+      "type": "project",
+      "path": "../EutherDrive.Audio/EutherDrive.Audio.csproj",
+      "msbuildProject": "../EutherDrive.Audio/EutherDrive.Audio.csproj"
+    },
     "EutherDrive.Core/1.0.0": {
       "type": "project",
       "path": "../EutherDrive.Core/EutherDrive.Core.csproj",
@@ -1429,6 +1444,7 @@
       "Avalonia.Fonts.Inter >= 11.3.2",
       "Avalonia.Native >= 11.3.2",
       "Avalonia.Themes.Fluent >= 11.3.2",
+      "EutherDrive.Audio >= 1.0.0",
       "EutherDrive.Core >= 1.0.0"
     ]
   },
@@ -1458,6 +1474,9 @@
         "net8.0": {
           "targetAlias": "net8.0",
           "projectReferences": {
+            "/home/nichlas/EutherDrive/EutherDrive.Audio/EutherDrive.Audio.csproj": {
+              "projectPath": "/home/nichlas/EutherDrive/EutherDrive.Audio/EutherDrive.Audio.csproj"
+            },
             "/home/nichlas/EutherDrive/EutherDrive.Core/EutherDrive.Core.csproj": {
               "projectPath": "/home/nichlas/EutherDrive/EutherDrive.Core/EutherDrive.Core.csproj"
             }
@@ -1468,13 +1487,7 @@
         "warnAsError": [
           "NU1605"
         ]
-      },
-      "restoreAuditProperties": {
-        "enableAudit": "true",
-        "auditLevel": "low",
-        "auditMode": "direct"
-      },
-      "SdkAnalysisLevel": "10.0.100"
+      }
     },
     "frameworks": {
       "net8.0": {
@@ -1520,10 +1533,6 @@
           {
             "name": "Microsoft.AspNetCore.App.Ref",
             "version": "[8.0.22, 8.0.22]"
-          },
-          {
-            "name": "Microsoft.NETCore.App.Host.linux-x64",
-            "version": "[8.0.22, 8.0.22]"
           }
         ],
         "frameworkReferences": {
@@ -1531,7 +1540,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "/usr/share/dotnet/sdk/10.0.100/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "/usr/share/dotnet/sdk/8.0.122/PortableRuntimeIdentifierGraph.json"
       }
     }
   }

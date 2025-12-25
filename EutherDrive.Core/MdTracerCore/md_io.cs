@@ -161,7 +161,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (thHigh)
             {
-                handshake.Stage = 0;
+                if (padType != PadType.SixButton)
+                    handshake.Stage = 0;
                 handshake.LastThHigh = true;
                 if (pad.B) v &= 0xEF;     // bit 4
                 if (pad.C) v &= 0xDF;     // bit 5
@@ -170,12 +171,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             int stage = padType == PadType.SixButton ? handshake.Stage : 0;
-            if (padType == PadType.SixButton && handshake.LastThHigh)
-            {
-                handshake.Stage++;
-                if (handshake.Stage > 3)
-                    handshake.Stage = 3;
-            }
+            bool advance = padType == PadType.SixButton && handshake.LastThHigh;
             handshake.LastThHigh = false;
 
             if (padType == PadType.SixButton)
@@ -183,10 +179,11 @@ namespace EutherDrive.Core.MdTracerCore
                 switch (stage)
                 {
                     case 0:
-                        if (pad.Start) v &= 0xEF;
-                        if (pad.A) v &= 0xDF;
-                        break;
                     case 1:
+                        if (pad.A) v &= 0xEF;
+                        if (pad.Start) v &= 0xDF;
+                        break;
+                    case 2:
                         if (pad.X) v &= 0xEF;
                         if (pad.Y) v &= 0xDF;
                         break;
@@ -195,11 +192,18 @@ namespace EutherDrive.Core.MdTracerCore
                         if (pad.Mode) v &= 0xDF;
                         break;
                 }
+
+                if (advance)
+                {
+                    handshake.Stage++;
+                    if (handshake.Stage > 3)
+                        handshake.Stage = 3;
+                }
             }
             else
             {
-                if (pad.Start) v &= 0xEF;
-                if (pad.A) v &= 0xDF;
+                if (pad.A) v &= 0xEF;
+                if (pad.Start) v &= 0xDF;
             }
 
             v &= 0xBF; // TH = 0

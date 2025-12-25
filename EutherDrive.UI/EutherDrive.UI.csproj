@@ -24,5 +24,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\EutherDrive.Core\EutherDrive.Core.csproj" />
+    <ProjectReference Include="..\EutherDrive.Audio\EutherDrive.Audio.csproj" />
   </ItemGroup>
 </Project>

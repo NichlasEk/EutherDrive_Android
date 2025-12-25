@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "VLaiim6qYhM=",
+  "dgSpecHash": "M6ITw/bhMz0qmbOq/uiK2KdexFrzulhLzvZamRB14/w3Qd8MyC0n8+09eNnYEhEd2OBP5DmeBRMEKzGMAaAtbA==",
   "success": true,
   "projectFilePath": "/home/nichlas/EutherDrive/EutherDrive.UI/EutherDrive.UI.csproj",
   "expectedPackageFiles": [
@@ -32,8 +32,7 @@
     "/home/nichlas/.nuget/packages/skiasharp.nativeassets.win32/2.88.9/skiasharp.nativeassets.win32.2.88.9.nupkg.sha512",
     "/home/nichlas/.nuget/packages/system.io.pipelines/8.0.0/system.io.pipelines.8.0.0.nupkg.sha512",
     "/home/nichlas/.nuget/packages/tmds.dbus.protocol/0.21.2/tmds.dbus.protocol.0.21.2.nupkg.sha512",
-    "/home/nichlas/.nuget/packages/microsoft.aspnetcore.app.ref/8.0.22/microsoft.aspnetcore.app.ref.8.0.22.nupkg.sha512",
-    "/home/nichlas/.nuget/packages/microsoft.netcore.app.host.linux-x64/8.0.22/microsoft.netcore.app.host.linux-x64.8.0.22.nupkg.sha512"
+    "/home/nichlas/.nuget/packages/microsoft.aspnetcore.app.ref/8.0.22/microsoft.aspnetcore.app.ref.8.0.22.nupkg.sha512"
   ],
   "logs": []
 }
