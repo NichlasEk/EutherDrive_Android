@@ -333,10 +333,14 @@ public partial class MainWindow : Window
         bool a = _keysDown.Contains(Key.Z) || _keysDown.Contains(Key.J) || _keysDown.Contains(Key.Q) || _keysDown.Contains(Key.Space);
         bool b = _keysDown.Contains(Key.X) || _keysDown.Contains(Key.K) || _keysDown.Contains(Key.E);
         bool c = _keysDown.Contains(Key.C) || _keysDown.Contains(Key.L) || _keysDown.Contains(Key.R);
-
         bool start = _keysDown.Contains(Key.Enter);
+        bool x = _keysDown.Contains(Key.A);
+        bool y = _keysDown.Contains(Key.S);
+        bool z = _keysDown.Contains(Key.D);
+        bool mode = _keysDown.Contains(Key.LeftShift) || _keysDown.Contains(Key.RightShift);
+        PadType padType = ThreeButtonPadCheck?.IsChecked == true ? PadType.ThreeButton : PadType.SixButton;
 
-        core.SetInputState(up, down, left, right, a, b, c, start);
+        core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
 
         // StatusText uppdateras i Tick()
     }

@@ -15,5 +15,18 @@ public interface IEmulatorCore
     ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels);
 
     /// Enkel input
-    void SetInputState(bool up, bool down, bool left, bool right, bool a, bool b, bool c, bool start);
+    void SetInputState(
+        bool up,
+        bool down,
+        bool left,
+        bool right,
+        bool a,
+        bool b,
+        bool c,
+        bool start,
+        bool x,
+        bool y,
+        bool z,
+        bool mode,
+        PadType padType);
 }

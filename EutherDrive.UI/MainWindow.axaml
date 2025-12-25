@@ -21,6 +21,7 @@
     <Border Grid.Row="1" Grid.Column="0" Padding="10" CornerRadius="8">
       <StackPanel Spacing="8" Width="260">
         <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
+        <CheckBox Content="Use 3-button pad" IsChecked="False" Name="ThreeButtonPadCheck"/>
         <TextBlock Text="Controls" FontWeight="Bold"/>
         <TextBlock Name="KeysText"/>
         <TextBlock Text="Arrows: D-pad"/>

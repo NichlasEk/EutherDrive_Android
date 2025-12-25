@@ -38,10 +38,23 @@ public sealed class MdVdpHeadlessTest
         _py = Height / 2;
     }
 
-    public void SetInput(bool up, bool down, bool left, bool right, bool a, bool b, bool c, bool start)
+    public void SetInput(
+        bool up,
+        bool down,
+        bool left,
+        bool right,
+        bool a,
+        bool b,
+        bool c,
+        bool start,
+        bool x,
+        bool y,
+        bool z,
+        bool mode)
     {
         _up = up; _down = down; _left = left; _right = right;
         _a = a; _b = b; _c = c; _start = start;
+        // x, y, z, mode are unused for this headless test but accepted for interface compatibility.
     }
 
     public void RunFrame()

@@ -48,10 +48,24 @@ public sealed class DummyCore : IEmulatorCore
         Array.Clear(_fb, 0, _fb.Length);
     }
 
-    public void SetInputState(bool up, bool down, bool left, bool right, bool a, bool b, bool c, bool start)
+    public void SetInputState(
+        bool up,
+        bool down,
+        bool left,
+        bool right,
+        bool a,
+        bool b,
+        bool c,
+        bool start,
+        bool x,
+        bool y,
+        bool z,
+        bool mode,
+        PadType padType)
     {
         _up = up; _down = down; _left = left; _right = right;
         _a = a; _b = b; _c = c; _start = start;
+        // x, y, z, mode are ignored; padType unused.
     }
 
     public void RunFrame()

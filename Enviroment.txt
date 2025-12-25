@@ -1,0 +1,55 @@
+EutherDrive environment variables (EUTHERDRIVE_*).
+
+General
+- EUTHERDRIVE_DUMP_VECTORS=1: dump initial vector bytes on load.
+- EUTHERDRIVE_FB_TRACE=1: framebuffer identity/sample tracing.
+- EUTHERDRIVE_PERF_STATS=1: bus perf stats.
+
+UI
+- EUTHERDRIVE_UI_HEARTBEAT=1: UI heartbeat log.
+- EUTHERDRIVE_TRACE_TICK=1: per-tick log.
+
+VDP
+- EUTHERDRIVE_TRACE_VDP=1: VDP log (general).
+- EUTHERDRIVE_TRACE_MD_VDP=1: MD VDP log (core).
+- EUTHERDRIVE_TRACE_VDP_TIMING=1: VDP timing log.
+- EUTHERDRIVE_TRACE_VDP_FB=1: VDP framebuffer sampling.
+- EUTHERDRIVE_TRACE_VRAM=1: VRAM vs renderer VRAM sampling.
+- EUTHERDRIVE_TRACE_CRAM=1: CRAM write log.
+- EUTHERDRIVE_FORCE_MD_VBLANK=1: force MD vblank.
+- EUTHERDRIVE_FORCE_SMS_VBLANK=1: force SMS vblank.
+
+CPU / 68k
+- EUTHERDRIVE_TRACE_MD_STALL=1: stall watchdog log.
+- EUTHERDRIVE_TRACE_PC=1: PC watch logs.
+- EUTHERDRIVE_TRACE_DBRA=1: DBRA trace.
+- EUTHERDRIVE_TRACE_TRAP=1: TRAP trace.
+- EUTHERDRIVE_TRACE_CALLPARAM=1: log stack argument near 0x02EB60..0x02EB80.
+- EUTHERDRIVE_TRACE_MOVEA_PARAM=1: log MOVEA.L (A7+8) param near 0x02EB80..0x02EBC0.
+- EUTHERDRIVE_TRACE_ROMCOPY=1: ROM copy trace.
+- EUTHERDRIVE_TRACE_RESETVECT=1: reset vector trace.
+
+WRAM
+- EUTHERDRIVE_TRACE_WRAM=1: WRAM writes (sampled).
+- EUTHERDRIVE_TRACE_WRAMTABLE=1: WRAM table range logs (0xFF0540..0xFF0580).
+- EUTHERDRIVE_TRACE_WRAMSLOTS=1: WRAM slot writes (0xFF0556..0xFF055D).
+
+Z80
+- EUTHERDRIVE_TRACE_Z80=1: Z80 trace.
+- EUTHERDRIVE_TRACE_Z80WIN=1: Z80 window bus logs.
+- EUTHERDRIVE_FORCE_SMS_STATUS7=1: force SMS status bit 7.
+- EUTHERDRIVE_TRACE_BOOT=1: Z80 boot trace.
+- EUTHERDRIVE_TRACE_SMS_DELAY=1: SMS delay trace.
+- EUTHERDRIVE_SKIP_SMS_DELAYS=1: skip SMS delays.
+
+Pads
+- EUTHERDRIVE_TRACE_PAD=1: pad read/write trace.
+- EUTHERDRIVE_PAD_SELFTEST=1: pad self-test logs.
+- EUTHERDRIVE_PAD_TYPE=ThreeButton|SixButton: pad type override.
+
+SMS timing
+- EUTHERDRIVE_SMS_CYCLES_MULT=<int>: SMS cycles multiplier.
+
+Stubs enabled by default
+- TRAP stub at 0xFF0500 (RTS) is installed and pointers 0xFF0556/0xFF055A/0xFF0562/0xFF0566/0xFF056A are set to it.
+  Disable with EUTHERDRIVE_TRAP_STUB=0.

@@ -1,3 +1,5 @@
+using EutherDrive.Core;
+
 namespace EutherDrive.Core.MdTracerCore
 {
     // OBS: måste vara samma "shape" som övriga md_io- partials:
@@ -7,6 +9,11 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private bool _pad1Th = true;
         private bool _pad2Th = true;
+
+        private PadHandshake _pad1Handshake;
+        private PadHandshake _pad2Handshake;
+        private PadType _pad1Type = PadType.SixButton;
+        private PadType _pad2Type = PadType.ThreeButton;
 
         // Global pekare (som md_bus.Current)
         public static md_io? Current { get; set; }
@@ -34,10 +41,10 @@ namespace EutherDrive.Core.MdTracerCore
                     return 0xA0; // Version register (NTSC, rev 0)
                 case 0xA10002:
                 case 0xA10003:
-                    return ReadPadData(_pad1, _pad1Th);
+                    return ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type);
                 case 0xA10004:
                 case 0xA10005:
-                    return ReadPadData(_pad2, _pad2Th);
+                    return ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type);
                 case 0xA10008:
                 case 0xA10009:
                     return (byte)(_pad1Th ? 0x40 : 0x00);
@@ -57,10 +64,10 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 case 0xA10002:
                 case 0xA10003:
-                    return (ushort)(0xFF00 | ReadPadData(_pad1, _pad1Th));
+                    return (ushort)(0xFF00 | ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type));
                 case 0xA10004:
                 case 0xA10005:
-                    return (ushort)(0xFF00 | ReadPadData(_pad2, _pad2Th));
+                    return (ushort)(0xFF00 | ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type));
                 case 0xA10008:
                 case 0xA10009:
                     return (ushort)(0xFF00 | (_pad1Th ? 0x40 : 0x00));
@@ -119,7 +126,31 @@ namespace EutherDrive.Core.MdTracerCore
             write16(in_address + 2, (ushort)(in_val & 0xFFFF));
         }
 
-        private static byte ReadPadData(MdPadState pad, bool thHigh)
+        internal void SetPad1Input(in MdPadState state, PadType padType)
+        {
+            _pad1 = state;
+            if (_pad1Type != padType)
+            {
+                _pad1Type = padType;
+            }
+
+            _pad1Handshake.Stage = 0;
+            _pad1Handshake.LastThHigh = _pad1Th;
+        }
+
+        internal void SetPad2Input(in MdPadState state, PadType padType)
+        {
+            _pad2 = state;
+            if (_pad2Type != padType)
+            {
+                _pad2Type = padType;
+            }
+
+            _pad2Handshake.Stage = 0;
+            _pad2Handshake.LastThHigh = _pad2Th;
+        }
+
+        private static byte ReadPadData(MdPadState pad, bool thHigh, ref PadHandshake handshake, PadType padType)
         {
             byte v = 0xFF; // active-low
 
@@ -130,18 +161,55 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (thHigh)
             {
+                handshake.Stage = 0;
+                handshake.LastThHigh = true;
                 if (pad.B) v &= 0xEF;     // bit 4
                 if (pad.C) v &= 0xDF;     // bit 5
                 v |= 0x40;                // TH = 1
+                return v;
+            }
+
+            int stage = padType == PadType.SixButton ? handshake.Stage : 0;
+            if (padType == PadType.SixButton && handshake.LastThHigh)
+            {
+                handshake.Stage++;
+                if (handshake.Stage > 3)
+                    handshake.Stage = 3;
+            }
+            handshake.LastThHigh = false;
+
+            if (padType == PadType.SixButton)
+            {
+                switch (stage)
+                {
+                    case 0:
+                        if (pad.Start) v &= 0xEF;
+                        if (pad.A) v &= 0xDF;
+                        break;
+                    case 1:
+                        if (pad.X) v &= 0xEF;
+                        if (pad.Y) v &= 0xDF;
+                        break;
+                    default:
+                        if (pad.Z) v &= 0xEF;
+                        if (pad.Mode) v &= 0xDF;
+                        break;
+                }
             }
             else
             {
-                if (pad.Start) v &= 0xEF; // bit 4
-                if (pad.A) v &= 0xDF;     // bit 5
-                v &= 0xBF;                // TH = 0
+                if (pad.Start) v &= 0xEF;
+                if (pad.A) v &= 0xDF;
             }
 
+            v &= 0xBF; // TH = 0
             return v;
+        }
+
+        private struct PadHandshake
+        {
+            public bool LastThHigh;
+            public int Stage;
         }
     }
 }

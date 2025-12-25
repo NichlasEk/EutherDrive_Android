@@ -52,8 +52,21 @@ public sealed class MdTracerStage1Core : IEmulatorCore
         return ReadOnlySpan<short>.Empty;
     }
 
-    public void SetInputState(bool up, bool down, bool left, bool right, bool a, bool b, bool c, bool start)
+    public void SetInputState(
+        bool up,
+        bool down,
+        bool left,
+        bool right,
+        bool a,
+        bool b,
+        bool c,
+        bool start,
+        bool x,
+        bool y,
+        bool z,
+        bool mode,
+        PadType padType)
     {
-        _vdp.SetInput(up, down, left, right, a, b, c, start);
+        _vdp.SetInput(up, down, left, right, a, b, c, start, x, y, z, mode);
     }
 }

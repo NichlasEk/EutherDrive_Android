@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("EutherDrive.UI")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+73c3634d9d2d5e5f26839c3bf7c71ddb63a76159")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+96497fa03cd15d3ed5c4da20ff21b325ac07715b")]
 [assembly: System.Reflection.AssemblyProductAttribute("EutherDrive.UI")]
 [assembly: System.Reflection.AssemblyTitleAttribute("EutherDrive.UI")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

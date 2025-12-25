@@ -639,19 +639,41 @@ public sealed class MdTracerAdapter : IEmulatorCore
         return ReadOnlySpan<short>.Empty;
     }
 
-    public void SetInputState(bool up, bool down, bool left, bool right, bool a, bool b, bool c, bool start)
+    public void SetInputState(
+        bool up,
+        bool down,
+        bool left,
+        bool right,
+        bool a,
+        bool b,
+        bool c,
+        bool start,
+        bool x,
+        bool y,
+        bool z,
+        bool mode,
+        PadType padType)
     {
         var io = md_main.g_md_io;
         if (io == null)
             return;
 
-        io._pad1.Up = up;
-        io._pad1.Down = down;
-        io._pad1.Left = left;
-        io._pad1.Right = right;
-        io._pad1.A = a;
-        io._pad1.B = b;
-        io._pad1.C = c;
-        io._pad1.Start = start;
+        var state = new MdPadState
+        {
+            Up = up,
+            Down = down,
+            Left = left,
+            Right = right,
+            A = a,
+            B = b,
+            C = c,
+            Start = start,
+            X = x,
+            Y = y,
+            Z = z,
+            Mode = mode
+        };
+
+        io.SetPad1Input(state, padType);
     }
 }
