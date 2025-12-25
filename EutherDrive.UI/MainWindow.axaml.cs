@@ -47,13 +47,9 @@ public partial class MainWindow : Window
     private OpenAlAudioOutput? _audioOutput;
     private AudioEngine? _audioEngine;
     private bool _audioEnabled;
-    private double _tonePhase;
-    private double _tonePhaseStep;
-    private double _toneFrameAccumulator;
-    private short[]? _toneFrameBuffer;
-    private const int AudioSampleRate = 48000;
+    private bool _audioFormatMismatchLogged;
+    private const int AudioSampleRate = 44100;
     private const int AudioChannels = 2;
-    private const double ToneFrequency = 440.0;
     private static readonly bool AudioEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO") == "1";
     private TextWriter? _originalConsoleOut;
     private StreamWriter? _romLogWriter;
@@ -321,10 +317,7 @@ public partial class MainWindow : Window
 
         _audioEngine = new AudioEngine(new PwCatAudioSink(), AudioSampleRate, AudioChannels);
         _audioEngine.Start();
-        _tonePhase = 0.0;
-        _tonePhaseStep = 2.0 * Math.PI * ToneFrequency / AudioSampleRate;
-        _toneFrameAccumulator = 0.0;
-        _toneFrameBuffer = null;
+        _audioFormatMismatchLogged = false;
     }
 
     private void StopAudioEngine()
@@ -336,24 +329,26 @@ public partial class MainWindow : Window
         _audioEngine = null;
     }
 
-    private void ProduceToneForFrame()
+    private void ProducePsgForFrame()
     {
-        if (_audioEngine == null)
+        if (_audioEngine == null || _core == null)
             return;
 
-        _toneFrameAccumulator += AudioSampleRate / 60.0;
-        int frames = (int)_toneFrameAccumulator;
-        if (frames <= 0)
+        var audio = _core.GetAudioBuffer(out int sampleRate, out int channels);
+        if (audio.IsEmpty)
             return;
 
-        _toneFrameAccumulator -= frames;
-        int samples = frames * AudioChannels;
+        if (sampleRate != AudioSampleRate || channels != AudioChannels)
+        {
+            if (!_audioFormatMismatchLogged)
+            {
+                _audioFormatMismatchLogged = true;
+                Console.WriteLine($"[AudioEngine] core audio format mismatch: {sampleRate} Hz, {channels} ch (expected {AudioSampleRate} Hz, {AudioChannels} ch)");
+            }
+            return;
+        }
 
-        if (_toneFrameBuffer == null || _toneFrameBuffer.Length < samples)
-            _toneFrameBuffer = new short[samples];
-
-        TestToneGenerator.FillSine(AudioSampleRate, ToneFrequency, frames, AudioChannels, ref _tonePhase, _toneFrameBuffer.AsSpan(0, samples));
-        _audioEngine.Submit(_toneFrameBuffer.AsSpan(0, samples));
+        _audioEngine.Submit(audio);
     }
 
     private void Tick()
@@ -391,7 +386,7 @@ public partial class MainWindow : Window
             Dispatcher.UIThread.Post(_presentOnUiAction);
         }
 
-        ProduceToneForFrame();
+        ProducePsgForFrame();
         SubmitAudio();
 
         // fps

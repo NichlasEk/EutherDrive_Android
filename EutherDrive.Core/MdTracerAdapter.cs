@@ -57,6 +57,15 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private int _lastGc1;
     private int _lastGc2;
 
+    private const int PsgSampleRate = 44100;
+    private const int PsgChannels = 2;
+    private readonly bool _psgDisabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_PSG"), "1", StringComparison.Ordinal);
+    private double _psgFrameAccumulator;
+    private short[] _psgFrameBuffer = Array.Empty<short>();
+    private int _psgFrameSamples;
+    private long _psgLastFrame = -1;
+
     public string RomInfo { get; private set; } = "(no rom)";
 
     public void LoadRom(string path)
@@ -248,6 +257,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
         _bus?.Reset();
         md_main.g_md_bus?.Reset();
         _vdp.reset();
+        md_main.g_md_music?.reset();
 
         // Stub (så VDP-testet fortsätter)
         md_main.EnsureCpuStubs();
@@ -634,9 +644,48 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
     {
-        sampleRate = 44100;
-        channels = 1;
-        return ReadOnlySpan<short>.Empty;
+        sampleRate = PsgSampleRate;
+        channels = PsgChannels;
+
+        if (_psgDisabled)
+            return ReadOnlySpan<short>.Empty;
+
+        var music = md_main.g_md_music;
+        if (music == null)
+            return ReadOnlySpan<short>.Empty;
+
+        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+        if (frame == _psgLastFrame)
+            return _psgFrameSamples > 0 ? _psgFrameBuffer.AsSpan(0, _psgFrameSamples) : ReadOnlySpan<short>.Empty;
+
+        _psgLastFrame = frame;
+        _psgFrameAccumulator += (double)PsgSampleRate / 60.0;
+        int frames = (int)_psgFrameAccumulator;
+        if (frames <= 0)
+        {
+            _psgFrameSamples = 0;
+            return ReadOnlySpan<short>.Empty;
+        }
+
+        _psgFrameAccumulator -= frames;
+        int samples = frames * PsgChannels;
+        if (_psgFrameBuffer.Length < samples)
+            _psgFrameBuffer = new short[samples];
+
+        var psg = music.g_md_sn76489;
+        for (int i = 0; i < frames; i++)
+        {
+            int s = psg.SN76489_Update();
+            if (s > short.MaxValue) s = short.MaxValue;
+            else if (s < short.MinValue) s = short.MinValue;
+            short sample = (short)s;
+            int idx = i * PsgChannels;
+            _psgFrameBuffer[idx] = sample;
+            _psgFrameBuffer[idx + 1] = sample;
+        }
+
+        _psgFrameSamples = samples;
+        return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
     }
 
     public void SetInputState(

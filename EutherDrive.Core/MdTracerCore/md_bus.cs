@@ -208,7 +208,7 @@ namespace EutherDrive.Core.MdTracerCore
             // 0xC00010/11 SN76489 (PSG) – tills ljud kopplas in, ignorera
             if (in_address == 0xC00010 || in_address == 0xC00011)
             {
-                // TODO: md_music.WritePSG(in_data);
+                md_main.g_md_music?.g_md_sn76489.write8(in_data);
                 md_psg_trace.TraceWrite("68K", in_address, in_data, md_m68k.g_reg_PC);
                 return;
             }
