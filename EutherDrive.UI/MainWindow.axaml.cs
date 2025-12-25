@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -15,6 +16,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using EutherDrive.Core;
 using EutherDrive.UI.Audio;
+using EutherDrive.Audio;
 
 namespace EutherDrive.UI;
 
@@ -43,8 +45,19 @@ public partial class MainWindow : Window
     // Input “håll nere”
     private readonly HashSet<Key> _keysDown = new();
     private OpenAlAudioOutput? _audioOutput;
+    private AudioEngine? _audioEngine;
+    private bool _audioEnabled;
+    private double _tonePhase;
+    private double _tonePhaseStep;
+    private double _toneFrameAccumulator;
+    private short[]? _toneFrameBuffer;
+    private const int AudioSampleRate = 48000;
+    private const int AudioChannels = 2;
+    private const double ToneFrequency = 440.0;
+    private static readonly bool AudioEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO") == "1";
     private TextWriter? _originalConsoleOut;
     private StreamWriter? _romLogWriter;
+    private bool _toneTestRunning;
 
     // UI heartbeat
     private readonly bool _heartbeatEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HEARTBEAT") == "1";
@@ -64,6 +77,10 @@ public partial class MainWindow : Window
         AttachedToVisualTree += (_, __) => Focus();
 
         StatusText.Text = "Idle";
+
+        _audioEnabled = AudioEnvEnabled;
+        if (AudioEnabledCheck != null)
+            AudioEnabledCheck.IsChecked = _audioEnabled;
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16.666) };
         _timer.Tick += (_, _) => Tick();
@@ -112,6 +129,11 @@ public partial class MainWindow : Window
         {
             if (e.Source is TextBox)
                 return;
+
+            if (e.Key == Key.T && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+            {
+                _ = RunToneTestAsync();
+            }
 
             _keysDown.Add(e.Key);
             e.Handled = true;
@@ -209,12 +231,21 @@ public partial class MainWindow : Window
                 // Så du behöver inte _core.Reset() här.
             }
 
-            _audioOutput?.Dispose();
-            _audioOutput = OpenAlAudioOutput.TryCreate();
-            StatusText.Text = _audioOutput is null
-                ? "Audio output unavailable"
-                : "Audio output ready";
-
+            StartAudioEngineIfEnabled();
+            if (_audioEngine != null)
+            {
+                _audioOutput?.Dispose();
+                _audioOutput = null;
+                StatusText.Text = "Audio engine ready";
+            }
+            else
+            {
+                _audioOutput?.Dispose();
+                _audioOutput = OpenAlAudioOutput.TryCreate();
+                StatusText.Text = _audioOutput is null
+                    ? "Audio output unavailable"
+                    : "Audio output ready";
+            }
 
 
             // skapa bitmap utifrån core-storlek
@@ -235,11 +266,94 @@ public partial class MainWindow : Window
     {
         _timer.Stop();
         StatusText.Text = "Stopped";
+        StopAudioEngine();
+        _audioOutput?.Dispose();
+        _audioOutput = null;
         if (_heartbeatTimer != null)
         {
             _heartbeatTimer.Stop();
             _heartbeatTimer = null;
         }
+        _toneTestRunning = false;
+    }
+
+    private void OnToneTestClick(object? sender, RoutedEventArgs e)
+    {
+        _ = RunToneTestAsync();
+    }
+
+    private async Task RunToneTestAsync()
+    {
+        if (_toneTestRunning)
+            return;
+
+        _toneTestRunning = true;
+        StatusText.Text = "Tone test: playing 440 Hz...";
+        Console.WriteLine("[TestToneGenerator] starting tone test.");
+
+        try
+        {
+            using var sink = new PwCatAudioSink();
+            sink.Start(48000, 2);
+            var tone = TestToneGenerator.GenerateSine(48000, 440, 2.0, 2);
+            sink.Submit(tone);
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            sink.Stop();
+            StatusText.Text = "Tone test: completed.";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Tone test failed: {ex.Message}";
+            Console.WriteLine($"[TestToneGenerator] error: {ex}");
+        }
+        finally
+        {
+            _toneTestRunning = false;
+        }
+    }
+
+    private void StartAudioEngineIfEnabled()
+    {
+        StopAudioEngine();
+        _audioEnabled = AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled;
+        if (!_audioEnabled)
+            return;
+
+        _audioEngine = new AudioEngine(new PwCatAudioSink(), AudioSampleRate, AudioChannels);
+        _audioEngine.Start();
+        _tonePhase = 0.0;
+        _tonePhaseStep = 2.0 * Math.PI * ToneFrequency / AudioSampleRate;
+        _toneFrameAccumulator = 0.0;
+        _toneFrameBuffer = null;
+    }
+
+    private void StopAudioEngine()
+    {
+        if (_audioEngine == null)
+            return;
+
+        _audioEngine.Stop();
+        _audioEngine = null;
+    }
+
+    private void ProduceToneForFrame()
+    {
+        if (_audioEngine == null)
+            return;
+
+        _toneFrameAccumulator += AudioSampleRate / 60.0;
+        int frames = (int)_toneFrameAccumulator;
+        if (frames <= 0)
+            return;
+
+        _toneFrameAccumulator -= frames;
+        int samples = frames * AudioChannels;
+
+        if (_toneFrameBuffer == null || _toneFrameBuffer.Length < samples)
+            _toneFrameBuffer = new short[samples];
+
+        TestToneGenerator.FillSine(AudioSampleRate, ToneFrequency, frames, AudioChannels, ref _tonePhase, _toneFrameBuffer.AsSpan(0, samples));
+        _audioEngine.Submit(_toneFrameBuffer.AsSpan(0, samples));
     }
 
     private void Tick()
@@ -277,6 +391,7 @@ public partial class MainWindow : Window
             Dispatcher.UIThread.Post(_presentOnUiAction);
         }
 
+        ProduceToneForFrame();
         SubmitAudio();
 
         // fps
@@ -312,6 +427,9 @@ public partial class MainWindow : Window
 
     private void SubmitAudio()
     {
+        if (_audioEngine != null)
+            return;
+
         if (_core is null || _audioOutput is null)
             return;
 
@@ -319,7 +437,8 @@ public partial class MainWindow : Window
         if (audio.IsEmpty)
             return;
 
-        _audioOutput.Submit(audio, sampleRate, channels);
+        _audioOutput.Start(sampleRate, channels);
+        _audioOutput.Submit(audio);
     }
 
     private void ApplyInputToCore(IEmulatorCore core)
