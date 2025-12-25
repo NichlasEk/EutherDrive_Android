@@ -209,6 +209,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (in_address == 0xC00010 || in_address == 0xC00011)
             {
                 // TODO: md_music.WritePSG(in_data);
+                md_psg_trace.TraceWrite("68K", in_address, in_data, md_m68k.g_reg_PC);
                 return;
             }
 

@@ -135,6 +135,7 @@ namespace EutherDrive.Core.MdTracerCore
             else if (a == 0x7F11)
             {
                 // SN76489 PSG
+                md_psg_trace.TraceWrite("Z80", a, in_data, DebugPc);
                 md_main.g_md_music.g_md_sn76489.write8(in_data);
             }
             else if (a >= 0x8000)
@@ -257,6 +258,7 @@ namespace EutherDrive.Core.MdTracerCore
                     SmsPortLog(port, "write", data);
                     return true;
                 case 0x7F:
+                    md_psg_trace.TraceWrite("Z80-SMS", port, data, md_main.g_md_z80?.DebugPc ?? 0);
                     md_main.g_md_music?.g_md_sn76489.write8(data);
                     SmsPortLog(port, "write", data);
                     return true;
