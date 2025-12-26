@@ -22,7 +22,6 @@ namespace EutherDrive.Core.MdTracerCore
         private long _ioReadLastTicks;
         private static readonly bool TraceIo =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_IO"), "1", StringComparison.Ordinal);
-        private static readonly ConsoleRegion? RegionOverrideEnv = ParseRegionOverrideEnv();
         private const byte VersionBits = 0x20;
 
         // Global pekare (som md_bus.Current)
@@ -198,16 +197,18 @@ namespace EutherDrive.Core.MdTracerCore
         {
             ConsoleRegion effective = GetEffectiveRegion();
             byte value = VersionBits;
-            if (effective == ConsoleRegion.JP)
-                value |= 0x40;
-            if (effective == ConsoleRegion.EU)
+            // bit7=overseas (US/EU), bit6=PAL (EU)
+            if (effective == ConsoleRegion.US || effective == ConsoleRegion.EU)
                 value |= 0x80;
+            if (effective == ConsoleRegion.EU)
+                value |= 0x40;
             return value;
         }
 
         private ConsoleRegion GetEffectiveRegion()
         {
-            ConsoleRegion overrideRegion = RegionOverrideEnv ?? _identity.RegionOverride;
+            ConsoleRegion? envOverride = ParseRegionOverrideEnv();
+            ConsoleRegion overrideRegion = envOverride ?? _identity.RegionOverride;
             if (overrideRegion != ConsoleRegion.Auto)
                 return overrideRegion;
             if (_romRegionHint.HasValue)
