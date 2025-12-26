@@ -5,6 +5,11 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_vdp
     {
+        private static readonly bool TraceVramWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceCramWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CRAM"), "1", StringComparison.Ordinal);
+
         private byte[]   g_vram = Array.Empty<byte>();
         private ushort[] g_cram = Array.Empty<ushort>();
         public  ushort[] g_vsram = Array.Empty<ushort>();
@@ -403,11 +408,15 @@ namespace EutherDrive.Core.MdTracerCore
             // MDs byte-swap på VRAM-porten: lågbyte går till “addr ^ 1”
             g_vram[addr] = (byte)(data >> 8);
             g_vram[(addr ^ 1) & 0xffff] = (byte)(data & 0xff);
+            if (TraceVramWrites)
+                Console.WriteLine($"[VRAM] frame={_frameCounter} addr=0x{(addr & 0xffff):X4} data=0x{data:X4}");
         }
 
         private void cram_set(int idx, ushort data)
         {
             g_cram[idx] = data;
+            if (TraceCramWrites)
+                Console.WriteLine($"[CRAM] frame={_frameCounter} index=0x{(idx & 0x3f):X2} data=0x{data:X4}");
 
             int r = (data & 0x000e) >> 1;
             int g = (data & 0x00e0) >> 5;

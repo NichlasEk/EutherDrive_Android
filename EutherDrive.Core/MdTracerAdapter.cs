@@ -490,9 +490,16 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 Console.WriteLine($"[MdTracerAdapter] VDP output fbId=0x{id:X8} words={vdpBuffer.Length} p0=0x{p0:X8} p1=0x{p1:X8} p2=0x{p2:X8} p3=0x{p3:X8}");
             }
 
+            int vdpWidth = _vdp.g_display_xsize;
+            int vdpHeight = _vdp.g_display_ysize;
+            if (vdpWidth <= 0)
+                vdpWidth = 320;
+            if (vdpHeight <= 0)
+                vdpHeight = 224;
+
             ReadOnlySpan<uint> vdpSpan = vdpBuffer;
             long blitStart = Stopwatch.GetTimestamp();
-            BlitArgbToBgra8888(vdpSpan, _frameBuffer, srcStridePixels: 320);
+            BlitArgbToBgra8888(vdpSpan, _frameBuffer, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
             PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
         }
     }
@@ -682,13 +689,12 @@ public sealed class MdTracerAdapter : IEmulatorCore
         }
     }
 
-    private void BlitArgbToBgra8888(ReadOnlySpan<uint> vdpSrc, Span<byte> dst, int srcStridePixels)
+    private void BlitArgbToBgra8888(ReadOnlySpan<uint> vdpSrc, Span<byte> dst, int srcStridePixels, int srcWidth, int srcHeight)
     {
         if (vdpSrc.Length == 0 || dst.Length == 0)
             return;
 
-        int srcWidth = 320;
-        int copyHeight = Math.Min(_fbH, 224);
+        int copyHeight = Math.Min(_fbH, srcHeight);
         int copyWidth = Math.Min(_fbW, srcWidth);
         int dstStride = _fbStride;
         int srcStrideBytes = srcStridePixels * 4;
