@@ -71,6 +71,7 @@ public partial class MainWindow : Window
     private string? _romRegionKey;
     private bool _regionOverrideUpdating;
     private const string RegionSettingsFileName = "eutherdrive_region.txt";
+    private const string LastRomPathFileName = "eutherdrive_last_rom.txt";
 
     // UI heartbeat
     private readonly bool _heartbeatEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HEARTBEAT") == "1";
@@ -91,10 +92,11 @@ public partial class MainWindow : Window
 
         StatusText.Text = "Idle";
 
-        _audioEnabled = AudioEnvEnabled;
+        _audioEnabled = true;
         if (AudioEnabledCheck != null)
-            AudioEnabledCheck.IsChecked = _audioEnabled;
+            AudioEnabledCheck.IsChecked = true;
         _audioTimedEnabled = AudioTimedEnvEnabled || _audioEnabled;
+        LoadLastRomPath();
         LoadRegionOverrideSetting();
         UpdateRegionOverrideCombo();
         UpdateRomRegionHintText();
@@ -223,7 +225,15 @@ public partial class MainWindow : Window
 
     private async void OnOpenRom(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        IStorageFolder? startFolder = null;
+        if (!string.IsNullOrWhiteSpace(_romPath))
+        {
+            string? folderPath = Path.GetDirectoryName(_romPath);
+            if (!string.IsNullOrWhiteSpace(folderPath))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(folderPath);
+        }
+
+        var options = new FilePickerOpenOptions
         {
             Title = "Select Mega Drive ROM",
             AllowMultiple = false,
@@ -234,7 +244,14 @@ public partial class MainWindow : Window
                     Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.iso", "*.*" }
                 }
             }
-        });
+        };
+
+        if (startFolder != null)
+            options.SuggestedStartLocation = startFolder;
+        if (!string.IsNullOrWhiteSpace(_romPath))
+            options.SuggestedFileName = Path.GetFileName(_romPath);
+
+        var files = await StorageProvider.OpenFilePickerAsync(options);
 
         if (files.Count == 0)
             return;
@@ -280,10 +297,12 @@ public partial class MainWindow : Window
 
                         // OCH i terminal (om du kör från terminal)
                         Console.WriteLine(m.RomInfo.Summary);
+                        SaveLastRomPath();
                     }
                     else
                     {
                         _core.LoadRom(_romPath);
+                        SaveLastRomPath();
                     }
                 }
                 else
@@ -477,6 +496,32 @@ public partial class MainWindow : Window
 
     private static string GetRegionSettingsPath()
         => Path.Combine(Directory.GetCurrentDirectory(), RegionSettingsFileName);
+
+    private void LoadLastRomPath()
+    {
+        string path = GetLastRomPathSettingsPath();
+        if (!File.Exists(path))
+            return;
+
+        string raw = File.ReadAllText(path).Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+            return;
+
+        _romPath = raw;
+        if (RomPathText != null)
+            RomPathText.Text = _romPath;
+    }
+
+    private void SaveLastRomPath()
+    {
+        if (string.IsNullOrWhiteSpace(_romPath))
+            return;
+
+        File.WriteAllText(GetLastRomPathSettingsPath(), _romPath);
+    }
+
+    private static string GetLastRomPathSettingsPath()
+        => Path.Combine(Directory.GetCurrentDirectory(), LastRomPathFileName);
 
     private void OnStop(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
