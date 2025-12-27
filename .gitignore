@@ -1,0 +1,7 @@
+# Build artifacts
+bin/
+obj/
+
+# Emulator logs
+rom_*.log
+*.prev

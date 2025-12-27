@@ -1,13 +1,19 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 
 namespace EutherDrive.Audio;
 
 public sealed class AudioEngine : IDisposable
 {
+    private static readonly bool TraceStats =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_STATS"), "1", StringComparison.Ordinal);
+
     private readonly IAudioSink _sink;
     private readonly int _sampleRate;
     private readonly int _channels;
+    private readonly int _framesPerBatch;
+    private readonly int _bufferFrames;
     private readonly short[] _ring;
     private readonly short[] _batch;
     private readonly object _lock = new();
@@ -18,6 +24,35 @@ public sealed class AudioEngine : IDisposable
     private int _writeIndex;
     private int _count;
     private long _droppedSamples;
+    private long _producedFramesTotal;
+    private long _consumedFramesTotal;
+    private long _droppedFramesTotal;
+    private long _underrunEventsTotal;
+    private long _underrunFramesTotal;
+    private long _drainBatchesTotal;
+    private long _drainBatchFramesTotal;
+    private long _audioGenTicksTotal;
+    private long _audioGenFramesTotal;
+    private long _timedTicksTotal;
+    private long _frameTicksTotal;
+    private long _framesPerTickSum;
+    private int _framesPerTickMin = int.MaxValue;
+    private int _framesPerTickMax;
+    private long _timedClampCount;
+    private int _currentBufferedFrames;
+    private int _maxBufferedFrames;
+    private int _minBufferedFrames = int.MaxValue;
+    private long _statsStartTicks;
+    private long _lastStatsTicks;
+    private long _lastProducedFrames;
+    private long _lastConsumedFrames;
+    private long _lastDroppedFrames;
+    private long _lastUnderrunEvents;
+    private long _lastUnderrunFrames;
+    private long _lastGenTicks;
+    private long _lastGenFrames;
+    private long _lastDrainBatches;
+    private long _lastDrainBatchFrames;
 
     public AudioEngine(IAudioSink sink, int sampleRate, int channels, int framesPerBatch = 1024, int bufferFrames = 8192)
     {
@@ -33,6 +68,8 @@ public sealed class AudioEngine : IDisposable
         _sink = sink ?? throw new ArgumentNullException(nameof(sink));
         _sampleRate = sampleRate;
         _channels = channels;
+        _framesPerBatch = framesPerBatch;
+        _bufferFrames = bufferFrames;
 
         _ring = new short[bufferFrames * channels];
         _batch = new short[framesPerBatch * channels];
@@ -45,6 +82,7 @@ public sealed class AudioEngine : IDisposable
         if (_running)
             return;
 
+        ResetStats();
         _sink.Start(_sampleRate, _channels);
         _running = true;
         _thread = new Thread(DrainLoop) { IsBackground = true, Name = "AudioEngine" };
@@ -58,6 +96,7 @@ public sealed class AudioEngine : IDisposable
 
         int toWrite;
         int dropped = 0;
+        int currentFrames = 0;
 
         lock (_lock)
         {
@@ -80,6 +119,7 @@ public sealed class AudioEngine : IDisposable
                 }
 
                 _count += toWrite;
+                currentFrames = _count / _channels;
                 dropped = interleaved.Length - toWrite;
             }
         }
@@ -87,9 +127,17 @@ public sealed class AudioEngine : IDisposable
         if (toWrite > 0)
             _dataEvent.Set();
 
+        if (toWrite > 0)
+        {
+            long frames = toWrite / _channels;
+            Interlocked.Add(ref _producedFramesTotal, frames);
+            UpdateBufferedStats(currentFrames);
+        }
+
         if (dropped > 0)
         {
             long total = Interlocked.Add(ref _droppedSamples, dropped);
+            Interlocked.Add(ref _droppedFramesTotal, dropped / _channels);
             if (total == dropped || total % 4096 == 0)
                 Console.WriteLine($"[AudioEngine] dropped {dropped} samples (total={total}).");
         }
@@ -111,6 +159,7 @@ public sealed class AudioEngine : IDisposable
         while (_running)
         {
             int toRead = 0;
+            int currentFrames = 0;
 
             lock (_lock)
             {
@@ -128,22 +177,203 @@ public sealed class AudioEngine : IDisposable
                     }
 
                     _count -= toRead;
+                    currentFrames = _count / _channels;
                 }
             }
 
             if (toRead > 0)
             {
                 _sink.Submit(_batch.AsSpan(0, toRead));
+                int frames = toRead / _channels;
+                Interlocked.Add(ref _consumedFramesTotal, frames);
+                Interlocked.Increment(ref _drainBatchesTotal);
+                Interlocked.Add(ref _drainBatchFramesTotal, frames);
+                UpdateBufferedStats(currentFrames);
             }
             else
             {
+                int missingFrames = _batch.Length / _channels;
+                Interlocked.Increment(ref _underrunEventsTotal);
+                Interlocked.Add(ref _underrunFramesTotal, missingFrames);
                 _dataEvent.WaitOne(10);
             }
+
+            if (TraceStats)
+                MaybeLogStats();
         }
+    }
+
+    public void ReportGenerateBatch(int framesProduced, long genTicks, bool timedMode)
+    {
+        if (framesProduced <= 0)
+            return;
+
+        Interlocked.Add(ref _audioGenTicksTotal, genTicks);
+        Interlocked.Add(ref _audioGenFramesTotal, framesProduced);
+        if (timedMode)
+            Interlocked.Increment(ref _timedTicksTotal);
+        else
+            Interlocked.Increment(ref _frameTicksTotal);
+        Interlocked.Add(ref _framesPerTickSum, framesProduced);
+        UpdateMinMax(ref _framesPerTickMin, framesProduced, true);
+        UpdateMinMax(ref _framesPerTickMax, framesProduced, false);
+    }
+
+    public void ReportTimedClamp()
+    {
+        Interlocked.Increment(ref _timedClampCount);
+    }
+
+    private void UpdateBufferedStats(int currentFrames)
+    {
+        Volatile.Write(ref _currentBufferedFrames, currentFrames);
+        UpdateMinMax(ref _maxBufferedFrames, currentFrames, false);
+        UpdateMinMax(ref _minBufferedFrames, currentFrames, true);
+    }
+
+    private static void UpdateMinMax(ref int target, int value, bool isMin)
+    {
+        int initial;
+        while (true)
+        {
+            initial = Volatile.Read(ref target);
+            if (isMin)
+            {
+                if (value >= initial)
+                    return;
+            }
+            else
+            {
+                if (value <= initial)
+                    return;
+            }
+
+            if (Interlocked.CompareExchange(ref target, value, initial) == initial)
+                return;
+        }
+    }
+
+    private void MaybeLogStats()
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (_statsStartTicks == 0)
+        {
+            _statsStartTicks = now;
+            _lastStatsTicks = now;
+            return;
+        }
+
+        long elapsedTicks = now - _lastStatsTicks;
+        if (elapsedTicks < Stopwatch.Frequency)
+            return;
+
+        double intervalSec = elapsedTicks / (double)Stopwatch.Frequency;
+        double sinceStartSec = (now - _statsStartTicks) / (double)Stopwatch.Frequency;
+        _lastStatsTicks = now;
+
+        long produced = Interlocked.Read(ref _producedFramesTotal);
+        long consumed = Interlocked.Read(ref _consumedFramesTotal);
+        long dropped = Interlocked.Read(ref _droppedFramesTotal);
+        long underrunEvents = Interlocked.Read(ref _underrunEventsTotal);
+        long underrunFrames = Interlocked.Read(ref _underrunFramesTotal);
+        long genTicks = Interlocked.Read(ref _audioGenTicksTotal);
+        long genFrames = Interlocked.Read(ref _audioGenFramesTotal);
+        long drainBatches = Interlocked.Read(ref _drainBatchesTotal);
+        long drainBatchFrames = Interlocked.Read(ref _drainBatchFramesTotal);
+        long timedTicks = Interlocked.Exchange(ref _timedTicksTotal, 0);
+        long frameTicks = Interlocked.Exchange(ref _frameTicksTotal, 0);
+        long framesPerTickSum = Interlocked.Exchange(ref _framesPerTickSum, 0);
+        int framesPerTickMin = Interlocked.Exchange(ref _framesPerTickMin, int.MaxValue);
+        int framesPerTickMax = Interlocked.Exchange(ref _framesPerTickMax, 0);
+        long timedClampCount = Interlocked.Exchange(ref _timedClampCount, 0);
+
+        long producedDelta = produced - _lastProducedFrames;
+        long consumedDelta = consumed - _lastConsumedFrames;
+        long droppedDelta = dropped - _lastDroppedFrames;
+        long underrunEventsDelta = underrunEvents - _lastUnderrunEvents;
+        long underrunFramesDelta = underrunFrames - _lastUnderrunFrames;
+        long genTicksDelta = genTicks - _lastGenTicks;
+        long genFramesDelta = genFrames - _lastGenFrames;
+        long drainBatchesDelta = drainBatches - _lastDrainBatches;
+        long drainBatchFramesDelta = drainBatchFrames - _lastDrainBatchFrames;
+        long timedTicksDelta = timedTicks;
+        long frameTicksDelta = frameTicks;
+        long framesPerTickSumDelta = framesPerTickSum;
+        int framesPerTickMinDelta = framesPerTickMin == int.MaxValue ? 0 : framesPerTickMin;
+        int framesPerTickMaxDelta = framesPerTickMax;
+        long timedClampDelta = timedClampCount;
+
+        _lastProducedFrames = produced;
+        _lastConsumedFrames = consumed;
+        _lastDroppedFrames = dropped;
+        _lastUnderrunEvents = underrunEvents;
+        _lastUnderrunFrames = underrunFrames;
+        _lastGenTicks = genTicks;
+        _lastGenFrames = genFrames;
+        _lastDrainBatches = drainBatches;
+        _lastDrainBatchFrames = drainBatchFrames;
+        double producedFps = intervalSec > 0 ? producedDelta / intervalSec : 0;
+        double consumedFps = intervalSec > 0 ? consumedDelta / intervalSec : 0;
+        double genMs = genTicksDelta * 1000.0 / Stopwatch.Frequency;
+        double driftFrames = produced - consumed;
+        int currentBufferedFrames = Volatile.Read(ref _currentBufferedFrames);
+        int maxBufferedFrames = Volatile.Read(ref _maxBufferedFrames);
+        int minBufferedFrames = Volatile.Read(ref _minBufferedFrames);
+        string mode = timedTicksDelta > 0 && frameTicksDelta == 0
+            ? "timed"
+            : (frameTicksDelta > 0 && timedTicksDelta == 0 ? "frame" : "mixed");
+        double framesPerTickAvg = (timedTicksDelta + frameTicksDelta) > 0
+            ? framesPerTickSumDelta / (double)(timedTicksDelta + frameTicksDelta)
+            : 0;
+
+        Console.WriteLine(
+            "[AudioStats] t={0:F1}s rate={1} ch={2} batch={3} buf={4}/{5} minBuf={6} maxBuf={7} " +
+            "prod={8} cons={9} drift={10} drop={11} underruns={12}/{13} " +
+            "prodFps={14:F1} consFps={15:F1} genMs={16:F2} genFrames={17} " +
+            "ticks={18} mode={19} fpt={20:F2} fptMin={21} fptMax={22} clamp={23}",
+            sinceStartSec, _sampleRate, _channels, _framesPerBatch,
+            currentBufferedFrames, _bufferFrames, minBufferedFrames, maxBufferedFrames,
+            produced, consumed, driftFrames, dropped,
+            underrunEventsDelta, underrunFramesDelta,
+            producedFps, consumedFps, genMs, genFramesDelta,
+            drainBatchesDelta, mode, framesPerTickAvg, framesPerTickMinDelta, framesPerTickMaxDelta, timedClampDelta);
     }
 
     public void Dispose()
     {
         Stop();
+    }
+
+    private void ResetStats()
+    {
+        _producedFramesTotal = 0;
+        _consumedFramesTotal = 0;
+        _droppedFramesTotal = 0;
+        _underrunEventsTotal = 0;
+        _underrunFramesTotal = 0;
+        _drainBatchesTotal = 0;
+        _drainBatchFramesTotal = 0;
+        _audioGenTicksTotal = 0;
+        _audioGenFramesTotal = 0;
+        _timedTicksTotal = 0;
+        _frameTicksTotal = 0;
+        _framesPerTickSum = 0;
+        _framesPerTickMin = int.MaxValue;
+        _framesPerTickMax = 0;
+        _timedClampCount = 0;
+        _currentBufferedFrames = 0;
+        _maxBufferedFrames = 0;
+        _minBufferedFrames = int.MaxValue;
+        _statsStartTicks = 0;
+        _lastStatsTicks = 0;
+        _lastProducedFrames = 0;
+        _lastConsumedFrames = 0;
+        _lastDroppedFrames = 0;
+        _lastUnderrunEvents = 0;
+        _lastUnderrunFrames = 0;
+        _lastGenTicks = 0;
+        _lastGenFrames = 0;
+        _lastDrainBatches = 0;
+        _lastDrainBatchFrames = 0;
     }
 }

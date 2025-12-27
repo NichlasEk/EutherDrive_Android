@@ -55,6 +55,8 @@ public partial class MainWindow : Window
     private static readonly bool AudioEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO") == "1";
     private static readonly bool AudioTimedEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED") == "1";
     private static readonly bool YmEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") == "1";
+    private static readonly bool AudioStatsEnabled =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_STATS") == "1";
     private const int AudioMaxFramesPerTick = 4096;
     private TextWriter? _originalConsoleOut;
     private StreamWriter? _romLogWriter;
@@ -670,6 +672,8 @@ public partial class MainWindow : Window
             {
                 frames = AudioMaxFramesPerTick;
                 _audioFrameAccumulator = 0;
+                if (AudioStatsEnabled)
+                    _audioEngine?.ReportTimedClamp();
                 long logNow = now;
                 if (logNow - _audioLastDropLogTicks > Stopwatch.Frequency)
                 {
@@ -682,7 +686,9 @@ public partial class MainWindow : Window
                 _audioFrameAccumulator -= frames;
             }
 
+            long genStart = AudioStatsEnabled ? Stopwatch.GetTimestamp() : 0;
             var timed = adapter.GetAudioBufferForFrames(frames, out int timedRate, out int timedChannels);
+            long genTicks = AudioStatsEnabled ? Stopwatch.GetTimestamp() - genStart : 0;
             if (timed.IsEmpty)
                 return;
 
@@ -697,10 +703,17 @@ public partial class MainWindow : Window
             }
 
             _audioEngine.Submit(timed);
+            if (AudioStatsEnabled)
+            {
+                int producedFrames = timed.Length / timedChannels;
+                _audioEngine.ReportGenerateBatch(producedFrames, genTicks, timedMode: true);
+            }
             return;
         }
 
+        long genStartFrame = AudioStatsEnabled ? Stopwatch.GetTimestamp() : 0;
         var audio = _core.GetAudioBuffer(out int sampleRate, out int channels);
+        long genTicksFrame = AudioStatsEnabled ? Stopwatch.GetTimestamp() - genStartFrame : 0;
         if (audio.IsEmpty)
             return;
 
@@ -710,11 +723,16 @@ public partial class MainWindow : Window
             {
                 _audioFormatMismatchLogged = true;
                 Console.WriteLine($"[AudioEngine] core audio format mismatch: {sampleRate} Hz, {channels} ch (expected {AudioSampleRate} Hz, {AudioChannels} ch)");
+                }
+                return;
             }
-            return;
-        }
 
         _audioEngine.Submit(audio);
+        if (AudioStatsEnabled)
+        {
+            int producedFrames = audio.Length / channels;
+            _audioEngine.ReportGenerateBatch(producedFrames, genTicksFrame, timedMode: false);
+        }
     }
 
     private void ResetAudioTiming()

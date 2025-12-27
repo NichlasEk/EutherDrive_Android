@@ -40,7 +40,7 @@
             for (int w_ch = 0; w_ch <= 3; w_ch++)
             {
                 g_freq[w_ch] = 1;
-                g_vol[w_ch] = 15;
+                g_vol[w_ch] = VOL_MAP[15];
                 g_freq[3] = 0x10;
             }
         }
