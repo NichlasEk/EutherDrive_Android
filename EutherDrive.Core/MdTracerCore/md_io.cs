@@ -14,7 +14,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private PadHandshake _pad1Handshake;
         private PadHandshake _pad2Handshake;
-        private PadType _pad1Type = PadType.SixButton;
+        private PadType _pad1Type = PadType.ThreeButton;
         private PadType _pad2Type = PadType.ThreeButton;
         private readonly ConsoleIdentity _identity = new ConsoleIdentity();
         private ConsoleRegion? _romRegionHint;
@@ -268,58 +268,61 @@ namespace EutherDrive.Core.MdTracerCore
         private static byte ReadPadData(MdPadState pad, bool thHigh, ref PadHandshake handshake, PadType padType)
         {
             byte v = 0xFF; // active-low
+            bool sixButton = padType == PadType.SixButton;
 
-            if (pad.Up) v &= 0xFE;
-            if (pad.Down) v &= 0xFD;
-            if (pad.Left) v &= 0xFB;
-            if (pad.Right) v &= 0xF7;
-
-            if (thHigh)
+            if (!sixButton)
             {
-                if (padType != PadType.SixButton)
-                    handshake.Stage = 0;
-                handshake.LastThHigh = true;
-                if (pad.B) v &= 0xEF;     // bit 4
-                if (pad.C) v &= 0xDF;     // bit 5
-                v |= 0x40;                // TH = 1
-                return v;
-            }
-
-            int stage = padType == PadType.SixButton ? handshake.Stage : 0;
-            bool advance = padType == PadType.SixButton && handshake.LastThHigh;
-            handshake.LastThHigh = false;
-
-            if (padType == PadType.SixButton)
-            {
-                switch (stage)
-                {
-                    case 0:
-                    case 1:
-                        if (pad.A) v &= 0xEF;
-                        if (pad.Start) v &= 0xDF;
-                        break;
-                    case 2:
-                        if (pad.X) v &= 0xEF;
-                        if (pad.Y) v &= 0xDF;
-                        break;
-                    default:
-                        if (pad.Z) v &= 0xEF;
-                        if (pad.Mode) v &= 0xDF;
-                        break;
-                }
-
-                if (advance)
-                {
-                    handshake.Stage++;
-                    if (handshake.Stage > 3)
-                        handshake.Stage = 3;
-                }
+                handshake.Stage = 0;
+                handshake.LastThHigh = thHigh;
             }
             else
             {
-                if (pad.A) v &= 0xEF;
-                if (pad.Start) v &= 0xDF;
+                if (handshake.LastThHigh != thHigh && handshake.Stage < 6)
+                    handshake.Stage++;
+                handshake.LastThHigh = thHigh;
             }
+
+            if (thHigh)
+            {
+                if (sixButton && handshake.Stage >= 6)
+                {
+                    if (pad.C) v &= 0xDF;    // bit 5
+                    if (pad.B) v &= 0xEF;    // bit 4
+                    if (pad.Mode) v &= 0xF7; // bit 3
+                    if (pad.X) v &= 0xFB;    // bit 2
+                    if (pad.Y) v &= 0xFD;    // bit 1
+                    if (pad.Z) v &= 0xFE;    // bit 0
+                }
+                else
+                {
+                    if (pad.Up) v &= 0xFE;
+                    if (pad.Down) v &= 0xFD;
+                    if (pad.Left) v &= 0xFB;
+                    if (pad.Right) v &= 0xF7;
+                    if (pad.B) v &= 0xEF;     // bit 4
+                    if (pad.C) v &= 0xDF;     // bit 5
+                }
+
+                v |= 0x40; // TH = 1
+                return v;
+            }
+
+            int stage = sixButton ? handshake.Stage : 0;
+            bool specialLow = sixButton && stage >= 5;
+
+            if (!specialLow)
+            {
+                if (pad.Up) v &= 0xFE;
+                if (pad.Down) v &= 0xFD;
+            }
+
+            if (pad.A) v &= 0xEF;     // bit 4
+            if (pad.Start) v &= 0xDF; // bit 5
+
+            if (specialLow)
+                v &= 0xF0; // bits 3-0 = 0
+            else
+                v &= 0xF3; // bits 3-2 = 0
 
             v &= 0xBF; // TH = 0
             return v;
