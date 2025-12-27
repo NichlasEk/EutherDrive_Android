@@ -9,6 +9,8 @@
         private const int PSG_CLOCK = 3579545;
         private const int PSG_SAMPLING = 44100;
         private const float CLOCK_INC = (float)PSG_CLOCK / PSG_SAMPLING / 16;
+        private const int PSG_GAIN_NUM = 3;
+        private const int PSG_GAIN_DEN = 4;
         private const int CHANNEL_NUM = 4;
         private const int NOISE_CHANNEL = 3;
         private const int FREQ_MIN = 5;     //レート44100の最大周波数は22050Hzなので周波数の最小は5
@@ -105,7 +107,8 @@
             //mix
             for (int w_ch = 0; w_ch <= 3; w_ch++)
             {
-                w_out += (int)(g_channel_out[w_ch] * md_main.g_md_music.g_out_vol[w_ch + 6]);
+                int mixed = g_channel_out[w_ch] * md_main.g_md_music.g_out_vol[w_ch + 6];
+                w_out += (mixed * PSG_GAIN_NUM) / PSG_GAIN_DEN;
             }
             return w_out;
         }
