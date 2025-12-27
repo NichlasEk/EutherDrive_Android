@@ -37,6 +37,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         // Geometri / storlek
         public  int g_display_xsize;
+        private int g_output_xsize;
         public  int g_display_ysize;
         private int g_display_xcell;
         private int g_display_ycell;
@@ -86,8 +87,8 @@ namespace EutherDrive.Core.MdTracerCore
             else
             {
                 // Display off: nolla raden i framebuffer
-                int pos = g_scanline * g_display_xsize;
-                for (int x = 0; x < g_display_xsize; x++)
+                int pos = g_scanline * g_output_xsize;
+                for (int x = 0; x < g_output_xsize; x++)
                 {
                     g_game_screen[pos++] = 0;
                 }

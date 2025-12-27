@@ -96,7 +96,7 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
-            byte val = _z80BusRequested ? (byte)0x01 : (byte)0x00;
+            byte val = _z80BusRequested ? (byte)0x00 : (byte)0x01;
             LogZ80RegRead(addr, val);
             LogBusAccess("busreq read8", addr, val);
             return val;
@@ -148,7 +148,7 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
-            ushort val = _z80BusRequested ? (ushort)0x0001 : (ushort)0x0000;
+            ushort val = _z80BusRequested ? (ushort)0x0000 : (ushort)0x0001;
             LogZ80RegRead(addr, val);
             LogBusAccess("busreq read16", addr, val);
             md_m68k.RecordBusAccess(addr, 2, false, val);
@@ -226,7 +226,7 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
-            uint val = _z80BusRequested ? 0x0000_0001u : 0x0000_0000u;
+            uint val = _z80BusRequested ? 0x0000_0000u : 0x0000_0001u;
             LogZ80RegRead(addr, val);
             LogBusAccess("busreq read32", addr, val);
             md_m68k.RecordBusAccess(addr, 4, false, val);

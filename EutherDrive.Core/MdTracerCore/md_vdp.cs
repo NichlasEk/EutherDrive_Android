@@ -51,6 +51,8 @@ namespace EutherDrive.Core.MdTracerCore
         private long _lastStatusReadLogFrame = -1;
         private static readonly bool TraceVdpTiming =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_TIMING"), "1", StringComparison.Ordinal);
+        private static readonly bool ShowOverscan =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SHOW_OVERSCAN"), "1", StringComparison.Ordinal);
         private static readonly System.Diagnostics.Stopwatch _timingStopwatch = System.Diagnostics.Stopwatch.StartNew();
         private long _lastTimingLogFrame = -1;
         private long _lastTimingLogMs;
@@ -83,9 +85,15 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void SyncFrameSizeFromVdp()
         {
-            FrameWidth = g_display_xsize;
+            UpdateOutputWidth();
+            FrameWidth = g_output_xsize;
             FrameHeight = g_display_ysize;
             EnsureFrameBuffer();
+        }
+
+        private void UpdateOutputWidth()
+        {
+            g_output_xsize = ShowOverscan ? MaxFrameWidth : g_display_xsize;
         }
 
         private void EnsureFrameBuffer()

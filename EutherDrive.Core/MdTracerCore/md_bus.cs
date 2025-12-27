@@ -1,5 +1,7 @@
 ﻿using System.Diagnostics;
 
+using System.Threading;
+
 namespace EutherDrive.Core.MdTracerCore
 {
     //----------------------------------------------------------------
@@ -14,6 +16,10 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _z80BusGranted = true;
         private bool _z80ForceGrant = true;
         private bool _z80Reset;
+        private long _z80BusReqWriteCount;
+        private long _z80BusReqToggleCount;
+        private long _z80ResetWriteCount;
+        private long _z80ResetToggleCount;
         private int _z80RegReadLogRemaining = 32;
         private int _z80RegWriteLogRemaining = 32;
         private int _z80WinLogRemaining = 64;
@@ -38,10 +44,21 @@ namespace EutherDrive.Core.MdTracerCore
             _z80RegWriteLogRemaining = 32;
             _z80WinLogRemaining = 64;
             _z80WinWarned = false;
+            _z80BusReqWriteCount = 0;
+            _z80BusReqToggleCount = 0;
+            _z80ResetWriteCount = 0;
+            _z80ResetToggleCount = 0;
         }
 
         internal bool Z80BusGranted => _z80BusGranted;
         internal bool Z80Reset => _z80Reset;
+        internal void ConsumeZ80SignalStats(out long busReqWrites, out long busReqToggles, out long resetWrites, out long resetToggles)
+        {
+            busReqWrites = Interlocked.Exchange(ref _z80BusReqWriteCount, 0);
+            busReqToggles = Interlocked.Exchange(ref _z80BusReqToggleCount, 0);
+            resetWrites = Interlocked.Exchange(ref _z80ResetWriteCount, 0);
+            resetToggles = Interlocked.Exchange(ref _z80ResetToggleCount, 0);
+        }
 
         internal static void SetYmEnabled(bool enabled)
         {
@@ -55,8 +72,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsZ80BusReq(in_address))
             {
-                // TODO: Implement riktig bus-arbitrering; just nu alltid "grant" för att komma förbi boot-loop.
-                byte val = 0x00;
+                // Force grant only until the first busreq write, then reflect state.
+                byte val = _z80ForceGrant ? (byte)0x00 : (_z80BusGranted ? (byte)0x00 : (byte)0x01);
                 LogZ80RegRead(in_address, val);
                 return val;
             }
@@ -109,7 +126,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsZ80BusReq(in_address))
             {
-                ushort val = 0x0000;
+                // Force grant only until the first busreq write, then reflect state.
+                ushort val = _z80ForceGrant ? (ushort)0x0000 : (_z80BusGranted ? (ushort)0x0000 : (ushort)0x0001);
                 LogZ80RegRead(in_address, val);
                 return val;
             }
@@ -149,7 +167,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsZ80BusReq(in_address))
             {
-                uint val = 0x0000_0000u;
+                // Force grant only until the first busreq write, then reflect state.
+                uint val = _z80ForceGrant ? 0x0000_0000u : (_z80BusGranted ? 0x0000_0000u : 0x0000_0001u);
                 LogZ80RegRead(in_address, val);
                 return val;
             }
@@ -192,9 +211,16 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsZ80BusReq(in_address))
             {
-                // 0 = request bus (grant), 1 = release (no grant)
-                _z80BusGranted = (in_data & 0x01) == 0;
+                // 1 = request bus (grant), 0 = release (no grant)
+                bool prev = _z80BusGranted;
+                bool next = (in_data & 0x01) != 0;
+                _z80BusGranted = next;
                 _z80ForceGrant = false;
+                if (md_main.g_md_z80 != null)
+                    md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+                Interlocked.Increment(ref _z80BusReqWriteCount);
+                if (prev != next)
+                    Interlocked.Increment(ref _z80BusReqToggleCount);
                 LogZ80RegWrite(in_address, in_data);
                 if (TraceZ80Win)
                     Console.WriteLine($"[Z80BUSREQ] write addr=0x{in_address:X6} value=0x{in_data:X2}");
@@ -203,7 +229,14 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsZ80Reset(in_address))
             {
-                _z80Reset = (in_data & 0x01) == 0;
+                bool prev = _z80Reset;
+                bool next = (in_data & 0x01) == 0;
+                _z80Reset = next;
+                if (prev != next && md_main.g_md_z80 != null)
+                    md_main.g_md_z80.g_active = !next;
+                Interlocked.Increment(ref _z80ResetWriteCount);
+                if (prev != next)
+                    Interlocked.Increment(ref _z80ResetToggleCount);
                 LogZ80RegWrite(in_address, in_data);
                 if (TraceZ80Win)
                     Console.WriteLine($"[Z80RESET]  write addr=0x{in_address:X6} value=0x{in_data:X2}");
@@ -288,8 +321,15 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsZ80BusReq(in_address))
             {
-                _z80BusGranted = (in_data & 0x0100) != 0;
+                bool prev = _z80BusGranted;
+                bool next = (in_data & 0x0100) != 0;
+                _z80BusGranted = next;
                 _z80ForceGrant = false;
+                if (md_main.g_md_z80 != null)
+                    md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+                Interlocked.Increment(ref _z80BusReqWriteCount);
+                if (prev != next)
+                    Interlocked.Increment(ref _z80BusReqToggleCount);
                 LogZ80RegWrite(in_address, in_data);
                 if (TraceZ80Win)
                     Console.WriteLine($"[Z80BUSREQ] write addr=0x{in_address:X6} value=0x{in_data:X4}");
@@ -298,7 +338,14 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsZ80Reset(in_address))
             {
-                _z80Reset = (in_data & 0x0100) == 0;
+                bool prev = _z80Reset;
+                bool next = (in_data & 0x0100) == 0;
+                _z80Reset = next;
+                if (prev != next && md_main.g_md_z80 != null)
+                    md_main.g_md_z80.g_active = !next;
+                Interlocked.Increment(ref _z80ResetWriteCount);
+                if (prev != next)
+                    Interlocked.Increment(ref _z80ResetToggleCount);
                 LogZ80RegWrite(in_address, in_data);
                 if (TraceZ80Win)
                     Console.WriteLine($"[Z80RESET]  write addr=0x{in_address:X6} value=0x{in_data:X4}");
@@ -359,8 +406,15 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsZ80BusReq(in_address))
             {
-                _z80BusGranted = (in_data & 0x0100_0000u) != 0;
+                bool prev = _z80BusGranted;
+                bool next = (in_data & 0x0100_0000u) != 0;
+                _z80BusGranted = next;
                 _z80ForceGrant = false;
+                if (md_main.g_md_z80 != null)
+                    md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+                Interlocked.Increment(ref _z80BusReqWriteCount);
+                if (prev != next)
+                    Interlocked.Increment(ref _z80BusReqToggleCount);
                 LogZ80RegWrite(in_address, in_data);
                 if (TraceZ80Win)
                     Console.WriteLine($"[Z80BUSREQ] write addr=0x{in_address:X6} value=0x{in_data:X8}");
@@ -369,7 +423,14 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsZ80Reset(in_address))
             {
-                _z80Reset = (in_data & 0x0100_0000u) == 0;
+                bool prev = _z80Reset;
+                bool next = (in_data & 0x0100_0000u) == 0;
+                _z80Reset = next;
+                if (prev != next && md_main.g_md_z80 != null)
+                    md_main.g_md_z80.g_active = !next;
+                Interlocked.Increment(ref _z80ResetWriteCount);
+                if (prev != next)
+                    Interlocked.Increment(ref _z80ResetToggleCount);
                 LogZ80RegWrite(in_address, in_data);
                 if (TraceZ80Win)
                     Console.WriteLine($"[Z80RESET]  write addr=0x{in_address:X6} value=0x{in_data:X8}");

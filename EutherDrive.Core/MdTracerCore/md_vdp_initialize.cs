@@ -86,7 +86,7 @@
 
 
             // Default geometry/timing
-            g_display_xsize = 320;
+            g_display_xsize = 256;
             g_display_ysize = 224;
             g_scroll_xcell = 32;
             g_scroll_ycell = 32;
@@ -95,6 +95,7 @@
             g_scroll_xsize_mask = 0x00ff;
             g_scroll_ysize_mask = 0x00ff;
             g_vertical_line_max = 262;
+            UpdateOutputWidth();
 
             // VDP status / regs
             g_vdp_status_9_empl = 1;  // const
@@ -115,6 +116,8 @@
 
             g_scanline = 0;
             g_hinterrupt_counter = -1;
+
+            ApplyHorizontalMode(g_vdp_reg_12_0_cellmode2 != 0);
         }
     }
 }

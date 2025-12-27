@@ -858,7 +858,7 @@ public partial class MainWindow : Window
         bool y = _keysDown.Contains(Key.S);
         bool z = _keysDown.Contains(Key.D);
         bool mode = _keysDown.Contains(Key.LeftShift) || _keysDown.Contains(Key.RightShift);
-        PadType padType = ThreeButtonPadCheck?.IsChecked == true ? PadType.ThreeButton : PadType.SixButton;
+        PadType padType = SixButtonPadCheck?.IsChecked == true ? PadType.SixButton : PadType.ThreeButton;
 
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
 

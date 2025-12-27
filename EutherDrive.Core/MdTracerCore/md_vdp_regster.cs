@@ -60,6 +60,114 @@ namespace EutherDrive.Core.MdTracerCore
         public byte g_vdp_reg_23_dma_mode;
         public byte g_vdp_reg_23_5_dma_high;
 
+        private bool g_hmodeLogged;
+
+        private void RecomputeWindowBounds()
+        {
+            byte reg17 = g_vdp_reg[17];
+            int w_pos = (reg17 & 0x1f) << 4;
+            if ((reg17 & 0x80) == 0)
+            {
+                if (w_pos < g_display_xsize)
+                {
+                    g_screenA_left_x  = w_pos;
+                    g_screenA_right_x = g_display_xsize - 1;
+                }
+                else
+                {
+                    g_screenA_left_x = 0;
+                    g_screenA_right_x = 0;
+                }
+            }
+            else
+            {
+                if (w_pos == 0)
+                {
+                    g_screenA_left_x = 0;
+                    g_screenA_right_x = 0;
+                }
+                else if (w_pos < g_display_xsize)
+                {
+                    g_screenA_left_x  = 0;
+                    g_screenA_right_x = w_pos - 1;
+                }
+                else
+                {
+                    g_screenA_left_x  = 0;
+                    g_screenA_right_x = g_display_xsize - 1;
+                }
+            }
+
+            byte reg18 = g_vdp_reg[18];
+            int w_pos_y = (reg18 & 0x1f) << 3;
+            if ((reg18 & 0x80) == 0)
+            {
+                if (w_pos_y < g_display_ysize)
+                {
+                    g_screenA_top_y    = w_pos_y;
+                    g_screenA_bottom_y = g_display_ysize - 1;
+                }
+                else
+                {
+                    g_screenA_top_y = 0;
+                    g_screenA_bottom_y = 0;
+                }
+            }
+            else
+            {
+                if (w_pos_y == 0)
+                {
+                    g_screenA_top_y = 0;
+                    g_screenA_bottom_y = 0;
+                }
+                else if (w_pos_y < g_display_ysize)
+                {
+                    g_screenA_top_y    = 0;
+                    g_screenA_bottom_y = w_pos_y - 1;
+                }
+                else
+                {
+                    g_screenA_top_y    = 0;
+                    g_screenA_bottom_y = g_display_ysize - 1;
+                }
+            }
+        }
+
+        private void ApplyHorizontalMode(bool h40Mode)
+        {
+            int prevDisplayX = g_display_xsize;
+
+            if (!h40Mode)
+            {
+                g_display_xsize = 256;
+                g_display_xcell = 32;
+                g_max_sprite_num  = 64;
+                g_max_sprite_line = 16;
+                g_max_sprite_cell = 32;
+            }
+            else
+            {
+                g_display_xsize = 320;
+                g_display_xcell = 40;
+                g_max_sprite_num  = 80;
+                g_max_sprite_line = 20;
+                g_max_sprite_cell = 40;
+            }
+
+            UpdateOutputWidth();
+            RecomputeWindowBounds();
+
+            g_vdp_reg_3_windows = (ushort)(((h40Mode ? (g_vdp_reg[3] & 0x3c) : (g_vdp_reg[3] & 0x3e)) << 10));
+            g_vdp_reg_5_sprite  = (ushort)(((h40Mode ? (g_vdp_reg[5] & 0x7e) : (g_vdp_reg[5] & 0x7f)) << 9));
+
+            if (MdTracerCore.MdLog.Enabled && (!g_hmodeLogged || g_display_xsize != prevDisplayX))
+            {
+                string mode = h40Mode ? "H40" : "H32";
+                MdTracerCore.MdLog.WriteLine($"[VDP] HMODE={mode} width={g_display_xsize}");
+                g_hmodeLogged = true;
+            }
+        }
+
         private ushort build_vdp_status_word()
         {
             ushort w_out = 0;
@@ -144,6 +252,7 @@ namespace EutherDrive.Core.MdTracerCore
                         g_display_ycell    = 30;
                         g_vertical_line_max = 312;
                     }
+                    RecomputeWindowBounds();
                     break;
 
                 case 2:
@@ -151,22 +260,22 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
 
                 case 3:
-                    if (g_vdp_reg_12_7_cellmode1 == 0)
+                    if (g_vdp_reg_12_0_cellmode2 == 0)
                         g_vdp_reg_3_windows = (ushort)((in_data & 0x3e) << 10);
-                else
-                    g_vdp_reg_3_windows = (ushort)((in_data & 0x3c) << 10);
-                break;
+                    else
+                        g_vdp_reg_3_windows = (ushort)((in_data & 0x3c) << 10);
+                    break;
 
                 case 4:
                     g_vdp_reg_4_scrollb = (ushort)(in_data << 13);
                     break;
 
                 case 5:
-                    if (g_vdp_reg_12_7_cellmode1 == 0)
+                    if (g_vdp_reg_12_0_cellmode2 == 0)
                         g_vdp_reg_5_sprite = (ushort)((in_data & 0x7f) << 9);
-                else
-                    g_vdp_reg_5_sprite = (ushort)((in_data & 0x7e) << 9);
-                break;
+                    else
+                        g_vdp_reg_5_sprite = (ushort)((in_data & 0x7e) << 9);
+                    break;
 
                 case 7:
                     g_vdp_reg_7_backcolor = (byte)(in_data & 0x3f);
@@ -190,31 +299,11 @@ namespace EutherDrive.Core.MdTracerCore
                     if (g_vdp_reg_12_2_interlacemode != 0)
                         Warn("Interlace-läge ej implementerat – kör ändå (kan rita fel).");
 
-                g_sprite_vmask = (g_vdp_reg_12_2_interlacemode == 0) ? 0x1ff : 0x3ff;
+                    g_sprite_vmask = (g_vdp_reg_12_2_interlacemode == 0) ? 0x1ff : 0x3ff;
 
-                g_vdp_reg_12_0_cellmode2 = (byte)(in_data & 0x01);
-
-                if (g_vdp_reg_12_7_cellmode1 == 0)
-                {
-                    g_display_xsize = 256;
-                    g_display_xcell = 32;
-                    g_max_sprite_num  = 64;
-                    g_max_sprite_line = 16;
-                    g_max_sprite_cell = 32;
-                }
-                else
-                {
-                    g_display_xsize = 320;
-                    g_display_xcell = 40;
-                    g_max_sprite_num  = 80;
-                    g_max_sprite_line = 20;
-                    g_max_sprite_cell = 40;
-                }
-
-                // Uppdatera beroende register (3/5) enligt cellmode1
-                g_vdp_reg_3_windows = (ushort)(((g_vdp_reg_12_7_cellmode1 == 0 ? (g_vdp_reg[3] & 0x3e) : (g_vdp_reg[3] & 0x3c)) << 10));
-                g_vdp_reg_5_sprite  = (ushort)(((g_vdp_reg_12_7_cellmode1 == 0 ? (g_vdp_reg[5] & 0x7f) : (g_vdp_reg[5] & 0x7e)) << 9));
-                break;
+                    g_vdp_reg_12_0_cellmode2 = (byte)(in_data & 0x01);
+                    ApplyHorizontalMode(g_vdp_reg_12_0_cellmode2 != 0);
+                    break;
 
                 case 13:
                     g_vdp_reg_13_hscroll = (ushort)(in_data << 10);
@@ -239,75 +328,13 @@ namespace EutherDrive.Core.MdTracerCore
 
                 case 17:
                 {
-                    int w_pos = (in_data & 0x1f) << 4;
-                    if ((in_data & 0x80) == 0)
-                    {
-                        if (w_pos < g_display_xsize)
-                        {
-                            g_screenA_left_x  = w_pos;
-                            g_screenA_right_x = g_display_xsize - 1;
-                        }
-                        else
-                        {
-                            g_screenA_left_x = 0;
-                            g_screenA_right_x = 0;
-                        }
-                    }
-                    else
-                    {
-                        if (w_pos == 0)
-                        {
-                            g_screenA_left_x = 0;
-                            g_screenA_right_x = 0;
-                        }
-                        else if (w_pos < g_display_xsize)
-                        {
-                            g_screenA_left_x  = 0;
-                            g_screenA_right_x = w_pos - 1;
-                        }
-                        else
-                        {
-                            g_screenA_left_x  = 0;
-                            g_screenA_right_x = g_display_xsize - 1;
-                        }
-                    }
+                    RecomputeWindowBounds();
                     break;
                 }
 
                 case 18:
                 {
-                    int w_pos = (in_data & 0x1f) << 3;
-                    if ((in_data & 0x80) == 0)
-                    {
-                        if (w_pos < g_display_ysize)
-                        {
-                            g_screenA_top_y    = w_pos;
-                            g_screenA_bottom_y = g_display_ysize - 1;
-                        }
-                        else
-                        {
-                            g_screenA_top_y = 0;
-                            g_screenA_bottom_y = 0;
-                        }
-                    }
-                    else
-                    {
-                        if (w_pos == 0)
-                        {
-                            g_screenA_top_y = 0;
-                            g_screenA_bottom_y = 0;
-                        }
-                        else if (w_pos < g_display_ysize)
-                        {
-                            g_screenA_top_y    = 0;
-                            g_screenA_bottom_y = w_pos - 1;
-                        }
-                        else
-                        {
-                            g_screenA_top_y    = 0;
-                            g_screenA_bottom_y = g_display_ysize - 1;
-                        }
-                    }
+                    RecomputeWindowBounds();
                     break;
                 }
 

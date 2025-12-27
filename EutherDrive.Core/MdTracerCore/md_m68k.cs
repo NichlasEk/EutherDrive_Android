@@ -35,11 +35,17 @@ namespace EutherDrive.Core.MdTracerCore
         private static long _countA10005;
         private static long _countA04000;
         private static ushort _lastVdpStatusRead;
+        private static readonly bool TracePcSample =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_SAMPLE"), "1", StringComparison.Ordinal);
+        private static readonly Stopwatch _pcSampleStopwatch = Stopwatch.StartNew();
+        private static long _pcSampleLastMs;
         private static bool _pcWatchEnabled =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC"), "1", StringComparison.Ordinal);
-        private const uint PcWatchStart = 0x000330;
+        private const uint PcWatchStart = 0x000320;
         private const uint PcWatchEnd = 0x000340;
         private static bool _pcWatchDumped;
+        private static bool _pcWatchInRange;
+        private static bool _pcWatchExitLogged;
         private static readonly Stopwatch _pcWatchStopwatch = Stopwatch.StartNew();
         private static long _pcWatchLastProgressMs;
         private const long PcWatchProgressIntervalMs = 50;
@@ -74,6 +80,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool TraceDbra =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DBRA"), "1", StringComparison.Ordinal);
         private static long _lastDbraLogFrame = -1;
+        private static bool _checksumDoneLogged;
         // ... (alla dina fält osv som innan)
 
         // --- Headless trace helpers (ersätter Form_Code_Trace) ---
@@ -127,6 +134,8 @@ namespace EutherDrive.Core.MdTracerCore
                     g_op2 = (byte)((g_opcode >> 6) & 0x07);
                     g_op3 = (byte)((g_opcode >> 3) & 0x07);
                     g_op4 = (byte)(g_opcode & 0x07);
+
+                    MaybeLogPcSample(g_reg_PC, g_opcode);
 
                     if (g_68k_stop) { g_clock_now = g_clock_total; break; }
 
@@ -299,6 +308,19 @@ namespace EutherDrive.Core.MdTracerCore
                 g_interrupt_EXT_act = true;
                 g_68k_stop = false;
             }
+        }
+
+        private static void MaybeLogPcSample(uint pc, ushort opcode)
+        {
+            if (!TracePcSample)
+                return;
+
+            long now = _pcSampleStopwatch.ElapsedMilliseconds;
+            if (now - _pcSampleLastMs < 1000)
+                return;
+            _pcSampleLastMs = now;
+
+            MdLog.WriteLine($"[PCSAMPLE] t={now}ms pc=0x{pc:X6} op=0x{opcode:X4} sr=0x{g_reg_SR:X4} d0=0x{g_reg_data[0].l:X8} d1=0x{g_reg_data[1].l:X8} a7=0x{g_reg_addr[7].l:X8}");
         }
 
         internal static void RecordVdpStatusRead(ushort status)
@@ -491,14 +513,24 @@ namespace EutherDrive.Core.MdTracerCore
             if (!_pcWatchEnabled)
                 return;
             if (pc < PcWatchStart || pc > PcWatchEnd)
+            {
+                if (_pcWatchInRange && !_pcWatchExitLogged)
+                {
+                    _pcWatchInRange = false;
+                    _pcWatchExitLogged = true;
+                    Console.WriteLine(
+                        $"[PCWATCH] exit pc=0x{pc:X6} A0=0x{g_reg_addr[0].l:X8} D0=0x{g_reg_data[0].l:X8} C={(g_status_C ? 1 : 0)} Z={(g_status_Z ? 1 : 0)}");
+                    DumpPcWindowRange(pc, 16, 64);
+                }
                 return;
+            }
+            _pcWatchInRange = true;
 
             if (!_pcWatchDumped)
             {
                 _pcWatchDumped = true;
                 DumpPcWindow(pc);
                 Console.WriteLine($"[PCWATCH] {FormatRecentAccesses(8)}");
-                _pcWatchEnabled = false;
                 return;
             }
 
@@ -521,6 +553,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             Console.WriteLine(
                 $"[CHK] PC=0x{pc:X6} OP=0x{opcode:X4} A0=0x{g_reg_addr[0].l:X8} A1=0x{g_reg_addr[1].l:X8} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} {lastRead}");
+
+            if (!_checksumDoneLogged && g_reg_addr[0].l >= g_reg_data[0].l)
+            {
+                _checksumDoneLogged = true;
+                ushort expected = PeekMem16(0x0001A4);
+                Console.WriteLine($"[CHK] done A0=0x{g_reg_addr[0].l:X8} D0=0x{g_reg_data[0].l:X8} sum=0x{g_reg_data[1].l:X8} expected=0x{expected:X4}");
+            }
         }
 
         private static bool TryGetLastReadAccess(out uint address, out byte size, out uint value)

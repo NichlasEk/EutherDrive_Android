@@ -238,8 +238,10 @@ namespace EutherDrive.Core.MdTracerCore
 
             // --- Skriv ut till framebuffern ---
             {
-                int w_base = g_scanline * g_display_xsize;
-                for (int wx = 0; wx < g_display_xsize; wx++)
+                int w_base = g_scanline * g_output_xsize;
+                int visibleWidth = g_display_xsize;
+                int outputWidth = g_output_xsize;
+                for (int wx = 0; wx < visibleWidth; wx++)
                 {
                     uint w_colnum = g_game_cmap[wx];
                     if (w_colnum == 0) w_colnum = g_vdp_reg_7_backcolor;
@@ -257,6 +259,15 @@ namespace EutherDrive.Core.MdTracerCore
                         : g_color[w_colnum];
                     }
                     g_game_screen[w_base + wx] = color;
+                }
+
+                if (outputWidth > visibleWidth)
+                {
+                    uint borderColor = g_color[g_vdp_reg_7_backcolor];
+                    for (int wx = visibleWidth; wx < outputWidth; wx++)
+                    {
+                        g_game_screen[w_base + wx] = borderColor;
+                    }
                 }
             }
         }

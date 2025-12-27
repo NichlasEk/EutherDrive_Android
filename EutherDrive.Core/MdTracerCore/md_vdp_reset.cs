@@ -83,7 +83,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_vdp_reg_23_dma_mode = 0;
             g_vdp_reg_23_5_dma_high = 0;
 
-            g_display_xsize = 320;
+            g_display_xsize = 256;
             g_display_ysize = 224;
             g_scroll_xcell = 32;
             g_scroll_ycell = 32;
@@ -92,6 +92,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_scroll_xsize_mask = 0x00FF;
             g_scroll_ysize_mask = 0x00FF;
             g_vertical_line_max = 262;
+            UpdateOutputWidth();
 
             g_vdp_status_9_empl = 1;
             g_vdp_status_8_full = 0;
@@ -131,6 +132,7 @@ namespace EutherDrive.Core.MdTracerCore
             _smsVdpAddr = 0;
             _smsCommandLogCount = 0;
             _smsDisplayOnLogged = false;
+            g_hmodeLogged = false;
             _smsDataIgnoredLogged = false;
             _smsCramWriteLogged = false;
             _smsFirstLineRendered = false;
@@ -143,6 +145,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_dma_fill_req = false;
             g_dma_fill_data = 0;
 
+            ApplyHorizontalMode(g_vdp_reg_12_0_cellmode2 != 0);
             ClearVBlank();
         }
     }

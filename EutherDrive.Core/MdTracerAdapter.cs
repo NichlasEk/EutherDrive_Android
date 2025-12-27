@@ -490,8 +490,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 Console.WriteLine($"[MdTracerAdapter] VDP output fbId=0x{id:X8} words={vdpBuffer.Length} p0=0x{p0:X8} p1=0x{p1:X8} p2=0x{p2:X8} p3=0x{p3:X8}");
             }
 
-            int vdpWidth = _vdp.g_display_xsize;
-            int vdpHeight = _vdp.g_display_ysize;
+            int vdpWidth = _vdp.FrameWidth;
+            int vdpHeight = _vdp.FrameHeight;
             if (vdpWidth <= 0)
                 vdpWidth = 320;
             if (vdpHeight <= 0)

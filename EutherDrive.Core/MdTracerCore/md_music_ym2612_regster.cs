@@ -1,9 +1,20 @@
 ﻿using System;
+using System.Diagnostics;
 
 namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_ym2612
     {
+        private static readonly bool TraceDac =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC"), "1", StringComparison.Ordinal);
+
+        private long _dacWriteCount;
+        private long _dacEnableCount;
+        private long _dacDisableCount;
+        private byte _dacLastValue;
+        private bool _dacEnabled;
+        private long _dacLastLogTicks;
+
         private bool g_reg_22_lfo_enable;
         private int g_reg_22_lfo_inc;
         private int g_reg_24_timerA;
@@ -177,12 +188,28 @@ namespace EutherDrive.Core.MdTracerCore
 
                         case 0x2A:
                         {
+                            if (TraceDac)
+                            {
+                                _dacWriteCount++;
+                                _dacLastValue = in_val;
+                                MaybeLogDac();
+                            }
                             g_reg_2a_dac_data = ((int)(uint)in_val - 0x80) << DAC_SHIFT;
                             break;
                         }
 
                         case 0x2B:
                         {
+                            if (TraceDac)
+                            {
+                                bool enabled = (in_val & 0x80) != 0;
+                                if (enabled)
+                                    _dacEnableCount++;
+                                else
+                                    _dacDisableCount++;
+                                _dacEnabled = enabled;
+                                MaybeLogDac();
+                            }
                             g_reg_2b_dac = in_val & 0x80;
                             break;
                         }
@@ -402,6 +429,31 @@ namespace EutherDrive.Core.MdTracerCore
 
                 return;
             }
+        }
+
+        private void MaybeLogDac()
+        {
+            long now = Stopwatch.GetTimestamp();
+            if (_dacLastLogTicks == 0)
+            {
+                _dacLastLogTicks = now;
+                return;
+            }
+
+            if (now - _dacLastLogTicks < Stopwatch.Frequency)
+                return;
+
+            _dacLastLogTicks = now;
+            long writes = _dacWriteCount;
+            long enables = _dacEnableCount;
+            long disables = _dacDisableCount;
+            _dacWriteCount = 0;
+            _dacEnableCount = 0;
+            _dacDisableCount = 0;
+
+            Console.WriteLine(
+                "[YM-DAC] writes={0} enable={1} disable={2} enabled={3} last=0x{4:X2}",
+                writes, enables, disables, _dacEnabled ? 1 : 0, _dacLastValue);
         }
     }
 }

@@ -61,9 +61,15 @@ namespace EutherDrive.Core.MdTracerCore
         private bool g_halt;
         private static readonly bool TraceBoot =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BOOT"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80Stats =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_STATS"), "1", StringComparison.Ordinal);
+        private static readonly bool HaltOnBusReq =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_HALT_ON_BUSREQ"), "1", StringComparison.Ordinal);
 
         private long _instrThrottleCounter;
         private bool _pcLeftBootRangeSinceLastSummary;
+        private long _z80StatsLastTicks;
+        private long _z80StatsInstrCount;
 
         private ushort g_reg_BC => (ushort)((g_reg_B << 8) + g_reg_C);
         private ushort g_reg_DE => (ushort)((g_reg_D << 8) + g_reg_E);
@@ -137,6 +143,43 @@ namespace EutherDrive.Core.MdTracerCore
             initialize();
         }
 
+        private void MaybeLogZ80Stats()
+        {
+            if (!TraceZ80Stats)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            if (_z80StatsLastTicks == 0)
+            {
+                _z80StatsLastTicks = now;
+                return;
+            }
+
+            long elapsedTicks = now - _z80StatsLastTicks;
+            if (elapsedTicks < Stopwatch.Frequency)
+                return;
+
+            double elapsedSec = (double)elapsedTicks / Stopwatch.Frequency;
+            long instrDelta = _z80StatsInstrCount;
+            _z80StatsInstrCount = 0;
+            _z80StatsLastTicks = now;
+
+            bool busRequested = md_main.g_md_bus?.Z80BusGranted ?? false;
+            bool reset = md_main.g_md_bus?.Z80Reset ?? false;
+            long busReqWrites = 0;
+            long busReqToggles = 0;
+            long resetWrites = 0;
+            long resetToggles = 0;
+            md_main.g_md_bus?.ConsumeZ80SignalStats(out busReqWrites, out busReqToggles, out resetWrites, out resetToggles);
+
+            double ips = instrDelta / elapsedSec;
+            Console.WriteLine(
+                $"[Z80Stats] dt={elapsedSec:0.00}s instr={instrDelta} ips={ips:0} active={(g_active ? 1 : 0)} " +
+                $"halt={(g_halt ? 1 : 0)} pc=0x{g_reg_PC:X4} busReq={(busRequested ? 1 : 0)} " +
+                $"reset={(reset ? 1 : 0)} busReqW={busReqWrites} busReqT={busReqToggles} " +
+                $"resetW={resetWrites} resetT={resetToggles}");
+        }
+
         public void run(int in_clock)
         {
             #if DEBUG
@@ -145,6 +188,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (www) pgout();
             #endif
 
+            MaybeLogZ80Stats();
+            if (HaltOnBusReq && (md_main.g_md_bus?.Z80BusGranted ?? false))
+                return;
             if (g_active == false) return;
 
             int cyclesConsumed = 0;
@@ -160,6 +206,9 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock_total += in_clock;
             while (g_clock_total >= 0)
             {
+                if (TraceZ80Stats)
+                    _z80StatsInstrCount++;
+
                 // IRQ (NMI-block ej aktiverad i originalet)
             if (g_interrupt_irq)
             {
@@ -393,6 +442,7 @@ namespace EutherDrive.Core.MdTracerCore
             _smsLoopCount = 0;
             _instrThrottleCounter = 0;
             _pcLeftBootRangeSinceLastSummary = false;
+            g_active = true;
         }
 
         // ---- Prefixgrenar -----------------------------------------------------
