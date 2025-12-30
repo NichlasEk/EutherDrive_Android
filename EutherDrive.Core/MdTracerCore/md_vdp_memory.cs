@@ -66,7 +66,8 @@ namespace EutherDrive.Core.MdTracerCore
                     LogStatusRead(status, postStatus);
                     g_vdp_status_7_vinterrupt = 0;
                     md_m68k.g_interrupt_V_req = false;
-                    md_main.g_md_z80?.irq_request(false);
+                    if (md_main.g_masterSystemMode)
+                        md_main.g_md_z80?.irq_request(false, "VDP", 0);
                     return status;
                 }
 
@@ -110,7 +111,8 @@ namespace EutherDrive.Core.MdTracerCore
                 LogStatusRead(w_out, postStatus);
                 g_vdp_status_7_vinterrupt = 0; // ack on status read
                 md_m68k.g_interrupt_V_req = false;
-                md_main.g_md_z80?.irq_request(false);
+                if (md_main.g_masterSystemMode)
+                    md_main.g_md_z80?.irq_request(false, "VDP", 0);
             }
             else if (in_address <= 0xc0000e)
             {

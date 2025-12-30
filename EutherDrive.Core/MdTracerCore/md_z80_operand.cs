@@ -1701,14 +1701,15 @@ namespace EutherDrive.Core.MdTracerCore
         //--------------------------------------
         private void op_IN_a_N()
         {
-            ushort port = g_opcode2;
+            ushort port = (ushort)((g_reg_A << 8) | g_opcode2);
+            port = NormalizeIoPort(port);
             g_reg_A = read8(port);
             g_reg_PC += 2;
             g_clock = 11;
         }
         private void op_IN_r_C()
         {
-            ushort port = g_reg_BC;
+            ushort port = NormalizeIoPort(g_reg_BC);
             byte value = read8(port);
             write_reg(g_opcode2_543, value);
             g_reg_PC += 2;
@@ -1716,36 +1717,80 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_INI()
         {
-            g_clock = 16;
+            ushort port = NormalizeIoPort(g_reg_BC);
+            byte value = read8(port);
+            write_byte(g_reg_HL, value);
+            ushort newHL = (ushort)(g_reg_HL + 1);
+            g_reg_H = (byte)((newHL >> 8) & 0xFF);
+            g_reg_L = (byte)(newHL & 0xFF);
+            g_reg_B = (byte)(g_reg_B - 1);
             g_reg_PC += 2;
+            set_flag_z(g_reg_B == 0);
+            g_flag_N = 1;
+            g_clock = 16;
         }
         private void op_INIR()
         {
-            // Timingen för upprepad in går i loop – här minimi.
-            g_clock = 16;
+            do
+            {
+                ushort port = NormalizeIoPort(g_reg_BC);
+                byte value = read8(port);
+                write_byte(g_reg_HL, value);
+                ushort newHL = (ushort)(g_reg_HL + 1);
+                g_reg_H = (byte)((newHL >> 8) & 0xFF);
+                g_reg_L = (byte)(newHL & 0xFF);
+                g_reg_B = (byte)(g_reg_B - 1);
+                g_clock += 21;
+            } while (g_reg_B != 0);
             g_reg_PC += 2;
+            set_flag_z(g_reg_B == 0);
+            g_flag_N = 1;
+            g_clock += 16;
         }
         private void op_IND()
         {
-            g_clock = 16;
+            ushort port = NormalizeIoPort(g_reg_BC);
+            byte value = read8(port);
+            write_byte(g_reg_HL, value);
+            ushort newHL = (ushort)(g_reg_HL - 1);
+            g_reg_H = (byte)((newHL >> 8) & 0xFF);
+            g_reg_L = (byte)(newHL & 0xFF);
+            g_reg_B = (byte)(g_reg_B - 1);
             g_reg_PC += 2;
+            set_flag_z(g_reg_B == 0);
+            g_flag_N = 1;
+            g_clock = 16;
         }
         private void op_INDR()
         {
-            g_clock = 16;
+            do
+            {
+                ushort port = NormalizeIoPort(g_reg_BC);
+                byte value = read8(port);
+                write_byte(g_reg_HL, value);
+                ushort newHL = (ushort)(g_reg_HL - 1);
+                g_reg_H = (byte)((newHL >> 8) & 0xFF);
+                g_reg_L = (byte)(newHL & 0xFF);
+                g_reg_B = (byte)(g_reg_B - 1);
+                g_clock += 21;
+            } while (g_reg_B != 0);
             g_reg_PC += 2;
+            set_flag_z(g_reg_B == 0);
+            g_flag_N = 1;
+            g_clock += 16;
         }
         //--------------------------------------
         private void op_OUT_N_a()
         {
-            ushort port = g_opcode2;
+            ushort port = (ushort)((g_reg_A << 8) | g_opcode2);
+            port = NormalizeIoPort(port);
             write8(port, g_reg_A);
             g_reg_PC += 2;
             g_clock = 11;
         }
         private void op_OUT_C_r()
         {
-            ushort port = g_reg_BC;
+            ushort port = NormalizeIoPort(g_reg_BC);
             byte value = read_reg(g_opcode2_543);
             write8(port, value);
             g_reg_PC += 2;
@@ -1753,7 +1798,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_OUTI()
         {
-            ushort port = g_reg_BC;
+            ushort port = NormalizeIoPort(g_reg_BC);
             byte value = read_byte(g_reg_HL);
             write8(port, value);
             ushort newHL = (ushort)(g_reg_HL + 1);
@@ -1767,20 +1812,65 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_OUTIR()
         {
-            g_clock = 16;
+            do
+            {
+                ushort port = NormalizeIoPort(g_reg_BC);
+                byte value = read_byte(g_reg_HL);
+                write8(port, value);
+                ushort newHL = (ushort)(g_reg_HL + 1);
+                g_reg_H = (byte)((newHL >> 8) & 0xFF);
+                g_reg_L = (byte)(newHL & 0xFF);
+                g_reg_B = (byte)(g_reg_B - 1);
+                g_clock += 21;
+            } while (g_reg_B != 0);
             g_reg_PC += 2;
+            set_flag_z(g_reg_B == 0);
+            g_flag_N = 1;
+            g_clock += 16;
         }
         private void op_OUTD()
         {
-            g_clock = 16;
+            ushort port = NormalizeIoPort(g_reg_BC);
+            byte value = read_byte(g_reg_HL);
+            write8(port, value);
+            ushort newHL = (ushort)(g_reg_HL - 1);
+            g_reg_H = (byte)((newHL >> 8) & 0xFF);
+            g_reg_L = (byte)(newHL & 0xFF);
+            g_reg_B = (byte)(g_reg_B - 1);
             g_reg_PC += 2;
+            set_flag_z(g_reg_B == 0);
+            g_flag_N = 1;
+            g_clock = 16;
         }
         private void op_OUTDR()
         {
-            g_clock = 16;
+            do
+            {
+                ushort port = NormalizeIoPort(g_reg_BC);
+                byte value = read_byte(g_reg_HL);
+                write8(port, value);
+                ushort newHL = (ushort)(g_reg_HL - 1);
+                g_reg_H = (byte)((newHL >> 8) & 0xFF);
+                g_reg_L = (byte)(newHL & 0xFF);
+                g_reg_B = (byte)(g_reg_B - 1);
+                g_clock += 21;
+            } while (g_reg_B != 0);
             g_reg_PC += 2;
+            set_flag_z(g_reg_B == 0);
+            g_flag_N = 1;
+            g_clock += 16;
         }
         //--------------------------------------
+        private ushort NormalizeIoPort(ushort port)
+        {
+            ushort low = (ushort)(port & 0x00FF);
+            if (md_main.g_masterSystemMode)
+                return low;
+            if (low <= 0x03)
+                return (ushort)(0x4000 | low);
+            return low;
+        }
+
         private void op_DAA()
         {
             byte w_add = 0;

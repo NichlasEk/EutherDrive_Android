@@ -17,5 +17,6 @@ namespace EutherDrive.Core.MdTracerCore
     internal sealed class md_z80
     {
         public void irq_request(bool _) { }
+        public void irq_request(bool _, string __, byte ___) { }
     }
 }

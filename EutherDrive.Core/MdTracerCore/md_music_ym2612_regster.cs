@@ -7,6 +7,10 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private static readonly bool TraceDac =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmReg =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YMREG"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmIrq =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YMIRQ"), "1", StringComparison.Ordinal);
 
         private long _dacWriteCount;
         private long _dacEnableCount;
@@ -14,6 +18,10 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _dacLastValue;
         private bool _dacEnabled;
         private long _dacLastLogTicks;
+        private int _ymRegLogRemaining = 256;
+        private int _key28LogRemaining = 256;
+        private bool _key28KeyOffLogged;
+        private bool _ymIrqAsserted;
 
         private bool g_reg_22_lfo_enable;
         private int g_reg_22_lfo_inc;
@@ -24,6 +32,12 @@ namespace EutherDrive.Core.MdTracerCore
         private bool g_reg_27_enable_B;
         private bool g_reg_27_load_B;
         private bool g_reg_27_load_A;
+        private int _timerAReload = 1024;
+        private int _timerBReload = 256 << 4;
+        private int _timerACount = 1024;
+        private int _timerBCount = 256 << 4;
+        private double _timerTickFrac;
+        private bool _timersDrivenByZ80;
         private int g_reg_2a_dac_data;
         private int g_reg_2b_dac;
 
@@ -50,6 +64,17 @@ namespace EutherDrive.Core.MdTracerCore
             return g_com_status;
         }
 
+        public byte ReadStatus(bool clearOnRead)
+        {
+            byte status = g_com_status;
+            if (clearOnRead && (status & 0x03) != 0)
+            {
+                g_com_status &= 0xFC;
+                UpdateYmIrq("statusRead");
+            }
+            return status;
+        }
+
         public void write8(uint in_address, byte in_val)
         {
             int w_mode = -1;
@@ -62,6 +87,12 @@ namespace EutherDrive.Core.MdTracerCore
                 case 0:
                 {
                     g_reg_addr1 = in_val;
+                    if (TraceYmReg && in_val == 0x28 && _key28LogRemaining > 0)
+                    {
+                        _key28LogRemaining--;
+                        ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+                        Console.WriteLine($"[KEY28] pc=0x{pc:X4} sel=1 val=0x{in_val:X2}");
+                    }
                     break;
                 }
 
@@ -75,6 +106,12 @@ namespace EutherDrive.Core.MdTracerCore
                 case 2:
                 {
                     g_reg_addr2 = in_val;
+                    if (TraceYmReg && in_val == 0x28 && _key28LogRemaining > 0)
+                    {
+                        _key28LogRemaining--;
+                        ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+                        Console.WriteLine($"[KEY28] pc=0x{pc:X4} sel=2 val=0x{in_val:X2}");
+                    }
                     break;
                 }
 
@@ -91,6 +128,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             // skriv alltid till reg-matrisen
             g_reg[w_mode, w_addr] = in_val;
+            MaybeLogYmReg(w_mode, w_addr, in_val);
 
             // ------------------------------------------------------------
             // 0x20..0x2B (mode 0 only)
@@ -125,6 +163,7 @@ namespace EutherDrive.Core.MdTracerCore
                             {
                                 g_com_timerA_cnt = g_com_timerA = newTimerA;
                             }
+                            UpdateTimerA();
                             break;
                         }
 
@@ -137,6 +176,7 @@ namespace EutherDrive.Core.MdTracerCore
                             {
                                 g_com_timerA_cnt = g_com_timerA = newTimerA;
                             }
+                            UpdateTimerA();
                             break;
                         }
 
@@ -150,6 +190,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 g_com_timerB = newTimerB;
                                 g_com_timerB_cnt = g_com_timerB;
                             }
+                            UpdateTimerB();
                             break;
                         }
 
@@ -160,13 +201,21 @@ namespace EutherDrive.Core.MdTracerCore
                                 g_ch_reg_reflesh[2] = true;
                             }
 
-                            g_com_status &= (byte)((~in_val >> 4) & (in_val >> 2));
+                            if ((in_val & 0x10) != 0)
+                                g_com_status &= 0xFE;
+                            if ((in_val & 0x20) != 0)
+                                g_com_status &= 0xFD;
 
                             g_reg_27_mode = in_val;
                             g_reg_27_enable_B = (in_val & 0x08) != 0;
                             g_reg_27_enable_A = (in_val & 0x04) != 0;
                             g_reg_27_load_B = (in_val & 0x02) != 0;
                             g_reg_27_load_A = (in_val & 0x01) != 0;
+                            if (g_reg_27_load_A)
+                                _timerACount = _timerAReload;
+                            if (g_reg_27_load_B)
+                                _timerBCount = _timerBReload;
+                            UpdateYmIrq("reg27");
                             break;
                         }
 
@@ -174,6 +223,23 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             if ((in_val & 0x03) != 0x03)
                             {
+                                if (TraceYmReg && _key28LogRemaining > 0)
+                                {
+                                    int slotMask = (in_val >> 4) & 0x0F;
+                                    if (slotMask != 0)
+                                    {
+                                        _key28LogRemaining--;
+                                        ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+                                        Console.WriteLine($"[KEY28] pc=0x{pc:X4} val=0x{in_val:X2} ch={(in_val & 0x07)} slotmask=0x{slotMask:X1}");
+                                    }
+                                    else if (!_key28KeyOffLogged)
+                                    {
+                                        _key28KeyOffLogged = true;
+                                        _key28LogRemaining--;
+                                        ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+                                        Console.WriteLine($"[KEY28] pc=0x{pc:X4} val=0x{in_val:X2} ch={(in_val & 0x07)} slotmask=0x0");
+                                    }
+                                }
                                 int w_ch = KEYON_MAP[in_val & 0x07];
 
                                 if ((in_val & 0x10) != 0) Slot_Key_on(w_ch, 0); else Slot_Key_off(w_ch, 0);
@@ -431,6 +497,26 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
+        private void UpdateTimerA()
+        {
+            int reload = 1024 - g_reg_24_timerA;
+            if (reload <= 0)
+                reload = 1024;
+            _timerAReload = reload;
+            if (g_reg_27_load_A)
+                _timerACount = _timerAReload;
+        }
+
+        private void UpdateTimerB()
+        {
+            int reload = (256 - g_reg_26_timerB) << 4;
+            if (reload <= 0)
+                reload = 256 << 4;
+            _timerBReload = reload;
+            if (g_reg_27_load_B)
+                _timerBCount = _timerBReload;
+        }
+
         private void MaybeLogDac()
         {
             long now = Stopwatch.GetTimestamp();
@@ -454,6 +540,30 @@ namespace EutherDrive.Core.MdTracerCore
             Console.WriteLine(
                 "[YM-DAC] writes={0} enable={1} disable={2} enabled={3} last=0x{4:X2}",
                 writes, enables, disables, _dacEnabled ? 1 : 0, _dacLastValue);
+        }
+
+        private void MaybeLogYmReg(int port, byte addr, byte val)
+        {
+            if (!TraceYmReg || _ymRegLogRemaining <= 0)
+                return;
+            _ymRegLogRemaining--;
+            Console.WriteLine($"[YMREG] port={port} addr=0x{addr:X2} val=0x{val:X2}");
+        }
+
+        private void UpdateYmIrq(string reason)
+        {
+            bool shouldAssert = ((g_com_status & 0x01) != 0 && g_reg_27_enable_A)
+                || ((g_com_status & 0x02) != 0 && g_reg_27_enable_B);
+            if (shouldAssert != _ymIrqAsserted)
+            {
+                _ymIrqAsserted = shouldAssert;
+                if (TraceYmIrq)
+                {
+                    string state = shouldAssert ? "assert" : "clear";
+                    Console.WriteLine($"[YMIRQ] {state} reason={reason} status=0x{g_com_status:X2}");
+                }
+            }
+            md_main.g_md_z80?.irq_request(shouldAssert, "YM", g_com_status);
         }
     }
 }

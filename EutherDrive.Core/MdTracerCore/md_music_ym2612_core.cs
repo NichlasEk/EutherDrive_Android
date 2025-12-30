@@ -342,12 +342,38 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void timer_control()
         {
-            if (g_reg_27_load_A == true)
+            if (_timersDrivenByZ80 && md_main.g_md_z80 != null && md_main.g_md_z80.g_active)
+                return;
+            _timerTickFrac += (double)YM2612_CLOCK / (144.0 * YM2612_SAMPLING);
+            int ticks = (int)_timerTickFrac;
+            if (ticks <= 0)
+                return;
+            _timerTickFrac -= ticks;
+            StepTimers(ticks);
+        }
+
+        public void TickTimersFromZ80Cycles(int z80Cycles)
+        {
+            if (z80Cycles <= 0)
+                return;
+            _timersDrivenByZ80 = true;
+            _timerTickFrac += z80Cycles * (YM2612_CLOCK / 144.0) / Z80_CLOCK;
+            int ticks = (int)_timerTickFrac;
+            if (ticks <= 0)
+                return;
+            _timerTickFrac -= ticks;
+            StepTimers(ticks);
+        }
+
+        private void StepTimers(int ticks)
+        {
+            if (g_reg_27_enable_A)
             {
-                if ((g_com_timerA_cnt -= TIMER_CPU) <= 0)
+                int remaining = _timerACount - ticks;
+                while (remaining <= 0)
                 {
-                    g_com_status |= (byte)((g_reg_27_enable_A == true) ? 1 : 0);
-                    g_com_timerA_cnt += g_com_timerA;
+                    g_com_status |= 0x01;
+                    UpdateYmIrq("timerA");
                     if ((g_reg_27_mode & 0x80) != 0)
                     {
                         Slot_Key_on(2, 0);
@@ -355,15 +381,20 @@ namespace EutherDrive.Core.MdTracerCore
                         Slot_Key_on(2, 2);
                         Slot_Key_on(2, 3);
                     }
+                    remaining += _timerAReload;
                 }
+                _timerACount = remaining;
             }
-            if (g_reg_27_load_B == true)
+            if (g_reg_27_enable_B)
             {
-                if ((g_com_timerB_cnt -= TIMER_CPU) <= 0)
+                int remaining = _timerBCount - ticks;
+                while (remaining <= 0)
                 {
-                    g_com_status |= (byte)((g_reg_27_enable_B == true) ? 2 : 0);
-                    g_com_timerB_cnt += g_com_timerB;
+                    g_com_status |= 0x02;
+                    UpdateYmIrq("timerB");
+                    remaining += _timerBReload;
                 }
+                _timerBCount = remaining;
             }
         }
     }

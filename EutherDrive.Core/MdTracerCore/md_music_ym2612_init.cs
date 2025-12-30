@@ -8,6 +8,7 @@ namespace EutherDrive.Core.MdTracerCore
         private const int NUM_CHANNELS = 6;
         private const int NUM_SLOT = 4;
         private const uint YM2612_CLOCK = 7670454;
+        private const double Z80_CLOCK = 3579545.0;
         private const int YM2612_SAMPLING = 44100;
         private const double PI = 3.14159265358979323846;
         private const double EMU_CORRECTION = ((double)YM2612_CLOCK / 8000000f) * (8000000f / (double)YM2612_SAMPLING / 144f);
@@ -294,6 +295,12 @@ namespace EutherDrive.Core.MdTracerCore
             }
             write8(0, 0x2A);
             write8(1, 0x80);
+            _timerAReload = 1024;
+            _timerBReload = 256 << 4;
+            _timerACount = _timerAReload;
+            _timerBCount = _timerBReload;
+            _timerTickFrac = 0.0;
+            _timersDrivenByZ80 = false;
         }
     }
 }

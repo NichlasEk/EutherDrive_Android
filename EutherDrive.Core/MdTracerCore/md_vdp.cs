@@ -318,7 +318,8 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 g_vdp_status_7_vinterrupt = 1;
                 md_m68k.g_interrupt_V_req = true;
-                md_main.g_md_z80?.irq_request(true);
+                if (md_main.g_masterSystemMode)
+                    md_main.g_md_z80?.irq_request(true, "VDP", 0);
             }
             LogTriggerVBlank();
             LogVBlankEdge(1);
@@ -333,7 +334,8 @@ namespace EutherDrive.Core.MdTracerCore
             g_vdp_status_3_vbrank = 0;
             g_vdp_status_7_vinterrupt = 0;
             md_m68k.g_interrupt_V_req = false;
-            md_main.g_md_z80?.irq_request(false);
+            if (md_main.g_masterSystemMode)
+                md_main.g_md_z80?.irq_request(false, "VDP", 0);
             LogVBlankEdge(0);
         }
 

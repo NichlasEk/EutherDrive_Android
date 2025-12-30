@@ -52,6 +52,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_form_code_trace ??= new Form_Code_Trace();
 
             // Nollställ flaggor (UI kan slå på dem senare)
+            g_masterSystemMode = false;
             g_screenA_enable = g_screenB_enable = g_screenW_enable = g_screenS_enable = false;
             g_pattern_enable = g_pallete_enable = g_code_enable = false;
             g_io_enable = g_music_enable = g_registry_enable = g_flow_enable = false;

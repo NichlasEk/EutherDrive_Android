@@ -54,6 +54,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static long _smsCycleLogAccumBudget;
         private static long _smsCycleLogAccumActual;
         private const int SmsCycleLogIntervalMs = 1000;
+        private static bool _z80FrameScheduleLogged;
 
         // --- Kärnkomponenter ---
         internal static md_vdp g_md_vdp = new md_vdp();
@@ -121,6 +122,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             int lines = g_md_vdp.g_vertical_line_max;
             int z80LineBudget = SmsCyclesPerLine;
+            bool z80RunPerLine = g_masterSystemMode;
+            int z80FrameBudget = z80LineBudget * lines;
+            if (!z80RunPerLine && !_z80FrameScheduleLogged && MdLog.TraceZ80Win)
+            {
+                _z80FrameScheduleLogged = true;
+                Console.WriteLine($"[Z80SCHED] mode=frame budget={z80FrameBudget} lines={lines}");
+            }
 
             for (int vline = 0; vline < lines; vline++)
             {
@@ -129,8 +137,11 @@ namespace EutherDrive.Core.MdTracerCore
                 // Kör CPU:erna scanline-vis
                 if (!g_masterSystemMode)
                     g_md_m68k.run(VDL_LINE_RENDER_MC68_CLOCK);
-                g_md_z80.run(z80LineBudget);
+                if (z80RunPerLine)
+                    g_md_z80.run(z80LineBudget);
             }
+            if (!z80RunPerLine)
+                g_md_z80.run(z80FrameBudget);
 
             if (g_md_z80 != null)
             {

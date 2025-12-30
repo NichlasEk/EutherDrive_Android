@@ -19,3 +19,11 @@
 - If this loop spins, A11100 reads are still returning bit0=1 (bus not granted).
 - Verify busreq writes are seen and A11100 reads drop to 0 after the write.
   If not, consider accepting bit0 or bit8 for word writes in busreq handling.
+
+## Z80 window odd-byte reads (A00000..A0FFFF)
+- Some games poll odd Z80-window addresses like A01FFD for mailbox/handshake bits.
+- 68k byte reads on odd Z80-window addresses should map to the next even byte (addr+1).
+- Fix: apply odd-to-next mapping only for reads; keep writes unchanged to avoid corruption.
+- Controlled by `EUTHERDRIVE_Z80_ODD_READ_TO_NEXT` (default on) in:
+  - `EutherDrive.Core/MdTracerCore/md_bus.cs`
+  - `EutherDrive.Core/MegaDriveBus.cs`

@@ -27,6 +27,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private long _lastPresentLogTicks;
     private long _lastSampleLogTicks;
     private long _lastAudioLogTicks;
+    private long _lastAudioLevelTicks;
+    private long _lastAudioCoreLogTicks;
 
     private int _tick;
     private const int VLINES_NTSC = 262;
@@ -41,6 +43,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_TRACE"), "1", StringComparison.Ordinal);
     private static readonly bool TraceAudioEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceAudioLevel =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDLVL"), "1", StringComparison.Ordinal);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
 
@@ -131,6 +135,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
             md_main.PowerCycleReset();
             md_main.initialize();
+            MdTracerCore.MdLog.MaybeLogTraceBuildStamp();
             md_main.g_md_vdp = _vdp;
 
             if (isSms)
@@ -224,6 +229,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 $"VEC SP=0x{sp:X8} PC=0x{pc:X8} OP@PC=0x{op:X4} | CPU API ok";
             }
 
+            Console.WriteLine($"[ROMMODE] type={(isSms ? "SMS" : "MD")} masterSystemMode={(md_main.g_masterSystemMode ? 1 : 0)}");
             Reset();
             LogFrameBufferIdentity("LoadRom");
         }
@@ -780,12 +786,16 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
         _psgFrameAccumulator -= frames;
         int samples = frames * PsgChannels;
+        bool trackAudioLevel = TraceAudioLevel;
+        long mixSumSq = 0;
         if (_psgFrameBuffer.Length < samples)
             _psgFrameBuffer = new short[samples];
 
         int psgMin = 0;
         int psgMax = 0;
         bool psgMinMaxInit = false;
+        int psgPeak = 0;
+        int psgNonZero = 0;
         if (wantPsg)
         {
             var psg = music.g_md_sn76489;
@@ -806,9 +816,14 @@ public sealed class MdTracerAdapter : IEmulatorCore
                     if (sample < psgMin) psgMin = sample;
                     if (sample > psgMax) psgMax = sample;
                 }
+                int abs = sample < 0 ? -sample : sample;
+                if (abs > psgPeak) psgPeak = abs;
+                if (sample != 0) psgNonZero += PsgChannels;
                 int idx = i * PsgChannels;
                 _psgFrameBuffer[idx] = sample;
                 _psgFrameBuffer[idx + 1] = sample;
+                if (trackAudioLevel && !wantYm)
+                    mixSumSq += (long)sample * sample * PsgChannels;
             }
         }
         else
@@ -829,6 +844,10 @@ public sealed class MdTracerAdapter : IEmulatorCore
             int mixMin = 0;
             int mixMax = 0;
             bool mixMinMaxInit = false;
+            int ymPeak = 0;
+            int ymNonZero = 0;
+            int mixPeak = 0;
+            int mixNonZero = 0;
             for (int i = 0; i < samples; i++)
             {
                 int ymSample = _ymFrameBuffer[i];
@@ -843,6 +862,9 @@ public sealed class MdTracerAdapter : IEmulatorCore
                     if (ymSample < ymMin) ymMin = ymSample;
                     if (ymSample > ymMax) ymMax = ymSample;
                 }
+                int ymAbs = ymSample < 0 ? -ymSample : ymSample;
+                if (ymAbs > ymPeak) ymPeak = ymAbs;
+                if (ymSample != 0) ymNonZero++;
 
                 int mixed = _psgFrameBuffer[i] + _ymFrameBuffer[i];
                 if (mixed > short.MaxValue) mixed = short.MaxValue;
@@ -860,16 +882,81 @@ public sealed class MdTracerAdapter : IEmulatorCore
                     if (mixed < mixMin) mixMin = mixed;
                     if (mixed > mixMax) mixMax = mixed;
                 }
+                int mixAbs = mixed < 0 ? -mixed : mixed;
+                if (mixAbs > mixPeak) mixPeak = mixAbs;
+                if (mixed != 0) mixNonZero++;
+                if (trackAudioLevel)
+                    mixSumSq += (long)mixed * mixed;
             }
 
             if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
             {
                 Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax} samples={samples}");
             }
+
+            if (trackAudioLevel && ShouldLogPerSecond(ref _lastAudioLevelTicks))
+            {
+                double rms = samples > 0 ? Math.Sqrt(mixSumSq / (double)samples) : 0;
+                Console.WriteLine($"[AUDLVL] min={mixMin} max={mixMax} rms={rms:F1} samples={samples}");
+            }
+
+            if (ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
+            {
+                if (trackAudioLevel)
+                {
+                    if (wantPsg)
+                        Console.WriteLine($"[PSGLVL] peak={psgPeak} samples={samples}");
+                    Console.WriteLine($"[YMLVL] peak={ymPeak} samples={samples}");
+                }
+                int outVolMin = 0;
+                int outVolMax = 0;
+                if (music.g_out_vol != null && music.g_out_vol.Length > 0)
+                {
+                    outVolMin = music.g_out_vol[0];
+                    outVolMax = music.g_out_vol[0];
+                    for (int i = 1; i < music.g_out_vol.Length; i++)
+                    {
+                        int v = music.g_out_vol[i];
+                        if (v < outVolMin) outVolMin = v;
+                        if (v > outVolMax) outVolMax = v;
+                    }
+                }
+                Console.WriteLine(
+                    $"[AUDIOCORE] frames={frames} psgPeak={psgPeak} ymPeak={ymPeak} mixPeak={mixPeak} " +
+                    $"psgNZ={psgNonZero} ymNZ={ymNonZero} mixNZ={mixNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
+            }
         }
         else if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
         {
             Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin=NA ymMax=NA mixMin=NA mixMax=NA samples={samples}");
+        }
+
+        if (trackAudioLevel && !wantYm && ShouldLogPerSecond(ref _lastAudioLevelTicks))
+        {
+            double rms = samples > 0 ? Math.Sqrt(mixSumSq / (double)samples) : 0;
+            Console.WriteLine($"[AUDLVL] min={psgMin} max={psgMax} rms={rms:F1} samples={samples}");
+        }
+
+        if (!wantYm && ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
+        {
+            if (trackAudioLevel && wantPsg)
+                Console.WriteLine($"[PSGLVL] peak={psgPeak} samples={samples}");
+            int outVolMin = 0;
+            int outVolMax = 0;
+            if (music.g_out_vol != null && music.g_out_vol.Length > 0)
+            {
+                outVolMin = music.g_out_vol[0];
+                outVolMax = music.g_out_vol[0];
+                for (int i = 1; i < music.g_out_vol.Length; i++)
+                {
+                    int v = music.g_out_vol[i];
+                    if (v < outVolMin) outVolMin = v;
+                    if (v > outVolMax) outVolMax = v;
+                }
+            }
+            Console.WriteLine(
+                $"[AUDIOCORE] frames={frames} psgPeak={psgPeak} ymPeak=0 mixPeak={psgPeak} " +
+                $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
         }
 
         _psgFrameSamples = samples;
@@ -894,12 +981,16 @@ public sealed class MdTracerAdapter : IEmulatorCore
             return ReadOnlySpan<short>.Empty;
 
         int samples = frames * PsgChannels;
+        bool trackAudioLevel = TraceAudioLevel;
+        long mixSumSq = 0;
         if (_psgFrameBuffer.Length < samples)
             _psgFrameBuffer = new short[samples];
 
         int psgMin = 0;
         int psgMax = 0;
         bool psgMinMaxInit = false;
+        int psgPeak = 0;
+        int psgNonZero = 0;
         if (wantPsg)
         {
             var psg = music.g_md_sn76489;
@@ -920,9 +1011,14 @@ public sealed class MdTracerAdapter : IEmulatorCore
                     if (sample < psgMin) psgMin = sample;
                     if (sample > psgMax) psgMax = sample;
                 }
+                int abs = sample < 0 ? -sample : sample;
+                if (abs > psgPeak) psgPeak = abs;
+                if (sample != 0) psgNonZero += PsgChannels;
                 int idx = i * PsgChannels;
                 _psgFrameBuffer[idx] = sample;
                 _psgFrameBuffer[idx + 1] = sample;
+                if (trackAudioLevel && !wantYm)
+                    mixSumSq += (long)sample * sample * PsgChannels;
             }
         }
         else
@@ -936,6 +1032,10 @@ public sealed class MdTracerAdapter : IEmulatorCore
         int mixMin = 0;
         int mixMax = 0;
         bool mixMinMaxInit = false;
+        int ymPeak = 0;
+        int ymNonZero = 0;
+        int mixPeak = 0;
+        int mixNonZero = 0;
         if (wantYm)
         {
             if (_ymFrameBuffer.Length < samples)
@@ -957,6 +1057,9 @@ public sealed class MdTracerAdapter : IEmulatorCore
                     if (ymSample < ymMin) ymMin = ymSample;
                     if (ymSample > ymMax) ymMax = ymSample;
                 }
+                int ymAbs = ymSample < 0 ? -ymSample : ymSample;
+                if (ymAbs > ymPeak) ymPeak = ymAbs;
+                if (ymSample != 0) ymNonZero++;
 
                 int mixed = _psgFrameBuffer[i] + _ymFrameBuffer[i];
                 if (mixed > short.MaxValue) mixed = short.MaxValue;
@@ -974,16 +1077,81 @@ public sealed class MdTracerAdapter : IEmulatorCore
                     if (mixed < mixMin) mixMin = mixed;
                     if (mixed > mixMax) mixMax = mixed;
                 }
+                int mixAbs = mixed < 0 ? -mixed : mixed;
+                if (mixAbs > mixPeak) mixPeak = mixAbs;
+                if (mixed != 0) mixNonZero++;
+                if (trackAudioLevel)
+                    mixSumSq += (long)mixed * mixed;
             }
 
             if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
             {
                 Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax} samples={samples}");
             }
+
+            if (trackAudioLevel && ShouldLogPerSecond(ref _lastAudioLevelTicks))
+            {
+                double rms = samples > 0 ? Math.Sqrt(mixSumSq / (double)samples) : 0;
+                Console.WriteLine($"[AUDLVL] min={mixMin} max={mixMax} rms={rms:F1} samples={samples}");
+            }
+
+            if (ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
+            {
+                if (trackAudioLevel)
+                {
+                    if (wantPsg)
+                        Console.WriteLine($"[PSGLVL] peak={psgPeak} samples={samples}");
+                    Console.WriteLine($"[YMLVL] peak={ymPeak} samples={samples}");
+                }
+                int outVolMin = 0;
+                int outVolMax = 0;
+                if (music.g_out_vol != null && music.g_out_vol.Length > 0)
+                {
+                    outVolMin = music.g_out_vol[0];
+                    outVolMax = music.g_out_vol[0];
+                    for (int i = 1; i < music.g_out_vol.Length; i++)
+                    {
+                        int v = music.g_out_vol[i];
+                        if (v < outVolMin) outVolMin = v;
+                        if (v > outVolMax) outVolMax = v;
+                    }
+                }
+                Console.WriteLine(
+                    $"[AUDIOCORE] frames={frames} psgPeak={psgPeak} ymPeak={ymPeak} mixPeak={mixPeak} " +
+                    $"psgNZ={psgNonZero} ymNZ={ymNonZero} mixNZ={mixNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
+            }
         }
         else if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
         {
             Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin=NA ymMax=NA mixMin=NA mixMax=NA samples={samples}");
+        }
+
+        if (trackAudioLevel && !wantYm && ShouldLogPerSecond(ref _lastAudioLevelTicks))
+        {
+            double rms = samples > 0 ? Math.Sqrt(mixSumSq / (double)samples) : 0;
+            Console.WriteLine($"[AUDLVL] min={psgMin} max={psgMax} rms={rms:F1} samples={samples}");
+        }
+
+        if (!wantYm && ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
+        {
+            if (trackAudioLevel && wantPsg)
+                Console.WriteLine($"[PSGLVL] peak={psgPeak} samples={samples}");
+            int outVolMin = 0;
+            int outVolMax = 0;
+            if (music.g_out_vol != null && music.g_out_vol.Length > 0)
+            {
+                outVolMin = music.g_out_vol[0];
+                outVolMax = music.g_out_vol[0];
+                for (int i = 1; i < music.g_out_vol.Length; i++)
+                {
+                    int v = music.g_out_vol[i];
+                    if (v < outVolMin) outVolMin = v;
+                    if (v > outVolMax) outVolMax = v;
+                }
+            }
+            Console.WriteLine(
+                $"[AUDIOCORE] frames={frames} psgPeak={psgPeak} ymPeak=0 mixPeak={psgPeak} " +
+                $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
         }
 
         _psgFrameSamples = samples;

@@ -690,7 +690,19 @@ public partial class MainWindow : Window
             var timed = adapter.GetAudioBufferForFrames(frames, out int timedRate, out int timedChannels);
             long genTicks = AudioStatsEnabled ? Stopwatch.GetTimestamp() - genStart : 0;
             if (timed.IsEmpty)
+            {
+                Console.WriteLine($"[AUDLVL] timed EMPTY framesReq={frames} rate={timedRate} ch={timedChannels}");
                 return;
+            }
+
+            int timedPeak = 0;
+            for (int i = 0; i < timed.Length; i++)
+            {
+                int v = timed[i];
+                if (v < 0) v = -v;
+                if (v > timedPeak) timedPeak = v;
+            }
+            Console.WriteLine($"[AUDLVL] timed peak={timedPeak} samples={timed.Length} rate={timedRate} ch={timedChannels} framesReq={frames}");
 
             if (timedRate != AudioSampleRate || timedChannels != AudioChannels)
             {
@@ -715,7 +727,19 @@ public partial class MainWindow : Window
         var audio = _core.GetAudioBuffer(out int sampleRate, out int channels);
         long genTicksFrame = AudioStatsEnabled ? Stopwatch.GetTimestamp() - genStartFrame : 0;
         if (audio.IsEmpty)
+        {
+            Console.WriteLine("[AUDLVL] frame EMPTY");
             return;
+        }
+
+        int framePeak = 0;
+        for (int i = 0; i < audio.Length; i++)
+        {
+            int v = audio[i];
+            if (v < 0) v = -v;
+            if (v > framePeak) framePeak = v;
+        }
+        Console.WriteLine($"[AUDLVL] frame peak={framePeak} samples={audio.Length} rate={sampleRate} ch={channels}");
 
         if (sampleRate != AudioSampleRate || channels != AudioChannels)
         {
@@ -835,7 +859,19 @@ public partial class MainWindow : Window
 
         var audio = _core.GetAudioBuffer(out int sampleRate, out int channels);
         if (audio.IsEmpty)
+        {
+            Console.WriteLine("[AUDLVL] pcm EMPTY");
             return;
+        }
+
+        int peak = 0;
+        for (int i = 0; i < audio.Length; i++)
+        {
+            int v = audio[i];
+            if (v < 0) v = -v;
+            if (v > peak) peak = v;
+        }
+        Console.WriteLine($"[AUDLVL] peak={peak} samples={audio.Length} rate={sampleRate} channels={channels}");
 
         _audioOutput.Start(sampleRate, channels);
         _audioOutput.Submit(audio);

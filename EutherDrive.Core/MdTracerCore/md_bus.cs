@@ -36,7 +36,7 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Mbx =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80MBX"), "1", StringComparison.Ordinal);
-        private static readonly bool MapZ80OddToNext = false;
+        private static bool MapZ80OddReadToNext => ReadEnvDefaultOn("EUTHERDRIVE_Z80_ODD_READ_TO_NEXT");
         private static bool TraceZ80Sig => MdLog.TraceZ80Sig;
         private static bool MirrorZ80Mailbox => ReadEnvDefaultOn("EUTHERDRIVE_MBX_MIRROR");
         private static bool _ymEnabled =
@@ -157,7 +157,7 @@ namespace EutherDrive.Core.MdTracerCore
                 if (!CanAccessZ80BusRange(in_address, 1))
                     return 0xFF;
                 uint z80Addr = in_address;
-                if (MapZ80OddToNext && (in_address & 1) != 0)
+                if (MapZ80OddReadToNext && (in_address & 1) != 0)
                     z80Addr = in_address + 1;
                 byte val = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
                 LogZ80MailboxRead("8", z80Addr, val);
@@ -357,8 +357,6 @@ namespace EutherDrive.Core.MdTracerCore
                     return;
                 }
                 uint z80Addr = in_address;
-                if (MapZ80OddToNext && (in_address & 1) != 0)
-                    z80Addr = in_address + 1;
                 if ((in_address & 0xFFFFFE) == 0xA06000)
                     LogZ80BankRegWrite("8", in_address, in_data);
                 LogZ80Win68kOnce("byte", z80Addr, in_data);

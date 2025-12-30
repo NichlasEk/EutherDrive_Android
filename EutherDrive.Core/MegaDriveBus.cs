@@ -39,6 +39,8 @@ public sealed class MegaDriveBus
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal);
     private static readonly bool TraceZ80Win =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN"), "1", StringComparison.Ordinal);
+    private static bool TraceZ80Sig => MdTracerCore.MdLog.TraceZ80Sig;
+    private static bool MapZ80OddReadToNext => ReadEnvDefaultOn("EUTHERDRIVE_Z80_ODD_READ_TO_NEXT");
 
     public MegaDriveBus(byte[] rom)
     {
@@ -73,6 +75,13 @@ public sealed class MegaDriveBus
     private static bool IsZ80Window(uint addr) => (addr & 0xFFFF00) == 0xA00000;
     private static bool IsZ80BusReq(uint addr) => (addr & 0xFFFFFE) == 0xA11100;
     private static bool IsZ80Reset(uint addr) => (addr & 0xFFFFFE) == 0xA11200;
+    private static bool ReadEnvDefaultOn(string name)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrEmpty(raw))
+            return true;
+        return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+    }
 
     // 68k ROM space: 0x000000..0x3FFFFF
     // 68k WRAM:      0xFF0000..0xFFFFFF
@@ -122,7 +131,10 @@ public sealed class MegaDriveBus
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
-            byte val = md_main.g_md_z80.read8(addr & 0xFFFF);
+            uint z80Addr = addr & 0xFFFF;
+            if (MapZ80OddReadToNext && (z80Addr & 1) != 0)
+                z80Addr = (z80Addr + 1) & 0xFFFF;
+            byte val = md_main.g_md_z80.read8(z80Addr);
             LogZ80WindowRead(addr, val);
             return val;
         }
@@ -148,7 +160,7 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
-            ushort val = _z80BusRequested ? (ushort)0x0000 : (ushort)0x0001;
+            ushort val = _z80BusRequested ? (ushort)0x0000 : (ushort)0x0101;
             LogZ80RegRead(addr, val);
             LogBusAccess("busreq read16", addr, val);
             md_m68k.RecordBusAccess(addr, 2, false, val);
@@ -226,7 +238,7 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
-            uint val = _z80BusRequested ? 0x0000_0000u : 0x0000_0001u;
+            uint val = _z80BusRequested ? 0x0000_0000u : 0x0101_0101u;
             LogZ80RegRead(addr, val);
             LogBusAccess("busreq read32", addr, val);
             md_m68k.RecordBusAccess(addr, 4, false, val);
@@ -319,22 +331,40 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
+            bool prev = _z80BusRequested;
             _z80BusRequested = (value & 0x01) != 0;
+            if (md_main.g_md_z80 != null)
+                md_main.g_md_z80.g_active = !_z80BusRequested && !_z80Reset;
             LogZ80RegWrite(addr, value);
             LogBusAccess("busreq write8", addr, value);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80BUSREQ] write addr=0x{addr:X6} value=0x{value:X2}");
+            if (prev != _z80BusRequested && TraceZ80Sig)
+                Console.WriteLine($"[Z80SIG] BUSREQ={(_z80BusRequested ? 1 : 0)} (stopOn={(_z80BusRequested ? 1 : 0)})");
             md_m68k.RecordBusAccess(addr, 1, true, value);
             return;
         }
 
         if (IsZ80Reset(addr))
         {
-            _z80Reset = (value & 0x01) == 0;
+            bool next = (value & 0x01) == 0;
+            bool prev = _z80Reset;
+            _z80Reset = next;
+            if (md_main.g_md_z80 != null)
+            {
+                if (next && !prev)
+                {
+                    md_main.BeginZ80ResetCycle();
+                    md_main.g_md_z80.reset();
+                }
+                md_main.g_md_z80.g_active = !next && !_z80BusRequested;
+            }
             LogZ80RegWrite(addr, value);
             LogBusAccess("reset write8", addr, value);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X2}");
+            if (prev != next && TraceZ80Sig)
+                Console.WriteLine($"[Z80SIG] RESET={(next ? 1 : 0)} ({(next ? "assert" : "deassert")})");
             md_m68k.RecordBusAccess(addr, 1, true, value);
             return;
         }
@@ -398,22 +428,40 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
-            _z80BusRequested = (value & 0x0100) != 0;
+            bool prev = _z80BusRequested;
+            _z80BusRequested = (value & 0x0101) != 0;
+            if (md_main.g_md_z80 != null)
+                md_main.g_md_z80.g_active = !_z80BusRequested && !_z80Reset;
             LogZ80RegWrite(addr, value);
             LogBusAccess("busreq write16", addr, value);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80BUSREQ] write addr=0x{addr:X6} value=0x{value:X4}");
+            if (prev != _z80BusRequested && TraceZ80Sig)
+                Console.WriteLine($"[Z80SIG] BUSREQ={(_z80BusRequested ? 1 : 0)} (stopOn={(_z80BusRequested ? 1 : 0)})");
             md_m68k.RecordBusAccess(addr, 2, true, value);
             return;
         }
 
         if (IsZ80Reset(addr))
         {
-            _z80Reset = (value & 0x0100) == 0;
+            bool next = (value & 0x0101) == 0;
+            bool prev = _z80Reset;
+            _z80Reset = next;
+            if (md_main.g_md_z80 != null)
+            {
+                if (next && !prev)
+                {
+                    md_main.BeginZ80ResetCycle();
+                    md_main.g_md_z80.reset();
+                }
+                md_main.g_md_z80.g_active = !next && !_z80BusRequested;
+            }
             LogZ80RegWrite(addr, value);
             LogBusAccess("reset write16", addr, value);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X4}");
+            if (prev != next && TraceZ80Sig)
+                Console.WriteLine($"[Z80SIG] RESET={(next ? 1 : 0)} ({(next ? "assert" : "deassert")})");
             md_m68k.RecordBusAccess(addr, 2, true, value);
             return;
         }
@@ -455,22 +503,40 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
-            _z80BusRequested = (value & 0x0100_0000u) != 0;
+            bool prev = _z80BusRequested;
+            _z80BusRequested = (value & 0x0101_0101u) != 0;
+            if (md_main.g_md_z80 != null)
+                md_main.g_md_z80.g_active = !_z80BusRequested && !_z80Reset;
             LogZ80RegWrite(addr, value);
             LogBusAccess("busreq write32", addr, value);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80BUSREQ] write addr=0x{addr:X6} value=0x{value:X8}");
+            if (prev != _z80BusRequested && TraceZ80Sig)
+                Console.WriteLine($"[Z80SIG] BUSREQ={(_z80BusRequested ? 1 : 0)} (stopOn={(_z80BusRequested ? 1 : 0)})");
             md_m68k.RecordBusAccess(addr, 4, true, value);
             return;
         }
 
         if (IsZ80Reset(addr))
         {
-            _z80Reset = (value & 0x0100_0000u) == 0;
+            bool next = (value & 0x0101_0101u) == 0;
+            bool prev = _z80Reset;
+            _z80Reset = next;
+            if (md_main.g_md_z80 != null)
+            {
+                if (next && !prev)
+                {
+                    md_main.BeginZ80ResetCycle();
+                    md_main.g_md_z80.reset();
+                }
+                md_main.g_md_z80.g_active = !next && !_z80BusRequested;
+            }
             LogZ80RegWrite(addr, value);
             LogBusAccess("reset write32", addr, value);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X8}");
+            if (prev != next && TraceZ80Sig)
+                Console.WriteLine($"[Z80SIG] RESET={(next ? 1 : 0)} ({(next ? "assert" : "deassert")})");
             md_m68k.RecordBusAccess(addr, 4, true, value);
             return;
         }
