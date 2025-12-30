@@ -63,10 +63,13 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BOOT"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Stats =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_STATS"), "1", StringComparison.Ordinal);
+        private static readonly bool DumpZ80Ram =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_Z80_RAM"), "1", StringComparison.Ordinal);
         private static readonly bool HaltOnBusReq =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_HALT_ON_BUSREQ"), "1", StringComparison.Ordinal);
 
         private long _instrThrottleCounter;
+        private bool _z80Dumped;
         private bool _pcLeftBootRangeSinceLastSummary;
         private long _z80StatsLastTicks;
         private long _z80StatsInstrCount;
@@ -127,6 +130,7 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_SMS_DELAYS"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Console =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80"), "1", StringComparison.Ordinal);
+        private static bool TraceZ80Step => MdTracerCore.MdLog.TraceZ80Step;
         private long _delayTraceFrame = -1;
         private bool _delayEntryLogged;
         private bool _delayExitLogged;
@@ -136,6 +140,10 @@ namespace EutherDrive.Core.MdTracerCore
         private int _resetCallsThisCycle;
         private int _lastResetCycleId;
         private bool _duplicateResetLogged;
+        private int _traceStepRemaining;
+        private bool _lastCanRun;
+        private string _irqSource = "unknown";
+        private byte _irqStatus;
 
         //----------------------------------------------------------------
         public md_z80()
@@ -189,7 +197,16 @@ namespace EutherDrive.Core.MdTracerCore
             #endif
 
             MaybeLogZ80Stats();
-            if (HaltOnBusReq && (md_main.g_md_bus?.Z80BusGranted ?? false))
+            bool busRequested = md_main.g_md_bus?.Z80BusGranted ?? false;
+            bool reset = md_main.g_md_bus?.Z80Reset ?? false;
+            bool canRun = g_active && !busRequested && !reset;
+            if (TraceZ80Step && !_lastCanRun && canRun)
+            {
+                _traceStepRemaining = 64;
+            }
+            _lastCanRun = canRun;
+
+            if (HaltOnBusReq && busRequested)
                 return;
             if (g_active == false) return;
 
@@ -218,6 +235,7 @@ namespace EutherDrive.Core.MdTracerCore
                     if (g_halt) g_reg_PC += 1;
 
                     g_interrupt_irq = false;
+                    LogZ80Int(false, _irqSource, _irqStatus, "service");
                         g_IFF1 = false;
                         g_IFF2 = false;
                         g_halt = false;
@@ -256,6 +274,11 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             byte opcode = g_opcode1;
+            if (TraceZ80Step && _traceStepRemaining > 0)
+            {
+                Console.WriteLine($"[Z80STEP] pc=0x{pcBefore:X4} op=0x{opcode:X2} busreq={(busRequested ? 1 : 0)} reset={(reset ? 1 : 0)}");
+                _traceStepRemaining--;
+            }
             bool log0576After = TraceSmsDelay && !_delayExitLogged && pcBefore == 0x0576;
             bool djnzTracePending = TraceSmsDelay && opcode == 0x10 && _djnzLogCount < DjnzLogLimit;
             byte djnzBefore = g_reg_B;
@@ -286,6 +309,7 @@ namespace EutherDrive.Core.MdTracerCore
             ThrottleInstructionLog(opcode);
             g_operand[opcode]();   // exekvera en instruktion
             cyclesConsumed += g_clock;
+            md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(g_clock);
 
             if (log0576After)
                 LogSmsDelayExit(pcBefore);
@@ -337,7 +361,42 @@ namespace EutherDrive.Core.MdTracerCore
     private void TrackPcBootRange()
     {
         if (g_reg_PC > 0x01FF)
+        {
             _pcLeftBootRangeSinceLastSummary = true;
+            MaybeDumpZ80Ram("pc>01FF");
+        }
+    }
+
+    private void MaybeDumpZ80Ram(string reason)
+    {
+        if (!DumpZ80Ram || _z80Dumped)
+            return;
+        if (g_ram == null || g_ram.Length == 0)
+            return;
+        _z80Dumped = true;
+        Console.WriteLine(
+            $"[Z80DUMP] reason={reason} PC=0x{g_reg_PC:X4} SP=0x{g_reg_SP:X4} " +
+            $"A=0x{g_reg_A:X2} BC=0x{g_reg_BC:X4} " +
+            $"DE=0x{g_reg_DE:X4} HL=0x{g_reg_HL:X4} IX=0x{g_reg_IX:X4} " +
+            $"IY=0x{g_reg_IY:X4} I=0x{g_reg_I:X2} R=0x{g_reg_R:X2} bank=0x{g_bank_register:X6}");
+        DumpZ80Region(0x0000, 0x0200);
+        DumpZ80Region(0x1B80, 0x0080);
+    }
+
+    private void DumpZ80Region(int start, int length)
+    {
+        int end = Math.Min(start + length, g_ram.Length);
+        for (int addr = start; addr < end; addr += 16)
+        {
+            int lineLen = Math.Min(16, end - addr);
+            var sb = new StringBuilder(16 * 3 + 16);
+            sb.Append("[Z80RAM] ").Append(addr.ToString("X4")).Append(": ");
+            for (int i = 0; i < lineLen; i++)
+            {
+                sb.Append(g_ram[addr + i].ToString("X2")).Append(' ');
+            }
+            Console.WriteLine(sb.ToString().TrimEnd());
+        }
     }
 
     private void LogSmsDelayEntry(ushort pc)
@@ -392,7 +451,28 @@ namespace EutherDrive.Core.MdTracerCore
 
     public void irq_request(bool in_val)
     {
+        irq_request(in_val, "unknown", 0);
+    }
+
+    public void irq_request(bool in_val, string source, byte status)
+    {
+        bool prev = g_interrupt_irq;
         g_interrupt_irq = in_val;
+        if (in_val)
+        {
+            _irqSource = source;
+            _irqStatus = status;
+        }
+        if (prev != in_val)
+            LogZ80Int(in_val, source, status, "signal");
+    }
+
+    private void LogZ80Int(bool asserted, string source, byte status, string reason)
+    {
+        if (!MdTracerCore.MdLog.TraceZ80Int)
+            return;
+        string state = asserted ? "asserted" : "cleared";
+        Console.WriteLine($"[Z80INT] {state} source={source} status=0x{status:X2} pc=0x{g_reg_PC:X4} reason={reason}");
     }
 
         public void reset()
@@ -435,7 +515,9 @@ namespace EutherDrive.Core.MdTracerCore
             g_IFF1 = false;
             g_IFF2 = false;
 
-            g_bank_register = md_main.g_masterSystemMode ? 0u : 0xff8000u;
+            g_bank_register = 0u;
+            ResetMailboxShadow();
+            _z80Dumped = false;
             _smsBankSelect = 0;
             _smsInstructionLog = 0;
             _smsLoopPc = 0;
@@ -443,6 +525,9 @@ namespace EutherDrive.Core.MdTracerCore
             _instrThrottleCounter = 0;
             _pcLeftBootRangeSinceLastSummary = false;
             g_active = true;
+            if (TraceZ80Step)
+                _traceStepRemaining = 64;
+            ResetTraceBudgets();
         }
 
         // ---- Prefixgrenar -----------------------------------------------------
