@@ -337,6 +337,8 @@ public partial class MainWindow : Window
 
             // skapa bitmap utifrån core-storlek
             EnsureBitmapFromCore();
+            if (SplashImage != null && !string.IsNullOrWhiteSpace(_romPath))
+                SplashImage.IsVisible = false;
             StartHeartbeat();
 
             _timer.Start();
