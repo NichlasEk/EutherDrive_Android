@@ -109,8 +109,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else if (a >= 0x7F00 && a <= 0x7FFF)
             {
-                // VDP via 68k-bussen (0xC00000 + låga 5 bitar)
-                uint vdpAddr = 0xC00000u + (uint)(a & 0x1F);
+                // VDP via 68k-bussen (mirrora till giltiga VDP-portar)
+                uint vdpAddr = 0xC00000u + (uint)(a & 0x0E);
                 if (md_main.g_md_bus != null)
                     w_out = md_main.g_md_bus.read8(vdpAddr);
                 else if (md_main.g_md_vdp != null)
@@ -193,6 +193,7 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     if (MirrorZ80Mailbox)
                         MaybeMirrorMailboxWriteZ80(a, in_data);
+                    ClearMailboxShadowEntry(a - 0x1B80);
                     if (MbxSyncTrace.IsEnabled)
                     {
                         string dump = BuildMailboxDump();
@@ -242,8 +243,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else if (a >= 0x7F00 && a <= 0x7FFF)
             {
-                // VDP via 68k-bussen (0xC00000 + låga 5 bitar)
-                uint vdpAddr = 0xC00000u + (uint)(a & 0x1F);
+                // VDP via 68k-bussen (mirrora till giltiga VDP-portar)
+                uint vdpAddr = 0xC00000u + (uint)(a & 0x0E);
                 if (md_main.g_md_bus != null)
                     md_main.g_md_bus.write8(vdpAddr, in_data);
                 else
@@ -396,6 +397,21 @@ namespace EutherDrive.Core.MdTracerCore
         private void ResetMailboxShadow()
         {
             Array.Clear(_mbxShadow, 0, _mbxShadow.Length);
+            _mbxShadowValid = false;
+        }
+
+        private void ClearMailboxShadowEntry(int offset)
+        {
+            if (!_mbxShadowValid)
+                return;
+            if ((uint)offset >= _mbxShadow.Length)
+                return;
+            _mbxShadow[offset] = 0;
+            for (int i = 0; i < _mbxShadow.Length; i++)
+            {
+                if (_mbxShadow[i] != 0)
+                    return;
+            }
             _mbxShadowValid = false;
         }
 

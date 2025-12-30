@@ -97,7 +97,7 @@ namespace EutherDrive.Core.MdTracerCore
                         w_out = g_vsram[(g_vdp_reg_dest_address >> 1) % 40];
                         break;
                     default:
-                        Error("read16: data port with invalid code");
+                        w_out = 0xFFFF;
                         break;
                 }
                 g_vdp_reg_dest_address = (ushort)(g_vdp_reg_dest_address + g_vdp_reg_15_autoinc);
@@ -120,7 +120,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else
             {
-                Error("read16: invalid address");
+                w_out = 0xFFFF;
             }
 
             return w_out;

@@ -75,6 +75,7 @@ public sealed class MegaDriveBus
     private static bool IsZ80Window(uint addr) => (addr & 0xFFFF00) == 0xA00000;
     private static bool IsZ80BusReq(uint addr) => (addr & 0xFFFFFE) == 0xA11100;
     private static bool IsZ80Reset(uint addr) => (addr & 0xFFFFFE) == 0xA11200;
+    private static bool IsZ80Mailbox(uint addr) => addr >= 0xA01B80 && addr <= 0xA01B8F;
     private static bool ReadEnvDefaultOn(string name)
     {
         string? raw = Environment.GetEnvironmentVariable(name);
@@ -211,6 +212,15 @@ public sealed class MegaDriveBus
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
+            if (IsZ80Mailbox(addr) || IsZ80Mailbox(addr + 1))
+            {
+                byte mbxHi = md_main.g_md_z80.read8(addr & 0xFFFF);
+                byte mbxLo = md_main.g_md_z80.read8((addr + 1) & 0xFFFF);
+                ushort mbxVal = (ushort)((mbxHi << 8) | mbxLo);
+                LogZ80WindowRead(addr, mbxVal);
+                md_m68k.RecordBusAccess(addr, 2, false, mbxVal);
+                return mbxVal;
+            }
             ushort windowVal;
             if (MegaDriveBusProfiler.Enabled)
             {
@@ -485,6 +495,16 @@ public sealed class MegaDriveBus
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
+            if (IsZ80Mailbox(addr) || IsZ80Mailbox(addr + 1))
+            {
+                byte mbxHi = (byte)((value >> 8) & 0xFF);
+                byte mbxLo = (byte)(value & 0xFF);
+                md_main.g_md_z80.write8(addr & 0xFFFF, mbxHi);
+                md_main.g_md_z80.write8((addr + 1) & 0xFFFF, mbxLo);
+                LogZ80WindowWrite(addr, value);
+                md_m68k.RecordBusAccess(addr, 2, true, value);
+                return;
+            }
             LogVdpWrite(addr, addr, 16, value, "Z80");
             md_main.g_md_z80.write16(addr & 0xFFFF, value);
             LogZ80WindowWrite(addr, value);
@@ -560,6 +580,21 @@ public sealed class MegaDriveBus
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
+            if (IsZ80Mailbox(addr) || IsZ80Mailbox(addr + 1) ||
+                IsZ80Mailbox(addr + 2) || IsZ80Mailbox(addr + 3))
+            {
+                byte mbxB3 = (byte)((value >> 24) & 0xFF);
+                byte mbxB2 = (byte)((value >> 16) & 0xFF);
+                byte mbxB1 = (byte)((value >> 8) & 0xFF);
+                byte mbxB0 = (byte)(value & 0xFF);
+                md_main.g_md_z80.write8(addr & 0xFFFF, mbxB3);
+                md_main.g_md_z80.write8((addr + 1) & 0xFFFF, mbxB2);
+                md_main.g_md_z80.write8((addr + 2) & 0xFFFF, mbxB1);
+                md_main.g_md_z80.write8((addr + 3) & 0xFFFF, mbxB0);
+                LogZ80WindowWrite(addr, value);
+                md_m68k.RecordBusAccess(addr, 4, true, value);
+                return;
+            }
             LogVdpWrite(addr, addr, 32, value, "Z80");
             md_main.g_md_z80.write32(addr & 0xFFFF, value);
             LogZ80WindowWrite(addr, value);
