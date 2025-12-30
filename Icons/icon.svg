@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>EutherDrive — ED Monogram</title>
+
+  <!-- Background (edit fill to taste, or set to none) -->
+  <rect x="32" y="32" width="448" height="448" rx="96" fill="#1d2021"></rect>
+
+  <!-- Monogram group -->
+  <g fill="none" stroke="#ebdbb2" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <!-- E (built from strokes) -->
+    <path d="M170 150 V362"></path>
+    <path d="M170 150 H270"></path>
+    <path d="M170 256 H252"></path>
+    <path d="M170 362 H270"></path>
+
+    <!-- D (outer) -->
+    <path d="M308 150 V362"></path>
+    <path d="M308 150 H350"></path>
+    <path d="M350 150 C402 150 426 186 426 256 C426 326 402 362 350 362 H308"></path>
+  </g>
+
+  <!-- Small “pixel notch” detail (retro-ish) -->
+  <g fill="#fe8019">
+    <rect x="112" y="112" width="20" height="20" rx="4"></rect>
+    <rect x="380" y="380" width="20" height="20" rx="4"></rect>
+  </g>
+</svg>

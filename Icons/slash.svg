@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 260">
+  <title>EutherDrive — Wordmark</title>
+
+  <rect x="0" y="0" width="1000" height="260" rx="48" fill="#1d2021"></rect>
+
+  <!-- Icon -->
+  <g transform="translate(70,55)">
+    <rect x="0" y="0" width="150" height="150" rx="36" fill="#282828"></rect>
+    <g fill="none" stroke="#ebdbb2" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M52 40 V110"></path>
+      <path d="M52 40 H92"></path>
+      <path d="M52 75 H84"></path>
+      <path d="M52 110 H92"></path>
+
+      <path d="M102 40 V110"></path>
+      <path d="M102 40 H118"></path>
+      <path d="M118 40 C138 40 146 58 146 75 C146 92 138 110 118 110 H102"></path>
+    </g>
+    <circle cx="18" cy="18" r="6" fill="#fe8019"></circle>
+    <circle cx="132" cy="132" r="6" fill="#fe8019"></circle>
+  </g>
+
+  <!-- Text -->
+  <g fill="#ebdbb2">
+    <text x="260" y="125" font-family="Inter, DejaVu Sans, Segoe UI, Helvetica, Arial, sans-serif" font-size="84" font-weight="700" letter-spacing="1">EutherDrive</text>
+    <text x="264" y="175" font-family="Inter, DejaVu Sans, Segoe UI, Helvetica, Arial, sans-serif" font-size="28" opacity="0.85">Mega Drive emulator • core + UI</text>
+  </g>
+
+  <!-- Accent underline -->
+  <rect x="260" y="196" width="650" height="10" rx="5" fill="#fe8019"></rect>
+</svg>
