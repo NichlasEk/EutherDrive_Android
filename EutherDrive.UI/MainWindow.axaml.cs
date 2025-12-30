@@ -272,6 +272,8 @@ public partial class MainWindow : Window
             _fpsSw.Restart();
             _earlyMagentaTimer.Restart();
             _earlyMagentaReported = false;
+            if (SplashImage != null)
+                SplashImage.IsVisible = true;
 
             // välj core
             if (UseDummyCoreCheck.IsChecked == true)
@@ -532,6 +534,8 @@ public partial class MainWindow : Window
         StopAudioEngine();
         _audioOutput?.Dispose();
         _audioOutput = null;
+        if (SplashImage != null)
+            SplashImage.IsVisible = true;
         if (_heartbeatTimer != null)
         {
             _heartbeatTimer.Stop();
@@ -910,17 +914,19 @@ public partial class MainWindow : Window
         if (w <= 0 || h <= 0)
             throw new InvalidOperationException($"Core returned invalid size {w}x{h}.");
 
-        if (_wb == null || _wb.PixelSize.Width != w || _wb.PixelSize.Height != h)
-        {
-            _wb = new WriteableBitmap(
-                new PixelSize(w, h),
+            if (_wb == null || _wb.PixelSize.Width != w || _wb.PixelSize.Height != h)
+            {
+                _wb = new WriteableBitmap(
+                    new PixelSize(w, h),
                                       new Vector(96, 96),
                                       PixelFormat.Bgra8888,
                                       AlphaFormat.Unpremul);
 
-            ScreenImage.Source = _wb;
+                ScreenImage.Source = _wb;
+                if (SplashImage != null && !string.IsNullOrWhiteSpace(_romPath))
+                    SplashImage.IsVisible = false;
+            }
         }
-    }
 
     private unsafe void RenderFrame(IEmulatorCore core)
     {
