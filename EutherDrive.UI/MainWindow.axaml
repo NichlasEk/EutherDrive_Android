@@ -7,10 +7,10 @@
         x:Class="EutherDrive.UI.MainWindow">
 
 
-  <Grid RowDefinitions="Auto,*" ColumnDefinitions="Auto,*" Margin="12" RowSpacing="12" ColumnSpacing="12">
+  <Grid Name="RootGrid" RowDefinitions="Auto,*" ColumnDefinitions="Auto,*" Margin="12" RowSpacing="12" ColumnSpacing="12">
 
     <!-- Controls -->
-    <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10">
+    <StackPanel Name="TopControlsPanel" Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10">
       <Button Content="Open ROM…" Click="OnOpenRom"/>
       <Button Content="Start" Click="OnStart"/>
       <Button Content="Stop" Click="OnStop"/>
@@ -18,13 +18,11 @@
     </StackPanel>
 
     <!-- Left: info -->
-    <Border Grid.Row="1" Grid.Column="0" Padding="10" CornerRadius="8">
+    <Border Name="InfoPanel" Grid.Row="1" Grid.Column="0" Padding="10" CornerRadius="8">
       <StackPanel Spacing="8" Width="260">
         <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
         <CheckBox Content="Use 6-button pad" IsChecked="False" Name="SixButtonPadCheck"/>
         <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
-        <Button Content="Play 440 Hz tone" Click="OnToneTestClick" HorizontalAlignment="Stretch"/>
-        <Button Content="PSG blip" Click="OnPsgBlipClick" HorizontalAlignment="Stretch"/>
         <Separator/>
         <TextBlock Text="Region" FontWeight="Bold"/>
         <StackPanel Orientation="Horizontal" Spacing="6">
@@ -67,7 +65,7 @@
     </Border>
 
 <!-- Right: framebuffer -->
-  <Border Grid.Row="1" Grid.Column="1" Background="#111" CornerRadius="8" Padding="10">
+  <Border Name="ScreenBorder" Grid.Row="1" Grid.Column="1" Background="#111" CornerRadius="8" Padding="10">
     <Border Name="InputSurface" Background="Transparent" Focusable="True">
       <Viewbox Stretch="Uniform">
         <Grid Width="320" Height="224">

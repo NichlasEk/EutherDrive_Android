@@ -91,6 +91,7 @@ public partial class MainWindow : Window
     private volatile bool _emuRunning;
     private double _emuTargetFps = 60.0;
     private int _padTypeRaw = (int)PadType.ThreeButton;
+    private WindowState _prevWindowState = WindowState.Normal;
 
     public MainWindow()
     {
@@ -120,6 +121,7 @@ public partial class MainWindow : Window
 
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
         _presentOnUiAction = PresentPendingFrame;
+        ApplyFullScreenLayout(WindowState == WindowState.FullScreen);
     }
 
     public ConsoleRegion RegionOverride
@@ -234,6 +236,10 @@ public partial class MainWindow : Window
         {
             _ = RunToneTestAsync();
         }
+        else if (e.Key == Key.F1)
+        {
+            ToggleFullScreen();
+        }
 
         lock (_keysDown)
             _keysDown.Add(e.Key);
@@ -248,6 +254,42 @@ public partial class MainWindow : Window
         lock (_keysDown)
             _keysDown.Remove(e.Key);
         e.Handled = true;
+    }
+
+    private void ToggleFullScreen()
+    {
+        if (WindowState == WindowState.FullScreen)
+        {
+            WindowState = _prevWindowState == WindowState.FullScreen
+                ? WindowState.Normal
+                : _prevWindowState;
+            ApplyFullScreenLayout(false);
+            return;
+        }
+
+        _prevWindowState = WindowState;
+        WindowState = WindowState.FullScreen;
+        ApplyFullScreenLayout(true);
+    }
+
+    private void ApplyFullScreenLayout(bool fullScreen)
+    {
+        if (RootGrid == null || ScreenBorder == null || TopControlsPanel == null || InfoPanel == null)
+            return;
+
+        TopControlsPanel.IsVisible = !fullScreen;
+        InfoPanel.IsVisible = !fullScreen;
+
+        RootGrid.Margin = fullScreen ? new Thickness(0) : new Thickness(12);
+        RootGrid.RowSpacing = fullScreen ? 0 : 12;
+        RootGrid.ColumnSpacing = fullScreen ? 0 : 12;
+
+        ScreenBorder.Padding = fullScreen ? new Thickness(0) : new Thickness(10);
+        ScreenBorder.CornerRadius = fullScreen ? new CornerRadius(0) : new CornerRadius(8);
+        Grid.SetRow(ScreenBorder, fullScreen ? 0 : 1);
+        Grid.SetColumn(ScreenBorder, fullScreen ? 0 : 1);
+        Grid.SetRowSpan(ScreenBorder, fullScreen ? 2 : 1);
+        Grid.SetColumnSpan(ScreenBorder, fullScreen ? 2 : 1);
     }
 
     private async void OnOpenRom(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
