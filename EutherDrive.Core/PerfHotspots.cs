@@ -9,7 +9,9 @@ public enum PerfHotspot
     VdpRender = 1,
     VdpBlit = 2,
     UiBlit = 3,
-    Count = 4
+    UiLock = 4,
+    UiTick = 5,
+    Count = 6
 }
 
 public static class PerfHotspots
@@ -38,6 +40,8 @@ public static class PerfHotspots
             PerfHotspot.VdpRender => "VDP",
             PerfHotspot.VdpBlit => "VDPBlit",
             PerfHotspot.UiBlit => "UIBlit",
+            PerfHotspot.UiLock => "UILock",
+            PerfHotspot.UiTick => "UITick",
             _ => "Unknown"
         };
     }

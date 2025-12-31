@@ -22,7 +22,7 @@ internal static class MdLog
         EnvFlag("EUTHERDRIVE_TRACE_Z80");
 
     internal static readonly bool TraceZ80Sig =
-        EnvFlag("EUTHERDRIVE_TRACE_Z80SIG") || TraceZ80InstructionLogging;
+        EnvFlag("EUTHERDRIVE_TRACE_Z80SIG");
 
     internal static readonly bool TraceZ80Step =
         EnvFlag("EUTHERDRIVE_TRACE_Z80STEP") || TraceZ80InstructionLogging;

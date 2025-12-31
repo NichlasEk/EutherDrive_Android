@@ -3,6 +3,7 @@ EutherDrive environment variables (EUTHERDRIVE_*).
 General
 - EUTHERDRIVE_DUMP_VECTORS=1: dump initial vector bytes on load.
 - EUTHERDRIVE_FB_TRACE=1: framebuffer identity/sample tracing.
+- EUTHERDRIVE_TRACE_PERF=1: perf timers/hotspots logging (CPU/VDP/blit).
 - EUTHERDRIVE_PERF_STATS=1: bus perf stats.
 - EUTHERDRIVE_REGION=auto|jp|us|eu: force console region (defaults to auto).
 - EUTHERDRIVE_TRACE_IO=1: log IO reads (0xA10001, 0xA10003..0xA1001F).
@@ -40,6 +41,7 @@ WRAM
 
 Z80
 - EUTHERDRIVE_TRACE_Z80=1: Z80 trace.
+- EUTHERDRIVE_TRACE_Z80SIG=1: Z80 busreq/busack signal logs.
 - EUTHERDRIVE_TRACE_Z80WIN=1: Z80 window bus logs.
 - EUTHERDRIVE_FORCE_SMS_STATUS7=1: force SMS status bit 7.
 - EUTHERDRIVE_TRACE_BOOT=1: Z80 boot trace.
@@ -53,6 +55,7 @@ Pads
 
 Audio / PSG / YM
 - EUTHERDRIVE_TRACE_AUDIO=1: audio min/max log (per second).
+- EUTHERDRIVE_TRACE_AUDLVL=1: audio level/peak logs.
 - EUTHERDRIVE_TRACE_PSG=1: PSG write log.
 - EUTHERDRIVE_DISABLE_PSG=1: disable PSG mix.
 - EUTHERDRIVE_YM=1: enable YM2612 access/mix.

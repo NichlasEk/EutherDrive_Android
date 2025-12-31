@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -57,6 +58,10 @@ public partial class MainWindow : Window
     private static readonly bool YmEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") == "1";
     private static readonly bool AudioStatsEnabled =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_STATS") == "1";
+    private static readonly bool TraceAudioLevel =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDLVL") == "1";
+    private static readonly bool TracePerf =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PERF") == "1";
     private const int AudioMaxFramesPerTick = 4096;
     private TextWriter? _originalConsoleOut;
     private StreamWriter? _romLogWriter;
@@ -82,6 +87,9 @@ public partial class MainWindow : Window
     private int _tickTraceCount;
     private readonly bool _tickTraceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_TICK") == "1";
     private bool _heartbeatState;
+    private Thread? _emuThread;
+    private volatile bool _emuRunning;
+    private int _padTypeRaw = (int)PadType.ThreeButton;
 
     public MainWindow()
     {
@@ -98,13 +106,18 @@ public partial class MainWindow : Window
         if (AudioEnabledCheck != null)
             AudioEnabledCheck.IsChecked = true;
         _audioTimedEnabled = AudioTimedEnvEnabled || _audioEnabled;
+        UpdatePadTypeFromUi();
+        if (SixButtonPadCheck != null)
+        {
+            SixButtonPadCheck.Checked += (_, _) => UpdatePadTypeFromUi();
+            SixButtonPadCheck.Unchecked += (_, _) => UpdatePadTypeFromUi();
+        }
         LoadLastRomPath();
         LoadRegionOverrideSetting();
         UpdateRegionOverrideCombo();
         UpdateRomRegionHintText();
 
-        _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16.666) };
-        _timer.Tick += (_, _) => Tick();
+        _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
         _presentOnUiAction = PresentPendingFrame;
     }
 
@@ -212,7 +225,8 @@ public partial class MainWindow : Window
             _ = RunToneTestAsync();
         }
 
-        _keysDown.Add(e.Key);
+        lock (_keysDown)
+            _keysDown.Add(e.Key);
         e.Handled = true;
     }
 
@@ -221,7 +235,8 @@ public partial class MainWindow : Window
         if (e.Source is TextBox)
             return;
 
-        _keysDown.Remove(e.Key);
+        lock (_keysDown)
+            _keysDown.Remove(e.Key);
         e.Handled = true;
     }
 
@@ -268,6 +283,7 @@ public partial class MainWindow : Window
         try
         {
             _timer.Stop();
+            StopEmuLoop();
             _frames = 0;
             _fpsSw.Restart();
             _earlyMagentaTimer.Restart();
@@ -341,6 +357,7 @@ public partial class MainWindow : Window
                 SplashImage.IsVisible = false;
             StartHeartbeat();
 
+            StartEmuLoop();
             _timer.Start();
             Focus();
         }
@@ -532,6 +549,7 @@ public partial class MainWindow : Window
     private void OnStop(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         _timer.Stop();
+        StopEmuLoop();
         StatusText.Text = "Stopped";
         StopAudioEngine();
         _audioOutput?.Dispose();
@@ -697,18 +715,22 @@ public partial class MainWindow : Window
             long genTicks = AudioStatsEnabled ? Stopwatch.GetTimestamp() - genStart : 0;
             if (timed.IsEmpty)
             {
-                Console.WriteLine($"[AUDLVL] timed EMPTY framesReq={frames} rate={timedRate} ch={timedChannels}");
+                if (TraceAudioLevel)
+                    Console.WriteLine($"[AUDLVL] timed EMPTY framesReq={frames} rate={timedRate} ch={timedChannels}");
                 return;
             }
 
-            int timedPeak = 0;
-            for (int i = 0; i < timed.Length; i++)
+            if (TraceAudioLevel)
             {
-                int v = timed[i];
-                if (v < 0) v = -v;
-                if (v > timedPeak) timedPeak = v;
+                int timedPeak = 0;
+                for (int i = 0; i < timed.Length; i++)
+                {
+                    int v = timed[i];
+                    if (v < 0) v = -v;
+                    if (v > timedPeak) timedPeak = v;
+                }
+                Console.WriteLine($"[AUDLVL] timed peak={timedPeak} samples={timed.Length} rate={timedRate} ch={timedChannels} framesReq={frames}");
             }
-            Console.WriteLine($"[AUDLVL] timed peak={timedPeak} samples={timed.Length} rate={timedRate} ch={timedChannels} framesReq={frames}");
 
             if (timedRate != AudioSampleRate || timedChannels != AudioChannels)
             {
@@ -734,18 +756,22 @@ public partial class MainWindow : Window
         long genTicksFrame = AudioStatsEnabled ? Stopwatch.GetTimestamp() - genStartFrame : 0;
         if (audio.IsEmpty)
         {
-            Console.WriteLine("[AUDLVL] frame EMPTY");
+            if (TraceAudioLevel)
+                Console.WriteLine("[AUDLVL] frame EMPTY");
             return;
         }
 
-        int framePeak = 0;
-        for (int i = 0; i < audio.Length; i++)
+        if (TraceAudioLevel)
         {
-            int v = audio[i];
-            if (v < 0) v = -v;
-            if (v > framePeak) framePeak = v;
+            int framePeak = 0;
+            for (int i = 0; i < audio.Length; i++)
+            {
+                int v = audio[i];
+                if (v < 0) v = -v;
+                if (v > framePeak) framePeak = v;
+            }
+            Console.WriteLine($"[AUDLVL] frame peak={framePeak} samples={audio.Length} rate={sampleRate} ch={channels}");
         }
-        Console.WriteLine($"[AUDLVL] frame peak={framePeak} samples={audio.Length} rate={sampleRate} ch={channels}");
 
         if (sampleRate != AudioSampleRate || channels != AudioChannels)
         {
@@ -792,19 +818,7 @@ public partial class MainWindow : Window
             return;
         MaybeUpdateStatusText();
 
-        // input → core
-        ApplyInputToCore(_core);
-
-        // emulera frame
-        try
-        {
-            _core.RunFrame();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine("[UI] RunFrame exception: " + ex);
-            return;
-        }
+        long tickStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
 
         if (_tickTraceEnabled && (++_tickTraceCount % 60) == 0)
             Console.WriteLine("[UI] Tick " + _tickTraceCount);
@@ -821,8 +835,8 @@ public partial class MainWindow : Window
             Dispatcher.UIThread.Post(_presentOnUiAction);
         }
 
-        ProducePsgForFrame();
-        SubmitAudio();
+        if (TracePerf)
+            PerfHotspots.Add(PerfHotspot.UiTick, Stopwatch.GetTimestamp() - tickStart);
 
         // fps
         _frames++;
@@ -843,9 +857,13 @@ public partial class MainWindow : Window
         if (now - _lastStatusUpdateMs < 250)
             return;
 
-        string keys = _keysDown.Count == 0
-            ? "-"
-            : string.Join(", ", _keysDown.OrderBy(k => k.ToString()));
+        string keys;
+        lock (_keysDown)
+        {
+            keys = _keysDown.Count == 0
+                ? "-"
+                : string.Join(", ", _keysDown.OrderBy(k => k.ToString()));
+        }
 
         if (keys == _lastStatusKeys && now - _lastStatusUpdateMs < 1000)
             return;
@@ -866,18 +884,22 @@ public partial class MainWindow : Window
         var audio = _core.GetAudioBuffer(out int sampleRate, out int channels);
         if (audio.IsEmpty)
         {
-            Console.WriteLine("[AUDLVL] pcm EMPTY");
+            if (TraceAudioLevel)
+                Console.WriteLine("[AUDLVL] pcm EMPTY");
             return;
         }
 
-        int peak = 0;
-        for (int i = 0; i < audio.Length; i++)
+        if (TraceAudioLevel)
         {
-            int v = audio[i];
-            if (v < 0) v = -v;
-            if (v > peak) peak = v;
+            int peak = 0;
+            for (int i = 0; i < audio.Length; i++)
+            {
+                int v = audio[i];
+                if (v < 0) v = -v;
+                if (v > peak) peak = v;
+            }
+            Console.WriteLine($"[AUDLVL] peak={peak} samples={audio.Length} rate={sampleRate} channels={channels}");
         }
-        Console.WriteLine($"[AUDLVL] peak={peak} samples={audio.Length} rate={sampleRate} channels={channels}");
 
         _audioOutput.Start(sampleRate, channels);
         _audioOutput.Submit(audio);
@@ -885,22 +907,38 @@ public partial class MainWindow : Window
 
     private void ApplyInputToCore(IEmulatorCore core)
     {
-        bool up    = _keysDown.Contains(Key.Up);
-        bool down  = _keysDown.Contains(Key.Down);
-        bool left  = _keysDown.Contains(Key.Left);
-        bool right = _keysDown.Contains(Key.Right);
+        bool up;
+        bool down;
+        bool left;
+        bool right;
+        bool a;
+        bool b;
+        bool c;
+        bool start;
+        bool x;
+        bool y;
+        bool z;
+        bool mode;
+        PadType padType;
+        lock (_keysDown)
+        {
+            up    = _keysDown.Contains(Key.Up);
+            down  = _keysDown.Contains(Key.Down);
+            left  = _keysDown.Contains(Key.Left);
+            right = _keysDown.Contains(Key.Right);
 
-        // Knappar: flera alternativ för att slippa layout-strul
-        bool a = _keysDown.Contains(Key.Z);
-        bool b = _keysDown.Contains(Key.X);
-        bool c = _keysDown.Contains(Key.C);
-        bool start = _keysDown.Contains(Key.Enter)
-            || _keysDown.Contains(Key.Return);
-        bool x = _keysDown.Contains(Key.A);
-        bool y = _keysDown.Contains(Key.S);
-        bool z = _keysDown.Contains(Key.D);
-        bool mode = _keysDown.Contains(Key.LeftShift) || _keysDown.Contains(Key.RightShift);
-        PadType padType = SixButtonPadCheck?.IsChecked == true ? PadType.SixButton : PadType.ThreeButton;
+            // Knappar: flera alternativ för att slippa layout-strul
+            a = _keysDown.Contains(Key.Z);
+            b = _keysDown.Contains(Key.X);
+            c = _keysDown.Contains(Key.C);
+            start = _keysDown.Contains(Key.Enter)
+                || _keysDown.Contains(Key.Return);
+            x = _keysDown.Contains(Key.A);
+            y = _keysDown.Contains(Key.S);
+            z = _keysDown.Contains(Key.D);
+            mode = _keysDown.Contains(Key.LeftShift) || _keysDown.Contains(Key.RightShift);
+            padType = (PadType)Volatile.Read(ref _padTypeRaw);
+        }
 
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
 
@@ -951,7 +989,10 @@ public partial class MainWindow : Window
             return;
         }
 
+        long lockStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
         using var fb = _wb.Lock();
+        if (TracePerf)
+            PerfHotspots.Add(PerfHotspot.UiLock, Stopwatch.GetTimestamp() - lockStart);
         int dstStride = fb.RowBytes;
 
         int copyBytesPerRow = Math.Min(w * 4, Math.Min(srcStride, dstStride));
@@ -961,7 +1002,7 @@ public partial class MainWindow : Window
         fixed (byte* pSrc0 = src)
         {
             byte* pDst0 = (byte*)fb.Address.ToPointer();
-            long blitStart = Stopwatch.GetTimestamp();
+            long blitStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
 
             if (FrameBufferTraceEnabled)
             {
@@ -984,7 +1025,8 @@ public partial class MainWindow : Window
                 }
             }
 
-            PerfHotspots.Add(PerfHotspot.UiBlit, Stopwatch.GetTimestamp() - blitStart);
+            if (TracePerf)
+                PerfHotspots.Add(PerfHotspot.UiBlit, Stopwatch.GetTimestamp() - blitStart);
         }
 
         // VIKTIGT: tvinga repaint
@@ -1003,6 +1045,79 @@ public partial class MainWindow : Window
         var core = _pendingPresentCore;
         if (core != null)
             RenderFrame(core);
+    }
+
+    private void UpdatePadTypeFromUi()
+    {
+        int raw = SixButtonPadCheck?.IsChecked == true
+            ? (int)PadType.SixButton
+            : (int)PadType.ThreeButton;
+        Volatile.Write(ref _padTypeRaw, raw);
+    }
+
+    private void StartEmuLoop()
+    {
+        if (_core == null)
+            return;
+        if (_emuRunning)
+            return;
+        _emuRunning = true;
+        _emuThread = new Thread(EmuLoop)
+        {
+            IsBackground = true,
+            Name = "EmuLoop",
+            Priority = ThreadPriority.AboveNormal
+        };
+        _emuThread.Start();
+    }
+
+    private void StopEmuLoop()
+    {
+        _emuRunning = false;
+        if (_emuThread == null)
+            return;
+        if (!_emuThread.Join(1000))
+            _emuThread.Interrupt();
+        _emuThread = null;
+    }
+
+    private void EmuLoop()
+    {
+        const double targetFps = 60.0;
+        long ticksPerFrame = (long)(Stopwatch.Frequency / targetFps);
+        long nextTick = Stopwatch.GetTimestamp();
+        while (_emuRunning)
+        {
+            long now = Stopwatch.GetTimestamp();
+            if (now < nextTick)
+            {
+                int sleepMs = (int)((nextTick - now) * 1000 / Stopwatch.Frequency);
+                if (sleepMs > 1)
+                    Thread.Sleep(sleepMs - 1);
+                continue;
+            }
+
+            if (now - nextTick > ticksPerFrame * 4)
+                nextTick = now;
+            nextTick += ticksPerFrame;
+
+            var core = _core;
+            if (core == null)
+                continue;
+
+            ApplyInputToCore(core);
+            try
+            {
+                core.RunFrame();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[EmuLoop] RunFrame exception: " + ex);
+            }
+
+            ProducePsgForFrame();
+            SubmitAudio();
+        }
     }
 
     private unsafe void StartHeartbeat()

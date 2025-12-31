@@ -15,7 +15,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private const int DefaultH = 224;
     private readonly md_vdp _vdp = new md_vdp();
 
-    private byte[] _frameBuffer = Array.Empty<byte>(); // BGRA till UI
+    private byte[] _frameBufferFront = Array.Empty<byte>(); // BGRA till UI (read)
+    private byte[] _frameBufferBack = Array.Empty<byte>(); // BGRA till UI (write)
     private int _fbW, _fbH, _fbStride;
     private int _fbLogW = -1;
     private int _fbLogH = -1;
@@ -45,6 +46,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO"), "1", StringComparison.Ordinal);
     private static readonly bool TraceAudioLevel =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDLVL"), "1", StringComparison.Ordinal);
+    private static readonly bool TracePerf =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PERF"), "1", StringComparison.Ordinal);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
 
@@ -315,7 +318,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
         _vdp.SetFrameSize(DefaultW, DefaultH);
         EnsureFramebufferInitialized("Reset");
-        Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
+        Array.Clear(_frameBufferFront, 0, _frameBufferFront.Length);
+        Array.Clear(_frameBufferBack, 0, _frameBufferBack.Length);
         Console.WriteLine($"[MdTracerAdapter] Reset framebuffer { _fbW }x{ _fbH } stride={ _fbStride }");
         LogFrameBufferIdentity("Reset");
     }
@@ -352,8 +356,10 @@ public sealed class MdTracerAdapter : IEmulatorCore
         }
 
         int needed = _fbW * _fbH * 4;
-        if (_frameBuffer.Length != needed)
-            _frameBuffer = new byte[needed];
+        if (_frameBufferFront.Length != needed)
+            _frameBufferFront = new byte[needed];
+        if (_frameBufferBack.Length != needed)
+            _frameBufferBack = new byte[needed];
 
         if (FrameBufferTraceEnabled && _fbIdentityLogCount++ < 10)
         {
@@ -410,7 +416,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
         MdTracerCore.MdLog.WriteLine("[MdTracerAdapter] RunFrame start");
 
         _tick++;
-        long frameStart = Stopwatch.GetTimestamp();
+        long frameStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
 
         if (md_main.g_masterSystemMode)
         {
@@ -429,22 +435,39 @@ public sealed class MdTracerAdapter : IEmulatorCore
             {
                 if (!SkipVdpRenderEnabled)
                 {
-                    long start = Stopwatch.GetTimestamp();
-                    _vdp.run(v);
-                    vdpTicks += Stopwatch.GetTimestamp() - start;
+                    if (TracePerf)
+                    {
+                        long start = Stopwatch.GetTimestamp();
+                        _vdp.run(v);
+                        vdpTicks += Stopwatch.GetTimestamp() - start;
+                    }
+                    else
+                    {
+                        _vdp.run(v);
+                    }
                 }
 
-                long cpuStart = Stopwatch.GetTimestamp();
-                _cpu.RunSome(budget: md_main.VDL_LINE_RENDER_MC68_CLOCK);
-                cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+                if (TracePerf)
+                {
+                    long cpuStart = Stopwatch.GetTimestamp();
+                    _cpu.RunSome(budget: md_main.VDL_LINE_RENDER_MC68_CLOCK);
+                    cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+                }
+                else
+                {
+                    _cpu.RunSome(budget: md_main.VDL_LINE_RENDER_MC68_CLOCK);
+                }
 
                 md_main.g_md_z80?.run(z80Budget);
             }
 
-            _accCpuTicks += cpuTicks;
-            _accVdpTicks += vdpTicks;
-            PerfHotspots.Add(PerfHotspot.CpuStep, cpuTicks);
-            PerfHotspots.Add(PerfHotspot.VdpRender, vdpTicks);
+            if (TracePerf)
+            {
+                _accCpuTicks += cpuTicks;
+                _accVdpTicks += vdpTicks;
+                PerfHotspots.Add(PerfHotspot.CpuStep, cpuTicks);
+                PerfHotspots.Add(PerfHotspot.VdpRender, vdpTicks);
+            }
 
             pcAfter = md_m68k.g_reg_PC;
             if (pcAfter == _lastPc)
@@ -474,7 +497,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
         }
         }
 
-        if (_cpuReady && _cpu != null)
+        if (TracePerf && _cpuReady && _cpu != null)
         {
             _accFrameTicks += Stopwatch.GetTimestamp() - frameStart;
             _perfFrameCount++;
@@ -504,9 +527,11 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 vdpHeight = 224;
 
             ReadOnlySpan<uint> vdpSpan = vdpBuffer;
-            long blitStart = Stopwatch.GetTimestamp();
-            BlitArgbToBgra8888(vdpSpan, _frameBuffer, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
-            PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
+            long blitStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
+            BlitArgbToBgra8888(vdpSpan, _frameBufferBack, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
+            _frameBufferBack = Interlocked.Exchange(ref _frameBufferFront, _frameBufferBack);
+            if (TracePerf)
+                PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
         }
     }
 
@@ -609,15 +634,15 @@ public sealed class MdTracerAdapter : IEmulatorCore
         if (FrameBufferTraceEnabled)
         {
             _fbPresentCount++;
-            int id = RuntimeHelpers.GetHashCode(_frameBuffer);
+            int id = RuntimeHelpers.GetHashCode(_frameBufferFront);
             if (ShouldLogPerSecond(ref _lastPresentLogTicks))
-                Console.WriteLine($"[MdTracerAdapter] Present fbId=0x{id:X8} size={width}x{height} stride={stride} bytes={_frameBuffer.Length}");
-            if ((_fbPresentCount % PresentSampleEveryFrames) == 0 && _frameBuffer.Length >= 4)
+                Console.WriteLine($"[MdTracerAdapter] Present fbId=0x{id:X8} size={width}x{height} stride={stride} bytes={_frameBufferFront.Length}");
+            if ((_fbPresentCount % PresentSampleEveryFrames) == 0 && _frameBufferFront.Length >= 4)
             {
-                Console.WriteLine($"[MdTracerAdapter] Present sample frame={_fbPresentCount} bytes={_frameBuffer[0]:X2} {_frameBuffer[1]:X2} {_frameBuffer[2]:X2} {_frameBuffer[3]:X2}");
+                Console.WriteLine($"[MdTracerAdapter] Present sample frame={_fbPresentCount} bytes={_frameBufferFront[0]:X2} {_frameBufferFront[1]:X2} {_frameBufferFront[2]:X2} {_frameBufferFront[3]:X2}");
             }
         }
-        return _frameBuffer;
+        return _frameBufferFront;
     }
 
     private void LogFrameBufferIdentity(string reason)
@@ -625,14 +650,14 @@ public sealed class MdTracerAdapter : IEmulatorCore
         if (!FrameBufferTraceEnabled)
             return;
 
-        if (_frameBuffer.Length == 0)
+        if (_frameBufferFront.Length == 0)
         {
             Console.WriteLine($"[MdTracerAdapter] {reason} framebuffer empty");
             return;
         }
 
-        int id = RuntimeHelpers.GetHashCode(_frameBuffer);
-        Console.WriteLine($"[MdTracerAdapter] {reason} framebuffer id=0x{id:X8} size={_fbW}x{_fbH} stride={_fbStride} bytes={_frameBuffer.Length}");
+        int id = RuntimeHelpers.GetHashCode(_frameBufferFront);
+        Console.WriteLine($"[MdTracerAdapter] {reason} framebuffer id=0x{id:X8} size={_fbW}x{_fbH} stride={_fbStride} bytes={_frameBufferFront.Length}");
     }
 
     private void BlitRgb555ToBgra8888(Span<ushort> vdpSrc, Span<byte> dst, int srcStridePixels)
