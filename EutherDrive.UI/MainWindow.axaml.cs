@@ -89,6 +89,7 @@ public partial class MainWindow : Window
     private bool _heartbeatState;
     private Thread? _emuThread;
     private volatile bool _emuRunning;
+    private double _emuTargetFps = 60.0;
     private int _padTypeRaw = (int)PadType.ThreeButton;
 
     public MainWindow()
@@ -145,7 +146,16 @@ public partial class MainWindow : Window
                 _ => FrameRateMode.Auto
             };
             adapter.SetFrameRateMode(mode);
+            UpdateEmuTargetFps();
         }
+    }
+
+    private void UpdateEmuTargetFps()
+    {
+        double target = 60.0;
+        if (_core is MdTracerAdapter adapter)
+            target = adapter.GetTargetFps();
+        _emuTargetFps = target;
     }
 
     private void OnApplyCpuCycles(object? sender, RoutedEventArgs e)
@@ -374,6 +384,7 @@ public partial class MainWindow : Window
             return;
 
         adapter.SetRegionOverride(RegionOverride);
+        UpdateEmuTargetFps();
         if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
         {
             adapter.Reset();
@@ -410,6 +421,7 @@ public partial class MainWindow : Window
     {
         RomRegionHint = hint ?? ConsoleRegion.Auto;
         UpdateRomRegionHintText();
+        UpdateEmuTargetFps();
     }
 
     private void UpdateRomInfo(RomInfo info)
@@ -1083,11 +1095,18 @@ public partial class MainWindow : Window
 
     private void EmuLoop()
     {
-        const double targetFps = 60.0;
+        double targetFps = Volatile.Read(ref _emuTargetFps);
         long ticksPerFrame = (long)(Stopwatch.Frequency / targetFps);
         long nextTick = Stopwatch.GetTimestamp();
         while (_emuRunning)
         {
+            double currentTarget = Volatile.Read(ref _emuTargetFps);
+            if (Math.Abs(currentTarget - targetFps) > 0.001)
+            {
+                targetFps = currentTarget;
+                ticksPerFrame = (long)(Stopwatch.Frequency / targetFps);
+            }
+
             long now = Stopwatch.GetTimestamp();
             if (now < nextTick)
             {

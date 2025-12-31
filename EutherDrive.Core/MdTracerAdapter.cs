@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -33,10 +34,14 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     private int _tick;
     private const int VLINES_NTSC = 262;
+    private const int VLINES_PAL = 312;
+    private const double FPS_NTSC = 60.0;
+    private const double FPS_PAL = 50.0;
     private uint _lastPc;
     private int _pcStallFrames;
     private FrameRateMode _frameRateMode = FrameRateMode.Auto;
-    private int _cpuCyclesPerLine = 200;
+    private int _cpuCyclesPerLine;
+    private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
 
     private static readonly bool DumpVectorsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_VECTORS"), "1", StringComparison.Ordinal);
@@ -50,6 +55,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PERF"), "1", StringComparison.Ordinal);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
+    private static readonly double Z80CycleMultiplier = ParseZ80CycleMultiplier();
 
     // ROM + BUS
     private byte[]? _rom;
@@ -92,6 +98,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     public void SetRegionOverride(ConsoleRegion region)
     {
+        _regionOverride = region;
         if (md_main.g_md_io != null)
             md_main.g_md_io.SetRegionOverride(region);
     }
@@ -266,6 +273,41 @@ public sealed class MdTracerAdapter : IEmulatorCore
         return $"Header@0x100: '{text}'";
     }
 
+    private static double ParseZ80CycleMultiplier()
+    {
+        const double fallback = 1.0;
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_CYCLES_MULT");
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) && parsed > 0.0)
+            return parsed;
+        return fallback;
+    }
+
+    private static ConsoleRegion? ParseRegionOverrideEnv()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_REGION");
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        switch (raw.Trim().ToLowerInvariant())
+        {
+            case "jp":
+            case "japan":
+                return ConsoleRegion.JP;
+            case "us":
+            case "usa":
+                return ConsoleRegion.US;
+            case "eu":
+            case "europe":
+                return ConsoleRegion.EU;
+            case "auto":
+                return null;
+            default:
+                return null;
+        }
+    }
+
     private static ushort ReadBe16(byte[] rom, int offset)
     {
         if ((uint)(offset + 1) >= (uint)rom.Length)
@@ -300,6 +342,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
         _bus?.Reset();
         md_main.g_md_bus?.Reset();
         _vdp.reset();
+        ApplyFrameRateMode(GetEffectiveFrameRateMode());
         md_main.g_md_music?.reset();
 
         // Stub (så VDP-testet fortsätter)
@@ -326,11 +369,49 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     public void SetFrameRateMode(FrameRateMode mode) => _frameRateMode = mode;
 
+    public double GetTargetFps()
+    {
+        return GetEffectiveFrameRateMode() == FrameRateMode.Hz50 ? FPS_PAL : FPS_NTSC;
+    }
+
     public void SetCpuCyclesPerLine(int cycles)
     {
         if (cycles <= 0)
             throw new ArgumentOutOfRangeException(nameof(cycles), "Cycles must be positive.");
         _cpuCyclesPerLine = cycles;
+    }
+
+    private FrameRateMode GetEffectiveFrameRateMode()
+    {
+        if (_frameRateMode != FrameRateMode.Auto)
+            return _frameRateMode;
+
+        ConsoleRegion region = GetEffectiveRegion();
+        return region == ConsoleRegion.EU ? FrameRateMode.Hz50 : FrameRateMode.Hz60;
+    }
+
+    private ConsoleRegion GetEffectiveRegion()
+    {
+        ConsoleRegion? envOverride = ParseRegionOverrideEnv();
+        if (envOverride.HasValue)
+            return envOverride.Value;
+        if (_regionOverride != ConsoleRegion.Auto)
+            return _regionOverride;
+        if (RomInfo.RegionHint.HasValue)
+            return RomInfo.RegionHint.Value;
+        return ConsoleRegion.US;
+    }
+
+    private int ApplyFrameRateMode(FrameRateMode mode)
+    {
+        int lines = mode == FrameRateMode.Hz50 ? VLINES_PAL : VLINES_NTSC;
+        if (_vdp.g_vertical_line_max != lines)
+        {
+            _vdp.g_vertical_line_max = lines;
+            _vdp.g_vdp_reg_1_3_cellmode = (byte)(lines == VLINES_PAL ? 1 : 0);
+            _vdp.g_vdp_status_0_tvmode = (byte)(lines == VLINES_PAL ? 1 : 0);
+        }
+        return lines;
     }
 
     public void PowerCycleAndLoadRom(string path) => LoadRom(path);
@@ -413,7 +494,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
     public void RunFrame()
     {
         if (_tick == 0)
-        MdTracerCore.MdLog.WriteLine("[MdTracerAdapter] RunFrame start");
+            MdTracerCore.MdLog.WriteLine("[MdTracerAdapter] RunFrame start");
 
         _tick++;
         long frameStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
@@ -424,77 +505,79 @@ public sealed class MdTracerAdapter : IEmulatorCore
         }
         else
         {
-        uint pcAfter = md_m68k.g_reg_PC;
-        if (_cpuReady && _cpu != null)
-        {
-            long cpuTicks = 0;
-            long vdpTicks = 0;
-            int z80Budget = md_main.VDL_LINE_RENDER_Z80_CLOCK;
-
-            for (int v = 0; v < VLINES_NTSC; v++)
+            int vlines = ApplyFrameRateMode(GetEffectiveFrameRateMode());
+            uint pcAfter = md_m68k.g_reg_PC;
+            if (_cpuReady && _cpu != null)
             {
-                if (!SkipVdpRenderEnabled)
+                long cpuTicks = 0;
+                long vdpTicks = 0;
+                int z80Budget = Math.Max(1, (int)(md_main.VDL_LINE_RENDER_Z80_CLOCK * Z80CycleMultiplier));
+                int cpuBudget = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
+
+                for (int v = 0; v < vlines; v++)
                 {
+                    if (!SkipVdpRenderEnabled)
+                    {
+                        if (TracePerf)
+                        {
+                            long start = Stopwatch.GetTimestamp();
+                            _vdp.run(v);
+                            vdpTicks += Stopwatch.GetTimestamp() - start;
+                        }
+                        else
+                        {
+                            _vdp.run(v);
+                        }
+                    }
+
                     if (TracePerf)
                     {
-                        long start = Stopwatch.GetTimestamp();
-                        _vdp.run(v);
-                        vdpTicks += Stopwatch.GetTimestamp() - start;
+                        long cpuStart = Stopwatch.GetTimestamp();
+                        _cpu.RunSome(budget: cpuBudget);
+                        cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
                     }
                     else
                     {
-                        _vdp.run(v);
+                        _cpu.RunSome(budget: cpuBudget);
                     }
+
+                    md_main.g_md_z80?.run(z80Budget);
                 }
 
                 if (TracePerf)
                 {
-                    long cpuStart = Stopwatch.GetTimestamp();
-                    _cpu.RunSome(budget: md_main.VDL_LINE_RENDER_MC68_CLOCK);
-                    cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+                    _accCpuTicks += cpuTicks;
+                    _accVdpTicks += vdpTicks;
+                    PerfHotspots.Add(PerfHotspot.CpuStep, cpuTicks);
+                    PerfHotspots.Add(PerfHotspot.VdpRender, vdpTicks);
                 }
+
+                pcAfter = md_m68k.g_reg_PC;
+                if (pcAfter == _lastPc)
+                    _pcStallFrames++;
                 else
+                    _pcStallFrames = 0;
+                _lastPc = pcAfter;
+
+                if ((_tick % 60) == 0)
                 {
-                    _cpu.RunSome(budget: md_main.VDL_LINE_RENDER_MC68_CLOCK);
+                    ushort vdpStatus = md_main.g_md_vdp.read16(0xC00004);
+                    ushort hv = md_main.g_md_vdp.read16(0xC00008);
+                    ushort op0 = md_m68k.read16(pcAfter);
+                    ushort op1 = md_m68k.read16(pcAfter + 2);
+                    uint d1 = md_m68k.g_reg_data[1].l;
+                    MdTracerCore.MdLog.WriteLine($"m68k PC=0x{pcAfter:X6} stall={_pcStallFrames} VDP=0x{vdpStatus:X4} HV=0x{hv:X4} D1=0x{d1:X8} OP=0x{op0:X4} NXT=0x{op1:X4}");
                 }
-
-                md_main.g_md_z80?.run(z80Budget);
             }
-
-            if (TracePerf)
-            {
-                _accCpuTicks += cpuTicks;
-                _accVdpTicks += vdpTicks;
-                PerfHotspots.Add(PerfHotspot.CpuStep, cpuTicks);
-                PerfHotspots.Add(PerfHotspot.VdpRender, vdpTicks);
-            }
-
-            pcAfter = md_m68k.g_reg_PC;
-            if (pcAfter == _lastPc)
-                _pcStallFrames++;
             else
-                _pcStallFrames = 0;
-            _lastPc = pcAfter;
-
-            if ((_tick % 60) == 0)
             {
-                ushort vdpStatus = md_main.g_md_vdp.read16(0xC00004);
-                ushort hv = md_main.g_md_vdp.read16(0xC00008);
-                ushort op0 = md_m68k.read16(pcAfter);
-                ushort op1 = md_m68k.read16(pcAfter + 2);
-                uint d1 = md_m68k.g_reg_data[1].l;
-                MdTracerCore.MdLog.WriteLine($"m68k PC=0x{pcAfter:X6} stall={_pcStallFrames} VDP=0x{vdpStatus:X4} HV=0x{hv:X4} D1=0x{d1:X8} OP=0x{op0:X4} NXT=0x{op1:X4}");
+                // Fortfarande VDP-test tills vi kopplar VDP-register/IO
+                if (!SkipVdpRenderEnabled)
+                {
+                    for (int v = 0; v < vlines; v++)
+                        _vdp.run(v);
+                }
             }
-        }
-        else
-        {
-            // Fortfarande VDP-test tills vi kopplar VDP-register/IO
-            if (!SkipVdpRenderEnabled)
-            {
-                for (int v = 0; v < VLINES_NTSC; v++)
-                    _vdp.run(v);
-            }
-        }
         }
 
         if (TracePerf && _cpuReady && _cpu != null)
@@ -801,7 +884,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
             return _psgFrameSamples > 0 ? _psgFrameBuffer.AsSpan(0, _psgFrameSamples) : ReadOnlySpan<short>.Empty;
 
         _psgLastFrame = frame;
-        _psgFrameAccumulator += (double)PsgSampleRate / 60.0;
+        _psgFrameAccumulator += (double)PsgSampleRate / GetTargetFps();
         int frames = (int)_psgFrameAccumulator;
         if (frames <= 0)
         {
