@@ -33,6 +33,10 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private long _lastAudioCoreLogTicks;
 
     private int _tick;
+    private int _bootRecoverStallCount;
+    private int _bootRecoverFrameCount;
+    private bool _bootRecoverCompleted;
+    private ushort _bootRecoverLastPc;
     private const int VLINES_NTSC = 262;
     private const int VLINES_PAL = 312;
     private const double FPS_NTSC = 60.0;
@@ -42,6 +46,12 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private FrameRateMode _frameRateMode = FrameRateMode.Auto;
     private int _cpuCyclesPerLine;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
+
+    private int _bootRecoverStablePcFrames;
+    private long _bootRecoverLastBusReqToggles;
+    private long _bootRecoverLastResetToggles;
+    private long _bootRecoverToggleAccum;
+    private bool _bootRecoverSigInit;
 
     private static readonly bool DumpVectorsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_VECTORS"), "1", StringComparison.Ordinal);
@@ -56,6 +66,12 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
     private static readonly double Z80CycleMultiplier = ParseZ80CycleMultiplier();
+    private static readonly int BootRecoverStallFrames = ParseBootRecoverStallFrames();
+    private static readonly int BootRecoverWindowFrames = ParseBootRecoverWindowFrames();
+    private static readonly int BootRecoverEdgeToggleThreshold = ParseBootRecoverEdgeToggleThreshold();
+    private static readonly int BootRecoverEdgeStableFrames = ParseBootRecoverEdgeStableFrames();
+    private static readonly bool BootRecoverLog =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOT_RECOVER_LOG"), "1", StringComparison.Ordinal);
 
     // ROM + BUS
     private byte[]? _rom;
@@ -240,6 +256,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
             }
 
             Console.WriteLine($"[ROMMODE] type={(isSms ? "SMS" : "MD")} masterSystemMode={(md_main.g_masterSystemMode ? 1 : 0)}");
+            ArmBootRecover();
             Reset();
             LogFrameBufferIdentity("LoadRom");
         }
@@ -280,6 +297,50 @@ public sealed class MdTracerAdapter : IEmulatorCore
         if (string.IsNullOrWhiteSpace(raw))
             return fallback;
         if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) && parsed > 0.0)
+            return parsed;
+        return fallback;
+    }
+
+    private static int ParseBootRecoverStallFrames()
+    {
+        const int fallback = 0;
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOT_RECOVER_STALL_FRAMES");
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0)
+            return parsed;
+        return fallback;
+    }
+
+    private static int ParseBootRecoverWindowFrames()
+    {
+        const int fallback = 0;
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOT_RECOVER_WINDOW_FRAMES");
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0)
+            return parsed;
+        return fallback;
+    }
+
+    private static int ParseBootRecoverEdgeToggleThreshold()
+    {
+        const int fallback = 0;
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOT_RECOVER_EDGE_TOGGLES");
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0)
+            return parsed;
+        return fallback;
+    }
+
+    private static int ParseBootRecoverEdgeStableFrames()
+    {
+        const int fallback = 0;
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOT_RECOVER_EDGE_STABLE_FRAMES");
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0)
             return parsed;
         return fallback;
     }
@@ -333,6 +394,31 @@ public sealed class MdTracerAdapter : IEmulatorCore
         return rawData;
     }
 
+    private void ArmBootRecover()
+    {
+        _bootRecoverStallCount = 0;
+        _bootRecoverFrameCount = 0;
+        _bootRecoverCompleted = false;
+        _bootRecoverLastPc = 0;
+        _bootRecoverStablePcFrames = 0;
+        _bootRecoverLastBusReqToggles = 0;
+        _bootRecoverLastResetToggles = 0;
+        _bootRecoverToggleAccum = 0;
+        _bootRecoverSigInit = false;
+    }
+
+    private void ResetZ80Only()
+    {
+        if (md_main.g_md_z80 == null)
+            return;
+        md_main.BeginZ80ResetCycle();
+        md_main.g_md_z80.reset();
+        md_main.g_md_z80.ArmPostResetHold();
+        bool busReq = md_main.g_md_bus?.Z80BusGranted ?? false;
+        bool reset = md_main.g_md_bus?.Z80Reset ?? false;
+        md_main.g_md_z80.g_active = !busReq && !reset;
+    }
+
     public void Reset()
     {
         Console.WriteLine("[MdTracerAdapter] Reset begin");
@@ -341,6 +427,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
         // Nollställ RAM
         _bus?.Reset();
         md_main.g_md_bus?.Reset();
+        md_main.ResetZ80WaitState();
         _vdp.reset();
         ApplyFrameRateMode(GetEffectiveFrameRateMode());
         md_main.g_md_music?.reset();
@@ -497,6 +584,104 @@ public sealed class MdTracerAdapter : IEmulatorCore
             MdTracerCore.MdLog.WriteLine("[MdTracerAdapter] RunFrame start");
 
         _tick++;
+        if (!_bootRecoverCompleted && (BootRecoverStallFrames > 0 || BootRecoverEdgeToggleThreshold > 0))
+        {
+            _bootRecoverFrameCount++;
+            if (BootRecoverWindowFrames > 0 && _bootRecoverFrameCount > BootRecoverWindowFrames)
+            {
+                _bootRecoverCompleted = true;
+            }
+            else
+            {
+                var z80 = md_main.g_md_z80;
+                var bus = md_main.g_md_bus;
+                bool busReq = bus?.Z80BusGranted ?? false;
+                bool reset = bus?.Z80Reset ?? false;
+                bool active = z80?.g_active ?? false;
+                ushort pc = z80?.CpuPc ?? (ushort)0;
+
+                bool pcStable = pc == _bootRecoverLastPc;
+                if (pcStable)
+                {
+                    _bootRecoverStablePcFrames++;
+                }
+                else
+                {
+                    _bootRecoverStablePcFrames = 0;
+                    _bootRecoverToggleAccum = 0;
+                    _bootRecoverLastPc = pc;
+                }
+
+                if (BootRecoverEdgeToggleThreshold > 0 && bus != null)
+                {
+                    if (!_bootRecoverSigInit)
+                    {
+                        bus.PeekZ80SignalStats(out _, out long busReqToggles, out _, out long resetToggles);
+                        _bootRecoverLastBusReqToggles = busReqToggles;
+                        _bootRecoverLastResetToggles = resetToggles;
+                        _bootRecoverSigInit = true;
+                    }
+                    else
+                    {
+                        bus.PeekZ80SignalStats(out _, out long busReqToggles, out _, out long resetToggles);
+                        long deltaBusReqToggles = busReqToggles - _bootRecoverLastBusReqToggles;
+                        long deltaResetToggles = resetToggles - _bootRecoverLastResetToggles;
+                        if (deltaBusReqToggles < 0)
+                            deltaBusReqToggles = 0;
+                        if (deltaResetToggles < 0)
+                            deltaResetToggles = 0;
+                        _bootRecoverLastBusReqToggles = busReqToggles;
+                        _bootRecoverLastResetToggles = resetToggles;
+
+                        if (pcStable)
+                            _bootRecoverToggleAccum += deltaBusReqToggles + deltaResetToggles;
+
+                        int stableFramesTarget = BootRecoverEdgeStableFrames > 0
+                            ? BootRecoverEdgeStableFrames
+                            : (BootRecoverStallFrames > 0 ? BootRecoverStallFrames : 1);
+                        if (stableFramesTarget > 0 &&
+                            _bootRecoverStablePcFrames >= stableFramesTarget &&
+                            _bootRecoverToggleAccum >= BootRecoverEdgeToggleThreshold &&
+                            !active)
+                        {
+                            _bootRecoverCompleted = true;
+                            if (BootRecoverLog)
+                            {
+                                Console.WriteLine(
+                                    $"[BOOTRECOVER] reset after edge toggles={_bootRecoverToggleAccum} " +
+                                    $"stable={_bootRecoverStablePcFrames} pc=0x{pc:X4} " +
+                                    $"busReqT={deltaBusReqToggles} resetT={deltaResetToggles} " +
+                                    $"busReq={(busReq ? 1 : 0)} reset={(reset ? 1 : 0)}");
+                            }
+                            ResetZ80Only();
+                            return;
+                        }
+                    }
+                }
+
+                bool stalled = busReq && !reset && !active && pcStable;
+                if (stalled)
+                {
+                    _bootRecoverStallCount++;
+                }
+                else
+                {
+                    _bootRecoverStallCount = 0;
+                }
+                if (BootRecoverStallFrames > 0 && _bootRecoverStallCount >= BootRecoverStallFrames)
+                {
+                    _bootRecoverCompleted = true;
+                    if (BootRecoverLog)
+                    {
+                        Console.WriteLine(
+                            $"[BOOTRECOVER] reset after stall frames={_bootRecoverStallCount} " +
+                            $"pc=0x{pc:X4} busReq={(busReq ? 1 : 0)} reset={(reset ? 1 : 0)}");
+                    }
+                    ResetZ80Only();
+                    return;
+                }
+            }
+        }
         long frameStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
 
         if (md_main.g_masterSystemMode)
@@ -506,6 +691,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
         else
         {
             int vlines = ApplyFrameRateMode(GetEffectiveFrameRateMode());
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            bool allowZ80 = md_main.ShouldRunZ80(frame);
             uint pcAfter = md_m68k.g_reg_PC;
             if (_cpuReady && _cpu != null)
             {
@@ -541,7 +728,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
                         _cpu.RunSome(budget: cpuBudget);
                     }
 
-                    md_main.g_md_z80?.run(z80Budget);
+                    if (allowZ80)
+                        md_main.g_md_z80?.run(z80Budget);
                 }
 
                 if (TracePerf)
@@ -578,6 +766,16 @@ public sealed class MdTracerAdapter : IEmulatorCore
                         _vdp.run(v);
                 }
             }
+
+            md_main.MaybeInjectMbx(frame);
+            md_main.g_md_music?.g_md_ym2612.FlushDacRateFrame(frame);
+            md_main.g_md_music?.FlushAudioStats(frame);
+            md_main.g_md_bus?.FlushZ80WinHist(frame);
+            md_main.g_md_bus?.FlushZ80WinStat(frame);
+            md_main.g_md_bus?.FlushMbx68kStat(frame);
+            md_main.g_md_bus?.TickZ80SafeBoot(frame);
+            md_main.g_md_z80?.FlushZ80MbxPoll(frame);
+            md_main.g_md_z80?.FlushPcHist(frame);
         }
 
         if (TracePerf && _cpuReady && _cpu != null)
