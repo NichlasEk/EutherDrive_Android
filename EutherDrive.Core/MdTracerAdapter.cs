@@ -203,6 +203,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
                     byte[] normalized = md_rom_utils.NormalizeMegaDriveRom(rawData).Data;
                     md_main.g_md_cartridge.g_file = normalized;
                     md_main.g_md_cartridge.g_file_size = normalized.Length;
+                    md_main.g_md_cartridge.g_file_path = path;
                 }
 
                 bool useNormalizedForBus = md_main.g_md_cartridge.g_smd_header_size > 0 || md_main.g_md_cartridge.g_smd_deinterleaved;

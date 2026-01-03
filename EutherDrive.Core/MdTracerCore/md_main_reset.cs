@@ -4,6 +4,7 @@ namespace EutherDrive.Core.MdTracerCore
     {
         internal static void PowerCycleReset()
         {
+            g_md_bus?.FlushSram("powercycle");
             g_md_bus = null;
             g_md_control = null;
             g_md_io = null;

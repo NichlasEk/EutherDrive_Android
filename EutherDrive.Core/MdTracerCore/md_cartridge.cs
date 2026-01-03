@@ -9,6 +9,7 @@ namespace EutherDrive.Core.MdTracerCore
     {
         public byte[] g_file = Array.Empty<byte>(); // ROM File data
         public int g_file_size;                      // ROM File data size
+        public string g_file_path = string.Empty;
         public string g_system_type = string.Empty;
         public string g_copyright = string.Empty;
         public string g_game_title1 = string.Empty;
@@ -31,6 +32,7 @@ namespace EutherDrive.Core.MdTracerCore
             try
             {
                 // Läs råfilen
+                g_file_path = in_romname;
                 g_file = File.ReadAllBytes(in_romname);
                 g_file_size = g_file.Length;
             }

@@ -16,6 +16,14 @@
 - Observed: some previously failing games (Power Rangers, Toki Densetsu) boot with Safe Boot enabled.
 - To avoid log spam, do not set `EUTHERDRIVE_TRACE_Z80SIG` or `EUTHERDRIVE_TRACE_Z80REG_DECODE` during A/B tests.
 
+## SRAM support (2025-01-??)
+- Cartridge SRAM is now supported and persisted to disk (`.srm` next to the ROM path).
+- SRAM range is taken from the header (`g_extra_memory_start/end` or `g_ram_start/end`).
+- SRAM is mapped only when `$A130F1` is set to 1 (lock register); write 0 to release.
+- Only odd addresses in the range are used (even addresses return `0xFF` / ignore writes).
+- Saves are triggered when SRAM lock transitions 1 -> 0 and on powercycle/reset.
+- If ROM path is unavailable, SRAM is in-memory only and a single `[SRAM] save skipped` log is emitted.
+
 ## Z80 bus request semantics (A11100)
 - 68K code expects bit0=1 to request/grant the Z80 bus and bit0=0 to release.
 - ROMs spin on `btst #0,$A11100` until it clears after a request (e.g. Sonic at

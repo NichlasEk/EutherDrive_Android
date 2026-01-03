@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using System.Threading;
 
@@ -65,6 +66,14 @@ namespace EutherDrive.Core.MdTracerCore
         private long _z80SafeBootStartFrame;
         private long _z80SafeBootLastUploadFrame = -1;
         private long _z80SafeBootResetReleaseFrame = -1;
+        private byte[]? _sram;
+        private uint _sramStart;
+        private uint _sramEnd;
+        private bool _sramLock;
+        private bool _sramDirty;
+        private string? _sramPath;
+        private bool _sramLoaded;
+        private bool _sramNoPathLogged;
         private int _z80ResetOnBusReqRemaining = ResetZ80OnBusReqReleaseLimit;
         private int _z80ForcePcOnUploadRemaining = ForceZ80PcOnUploadLimit;
         private bool _z80Win68kLogged;
@@ -337,11 +346,184 @@ namespace EutherDrive.Core.MdTracerCore
             return addr;
         }
 
+        private static bool IsSramLockReg(uint addr) => (addr & 0x00FF_FFFF) == 0x00A1_30F1;
+
+        private bool IsSramConfigured => _sram != null && _sramEnd >= _sramStart;
+
+        private bool IsSramAddress(uint addr)
+        {
+            if (!IsSramConfigured)
+                return false;
+            return addr >= _sramStart && addr <= _sramEnd;
+        }
+
+        private byte ReadSramByte(uint addr)
+        {
+            if (!IsSramConfigured || !_sramLock || !IsSramAddress(addr) || (addr & 1) == 0)
+                return 0xFF;
+            int index = (int)((addr - _sramStart) >> 1);
+            if (_sram == null || index < 0 || index >= _sram.Length)
+                return 0xFF;
+            return _sram[index];
+        }
+
+        private void WriteSramByte(uint addr, byte value)
+        {
+            if (!IsSramConfigured || !_sramLock || !IsSramAddress(addr) || (addr & 1) == 0)
+                return;
+            int index = (int)((addr - _sramStart) >> 1);
+            if (_sram == null || index < 0 || index >= _sram.Length)
+                return;
+            if (_sram[index] == value)
+                return;
+            _sram[index] = value;
+            _sramDirty = true;
+        }
+
+        private void EnsureSramInitialized()
+        {
+            if (_sramLoaded)
+                return;
+            var cart = md_main.g_md_cartridge;
+            if (cart == null)
+                return;
+
+            if (!TryGetSramRange(cart, out uint start, out uint end))
+                return;
+
+            int size = (int)(((end - start) >> 1) + 1);
+            if (size <= 0 || size > 0x200000)
+            {
+                Console.WriteLine($"[SRAM] range ignored: start=0x{start:X6} end=0x{end:X6} size=0x{size:X}");
+                return;
+            }
+
+            string? path = BuildSramPath(cart);
+            bool needsAlloc = _sram == null || _sram.Length != size || !string.Equals(_sramPath, path, StringComparison.Ordinal);
+            if (needsAlloc)
+            {
+                _sram = new byte[size];
+                for (int i = 0; i < _sram.Length; i++)
+                    _sram[i] = 0xFF;
+            }
+
+            _sramStart = start;
+            _sramEnd = end;
+            _sramPath = path;
+            _sramLoaded = true;
+            _sramDirty = false;
+            _sramNoPathLogged = false;
+
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            {
+                try
+                {
+                    byte[] data = File.ReadAllBytes(path);
+                    int copy = Math.Min(data.Length, _sram.Length);
+                    Buffer.BlockCopy(data, 0, _sram, 0, copy);
+                    Console.WriteLine($"[SRAM] loaded '{path}' bytes=0x{copy:X}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[SRAM] load failed '{path}': {ex.Message}");
+                }
+            }
+        }
+
+        private void SaveSramIfNeeded(string reason)
+        {
+            if (!_sramDirty || _sram == null)
+                return;
+            if (string.IsNullOrWhiteSpace(_sramPath))
+            {
+                if (!_sramNoPathLogged)
+                {
+                    Console.WriteLine($"[SRAM] save skipped ({reason}): no path");
+                    _sramNoPathLogged = true;
+                }
+                return;
+            }
+            try
+            {
+                File.WriteAllBytes(_sramPath, _sram);
+                _sramDirty = false;
+                Console.WriteLine($"[SRAM] saved '{_sramPath}' reason={reason}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SRAM] save failed '{_sramPath}' reason={reason}: {ex.Message}");
+            }
+        }
+
+        private static string? BuildSramPath(md_cartridge cart)
+        {
+            if (string.IsNullOrWhiteSpace(cart.g_file_path))
+                return null;
+            try
+            {
+                return Path.ChangeExtension(cart.g_file_path, ".srm");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool TryGetSramRange(md_cartridge cart, out uint start, out uint end)
+        {
+            start = 0;
+            end = 0;
+            bool hasRaSig = cart.g_file.Length >= 0x1B2 &&
+                            cart.g_file[0x1B0] == (byte)'R' &&
+                            cart.g_file[0x1B1] == (byte)'A';
+            bool hasExtraRange = cart.g_extra_memory_end >= cart.g_extra_memory_start &&
+                                 cart.g_extra_memory_end != 0;
+
+            if (hasExtraRange && hasRaSig)
+            {
+                start = cart.g_extra_memory_start;
+                end = cart.g_extra_memory_end;
+            }
+            else if (cart.g_ram_end >= cart.g_ram_start && cart.g_ram_end != 0)
+            {
+                start = cart.g_ram_start;
+                end = cart.g_ram_end;
+            }
+            else if (hasExtraRange)
+            {
+                start = cart.g_extra_memory_start;
+                end = cart.g_extra_memory_end;
+            }
+            else
+            {
+                return false;
+            }
+
+            if (end < start)
+                return false;
+            if (start < 0x200000 || end > 0x3FFFFF)
+                return false;
+
+            return true;
+        }
+
+        private void SetSramLock(bool enabled, string reason)
+        {
+            bool prev = _sramLock;
+            if (enabled && !_sramLoaded)
+                EnsureSramInitialized();
+            _sramLock = enabled;
+            if (prev && !enabled)
+                SaveSramIfNeeded(reason);
+        }
+
         public void Reset()
         {
+            SaveSramIfNeeded("reset");
             _z80BusGranted = false;
             _z80ForceGrant = false;
             _z80Reset = Z80ResetAssertOnBoot;
+            _sramLock = false;
             if (md_main.g_md_z80 != null)
                 md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
             if (Z80ResetAssertOnBoot && Z80ResetAssertLog)
@@ -397,6 +579,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (Z80SafeBootEnabled)
                 StartZ80SafeBoot();
+
+            EnsureSramInitialized();
         }
 
         internal void TickZ80SafeBoot(long frame)
@@ -442,6 +626,11 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 ReleaseZ80SafeBootBusReq(now);
             }
+        }
+
+        internal void FlushSram(string reason)
+        {
+            SaveSramIfNeeded(reason);
         }
 
         private void StartZ80SafeBoot()
@@ -593,6 +782,12 @@ namespace EutherDrive.Core.MdTracerCore
                 return (byte)(val & 0x01);
             }
 
+            if (IsSramLockReg(in_address))
+                return _sramLock ? (byte)0x01 : (byte)0x00;
+
+            if (_sramLock && IsSramAddress(in_address))
+                return ReadSramByte(in_address);
+
             // 0x000000–0x3FFFFF  | ROM / cart
             if (in_address <= 0x3FFFFF)
                 return md_m68k.read8(in_address);
@@ -669,6 +864,16 @@ namespace EutherDrive.Core.MdTracerCore
                 return val;
             }
 
+            if (IsSramLockReg(in_address) || IsSramLockReg(in_address + 1))
+                return _sramLock ? (ushort)0x0101 : (ushort)0x0000;
+
+            if (_sramLock && IsSramAddress(in_address))
+            {
+                byte hi = ReadSramByte(in_address);
+                byte lo = ReadSramByte(in_address + 1);
+                return (ushort)((hi << 8) | lo);
+            }
+
             if (in_address <= 0x3FFFFF)
                 return md_m68k.read16(in_address);
 
@@ -730,6 +935,19 @@ namespace EutherDrive.Core.MdTracerCore
                 uint val = (uint)((word << 16) | word);
                 LogZ80RegRead(in_address, val);
                 return val;
+            }
+
+            if (IsSramLockReg(in_address) || IsSramLockReg(in_address + 1) ||
+                IsSramLockReg(in_address + 2) || IsSramLockReg(in_address + 3))
+                return _sramLock ? 0x0101_0101u : 0x0000_0000u;
+
+            if (_sramLock && IsSramAddress(in_address))
+            {
+                byte b0 = ReadSramByte(in_address);
+                byte b1 = ReadSramByte(in_address + 1);
+                byte b2 = ReadSramByte(in_address + 2);
+                byte b3 = ReadSramByte(in_address + 3);
+                return (uint)((b0 << 24) | (b1 << 16) | (b2 << 8) | b3);
             }
 
             if (in_address <= 0x3FFFFF)
@@ -804,6 +1022,18 @@ namespace EutherDrive.Core.MdTracerCore
                 bool lds = !uds;
                 ushort raw = uds ? (ushort)(in_data << 8) : in_data;
                 HandleZ80ResetWrite(in_address, raw, uds, lds, raw);
+                return;
+            }
+
+            if (IsSramLockReg(in_address))
+            {
+                SetSramLock((in_data & 0x01) != 0, "lock");
+                return;
+            }
+
+            if (IsSramAddress(in_address))
+            {
+                WriteSramByte(in_address, in_data);
                 return;
             }
 
@@ -953,6 +1183,22 @@ namespace EutherDrive.Core.MdTracerCore
             if (IsZ80Reset(in_address))
             {
                 HandleZ80ResetWrite(in_address, in_data, uds: true, lds: true, in_data);
+                return;
+            }
+
+            if (IsSramLockReg(in_address) || IsSramLockReg(in_address + 1))
+            {
+                byte regByte = (byte)(in_data & 0xFF);
+                SetSramLock((regByte & 0x01) != 0, "lock16");
+                return;
+            }
+
+            if (IsSramAddress(in_address))
+            {
+                byte hi = (byte)((in_data >> 8) & 0xFF);
+                byte lo = (byte)(in_data & 0xFF);
+                WriteSramByte(in_address, hi);
+                WriteSramByte(in_address + 1, lo);
                 return;
             }
 
@@ -1119,6 +1365,27 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 ushort raw = (ushort)((in_data >> 16) & 0xFFFF);
                 HandleZ80ResetWrite(in_address, raw, uds: true, lds: true, in_data);
+                return;
+            }
+
+            if (IsSramLockReg(in_address) || IsSramLockReg(in_address + 1) ||
+                IsSramLockReg(in_address + 2) || IsSramLockReg(in_address + 3))
+            {
+                byte regByte = (byte)(in_data & 0xFF);
+                SetSramLock((regByte & 0x01) != 0, "lock32");
+                return;
+            }
+
+            if (IsSramAddress(in_address))
+            {
+                byte b3 = (byte)((in_data >> 24) & 0xFF);
+                byte b2 = (byte)((in_data >> 16) & 0xFF);
+                byte b1 = (byte)((in_data >> 8) & 0xFF);
+                byte b0 = (byte)(in_data & 0xFF);
+                WriteSramByte(in_address, b3);
+                WriteSramByte(in_address + 1, b2);
+                WriteSramByte(in_address + 2, b1);
+                WriteSramByte(in_address + 3, b0);
                 return;
             }
 
