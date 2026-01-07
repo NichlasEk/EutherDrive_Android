@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Globalization;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -11,17 +12,135 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YMREG"), "1", StringComparison.Ordinal);
         private static readonly bool TraceYmIrq =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YMIRQ"), "1", StringComparison.Ordinal);
+        private static readonly bool EmulateYmBusy =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_EMULATE_YM_BUSY"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmBusy =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_BUSY"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmStatus =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_STATUS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmDacBank =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_DAC_BANK"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceAudStat =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDSTAT"), "1", StringComparison.Ordinal);
+        private static readonly bool DacInputSigned =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DAC_INPUT_SIGNED"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceDacSample =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC_SAMPLE"), "1", StringComparison.Ordinal);
+        private static readonly string? TraceDacRateRaw =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DACRATE");
+        private static readonly bool TraceDacRate =
+            string.Equals(TraceDacRateRaw?.Trim(), "1", StringComparison.Ordinal);
+        private static readonly int TraceYmDacBankLimit = ParseYmDacBankLimit();
+        private static readonly int Key28LogLimit = ParseKey28LogLimit();
+        private static readonly int TraceYmBusyLimit = ParseYmBusyLimit();
+        private static readonly int TraceYmStatusLimit = ParseYmStatusLimit();
+        private static readonly int YmBusyZ80Cycles = ParseYmBusyZ80Cycles();
 
         private long _dacWriteCount;
         private long _dacEnableCount;
         private long _dacDisableCount;
+        private long _dacSum;
+        private long _dacRateWriteCount;
+        private long _dacRateDeltaCount;
+        private long _dacRateDeltaTotal;
+        private long _dacRateDeltaMin = long.MaxValue;
+        private long _dacRateDeltaMax;
+        private long _dacRateLastCycle;
+        private bool _dacRateHasLast;
+        private bool _dacRateBannerLogged;
         private byte _dacLastValue;
         private bool _dacEnabled;
         private long _dacLastLogTicks;
+        private byte _dacMinValue = 0xFF;
+        private byte _dacMaxValue;
+        private long _dacCenterCount;
+        private long _dacNonCenterCount;
+        private readonly int[] _dacHistogram = new int[16];
         private int _ymRegLogRemaining = 256;
-        private int _key28LogRemaining = 256;
+        private int _key28LogRemaining = Key28LogLimit;
+        private int _ymDacBankLogRemaining = TraceYmDacBankLimit;
+        private int _ymBusyLogRemaining = TraceYmBusyLimit;
+        private int _ymStatusLogRemaining = TraceYmStatusLimit;
+        private long _ymBusyUntilCycle;
+        private long _ymBusyDropCount;
         private bool _key28KeyOffLogged;
         private bool _ymIrqAsserted;
+        private int _audStatKeyOn;
+        private int _audStatFnum;
+        private int _audStatParam;
+        private int _audStatDacCmd;
+        private int _audStatDacDat;
+
+        private static int ParseKey28LogLimit()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_KEY28_LIMIT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 256;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return 256;
+            if (value <= 0)
+                return int.MaxValue;
+            return value;
+        }
+
+        private static int ParseYmDacBankLimit()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_DAC_BANK_LIMIT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 256;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return 256;
+            if (value <= 0)
+                return int.MaxValue;
+            return value;
+        }
+
+        private static int ParseYmBusyLimit()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_BUSY_LIMIT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 256;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return 256;
+            if (value <= 0)
+                return int.MaxValue;
+            return value;
+        }
+
+        private static int ParseYmStatusLimit()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_STATUS_LIMIT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 256;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return 256;
+            if (value <= 0)
+                return int.MaxValue;
+            return value;
+        }
+
+        private static int ParseYmBusyZ80Cycles()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_BUSY_Z80_CYCLES");
+            if (string.IsNullOrWhiteSpace(raw))
+                return ComputeDefaultYmBusyCycles();
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return ComputeDefaultYmBusyCycles();
+            if (value <= 0)
+                return ComputeDefaultYmBusyCycles();
+            return value;
+        }
+
+        private static int ComputeDefaultYmBusyCycles()
+        {
+            int cycles = (int)Math.Round(Z80_CLOCK * 32.0 / 1_000_000.0);
+            return cycles > 0 ? cycles : 1;
+        }
 
         private bool g_reg_22_lfo_enable;
         private int g_reg_22_lfo_inc;
@@ -38,7 +157,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _timerBCount = 256 << 4;
         private double _timerTickFrac;
         private bool _timersDrivenByZ80;
-        private int g_reg_2a_dac_data;
+        private int g_reg_2a_dac_data = 0x100;  // Match clownmdemu: 0x100 = silence
         private int g_reg_2b_dac;
 
         private double[,] g_reg_30_multi = new double[0, 0];
@@ -61,7 +180,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         public byte read8(uint in_address)
         {
-            return g_com_status;
+            return ReadStatus(false);
         }
 
         public byte ReadStatus(bool clearOnRead)
@@ -72,6 +191,14 @@ namespace EutherDrive.Core.MdTracerCore
                 g_com_status &= 0xFC;
                 UpdateYmIrq("statusRead");
             }
+            long nowCycle = GetZ80Cycle();
+            bool busy = (EmulateYmBusy || TraceYmBusy || TraceYmStatus) && IsYmBusy(nowCycle);
+            if (EmulateYmBusy && busy)
+                status |= 0x80;
+            if (TraceYmStatus)
+                LogYmStatusRead(nowCycle, status, clearOnRead, busy);
+            if (TraceYmBusy && busy)
+                LogYmBusyStatus(nowCycle, status);
             return status;
         }
 
@@ -87,6 +214,8 @@ namespace EutherDrive.Core.MdTracerCore
                 case 0:
                 {
                     g_reg_addr1 = in_val;
+                    if (TraceAudStat && in_val == 0x2A)
+                        _audStatDacCmd++;
                     if (TraceYmReg && in_val == 0x28 && _key28LogRemaining > 0)
                     {
                         _key28LogRemaining--;
@@ -106,6 +235,8 @@ namespace EutherDrive.Core.MdTracerCore
                 case 2:
                 {
                     g_reg_addr2 = in_val;
+                    if (TraceAudStat && in_val == 0x2A)
+                        _audStatDacCmd++;
                     if (TraceYmReg && in_val == 0x28 && _key28LogRemaining > 0)
                     {
                         _key28LogRemaining--;
@@ -126,8 +257,33 @@ namespace EutherDrive.Core.MdTracerCore
             if (w_mode == -1)
                 return;
 
+            long nowCycle = GetZ80Cycle();
+            bool busy = (EmulateYmBusy || TraceYmBusy) && nowCycle >= 0 && IsYmBusy(nowCycle);
+
+            // Don't drop writes when YM is busy - just process them and extend the busy timer
+            // This is more accurate than dropping writes which can break audio
+            if (busy && TraceYmBusy)
+            {
+                LogYmBusyWrite("busy", nowCycle, w_mode, w_addr, in_val, -1);
+            }
+
+            // Always update the busy timer (extends it if already busy)
+            if ((EmulateYmBusy || TraceYmBusy || TraceYmStatus) && nowCycle >= 0)
+                SetYmBusy(nowCycle, w_mode, w_addr, in_val);
+
             // skriv alltid till reg-matrisen
             g_reg[w_mode, w_addr] = in_val;
+            if (TraceAudStat)
+            {
+                if (w_mode == 0 && w_addr == 0x28)
+                    _audStatKeyOn++;
+                if (w_mode == 0 && w_addr == 0x2A)
+                    _audStatDacDat++;
+                if (w_addr >= 0xA0 && w_addr <= 0xA6)
+                    _audStatFnum++;
+                if ((w_addr >= 0x30 && w_addr <= 0x9F) || (w_addr >= 0xB0 && w_addr <= 0xB6))
+                    _audStatParam++;
+            }
             MaybeLogYmReg(w_mode, w_addr, in_val);
 
             // ------------------------------------------------------------
@@ -258,9 +414,90 @@ namespace EutherDrive.Core.MdTracerCore
                             {
                                 _dacWriteCount++;
                                 _dacLastValue = in_val;
+                                _dacSum += in_val;
+                                _dacHistogram[in_val >> 4]++;
+                                if (in_val < _dacMinValue)
+                                    _dacMinValue = in_val;
+                                if (in_val > _dacMaxValue)
+                                    _dacMaxValue = in_val;
+                                byte centerValue = DacInputSigned ? (byte)0x00 : (byte)0x80;
+                                if (in_val == centerValue)
+                                    _dacCenterCount++;
+                                else
+                                _dacNonCenterCount++;
                                 MaybeLogDac();
                             }
-                            g_reg_2a_dac_data = ((int)(uint)in_val - 0x80) << DAC_SHIFT;
+                            if (!_dacRateBannerLogged && TraceDacRateRaw != null)
+                            {
+                                Console.WriteLine($"[DACRATE] env='{TraceDacRateRaw}' enabled={TraceDacRate}");
+                                _dacRateBannerLogged = true;
+                            }
+                            if (TraceDacRate)
+                            {
+                                _dacRateWriteCount++;
+                                long now = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugTotalCycles : -1;
+                                if (now >= 0)
+                                {
+                                    if (_dacRateHasLast)
+                                    {
+                                        long delta = now - _dacRateLastCycle;
+                                        if (delta >= 0)
+                                        {
+                                            _dacRateDeltaTotal += delta;
+                                            _dacRateDeltaCount++;
+                                            if (delta < _dacRateDeltaMin)
+                                                _dacRateDeltaMin = delta;
+                                            if (delta > _dacRateDeltaMax)
+                                                _dacRateDeltaMax = delta;
+                                        }
+                                    }
+                                    _dacRateLastCycle = now;
+                                    _dacRateHasLast = true;
+                                }
+                            }
+                            if (TraceYmDacBank && _ymDacBankLogRemaining > 0)
+                            {
+                                ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+                                uint bankBase = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugBankBase : 0;
+                                uint bankReg = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugBankRegister : 0;
+                                ushort lastAddr = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugLastReadAddr : (ushort)0xFFFF;
+                                byte lastVal = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugLastReadValue : (byte)0xFF;
+                                ushort lastPc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugLastReadPc : (ushort)0xFFFF;
+                                bool lastBanked = md_main.g_md_z80 != null && md_main.g_md_z80.DebugLastReadWasBanked;
+                                uint lastM68k = lastBanked && md_main.g_md_z80 != null ? md_main.g_md_z80.DebugLastReadM68kAddr : 0;
+                                string lastBankInfo = lastBanked ? $" m68k=0x{lastM68k:X6}" : string.Empty;
+                                Console.WriteLine(
+                                    $"[YMDACBANK] pc=0x{pc:X4} val=0x{in_val:X2} bank=0x{bankBase:X6} reg=0x{bankReg:X3} " +
+                                    $"last=0x{lastAddr:X4} lastVal=0x{lastVal:X2} lastPc=0x{lastPc:X4}{lastBankInfo}");
+                                if (_ymDacBankLogRemaining != int.MaxValue)
+                                    _ymDacBankLogRemaining--;
+                            }
+                            // Convert 8-bit input to 9-bit unsigned DAC value
+                            // Clownmdemu does: dac_sample &= 1; dac_sample |= data << 1;
+                            // This maps input 0x00..0xFF to 9-bit values where:
+                            // - Input 0x80 (silence in unsigned 8-bit) -> 0x100 (256, signed 0)
+                            // - Input 0x00 -> 0x00 (signed -128)
+                            // - Input 0xFF -> 0x1FE (510, signed +254)
+                            // For signed input (sbyte), we need to convert -128..+127 to 0..255 first
+                            int shiftedData;
+                            if (DacInputSigned)
+                            {
+                                // Signed: convert -128..+127 to 0..255, then shift
+                                // -128 -> 0, 0 -> 128, +127 -> 255
+                                shiftedData = ((int)(sbyte)in_val + 0x80) & 0xFF;
+                            }
+                            else
+                            {
+                                // Already unsigned 0..255
+                                shiftedData = in_val & 0xFF;
+                            }
+                            // Shift left by 1 to get 9-bit value, preserve old bit 0 for compatibility
+                            g_reg_2a_dac_data = ((shiftedData << 1) & 0x1FE) | (g_reg_2a_dac_data & 1);
+                            if (TraceDacSample)
+                            {
+                                int signedDac = g_reg_2a_dac_data - 0x100;
+                                Console.WriteLine($"[YMDAC] val=0x{in_val:X2} shifted=0x{shiftedData:X2} g_reg_2a_dac_data=0x{g_reg_2a_dac_data:X3} signed={signedDac}");
+                            }
                             break;
                         }
 
@@ -533,13 +770,89 @@ namespace EutherDrive.Core.MdTracerCore
             long writes = _dacWriteCount;
             long enables = _dacEnableCount;
             long disables = _dacDisableCount;
+            byte minVal = _dacMinValue == 0xFF ? _dacLastValue : _dacMinValue;
+            byte maxVal = _dacMaxValue;
+            long center = _dacCenterCount;
+            long nonCenter = _dacNonCenterCount;
+            long sum = _dacSum;
+            string histText = string.Join(",", _dacHistogram);
             _dacWriteCount = 0;
             _dacEnableCount = 0;
             _dacDisableCount = 0;
+            _dacSum = 0;
+            _dacMinValue = 0xFF;
+            _dacMaxValue = 0x00;
+            _dacCenterCount = 0;
+            _dacNonCenterCount = 0;
+            Array.Clear(_dacHistogram, 0, _dacHistogram.Length);
+
+            byte centerValue = DacInputSigned ? (byte)0x00 : (byte)0x80;
+            double mean = writes > 0 ? (double)sum / writes : 0.0;
+            int meanRounded = (int)Math.Round(mean);
+            string meanText = mean.ToString("0.##", CultureInfo.InvariantCulture);
+            string meanHex = meanRounded.ToString("X2", CultureInfo.InvariantCulture);
+            Console.WriteLine(
+                "[YM-DAC] writes={0} enable={1} disable={2} enabled={3} last=0x{4:X2} min=0x{5:X2} max=0x{6:X2} mean={7} meanHex=0x{8} center=0x{9:X2} nonCenter={10} hist16={11}",
+                writes, enables, disables, _dacEnabled ? 1 : 0, _dacLastValue, minVal, maxVal, meanText, meanHex, centerValue, nonCenter, histText);
+        }
+
+        internal void FlushDacRateFrame(long frame)
+        {
+            if (!_dacRateBannerLogged && TraceDacRateRaw != null)
+            {
+                Console.WriteLine($"[DACRATE] env='{TraceDacRateRaw}' enabled={TraceDacRate}");
+                _dacRateBannerLogged = true;
+            }
+
+            if (!TraceDacRate)
+                return;
+
+            long writes = _dacRateWriteCount;
+            long deltaCount = _dacRateDeltaCount;
+            long minCycles = deltaCount > 0 ? _dacRateDeltaMin : 0;
+            long maxCycles = deltaCount > 0 ? _dacRateDeltaMax : 0;
+            double avgCycles = deltaCount > 0 ? (double)_dacRateDeltaTotal / deltaCount : 0.0;
+            double rate = avgCycles > 0 ? Z80_CLOCK / avgCycles : 0.0;
+            string avgText = avgCycles > 0 ? avgCycles.ToString("0.##", CultureInfo.InvariantCulture) : "0";
+            string rateText = rate > 0 ? rate.ToString("0.##", CultureInfo.InvariantCulture) : "0";
 
             Console.WriteLine(
-                "[YM-DAC] writes={0} enable={1} disable={2} enabled={3} last=0x{4:X2}",
-                writes, enables, disables, _dacEnabled ? 1 : 0, _dacLastValue);
+                $"[DACRATE] frame={frame} writes={writes} avgCycles={avgText} minCycles={minCycles} maxCycles={maxCycles} estHz={rateText}");
+
+            _dacRateWriteCount = 0;
+            _dacRateDeltaCount = 0;
+            _dacRateDeltaTotal = 0;
+            _dacRateDeltaMin = long.MaxValue;
+            _dacRateDeltaMax = 0;
+            _dacRateHasLast = false;
+        }
+
+        internal static bool AudStatEnabled => TraceAudStat;
+
+        internal void ConsumeAudStatCounters(
+            out int keyOn, out int fnum, out int param, out int dacCmd, out int dacDat)
+        {
+            if (!TraceAudStat)
+            {
+                keyOn = 0;
+                fnum = 0;
+                param = 0;
+                dacCmd = 0;
+                dacDat = 0;
+                return;
+            }
+
+            keyOn = _audStatKeyOn;
+            fnum = _audStatFnum;
+            param = _audStatParam;
+            dacCmd = _audStatDacCmd;
+            dacDat = _audStatDacDat;
+
+            _audStatKeyOn = 0;
+            _audStatFnum = 0;
+            _audStatParam = 0;
+            _audStatDacCmd = 0;
+            _audStatDacDat = 0;
         }
 
         private void MaybeLogYmReg(int port, byte addr, byte val)
@@ -547,7 +860,64 @@ namespace EutherDrive.Core.MdTracerCore
             if (!TraceYmReg || _ymRegLogRemaining <= 0)
                 return;
             _ymRegLogRemaining--;
-            Console.WriteLine($"[YMREG] port={port} addr=0x{addr:X2} val=0x{val:X2}");
+            ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+            Console.WriteLine($"[YMREG] pc=0x{pc:X4} port={port} addr=0x{addr:X2} val=0x{val:X2}");
+        }
+
+        private long GetZ80Cycle()
+        {
+            // Use the system-wide monotonic cycle counter for YM2612 timing.
+            // This ensures the busy flag advances correctly even when Z80 is held in
+            // reset or waiting for bus request, and provides a consistent timebase.
+            return md_main.SystemCycles;
+        }
+
+        private bool IsYmBusy(long nowCycle)
+        {
+            return nowCycle >= 0 && nowCycle < _ymBusyUntilCycle;
+        }
+
+        private void SetYmBusy(long nowCycle, int port, byte addr, byte val)
+        {
+            long newUntil = nowCycle + YmBusyZ80Cycles;
+            if (newUntil <= _ymBusyUntilCycle)
+                return;
+            _ymBusyUntilCycle = newUntil;
+            if (TraceYmBusy)
+                LogYmBusyWrite("set", nowCycle, port, addr, val, -1);
+        }
+
+        private void LogYmBusyWrite(string kind, long nowCycle, int port, byte addr, byte val, long dropCount)
+        {
+            if (_ymBusyLogRemaining <= 0)
+                return;
+            _ymBusyLogRemaining--;
+            ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+            string dacTag = (addr == 0x2A || addr == 0x2B) ? " dac=1" : string.Empty;
+            string dropTag = dropCount >= 0 ? $" drops={dropCount}" : string.Empty;
+            Console.WriteLine(
+                $"[YM-BUSY] {kind} pc=0x{pc:X4} port={port} addr=0x{addr:X2} val=0x{val:X2} cycles={nowCycle} until={_ymBusyUntilCycle}{dacTag}{dropTag}");
+        }
+
+        private void LogYmBusyStatus(long nowCycle, byte status)
+        {
+            if (_ymBusyLogRemaining <= 0)
+                return;
+            _ymBusyLogRemaining--;
+            ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+            Console.WriteLine($"[YM-BUSY] status pc=0x{pc:X4} cycles={nowCycle} until={_ymBusyUntilCycle} status=0x{status:X2}");
+        }
+
+        private void LogYmStatusRead(long nowCycle, byte status, bool clearOnRead, bool busy)
+        {
+            if (_ymStatusLogRemaining <= 0)
+                return;
+            if (_ymStatusLogRemaining != int.MaxValue)
+                _ymStatusLogRemaining--;
+            ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.CpuPc : (ushort)0xFFFF;
+            int busyFlag = busy ? 1 : 0;
+            int clearFlag = clearOnRead ? 1 : 0;
+            Console.WriteLine($"[YM-STATUS] pc=0x{pc:X4} cycles={nowCycle} status=0x{status:X2} busy={busyFlag} clear={clearFlag}");
         }
 
         private void UpdateYmIrq(string reason)

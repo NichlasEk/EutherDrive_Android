@@ -7,10 +7,20 @@ namespace EutherDrive.Core.MdTracerCore
     //----------------------------------------------------------------
     internal partial class md_ym2612
     {
+        private static readonly bool AudioMuteDac =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_MUTE_DAC"), "1", StringComparison.Ordinal);
+        private static readonly bool AudioMuteFmPsg =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_MUTE_FMPSG"), "1", StringComparison.Ordinal);
+
         public (int out1, int out2) YM2612_Update()
         {
             int w_out_l = 0;
             int w_out_r = 0;
+
+            // FM_VOLUME_DIVISOR controls the final output level
+            // clownmdemu does: sample * 128 / 8 = sample * 16
+            // With g_ch_out being post->>9, using 32 gives g_ch_out * 4 (reasonable volume)
+            const int FM_VOLUME_DIVISOR = 32;
 
             lfo_calc();
             for (int w_ch = 0; w_ch < NUM_CHANNELS; w_ch++)
@@ -23,17 +33,35 @@ namespace EutherDrive.Core.MdTracerCore
                     operator_update(w_ch);
                     if (g_ch_out[w_ch] > OUT_CH_LIMIT) g_ch_out[w_ch] = OUT_CH_LIMIT;
                     else if (g_ch_out[w_ch] < -OUT_CH_LIMIT) g_ch_out[w_ch] = -OUT_CH_LIMIT;
-                    if (g_reg_b4_l[w_ch] == true) w_out_l += (int)(g_ch_out[w_ch] * md_main.g_md_music.g_out_vol[w_ch]);
-                    if (g_reg_b4_r[w_ch] == true) w_out_r += (int)(g_ch_out[w_ch] * md_main.g_md_music.g_out_vol[w_ch]);
+                    if (!AudioMuteFmPsg)
+                    {
+                        // g_ch_out has been shifted right by OUT_DOWN_BIT (9) in slot_mixer
+                        // clownmdemu does: sample * 128 / 8 = sample * 16
+                        // So we shift left 7 (multiply by 128) then divide by 8 = multiply by 16
+                        int ch_output = (g_ch_out[w_ch] << 7) / FM_VOLUME_DIVISOR;
+                        if (g_reg_b4_l[w_ch] == true) w_out_l += (int)(ch_output * md_main.g_md_music.g_out_vol[w_ch]);
+                        if (g_reg_b4_r[w_ch] == true) w_out_r += (int)(ch_output * md_main.g_md_music.g_out_vol[w_ch]);
+                    }
                 }
                 else
                 {
                     int w_dac = dac_control();
-                    if (g_reg_b4_l[5] == true) w_out_l += (int)(w_dac * md_main.g_md_music.g_out_vol[5]);
-                    if (g_reg_b4_r[5] == true) w_out_r += (int)(w_dac * md_main.g_md_music.g_out_vol[5]);
+                    if (!AudioMuteDac)
+                    {
+                        int dac_output = w_dac / FM_VOLUME_DIVISOR;
+                        if (g_reg_b4_l[5] == true) w_out_l += (int)(dac_output * md_main.g_md_music.g_out_vol[5]);
+                        if (g_reg_b4_r[5] == true) w_out_r += (int)(dac_output * md_main.g_md_music.g_out_vol[5]);
+                    }
                 }
             }
             timer_control();
+
+            // Final output limiting to prevent clipping
+            if (w_out_l > short.MaxValue) w_out_l = short.MaxValue;
+            else if (w_out_l < short.MinValue) w_out_l = short.MinValue;
+            if (w_out_r > short.MaxValue) w_out_r = short.MaxValue;
+            else if (w_out_r < short.MinValue) w_out_r = short.MinValue;
+
             return (w_out_l, w_out_r);
         }
 
@@ -331,14 +359,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private int dac_control()
         {
-            int w_dac = 0;
-            if (g_reg_2a_dac_data != 0)
-            {
-                w_dac = (int)(((uint)g_reg_2a_dac_data << 15) - g_dac_high_level);
-                g_dac_high_level += w_dac >> 9;
-                w_dac >>= 15;
-            }
-            return w_dac;
+            // g_reg_2a_dac_data is now stored as 9-bit unsigned value (0x000..0x1FF)
+            // The DAC input was: ((val + 0x80) << 1) & 0x1FF
+            // So we need to reverse: divide by 2 and add 0x100 to get signed
+            // But since values are always even, we can just use the value directly
+            // after adjusting for the bit 0 that was preserved
+            int w_dac = (int)g_reg_2a_dac_data - 0x100;
+            // Scale to match FM output levels (multiply by 128 for 16-bit range)
+            return w_dac << 7;
         }
         private void timer_control()
         {

@@ -81,13 +81,16 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void rendering_line_snap()
         {
+            int cellHeight = GetCellHeightPixels();
+
             // HScroll A/B
             {
+                int hscrollLine = GetHScrollLine(g_scanline);
                 int w_addr = g_vdp_reg_13_hscroll;
                 switch (g_vdp_reg_11_1_hscroll)
                 {
-                    case 2: w_addr += (g_scanline & 0xfff8) << 2; break;
-                    case 3: w_addr +=  g_scanline               << 2; break;
+                    case 2: w_addr += (hscrollLine & 0xfff8) << 2; break;
+                    case 3: w_addr +=  hscrollLine             << 2; break;
                 }
                 w_addr >>= 1;
 
@@ -108,7 +111,7 @@ namespace EutherDrive.Core.MdTracerCore
                     ushort w_vscrollA = g_vsram[0];
                     ushort w_vscrollB = g_vsram[1];
 
-                    if (g_vdp_reg_12_2_interlacemode == 0)
+                    if (g_vdp_interlace_mode == 0)
                     {
                         w_vscrollA &= 0x3ff;
                         w_vscrollB &= 0x3ff;
@@ -117,6 +120,11 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         w_vscrollA &= 0x7ff;
                         w_vscrollB &= 0x7ff;
+                    }
+                    if (g_vdp_interlace_mode == 2)
+                    {
+                        w_vscrollA &= 0x7fe;
+                        w_vscrollB &= 0x7fe;
                     }
 
                     for (int i = 0; i < VSRAM_DATASIZE; i++)
@@ -132,7 +140,7 @@ namespace EutherDrive.Core.MdTracerCore
                         ushort w_vscrollA = g_vsram[i << 1];
                         ushort w_vscrollB = g_vsram[(i << 1) + 1];
 
-                        if (g_vdp_reg_12_2_interlacemode == 0)
+                        if (g_vdp_interlace_mode == 0)
                         {
                             w_vscrollA &= 0x3ff;
                             w_vscrollB &= 0x3ff;
@@ -141,6 +149,11 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             w_vscrollA &= 0x7ff;
                             w_vscrollB &= 0x7ff;
+                        }
+                        if (g_vdp_interlace_mode == 2)
+                        {
+                            w_vscrollA &= 0x7fe;
+                            w_vscrollB &= 0x7fe;
                         }
 
                         g_line_snap[g_scanline].vscrollA[i] = (w_vscrollA + g_scanline) % g_scroll_ysize;
@@ -154,6 +167,8 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_xcell_st = 0;
                 int w_xcell_ed = 0;
 
+                // Använd g_scanline (scanline) istället för renderLine (output-linje)
+                // för korrekt window-positionering i interlace mode
                 if ((g_screenA_bottom_y == 0) || (g_scanline < g_screenA_top_y) || (g_screenA_bottom_y < g_scanline))
                 {
                     w_xcell_ed = g_display_xcell - 1;
@@ -198,15 +213,21 @@ namespace EutherDrive.Core.MdTracerCore
 
                     int w_top_x      = w_val4 & 0x01ff;
                     int w_top_y      = w_val1 & g_sprite_vmask;
+                    if (g_vdp_interlace_mode == 2)
+                        w_top_y &= ~1;
                     int w_xcell_size = ((w_val2 >> 10) & 0x0003) + 1;
                     int w_ycell_size = ((w_val2 >>  8) & 0x0003) + 1;
 
                     int w_left   = w_top_x - 128;
                     int w_top    = w_top_y - 128;
                     int w_right  = w_left + (w_xcell_size << 3) - 1;
-                    int w_bottom = w_top  + (w_ycell_size << 3) - 1;
+                    int w_bottom = w_top  + (w_ycell_size * cellHeight) - 1;
 
-                    if ((g_scanline < w_top) || (w_bottom < g_scanline))
+                    // I interlace mode 2, använd g_scanline direkt för sprite-hittande
+                    // Sprite Y är redan maskerad till jämna värden (& ~1), så sprites
+                    // triggas på samma scanlines oavsett fält
+                    int lineY = g_scanline;
+                    if ((lineY < w_top) || (w_bottom < lineY))
                         continue;
 
                     if (w_top_x == 1) w_sprite_mask1 = w_now_link;

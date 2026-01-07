@@ -2,8 +2,15 @@
 {
     internal partial class md_sn76489
     {
+        private static readonly bool TraceAudStat =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDSTAT"), "1", StringComparison.Ordinal);
+        private int _audStatWrites;
+
         public void write8(byte in_val)
         {
+            if (TraceAudStat)
+                _audStatWrites++;
+
             if ((in_val & 0x80) != 0)
             {
                 int w_num = (in_val >> 5) & 0x03;
@@ -60,7 +67,16 @@
             }
         }
 
-        // Gör tabellen readonly (kan ligga i core-filen, med samma värden som du redan har)
+        internal int ConsumeAudStatWrites()
+        {
+            if (!TraceAudStat)
+                return 0;
+            int value = _audStatWrites;
+            _audStatWrites = 0;
+            return value;
+        }
+
+        // Volume table - matches classic SN76489 attenuation values
         private static readonly int[] VOL_MAP = new int[]
         {
             4095, 3267, 2594, 2062, 1638, 1301, 1032, 819,

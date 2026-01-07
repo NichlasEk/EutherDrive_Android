@@ -13,6 +13,12 @@
             g_color = new uint[COLOR_MAX];
             g_color_shadow = new uint[COLOR_MAX];
             g_color_highlight = new uint[COLOR_MAX];
+            for (int i = 0; i < COLOR_MAX; i++)
+            {
+                g_color[i] = 0xFF000000u;
+                g_color_shadow[i] = 0xFF000000u;
+                g_color_highlight[i] = 0xFF000000u;
+            }
 
             // Pattern cache & frame buffers
             g_pattern_chk = new bool[PATTERN_MAX];
@@ -21,6 +27,7 @@
             g_game_shadowmap = new uint[DISPLAY_BUFSIZE];
 
             g_game_screen = new uint[DISPLAY_BUFSIZE];
+            Array.Fill(g_game_screen, 0xFF000000u);
             g_renderer_vram = new uint[VRAM_DATASIZE * 4];
 
             // Per-line snapshot buffers
@@ -113,11 +120,14 @@
             g_vdp_reg_2_scrolla = 0xffff;
             g_vdp_reg_3_windows = 0xffff;
             g_vdp_reg_4_scrollb = 0xffff;
+            g_vdp_interlace_mode = 0;
+            g_vdp_interlace_field = 0;
+            _interlaceFieldAdvanced = false;
 
             g_scanline = 0;
             g_hinterrupt_counter = -1;
 
-            ApplyHorizontalMode(g_vdp_reg_12_0_cellmode2 != 0);
+            ApplyHorizontalMode(IsH40Mode());
         }
     }
 }

@@ -21,13 +21,13 @@ namespace EutherDrive.Core.MdTracerCore
                 Array.Clear(g_vsram, 0, g_vsram.Length);
 
             if (g_color != null && g_color.Length > 0)
-                Array.Clear(g_color, 0, g_color.Length);
+                Array.Fill(g_color, 0xFF000000u);
 
             if (g_color_shadow != null && g_color_shadow.Length > 0)
-                Array.Clear(g_color_shadow, 0, g_color_shadow.Length);
+                Array.Fill(g_color_shadow, 0xFF000000u);
 
             if (g_color_highlight != null && g_color_highlight.Length > 0)
-                Array.Clear(g_color_highlight, 0, g_color_highlight.Length);
+                Array.Fill(g_color_highlight, 0xFF000000u);
 
             if (g_pattern_chk != null && g_pattern_chk.Length > 0)
                 Array.Clear(g_pattern_chk, 0, g_pattern_chk.Length);
@@ -42,7 +42,7 @@ namespace EutherDrive.Core.MdTracerCore
                 Array.Clear(g_game_shadowmap, 0, g_game_shadowmap.Length);
 
             if (g_game_screen != null && g_game_screen.Length > 0)
-                Array.Clear(g_game_screen, 0, g_game_screen.Length);
+                Array.Fill(g_game_screen, 0xFF000000u);
 
             if (g_renderer_vram != null && g_renderer_vram.Length > 0)
                 Array.Clear(g_renderer_vram, 0, g_renderer_vram.Length);
@@ -66,6 +66,8 @@ namespace EutherDrive.Core.MdTracerCore
             g_vdp_reg_12_7_cellmode1 = 0;
             g_vdp_reg_12_3_shadow = 0;
             g_vdp_reg_12_2_interlacemode = 0;
+            g_vdp_interlace_mode = 0;
+            g_vdp_interlace_field = 0;
             g_vdp_reg_12_0_cellmode2 = 0;
             g_sprite_vmask = 0x1FF;
             g_vdp_reg_13_hscroll = 0;
@@ -145,7 +147,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_dma_fill_req = false;
             g_dma_fill_data = 0;
 
-            ApplyHorizontalMode(g_vdp_reg_12_0_cellmode2 != 0);
+            ApplyHorizontalMode(IsH40Mode());
             ClearVBlank();
         }
     }

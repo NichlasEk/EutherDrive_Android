@@ -16,7 +16,10 @@ class Program
     public static void Main(string[] args)
     {
         ConfigureConsoleLogging();
-        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        var builder = BuildAvaloniaApp();
+        // Store args in a static field that App can access
+        App.CommandLineArgs = args;
+        builder.StartWithClassicDesktopLifetime(args);
     }
 
     private static void ConfigureConsoleLogging()

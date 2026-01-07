@@ -12,5 +12,19 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         public void run(int cycles) { }
+
+        internal void FlushAudioStats(long frame)
+        {
+            if (!md_ym2612.AudStatEnabled)
+                return;
+
+            g_md_ym2612.ConsumeAudStatCounters(
+                out int keyOn, out int fnum, out int param, out int dacCmd, out int dacDat);
+            int psgWrites = g_md_sn76489.ConsumeAudStatWrites();
+
+            Console.WriteLine(
+                $"[AUDSTAT] frame={frame} ym_keyon={keyOn} ym_fnum={fnum} ym_param={param} " +
+                $"ym_dac_cmd={dacCmd} ym_dac_dat={dacDat} psg={psgWrites}");
+        }
     }
 }

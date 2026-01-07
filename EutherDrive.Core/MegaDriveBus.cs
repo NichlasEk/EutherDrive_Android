@@ -39,6 +39,8 @@ public sealed class MegaDriveBus
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal);
     private static readonly bool TraceZ80Win =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceZ80RegDecode =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80REG_DECODE"), "1", StringComparison.Ordinal);
     private static bool TraceZ80Sig => MdTracerCore.MdLog.TraceZ80Sig;
     private static bool MapZ80OddReadToNext => ReadEnvDefaultOn("EUTHERDRIVE_Z80_ODD_READ_TO_NEXT");
 
@@ -75,13 +77,36 @@ public sealed class MegaDriveBus
     private static bool IsZ80Window(uint addr) => (addr & 0xFFFF00) == 0xA00000;
     private static bool IsZ80BusReq(uint addr) => (addr & 0xFFFFFE) == 0xA11100;
     private static bool IsZ80Reset(uint addr) => (addr & 0xFFFFFE) == 0xA11200;
-    private static bool IsZ80Mailbox(uint addr) => addr >= 0xA01B80 && addr <= 0xA01B8F;
+    private static bool IsZ80Mailbox(uint addr)
+    {
+        uint low = addr & 0x1FFF;
+        return low >= 0x1B80 && low <= 0x1BFF;
+    }
     private static bool ReadEnvDefaultOn(string name)
     {
         string? raw = Environment.GetEnvironmentVariable(name);
         if (string.IsNullOrEmpty(raw))
             return true;
         return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static byte DecodeZ80RegByte(ushort raw, bool uds, bool lds)
+    {
+        if (uds && !lds)
+            return (byte)((raw >> 8) & 0xFF);
+        if (lds && !uds)
+            return (byte)(raw & 0xFF);
+        return (byte)((raw >> 8) & 0xFF);
+    }
+
+    private void LogZ80RegDecode(string tag, uint addr, ushort raw, bool uds, bool lds, byte regByte, bool state)
+    {
+        if (!TraceZ80RegDecode)
+            return;
+        string stateName = tag == "BUSREQ" ? "busreq" : "reset";
+        Console.WriteLine(
+            $"[Z80REG] {tag} addr=0x{addr:X6} raw=0x{raw:X4} uds={(uds ? 1 : 0)} lds={(lds ? 1 : 0)} " +
+            $"byte=0x{regByte:X2} {stateName}={(state ? 1 : 0)}");
     }
 
     // 68k ROM space: 0x000000..0x3FFFFF
@@ -170,7 +195,7 @@ public sealed class MegaDriveBus
 
         if (IsZ80Reset(addr))
         {
-            ushort val = _z80Reset ? (ushort)0x0000 : (ushort)0x0001;
+            ushort val = _z80Reset ? (ushort)0x0000 : (ushort)0x0101;
             LogZ80RegRead(addr, val);
             LogBusAccess("reset read16", addr, val);
             md_m68k.RecordBusAccess(addr, 2, false, val);
@@ -342,11 +367,16 @@ public sealed class MegaDriveBus
         if (IsZ80BusReq(addr))
         {
             bool prev = _z80BusRequested;
-            _z80BusRequested = (value & 0x01) != 0;
+            bool uds = (addr & 1) == 0;
+            bool lds = !uds;
+            ushort raw = uds ? (ushort)(value << 8) : value;
+            byte regByte = DecodeZ80RegByte(raw, uds, lds);
+            _z80BusRequested = (regByte & 0x01) != 0;
             if (md_main.g_md_z80 != null)
                 md_main.g_md_z80.g_active = !_z80BusRequested && !_z80Reset;
             LogZ80RegWrite(addr, value);
             LogBusAccess("busreq write8", addr, value);
+            LogZ80RegDecode("BUSREQ", addr, raw, uds, lds, regByte, _z80BusRequested);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80BUSREQ] write addr=0x{addr:X6} value=0x{value:X2}");
             if (prev != _z80BusRequested && TraceZ80Sig)
@@ -357,7 +387,11 @@ public sealed class MegaDriveBus
 
         if (IsZ80Reset(addr))
         {
-            bool next = (value & 0x01) == 0;
+            bool uds = (addr & 1) == 0;
+            bool lds = !uds;
+            ushort raw = uds ? (ushort)(value << 8) : value;
+            byte regByte = DecodeZ80RegByte(raw, uds, lds);
+            bool next = (regByte & 0x01) == 0;
             bool prev = _z80Reset;
             _z80Reset = next;
             if (md_main.g_md_z80 != null)
@@ -371,6 +405,7 @@ public sealed class MegaDriveBus
             }
             LogZ80RegWrite(addr, value);
             LogBusAccess("reset write8", addr, value);
+            LogZ80RegDecode("RESET", addr, raw, uds, lds, regByte, next);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X2}");
             if (prev != next && TraceZ80Sig)
@@ -439,11 +474,16 @@ public sealed class MegaDriveBus
         if (IsZ80BusReq(addr))
         {
             bool prev = _z80BusRequested;
-            _z80BusRequested = (value & 0x0101) != 0;
+            bool uds = true;
+            bool lds = true;
+            ushort raw = value;
+            byte regByte = DecodeZ80RegByte(raw, uds, lds);
+            _z80BusRequested = (regByte & 0x01) != 0;
             if (md_main.g_md_z80 != null)
                 md_main.g_md_z80.g_active = !_z80BusRequested && !_z80Reset;
             LogZ80RegWrite(addr, value);
             LogBusAccess("busreq write16", addr, value);
+            LogZ80RegDecode("BUSREQ", addr, raw, uds, lds, regByte, _z80BusRequested);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80BUSREQ] write addr=0x{addr:X6} value=0x{value:X4}");
             if (prev != _z80BusRequested && TraceZ80Sig)
@@ -454,7 +494,11 @@ public sealed class MegaDriveBus
 
         if (IsZ80Reset(addr))
         {
-            bool next = (value & 0x0101) == 0;
+            bool uds = true;
+            bool lds = true;
+            ushort raw = value;
+            byte regByte = DecodeZ80RegByte(raw, uds, lds);
+            bool next = (regByte & 0x01) == 0;
             bool prev = _z80Reset;
             _z80Reset = next;
             if (md_main.g_md_z80 != null)
@@ -468,6 +512,7 @@ public sealed class MegaDriveBus
             }
             LogZ80RegWrite(addr, value);
             LogBusAccess("reset write16", addr, value);
+            LogZ80RegDecode("RESET", addr, raw, uds, lds, regByte, next);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X4}");
             if (prev != next && TraceZ80Sig)
@@ -524,11 +569,16 @@ public sealed class MegaDriveBus
         if (IsZ80BusReq(addr))
         {
             bool prev = _z80BusRequested;
-            _z80BusRequested = (value & 0x0101_0101u) != 0;
+            bool uds = true;
+            bool lds = true;
+            ushort raw = (ushort)((value >> 16) & 0xFFFF);
+            byte regByte = DecodeZ80RegByte(raw, uds, lds);
+            _z80BusRequested = (regByte & 0x01) != 0;
             if (md_main.g_md_z80 != null)
                 md_main.g_md_z80.g_active = !_z80BusRequested && !_z80Reset;
             LogZ80RegWrite(addr, value);
             LogBusAccess("busreq write32", addr, value);
+            LogZ80RegDecode("BUSREQ", addr, raw, uds, lds, regByte, _z80BusRequested);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80BUSREQ] write addr=0x{addr:X6} value=0x{value:X8}");
             if (prev != _z80BusRequested && TraceZ80Sig)
@@ -539,7 +589,11 @@ public sealed class MegaDriveBus
 
         if (IsZ80Reset(addr))
         {
-            bool next = (value & 0x0101_0101u) == 0;
+            bool uds = true;
+            bool lds = true;
+            ushort raw = (ushort)((value >> 16) & 0xFFFF);
+            byte regByte = DecodeZ80RegByte(raw, uds, lds);
+            bool next = (regByte & 0x01) == 0;
             bool prev = _z80Reset;
             _z80Reset = next;
             if (md_main.g_md_z80 != null)
@@ -553,6 +607,7 @@ public sealed class MegaDriveBus
             }
             LogZ80RegWrite(addr, value);
             LogBusAccess("reset write32", addr, value);
+            LogZ80RegDecode("RESET", addr, raw, uds, lds, regByte, next);
             if (TraceZ80Win)
                 Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X8}");
             if (prev != next && TraceZ80Sig)

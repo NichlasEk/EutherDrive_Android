@@ -42,6 +42,7 @@
         <TextBlock Text="Z/X/C: A/B/C"/>
         <TextBlock Text="Enter: Start"/>
         <TextBlock Text="RightShift: Mode (optional)"/>
+        <TextBlock Text="F1: Fullscreen mode"/>
         <Separator/>
         <TextBlock Text="ROM" FontWeight="Bold"/>
         <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
@@ -68,7 +69,7 @@
   <Border Name="ScreenBorder" Grid.Row="1" Grid.Column="1" Background="#111" CornerRadius="8" Padding="10">
     <Border Name="InputSurface" Background="Transparent" Focusable="True">
       <Viewbox Stretch="Uniform">
-        <Grid Width="320" Height="224">
+        <Grid Name="ScreenGrid" Width="320" Height="224">
           <Image Name="ScreenImage"
                  Width="320" Height="224"
                  Stretch="Fill"/>

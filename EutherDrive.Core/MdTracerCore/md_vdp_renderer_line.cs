@@ -4,13 +4,15 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_vdp
     {
-        private void rendering_line_cpu()
+        private void rendering_line_cpu(int outputLine)
         {
             int w_vscroll_mask = 0xffff;
             if (g_vdp_reg_11_2_vscroll == 1)
             {
                 w_vscroll_mask = 0x000f;
             }
+            int renderLine = GetRenderLine(g_scanline);
+            int cellShift = GetCellHeightShift();
 
             // Nollställ rad-buffertar för aktuell scanline
             for (int dx = 0; dx < g_display_xsize; dx++)
@@ -38,8 +40,8 @@ namespace EutherDrive.Core.MdTracerCore
                     if ((wx & w_vscroll_mask) == 0)
                     {
                         int w_view_y = g_line_snap[g_scanline].vscrollB[wx >> 4];
-                        w_view_dy = w_view_y & 7;
-                        w_view_addr = w_screen_adrdr + ((w_view_y >> 3) * g_scroll_xcell);
+                        w_view_dy = GetRowInCell(w_view_y);
+                        w_view_addr = w_screen_adrdr + ((w_view_y >> cellShift) * g_scroll_xcell);
                         w_view_dx = 8;
                     }
                     if (w_view_dx == 8)
@@ -51,7 +53,7 @@ namespace EutherDrive.Core.MdTracerCore
                         w_palette  = (((w_val >> 13) & 0x0003) << 4);
                         w_reverse  = ((w_val >> 11) & 0x0003);
                         w_char     =  (w_val & 0x07ff);
-                        w_pic_addr = (int)((w_reverse * VRAM_DATASIZE) + (w_char << 4) + (w_view_dy << 1));
+                        w_pic_addr = GetTileWordAddress((int)w_char, w_view_dy, w_reverse);
                     }
                     uint w_pic_w = g_renderer_vram[w_pic_addr + (w_view_dx >> 2)];
                     uint w_pic   = (w_pic_w >> ((3 - (w_view_dx & 3)) << 2)) & 0x0f;
@@ -69,8 +71,8 @@ namespace EutherDrive.Core.MdTracerCore
             // --- Scroll A ---
             {
                 if (!((g_screenA_bottom_y == 0)
-                    || (g_scanline < g_screenA_top_y)
-                    || (g_screenA_bottom_y < g_scanline)))
+                    || (renderLine < g_screenA_top_y)
+                    || (g_screenA_bottom_y < renderLine)))
                 {
                     int w_view_x = g_line_snap[g_scanline].hscrollA;
                     uint w_priority = 0;
@@ -88,8 +90,8 @@ namespace EutherDrive.Core.MdTracerCore
                         if ((wx & w_vscroll_mask) == 0)
                         {
                             int w_view_y = g_line_snap[g_scanline].vscrollA[wx >> 4];
-                            w_view_dy = w_view_y & 7;
-                            w_view_addr = w_screen_adrdr + ((w_view_y >> 3) * g_scroll_xcell);
+                            w_view_dy = GetRowInCell(w_view_y);
+                            w_view_addr = w_screen_adrdr + ((w_view_y >> cellShift) * g_scroll_xcell);
                             w_view_dx = 8;
                         }
                         if (w_view_dx == 8)
@@ -101,7 +103,7 @@ namespace EutherDrive.Core.MdTracerCore
                             w_palette  = (((w_val >> 13) & 0x0003) << 4);
                             w_reverse  = ((w_val >> 11) & 0x0003);
                             w_char     =  (w_val & 0x07ff);
-                            w_pic_addr = (int)((w_reverse * VRAM_DATASIZE) + (w_char << 4) + (w_view_dy << 1));
+                            w_pic_addr = GetTileWordAddress((int)w_char, w_view_dy, w_reverse);
                         }
                         if (((g_screenA_right_x != 0)
                             && (g_screenA_left_x <= wx) && (wx <= g_screenA_right_x)
@@ -133,23 +135,29 @@ namespace EutherDrive.Core.MdTracerCore
                 uint w_priority   = g_line_snap[g_scanline].sprite_priority[w_sp];
                 uint w_palette    = g_line_snap[g_scanline].sprite_palette[w_sp];
                 uint w_reverse    = g_line_snap[g_scanline].sprite_reverse[w_sp];
-                uint w_reverse_addr = VRAM_DATASIZE * w_reverse;
                 int  w_char       = (int)g_line_snap[g_scanline].sprite_char[w_sp];
 
+                int cellHeight = GetCellHeightPixels();
+                // w_top är (w_top_y & ~1) - 128, redan justerad för interlace mode 2
+                // Använd g_scanline direkt för att beräkna position inuti spriten
                 int w_y     = g_scanline - w_top;
-                int w_ycell = w_y >> 3;
-                int w_cy    = w_y & 7;
+                int w_ycell = w_y >> cellShift;
+                int w_cy    = w_y & (cellHeight - 1);
                 int w_posx  = w_left;
+                int cellHeightTiles = g_vdp_interlace_mode == 2 ? 1 : (cellHeight >> 3);
+                int cellStride = w_ycell_size * cellHeightTiles;
+                int yCellIndex = w_ycell * cellHeightTiles;
+                int yCellIndexFlipped = (w_ycell_size - w_ycell - 1) * cellHeightTiles;
 
                 for (int w_cur_xcell = 0; w_cur_xcell < w_xcell_size; w_cur_xcell++)
                 {
                     int w_char_cur = 0;
                     switch (w_reverse)
                     {
-                        case 0: w_char_cur = w_char + (w_ycell_size * w_cur_xcell) + w_ycell; break;
-                        case 1: w_char_cur = w_char + (w_ycell_size * (w_xcell_size - w_cur_xcell - 1)) + w_ycell; break;
-                        case 2: w_char_cur = w_char + (w_ycell_size * w_cur_xcell) + (w_ycell_size - w_ycell - 1); break;
-                        default:w_char_cur = w_char + (w_ycell_size * (w_xcell_size - w_cur_xcell - 1)) + (w_ycell_size - w_ycell - 1); break;
+                        case 0: w_char_cur = w_char + (cellStride * w_cur_xcell) + yCellIndex; break;
+                        case 1: w_char_cur = w_char + (cellStride * (w_xcell_size - w_cur_xcell - 1)) + yCellIndex; break;
+                        case 2: w_char_cur = w_char + (cellStride * w_cur_xcell) + yCellIndexFlipped; break;
+                        default:w_char_cur = w_char + (cellStride * (w_xcell_size - w_cur_xcell - 1)) + yCellIndexFlipped; break;
                     }
                     for (int w_cx = 0; w_cx < 8; w_cx++)
                     {
@@ -157,8 +165,8 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             if (g_game_primap[w_posx] <= w_priority)
                             {
-                                int  w_num  = (w_char_cur << 4) + (w_cy << 1) + (w_cx >> 2);
-                                uint w_pic_w= g_renderer_vram[w_reverse_addr + w_num];
+                                int  w_num  = GetTileWordAddress(w_char_cur, w_cy, w_reverse) + (w_cx >> 2);
+                                uint w_pic_w= g_renderer_vram[w_num];
                                 uint w_pic  = (w_pic_w >> ((3 - (w_cx & 3)) << 2)) & 0x0f;
 
                                 if (w_pic != 0)
@@ -205,22 +213,25 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_xcell_ed = g_line_snap[g_scanline].window_x_ed;
                 if (w_xcell_st != w_xcell_ed)
                 {
-                    int w_view_dy = g_scanline & 7;
-                    int w_addr = (g_vdp_reg_3_windows >> 1) + ((g_scanline >> 3) * g_scroll_xcell) + w_xcell_st;
+                    // Använd g_scanline direkt för window-rad, INTE renderLine
+                    // renderLine inkluderar field-bit för output-positionering
+                    // men window-tiles är baserade på scanlines (0-223)
+                    int w_view_dy = GetRowInCell(g_scanline);
+                    int w_addr = (g_vdp_reg_3_windows >> 1) + ((g_scanline >> cellShift) * g_scroll_xcell) + w_xcell_st;
                     int w_posx = w_xcell_st << 3;
                     for (int w_cx = w_xcell_st; w_cx <= w_xcell_ed; w_cx++)
                     {
                         uint w_val = g_renderer_vram[w_addr++];
                         uint w_priority = ((w_val >> 15) & 0x0001);
                         uint w_palette  = (((w_val >> 13) & 0x0003) << 4);
-                        uint w_reverse  = ((w_val >> 11) & 0x0003) * VRAM_DATASIZE;
+                        uint w_reverse_bits = (w_val >> 11) & 0x0003;
                         uint w_char     = (w_val & 0x07ff);
 
                         for (int w_dx = 0; w_dx < 8; w_dx++)
                         {
                             if ((g_game_cmap[w_posx] == 0) || (g_game_primap[w_posx] <= w_priority))
                             {
-                                int  w_pic_addr = (int)(w_reverse + (w_char << 4) + (w_view_dy << 1) + (w_dx >> 2));
+                                int  w_pic_addr = GetTileWordAddress((int)w_char, w_view_dy, w_reverse_bits) + (w_dx >> 2);
                                 uint w_pic_w    = g_renderer_vram[w_pic_addr];
                                 uint w_pic      = (w_pic_w >> ((3 - (w_dx & 3)) << 2)) & 0x0f;
                                 if (w_pic != 0)
@@ -238,7 +249,10 @@ namespace EutherDrive.Core.MdTracerCore
 
             // --- Skriv ut till framebuffern ---
             {
-                int w_base = g_scanline * g_output_xsize;
+                if ((uint)outputLine >= (uint)g_output_ysize)
+                    return;
+
+                int w_base = outputLine * g_output_xsize;
                 int visibleWidth = g_display_xsize;
                 int outputWidth = g_output_xsize;
                 for (int wx = 0; wx < visibleWidth; wx++)

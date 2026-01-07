@@ -791,6 +791,13 @@ public sealed class MdTracerAdapter : IEmulatorCore
         var vdpBuffer = _vdp.GetFrameBuffer();
         if (vdpBuffer.Length > 0)
         {
+            int vdpWidth = _vdp.FrameWidth;
+            int vdpHeight = _vdp.FrameHeight;
+            if (vdpWidth <= 0)
+                vdpWidth = 320;
+            if (vdpHeight <= 0)
+                vdpHeight = 224;
+
             if (FrameBufferTraceEnabled && ShouldLogPerSecond(ref _lastVdpLogTicks))
             {
                 int id = RuntimeHelpers.GetHashCode(vdpBuffer);
@@ -799,14 +806,36 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 uint p2 = vdpBuffer.Length > 2 ? vdpBuffer[2] : 0;
                 uint p3 = vdpBuffer.Length > 3 ? vdpBuffer[3] : 0;
                 Console.WriteLine($"[MdTracerAdapter] VDP output fbId=0x{id:X8} words={vdpBuffer.Length} p0=0x{p0:X8} p1=0x{p1:X8} p2=0x{p2:X8} p3=0x{p3:X8}");
-            }
 
-            int vdpWidth = _vdp.FrameWidth;
-            int vdpHeight = _vdp.FrameHeight;
-            if (vdpWidth <= 0)
-                vdpWidth = 320;
-            if (vdpHeight <= 0)
-                vdpHeight = 224;
+                int renderPixels = Math.Min(vdpBuffer.Length, vdpWidth * vdpHeight);
+                uint baseColor = vdpBuffer[0];
+                int diffCount = 0;
+                int firstDiff = -1;
+                uint firstDiffValue = 0;
+                for (int i = 0; i < renderPixels; i++)
+                {
+                    uint val = vdpBuffer[i];
+                    if (val == baseColor)
+                        continue;
+                    diffCount++;
+                    if (firstDiff < 0)
+                    {
+                        firstDiff = i;
+                        firstDiffValue = val;
+                    }
+                }
+
+                if (diffCount == 0)
+                {
+                    Console.WriteLine($"[MdTracerAdapter] VDP summary base=0x{baseColor:X8} diff=0 size={vdpWidth}x{vdpHeight}");
+                }
+                else
+                {
+                    int fx = firstDiff % vdpWidth;
+                    int fy = firstDiff / vdpWidth;
+                    Console.WriteLine($"[MdTracerAdapter] VDP summary base=0x{baseColor:X8} diff={diffCount} first=({fx},{fy}) val=0x{firstDiffValue:X8} size={vdpWidth}x{vdpHeight}");
+                }
+            }
 
             ReadOnlySpan<uint> vdpSpan = vdpBuffer;
             long blitStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
@@ -815,6 +844,30 @@ public sealed class MdTracerAdapter : IEmulatorCore
             if (TracePerf)
                 PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
         }
+    }
+
+    /// <summary>
+    /// Step one frame - for headless testing
+    /// </summary>
+    public void StepFrame()
+    {
+        RunFrame();
+    }
+
+    /// <summary>
+    /// Get current Z80 PC - for debugging
+    /// </summary>
+    public ushort GetZ80Pc()
+    {
+        return md_main.g_md_z80?.CpuPc ?? (ushort)0;
+    }
+
+    /// <summary>
+    /// Get current M68K PC - for debugging
+    /// </summary>
+    public uint GetM68kPc()
+    {
+        return MdTracerCore.md_m68k.g_reg_PC;
     }
 
     private void MaybeLogPerformance()

@@ -5,3 +5,10 @@ obj/
 # Emulator logs
 rom_*.log
 *.prev
+
+# Local UI settings
+eutherdrive_last_rom.txt
+eutherdrive_region.txt
+
+# Local notes
+MEMO.md

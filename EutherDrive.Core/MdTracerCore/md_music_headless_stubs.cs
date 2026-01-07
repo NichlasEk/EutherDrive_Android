@@ -14,7 +14,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         public md_music()
         {
-            // Default: full volym, “påslaget”
+            // Default: full volym, "påslaget"
             for (int i = 0; i < g_out_vol.Length; i++)
                 g_out_vol[i] = 1;
 

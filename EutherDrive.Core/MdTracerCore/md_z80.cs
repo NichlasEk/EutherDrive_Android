@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -12,7 +13,21 @@ namespace EutherDrive.Core.MdTracerCore
     {
         public bool g_active;
         internal ushort DebugPc => g_reg_PC;
+        internal ushort CpuPc => g_reg_PC;
         internal ushort DebugBc => g_reg_BC;
+        internal uint DebugBankRegister => g_bank_register & 0x1FFu;
+        internal uint DebugBankBase => (g_bank_register & 0x1FFu) * 0x8000u;
+        internal ushort DebugLastReadAddr => _lastReadAddr;
+        internal uint DebugLastReadM68kAddr => _lastReadM68kAddr;
+        internal byte DebugLastReadValue => _lastReadValue;
+        internal ushort DebugLastReadPc => _lastReadPc;
+        internal bool DebugLastReadWasBanked => _lastReadWasBanked;
+        internal long DebugTotalCycles => _totalCycles;
+        internal long BudgetCycles => _budgetCycles;  // Always advances when run() is called
+
+        // Bank register access for M68K bus writes (shift-register style)
+        internal uint GetBankRegister() => g_bank_register;
+        internal void SetBankRegister(uint value) => g_bank_register = value;
 
         private ushort g_reg_PC;
         private byte   g_reg_A;
@@ -63,16 +78,66 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BOOT"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Stats =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_STATS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80PcHist =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80PCHIST"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80PcHistLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80PCHIST_LIMIT", 4);
+        private static readonly int TraceZ80PcHistMin =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80PCHIST_MIN", 1);
+        private static readonly bool TraceZ80DdcbBit =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_DDCB_BIT"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80DdcbBitLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80_DDCB_BIT_LIMIT", 64);
+        private static readonly ushort? TraceZ80PcRangeStart =
+            ParseZ80Addr("EUTHERDRIVE_TRACE_Z80_PC_RANGE_START");
+        private static readonly ushort? TraceZ80PcRangeEnd =
+            ParseZ80Addr("EUTHERDRIVE_TRACE_Z80_PC_RANGE_END");
+        private static readonly int TraceZ80PcRangeLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80_PC_RANGE_LIMIT", 128);
+        private static readonly bool ForceZ80FlagJr =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80FLAG_FORCE_JR"), "1", StringComparison.Ordinal);
+        private static readonly ushort? ForceZ80FlagJrTargetOverride =
+            ParseZ80Addr("EUTHERDRIVE_Z80FLAG_FORCE_JR_TARGET");
+        private const ushort ForceZ80FlagJrFallback = 0x0DF0;
+        private static readonly int ForceZ80FlagJrLimit =
+            ParseTraceLimit("EUTHERDRIVE_Z80FLAG_FORCE_JR_LIMIT", 8);
+        private static readonly int Z80ResetHoldCycles =
+            ParseTraceLimit("EUTHERDRIVE_Z80_RESET_HOLD_Z80_CYCLES", 0);
+        private static readonly int Z80ResetHoldLogLimit =
+            ParseTraceLimit("EUTHERDRIVE_Z80_RESET_HOLD_LIMIT", 8);
         private static readonly bool DumpZ80Ram =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_Z80_RAM"), "1", StringComparison.Ordinal);
         private static readonly bool HaltOnBusReq =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_HALT_ON_BUSREQ"), "1", StringComparison.Ordinal);
+        private static readonly uint Z80BankDefault = ParseZ80BankDefault();
+        private static readonly byte Z80Im2Vector = ParseZ80Im2Vector();
 
         private long _instrThrottleCounter;
+        private long _totalCycles;
+        private long _budgetCycles;  // Cycles budgeted to Z80 (always advances)
         private bool _z80Dumped;
         private bool _pcLeftBootRangeSinceLastSummary;
         private long _z80StatsLastTicks;
         private long _z80StatsInstrCount;
+        private int _bootInstrCount;
+        private readonly int[] _pcHist = new int[0x10000];
+        private int _pcHistTotal;
+        private int _forceZ80FlagJrRemaining = ForceZ80FlagJrLimit;
+        private int _z80PcRangeRemaining = TraceZ80PcRangeLimit;
+        private int _z80ResetHoldRemaining;
+        private int _z80ResetHoldLogRemaining = Z80ResetHoldLogLimit;
+        private bool _forcePcPending;
+        private ushort _forcePcTarget;
+        private string _forcePcReason = string.Empty;
+
+        // [INT-STATS] ZINT interrupt counting per frame
+        private int _zintAssertCount;
+        private int _zintClearCount;
+        private int _zintServiceCount;
+        private long _zintLastFrameLogged = -1;
+
+        // [Z80-BANK] Log banked memory entry once
+        private bool _z80BankEntryLogged;
 
         private ushort g_reg_BC => (ushort)((g_reg_B << 8) + g_reg_C);
         private ushort g_reg_DE => (ushort)((g_reg_D << 8) + g_reg_E);
@@ -93,13 +158,19 @@ namespace EutherDrive.Core.MdTracerCore
         private void g_write_IYH(byte in_val) => g_reg_IY = (ushort)((in_val << 8) + g_reg_IYL);
         private void g_write_IYL(byte in_val) => g_reg_IY = (ushort)((g_reg_IYH << 8) + in_val);
 
-        // VIKTIGT: använd alltid bus/minnes-API:t för fetch (respekterar bankning)
-        private byte   g_opcode1  => read8(g_reg_PC);
-        private byte   g_opcode2  => read8((uint)(g_reg_PC + 1));
-        private byte   g_opcode3  => read8((uint)(g_reg_PC + 2));
-        private byte   g_opcode4  => read8((uint)(g_reg_PC + 3));
-        private ushort g_opcode23 => (ushort)((read8((uint)(g_reg_PC + 2)) << 8) + read8((uint)(g_reg_PC + 1)));
-        private ushort g_opcode34 => (ushort)((read8((uint)(g_reg_PC + 3)) << 8) + read8((uint)(g_reg_PC + 2)));
+        // Opcode fetch should not trigger MMIO/mailbox side effects; keep SMS mapping intact.
+        private byte ReadOpcodeByte(uint addr)
+        {
+            if (md_main.g_masterSystemMode)
+                return read8(addr);
+            return PeekZ80ByteNoSideEffect((ushort)(addr & 0xFFFF));
+        }
+        private byte   g_opcode1  => ReadOpcodeByte(g_reg_PC);
+        private byte   g_opcode2  => ReadOpcodeByte((uint)(g_reg_PC + 1));
+        private byte   g_opcode3  => ReadOpcodeByte((uint)(g_reg_PC + 2));
+        private byte   g_opcode4  => ReadOpcodeByte((uint)(g_reg_PC + 3));
+        private ushort g_opcode23 => (ushort)((ReadOpcodeByte((uint)(g_reg_PC + 2)) << 8) + ReadOpcodeByte((uint)(g_reg_PC + 1)));
+        private ushort g_opcode34 => (ushort)((ReadOpcodeByte((uint)(g_reg_PC + 3)) << 8) + ReadOpcodeByte((uint)(g_reg_PC + 2)));
 
         private byte g_opcode1_210 => (byte)(g_opcode1 & 0x07);
         private byte g_opcode2_210 => (byte)(g_opcode2 & 0x07);
@@ -118,6 +189,62 @@ namespace EutherDrive.Core.MdTracerCore
         private const int SmsInstructionLogLimit = 256;
         private const int SmsLoopReportThreshold = 64;
         private const int SmsControlLogLimit = 12;
+
+        private static uint ParseZ80BankDefault()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_BANK_DEFAULT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 0x00u;  // Default to bank 0 for compatibility with games that don't configure the bank
+            raw = raw.Trim();
+            uint value;
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!uint.TryParse(raw.AsSpan(2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out value))
+                    return 0x00u;
+            }
+            else if (!uint.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+            {
+                return 0x00u;
+            }
+            return value & 0x1FFu;
+        }
+
+        private static byte ParseZ80Im2Vector()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_IM2_VECTOR");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 0xFF;
+            raw = raw.Trim();
+            uint value;
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!uint.TryParse(raw.AsSpan(2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out value))
+                    return 0xFF;
+            }
+            else if (!uint.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+            {
+                return 0xFF;
+            }
+            return (byte)(value & 0xFF);
+        }
+
+        private static int ParseTraceLimit(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                if (int.TryParse(raw.AsSpan(2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out int hex))
+                    return hex;
+                return fallback;
+            }
+            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+                return parsed;
+            return fallback;
+        }
+
         private static int _smsControlLogCount;
         private const int SmsLoopRegLogLimit = 4;
         private static int _smsLoopRegLogCount;
@@ -141,6 +268,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _lastResetCycleId;
         private bool _duplicateResetLogged;
         private int _traceStepRemaining;
+        private int _z80DdcbBitRemaining;
         private bool _lastCanRun;
         private string _irqSource = "unknown";
         private byte _irqStatus;
@@ -149,6 +277,21 @@ namespace EutherDrive.Core.MdTracerCore
         public md_z80()
         {
             initialize();
+        }
+
+        private void MaybeArmZ80AfterFlagRetTrace(ushort pcBefore, ushort pcAfter)
+        {
+            if (!TraceZ80AfterFlagRet)
+                return;
+            if (_z80AfterFlagRetRemaining > 0)
+                return;
+            _z80AfterFlagRetRemaining = TraceZ80AfterFlagRetLimit;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string pcdump = DumpZ80PcBytes(pcAfter, 0, 7);
+            Console.WriteLine(
+                $"[Z80AFTERRET-ARM] frame={frame} from=0x{pcBefore:X4} to=0x{pcAfter:X4} " +
+                $"ix=0x{g_reg_IX:X4} iy=0x{g_reg_IY:X4} sp=0x{g_reg_SP:X4} " +
+                $"limit={TraceZ80AfterFlagRetLimit} pcdump={pcdump}");
         }
 
         private void MaybeLogZ80Stats()
@@ -200,6 +343,12 @@ namespace EutherDrive.Core.MdTracerCore
             bool busRequested = md_main.g_md_bus?.Z80BusGranted ?? false;
             bool reset = md_main.g_md_bus?.Z80Reset ?? false;
             bool canRun = g_active && !busRequested && !reset;
+
+            // Advance budget cycles - these are the cycles allocated to Z80,
+            // which should be used for timekeeping (YM2612 busy flag, timers)
+            // regardless of whether Z80 actually executes.
+            _budgetCycles += in_clock;
+
             if (TraceZ80Step && !_lastCanRun && canRun)
             {
                 _traceStepRemaining = 64;
@@ -226,6 +375,17 @@ namespace EutherDrive.Core.MdTracerCore
                 if (TraceZ80Stats)
                     _z80StatsInstrCount++;
 
+                if (_z80ResetHoldRemaining > 0)
+                {
+                    int burn = Math.Min(_z80ResetHoldRemaining, Math.Max(1, g_clock_total + 1));
+                    _z80ResetHoldRemaining -= burn;
+                    _totalCycles += burn;
+                    cyclesConsumed += burn;
+                    md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(burn);
+                    g_clock_total -= burn;
+                    continue;
+                }
+
                 // IRQ (NMI-block ej aktiverad i originalet)
             if (g_interrupt_irq)
             {
@@ -247,22 +407,58 @@ namespace EutherDrive.Core.MdTracerCore
                                 break;
 
                             case 1:
-                                stack_push(g_reg_PCH);
-                                stack_push(g_reg_PCL);
-                                g_reg_PC = 0x0038;
-                                g_halt = false;
-                                break;
+                                {
+                                    // [INT-INSTRUMENTATION] Log SP and push before stack operation
+                                    ushort spBefore = g_reg_SP;
+                                    ushort pcPushed = g_reg_PC;
+                                    bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
+                                    bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
+                                    Console.WriteLine($"[Z80-INT-IM1] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+                                    stack_push(g_reg_PCH);
+                                    stack_push(g_reg_PCL);
+                                    g_reg_PC = 0x0038;
+                                    g_halt = false;
+                                    CountZ80IntService(); // [INT-STATS]
+                                    break;
+                                }
 
                             case 2:
-                                // IM 2: vektor via I-register – ej implementerat här
-                                break;
+                                {
+                                    // [INT-INSTRUMENTATION] Log SP and push before stack operation
+                                    ushort spBefore = g_reg_SP;
+                                    ushort pcPushed = g_reg_PC;
+                                    bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
+                                    bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
+                                    Console.WriteLine($"[Z80-INT-IM2] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+                                    // IM 2: vektor via I-register
+                                    stack_push(g_reg_PCH);
+                                    stack_push(g_reg_PCL);
+                                    byte vector = Z80Im2Vector;
+                                    ushort vectorAddr = (ushort)((g_reg_I << 8) | vector);
+                                    byte lo = read8(vectorAddr);
+                                    byte hi = read8((ushort)(vectorAddr + 1));
+                                    g_reg_PC = (ushort)((hi << 8) | lo);
+                                    g_halt = false;
+                                    CountZ80IntService(); // [INT-STATS]
+                                    break;
+                                }
                         }
                     }
                 }
 
             g_clock = 0;
 
+            if (_forcePcPending)
+            {
+                g_reg_PC = _forcePcTarget;
+                _forcePcPending = false;
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                string pcdump = DumpZ80PcBytes(g_reg_PC, 0, 7);
+                Console.WriteLine(
+                    $"[Z80PC-FORCE] frame={frame} pc=0x{g_reg_PC:X4} reason={_forcePcReason} bytes={pcdump}");
+            }
             ushort pcBefore = g_reg_PC;
+            RecordPcHist(pcBefore);
             if (TraceSmsDelay && pcBefore == 0x056B)
             {
                 LogSmsDelayEntry(pcBefore);
@@ -274,17 +470,56 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             byte opcode = g_opcode1;
+            byte opcode2 = g_opcode2;
+            byte opcode3 = g_opcode3;
+            byte opcode4 = g_opcode4;
+            ushort ixBefore = g_reg_IX;
             if (TraceZ80Step && _traceStepRemaining > 0)
             {
-                Console.WriteLine($"[Z80STEP] pc=0x{pcBefore:X4} op=0x{opcode:X2} busreq={(busRequested ? 1 : 0)} reset={(reset ? 1 : 0)}");
+                // [INT-INSTRUMENTATION] Log instruction fetch region
+                bool pcInRam = pcBefore >= 0x0000 && pcBefore <= 0x1FFF;
+                bool pcInBootRom = pcBefore >= 0x0000 && pcBefore <= 0x003F;
+                bool pcInDrv = pcBefore >= 0x0040 && pcBefore <= 0x1FFF;
+                Console.WriteLine($"[Z80STEP] pc=0x{pcBefore:X4} op=0x{opcode:X2} busreq={(busRequested ? 1 : 0)} reset={(reset ? 1 : 0)} fetch={(pcInBootRom ? "BOOTROM" : pcInDrv ? "DRIVER" : pcInRam ? "RAM" : "EXT")}");
                 _traceStepRemaining--;
+            }
+            // [BOOT-DEBUG] Log when Z80 reaches boot code execution
+            if (pcBefore == 0x0040)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine($"[Z80-BOOT-CODE] frame={frame} pc=0x{pcBefore:X4} SP=0x{g_reg_SP:X4} - Entering boot code (DI, LD SP, JP)");
+                // Dump boot code bytes to verify it hasn't been overwritten
+                if (g_ram != null && g_ram.Length >= 0x50)
+                {
+                    Console.WriteLine($"[Z80-BOOT-DUMP] 0x0040-0x004F: {g_ram[0x40]:X2} {g_ram[0x41]:X2} {g_ram[0x42]:X2} {g_ram[0x43]:X2} {g_ram[0x44]:X2} {g_ram[0x45]:X2} {g_ram[0x46]:X2} {g_ram[0x47]:X2} {g_ram[0x48]:X2} {g_ram[0x49]:X2} {g_ram[0x4A]:X2} {g_ram[0x4B]:X2} {g_ram[0x4C]:X2} {g_ram[0x4D]:X2} {g_ram[0x4E]:X2} {g_ram[0x4F]:X2}");
+                }
+                // Also dump driver area to verify driver was uploaded
+                if (g_ram != null && g_ram.Length >= 0x180)
+                {
+                    Console.WriteLine($"[Z80-RAM-DUMP] 0x0160-0x017F: {g_ram[0x160]:X2} {g_ram[0x161]:X2} {g_ram[0x162]:X2} {g_ram[0x163]:X2} {g_ram[0x164]:X2} {g_ram[0x165]:X2} {g_ram[0x166]:X2} {g_ram[0x167]:X2} {g_ram[0x168]:X2} {g_ram[0x169]:X2} {g_ram[0x16A]:X2} {g_ram[0x16B]:X2} {g_ram[0x16C]:X2} {g_ram[0x16D]:X2} {g_ram[0x16E]:X2} {g_ram[0x16F]:X2}");
+                    Console.WriteLine($"[Z80-RAM-DUMP] 0x0170-0x017F: {g_ram[0x170]:X2} {g_ram[0x171]:X2} {g_ram[0x172]:X2} {g_ram[0x173]:X2} {g_ram[0x174]:X2} {g_ram[0x175]:X2} {g_ram[0x176]:X2} {g_ram[0x177]:X2} {g_ram[0x178]:X2} {g_ram[0x179]:X2} {g_ram[0x17A]:X2} {g_ram[0x17B]:X2} {g_ram[0x17C]:X2} {g_ram[0x17D]:X2} {g_ram[0x17E]:X2} {g_ram[0x17F]:X2}");
+                }
+            }
+            // [BOOT-DEBUG] Log when Z80 reaches driver entry
+            if (pcBefore == 0x0167)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine($"[Z80-DRIVER-ENTRY] frame={frame} pc=0x{pcBefore:X4} SP=0x{g_reg_SP:X4} - Jumping to Z80 driver!");
+            }
+            // [Z80-BANK] Log when Z80 enters banked memory area (0x8000+)
+            if (pcBefore >= 0x8000 && pcBefore <= 0xFFFF && !_z80BankEntryLogged)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                uint bankBase = GetBankBase();
+                Console.WriteLine($"[Z80-BANK] frame={frame} pc=0x{pcBefore:X4} bankReg=0x{g_bank_register:X3} bankBase=0x{bankBase:X6} - Entering banked memory!");
+                _z80BankEntryLogged = true;
             }
             bool log0576After = TraceSmsDelay && !_delayExitLogged && pcBefore == 0x0576;
             bool djnzTracePending = TraceSmsDelay && opcode == 0x10 && _djnzLogCount < DjnzLogLimit;
             byte djnzBefore = g_reg_B;
             ushort djnzTarget = 0;
             if (djnzTracePending)
-                djnzTarget = (ushort)((int)pcBefore + 2 + (sbyte)g_opcode2);
+                djnzTarget = (ushort)((int)pcBefore + 2 + (sbyte)opcode2);
 
             if (md_main.g_masterSystemMode && MdTracerCore.MdLog.TraceZ80InstructionLogging)
             {
@@ -307,12 +542,69 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             ThrottleInstructionLog(opcode);
+            bool traceDdcbBit = TraceZ80DdcbBit &&
+                                _z80DdcbBitRemaining > 0 &&
+                                pcBefore >= 0x0DD0 &&
+                                pcBefore <= 0x0DF0;
+            bool tracePcRange = TraceZ80PcRangeStart.HasValue &&
+                                TraceZ80PcRangeEnd.HasValue &&
+                                _z80PcRangeRemaining > 0 &&
+                                pcBefore >= TraceZ80PcRangeStart.Value &&
+                                pcBefore <= TraceZ80PcRangeEnd.Value;
+            bool logDdcbBit = false;
+            bool logJrNz = false;
+            bool logRetNz = false;
+            byte ddcbDisp = 0;
+            ushort ddcbEa = 0;
+            byte ddcbMem = 0;
+            int ddcbBit = 0;
+            byte flagBefore = 0;
+            if (traceDdcbBit)
+            {
+                if (opcode == 0xDD && opcode2 == 0xCB && opcode4 == 0x56)
+                {
+                    logDdcbBit = true;
+                    ddcbDisp = opcode3;
+                    ddcbEa = (ushort)(ixBefore + (sbyte)ddcbDisp);
+                    ddcbMem = PeekZ80ByteNoSideEffect(ddcbEa);
+                    ddcbBit = ((ddcbMem & 0x04) != 0) ? 1 : 0;
+                    flagBefore = g_status_flag;
+                }
+                else if (opcode == 0x20)
+                {
+                    logJrNz = true;
+                    flagBefore = g_status_flag;
+                }
+                else if (opcode == 0xC0)
+                {
+                    logRetNz = true;
+                    flagBefore = g_status_flag;
+                }
+            }
+            if (tracePcRange)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine(
+                    $"[Z80PC] frame={frame} pc=0x{pcBefore:X4} op=0x{opcode:X2} op2=0x{opcode2:X2} " +
+                    $"op3=0x{opcode3:X2} op4=0x{opcode4:X2} " +
+                    $"A=0x{g_reg_A:X2} BC=0x{g_reg_BC:X4} DE=0x{g_reg_DE:X4} HL=0x{g_reg_HL:X4} SP=0x{g_reg_SP:X4}");
+            }
             g_operand[opcode]();   // exekvera en instruktion
+            _bootInstrCount++;
+            _totalCycles += g_clock;
             cyclesConsumed += g_clock;
             md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(g_clock);
 
             if (log0576After)
                 LogSmsDelayExit(pcBefore);
+            if (tracePcRange)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine(
+                    $"[Z80PC] frame={frame} nextpc=0x{g_reg_PC:X4} F=0x{g_status_flag:X2}");
+                if (_z80PcRangeRemaining != int.MaxValue)
+                    _z80PcRangeRemaining--;
+            }
 
             if (djnzTracePending)
             {
@@ -320,6 +612,75 @@ namespace EutherDrive.Core.MdTracerCore
                 bool taken = g_reg_PC != (ushort)(pcBefore + 2);
                 Console.WriteLine($"[SMS DJNZ] PC=0x{pcBefore:X4} B before=0x{djnzBefore:X2} after=0x{djnzAfter:X2} taken={(taken ? 1 : 0)} target=0x{djnzTarget:X4}");
                 _djnzLogCount++;
+            }
+            if (ForceZ80FlagJr &&
+                pcBefore == 0x0DD8 &&
+                opcode == 0xDD &&
+                opcode2 == 0xCB &&
+                opcode4 == 0x56)
+            {
+                ushort ea = (ushort)(ixBefore + (sbyte)opcode3);
+                byte mem = PeekZ80ByteNoSideEffect(ea);
+                if ((mem & 0x04) != 0)
+                {
+                    ushort target = ForceZ80FlagJrTargetOverride ?? ForceZ80FlagJrFallback;
+                    if (!ForceZ80FlagJrTargetOverride.HasValue)
+                    {
+                        ushort jrPc = (ushort)(pcBefore + 4);
+                        byte jrOp = ReadOpcodeByte(jrPc);
+                        byte jrDisp = ReadOpcodeByte((ushort)(jrPc + 1));
+                        if (jrOp == 0x20)
+                            target = (ushort)(jrPc + 2 + (sbyte)jrDisp);
+                    }
+                    g_reg_PC = target;
+                    if (_forceZ80FlagJrRemaining > 0)
+                    {
+                        Console.WriteLine(
+                            $"[Z80FLAG-JR] pc=0x{pcBefore:X4} ix=0x{ixBefore:X4} ea=0x{ea:X4} " +
+                            $"mem=0x{mem:X2} -> pc=0x{g_reg_PC:X4}");
+                        if (_forceZ80FlagJrRemaining != int.MaxValue)
+                            _forceZ80FlagJrRemaining--;
+                    }
+                }
+            }
+            if (traceDdcbBit && (logDdcbBit || logJrNz || logRetNz) && _z80DdcbBitRemaining > 0)
+            {
+                byte flagAfter = g_status_flag;
+                int zFlag = g_flag_Z != 0 ? 1 : 0;
+                ushort pcAfter = g_reg_PC;
+                bool taken = false;
+                string instr = "BIT";
+                if (logJrNz)
+                {
+                    instr = "JR";
+                    taken = pcAfter != (ushort)(pcBefore + 2);
+                }
+                else if (logRetNz)
+                {
+                    instr = "RET";
+                    taken = pcAfter != (ushort)(pcBefore + 1);
+                }
+                string dispText = logDdcbBit ? $"0x{ddcbDisp:X2}" : "--";
+                string eaText = logDdcbBit ? $"0x{ddcbEa:X4}" : "----";
+                string memText = logDdcbBit ? $"0x{ddcbMem:X2}" : "--";
+                string bitText = logDdcbBit ? (ddcbBit != 0 ? "1" : "0") : "-";
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine(
+                    $"[Z80DDCB] frame={frame} pc=0x{pcBefore:X4} ix=0x{g_reg_IX:X4} iy=0x{g_reg_IY:X4} sp=0x{g_reg_SP:X4} " +
+                    $"d={dispText} ea={eaText} mem={memText} bit2={bitText} F(before)=0x{flagBefore:X2} " +
+                    $"F(after)=0x{flagAfter:X2} Z={zFlag} nextpc=0x{pcAfter:X4} instr={instr} taken={(taken ? 1 : 0)}");
+                _z80DdcbBitRemaining--;
+            }
+            if (opcode == 0xC0 || opcode == 0xC9)
+            {
+                ushort pcAfter = g_reg_PC;
+                bool taken = opcode == 0xC0 ? pcAfter != (ushort)(pcBefore + 1) : true;
+                if (taken &&
+                    (pcBefore == 0x0DDC || pcBefore == 0x0DEE ||
+                     pcAfter == 0x0E75 || pcAfter == 0x0E84))
+                {
+                    MaybeArmZ80AfterFlagRetTrace(pcBefore, pcAfter);
+                }
             }
             TrackPcBootRange();
 
@@ -343,6 +704,78 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock_total -= g_clock;
         }
         AccumulateLineCycles(in_clock, cyclesConsumed);
+    }
+
+    private void RecordPcHist(ushort pc)
+    {
+        if (!TraceZ80PcHist)
+            return;
+        _pcHist[pc]++;
+        _pcHistTotal++;
+    }
+
+    internal void FlushPcHist(long frame)
+    {
+        if (!TraceZ80PcHist)
+            return;
+        if (_pcHistTotal == 0)
+        {
+            Console.WriteLine($"[Z80PC-HIST] frame={frame} total=0");
+            return;
+        }
+
+        int limit = TraceZ80PcHistLimit > 0 ? TraceZ80PcHistLimit : 1;
+        Span<int> topCount = stackalloc int[limit];
+        Span<int> topPc = stackalloc int[limit];
+        for (int i = 0; i < limit; i++)
+            topPc[i] = -1;
+
+        for (int pc = 0; pc < 0x10000; pc++)
+        {
+            int count = _pcHist[pc];
+            if (count < TraceZ80PcHistMin)
+                continue;
+            for (int i = 0; i < limit; i++)
+            {
+                if (topPc[i] == pc)
+                {
+                    topCount[i] = count;
+                    goto NextPc;
+                }
+            }
+            for (int i = 0; i < limit; i++)
+            {
+                if (count > topCount[i])
+                {
+                    for (int j = limit - 1; j > i; j--)
+                    {
+                        topCount[j] = topCount[j - 1];
+                        topPc[j] = topPc[j - 1];
+                    }
+                    topCount[i] = count;
+                    topPc[i] = pc;
+                    break;
+                }
+            }
+NextPc:;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < limit; i++)
+        {
+            if (topPc[i] < 0)
+                continue;
+            if (sb.Length > 0)
+                sb.Append(' ');
+            sb.Append("0x");
+            sb.Append(topPc[i].ToString("X4"));
+            sb.Append(':');
+            sb.Append(topCount[i]);
+        }
+
+        Console.WriteLine($"[Z80PC-HIST] frame={frame} total={_pcHistTotal} bins={sb}");
+        Array.Clear(_pcHist, 0, _pcHist.Length);
+        _pcHistTotal = 0;
     }
 
     private void ThrottleInstructionLog(byte opcode)
@@ -395,6 +828,60 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 sb.Append(g_ram[addr + i].ToString("X2")).Append(' ');
             }
+            Console.WriteLine(sb.ToString().TrimEnd());
+        }
+    }
+
+    private static readonly uint[] Crc32Table = BuildCrc32Table();
+
+    private static uint[] BuildCrc32Table()
+    {
+        var table = new uint[256];
+        for (uint i = 0; i < table.Length; i++)
+        {
+            uint c = i;
+            for (int bit = 0; bit < 8; bit++)
+                c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : (c >> 1);
+            table[i] = c;
+        }
+        return table;
+    }
+
+    private static uint ComputeCrc32(byte[] data, int offset, int length)
+    {
+        uint crc = 0xFFFFFFFFu;
+        int end = offset + length;
+        for (int i = offset; i < end; i++)
+            crc = Crc32Table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+        return crc ^ 0xFFFFFFFFu;
+    }
+
+    internal void DumpRamRangeWithChecksum(ushort start, ushort end, string reason)
+    {
+        if (g_ram == null || g_ram.Length == 0)
+            return;
+        ushort rangeStart = start;
+        ushort rangeEnd = end;
+        if (rangeStart > rangeEnd)
+        {
+            ushort tmp = rangeStart;
+            rangeStart = rangeEnd;
+            rangeEnd = tmp;
+        }
+        if (rangeStart >= g_ram.Length)
+            return;
+        int cappedEnd = Math.Min(rangeEnd, g_ram.Length - 1);
+        int length = cappedEnd - rangeStart + 1;
+        uint crc = ComputeCrc32(g_ram, rangeStart, length);
+        Console.WriteLine(
+            $"[Z80WIN-DUMP] reason={reason} range=0x{rangeStart:X4}..0x{cappedEnd:X4} len=0x{length:X4} crc32=0x{crc:X8}");
+        for (int addr = rangeStart; addr <= cappedEnd; addr += 16)
+        {
+            int lineLen = Math.Min(16, cappedEnd - addr + 1);
+            var sb = new StringBuilder(16 * 3 + 16);
+            sb.Append("[Z80WIN-DUMP] ").Append(addr.ToString("X4")).Append(": ");
+            for (int i = 0; i < lineLen; i++)
+                sb.Append(g_ram[addr + i].ToString("X2")).Append(' ');
             Console.WriteLine(sb.ToString().TrimEnd());
         }
     }
@@ -467,13 +954,59 @@ namespace EutherDrive.Core.MdTracerCore
             LogZ80Int(in_val, source, status, "signal");
     }
 
-    private void LogZ80Int(bool asserted, string source, byte status, string reason)
+    internal void ArmPostResetHold()
     {
-        if (!MdTracerCore.MdLog.TraceZ80Int)
+        if (Z80ResetHoldCycles <= 0)
             return;
-        string state = asserted ? "asserted" : "cleared";
-        Console.WriteLine($"[Z80INT] {state} source={source} status=0x{status:X2} pc=0x{g_reg_PC:X4} reason={reason}");
+        _z80ResetHoldRemaining = Z80ResetHoldCycles;
+        if (_z80ResetHoldLogRemaining > 0)
+        {
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            Console.WriteLine(
+                $"[Z80RESET-HOLD] frame={frame} cycles={Z80ResetHoldCycles} pc=0x{g_reg_PC:X4}");
+            if (_z80ResetHoldLogRemaining != int.MaxValue)
+                _z80ResetHoldLogRemaining--;
+        }
     }
+
+        private void LogZ80Int(bool asserted, string source, byte status, string reason)
+        {
+            if (!MdTracerCore.MdLog.TraceZ80Int)
+                return;
+            string state = asserted ? "asserted" : "cleared";
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+
+            // [INT-STATS] Count ZINT events
+            if (source == "VDP")
+            {
+                if (asserted)
+                    _zintAssertCount++;
+                else
+                    _zintClearCount++;
+            }
+
+            Console.WriteLine(
+                $"[Z80INT] {state} source={source} status=0x{status:X2} pc=0x{g_reg_PC:X4} frame={frame} reason={reason}");
+        }
+
+        internal void CountZ80IntService()
+        {
+            _zintServiceCount++;
+        }
+
+        internal void FlushZ80IntStats(long frame)
+        {
+            if (!MdTracerCore.MdLog.TraceZ80Int)
+                return;
+            if (frame != _zintLastFrameLogged && (_zintAssertCount > 0 || _zintClearCount > 0 || _zintServiceCount > 0))
+            {
+                Console.WriteLine($"[Z80INT-STATS] frame={frame} assert={_zintAssertCount} clear={_zintClearCount} service={_zintServiceCount}");
+                _zintLastFrameLogged = frame;
+            }
+            _zintAssertCount = 0;
+            _zintClearCount = 0;
+            _zintServiceCount = 0;
+        }
 
         public void reset()
         {
@@ -493,6 +1026,7 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine(new StackTrace(1, true));
             }
             g_reg_PC = 0;
+            _z80ResetHoldRemaining = 0;
 
             g_reg_A = g_reg_B = g_reg_C = g_reg_D = g_reg_E = g_reg_H = g_reg_L = 0;
             g_reg_R = g_reg_I = 0;
@@ -509,13 +1043,14 @@ namespace EutherDrive.Core.MdTracerCore
             g_flag_PV = 0;
             g_flag_N = 0;
             g_flag_C = 0;
+            MaybePatchZ80BootJump();
 
             g_interruptMode = 0;
             g_halt = false;
             g_IFF1 = false;
             g_IFF2 = false;
 
-            g_bank_register = 0u;
+            g_bank_register = Z80BankDefault;
             ResetMailboxShadow();
             _z80Dumped = false;
             _smsBankSelect = 0;
@@ -523,11 +1058,41 @@ namespace EutherDrive.Core.MdTracerCore
             _smsLoopPc = 0;
             _smsLoopCount = 0;
             _instrThrottleCounter = 0;
+            _bootInstrCount = 0;
+            _z80IoLogRemaining = TraceZ80IoLimit;
+            _z80YmLogRemaining = TraceZ80YmLimit;
+            _z80RamWriteLogRemaining = TraceZ80RamWriteLimit;
+            _z80RamWriteRangeRemaining = TraceZ80RamWriteRangeLimit;
+            _z80RamReadRangeRemaining = TraceZ80RamReadRangeLimit;
+            _z80ReadRangeRemaining = TraceZ80ReadRangeLimit;
+            _z80MbxPollEdgeRemaining = TraceZ80MbxPollEdgeLimit;
+            _z80MbxPollDataRemaining = TraceZ80MbxPollDataLimit;
+            _z80MbxPollEdgeLastValid = false;
+            _z80MbxPollEdgeLastValue = 0x00;
+            _z80MbxPollDataLastValid = false;
+            _lastReadAddr = 0;
+            _lastReadM68kAddr = 0;
+            _lastReadValue = 0;
+            _lastReadPc = 0;
+            _lastReadWasBanked = false;
             _pcLeftBootRangeSinceLastSummary = false;
             g_active = true;
             if (TraceZ80Step)
                 _traceStepRemaining = 64;
             ResetTraceBudgets();
+        }
+
+        internal void ArmForcePc(ushort target, string reason)
+        {
+            _forcePcPending = true;
+            _forcePcTarget = target;
+            _forcePcReason = reason;
+            _z80PcRangeRemaining = TraceZ80PcRangeLimit;
+        }
+
+        internal void SetStackPointer(ushort sp)
+        {
+            g_reg_SP = sp;
         }
 
         // ---- Prefixgrenar -----------------------------------------------------

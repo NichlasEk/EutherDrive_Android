@@ -106,14 +106,12 @@ namespace EutherDrive.Core.MdTracerCore
             switch (g_vdp_reg_code & 0x0f)
             {
                 case 1:
-                    byte w_data = (byte)(g_dma_fill_data & 0x00ff);
-                    g_vram[g_vdp_reg_dest_address] = w_data;
-                    pattern_chk(g_vdp_reg_dest_address, w_data);
-                    w_data = (byte)((g_dma_fill_data >> 8) & 0x00ff);
+                    // DMA fill writes a single byte (the high byte of the data port) to VRAM.
+                    byte w_data = (byte)((g_dma_fill_data >> 8) & 0x00ff);
                     do
                     {
-                        g_vram[g_vdp_reg_dest_address ^ 1] = w_data;
-                        pattern_chk((g_vdp_reg_dest_address ^ 1), w_data);
+                        g_vram[g_vdp_reg_dest_address & 0xffff] = w_data;
+                        pattern_chk(g_vdp_reg_dest_address, w_data);
                         g_vdp_reg_dest_address = (ushort)(g_vdp_reg_dest_address + g_vdp_reg_15_autoinc);
                     } while (--w_loop_cnt > 0);
                     break;

@@ -11,6 +11,35 @@ namespace EutherDrive.Core.MdTracerCore
     //----------------------------------------------------------------
     internal class md_bus
     {
+        private enum SramAccessMode
+        {
+            ByteOdd,
+            ByteEven,
+            Word
+        }
+
+        // File-based SRAM logger for UI mode
+        private static StreamWriter? _sramLog;
+        private static readonly object _sramLogLock = new();
+
+        private static void SramLog(string msg)
+        {
+            try
+            {
+                lock (_sramLogLock)
+                {
+                    if (_sramLog == null)
+                    {
+                        string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_SRAM_LOG");
+                        if (string.IsNullOrEmpty(path))
+                            path = "/tmp/eutherdrive_sram.log";
+                        _sramLog = new StreamWriter(path, false, Encoding.UTF8) { AutoFlush = true };
+                    }
+                    _sramLog.WriteLine(msg);
+                }
+            }
+            catch { }
+        }
         // ------------------------------------------------------------
         // READ
         // ------------------------------------------------------------
@@ -74,9 +103,11 @@ namespace EutherDrive.Core.MdTracerCore
         private string? _sramPath;
         private bool _sramLoaded;
         private bool _sramNoPathLogged;
+        private SramAccessMode _sramAccess = SramAccessMode.ByteOdd;
         private int _z80ResetOnBusReqRemaining = ResetZ80OnBusReqReleaseLimit;
         private int _z80ForcePcOnUploadRemaining = ForceZ80PcOnUploadLimit;
         private bool _z80Win68kLogged;
+        private int _z80SafeBootWriteCount;
         private bool _z80WinWarned;
         private bool _suppressZ80WinRangeByteLog;
         private bool _suppressMbxByteLog;
@@ -359,25 +390,79 @@ namespace EutherDrive.Core.MdTracerCore
 
         private byte ReadSramByte(uint addr)
         {
-            if (!IsSramConfigured || !_sramLock || !IsSramAddress(addr) || (addr & 1) == 0)
+            if (!IsSramConfigured)
+            {
+                Console.WriteLine($"[SRAM-READ] not configured addr=0x{addr:X6}");
                 return 0xFF;
-            int index = (int)((addr - _sramStart) >> 1);
+            }
+            if (!IsSramAddress(addr))
+            {
+                Console.WriteLine($"[SRAM-READ] out of range addr=0x{addr:X6}");
+                return 0xFF;
+            }
+            if (!IsSramByteAddress(addr))
+            {
+                Console.WriteLine($"[SRAM-READ] invalid byte addr=0x{addr:X6}");
+                return 0xFF;
+            }
+            int index = GetSramIndex(addr);
             if (_sram == null || index < 0 || index >= _sram.Length)
+            {
+                Console.WriteLine($"[SRAM-READ] invalid index addr=0x{addr:X6} index={index}");
                 return 0xFF;
-            return _sram[index];
+            }
+            byte val = _sram[index];
+            if (MdLog.Enabled)
+                Console.WriteLine($"[SRAM-READ] addr=0x{addr:X6} idx=0x{index:X} val=0x{val:X2}");
+            return val;
         }
 
         private void WriteSramByte(uint addr, byte value)
         {
-            if (!IsSramConfigured || !_sramLock || !IsSramAddress(addr) || (addr & 1) == 0)
+            if (!IsSramConfigured)
+            {
+                Console.WriteLine($"[SRAM-WRITE] not configured addr=0x{addr:X6} val=0x{value:X2}");
                 return;
-            int index = (int)((addr - _sramStart) >> 1);
+            }
+            if (!IsSramAddress(addr))
+            {
+                Console.WriteLine($"[SRAM-WRITE] out of range addr=0x{addr:X6} val=0x{value:X2}");
+                return;
+            }
+            if (!IsSramByteAddress(addr))
+            {
+                Console.WriteLine($"[SRAM-WRITE] invalid byte addr=0x{addr:X6} val=0x{value:X2}");
+                return;
+            }
+            int index = GetSramIndex(addr);
             if (_sram == null || index < 0 || index >= _sram.Length)
+            {
+                Console.WriteLine($"[SRAM-WRITE] invalid index addr=0x{addr:X6} val=0x{value:X2}");
                 return;
+            }
             if (_sram[index] == value)
                 return;
             _sram[index] = value;
             _sramDirty = true;
+            if (MdLog.Enabled)
+                Console.WriteLine($"[SRAM-WRITE] addr=0x{addr:X6} idx=0x{index:X} val=0x{value:X2}");
+        }
+
+        private bool IsSramByteAddress(uint addr)
+        {
+            return _sramAccess switch
+            {
+                SramAccessMode.Word => true,
+                SramAccessMode.ByteEven => (addr & 1) == 0,
+                _ => (addr & 1) != 0
+            };
+        }
+
+        private int GetSramIndex(uint addr)
+        {
+            if (_sramAccess == SramAccessMode.Word)
+                return (int)(addr - _sramStart);
+            return (int)((addr - _sramStart) >> 1);
         }
 
         private void EnsureSramInitialized()
@@ -391,7 +476,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (!TryGetSramRange(cart, out uint start, out uint end))
                 return;
 
-            int size = (int)(((end - start) >> 1) + 1);
+            _sramAccess = ResolveSramAccess(cart);
+            int shift = _sramAccess == SramAccessMode.Word ? 0 : 1;
+            int size = (int)(((end - start) >> shift) + 1);
             if (size <= 0 || size > 0x200000)
             {
                 Console.WriteLine($"[SRAM] range ignored: start=0x{start:X6} end=0x{end:X6} size=0x{size:X}");
@@ -447,7 +534,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 File.WriteAllBytes(_sramPath, _sram);
                 _sramDirty = false;
-                Console.WriteLine($"[SRAM] saved '{_sramPath}' reason={reason}");
+                SramLog($"[SRAM] saved '{_sramPath}' reason={reason}");
             }
             catch (Exception ex)
             {
@@ -473,23 +560,29 @@ namespace EutherDrive.Core.MdTracerCore
         {
             start = 0;
             end = 0;
-            bool hasRaSig = cart.g_file.Length >= 0x1B2 &&
-                            cart.g_file[0x1B0] == (byte)'R' &&
-                            cart.g_file[0x1B1] == (byte)'A';
+
+            // Check for manual SRAM override via environment variable
+            // Format: EUTHERDRIVE_SRAM=START-END (hex), e.g., 0x200000-0x3FFFFF
+            string? sramEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_SRAM");
+            if (!string.IsNullOrEmpty(sramEnv))
+            {
+                if (TryParseSramRange(sramEnv, out start, out end))
+                {
+                    SramLog($"[SRAM] manual config: start=0x{start:X6} end=0x{end:X6}");
+                    return true;
+                }
+            }
+
             bool hasExtraRange = cart.g_extra_memory_end >= cart.g_extra_memory_start &&
                                  cart.g_extra_memory_end != 0;
+            bool hasRaSig = cart.g_extra_memory_ra;
 
-            if (hasExtraRange && hasRaSig)
+            if (hasExtraRange && cart.g_extra_memory_is_sram)
             {
                 start = cart.g_extra_memory_start;
                 end = cart.g_extra_memory_end;
             }
-            else if (cart.g_ram_end >= cart.g_ram_start && cart.g_ram_end != 0)
-            {
-                start = cart.g_ram_start;
-                end = cart.g_ram_end;
-            }
-            else if (hasExtraRange)
+            else if (hasExtraRange && !hasRaSig)
             {
                 start = cart.g_extra_memory_start;
                 end = cart.g_extra_memory_end;
@@ -507,12 +600,64 @@ namespace EutherDrive.Core.MdTracerCore
             return true;
         }
 
+        private static bool TryParseSramRange(string s, out uint start, out uint end)
+        {
+            start = 0;
+            end = 0;
+            try
+            {
+                // Support formats: "0x200000-0x3FFFFF" or "200000-3FFFFF"
+                string[] parts = s.Split('-');
+                if (parts.Length != 2)
+                    return false;
+                start = Convert.ToUInt32(parts[0].Trim(), 16);
+                end = Convert.ToUInt32(parts[1].Trim(), 16);
+                if (end < start)
+                    return false;
+                if (start < 0x200000 || end > 0x3FFFFF)
+                    return false;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static SramAccessMode ResolveSramAccess(md_cartridge cart)
+        {
+            // Check for manual access mode override
+            string? accessEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_SRAM_ACCESS");
+            if (!string.IsNullOrEmpty(accessEnv))
+            {
+                return accessEnv.ToLowerInvariant() switch
+                {
+                    "word" => SramAccessMode.Word,
+                    "byte-even" => SramAccessMode.ByteEven,
+                    "byte-odd" => SramAccessMode.ByteOdd,
+                    _ => SramAccessMode.ByteOdd
+                };
+            }
+
+            if (cart.g_extra_memory_is_sram)
+            {
+                return cart.g_extra_memory_access.ToLowerInvariant() switch
+                {
+                    "word" => SramAccessMode.Word,
+                    "byte-even" => SramAccessMode.ByteEven,
+                    _ => SramAccessMode.ByteOdd
+                };
+            }
+            return SramAccessMode.ByteOdd;
+        }
+
         private void SetSramLock(bool enabled, string reason)
         {
             bool prev = _sramLock;
             if (enabled && !_sramLoaded)
                 EnsureSramInitialized();
             _sramLock = enabled;
+            SramLog($"[SRAM-LOCK] {reason}: enabled={enabled} prev={prev} loaded={_sramLoaded} configured={IsSramConfigured}");
             if (prev && !enabled)
                 SaveSramIfNeeded(reason);
         }
@@ -605,19 +750,23 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (_z80SafeBootUploadActive)
             {
-                bool releaseReset = false;
+                // Only release reset after seeing actual uploads AND quiet period
+                // DON'T auto-release on timeout - let 68K control timing
                 if (_z80SafeBootSawUpload)
                 {
                     if (now - _z80SafeBootLastUploadFrame >= Z80SafeBootUploadQuietFrames)
-                        releaseReset = true;
+                    {
+                        ReleaseZ80SafeBootReset(now);
+                    }
                 }
-                else if (now - _z80SafeBootStartFrame >= Z80SafeBootDelayFrames)
+                else if (now - _z80SafeBootStartFrame >= 100)
                 {
-                    releaseReset = true;
+                    // Warn if no uploads for 100 frames - likely game does its own Z80 reset sequence
+                    if ((now - _z80SafeBootStartFrame) % 100 == 0)
+                    {
+                        Console.WriteLine($"[Z80SAFE-WARN] frame={now} no uploads yet, Z80 held in reset");
+                    }
                 }
-
-                if (releaseReset)
-                    ReleaseZ80SafeBootReset(now);
                 return;
             }
 
@@ -645,6 +794,7 @@ namespace EutherDrive.Core.MdTracerCore
             _z80SafeBootStartFrame = frame;
             _z80SafeBootLastUploadFrame = frame;
             _z80SafeBootResetReleaseFrame = -1;
+            _z80SafeBootWriteCount = 0;
 
             _z80BusGranted = true;
             md_main.g_md_z80.g_active = false;
@@ -687,11 +837,15 @@ namespace EutherDrive.Core.MdTracerCore
                 _z80Reset = false;
                 if (md_main.g_md_z80 != null)
                 {
+                    // Sync Z80 and reinitialize FM when reset is released (matching clownmdemu behavior)
+                    // DON'T call reset() here - it would set PC=0!
+                    md_main.BeginZ80ResetCycle();
+                    md_main.g_md_music?.g_md_ym2612.YM2612_Start();
                     md_main.g_md_z80.ArmPostResetHold();
                     md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
                 }
             }
-            Console.WriteLine($"[Z80SAFE] reset released frame={frame}");
+            Console.WriteLine($"[Z80SAFE] reset released frame={frame} - uploads will NOT be protected after this!");
             LogZ80SafeBootVerify();
         }
 
@@ -711,6 +865,13 @@ namespace EutherDrive.Core.MdTracerCore
             long frame = SafeBootFrameNow();
             _z80SafeBootSawUpload = true;
             _z80SafeBootLastUploadFrame = frame;
+            _z80SafeBootWriteCount++;
+            // Log first 8 writes to show what's being uploaded
+            if (_z80SafeBootWriteCount <= 8)
+            {
+                ushort z80Addr = (ushort)(addr & 0x1FFF);
+                Console.WriteLine($"[Z80SAFE-UPLOAD] #{_z80SafeBootWriteCount} frame={frame} addr=0x{addr:X6} -> z80[{z80Addr:X4}]");
+            }
         }
 
         private long SafeBootFrameNow()
@@ -734,6 +895,7 @@ namespace EutherDrive.Core.MdTracerCore
                 sb.Append(val.ToString("X2"));
             }
             Console.WriteLine($"[Z80SAFE] verify 0x0000..0x000F bytes={sb} xor=0x{xor:X2}");
+            Console.WriteLine($"[Z80SAFE] total writes during safe boot: {_z80SafeBootWriteCount} bytes");
         }
 
         private bool ShouldSuppressSafeBootMirror()
@@ -783,10 +945,20 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             if (IsSramLockReg(in_address))
-                return _sramLock ? (byte)0x01 : (byte)0x00;
+            {
+                byte val = _sramLock ? (byte)0x01 : (byte)0x00;
+                SramLog($"[SRAM-LOCK-READ] addr=0x{in_address:X6} val=0x{val:X2} configured={IsSramConfigured}");
+                return val;
+            }
 
-            if (_sramLock && IsSramAddress(in_address))
+            if (IsSramAddress(in_address))
                 return ReadSramByte(in_address);
+
+            // Log any access to 0xA130F0-0xA130FF range (SRAM control area)
+            if ((in_address & 0xFFFFF0) == 0xA130F0)
+            {
+                SramLog($"[SRAM-CTRL-READ] addr=0x{in_address:X6} val=0xFF");
+            }
 
             // 0x000000–0x3FFFFF  | ROM / cart
             if (in_address <= 0x3FFFFF)
@@ -867,7 +1039,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (IsSramLockReg(in_address) || IsSramLockReg(in_address + 1))
                 return _sramLock ? (ushort)0x0101 : (ushort)0x0000;
 
-            if (_sramLock && IsSramAddress(in_address))
+            if (IsSramAddress(in_address))
             {
                 byte hi = ReadSramByte(in_address);
                 byte lo = ReadSramByte(in_address + 1);
@@ -941,7 +1113,7 @@ namespace EutherDrive.Core.MdTracerCore
                 IsSramLockReg(in_address + 2) || IsSramLockReg(in_address + 3))
                 return _sramLock ? 0x0101_0101u : 0x0000_0000u;
 
-            if (_sramLock && IsSramAddress(in_address))
+            if (IsSramAddress(in_address))
             {
                 byte b0 = ReadSramByte(in_address);
                 byte b1 = ReadSramByte(in_address + 1);
@@ -1027,14 +1199,22 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (IsSramLockReg(in_address))
             {
+                SramLog($"[SRAM-LOCK-WRITE] addr=0x{in_address:X6} data=0x{in_data:X2} lockBit={in_data & 0x01}");
                 SetSramLock((in_data & 0x01) != 0, "lock");
                 return;
             }
 
             if (IsSramAddress(in_address))
             {
+                SramLog($"[SRAM-WRITE] addr=0x{in_address:X6} data=0x{in_data:X2} lock={_sramLock} configured={IsSramConfigured}");
                 WriteSramByte(in_address, in_data);
                 return;
+            }
+
+            // Log any access to 0xA130F0-0xA130FF range (SRAM control area)
+            if ((in_address & 0xFFFFF0) == 0xA130F0)
+            {
+                SramLog($"[SRAM-CTRL-WRITE] addr=0x{in_address:X6} data=0x{in_data:X2}");
             }
 
             if (in_address >= 0xFF0000)
@@ -1127,7 +1307,18 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 uint z80Addr = in_address;
                 if ((in_address & 0xFFFFFE) == 0xA06000)
+                {
+                    // M68K writes to Z80 bank register (shift-register style, like on real hardware)
+                    // Each write shifts the register right and injects the LSB as bit 8
+                    if (md_main.g_md_z80 != null)
+                    {
+                        var bank = md_main.g_md_z80.GetBankRegister();
+                        bank >>= 1;
+                        bank |= (in_data & 1) != 0 ? 0x100u : 0u;
+                        md_main.g_md_z80.SetBankRegister(bank);
+                    }
                     LogZ80BankRegWrite("8", in_address, in_data);
+                }
                 LogZ80Win68kOnce("byte", z80Addr, in_data);
                 RecordZ80WinStat(z80Addr, in_data, 1, blocked: false);
                 byte oldMbx = 0;
@@ -1269,8 +1460,25 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     else
                     {
-                        MarkZ80SafeBootUploadWrite(in_address);
-                        md_main.g_md_z80?.write16(in_address, in_data);
+                        // [BOOT-PROTECT] Check for boot code area protection in compat mode
+                        ushort z80Addr = (ushort)(in_address & 0x1FFF);
+                        bool inBootArea = z80Addr >= 0x0040 && z80Addr <= 0x0046;
+                        bool nextInBootArea = (z80Addr + 1) >= 0x0040 && (z80Addr + 1) <= 0x0046;
+
+                        if (Z80SafeBootEnabled && _z80SafeBootUploadActive && (inBootArea || nextInBootArea))
+                        {
+                            // Handle partial boot area writes in compat mode
+                            if (TraceZ80Win && _z80WinLogRemaining > 0)
+                            {
+                                _z80WinLogRemaining--;
+                                Console.WriteLine($"[Z80WIN-PROTECT-COMPAT] addr=0x{in_address:X6} val=0x{in_data:X4} skipped");
+                            }
+                        }
+                        else
+                        {
+                            MarkZ80SafeBootUploadWrite(in_address);
+                            md_main.g_md_z80?.write16(in_address, in_data);
+                        }
                     }
                     MaybeDumpZ80WinRangeSnapshot((ushort)(in_address & 0x1FFF), 2, false);
                     return;
@@ -1709,7 +1917,20 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 else
                 {
+                    // Sync Z80 and reinitialize FM when reset is released (matching clownmdemu behavior)
+                    // DON'T call reset() here - it would set PC=0 and restart Z80 from boot!
+                    md_main.BeginZ80ResetCycle();
+                    md_main.g_md_music?.g_md_ym2612.YM2612_Start();
                     md_main.g_md_z80.ArmPostResetHold();
+                    // Set SP to same value as boot code would (0x1F00) since we skip boot code execution
+                    md_main.g_md_z80.SetStackPointer(0x1F00);
+                    // Force Z80 to execute driver code at 0x0167 after reset release
+                    // This gives the 68K time to upload the driver before Z80 starts executing
+                    // Only do this after safe boot has completed (when busreq is not granted)
+                    if (!_z80BusGranted)
+                    {
+                        md_main.g_md_z80.ArmForcePc(0x0167, "resetRelease");
+                    }
                 }
                 md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
             }
@@ -1719,7 +1940,11 @@ namespace EutherDrive.Core.MdTracerCore
             LogZ80RegWrite(addr, logValue);
             LogZ80RegDecode("RESET", addr, raw, uds, lds, regByte, next);
             if (prev != next)
-                Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} val=0x{logValue:X} resetOn={(next ? 1 : 0)}");
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                uint pc68k = md_main.g_md_m68k != null ? md_m68k.g_reg_PC : 0u;
+                Console.WriteLine($"[Z80RESET] frame={frame} write addr=0x{addr:X6} val=0x{logValue:X} resetOn={(next ? 1 : 0)} pc68k=0x{pc68k:X6}");
+            }
             if (prev != next && TraceZ80Sig)
                 Console.WriteLine($"[Z80SIG] RESET={(next ? 1 : 0)} ({(next ? "assert" : "deassert")})");
             _z80BusAckLogState = -1;
@@ -1902,6 +2127,21 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (md_main.g_md_z80 == null)
                 return;
+
+            // [BOOT-PROTECT] Protect boot code area (0x0040-0x0046) during safe boot upload
+            // This includes: DI (0x0040), LD SP,nn (0x0041-0x0043), JP nn (0x0044-0x0046)
+            ushort z80Addr = (ushort)(addr & 0x1FFF);
+            if (Z80SafeBootEnabled && _z80SafeBootUploadActive && z80Addr >= 0x0040 && z80Addr <= 0x0046)
+            {
+                // Skip write to protect boot code (DI, LD SP, JP to driver)
+                if (TraceZ80Win && _z80WinLogRemaining > 0)
+                {
+                    _z80WinLogRemaining--;
+                    Console.WriteLine($"[Z80WIN-PROTECT] addr=0x{addr:X6} -> z80[{z80Addr:X4}] val=0x{value:X2} skipped");
+                }
+                return;
+            }
+
             MarkZ80SafeBootUploadWrite(addr);
             if (ShouldForceZ80FlagBit2 && (addr & 0x1FFF) == ForceZ80FlagBit2Target)
                 value = (byte)(value | 0x04);

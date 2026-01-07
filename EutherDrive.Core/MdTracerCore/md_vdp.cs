@@ -51,17 +51,34 @@ namespace EutherDrive.Core.MdTracerCore
         private long _lastStatusReadLogFrame = -1;
         private static readonly bool TraceVdpTiming =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_TIMING"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdpInterlace =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_INTERLACE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdpState =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATE"), "1", StringComparison.Ordinal);
         private static readonly bool ShowOverscan =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SHOW_OVERSCAN"), "1", StringComparison.Ordinal);
         private static readonly System.Diagnostics.Stopwatch _timingStopwatch = System.Diagnostics.Stopwatch.StartNew();
         private long _lastTimingLogFrame = -1;
         private long _lastTimingLogMs;
+        private long _lastStateLogFrame = -1;
         private bool _vblankRiseLogged;
         private bool _vblankFallLogged;
         private static readonly bool ForceSmsVBlank =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_SMS_VBLANK"), "1", StringComparison.Ordinal);
         private static readonly bool ForceMdVBlank =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_MD_VBLANK"), "1", StringComparison.Ordinal);
+
+        private enum InterlaceOutputPolicy
+        {
+            SingleField = 0,
+            DoubleField = 1
+        }
+
+        private static InterlaceOutputPolicy InterlaceOutput =
+            ParseInterlaceOutputPolicy(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_INTERLACE_OUTPUT"));
+
+        private byte g_vdp_interlace_field;
+        private bool _interlaceFieldAdvanced; // Guard för att förhindra dubbel AdvanceInterlaceField() per frame
 
         // --- UI-agnostiska inparametrar (matas från Avalonia) ---
         public bool MouseClickInterrupt { get; set; }
@@ -70,7 +87,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         // --- Minimal framebuffer (RGBA32) för Avalonia ---
         private const int MaxFrameWidth = 320;
-        private const int MaxFrameHeight = 240;
+        private const int MaxFrameHeight = 480;
         public int FrameWidth  { get; private set; } = 320;  // MD standard 320x224 (NTSC)
         public int FrameHeight { get; private set; } = 224;
         public int Pitch => FrameWidth * 4;                  // bytes per rad
@@ -87,13 +104,14 @@ namespace EutherDrive.Core.MdTracerCore
         {
             UpdateOutputWidth();
             FrameWidth = g_output_xsize;
-            FrameHeight = g_display_ysize;
+            FrameHeight = g_output_ysize;
             EnsureFrameBuffer();
         }
 
         private void UpdateOutputWidth()
         {
             g_output_xsize = ShowOverscan ? MaxFrameWidth : g_display_xsize;
+            g_output_ysize = GetOutputHeight();
         }
 
         private void EnsureFrameBuffer()
@@ -107,6 +125,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         internal long FrameCounter => _frameCounter;
+        internal byte InterlaceField => g_vdp_interlace_field;
 
         /// <summary>Byt upplösning (valfritt att kalla om du vill synka till VDP-registret senare).</summary>
         public void SetFrameSize(int width, int height)
@@ -152,20 +171,26 @@ namespace EutherDrive.Core.MdTracerCore
                 g_vdp_status_5_collision = 0;
                 g_vdp_status_6_sprite = 0;
             }
+
+            // Nollställ guard för fält-växling först EFTER att alla nested run() anrop är klara.
+            // Detta säkerställer att varje frame-växling kan toggla fältet exakt en gång,
+            // även när rendering_frame() anropas två gånger (vid scanline 224 och via run(0)).
+            _interlaceFieldAdvanced = false;
         }
 
         private void set_hvcounter()
         {
-            if (g_vdp_reg_12_2_interlacemode == 0)
+            if (g_vdp_interlace_mode == 0)
             {
                 g_vdp_c00008_hvcounter = (ushort)(((MouseClickPosX >> 1) & 0x00ff)
                 + (MouseClickPosY << 8));
             }
             else
             {
+                int interlaceY = (MouseClickPosY << 1) | g_vdp_interlace_field;
                 g_vdp_c00008_hvcounter = (ushort)(((MouseClickPosX >> 1) & 0x00ff)
-                + ((MouseClickPosY << 8) & 0xfe00)
-                + (MouseClickPosY & 0x0100));
+                + ((interlaceY << 8) & 0xfe00)
+                + (interlaceY & 0x0100));
             }
         }
 
@@ -253,6 +278,137 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
+        private int GetInterlaceLine(int scanline)
+        {
+            if (g_vdp_interlace_mode == 0)
+                return scanline;
+            return (scanline << 1) | g_vdp_interlace_field;
+        }
+
+        private int GetRenderLine(int scanline)
+        {
+            if (g_vdp_interlace_mode == 0)
+                return scanline;
+            if (InterlaceOutput == InterlaceOutputPolicy.SingleField)
+                return scanline << 1;
+            return (scanline << 1) | g_vdp_interlace_field;
+        }
+
+        private int GetHScrollLine(int scanline)
+        {
+            if (g_vdp_interlace_mode == 2)
+                return scanline >> 1;
+            return scanline;
+        }
+
+        private int GetCellHeightShift() => g_vdp_interlace_mode == 2 ? 4 : 3;
+
+        private int GetCellHeightPixels() => g_vdp_interlace_mode == 2 ? 16 : 8;
+
+        private int GetRowInCell(int lineInCell) => g_vdp_interlace_mode == 2 ? (lineInCell & 0x0f) : (lineInCell & 0x07);
+
+        private int GetTileWordBase(int tileIndex)
+        {
+            if (g_vdp_interlace_mode == 2)
+            {
+                int masked = tileIndex & 0x03ff;
+                return masked << 5;
+            }
+            return (tileIndex & 0x07ff) << 4;
+        }
+
+        private int GetReversePage(uint reverse)
+        {
+            if (g_vdp_interlace_mode == 2)
+                return (reverse & 0x01) != 0 ? VRAM_DATASIZE : 0;
+            return (int)(reverse * VRAM_DATASIZE);
+        }
+
+        private int GetRowWordOffset(int rowInCell, uint reverse)
+        {
+            int row = rowInCell;
+            if (g_vdp_interlace_mode == 2 && (reverse & 0x02) != 0)
+                row = 15 - row;
+            return row << 1;
+        }
+
+        private int GetTileWordAddress(int tileIndex, int rowInCell, uint reverse)
+        {
+            return GetReversePage(reverse) + GetTileWordBase(tileIndex) + GetRowWordOffset(rowInCell, reverse);
+        }
+
+        private int GetOutputHeight()
+        {
+            if (g_vdp_interlace_mode != 0 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
+                return g_display_ysize * 2;
+            return g_display_ysize;
+        }
+
+        private int GetOutputLineForScanline(int scanline)
+        {
+            if (g_vdp_interlace_mode != 0 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
+                return (scanline << 1) | g_vdp_interlace_field;
+            return scanline;
+        }
+
+        private void AdvanceInterlaceField()
+        {
+            // Guard mot dubbel anrop (kan hända när rendering_frame() anropas två gånger)
+            if (_interlaceFieldAdvanced)
+                return;
+
+            if (g_vdp_interlace_mode == 0)
+            {
+                g_vdp_interlace_field = 0;
+                return;
+            }
+
+            g_vdp_interlace_field ^= 0x01;
+            _interlaceFieldAdvanced = true;
+            if (TraceVdpInterlace)
+            {
+                string fieldLabel = g_vdp_interlace_field == 0 ? "even" : "odd";
+                Console.WriteLine($"[VDP] interlace field={fieldLabel} frame={_frameCounter}");
+            }
+        }
+
+        private static InterlaceOutputPolicy ParseInterlaceOutputPolicy(string? raw)
+        {
+            if (string.Equals(raw, "single_field", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "single", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "bob", StringComparison.OrdinalIgnoreCase))
+            {
+                return InterlaceOutputPolicy.SingleField;
+            }
+            return InterlaceOutputPolicy.DoubleField;
+        }
+
+        private void MaybeLogVdpState()
+        {
+            if (!TraceVdpState)
+                return;
+            if (_frameCounter - _lastStateLogFrame < 60)
+                return;
+            _lastStateLogFrame = _frameCounter;
+
+            int planeA = g_vdp_reg_2_scrolla >> 1;
+            int planeB = g_vdp_reg_4_scrollb >> 1;
+            int window = g_vdp_reg_3_windows >> 1;
+            int sprite = g_vdp_reg_5_sprite >> 1;
+            int hscroll = g_vdp_reg_13_hscroll >> 1;
+
+            uint sampleA = (uint)((uint)planeA < (uint)g_renderer_vram.Length ? g_renderer_vram[planeA] : 0);
+            uint sampleB = (uint)((uint)planeB < (uint)g_renderer_vram.Length ? g_renderer_vram[planeB] : 0);
+            uint sampleW = (uint)((uint)window < (uint)g_renderer_vram.Length ? g_renderer_vram[window] : 0);
+            uint sampleS = (uint)((uint)sprite < (uint)g_renderer_vram.Length ? g_renderer_vram[sprite] : 0);
+
+            Console.WriteLine(
+                $"[VDPSTATE] frame={_frameCounter} display={g_vdp_reg_1_6_display} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field} " +
+                $"disp={g_display_xsize}x{g_display_ysize} out={g_output_xsize}x{g_output_ysize} " +
+                $"A=0x{planeA:X4} B=0x{planeB:X4} W=0x{window:X4} S=0x{sprite:X4} HS=0x{hscroll:X4} " +
+                $"A0=0x{sampleA:X4} B0=0x{sampleB:X4} W0=0x{sampleW:X4} S0=0x{sampleS:X4} bg=0x{g_vdp_reg_7_backcolor:X2}");
+        }
+
         private void SmsLogFrameHash()
         {
             if (!md_main.g_masterSystemMode || !MdTracerCore.MdLog.Enabled)
@@ -318,8 +474,8 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 g_vdp_status_7_vinterrupt = 1;
                 md_m68k.g_interrupt_V_req = true;
-                if (md_main.g_masterSystemMode)
-                    md_main.g_md_z80?.irq_request(true, "VDP", 0);
+                // Z80 needs VBlank interrupt for sound drivers in both MD and SMS mode
+                md_main.g_md_z80?.irq_request(true, "VDP", 0);
             }
             LogTriggerVBlank();
             LogVBlankEdge(1);
@@ -334,8 +490,8 @@ namespace EutherDrive.Core.MdTracerCore
             g_vdp_status_3_vbrank = 0;
             g_vdp_status_7_vinterrupt = 0;
             md_m68k.g_interrupt_V_req = false;
-            if (md_main.g_masterSystemMode)
-                md_main.g_md_z80?.irq_request(false, "VDP", 0);
+            // Clear Z80 INT for sound drivers in both MD and SMS mode
+            md_main.g_md_z80?.irq_request(false, "VDP", 0);
             LogVBlankEdge(0);
         }
 

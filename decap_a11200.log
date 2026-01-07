@@ -1,0 +1,227 @@
+[MdTracerAdapter] LoadRom request: path='/run/media/nichlas/Atlas/roms/Genesis/Decap Attack (UE) [h1C].gen' ext='.gen' thread=1
+[MdTracerAdapter] Detected ROM region: US (raw='UE')
+[MdTracerAdapter] Vector check SP=0x00FFFE00 PC=0x00000200
+[ROMMODE] type=MD masterSystemMode=0
+[MdTracerAdapter] Reset begin
+[MdTracerAdapter] Reset framebuffer 320x224 stride=1280
+ROM bytes: 524288 | Header@0x100: 'SEGA' | WRAM@FF0000: 0x1234ABCD | VEC SP=0x00FFFE00 PC=0x00000200 OP@PC=0x4AB9 | CPU API ok
+[PwCatAudioSink] Starting pw-cat session.
+[MainWindow] Early magenta ready after 2484,2 ms
+[MBXINJ-ENV] value='<null>'
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,01s instr=104527 ips=103814 active=1 halt=0 pc=0x1999 busReq=0 reset=0 busReqW=0 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=2874 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=223982 ips=222992 active=1 halt=0 pc=0x0789 busReq=0 reset=0 busReqW=0 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=2923 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=225466 ips=225280 active=1 halt=0 pc=0x3B0E busReq=0 reset=0 busReqW=0 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=2441 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=257323 ips=257294 active=1 halt=0 pc=0x2BA9 busReq=0 reset=0 busReqW=205 busReqT=196 resetW=98 resetT=0
+[AUDIOCORE] frames=2653 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=253276 ips=253265 active=1 halt=0 pc=0x0C75 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2457 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=251682 ips=251638 active=1 halt=0 pc=0x26D0 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2661 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=250713 ips=250498 active=1 halt=0 pc=0x3D62 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2589 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=248203 ips=248196 active=1 halt=0 pc=0x0A5D busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2648 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=254019 ips=253965 active=1 halt=0 pc=0x2DD9 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2831 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=251281 ips=251244 active=1 halt=0 pc=0x06DA busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2561 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=252081 ips=252056 active=1 halt=0 pc=0x22C4 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2537 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=254074 ips=254050 active=1 halt=0 pc=0x06AE busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2566 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=257667 ips=257653 active=1 halt=0 pc=0x386A busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2519 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=258919 ips=258878 active=1 halt=0 pc=0x2F41 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[MdTracerAdapter] Reset begin
+[m68k] missing opcode handler op=0x1445 pc=0x02A6EE
+[m68k] missing opcode handler op=0x1444 pc=0x02A6F2
+[MdTracerAdapter] Reset framebuffer 320x224 stride=1280
+[AUDIOCORE] frames=3195 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=242562 ips=242556 active=1 halt=0 pc=0x25FC busReq=0 reset=0 busReqW=0 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=2816 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=221018 ips=220855 active=1 halt=0 pc=0x0858 busReq=0 reset=0 busReqW=0 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=2784 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=237092 ips=237055 active=1 halt=0 pc=0x297E busReq=0 reset=0 busReqW=0 busReqT=0 resetW=0 resetT=0
+[m68k] missing opcode handler op=0x3C3D pc=0x020146
+[m68k] missing opcode handler op=0x4344 pc=0x020156
+[m68k] missing opcode handler op=0x4B4C pc=0x020164
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=209677 ips=209636 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=185 busReqT=179 resetW=90 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[AudioEngine] timed audio clamped to 4096 frames.
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[AudioEngine] timed audio clamped to 4096 frames.
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=6 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[AudioEngine] timed audio clamped to 4096 frames.
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=10 busReqT=0 resetW=0 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[AUDIOCORE] frames=4096 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x1F56 busReq=1 reset=0 busReqW=9 busReqT=0 resetW=0 resetT=0
+[MdTracerAdapter] Reset begin
+[MdTracerAdapter] Reset framebuffer 320x224 stride=1280
+[Z80RESET]  write addr=0xA11200 val=0x0 resetOn=1
+[Z80RESET]  write addr=0xA11200 val=0x100 resetOn=0
+[AUDIOCORE] frames=2289 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80RESET]  write addr=0xA11200 val=0x0 resetOn=1
+[Z80Stats] dt=1,00s instr=10918 ips=10911 active=0 halt=0 pc=0x0000 busReq=0 reset=1 busReqW=2 busReqT=2 resetW=4 resetT=3
+[AUDIOCORE] frames=2783 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x0000 busReq=0 reset=1 busReqW=0 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=2786 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[AudioEngine] timed audio clamped to 4096 frames.
+[Z80Stats] dt=1,00s instr=0 ips=0 active=0 halt=0 pc=0x0000 busReq=0 reset=1 busReqW=0 busReqT=0 resetW=0 resetT=0
+[AUDIOCORE] frames=2911 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80RESET]  write addr=0xA11200 val=0x100 resetOn=0
+[Z80Stats] dt=1,00s instr=92340 ips=92330 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=190 busReqT=184 resetW=92 resetT=1
+[AUDIOCORE] frames=2525 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=262257 ips=262067 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2501 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=261402 ips=261369 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2486 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,01s instr=263340 ips=261825 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2553 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=260661 ips=260654 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2464 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=261459 ips=261455 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2479 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=262542 ips=262502 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2464 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=264594 ips=264588 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2508 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=263340 ips=263331 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2481 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=263853 ips=263750 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2499 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=255417 ips=255404 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2477 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,01s instr=265107 ips=263654 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2439 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=267102 ips=267080 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2437 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=263283 ips=263251 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2463 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=257811 ips=257229 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2481 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=262086 ips=262072 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=85 busReqT=68 resetW=34 resetT=0
+[AUDIOCORE] frames=2522 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=261744 ips=261724 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=90 busReqT=72 resetW=36 resetT=0
+[AUDIOCORE] frames=2526 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=263682 ips=263681 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=78 busReqT=60 resetW=36 resetT=0
+[AUDIOCORE] frames=2492 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=261288 ips=261247 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=51 busReqT=34 resetW=34 resetT=0
+[AUDIOCORE] frames=2124 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=264594 ips=264581 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=48 busReqT=32 resetW=32 resetT=0
+[AUDIOCORE] frames=2500 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=262770 ips=262667 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=54 busReqT=36 resetW=36 resetT=0
+[AUDIOCORE] frames=2477 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=262941 ips=262928 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=51 busReqT=34 resetW=34 resetT=0
+[AUDIOCORE] frames=2493 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=263568 ips=263521 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=54 busReqT=36 resetW=36 resetT=0
+[AUDIOCORE] frames=2509 psgPeak=0 ymPeak=0 mixPeak=0 psgNZ=0 ymNZ=0 mixNZ=0 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=262200 ips=262154 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=54 busReqT=36 resetW=36 resetT=0
+[AUDIOCORE] frames=2558 psgPeak=0 ymPeak=8192 mixPeak=8192 psgNZ=0 ymNZ=5110 mixNZ=5110 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=260376 ips=260335 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=127 busReqT=110 resetW=72 resetT=0
+[AUDIOCORE] frames=2662 psgPeak=0 ymPeak=8192 mixPeak=8192 psgNZ=0 ymNZ=5318 mixNZ=5318 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=243903 ips=243805 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=91 busReqT=74 resetW=54 resetT=0
+[AUDIOCORE] frames=2567 psgPeak=0 ymPeak=8192 mixPeak=8192 psgNZ=0 ymNZ=5124 mixNZ=5124 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=255531 ips=255465 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=91 busReqT=74 resetW=54 resetT=0
+[AUDIOCORE] frames=2572 psgPeak=0 ymPeak=8192 mixPeak=8192 psgNZ=0 ymNZ=5132 mixNZ=5132 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,00s instr=258153 ips=258097 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=91 busReqT=74 resetW=54 resetT=0
+[AUDIOCORE] frames=2579 psgPeak=0 ymPeak=8192 mixPeak=8192 psgNZ=0 ymNZ=5148 mixNZ=5148 outVolMin=1 outVolMax=1
+[Z80Stats] dt=1,01s instr=258267 ips=256616 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=160 busReqT=142 resetW=89 resetT=0
+[AudioEngine] timed audio clamped to 4096 frames.
+[Z80Stats] dt=1,00s instr=140676 ips=140653 active=1 halt=0 pc=0x0000 busReq=0 reset=0 busReqW=47 busReqT=38 resetW=28 resetT=0
+[AUDIOCORE] frames=2796 psgPeak=0 ymPeak=8192 mixPeak=8192 psgNZ=0 ymNZ=5586 mixNZ=5586 outVolMin=1 outVolMax=1

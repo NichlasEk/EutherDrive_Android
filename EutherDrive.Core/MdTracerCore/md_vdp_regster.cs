@@ -44,6 +44,7 @@ namespace EutherDrive.Core.MdTracerCore
         public byte g_vdp_reg_12_7_cellmode1;
         public byte g_vdp_reg_12_3_shadow;
         public byte g_vdp_reg_12_2_interlacemode;
+        public byte g_vdp_interlace_mode;
         public byte g_vdp_reg_12_0_cellmode2;
         public int  g_vdp_reg_13_hscroll;
         public byte g_vdp_reg_15_autoinc;
@@ -66,6 +67,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
             byte reg17 = g_vdp_reg[17];
             int w_pos = (reg17 & 0x1f) << 4;
+            int windowScale = g_vdp_interlace_mode == 2 ? 2 : 1;
+            int displayY = g_display_ysize * windowScale;
             if ((reg17 & 0x80) == 0)
             {
                 if (w_pos < g_display_xsize)
@@ -100,12 +103,14 @@ namespace EutherDrive.Core.MdTracerCore
 
             byte reg18 = g_vdp_reg[18];
             int w_pos_y = (reg18 & 0x1f) << 3;
+            if (windowScale != 1)
+                w_pos_y <<= 1;
             if ((reg18 & 0x80) == 0)
             {
-                if (w_pos_y < g_display_ysize)
+                if (w_pos_y < displayY)
                 {
                     g_screenA_top_y    = w_pos_y;
-                    g_screenA_bottom_y = g_display_ysize - 1;
+                    g_screenA_bottom_y = displayY - 1;
                 }
                 else
                 {
@@ -120,7 +125,7 @@ namespace EutherDrive.Core.MdTracerCore
                     g_screenA_top_y = 0;
                     g_screenA_bottom_y = 0;
                 }
-                else if (w_pos_y < g_display_ysize)
+                else if (w_pos_y < displayY)
                 {
                     g_screenA_top_y    = 0;
                     g_screenA_bottom_y = w_pos_y - 1;
@@ -128,10 +133,12 @@ namespace EutherDrive.Core.MdTracerCore
                 else
                 {
                     g_screenA_top_y    = 0;
-                    g_screenA_bottom_y = g_display_ysize - 1;
+                    g_screenA_bottom_y = displayY - 1;
                 }
             }
         }
+
+        private bool IsH40Mode() => g_vdp_reg_12_0_cellmode2 != 0 || g_vdp_reg_12_7_cellmode1 != 0;
 
         private void ApplyHorizontalMode(bool h40Mode)
         {
@@ -157,7 +164,7 @@ namespace EutherDrive.Core.MdTracerCore
             UpdateOutputWidth();
             RecomputeWindowBounds();
 
-            g_vdp_reg_3_windows = (ushort)(((h40Mode ? (g_vdp_reg[3] & 0x3c) : (g_vdp_reg[3] & 0x3e)) << 10));
+            g_vdp_reg_3_windows = (ushort)((g_vdp_reg[3] & 0x7e) << 10);
             g_vdp_reg_5_sprite  = (ushort)(((h40Mode ? (g_vdp_reg[5] & 0x7e) : (g_vdp_reg[5] & 0x7f)) << 9));
 
             if (MdTracerCore.MdLog.Enabled && (!g_hmodeLogged || g_display_xsize != prevDisplayX))
@@ -166,6 +173,29 @@ namespace EutherDrive.Core.MdTracerCore
                 MdTracerCore.MdLog.WriteLine($"[VDP] HMODE={mode} width={g_display_xsize}");
                 g_hmodeLogged = true;
             }
+        }
+
+        private void RecomputeScrollSizes()
+        {
+            g_scroll_ycell = 32 * (g_vdp_reg_16_5_scrollV + 1);
+            int yShift = g_vdp_interlace_mode == 2 ? 4 : 3;
+            g_scroll_ysize = g_scroll_ycell << yShift;
+            g_scroll_ysize_mask = g_scroll_ysize - 1;
+
+            g_scroll_xcell = 32 * (g_vdp_reg_16_1_scrollH + 1);
+            g_scroll_xsize = g_scroll_xcell << 3;
+            g_scroll_xsize_mask = g_scroll_xsize - 1;
+        }
+
+        private static byte DecodeInterlaceMode(byte raw)
+        {
+            return raw switch
+            {
+                0 => 0,
+                1 => 1,
+                3 => 2,
+                _ => 0
+            };
         }
 
         private ushort build_vdp_status_word()
@@ -195,21 +225,23 @@ namespace EutherDrive.Core.MdTracerCore
             ushort w_out = g_vdp_c00008_hvcounter;
             if (!g_vdp_c00008_hvcounter_latched)
             {
-                if (g_vdp_reg_12_2_interlacemode == 0)
-                {
-                    w_out = (ushort)
-                    ((g_scanline << 8)
-                    + ((g_display_xsize
+                int hCounter = (g_display_xsize
                     * (md_m68k.g_clock_total - md_m68k.g_clock_now)
-                    / md_main.VDL_LINE_RENDER_MC68_CLOCK) & 0xff));
+                    / md_main.VDL_LINE_RENDER_MC68_CLOCK) & 0xff;
+                if (g_vdp_interlace_mode == 0)
+                {
+                    w_out = (ushort)((GetInterlaceLine(g_scanline) << 8) + hCounter);
+                }
+                else if (g_vdp_interlace_mode == 2)
+                {
+                    int vCounter = (g_scanline & 0xFE) | g_vdp_interlace_field;
+                    w_out = (ushort)((vCounter << 8) | hCounter);
                 }
                 else
                 {
                     w_out = (ushort)
-                    (((g_scanline << 7) & 0xff00)
-                    + ((g_display_xsize
-                    * (md_m68k.g_clock_total - md_m68k.g_clock_now)
-                    / md_main.VDL_LINE_RENDER_MC68_CLOCK) & 0x00ff));
+                    (((GetInterlaceLine(g_scanline) << 7) & 0xff00)
+                    + hCounter);
                 }
                 g_vdp_c00008_hvcounter = w_out;
             }
@@ -253,28 +285,23 @@ namespace EutherDrive.Core.MdTracerCore
                         g_vertical_line_max = 312;
                     }
                     RecomputeWindowBounds();
+                    UpdateOutputWidth();
                     break;
 
                 case 2:
-                    g_vdp_reg_2_scrolla = (ushort)(in_data << 10);
+                    g_vdp_reg_2_scrolla = (ushort)((in_data & 0x78) << 10);
                     break;
 
                 case 3:
-                    if (g_vdp_reg_12_0_cellmode2 == 0)
-                        g_vdp_reg_3_windows = (ushort)((in_data & 0x3e) << 10);
-                    else
-                        g_vdp_reg_3_windows = (ushort)((in_data & 0x3c) << 10);
+                    g_vdp_reg_3_windows = (ushort)((in_data & 0x7e) << 10);
                     break;
 
                 case 4:
-                    g_vdp_reg_4_scrollb = (ushort)(in_data << 13);
+                    g_vdp_reg_4_scrollb = (ushort)((in_data & 0x0f) << 13);
                     break;
 
                 case 5:
-                    if (g_vdp_reg_12_0_cellmode2 == 0)
-                        g_vdp_reg_5_sprite = (ushort)((in_data & 0x7f) << 9);
-                    else
-                        g_vdp_reg_5_sprite = (ushort)((in_data & 0x7e) << 9);
+                    g_vdp_reg_5_sprite = (ushort)(((IsH40Mode() ? (in_data & 0x7e) : (in_data & 0x7f)) << 9));
                     break;
 
                 case 7:
@@ -295,18 +322,40 @@ namespace EutherDrive.Core.MdTracerCore
                     g_vdp_reg_12_7_cellmode1     = (byte)((in_data >> 7) & 0x01);
                     g_vdp_reg_12_3_shadow        = (byte)((in_data >> 3) & 0x01);
                     g_vdp_reg_12_2_interlacemode = (byte)((in_data >> 1) & 0x03);
+                    byte prevInterlace = g_vdp_interlace_mode;
+                    g_vdp_interlace_mode = DecodeInterlaceMode(g_vdp_reg_12_2_interlacemode);
 
-                    if (g_vdp_reg_12_2_interlacemode != 0)
-                        Warn("Interlace-läge ej implementerat – kör ändå (kan rita fel).");
+                    if (prevInterlace != g_vdp_interlace_mode)
+                    {
+                        g_vdp_interlace_field = 0;
+                        RecomputeScrollSizes();
+                        RecomputeWindowBounds();
+                        UpdateOutputWidth();
+                        if (g_game_screen != null && g_game_screen.Length > 0)
+                            Array.Fill(g_game_screen, 0xFF000000u);
 
-                    g_sprite_vmask = (g_vdp_reg_12_2_interlacemode == 0) ? 0x1ff : 0x3ff;
+                        if (MdTracerCore.MdLog.Enabled || TraceVdpInterlace)
+                        {
+                            string modeLabel = g_vdp_interlace_mode switch { 0 => "none", 1 => "interlace", _ => "mode2" };
+                            string fieldLabel = g_vdp_interlace_field == 0 ? "even" : "odd";
+                            if (TraceVdpInterlace)
+                                Console.WriteLine($"[VDP] interlace={modeLabel} field={fieldLabel} reg=0x{g_vdp_reg_12_2_interlacemode:X2}");
+                            else
+                                MdTracerCore.MdLog.WriteLine($"[VDP] interlace={modeLabel} field={fieldLabel} reg=0x{g_vdp_reg_12_2_interlacemode:X2}");
+                        }
+                    }
+
+                    if (g_vdp_interlace_mode == 1)
+                        Warn("Interlace mode 1 not fully implemented.");
+
+                    g_sprite_vmask = (g_vdp_interlace_mode == 0) ? 0x1ff : 0x3ff;
 
                     g_vdp_reg_12_0_cellmode2 = (byte)(in_data & 0x01);
-                    ApplyHorizontalMode(g_vdp_reg_12_0_cellmode2 != 0);
+                    ApplyHorizontalMode(IsH40Mode());
                     break;
 
                 case 13:
-                    g_vdp_reg_13_hscroll = (ushort)(in_data << 10);
+                    g_vdp_reg_13_hscroll = (ushort)((in_data & 0x7f) << 10);
                     break;
 
                 case 15:
@@ -316,14 +365,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 16:
                     g_vdp_reg_16_5_scrollV = (in_data >> 4) & 0x03;
                     g_vdp_reg_16_1_scrollH = in_data & 0x03;
-
-                    g_scroll_ycell      = 32 * (g_vdp_reg_16_5_scrollV + 1);
-                    g_scroll_ysize      = g_scroll_ycell << 3;
-                    g_scroll_ysize_mask = g_scroll_ysize - 1;
-
-                    g_scroll_xcell      = 32 * (g_vdp_reg_16_1_scrollH + 1);
-                    g_scroll_xsize      = g_scroll_xcell << 3;
-                    g_scroll_xsize_mask = g_scroll_xsize - 1;
+                    RecomputeScrollSizes();
                     break;
 
                 case 17:

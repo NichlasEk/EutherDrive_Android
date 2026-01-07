@@ -1630,15 +1630,33 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RETI()
         {
-            g_write_PCL(stack_pop());
-            g_write_PCH(stack_pop());
+            // [INT-INSTRUMENTATION] Log pop before RETI
+            ushort spBefore = g_reg_SP;
+            byte pcl = stack_pop();
+            byte pch = stack_pop();
+            ushort pcPopped = (ushort)((pch << 8) | pcl);
+            bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
+            bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            Console.WriteLine($"[Z80-RETI] frame={frame} SP=0x{spBefore:X4} popPC=0x{pcPopped:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+            g_write_PCL(pcl);
+            g_write_PCH(pch);
             g_IFF1 = g_IFF2;
             g_clock = 15;
         }
         private void op_RETN()
         {
-            g_write_PCL(stack_pop());
-            g_write_PCH(stack_pop());
+            // [INT-INSTRUMENTATION] Log pop before RETN
+            ushort spBefore = g_reg_SP;
+            byte pcl = stack_pop();
+            byte pch = stack_pop();
+            ushort pcPopped = (ushort)((pch << 8) | pcl);
+            bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
+            bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            Console.WriteLine($"[Z80-RETN] frame={frame} SP=0x{spBefore:X4} popPC=0x{pcPopped:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+            g_write_PCL(pcl);
+            g_write_PCH(pch);
             g_IFF1 = g_IFF2;
             g_clock = 14;
         }
@@ -1701,15 +1719,14 @@ namespace EutherDrive.Core.MdTracerCore
         //--------------------------------------
         private void op_IN_a_N()
         {
-            ushort port = (ushort)((g_reg_A << 8) | g_opcode2);
-            port = NormalizeIoPort(port);
+            uint port = NormalizeIoPort((ushort)((g_reg_A << 8) | g_opcode2));
             g_reg_A = read8(port);
             g_reg_PC += 2;
             g_clock = 11;
         }
         private void op_IN_r_C()
         {
-            ushort port = NormalizeIoPort(g_reg_BC);
+            uint port = NormalizeIoPort(g_reg_BC);
             byte value = read8(port);
             write_reg(g_opcode2_543, value);
             g_reg_PC += 2;
@@ -1717,7 +1734,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_INI()
         {
-            ushort port = NormalizeIoPort(g_reg_BC);
+            uint port = NormalizeIoPort(g_reg_BC);
             byte value = read8(port);
             write_byte(g_reg_HL, value);
             ushort newHL = (ushort)(g_reg_HL + 1);
@@ -1733,7 +1750,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             do
             {
-                ushort port = NormalizeIoPort(g_reg_BC);
+                uint port = NormalizeIoPort(g_reg_BC);
                 byte value = read8(port);
                 write_byte(g_reg_HL, value);
                 ushort newHL = (ushort)(g_reg_HL + 1);
@@ -1749,7 +1766,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_IND()
         {
-            ushort port = NormalizeIoPort(g_reg_BC);
+            uint port = NormalizeIoPort(g_reg_BC);
             byte value = read8(port);
             write_byte(g_reg_HL, value);
             ushort newHL = (ushort)(g_reg_HL - 1);
@@ -1765,7 +1782,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             do
             {
-                ushort port = NormalizeIoPort(g_reg_BC);
+                uint port = NormalizeIoPort(g_reg_BC);
                 byte value = read8(port);
                 write_byte(g_reg_HL, value);
                 ushort newHL = (ushort)(g_reg_HL - 1);
@@ -1782,15 +1799,14 @@ namespace EutherDrive.Core.MdTracerCore
         //--------------------------------------
         private void op_OUT_N_a()
         {
-            ushort port = (ushort)((g_reg_A << 8) | g_opcode2);
-            port = NormalizeIoPort(port);
+            uint port = NormalizeIoPort((ushort)((g_reg_A << 8) | g_opcode2));
             write8(port, g_reg_A);
             g_reg_PC += 2;
             g_clock = 11;
         }
         private void op_OUT_C_r()
         {
-            ushort port = NormalizeIoPort(g_reg_BC);
+            uint port = NormalizeIoPort(g_reg_BC);
             byte value = read_reg(g_opcode2_543);
             write8(port, value);
             g_reg_PC += 2;
@@ -1798,7 +1814,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_OUTI()
         {
-            ushort port = NormalizeIoPort(g_reg_BC);
+            uint port = NormalizeIoPort(g_reg_BC);
             byte value = read_byte(g_reg_HL);
             write8(port, value);
             ushort newHL = (ushort)(g_reg_HL + 1);
@@ -1814,7 +1830,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             do
             {
-                ushort port = NormalizeIoPort(g_reg_BC);
+                uint port = NormalizeIoPort(g_reg_BC);
                 byte value = read_byte(g_reg_HL);
                 write8(port, value);
                 ushort newHL = (ushort)(g_reg_HL + 1);
@@ -1830,7 +1846,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_OUTD()
         {
-            ushort port = NormalizeIoPort(g_reg_BC);
+            uint port = NormalizeIoPort(g_reg_BC);
             byte value = read_byte(g_reg_HL);
             write8(port, value);
             ushort newHL = (ushort)(g_reg_HL - 1);
@@ -1846,7 +1862,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             do
             {
-                ushort port = NormalizeIoPort(g_reg_BC);
+                uint port = NormalizeIoPort(g_reg_BC);
                 byte value = read_byte(g_reg_HL);
                 write8(port, value);
                 ushort newHL = (ushort)(g_reg_HL - 1);
@@ -1861,13 +1877,31 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock += 16;
         }
         //--------------------------------------
-        private ushort NormalizeIoPort(ushort port)
+        private uint NormalizeIoPort(ushort port)
         {
             ushort low = (ushort)(port & 0x00FF);
             if (md_main.g_masterSystemMode)
                 return low;
+            // Map YM2612 ports to memory-mapped addresses:
+            // Port 0x40 -> 0xA04000 (YM2612 Port 0 Address, A0=0,A1=0)
+            // Port 0x41 -> 0xA04001 (YM2612 Port 0 Data, A0=1,A1=0)
+            // Port 0x42 -> 0xA04002 (YM2612 Port 1 Address, A0=0,A1=1)
+            // Port 0x43 -> 0xA04003 (YM2612 Port 1 Data, A0=1,A1=1)
+            if (low >= 0x40 && low <= 0x43)
+            {
+                uint result = 0xA00000u | (uint)(0x4000 | low);
+                if (MdTracerCore.MdLog.Enabled)
+                    Console.WriteLine($"[Z80IO] port=0x{port:X4} -> addr=0x{result:X6} pc=0x{DebugPc:X4}");
+                return result;
+            }
+            // Ports 0x00-0x03 also map to YM2612 (legacy/alternative mapping)
             if (low <= 0x03)
-                return (ushort)(0x4000 | low);
+            {
+                uint result = 0xA00000u | (uint)(0x4000 | low);
+                if (MdTracerCore.MdLog.Enabled)
+                    Console.WriteLine($"[Z80IO] port=0x{port:X4} -> addr=0x{result:X6} pc=0x{DebugPc:X4}");
+                return result;
+            }
             return low;
         }
 

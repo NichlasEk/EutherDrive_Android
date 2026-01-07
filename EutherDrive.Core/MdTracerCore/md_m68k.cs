@@ -1,6 +1,7 @@
 ﻿using System.Runtime.InteropServices;
 using System.Text;
 using System.Diagnostics;
+using System.Globalization;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -41,8 +42,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static long _pcSampleLastMs;
         private static bool _pcWatchEnabled =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC"), "1", StringComparison.Ordinal);
-        private const uint PcWatchStart = 0x000320;
-        private const uint PcWatchEnd = 0x000340;
+        private static readonly uint PcWatchStart = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_START") ?? 0x000320;
+        private static readonly uint PcWatchEnd = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_END") ?? 0x000340;
         private static bool _pcWatchDumped;
         private static bool _pcWatchInRange;
         private static bool _pcWatchExitLogged;
@@ -71,6 +72,14 @@ namespace EutherDrive.Core.MdTracerCore
         private static bool _stallWatchLowDumped;
         private const uint StallWatchLowStart = 0x000710;
         private const uint StallWatchLowEnd = 0x000730;
+        private static readonly uint? TraceMemWatchAddr = ParseWatchAddr("EUTHERDRIVE_TRACE_MEM_WATCH");
+        private static readonly int MemWatchLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_MEM_WATCH_LIMIT");
+        private static readonly bool MemWatchAll =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MEM_WATCH_ALL"), "1", StringComparison.Ordinal);
+        private static int _memWatchLogRemaining = MemWatchLimit;
+        private static bool _memWatchLastValid;
+        private static uint _memWatchLastValue;
+        private static byte _memWatchLastSize;
         private uint _stallLastPc;
         private uint _stallSecondLastPc;
         private uint _stallOscCurrent;
@@ -462,6 +471,21 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static void RecordMemoryAccess(uint address, byte size, bool write, uint value)
         {
+            if (TraceMemWatchAddr.HasValue && address == TraceMemWatchAddr.Value && _memWatchLogRemaining > 0)
+            {
+                bool shouldLog = write || MemWatchAll || !_memWatchLastValid ||
+                    _memWatchLastSize != size || _memWatchLastValue != value;
+                if (shouldLog)
+                {
+                    char rw = write ? 'W' : 'R';
+                    Console.WriteLine($"[MEMWATCH] {rw}{size} pc=0x{g_reg_PC:X6} addr=0x{address:X6} val=0x{FormatAccessValue(value, size)}");
+                    _memWatchLastValid = true;
+                    _memWatchLastSize = size;
+                    _memWatchLastValue = value;
+                    if (_memWatchLogRemaining != int.MaxValue)
+                        _memWatchLogRemaining--;
+                }
+            }
             if (!TraceMdStall && !_pcWatchEnabled)
                 return;
             _stallAccessBuffer[_stallAccessIndex] = new StallAccess { Address = address, Size = size, IsWrite = write, Value = value };
@@ -506,6 +530,32 @@ namespace EutherDrive.Core.MdTracerCore
                         _countA04000++;
                     break;
             }
+        }
+
+        private static uint? ParseWatchAddr(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                raw = raw.Substring(2);
+            if (!uint.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint value))
+                return null;
+            return value & 0x00FF_FFFF;
+        }
+
+        private static int ParseWatchLimit(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return 256;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return 256;
+            if (value <= 0)
+                return int.MaxValue;
+            return value;
         }
 
         private static void MaybeLogPcWatch(uint pc, ushort opcode)

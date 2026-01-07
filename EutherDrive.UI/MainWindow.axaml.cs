@@ -93,7 +93,7 @@ public partial class MainWindow : Window
     private int _padTypeRaw = (int)PadType.ThreeButton;
     private WindowState _prevWindowState = WindowState.Normal;
 
-    public MainWindow()
+    public MainWindow(string? romPath = null)
     {
         InitializeComponent();
 
@@ -119,9 +119,34 @@ public partial class MainWindow : Window
         UpdateRegionOverrideCombo();
         UpdateRomRegionHintText();
 
+        // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
+
+        // Load ROM from command line if provided
+        if (!string.IsNullOrEmpty(romPath) && File.Exists(romPath))
+        {
+            StatusText.Text = $"Loading from CLI: {romPath}";
+            _romPath = romPath;
+            _core = new MdTracerAdapter();
+            if (_core is MdTracerAdapter m)
+            {
+                m.PowerCycleAndLoadRom(_romPath);
+                UpdateRomInfo(m.RomInfo);
+                Console.WriteLine(m.RomInfo.Summary);
+            }
+            else
+            {
+                _core.LoadRom(_romPath);
+            }
+        }
         _presentOnUiAction = PresentPendingFrame;
         ApplyFullScreenLayout(WindowState == WindowState.FullScreen);
+
+        // Auto-start if ROM was loaded from CLI
+        if (!string.IsNullOrEmpty(_romPath))
+        {
+            OnStart(null, null);
+        }
     }
 
     public ConsoleRegion RegionOverride
@@ -1017,6 +1042,13 @@ public partial class MainWindow : Window
                                       AlphaFormat.Unpremul);
 
                 ScreenImage.Source = _wb;
+                if (ScreenGrid != null)
+                {
+                    ScreenGrid.Width = w;
+                    ScreenGrid.Height = h;
+                }
+                ScreenImage.Width = w;
+                ScreenImage.Height = h;
                 if (SplashImage != null && !string.IsNullOrWhiteSpace(_romPath))
                     SplashImage.IsVisible = false;
             }

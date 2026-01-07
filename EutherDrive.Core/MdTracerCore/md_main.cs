@@ -48,13 +48,44 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
         private static readonly double SmsCycleMultiplier = ParseSmsCycleMultiplier();
+        private static readonly double Z80CycleMultiplier = ParseZ80CycleMultiplier();
+        private static readonly bool ForceZ80RunPerLine = ReadEnvFlag("EUTHERDRIVE_Z80_RUN_PER_LINE");
+        private static readonly int Z80RunPerLineFrames = ParseZ80RunPerLineFrames();
+        private static readonly bool Z80RunBeforeM68k = ReadEnvFlag("EUTHERDRIVE_Z80_RUN_BEFORE_M68K");
+        private static readonly int Z80InterleaveSlices = ParseZ80InterleaveSlices();
+        private static readonly int Z80WaitBusReqFrames = ParseZ80WaitBusReqFrames();
+        private static readonly int Z80WaitBusReqMaxFrames = ParseZ80WaitBusReqMaxFrames();
+        private static readonly bool Z80WaitBusReqLog = ReadEnvFlag("EUTHERDRIVE_Z80_WAIT_BUSREQ_LOG");
         private static int SmsCyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * SmsCycleMultiplier));
+        private static int Z80CyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * Z80CycleMultiplier));
         private static readonly Stopwatch _smsCycleLogTimer = Stopwatch.StartNew();
         private static long _smsCycleLogLastMs;
         private static long _smsCycleLogAccumBudget;
         private static long _smsCycleLogAccumActual;
         private const int SmsCycleLogIntervalMs = 1000;
         private static bool _z80FrameScheduleLogged;
+        private static int _z80WaitFrames;
+        private static int _z80StableLowFrames;
+        private static bool _z80WaitReleased;
+        private static bool _z80WaitLogged;
+        private static bool _mbxInjected;
+        private static bool _mbxInjectAcked;
+        private static bool _mbxInjectPendingClear;
+        private static bool _mbxInjectCleared;
+        private static bool _mbxInjectArmedLogged;
+        private static bool _mbxInjectEnvLogged;
+        private static bool _mbxInjectConfigLoaded;
+        private static ushort _injectMbxAddr;
+        private static byte _injectMbxValue;
+        private static long _injectMbxFrame;
+
+        // --- System-wide monotonic cycle counter for YM2612 timing ---
+        // This counter advances as the system executes, providing a monotonic
+        // timebase for YM2612 busy checks that doesn't depend on per-frame budgets.
+        // We use M68K cycles as the base unit (VDL_LINE_RENDER_MC68_CLOCK per line).
+        private static long _systemCycles;
+        internal static long SystemCycles => _systemCycles;
+        internal static void AdvanceSystemCycles(long cycles) => _systemCycles += cycles;
 
         // --- Kärnkomponenter ---
         internal static md_vdp g_md_vdp = new md_vdp();
@@ -90,6 +121,14 @@ namespace EutherDrive.Core.MdTracerCore
             g_md_m68k.reset();
             SafeResetZ80();
             g_md_vdp.reset();
+            _mbxInjected = false;
+            _mbxInjectAcked = false;
+            _mbxInjectPendingClear = false;
+            _mbxInjectCleared = false;
+            _mbxInjectArmedLogged = false;
+            _mbxInjectEnvLogged = false;
+            _mbxInjectConfigLoaded = false;
+            ResetZ80WaitState();
 
             g_hard_reset_req  = false;
             g_trace_nextframe = false;
@@ -117,12 +156,26 @@ namespace EutherDrive.Core.MdTracerCore
                 g_md_m68k.reset();
                 SafeResetZ80();
                 g_md_vdp.reset();
+                ResetZ80WaitState();
                 g_hard_reset_req = false;
+                _mbxInjected = false;
+                _mbxInjectAcked = false;
+                _mbxInjectPendingClear = false;
+                _mbxInjectCleared = false;
+                _mbxInjectArmedLogged = false;
+                _mbxInjectEnvLogged = false;
+                _mbxInjectConfigLoaded = false;
             }
 
             int lines = g_md_vdp.g_vertical_line_max;
-            int z80LineBudget = SmsCyclesPerLine;
+            long frame = g_md_vdp?.FrameCounter ?? -1;
+            int z80LineBudget = g_masterSystemMode ? SmsCyclesPerLine : Z80CyclesPerLine;
             bool z80RunPerLine = g_masterSystemMode;
+            if (!g_masterSystemMode && ForceZ80RunPerLine)
+            {
+                z80RunPerLine = Z80RunPerLineFrames <= 0 || (frame >= 0 && frame < Z80RunPerLineFrames);
+            }
+            bool allowZ80 = ShouldRunZ80(frame);
             int z80FrameBudget = z80LineBudget * lines;
             if (!z80RunPerLine && !_z80FrameScheduleLogged && MdLog.TraceZ80Win)
             {
@@ -135,13 +188,68 @@ namespace EutherDrive.Core.MdTracerCore
                 g_md_vdp.run(vline);
 
                 // Kör CPU:erna scanline-vis
+                if (!g_masterSystemMode && z80RunPerLine && Z80InterleaveSlices > 1)
+                {
+                    int slices = Z80InterleaveSlices;
+                    int m68kSlice = VDL_LINE_RENDER_MC68_CLOCK / slices;
+                    int m68kRemainder = VDL_LINE_RENDER_MC68_CLOCK - (m68kSlice * slices);
+                    int z80Slice = z80LineBudget / slices;
+                    int z80Remainder = z80LineBudget - (z80Slice * slices);
+                    for (int s = 0; s < slices; s++)
+                    {
+                        int m68kCycles = m68kSlice + (s == slices - 1 ? m68kRemainder : 0);
+                        int z80Cycles = z80Slice + (s == slices - 1 ? z80Remainder : 0);
+                        if (Z80RunBeforeM68k)
+                        {
+                            if (allowZ80 && z80Cycles > 0)
+                                g_md_z80.run(z80Cycles);
+                            if (m68kCycles > 0)
+                            {
+                                g_md_m68k.run(m68kCycles);
+                                AdvanceSystemCycles(m68kCycles);
+                            }
+                        }
+                        else
+                        {
+                            if (m68kCycles > 0)
+                            {
+                                g_md_m68k.run(m68kCycles);
+                                AdvanceSystemCycles(m68kCycles);
+                            }
+                            if (allowZ80 && z80Cycles > 0)
+                                g_md_z80.run(z80Cycles);
+                        }
+                    }
+                    continue;
+                }
+
                 if (!g_masterSystemMode)
+                {
+                    if (allowZ80 && z80RunPerLine && Z80RunBeforeM68k)
+                        g_md_z80.run(z80LineBudget);
                     g_md_m68k.run(VDL_LINE_RENDER_MC68_CLOCK);
-                if (z80RunPerLine)
+                    AdvanceSystemCycles(VDL_LINE_RENDER_MC68_CLOCK);
+                    if (allowZ80 && z80RunPerLine && !Z80RunBeforeM68k)
+                        g_md_z80.run(z80LineBudget);
+                }
+                else if (allowZ80 && z80RunPerLine)
+                {
                     g_md_z80.run(z80LineBudget);
+                }
             }
-            if (!z80RunPerLine)
+            if (allowZ80 && !z80RunPerLine)
                 g_md_z80.run(z80FrameBudget);
+
+            MaybeInjectMbx(frame);
+            g_md_music?.g_md_ym2612.FlushDacRateFrame(frame);
+            g_md_music?.FlushAudioStats(frame);
+            g_md_bus?.FlushZ80WinHist(frame);
+            g_md_bus?.FlushZ80WinStat(frame);
+            g_md_bus?.FlushMbx68kStat(frame);
+            g_md_bus?.FlushSram(frame.ToString());
+            g_md_z80?.FlushZ80MbxPoll(frame);
+            g_md_z80?.FlushPcHist(frame);
+            g_md_z80?.FlushZ80IntStats(frame); // [INT-STATS] ZINT per-frame stats
 
             if (g_md_z80 != null)
             {
@@ -160,6 +268,105 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
+        internal static void MaybeInjectMbx(long frame)
+        {
+            bool injectMbx = IsInjectMbxEnabled(out string? injectEnvRaw);
+            if (!_mbxInjectEnvLogged)
+            {
+                string shown = injectEnvRaw ?? "<null>";
+                Console.WriteLine($"[MBXINJ-ENV] value='{shown}'");
+                _mbxInjectEnvLogged = true;
+            }
+            if (injectMbx && !_mbxInjectConfigLoaded)
+            {
+                _injectMbxAddr = ParseInjectMbxAddr();
+                _injectMbxValue = ParseInjectMbxValue();
+                _injectMbxFrame = ParseInjectMbxFrame();
+                _mbxInjectConfigLoaded = true;
+            }
+            if (injectMbx && !_mbxInjectArmedLogged)
+            {
+                Console.WriteLine($"[MBXINJ-ARM] frame={frame} target={_injectMbxFrame} addr=0x{_injectMbxAddr:X4} val=0x{_injectMbxValue:X2}");
+                _mbxInjectArmedLogged = true;
+            }
+            if (injectMbx && !_mbxInjected && frame >= _injectMbxFrame && g_md_bus != null)
+            {
+                uint addr = 0xA00000u + _injectMbxAddr;
+                g_md_bus.write8(addr, _injectMbxValue);
+                Console.WriteLine($"[MBXINJ] frame={frame} addr=0x{_injectMbxAddr:X4} val=0x{_injectMbxValue:X2}");
+                _mbxInjected = true;
+                _mbxInjectAcked = false;
+                _mbxInjectPendingClear = true;
+                _mbxInjectCleared = false;
+            }
+            if (injectMbx && _mbxInjected && _mbxInjectPendingClear && _mbxInjectAcked && !_mbxInjectCleared && g_md_bus != null)
+            {
+                uint addr = 0xA00000u + _injectMbxAddr;
+                g_md_bus.write8(addr, 0x00);
+                Console.WriteLine($"[MBXINJ-CLR] frame={frame} addr=0x{_injectMbxAddr:X4} val=0x00");
+                _mbxInjectCleared = true;
+                _mbxInjectPendingClear = false;
+            }
+        }
+
+        internal static void NotifyMbxInjectedRead(ushort addr, byte value)
+        {
+            if (!_mbxInjected || !_mbxInjectPendingClear || _mbxInjectAcked)
+                return;
+            if (addr != _injectMbxAddr || value == 0x00)
+                return;
+            _mbxInjectAcked = true;
+            Console.WriteLine($"[MBXINJ-ACK] addr=0x{addr:X4} val=0x{value:X2}");
+        }
+
+        private static ushort ParseInjectMbxAddr()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_INJECT_MBX_ADDR");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 0x1B8F;
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                raw = raw.Substring(2);
+            if (ushort.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ushort value))
+                return value;
+            if (ushort.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+                return value;
+            return 0x1B8F;
+        }
+
+        private static byte ParseInjectMbxValue()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_INJECT_MBX_VAL");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 0x83;
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                raw = raw.Substring(2);
+            if (byte.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte value))
+                return value;
+            if (byte.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+                return value;
+            return 0x01;
+        }
+
+        private static long ParseInjectMbxFrame()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_INJECT_MBX_FRAME");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 10;
+            if (long.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long value))
+                return value;
+            return 10;
+        }
+
+        private static bool IsInjectMbxEnabled(out string? raw)
+        {
+            raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_INJECT_MBX");
+            if (raw == null)
+                return false;
+            return string.Equals(raw.Trim(), "1", StringComparison.Ordinal);
+        }
+
         private static double ParseSmsCycleMultiplier()
         {
             const double fallback = 1.0;
@@ -174,6 +381,115 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             return fallback;
+        }
+
+        private static double ParseZ80CycleMultiplier()
+        {
+            const double fallback = 1.0;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_CYCLES_MULT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+
+            if (double.TryParse(raw, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out double parsed) &&
+                parsed > 0.0)
+            {
+                return parsed;
+            }
+
+            return fallback;
+        }
+
+        private static bool ReadEnvFlag(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return false;
+            raw = raw.Trim();
+            return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int ParseZ80RunPerLineFrames()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_RUN_PER_LINE_FRAMES");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 0;
+            if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
+                return value;
+            return 0;
+        }
+
+        private static int ParseZ80InterleaveSlices()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_INTERLEAVE_SLICES");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 1;
+            if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
+                return value;
+            return 1;
+        }
+
+        private static int ParseZ80WaitBusReqFrames()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_WAIT_BUSREQ_FRAMES");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 0;
+            if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
+                return value;
+            return 0;
+        }
+
+        private static int ParseZ80WaitBusReqMaxFrames()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_WAIT_BUSREQ_MAX_FRAMES");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 0;
+            if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
+                return value;
+            return 0;
+        }
+
+        internal static void ResetZ80WaitState()
+        {
+            _z80WaitFrames = 0;
+            _z80StableLowFrames = 0;
+            _z80WaitReleased = Z80WaitBusReqFrames <= 0;
+            _z80WaitLogged = false;
+        }
+
+        internal static bool ShouldRunZ80(long frame)
+        {
+            if (g_masterSystemMode)
+                return true;
+            if (Z80WaitBusReqFrames <= 0)
+                return true;
+            if (_z80WaitReleased)
+                return true;
+
+            bool busReq = g_md_bus?.Z80BusGranted ?? false;
+            bool reset = g_md_bus?.Z80Reset ?? false;
+            if (!busReq && !reset)
+                _z80StableLowFrames++;
+            else
+                _z80StableLowFrames = 0;
+            _z80WaitFrames++;
+
+            bool release = _z80StableLowFrames >= Z80WaitBusReqFrames;
+            if (!release && Z80WaitBusReqMaxFrames > 0 && _z80WaitFrames >= Z80WaitBusReqMaxFrames)
+                release = true;
+
+            if (release)
+            {
+                _z80WaitReleased = true;
+                if (Z80WaitBusReqLog && !_z80WaitLogged)
+                {
+                    _z80WaitLogged = true;
+                    Console.WriteLine(
+                        $"[Z80WAIT] release frame={frame} stable={_z80StableLowFrames} waited={_z80WaitFrames} " +
+                        $"busReq={(busReq ? 1 : 0)} reset={(reset ? 1 : 0)}");
+                }
+            }
+
+            return _z80WaitReleased;
         }
 
         internal static void SafeResetZ80()

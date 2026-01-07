@@ -7,7 +7,7 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private const int PATTERN_MAX      = 2048;
         private const int DISPLAY_XSIZE    = 320;
-        private const int DISPLAY_YSIZE    = 240;
+        private const int DISPLAY_YSIZE    = 480;
         private const int DISPLAY_BUFSIZE  = DISPLAY_XSIZE * DISPLAY_YSIZE;
         public  int       SPRITE_XSIZE     = 512;
         public  int       SPRITE_YSIZE     = 512;
@@ -39,6 +39,7 @@ namespace EutherDrive.Core.MdTracerCore
         public  int g_display_xsize;
         private int g_output_xsize;
         public  int g_display_ysize;
+        private int g_output_ysize;
         private int g_display_xcell;
         private int g_display_ycell;
         private int g_scroll_xcell;
@@ -64,9 +65,32 @@ namespace EutherDrive.Core.MdTracerCore
         // GPU-path stöds inte i headless-läget
         public bool rendering_gpu;
 
+        // Interlace snapshot buffer (för att spara sprite-data vid double-field rendering)
+        private VDP_LINE_SNAP[] _interlaceSnapshotBuffer = Array.Empty<VDP_LINE_SNAP>();
+
         // Kör en scanline
         private void rendering_line()
         {
+            if (g_vdp_interlace_mode == 2 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
+            {
+                // I interlaced mode 2 renderar vi ALLA scanlines (0-223) varje frame
+                // men mappar dem till olika output-linjer baserat på fält:
+                // - field=0: scanline N → output linje 2*N (jämna linjer)
+                // - field=1: scanline N → output linje 2*N+1 (udda linjer)
+                // Detta ger 448 linjer totalt i framebufferten
+                
+                // Beräkna output-linje: scanline * 2 + fält (0 eller 1)
+                int outputLine = (g_scanline << 1) | g_vdp_interlace_field;
+                RenderLineWithField(g_vdp_interlace_field, outputLine);
+                return;
+            }
+
+            RenderLineWithField(g_vdp_interlace_field, GetOutputLineForScanline(g_scanline));
+        }
+
+        private void RenderLineWithField(byte field, int outputLineOverride = -1)
+        {
+            g_vdp_interlace_field = (byte)(field & 0x01);
             if (MdTracerCore.MdLog.Enabled && g_scanline == 0)
                 MdTracerCore.MdLog.WriteLine($"[VDP] frame={_frameCounter} display={g_vdp_reg_1_6_display}");
 
@@ -81,16 +105,23 @@ namespace EutherDrive.Core.MdTracerCore
                 // Ta snapshot av VDP-tillstånd för den här linjen
                 rendering_line_snap();
 
+                // Beräkna output line
+                int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
+
                 // Alltid CPU-rendering i headless
-                rendering_line_cpu();
+                rendering_line_cpu(outputLine);
             }
             else
             {
                 // Display off: nolla raden i framebuffer
-                int pos = g_scanline * g_output_xsize;
-                for (int x = 0; x < g_output_xsize; x++)
+                int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
+                if ((uint)outputLine < (uint)g_output_ysize)
                 {
-                    g_game_screen[pos++] = 0;
+                    int pos = outputLine * g_output_xsize;
+                    for (int x = 0; x < g_output_xsize; x++)
+                    {
+                        g_game_screen[pos++] = 0xFF000000u;
+                    }
                 }
             }
         }
@@ -98,15 +129,21 @@ namespace EutherDrive.Core.MdTracerCore
         // Avsluta en frame (ingen separat render-tråd eller DX)
         private void rendering_frame()
         {
+            // VIKTIGT: I interlace mode flippar fältet varje ram.
+            // Vi ska INTE sätta fältet till 0 här - det förstör fält-växlingen!
+            // AdvanceInterlaceField() hanterar fält-växlingen korrekt.
+
             ForceVBlankForTest();
             ForceMdVBlankForTest();
-            // “Lås in” det som behövs för postprocess/analys
+            // "Lås in" det som behövs för postprocess/analys
             rendering_frame_snap();
             UpdateRgbaFrameFromGameScreen();
             SmsLogFrameHash();
+            AdvanceInterlaceField();
             _frameCounter++;
             LogMdWriteSummary();
             MaybeLogVdpTiming();
+            MaybeLogVdpState();
         }
 
         // --- Hjälp (valfritt) ---

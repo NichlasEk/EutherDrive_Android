@@ -33,6 +33,8 @@ CPU / 68k
 - EUTHERDRIVE_TRACE_MOVEA_PARAM=1: log MOVEA.L (A7+8) param near 0x02EB80..0x02EBC0.
 - EUTHERDRIVE_TRACE_ROMCOPY=1: ROM copy trace.
 - EUTHERDRIVE_TRACE_RESETVECT=1: reset vector trace.
+- EUTHERDRIVE_FORCE_B154_READ=<byte>: force 68k reads at 0xFFB154 to this value (hex or dec).
+- EUTHERDRIVE_FORCE_B154_READ_LIMIT=<int>: limit [B154-OVERRIDE] logs (0 = unlimited).
 
 WRAM
 - EUTHERDRIVE_TRACE_WRAM=1: WRAM writes (sampled).
@@ -43,10 +45,49 @@ Z80
 - EUTHERDRIVE_TRACE_Z80=1: Z80 trace.
 - EUTHERDRIVE_TRACE_Z80SIG=1: Z80 busreq/busack signal logs.
 - EUTHERDRIVE_TRACE_Z80WIN=1: Z80 window bus logs.
+- EUTHERDRIVE_TRACE_Z80WIN_LIMIT=<int>: limit Z80 window bus logs (0 = unlimited).
+- EUTHERDRIVE_Z80_BANK_DEFAULT=<int|hex>: default Z80 bank register (9-bit).
 - EUTHERDRIVE_FORCE_SMS_STATUS7=1: force SMS status bit 7.
 - EUTHERDRIVE_TRACE_BOOT=1: Z80 boot trace.
 - EUTHERDRIVE_TRACE_SMS_DELAY=1: SMS delay trace.
 - EUTHERDRIVE_SKIP_SMS_DELAYS=1: skip SMS delays.
+- EUTHERDRIVE_Z80_RESET_HOLD_Z80_CYCLES=<int>: hold Z80 execution for N cycles after reset deassert.
+- EUTHERDRIVE_Z80_RESET_HOLD_LIMIT=<int>: limit [Z80RESET-HOLD] logs (0 = unlimited).
+- EUTHERDRIVE_Z80FLAG65_READ_FROM_MBX=1: override Z80 reads at 0x0065 from mailbox RAM (read-only).
+- EUTHERDRIVE_Z80FLAG65_READ_ADDR=<hex|dec>: Z80 flag addr to override (default 0x0065).
+- EUTHERDRIVE_Z80FLAG65_READ_SOURCE=<hex|dec>: source mailbox addr in Z80 RAM (default 0x1B8F).
+- EUTHERDRIVE_Z80FLAG65_READ_AND=<hex|dec>: optional AND mask applied to the source value.
+- EUTHERDRIVE_Z80FLAG65_READ_OR=<hex|dec>: optional OR mask applied to the source value.
+- EUTHERDRIVE_Z80FLAG65_READ_LIMIT=<int>: limit [Z80FLAG65-READ] logs (0 = unlimited).
+- EUTHERDRIVE_Z80_BOOT_JP=1: patch Z80 RAM at 0x0000 with `JP <target>` on reset.
+- EUTHERDRIVE_Z80_BOOT_JP_TARGET=<hex|dec>: boot jump target (default 0x0D00).
+- EUTHERDRIVE_Z80_BOOT_JP_LIMIT=<int>: limit [Z80BOOT-JP] logs (0 = unlimited).
+- EUTHERDRIVE_Z80FLAG_FORCE_JR=1: force JR path after DDCB BIT at 0x0DD8 when bit2 is set.
+- EUTHERDRIVE_Z80FLAG_FORCE_JR_TARGET=<hex|dec>: override forced JR target (default uses the JR+disp at 0x0DDC).
+- EUTHERDRIVE_Z80FLAG_FORCE_JR_LIMIT=<int>: limit [Z80FLAG-JR] logs (0 = unlimited).
+- EUTHERDRIVE_Z80_RESET_ON_BUSREQ_RELEASE=1: reset Z80 once when BUSREQ deasserts (debug).
+- EUTHERDRIVE_Z80_RESET_ON_BUSREQ_RELEASE_LIMIT=<int>: limit [Z80BUSREQ-RESET] logs/resets (0 = unlimited).
+- EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD=1: force Z80 PC to target after a 68k upload write hits the Z80 window range.
+- EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_START=<hex|dec>: range start (default 0x0D00).
+- EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_END=<hex|dec>: range end (default 0x0E50).
+- EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_TARGET=<hex|dec>: forced PC target (default 0x0D00).
+- EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_LIMIT=<int>: limit [Z80PC-ARM] logs (0 = unlimited).
+- EUTHERDRIVE_TRACE_Z80_PC_RANGE_START=<hex|dec>: log Z80 opcodes in this PC range (start).
+- EUTHERDRIVE_TRACE_Z80_PC_RANGE_END=<hex|dec>: log Z80 opcodes in this PC range (end).
+- EUTHERDRIVE_TRACE_Z80_PC_RANGE_LIMIT=<int>: limit [Z80PC] logs (0 = unlimited).
+- EUTHERDRIVE_FORCE_Z80_B154_MAP=1: map Z80 reads/writes at 0xB154 to a fixed 68k address.
+- EUTHERDRIVE_FORCE_Z80_B154_ADDR=<hex|dec>: target 68k addr (default 0xFFB154).
+- EUTHERDRIVE_FORCE_Z80_B154_Z80ADDR=<hex|dec>: Z80 addr to intercept (default 0xB154).
+- EUTHERDRIVE_FORCE_Z80_B154_Z80ADDR2=<hex|dec>: optional second Z80 addr to intercept.
+- EUTHERDRIVE_FORCE_Z80_B154_LIMIT=<int>: limit [Z80B154-OVERRIDE] logs (0 = unlimited).
+- EUTHERDRIVE_MIRROR_MBX_TO_Z80FLAG_RANGE=1: mirror 0x1B80..0x1B8F into Z80 RAM (default 0x0060..0x006F).
+- EUTHERDRIVE_MIRROR_MBX_TO_Z80FLAG_RANGE_ADDR=<hex|dec>: base address for the mirror range (default 0x0060).
+- EUTHERDRIVE_MIRROR_MBX_TO_Z80FLAG_RANGE_LIMIT=<int>: limit [Z80FLAG-RANGE] logs (0 = unlimited).
+- EUTHERDRIVE_MIRROR_MBX_WIDE_TO_Z80FLAG_RANGE=1: mirror a sub-range of 0x1B00..0x1B7F into Z80 RAM.
+- EUTHERDRIVE_MIRROR_MBX_WIDE_TO_Z80FLAG_RANGE_START=<hex|dec>: source start (default 0x1B20).
+- EUTHERDRIVE_MIRROR_MBX_WIDE_TO_Z80FLAG_RANGE_END=<hex|dec>: source end (default 0x1B2F).
+- EUTHERDRIVE_MIRROR_MBX_WIDE_TO_Z80FLAG_RANGE_ADDR=<hex|dec>: destination base (default 0x0060).
+- EUTHERDRIVE_MIRROR_MBX_WIDE_TO_Z80FLAG_RANGE_LIMIT=<int>: limit [Z80FLAG-WIDE] logs (0 = unlimited).
 
 Pads
 - EUTHERDRIVE_TRACE_PAD=1: pad read/write trace.
@@ -63,6 +104,9 @@ Audio / PSG / YM
 
 SMS timing
 - EUTHERDRIVE_SMS_CYCLES_MULT=<int>: SMS cycles multiplier.
+
+MD timing
+- EUTHERDRIVE_Z80_CYCLES_MULT=<float>: Z80 cycles multiplier.
 
 Bus
 - EUTHERDRIVE_TRACE_BUS=1: bus address routing trace.

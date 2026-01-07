@@ -5,6 +5,8 @@
     //----------------------------------------------------------------
     internal partial class md_sn76489
     {
+        private static readonly bool AudioMuteFmPsg =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_MUTE_FMPSG"), "1", StringComparison.Ordinal);
         //const
         private const int PSG_CLOCK = 3579545;
         private const int PSG_SAMPLING = 44100;
@@ -90,14 +92,18 @@
                     }
                     if (g_duty[NOISE_CHANNEL] == true)
                     {
+                        // Following clownmdemu-core PSG_ShiftRegisterClock():
+                        // For white noise: feedback from bit 13 XOR bit 10 (shift >> 13) ^ (shift >> 10)
+                        // For periodic noise: feedback from bit 0 (LSB)
                         int w_bit1;
                         if (g_noise_mode == true)
                         {
-                            w_bit1 = g_shift_reg & WHITENOISE;
-                            w_bit1 = (w_bit1 > 0) && (((g_shift_reg & WHITENOISE) ^ WHITENOISE) > 0) ? 1 : 0;
+                            // White noise: XOR bits 13 and 10, then extract LSB
+                            w_bit1 = ((g_shift_reg >> 13) ^ (g_shift_reg >> 10)) & 1;
                         }
                         else
                         {
+                            // Periodic noise: use LSB
                             w_bit1 = g_shift_reg & 1;
                         }
                         g_shift_reg = (g_shift_reg >> 1) | (w_bit1 << NOISESHIFT);
@@ -105,6 +111,8 @@
                 }
             }
             //mix
+            if (AudioMuteFmPsg)
+                return 0;
             for (int w_ch = 0; w_ch <= 3; w_ch++)
             {
                 int mixed = g_channel_out[w_ch] * md_main.g_md_music.g_out_vol[w_ch + 6];

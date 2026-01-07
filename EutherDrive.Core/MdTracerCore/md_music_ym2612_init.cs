@@ -134,6 +134,11 @@ namespace EutherDrive.Core.MdTracerCore
         private uint[] ENV_D2A = Array.Empty<uint>();
         public void YM2612_Start()
         {
+            if (!_dacRateBannerLogged && TraceDacRateRaw != null)
+            {
+                Console.WriteLine($"[DACRATE] env='{TraceDacRateRaw}' enabled={TraceDacRate}");
+                _dacRateBannerLogged = true;
+            }
             //regster
             g_reg_30_multi = new double[NUM_CHANNELS, NUM_SLOT];
             g_reg_30_dt = new int[NUM_CHANNELS, NUM_SLOT];

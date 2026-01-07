@@ -9,6 +9,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM"), "1", StringComparison.Ordinal);
         private static readonly bool TraceCramWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CRAM"), "1", StringComparison.Ordinal);
+        private static readonly bool StrictVdpAccess =
+            ReadEnvDefaultOn("EUTHERDRIVE_VDP_STRICT");
 
         private byte[]   g_vram = Array.Empty<byte>();
         private ushort[] g_cram = Array.Empty<ushort>();
@@ -28,9 +30,21 @@ namespace EutherDrive.Core.MdTracerCore
         private readonly int[] COLOR_SHADOW    = { 0, 29, 52, 70, 87, 101, 116, 130 };
         private readonly int[] COLOR_HIGHLIGHT = { 130, 144, 158, 172, 187, 206, 228, 255 };
 
-        // Centraliserad felhantering (byt till Debug.WriteLine om du inte vill kasta)
-        private static void Error(string where) =>
-        throw new InvalidOperationException($"VDP: {where}");
+        // Centraliserad felhantering (strict by default; disable with EUTHERDRIVE_VDP_STRICT=0).
+        private static void Error(string where)
+        {
+            if (StrictVdpAccess)
+                throw new InvalidOperationException($"VDP: {where}");
+            Debug.WriteLine($"[VDP] {where}");
+        }
+
+        private static bool ReadEnvDefaultOn(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrEmpty(raw))
+                return true;
+            return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+        }
 
         // ----------------------------------------------------------------
         // read
@@ -128,11 +142,11 @@ namespace EutherDrive.Core.MdTracerCore
 
         public uint read32(uint in_address)
         {
-            if (in_address <= 0xc00003)
+            if (in_address <= 0xc0001e)
             {
-                return ((uint)read16(in_address) << 16) | read16(in_address);
+                return ((uint)read16(in_address) << 16) | read16(in_address + 2);
             }
-            Error("read32: invalid address");
+            Error($"read32: invalid address 0x{in_address:X6}");
             return 0;
         }
 
@@ -277,9 +291,14 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                 }
             }
+            else if (in_address <= 0xc0001e)
+            {
+                // H/V counter + mirrors: writes are ignored on real hardware.
+                return;
+            }
             else
             {
-                Error("write16: invalid address");
+                Error($"write16: invalid address 0x{in_address:X6}");
             }
         }
 
@@ -292,13 +311,13 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
 
-            if (in_address <= 0xc00007)
+            if (in_address <= 0xc0001e)
             {
                 write16(in_address, (ushort)(in_data >> 16));
                 write16(in_address, (ushort)(in_data & 0xffff));
                 return;
             }
-            Error("write32: invalid address");
+            Error($"write32: invalid address 0x{in_address:X6}");
         }
 
         private byte SmsReadData()
