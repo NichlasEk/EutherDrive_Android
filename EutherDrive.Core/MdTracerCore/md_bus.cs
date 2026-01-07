@@ -103,7 +103,7 @@ namespace EutherDrive.Core.MdTracerCore
         private string? _sramPath;
         private bool _sramLoaded;
         private bool _sramNoPathLogged;
-        private SramAccessMode _sramAccess = SramAccessMode.ByteOdd;
+        private SramAccessMode _sramAccess = SramAccessMode.Word;
         private int _z80ResetOnBusReqRemaining = ResetZ80OnBusReqReleaseLimit;
         private int _z80ForcePcOnUploadRemaining = ForceZ80PcOnUploadLimit;
         private bool _z80Win68kLogged;
@@ -574,7 +574,9 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             bool hasExtraRange = cart.g_extra_memory_end >= cart.g_extra_memory_start &&
-                                 cart.g_extra_memory_end != 0;
+                                 cart.g_extra_memory_end != 0 &&
+                                 cart.g_extra_memory_start >= 0x200000 &&
+                                 cart.g_extra_memory_end <= 0x3FFFFF;
             bool hasRaSig = cart.g_extra_memory_ra;
 
             if (hasExtraRange && cart.g_extra_memory_is_sram)
@@ -589,7 +591,10 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else
             {
-                return false;
+                // No SRAM info in header - use default range for games that need it
+                start = 0x200001;
+                end = 0x20FFFF;
+                return true;
             }
 
             if (end < start)
@@ -635,7 +640,7 @@ namespace EutherDrive.Core.MdTracerCore
                     "word" => SramAccessMode.Word,
                     "byte-even" => SramAccessMode.ByteEven,
                     "byte-odd" => SramAccessMode.ByteOdd,
-                    _ => SramAccessMode.ByteOdd
+                    _ => SramAccessMode.Word
                 };
             }
 
@@ -645,10 +650,10 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     "word" => SramAccessMode.Word,
                     "byte-even" => SramAccessMode.ByteEven,
-                    _ => SramAccessMode.ByteOdd
+                    _ => SramAccessMode.Word
                 };
             }
-            return SramAccessMode.ByteOdd;
+            return SramAccessMode.Word;
         }
 
         private void SetSramLock(bool enabled, string reason)
