@@ -68,7 +68,7 @@ namespace EutherDrive.Core.MdTracerCore
                         int max = g_md_music.g_master_vol.Length - 1;
                         int end = max < 10 ? max : 10;
                         for (int j = 0; j <= end; j++)
-                            g_md_music.g_master_vol[j] = 100;
+                            g_md_music.g_master_vol[j] = 50;
                     }
                 }
             }

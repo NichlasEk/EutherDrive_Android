@@ -14,6 +14,16 @@
       <Button Content="Open ROM…" Click="OnOpenRom"/>
       <Button Content="Start" Click="OnStart"/>
       <Button Content="Stop" Click="OnStop"/>
+      <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+        <TextBlock Text="Master vol" VerticalAlignment="Center"/>
+        <Slider Name="MasterVolumeSlider"
+                Minimum="0"
+                Maximum="100"
+                Width="120"
+                Value="50"
+                ValueChanged="OnMasterVolumeChanged"/>
+        <TextBlock Name="MasterVolumeValueText" Width="36" Text="50%" VerticalAlignment="Center"/>
+      </StackPanel>
       <TextBlock Name="StatusText" VerticalAlignment="Center"/>
     </StackPanel>
 
@@ -37,7 +47,6 @@
         <TextBlock x:Name="RomRegionHintText" Opacity="0.85" FontSize="12"/>
         <Button Content="Use ROM region" Click="OnUseRomRegion" HorizontalAlignment="Left"/>
         <TextBlock Text="Controls" FontWeight="Bold"/>
-        <TextBlock Name="KeysText"/>
         <TextBlock Text="Arrows: D-pad"/>
         <TextBlock Text="Z/X/C: A/B/C"/>
         <TextBlock Text="Enter: Start"/>
@@ -62,6 +71,12 @@
           <TextBox Name="CpuCyclesTextBox" Width="80" Text="220"/>
           <Button Content="Set cycles/line" Click="OnApplyCpuCycles"/>
         </StackPanel>
+        <Separator/>
+        <TextBlock Text="Dev / Test" FontWeight="Bold"/>
+        <CheckBox Content="Interlace Test Mode (448px)" IsChecked="False" Name="InterlaceTestCheck" Checked="OnInterlaceTestToggle" Unchecked="OnInterlaceTestToggle"/>
+        <CheckBox Content="Static (no flicker)" IsChecked="True" Name="InterlaceStaticCheck" Checked="OnInterlaceStaticToggle" Unchecked="OnInterlaceStaticToggle" IsEnabled="False"/>
+        <CheckBox Content="Force Opaque Pixels" IsChecked="False" Name="ForceOpaqueCheck"/>
+        <TextBlock Name="InterlaceTestInfo" Opacity="0.7" FontSize="11" TextWrapping="Wrap"/>
       </StackPanel>
     </Border>
 

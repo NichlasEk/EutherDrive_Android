@@ -5,10 +5,12 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
@@ -49,7 +51,7 @@ public partial class MainWindow : Window
     private readonly HashSet<Key> _keysDown = new();
     private OpenAlAudioOutput? _audioOutput;
     private AudioEngine? _audioEngine;
-    private bool _audioEnabled;
+    private bool _audioEnabled = true;
     private bool _audioFormatMismatchLogged;
     private const int AudioSampleRate = 44100;
     private const int AudioChannels = 2;
@@ -71,14 +73,17 @@ public partial class MainWindow : Window
     private long _audioLastTicks;
     private double _audioFrameAccumulator;
     private long _audioLastDropLogTicks;
+    private int _masterVolumePercent = DefaultMasterVolumePercent;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _defaultRegionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
     private readonly Dictionary<string, ConsoleRegion> _romRegionOverrides = new(StringComparer.OrdinalIgnoreCase);
     private string? _romRegionKey;
     private bool _regionOverrideUpdating;
-    private const string RegionSettingsFileName = "eutherdrive_region.txt";
-    private const string LastRomPathFileName = "eutherdrive_last_rom.txt";
+    private const string SettingsFileName = "eutherdrive_settings.json";
+    private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
+    private const string LegacyLastRomPathFileName = "eutherdrive_last_rom.txt";
+    private const int DefaultMasterVolumePercent = 50;
 
     // UI heartbeat
     private readonly bool _heartbeatEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HEARTBEAT") == "1";
@@ -99,14 +104,18 @@ public partial class MainWindow : Window
 
         HookInput();
 
+        LoadSettings();
+        if (MasterVolumeSlider != null)
+            MasterVolumeSlider.Value = _masterVolumePercent;
+        UpdateMasterVolumeText();
+        if (AudioEnabledCheck != null)
+            AudioEnabledCheck.IsChecked = _audioEnabled || AudioEnvEnabled;
+
         Focusable = true;
         AttachedToVisualTree += (_, __) => Focus();
 
         StatusText.Text = "Idle";
 
-        _audioEnabled = true;
-        if (AudioEnabledCheck != null)
-            AudioEnabledCheck.IsChecked = true;
         _audioTimedEnabled = AudioTimedEnvEnabled || _audioEnabled;
         UpdatePadTypeFromUi();
         if (SixButtonPadCheck != null)
@@ -114,8 +123,6 @@ public partial class MainWindow : Window
             SixButtonPadCheck.Checked += (_, _) => UpdatePadTypeFromUi();
             SixButtonPadCheck.Unchecked += (_, _) => UpdatePadTypeFromUi();
         }
-        LoadLastRomPath();
-        LoadRegionOverrideSetting();
         UpdateRegionOverrideCombo();
         UpdateRomRegionHintText();
 
@@ -128,6 +135,8 @@ public partial class MainWindow : Window
             StatusText.Text = $"Loading from CLI: {romPath}";
             _romPath = romPath;
             _core = new MdTracerAdapter();
+            ApplyMasterVolumeToCore();
+            SaveSettings();
             if (_core is MdTracerAdapter m)
             {
                 m.PowerCycleAndLoadRom(_romPath);
@@ -353,6 +362,7 @@ public partial class MainWindow : Window
         _romPath = files[0].TryGetLocalPath();
         RomPathText.Text = _romPath ?? files[0].Name;
         StatusText.Text = "ROM selected";
+        SaveSettings();
     }
 
     private void OnStart(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -379,6 +389,7 @@ public partial class MainWindow : Window
             else
             {
             _core = new MdTracerAdapter();   // <-- Steg A core
+                ApplyMasterVolumeToCore();
 
                 if (!string.IsNullOrWhiteSpace(_romPath))
                 {
@@ -394,12 +405,12 @@ public partial class MainWindow : Window
 
                         // OCH i terminal (om du kör från terminal)
                         Console.WriteLine(m.RomInfo.Summary);
-                        SaveLastRomPath();
+                        SaveSettings();
                     }
                     else
                     {
                         _core.LoadRom(_romPath);
-                        SaveLastRomPath();
+                        SaveSettings();
                     }
                 }
                 else
@@ -459,6 +470,32 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ApplyMasterVolumeToCore()
+    {
+        if (_core is MdTracerAdapter adapter)
+            adapter.SetMasterVolumePercent(_masterVolumePercent);
+    }
+
+    private void UpdateMasterVolumeText()
+    {
+        if (MasterVolumeValueText != null)
+            MasterVolumeValueText.Text = $"{_masterVolumePercent}%";
+    }
+
+    private void OnMasterVolumeChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        int percent = (int)Math.Round(e.NewValue);
+        if (percent < 0) percent = 0;
+        else if (percent > 100) percent = 100;
+        if (percent == _masterVolumePercent)
+            return;
+
+        _masterVolumePercent = percent;
+        UpdateMasterVolumeText();
+        ApplyMasterVolumeToCore();
+        SaveSettings();
+    }
+
     private void SetRegionOverride(ConsoleRegion region, bool resetIfRunning, bool persist)
     {
         RegionOverride = region;
@@ -478,7 +515,7 @@ public partial class MainWindow : Window
                 _defaultRegionOverride = region;
             }
 
-            SaveRegionOverrideSetting();
+            SaveSettings();
         }
 
         ApplyRegionOverrideToCore(resetIfRunning);
@@ -546,9 +583,109 @@ public partial class MainWindow : Window
         }
     }
 
-    private void LoadRegionOverrideSetting()
+    private sealed class UiSettings
     {
-        string path = GetRegionSettingsPath();
+        public string? LastRomPath { get; set; }
+        public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
+        public bool AudioEnabled { get; set; } = true;
+        public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
+        public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
+    }
+
+    private void LoadSettings()
+    {
+        string path = GetSettingsPath();
+        if (File.Exists(path))
+        {
+            try
+            {
+                string json = File.ReadAllText(path);
+                var settings = JsonSerializer.Deserialize<UiSettings>(json);
+                if (settings != null)
+                {
+                    ApplySettings(settings);
+                    return;
+                }
+            }
+            catch
+            {
+                // Ignore settings parse errors and fall back to legacy files.
+            }
+        }
+
+        bool migrated = LoadLegacySettings();
+        if (migrated)
+            SaveSettings();
+    }
+
+    private void ApplySettings(UiSettings settings)
+    {
+        if (!string.IsNullOrWhiteSpace(settings.LastRomPath))
+        {
+            _romPath = settings.LastRomPath;
+            if (RomPathText != null)
+                RomPathText.Text = _romPath;
+        }
+
+        _masterVolumePercent = ClampPercent(settings.MasterVolumePercent);
+        _audioEnabled = settings.AudioEnabled;
+
+        _defaultRegionOverride = settings.DefaultRegionOverride;
+        _romRegionOverrides.Clear();
+        if (settings.RomRegionOverrides != null)
+        {
+            foreach (var entry in settings.RomRegionOverrides)
+                _romRegionOverrides[entry.Key] = entry.Value;
+        }
+
+        RegionOverride = _defaultRegionOverride;
+    }
+
+    private static int ClampPercent(int value)
+    {
+        if (value < 0) return 0;
+        if (value > 100) return 100;
+        return value;
+    }
+
+    private bool LoadLegacySettings()
+    {
+        bool loaded = false;
+        if (File.Exists(GetLegacyLastRomPathSettingsPath()))
+        {
+            LoadLegacyLastRomPath();
+            loaded = true;
+        }
+
+        if (File.Exists(GetLegacyRegionSettingsPath()))
+        {
+            LoadLegacyRegionOverrideSetting();
+            loaded = true;
+        }
+
+        return loaded;
+    }
+
+    private void SaveSettings()
+    {
+        var settings = new UiSettings
+        {
+            LastRomPath = _romPath,
+            MasterVolumePercent = _masterVolumePercent,
+            AudioEnabled = _audioEnabled,
+            DefaultRegionOverride = _defaultRegionOverride,
+            RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase)
+        };
+        string json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(GetSettingsPath(), json);
+    }
+
+    private static string GetSettingsPath()
+        => Path.Combine(Directory.GetCurrentDirectory(), SettingsFileName);
+
+    private void LoadLegacyRegionOverrideSetting()
+    {
+        string path = GetLegacyRegionSettingsPath();
         if (!File.Exists(path))
             return;
 
@@ -587,21 +724,12 @@ public partial class MainWindow : Window
         RegionOverride = _defaultRegionOverride;
     }
 
-    private void SaveRegionOverrideSetting()
-    {
-        string path = GetRegionSettingsPath();
-        var lines = new List<string> { $"default={_defaultRegionOverride}" };
-        foreach (var entry in _romRegionOverrides.OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase))
-            lines.Add($"{entry.Key}={entry.Value}");
-        File.WriteAllLines(path, lines);
-    }
+    private static string GetLegacyRegionSettingsPath()
+        => Path.Combine(Directory.GetCurrentDirectory(), LegacyRegionSettingsFileName);
 
-    private static string GetRegionSettingsPath()
-        => Path.Combine(Directory.GetCurrentDirectory(), RegionSettingsFileName);
-
-    private void LoadLastRomPath()
+    private void LoadLegacyLastRomPath()
     {
-        string path = GetLastRomPathSettingsPath();
+        string path = GetLegacyLastRomPathSettingsPath();
         if (!File.Exists(path))
             return;
 
@@ -614,16 +742,8 @@ public partial class MainWindow : Window
             RomPathText.Text = _romPath;
     }
 
-    private void SaveLastRomPath()
-    {
-        if (string.IsNullOrWhiteSpace(_romPath))
-            return;
-
-        File.WriteAllText(GetLastRomPathSettingsPath(), _romPath);
-    }
-
-    private static string GetLastRomPathSettingsPath()
-        => Path.Combine(Directory.GetCurrentDirectory(), LastRomPathFileName);
+    private static string GetLegacyLastRomPathSettingsPath()
+        => Path.Combine(Directory.GetCurrentDirectory(), LegacyLastRomPathFileName);
 
     private void OnStop(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
@@ -641,6 +761,20 @@ public partial class MainWindow : Window
             _heartbeatTimer = null;
         }
         _toneTestRunning = false;
+        _psgBlipRunning = false;
+    }
+
+    private void OnTestInterlace2(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (_core is MdTracerAdapter adapter)
+        {
+            adapter.RunInterlaceMode2Test();
+            StatusText.Text = "Interlace mode 2 test run - check console output";
+        }
+        else
+        {
+            StatusText.Text = "No tracing core available";
+        }
     }
 
     private void OnToneTestClick(object? sender, RoutedEventArgs e)
@@ -889,6 +1023,87 @@ public partial class MainWindow : Window
     private void OnAudioToggle(object? sender, RoutedEventArgs e)
     {
         StartAudioEngineIfEnabled();
+        SaveSettings();
+    }
+
+    private void OnInterlaceTestToggle(object? sender, RoutedEventArgs e)
+    {
+        bool enabled = InterlaceTestCheck?.IsChecked == true;
+
+        if (InterlaceTestInfo != null)
+        {
+            if (enabled)
+            {
+                InterlaceTestInfo.Text = "Interlace Test Mode: 320x448 | Field toggles every frame | Scanlines every 16 lines";
+                Console.WriteLine("[UI] Interlace Test Mode ENABLED - 320x448 framebuffer");
+            }
+            else
+            {
+                InterlaceTestInfo.Text = "";
+            }
+        }
+
+        if (enabled)
+        {
+            // Enable test mode - stop any running core and start test core (no ROM needed)
+            _timer.Stop();
+            StopEmuLoop();
+            _frames = 0;
+            _fpsSw.Restart();
+
+            _core = new InterlaceTestCore();
+            _core.Reset();
+
+            // Enable and sync static mode checkbox
+            if (InterlaceStaticCheck != null)
+            {
+                InterlaceStaticCheck.IsEnabled = true;
+                InterlaceStaticCheck.IsChecked = true; // Default to static for easier verification
+            }
+
+            EnsureBitmapFromCore();
+            if (SplashImage != null)
+                SplashImage.IsVisible = false;
+
+            StartEmuLoop();
+            _timer.Start();
+            StatusText.Text = "Interlace Test Mode (320x448) - NO ROM";
+            Focus();
+        }
+        else
+        {
+            // Disable test mode - stop test core
+            _timer.Stop();
+            StopEmuLoop();
+            _core = null;
+
+            // Disable static mode checkbox
+            if (InterlaceStaticCheck != null)
+            {
+                InterlaceStaticCheck.IsEnabled = false;
+                InterlaceStaticCheck.IsChecked = false;
+            }
+
+            // If a ROM was previously loaded, restart it
+            if (!string.IsNullOrWhiteSpace(_romPath))
+            {
+                OnStart(null, null);
+            }
+            else if (SplashImage != null)
+            {
+                SplashImage.IsVisible = true;
+            }
+            StatusText.Text = "Stopped";
+        }
+    }
+
+    private void OnInterlaceStaticToggle(object? sender, RoutedEventArgs e)
+    {
+        if (_core is InterlaceTestCore testCore)
+        {
+            testCore.StaticMode = InterlaceStaticCheck?.IsChecked == true;
+            Console.WriteLine($"[UI] Interlace Static Mode: {testCore.StaticMode}");
+        }
     }
 
     private void Tick()
@@ -1025,6 +1240,9 @@ public partial class MainWindow : Window
     }
 
 
+    private int _lastPresentedWidth;
+    private int _lastPresentedHeight;
+
     private void EnsureBitmapFromCore()
     {
         if (_core == null) return;
@@ -1033,26 +1251,35 @@ public partial class MainWindow : Window
         if (w <= 0 || h <= 0)
             throw new InvalidOperationException($"Core returned invalid size {w}x{h}.");
 
-            if (_wb == null || _wb.PixelSize.Width != w || _wb.PixelSize.Height != h)
-            {
-                _wb = new WriteableBitmap(
-                    new PixelSize(w, h),
-                                      new Vector(96, 96),
-                                      PixelFormat.Bgra8888,
-                                      AlphaFormat.Unpremul);
+        // Only recreate bitmap when size actually changes
+        if (_wb == null || _wb.PixelSize.Width != w || _wb.PixelSize.Height != h)
+        {
+            Console.WriteLine($"[MainWindow] Recreating bitmap: {_lastPresentedWidth}x{_lastPresentedHeight} -> {w}x{h}");
+            _wb = new WriteableBitmap(
+                new PixelSize(w, h),
+                new Vector(96, 96),
+                PixelFormat.Bgra8888,
+                AlphaFormat.Unpremul);
 
-                ScreenImage.Source = _wb;
-                if (ScreenGrid != null)
-                {
-                    ScreenGrid.Width = w;
-                    ScreenGrid.Height = h;
-                }
-                ScreenImage.Width = w;
-                ScreenImage.Height = h;
-                if (SplashImage != null && !string.IsNullOrWhiteSpace(_romPath))
-                    SplashImage.IsVisible = false;
+            ScreenImage.Source = _wb;
+            if (ScreenGrid != null)
+            {
+                ScreenGrid.Width = w;
+                ScreenGrid.Height = h;
             }
+            ScreenImage.Width = w;
+            ScreenImage.Height = h;
+            if (SplashImage != null && !string.IsNullOrWhiteSpace(_romPath))
+                SplashImage.IsVisible = false;
+
+            _lastPresentedWidth = w;
+            _lastPresentedHeight = h;
         }
+    }
+
+    private int _lastCoreFrameId;
+    private int _presentTickCounter;
+    private int _presentLogInterval = 60;
 
     private unsafe void RenderFrame(IEmulatorCore core)
     {
@@ -1062,7 +1289,23 @@ public partial class MainWindow : Window
 
         var src = core.GetFrameBuffer(out var w, out var h, out var srcStride);
         if (src.IsEmpty || srcStride <= 0 || w <= 0 || h <= 0)
+        {
+            Console.WriteLine($"[MainWindow] Present tick={_presentTickCounter}: EMPTY");
+            _presentTickCounter++;
             return;
+        }
+
+        // Check if this is actually a new frame
+        int currentFrameId = core is InterlaceTestCore itc ? itc.GetFrameId() : _presentTickCounter;
+        bool isNewFrame = currentFrameId != _lastCoreFrameId;
+        _lastCoreFrameId = currentFrameId;
+
+        // Only log when frame changes (for debugging flicker)
+        if (isNewFrame)
+        {
+            Console.WriteLine($"[Present] tick={_presentTickCounter} NEW_FRAME frameId={currentFrameId}");
+        }
+        _presentTickCounter++;
 
         if (SkipUiBlitEnabled)
         {
@@ -1085,6 +1328,8 @@ public partial class MainWindow : Window
         if (copyBytesPerRow <= 0)
             return;
 
+        bool forceOpaque = ForceOpaqueCheck?.IsChecked == true;
+
         fixed (byte* pSrc0 = src)
         {
             byte* pDst0 = (byte*)fb.Address.ToPointer();
@@ -1096,7 +1341,7 @@ public partial class MainWindow : Window
                 Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} srcPtr=0x{(nint)pSrc0:X} size={w}x{h} stride={srcStride} bytes={src.Length}");
             }
 
-            if (copyBytesPerRow == srcStride && copyBytesPerRow == dstStride)
+            if (copyBytesPerRow == srcStride && copyBytesPerRow == dstStride && !forceOpaque)
             {
                 long totalBytes = (long)copyBytesPerRow * h;
                 Buffer.MemoryCopy(pSrc0, pDst0, totalBytes, totalBytes);
@@ -1107,7 +1352,22 @@ public partial class MainWindow : Window
                 {
                     byte* pSrcRow = pSrc0 + (y * srcStride);
                     byte* pDstRow = pDst0 + (y * dstStride);
-                    Buffer.MemoryCopy(pSrcRow, pDstRow, dstStride, copyBytesPerRow);
+
+                    if (forceOpaque)
+                    {
+                        // Force alpha = 0xFF on every pixel
+                        for (int x = 0; x < copyBytesPerRow; x += 4)
+                        {
+                            pDstRow[x + 0] = pSrcRow[x + 0]; // B
+                            pDstRow[x + 1] = pSrcRow[x + 1]; // G
+                            pDstRow[x + 2] = pSrcRow[x + 2]; // R
+                            pDstRow[x + 3] = 0xFF;          // Force opaque alpha
+                        }
+                    }
+                    else
+                    {
+                        Buffer.MemoryCopy(pSrcRow, pDstRow, dstStride, copyBytesPerRow);
+                    }
                 }
             }
 
@@ -1117,6 +1377,9 @@ public partial class MainWindow : Window
 
         // VIKTIGT: tvinga repaint
         ScreenImage.InvalidateVisual();
+
+        // Log presentation info
+        Console.WriteLine($"[MainWindow] Present WxH={w}x{h} stride={srcStride} forceOpaque={forceOpaque}");
 
         if (!_earlyMagentaReported && _earlyMagentaTimer.IsRunning)
         {

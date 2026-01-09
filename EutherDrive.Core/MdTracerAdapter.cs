@@ -103,6 +103,32 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private short[] _ymFrameBuffer = Array.Empty<short>();
     private int _psgFrameSamples;
     private long _psgLastFrame = -1;
+    private volatile int _masterVolumePercent = 50;
+
+    public void SetMasterVolumePercent(int percent)
+    {
+        if (percent < 0) percent = 0;
+        else if (percent > 100) percent = 100;
+        _masterVolumePercent = percent;
+    }
+
+    private void ApplyMasterVolume(short[] buffer, int samples)
+    {
+        if (samples <= 0)
+            return;
+
+        int percent = Volatile.Read(ref _masterVolumePercent);
+        if (percent >= 100)
+            return;
+
+        for (int i = 0; i < samples; i++)
+        {
+            int scaled = buffer[i] * percent / 100;
+            if (scaled > short.MaxValue) scaled = short.MaxValue;
+            else if (scaled < short.MinValue) scaled = short.MinValue;
+            buffer[i] = (short)scaled;
+        }
+    }
 
     public RomInfo RomInfo { get; private set; } = new RomInfo();
 
@@ -117,6 +143,11 @@ public sealed class MdTracerAdapter : IEmulatorCore
         _regionOverride = region;
         if (md_main.g_md_io != null)
             md_main.g_md_io.SetRegionOverride(region);
+    }
+
+    public void RunInterlaceMode2Test()
+    {
+        MdVdpInterlaceMode2PatternTest.Run();
     }
 
     public void LoadRom(string path)
@@ -1319,6 +1350,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
         }
 
+        ApplyMasterVolume(_psgFrameBuffer, samples);
         _psgFrameSamples = samples;
         return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
     }
@@ -1514,6 +1546,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
         }
 
+        ApplyMasterVolume(_psgFrameBuffer, samples);
         _psgFrameSamples = samples;
         return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
     }

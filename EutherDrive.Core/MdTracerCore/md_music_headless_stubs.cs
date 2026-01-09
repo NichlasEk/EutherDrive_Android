@@ -25,7 +25,7 @@ namespace EutherDrive.Core.MdTracerCore
                 g_master_chk[i] = true;
 
             for (int i = 0; i < g_master_vol.Length; i++)
-                g_master_vol[i] = 100;
+                g_master_vol[i] = 50;
         }
     }
 }
