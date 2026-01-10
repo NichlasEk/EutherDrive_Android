@@ -11,6 +11,8 @@ namespace EutherDrive.Core.MdTracerCore
     //----------------------------------------------------------------
     internal partial class md_z80
     {
+        private static readonly bool TraceZ80SigTransitions =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80SIG_TRANS"), "1", StringComparison.Ordinal);
         public bool g_active;
         internal ushort DebugPc => g_reg_PC;
         internal ushort CpuPc => g_reg_PC;
@@ -358,6 +360,15 @@ namespace EutherDrive.Core.MdTracerCore
             if (HaltOnBusReq && busRequested)
                 return;
             if (g_active == false) return;
+            if (busRequested || reset)
+            {
+                if (TraceZ80SigTransitions && g_active)
+                {
+                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                    Console.WriteLine($"[Z80RUN-BLOCK] frame={frame} pc=0x{g_reg_PC:X4} busReq={(busRequested ? 1 : 0)} reset={(reset ? 1 : 0)}");
+                }
+                return;
+            }
 
             int cyclesConsumed = 0;
             long frameCounter = md_main.g_md_vdp?.FrameCounter ?? -1;
@@ -474,6 +485,20 @@ namespace EutherDrive.Core.MdTracerCore
             byte opcode3 = g_opcode3;
             byte opcode4 = g_opcode4;
             ushort ixBefore = g_reg_IX;
+
+            // [VERIFY-RAM-INTEGRITY] Compare opcode fetch with direct RAM read
+            // This verifies that ReadOpcodeByte(PC) == read8(PC) == g_ram[PC & 0x1FFF]
+            if (MdTracerCore.MdLog.Enabled && pcBefore < 0x0040 && pcBefore < 0x2000)
+            {
+                ushort z80Addr = (ushort)(pcBefore & 0x1FFF);
+                byte fromRam = g_ram != null ? g_ram[z80Addr] : (byte)0xFF;
+                byte fromRead8 = md_main.g_md_z80?.read8(pcBefore) ?? (byte)0xFF;
+                if (opcode != fromRam || opcode != fromRead8)
+                {
+                    Console.WriteLine($"[Z80-RAM-MISMATCH] pc=0x{pcBefore:X4} opcode=0x{opcode:X2} read8=0x{fromRead8:X2} ram[0x{z80Addr:X4}]=0x{fromRam:X2}");
+                }
+            }
+
             if (TraceZ80Step && _traceStepRemaining > 0)
             {
                 // [INT-INSTRUMENTATION] Log instruction fetch region
@@ -704,6 +729,11 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock_total -= g_clock;
         }
         AccumulateLineCycles(in_clock, cyclesConsumed);
+
+        // Decrement YM2612 busy counter - this is the key fix!
+        // The busy flag should clear after Z80 cycles have elapsed,
+        // allowing the Z80 to proceed past polling loops.
+        md_main.g_md_music?.g_md_ym2612?.DecrementYmBusyCounter(in_clock);
     }
 
     private void RecordPcHist(ushort pc)
@@ -1080,6 +1110,7 @@ NextPc:;
             if (TraceZ80Step)
                 _traceStepRemaining = 64;
             ResetTraceBudgets();
+            ResetZ80Ram1800Trace();
         }
 
         internal void ArmForcePc(ushort target, string reason)

@@ -56,7 +56,7 @@ public partial class MainWindow : Window
     private const int AudioSampleRate = 44100;
     private const int AudioChannels = 2;
     private static readonly bool AudioEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO") == "1";
-    private static readonly bool AudioTimedEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED") == "1";
+    private static readonly bool AudioTimedEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED") != "0";
     private static readonly bool YmEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") == "1";
     private static readonly bool AudioStatsEnabled =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_STATS") == "1";
@@ -77,9 +77,11 @@ public partial class MainWindow : Window
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _defaultRegionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
+    private FrameRateMode _frameRateMode = FrameRateMode.Auto;
     private readonly Dictionary<string, ConsoleRegion> _romRegionOverrides = new(StringComparer.OrdinalIgnoreCase);
     private string? _romRegionKey;
     private bool _regionOverrideUpdating;
+    private bool _frameRateUpdating;
     private const string SettingsFileName = "eutherdrive_settings.json";
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
     private const string LegacyLastRomPathFileName = "eutherdrive_last_rom.txt";
@@ -116,7 +118,7 @@ public partial class MainWindow : Window
 
         StatusText.Text = "Idle";
 
-        _audioTimedEnabled = AudioTimedEnvEnabled || _audioEnabled;
+        _audioTimedEnabled = AudioTimedEnvEnabled;
         UpdatePadTypeFromUi();
         if (SixButtonPadCheck != null)
         {
@@ -124,6 +126,7 @@ public partial class MainWindow : Window
             SixButtonPadCheck.Unchecked += (_, _) => UpdatePadTypeFromUi();
         }
         UpdateRegionOverrideCombo();
+        UpdateFrameRateCombo();
         UpdateRomRegionHintText();
 
         // Initialize timer
@@ -141,6 +144,7 @@ public partial class MainWindow : Window
             {
                 m.PowerCycleAndLoadRom(_romPath);
                 UpdateRomInfo(m.RomInfo);
+                ApplyFrameRateModeToCore(resetIfRunning: false);
                 Console.WriteLine(m.RomInfo.Summary);
             }
             else
@@ -172,18 +176,19 @@ public partial class MainWindow : Window
 
     private void OnFrameRateChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (_core is MdTracerAdapter adapter && FrameRateCombo?.SelectedItem is ComboBoxItem item)
+        if (_frameRateUpdating)
+            return;
+        if (FrameRateCombo?.SelectedItem is not ComboBoxItem item)
+            return;
+        var tag = item.Tag?.ToString();
+        _frameRateMode = tag switch
         {
-            var tag = item.Tag?.ToString();
-            var mode = tag switch
-            {
-                "Hz50" => FrameRateMode.Hz50,
-                "Hz60" => FrameRateMode.Hz60,
-                _ => FrameRateMode.Auto
-            };
-            adapter.SetFrameRateMode(mode);
-            UpdateEmuTargetFps();
-        }
+            "Hz50" => FrameRateMode.Hz50,
+            "Hz60" => FrameRateMode.Hz60,
+            _ => FrameRateMode.Auto
+        };
+        ApplyFrameRateModeToCore(resetIfRunning: false);
+        SaveSettings();
     }
 
     private void UpdateEmuTargetFps()
@@ -191,7 +196,7 @@ public partial class MainWindow : Window
         double target = 60.0;
         if (_core is MdTracerAdapter adapter)
             target = adapter.GetTargetFps();
-        _emuTargetFps = target;
+        Volatile.Write(ref _emuTargetFps, target);
     }
 
     private void OnApplyCpuCycles(object? sender, RoutedEventArgs e)
@@ -402,6 +407,7 @@ public partial class MainWindow : Window
 
                         // Visa i UI direkt (snabbast att se)
                         UpdateRomInfo(m.RomInfo);
+                        ApplyFrameRateModeToCore(resetIfRunning: false);
 
                         // OCH i terminal (om du kör från terminal)
                         Console.WriteLine(m.RomInfo.Summary);
@@ -422,6 +428,7 @@ public partial class MainWindow : Window
                 // Så du behöver inte _core.Reset() här.
             }
 
+            ApplyFrameRateModeToCore(resetIfRunning: false);
             StartAudioEngineIfEnabled();
             if (_audioEngine != null)
             {
@@ -467,6 +474,20 @@ public partial class MainWindow : Window
         {
             adapter.Reset();
             StatusText.Text = $"Region override set to {RegionOverride}. Reset applied.";
+        }
+    }
+
+    private void ApplyFrameRateModeToCore(bool resetIfRunning)
+    {
+        if (_core is not MdTracerAdapter adapter)
+            return;
+
+        adapter.SetFrameRateMode(_frameRateMode);
+        UpdateEmuTargetFps();
+        if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
+        {
+            adapter.Reset();
+            StatusText.Text = $"Frame rate set to {_frameRateMode}. Reset applied.";
         }
     }
 
@@ -583,6 +604,29 @@ public partial class MainWindow : Window
         }
     }
 
+    private void UpdateFrameRateCombo()
+    {
+        if (FrameRateCombo == null)
+            return;
+
+        _frameRateUpdating = true;
+        try
+        {
+            foreach (var item in FrameRateCombo.Items.Cast<ComboBoxItem>())
+            {
+                if (string.Equals(item.Tag?.ToString(), _frameRateMode.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    FrameRateCombo.SelectedItem = item;
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            _frameRateUpdating = false;
+        }
+    }
+
     private sealed class UiSettings
     {
         public string? LastRomPath { get; set; }
@@ -590,6 +634,7 @@ public partial class MainWindow : Window
         public bool AudioEnabled { get; set; } = true;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
+        public FrameRateMode FrameRateMode { get; set; } = FrameRateMode.Auto;
     }
 
     private void LoadSettings()
@@ -639,6 +684,8 @@ public partial class MainWindow : Window
         }
 
         RegionOverride = _defaultRegionOverride;
+        _frameRateMode = settings.FrameRateMode;
+        UpdateFrameRateCombo();
     }
 
     private static int ClampPercent(int value)
@@ -674,7 +721,8 @@ public partial class MainWindow : Window
             MasterVolumePercent = _masterVolumePercent,
             AudioEnabled = _audioEnabled,
             DefaultRegionOverride = _defaultRegionOverride,
-            RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase)
+            RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
+            FrameRateMode = _frameRateMode
         };
         string json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(GetSettingsPath(), json);
@@ -860,7 +908,7 @@ public partial class MainWindow : Window
     {
         StopAudioEngine();
         _audioEnabled = AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled;
-        _audioTimedEnabled = AudioTimedEnvEnabled || (AudioEnabledCheck?.IsChecked == true);
+        _audioTimedEnabled = AudioTimedEnvEnabled && _audioEnabled;
         ApplyAudioOptionsToCore();
         if (!_audioEnabled)
         {
@@ -1432,12 +1480,12 @@ public partial class MainWindow : Window
 
     private void EmuLoop()
     {
-        double targetFps = Volatile.Read(ref _emuTargetFps);
+        double targetFps = GetLiveTargetFps();
         long ticksPerFrame = (long)(Stopwatch.Frequency / targetFps);
         long nextTick = Stopwatch.GetTimestamp();
         while (_emuRunning)
         {
-            double currentTarget = Volatile.Read(ref _emuTargetFps);
+            double currentTarget = GetLiveTargetFps();
             if (Math.Abs(currentTarget - targetFps) > 0.001)
             {
                 targetFps = currentTarget;
@@ -1474,6 +1522,13 @@ public partial class MainWindow : Window
             ProducePsgForFrame();
             SubmitAudio();
         }
+    }
+
+    private double GetLiveTargetFps()
+    {
+        if (_core is MdTracerAdapter adapter)
+            return adapter.GetTargetFps();
+        return Volatile.Read(ref _emuTargetFps);
     }
 
     private unsafe void StartHeartbeat()

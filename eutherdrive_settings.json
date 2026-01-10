@@ -1,5 +1,5 @@
 {
-  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Sonic The Hedgehog 2 (W) (REVSC02).gen",
+  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Shinobi III - Return of the Ninja Master (E) [c][!].gen",
   "MasterVolumePercent": 14,
   "AudioEnabled": true,
   "DefaultRegionOverride": 0,
@@ -47,6 +47,14 @@
     "serial:GM MK-1142 -00": 2,
     "serial:GM T-48123 -00": 1,
     "serial:GM T-60016 -00": 2,
-    "serial:GM T-47046 -00": 1
-  }
+    "serial:GM T-47046 -00": 1,
+    "serial:GM 00004007-00": 1,
+    "serial:GM MK-1058 -00": 1,
+    "serial:GM T-081236 00": 1,
+    "serial:GM T-081426-50": 1,
+    "serial:GM T-70226-500": 2,
+    "serial:GM T-139036-00": 1,
+    "serial:GM MK-1539 -00": 1
+  },
+  "FrameRateMode": 0
 }

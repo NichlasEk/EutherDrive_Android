@@ -61,6 +61,9 @@ namespace EutherDrive.Core.MdTracerCore
         private int g_max_sprite_line;
         private int g_max_sprite_cell;
         private int g_sprite_vmask;
+        private bool[] g_sprite_line_mask = Array.Empty<bool>();
+        private uint[] g_game_field_even = Array.Empty<uint>();
+        private uint[] g_game_field_odd = Array.Empty<uint>();
 
         // GPU-path stöds inte i headless-läget
         public bool rendering_gpu;
@@ -73,27 +76,16 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (g_vdp_interlace_mode == 2 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
             {
-                // I interlaced mode 2 renderar vi ALLA scanlines (0-223) varje frame
-                // men mappar dem till olika output-linjer baserat på fält:
-                // - field=0: scanline N → output linje 2*N (jämna linjer)
-                // - field=1: scanline N → output linje 2*N+1 (udda linjer)
-                // Detta ger 448 linjer totalt i framebufferten
-
-                // Set g_vdp_interlace_field BEFORE taking the snapshot
-                // This ensures the snapshot captures the correct field state
-                int fieldBit = g_vdp_interlace_field;
-                g_vdp_interlace_field = (byte)fieldBit;
-
-                // Beräkna output-linje: scanline * 2 + fält (0 eller 1)
-                int outputLine = (g_scanline << 1) | fieldBit;
-                RenderLineWithField((byte)fieldBit, outputLine);
+                byte currentField = (byte)(g_vdp_interlace_field & 0x01);
+                uint[] dest = (currentField == 0) ? g_game_field_even : g_game_field_odd;
+                RenderLineWithField(currentField, g_scanline, dest);
                 return;
             }
 
             RenderLineWithField(g_vdp_interlace_field, GetOutputLineForScanline(g_scanline));
         }
 
-        private void RenderLineWithField(byte field, int outputLineOverride = -1)
+        private void RenderLineWithField(byte field, int outputLineOverride = -1, uint[]? targetBuffer = null)
         {
             g_vdp_interlace_field = (byte)(field & 0x01);
             if (MdTracerCore.MdLog.Enabled && g_scanline == 0)
@@ -114,7 +106,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
 
                 // Alltid CPU-rendering i headless
-                rendering_line_cpu(outputLine);
+                rendering_line_cpu(outputLine, targetBuffer);
             }
             else
             {
@@ -125,7 +117,10 @@ namespace EutherDrive.Core.MdTracerCore
                     int pos = outputLine * g_output_xsize;
                     for (int x = 0; x < g_output_xsize; x++)
                     {
-                        g_game_screen[pos++] = 0xFF000000u;
+                        if (targetBuffer != null)
+                            targetBuffer[pos++] = 0xFF000000u;
+                        else
+                            g_game_screen[pos++] = 0xFF000000u;
                     }
                 }
             }
@@ -142,6 +137,7 @@ namespace EutherDrive.Core.MdTracerCore
             ForceMdVBlankForTest();
             // "Lås in" det som behövs för postprocess/analys
             rendering_frame_snap();
+            WeaveInterlaceFields();
             UpdateRgbaFrameFromGameScreen();
             SmsLogFrameHash();
             AdvanceInterlaceField();
@@ -150,6 +146,29 @@ namespace EutherDrive.Core.MdTracerCore
             MaybeLogVdpTiming();
             MaybeLogVdpState();
             LogInterlaceDebug();
+        }
+
+        private void WeaveInterlaceFields()
+        {
+            if (g_vdp_interlace_mode != 2 || InterlaceOutput != InterlaceOutputPolicy.DoubleField)
+                return;
+
+            int fieldLineCount = g_display_ysize;
+            int outputLines = g_output_ysize;
+            int width = g_output_xsize;
+            int maxLines = Math.Min(fieldLineCount * 2, outputLines);
+
+            for (int y = 0; y < fieldLineCount && (y << 1) < maxLines; y++)
+            {
+                int evenBase = y * width;
+                int oddBase = y * width;
+                int outEven = (y << 1) * width;
+                int outOdd = ((y << 1) + 1) * width;
+
+                Array.Copy(g_game_field_even, evenBase, g_game_screen, outEven, width);
+                if ((y << 1) + 1 < maxLines)
+                    Array.Copy(g_game_field_odd, oddBase, g_game_screen, outOdd, width);
+            }
         }
 
         // --- Hjälp (valfritt) ---

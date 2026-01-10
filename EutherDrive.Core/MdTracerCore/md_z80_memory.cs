@@ -47,6 +47,13 @@ namespace EutherDrive.Core.MdTracerCore
         private int _z80MbxPollDataRemaining;
         private readonly byte[] _z80MbxPollDataLast = new byte[0x10];
         private bool _z80MbxPollDataLastValid;
+        // Wait loop polling histogram (for 0x11C3-0x11DB NOP loop)
+        private static readonly int[] _waitLoopPollHist = new int[0x2000]; // Full Z80 RAM histogram
+        private static readonly bool TraceZ80WaitLoop =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_WAITLOOP"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80WaitLoopLimit =
+            ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_WAITLOOP_LIMIT", 256);
+        private int _waitLoopLoggedCount;
         private bool _z80Flag65LastReadValid;
         private byte _z80Flag65LastReadValue;
         private bool _z80PostFlagLastReadValid;
@@ -116,6 +123,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_AFTER_FLAGRET"), "1", StringComparison.Ordinal);
         private static readonly int TraceZ80AfterFlagRetLimit =
             ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_AFTER_FLAGRET_LIMIT", 256);
+        private static readonly bool TraceZ80Ram1800 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_RAM_1800"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80Ram1800Frames =
+            ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_RAM_1800_FRAMES", 120);
         private static readonly bool TraceZ80MbxPoll =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80MBXPOLL"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80MbxPollEdge =
@@ -173,6 +184,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TraceZ80ReadRangeLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_RD_RANGE_LIMIT");
         private int _z80RamReadRangeRemaining = TraceZ80RamReadRangeLimit;
         private int _z80ReadRangeRemaining = TraceZ80ReadRangeLimit;
+        private long _z80Ram1800TraceStartFrame = -1;
+        private long _z80Ram1800TraceEndFrame = -1;
         private int _z80Flag65ReadRemaining = TraceZ80Flag65Limit;
         private int _z80Flag65WriteRemaining = TraceZ80Flag65Limit;
         private int _z80Flag65ReadOverrideRemaining = ForceZ80Flag65ReadLimit;
@@ -562,6 +575,59 @@ namespace EutherDrive.Core.MdTracerCore
             _z80MbxPollWideReads = 0;
         }
 
+        internal void FlushZ80WaitLoopHist(long frame)
+        {
+            if (!TraceZ80WaitLoop)
+                return;
+            // Find top 5 polled addresses
+            int[] topAddrs = new int[5];
+            int[] topCounts = new int[5];
+            for (int i = 0; i < 5; i++)
+            {
+                topAddrs[i] = -1;
+                topCounts[i] = 0;
+            }
+            for (int addr = 0x11C0; addr <= 0x11E0; addr++)
+            {
+                int count = _waitLoopPollHist[addr];
+                if (count == 0)
+                    continue;
+                // Insert into top 5
+                for (int i = 0; i < 5; i++)
+                {
+                    if (count > topCounts[i])
+                    {
+                        // Shift down
+                        for (int j = 4; j > i; j--)
+                        {
+                            topAddrs[j] = topAddrs[j - 1];
+                            topCounts[j] = topCounts[j - 1];
+                        }
+                        topAddrs[i] = addr;
+                        topCounts[i] = count;
+                        break;
+                    }
+                }
+            }
+            // Log top 5
+            Console.Write($"[Z80-WAIT-HIST] frame={frame} top5=");
+            bool first = true;
+            for (int i = 0; i < 5; i++)
+            {
+                if (topAddrs[i] >= 0)
+                {
+                    if (!first) Console.Write(",");
+                    Console.Write($"0x{topAddrs[i]:X4}:{topCounts[i]}");
+                    first = false;
+                }
+            }
+            Console.WriteLine();
+            // Clear histogram
+            for (int addr = 0x11C0; addr <= 0x11E0; addr++)
+                _waitLoopPollHist[addr] = 0;
+            _waitLoopLoggedCount = 0;
+        }
+
         private void LogBootIo(string op, ushort addr, byte value)
         {
             Console.WriteLine($"[Z80BOOTIO] instr={_bootInstrCount} pc=0x{DebugPc:X4} {op} addr=0x{addr:X4} val=0x{value:X2}");
@@ -819,6 +885,8 @@ namespace EutherDrive.Core.MdTracerCore
                 w_out = g_ram[ramAddr];
                 w_out = MaybeOverrideFlag65Read(ramAddr, w_out);
                 w_out = ApplyForceZ80FlagBit2(ramAddr, w_out);
+                if (ShouldTraceZ80Ram1800(ramAddr))
+                    LogZ80Ram1800("R", ramAddr, w_out);
                 bool isMbxPoll = TraceZ80MbxPoll && ramAddr >= 0x1B00 && ramAddr <= 0x1B8F;
                 if (ShouldTraceBootIo())
                     LogBootIo("read", a, w_out);
@@ -996,6 +1064,18 @@ namespace EutherDrive.Core.MdTracerCore
                 MessageBox.Show("md_z80_memory.read8", "error");
             }
 
+            // Track wait loop polling (0x11C3-0x11DB NOP loop area)
+            if (TraceZ80WaitLoop && a >= 0x11C0 && a <= 0x11E0)
+            {
+                _waitLoopPollHist[a]++;
+                if (_waitLoopLoggedCount < TraceZ80WaitLoopLimit)
+                {
+                    _waitLoopLoggedCount++;
+                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                    Console.WriteLine($"[Z80-WAIT-READ] frame={frame} pc=0x{DebugPc:X4} addr=0x{a:X4} val=0x{w_out:X2}");
+                }
+            }
+
             TrackLastRead(a, w_out, wasBanked, bankedAddr);
             MaybeLogZ80ReadRange(a, w_out);
             MaybeLogZ80PostFlagRead(a, w_out);
@@ -1047,6 +1127,8 @@ namespace EutherDrive.Core.MdTracerCore
                 ushort ramAddr = (ushort)(a & 0x1FFF);
                 byte oldValue = g_ram[ramAddr];
                 g_ram[ramAddr] = in_data;
+                if (ShouldTraceZ80Ram1800(ramAddr))
+                    LogZ80Ram1800("W", ramAddr, in_data);
                 if (TraceZ80Flag65 && ramAddr == 0x0065 && _z80Flag65WriteRemaining > 0)
                 {
                     long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
@@ -1104,7 +1186,7 @@ namespace EutherDrive.Core.MdTracerCore
             else if (a >= 0x4000 && a <= 0x5FFF)
             {
                 // YM2612
-                md_main.g_md_music.g_md_ym2612.write8(a, in_data);
+                md_main.g_md_music.g_md_ym2612.write8(a, in_data, "Z80");
                 if (ShouldTraceBootIo())
                     LogBootIo("write", a, in_data);
                 if (TraceYm && _ymWriteLogRemaining > 0)
@@ -1696,6 +1778,37 @@ namespace EutherDrive.Core.MdTracerCore
             write8((ushort)(a + 1),       (byte)((in_data >> 16) & 0xFF));
             write8((ushort)(a + 2),       (byte)((in_data >> 8)  & 0xFF));
             write8((ushort)(a + 3),       (byte)( in_data        & 0xFF));
+        }
+
+        private void ResetZ80Ram1800Trace()
+        {
+            if (!TraceZ80Ram1800)
+            {
+                _z80Ram1800TraceStartFrame = -1;
+                _z80Ram1800TraceEndFrame = -1;
+                return;
+            }
+            long frame = md_main.g_md_vdp?.FrameCounter ?? 0;
+            if (frame < 0)
+                frame = 0;
+            _z80Ram1800TraceStartFrame = frame;
+            _z80Ram1800TraceEndFrame = frame + TraceZ80Ram1800Frames;
+        }
+
+        private bool ShouldTraceZ80Ram1800(ushort ramAddr)
+        {
+            if (!TraceZ80Ram1800)
+                return false;
+            if (ramAddr < 0x1800 || ramAddr > 0x1FFF)
+                return false;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? 0;
+            return frame >= _z80Ram1800TraceStartFrame && frame <= _z80Ram1800TraceEndFrame;
+        }
+
+        private void LogZ80Ram1800(string op, ushort addr, byte value)
+        {
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            Console.WriteLine($"[Z80RAM18] {op} frame={frame} pc=0x{DebugPc:X4} addr=0x{addr:X4} val=0x{value:X2}");
         }
     }
 }

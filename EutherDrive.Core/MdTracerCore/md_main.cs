@@ -56,6 +56,10 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int Z80WaitBusReqFrames = ParseZ80WaitBusReqFrames();
         private static readonly int Z80WaitBusReqMaxFrames = ParseZ80WaitBusReqMaxFrames();
         private static readonly bool Z80WaitBusReqLog = ReadEnvFlag("EUTHERDRIVE_Z80_WAIT_BUSREQ_LOG");
+        // Z80/M68K cycle ratio for NTSC: Z80 ~3.58MHz, M68K ~7.67MHz => ratio ~0.466
+        private static readonly double Z80PerM68kRatio = 3.58 / 7.67;
+        private static readonly int Z80ContinuousSliceCycles = ParseZ80ContinuousSliceCycles();
+        private static bool UseZ80ContinuousScheduling => !g_masterSystemMode && Z80ContinuousSliceCycles > 0;
         private static int SmsCyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * SmsCycleMultiplier));
         private static int Z80CyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * Z80CycleMultiplier));
         private static readonly Stopwatch _smsCycleLogTimer = Stopwatch.StartNew();
@@ -177,7 +181,12 @@ namespace EutherDrive.Core.MdTracerCore
             }
             bool allowZ80 = ShouldRunZ80(frame);
             int z80FrameBudget = z80LineBudget * lines;
-            if (!z80RunPerLine && !_z80FrameScheduleLogged && MdLog.TraceZ80Win)
+            if (UseZ80ContinuousScheduling && !_z80FrameScheduleLogged)
+            {
+                _z80FrameScheduleLogged = true;
+                Console.WriteLine($"[Z80SCHED] mode=continuous sliceM68k={Z80ContinuousSliceCycles} ratio={Z80PerM68kRatio:F4}");
+            }
+            else if (!z80RunPerLine && !_z80FrameScheduleLogged && MdLog.TraceZ80Win)
             {
                 _z80FrameScheduleLogged = true;
                 Console.WriteLine($"[Z80SCHED] mode=frame budget={z80FrameBudget} lines={lines}");
@@ -186,6 +195,45 @@ namespace EutherDrive.Core.MdTracerCore
             for (int vline = 0; vline < lines; vline++)
             {
                 g_md_vdp.run(vline);
+
+                // Continuous Z80 scheduling proportional to M68K cycles
+                // This runs Z80 in small slices throughout each M68K execution slice,
+                // maintaining proper timing for YM busy-polling, mailbox communication, etc.
+                if (!g_masterSystemMode && UseZ80ContinuousScheduling && allowZ80)
+                {
+                    int sliceM68kCycles = Z80ContinuousSliceCycles;
+                    int totalM68kCycles = VDL_LINE_RENDER_MC68_CLOCK;
+                    double z80Budget = 0.0;
+
+                    int m68kDone = 0;
+                    while (m68kDone < totalM68kCycles)
+                    {
+                        int m68kSlice = Math.Min(sliceM68kCycles, totalM68kCycles - m68kDone);
+
+                        // Run M68K slice
+                        g_md_m68k.run(m68kSlice);
+                        AdvanceSystemCycles(m68kSlice);
+                        m68kDone += m68kSlice;
+
+                        // Add Z80 budget proportional to M68K cycles executed
+                        z80Budget += m68kSlice * Z80PerM68kRatio;
+
+                        // Run Z80 while we have budget
+                        while (z80Budget >= 1.0)
+                        {
+                            if (!(g_md_bus?.Z80BusGranted ?? true))
+                            {
+                                // Z80 bus is not granted, it cannot run
+                                // Budget is consumed by M68K time, not Z80 execution
+                                break;
+                            }
+                            int z80Cycles = (int)Math.Floor(z80Budget);
+                            g_md_z80.run(z80Cycles);
+                            z80Budget -= z80Cycles;
+                        }
+                    }
+                    continue;
+                }
 
                 // Kör CPU:erna scanline-vis
                 if (!g_masterSystemMode && z80RunPerLine && Z80InterleaveSlices > 1)
@@ -248,6 +296,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_md_bus?.FlushMbx68kStat(frame);
             g_md_bus?.FlushSram(frame.ToString());
             g_md_z80?.FlushZ80MbxPoll(frame);
+            g_md_z80?.FlushZ80WaitLoopHist(frame);
             g_md_z80?.FlushPcHist(frame);
             g_md_z80?.FlushZ80IntStats(frame); // [INT-STATS] ZINT per-frame stats
 
@@ -441,6 +490,19 @@ namespace EutherDrive.Core.MdTracerCore
         private static int ParseZ80WaitBusReqMaxFrames()
         {
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_WAIT_BUSREQ_MAX_FRAMES");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 0;
+            if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
+                return value;
+            return 0;
+        }
+
+        private static int ParseZ80ContinuousSliceCycles()
+        {
+            // When > 0, enables continuous Z80 scheduling proportional to M68K cycles
+            // Value = how many M68K cycles between Z80 slices (smaller = more frequent)
+            // Default 0 = disabled (use per-frame or per-line scheduling)
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_CONTINUOUS_SLICE_M68K_CYCLES");
             if (string.IsNullOrWhiteSpace(raw))
                 return 0;
             if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)

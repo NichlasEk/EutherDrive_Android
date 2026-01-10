@@ -44,6 +44,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private uint _lastPc;
     private int _pcStallFrames;
     private FrameRateMode _frameRateMode = FrameRateMode.Auto;
+    private FrameRateMode _lastAppliedFrameRateMode = FrameRateMode.Auto;
     private int _cpuCyclesPerLine;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
 
@@ -250,9 +251,11 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 _bus.Write32(0xFF0000, 0x1234ABCD);
                 uint wramProbe = _bus.Read32(0xFF0000);
                 ConsoleRegion? regionHint = md_rom_utils.DetectRegionFromHeader(vecRom, out string regionRaw);
+                string serial = md_main.g_md_cartridge?.g_serial_number ?? string.Empty;
+                regionHint = AdjustRegionHint(regionHint, regionRaw, serial);
                 RomInfo.RegionHint = regionHint;
                 RomInfo.RegionHeaderRaw = regionRaw;
-                RomInfo.SerialNumber = md_main.g_md_cartridge?.g_serial_number ?? string.Empty;
+                RomInfo.SerialNumber = serial;
                 string regionLabel = regionHint?.ToString() ?? ConsoleRegion.Auto.ToString();
                 Console.WriteLine($"[MdTracerAdapter] Detected ROM region: {regionLabel} (raw='{regionRaw}')");
                 if (md_main.g_md_io != null)
@@ -401,6 +404,30 @@ public sealed class MdTracerAdapter : IEmulatorCore
         }
     }
 
+    private static ConsoleRegion? AdjustRegionHint(ConsoleRegion? hint, string regionRaw, string serial)
+    {
+        string upper = regionRaw?.Trim().ToUpperInvariant() ?? string.Empty;
+        string serialUpper = serial?.Trim().ToUpperInvariant() ?? string.Empty;
+        bool hasJ = upper.Contains('J');
+        bool hasU = upper.Contains('U');
+        bool hasE = upper.Contains('E');
+        bool serialPal = serialUpper.EndsWith("-50", StringComparison.Ordinal);
+
+        if (serialPal && hasE)
+            return ConsoleRegion.EU;
+        if (hint.HasValue)
+            return hint;
+        if (hasE && !hasJ && !hasU)
+            return ConsoleRegion.EU;
+        if (hasU && !hasJ && !hasE)
+            return ConsoleRegion.US;
+        if (hasJ && !hasU && !hasE)
+            return ConsoleRegion.JP;
+        if (serialPal)
+            return ConsoleRegion.EU;
+        return hint;
+    }
+
     private static ushort ReadBe16(byte[] rom, int offset)
     {
         if ((uint)(offset + 1) >= (uint)rom.Length)
@@ -454,6 +481,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
     public void Reset()
     {
         Console.WriteLine("[MdTracerAdapter] Reset begin");
+        Console.WriteLine($"[MdTracerAdapter] Reset _cpuReady={_cpuReady} _cpu={(_cpu != null ? "ok" : "null")}");
         _tick = 0;
 
         // Nollställ RAM
@@ -461,7 +489,9 @@ public sealed class MdTracerAdapter : IEmulatorCore
         md_main.g_md_bus?.Reset();
         md_main.ResetZ80WaitState();
         _vdp.reset();
-        ApplyFrameRateMode(GetEffectiveFrameRateMode());
+        _lastAppliedFrameRateMode = GetEffectiveFrameRateMode();
+        ApplyFrameRateMode(_lastAppliedFrameRateMode);
+        ResetAudioFrameState();
         md_main.g_md_music?.reset();
 
         // Stub (så VDP-testet fortsätter)
@@ -486,7 +516,10 @@ public sealed class MdTracerAdapter : IEmulatorCore
         LogFrameBufferIdentity("Reset");
     }
 
-    public void SetFrameRateMode(FrameRateMode mode) => _frameRateMode = mode;
+    public void SetFrameRateMode(FrameRateMode mode)
+    {
+        _frameRateMode = mode;
+    }
 
     public double GetTargetFps()
     {
@@ -504,6 +537,11 @@ public sealed class MdTracerAdapter : IEmulatorCore
     {
         if (_frameRateMode != FrameRateMode.Auto)
             return _frameRateMode;
+
+        if (RomInfo.RegionHint == ConsoleRegion.EU)
+            return FrameRateMode.Hz50;
+        if (RomInfo.RegionHint == ConsoleRegion.JP || RomInfo.RegionHint == ConsoleRegion.US)
+            return FrameRateMode.Hz60;
 
         ConsoleRegion region = GetEffectiveRegion();
         return region == ConsoleRegion.EU ? FrameRateMode.Hz50 : FrameRateMode.Hz60;
@@ -531,6 +569,13 @@ public sealed class MdTracerAdapter : IEmulatorCore
             _vdp.g_vdp_status_0_tvmode = (byte)(lines == VLINES_PAL ? 1 : 0);
         }
         return lines;
+    }
+
+    private void ResetAudioFrameState()
+    {
+        _psgFrameAccumulator = 0;
+        _psgFrameSamples = 0;
+        _psgLastFrame = -1;
     }
 
     public void PowerCycleAndLoadRom(string path) => LoadRom(path);
@@ -722,7 +767,13 @@ public sealed class MdTracerAdapter : IEmulatorCore
         }
         else
         {
-            int vlines = ApplyFrameRateMode(GetEffectiveFrameRateMode());
+            var effectiveFrameRateMode = GetEffectiveFrameRateMode();
+            if (effectiveFrameRateMode != _lastAppliedFrameRateMode)
+            {
+                _lastAppliedFrameRateMode = effectiveFrameRateMode;
+                ResetAudioFrameState();
+            }
+            int vlines = ApplyFrameRateMode(effectiveFrameRateMode);
             long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
             bool allowZ80 = md_main.ShouldRunZ80(frame);
             uint pcAfter = md_m68k.g_reg_PC;

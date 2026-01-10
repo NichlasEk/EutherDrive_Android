@@ -57,43 +57,50 @@ namespace EutherDrive.Core.MdTracerCore
 
             bool traceRomCopy = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ROMCOPY"), "1", StringComparison.Ordinal);
 
+            // Diagnostik: Logga cartridge status före ROM-kopia
+            bool hasCartridge = md_main.g_md_cartridge != null;
+            bool hasFile = hasCartridge && md_main.g_md_cartridge.g_file != null;
+            int fileLen = hasFile ? md_main.g_md_cartridge.g_file.Length : 0;
+            Console.WriteLine($"[m68k-reset] cartridge={hasCartridge} file={(hasFile ? "yes" : "no")} fileLen=0x{fileLen:X8}");
+
             // Kopiera ROM till minnet från adress 0
-            if (md_main.g_md_cartridge != null &&
-                md_main.g_md_cartridge.g_file != null &&
-                md_main.g_md_cartridge.g_file.Length > 0)
+            if (hasFile && fileLen > 0)
             {
-                int copySize = Math.Min(md_main.g_md_cartridge.g_file.Length, g_memory.Length);
+                int copySize = Math.Min(fileLen, g_memory.Length);
                 Buffer.BlockCopy(md_main.g_md_cartridge.g_file, 0, g_memory, 0, copySize);
 
-                if (traceRomCopy)
-                {
-                    var rom = md_main.g_md_cartridge.g_file;
-                    var sb = new StringBuilder(64);
-                    int dumpLen = Math.Min(16, rom.Length);
-                    sb.Append("[ROM] src[0..15]=");
-                    for (int i = 0; i < dumpLen; i++)
-                    {
-                        if (i > 0) sb.Append(' ');
-                        sb.Append(rom[i].ToString("X2"));
-                    }
-                    MdLog.WriteLine($"[ROM] copy bytes={copySize}");
-                    MdLog.WriteLine(sb.ToString());
+                Console.WriteLine($"[m68k-reset] ROM copied: 0x{copySize:X8} bytes");
 
-                    int memDumpLen = 16;
-                    sb.Clear();
-                    sb.Append("[ROM] mem[0x200..0x20F]=");
-                    for (int i = 0; i < memDumpLen; i++)
-                    {
-                        if (i > 0) sb.Append(' ');
-                        sb.Append(g_memory[0x200 + i].ToString("X2"));
-                    }
-                    MdLog.WriteLine(sb.ToString());
+                // Dump first 16 bytes of copied ROM
+                var sb = new StringBuilder(64);
+                sb.Append("[m68k-reset] mem[0x000..0x00F]=");
+                for (int i = 0; i < 16; i++)
+                {
+                    if (i > 0) sb.Append(' ');
+                    sb.Append(g_memory[i].ToString("X2"));
                 }
+                Console.WriteLine(sb.ToString());
+
+                // Dump first 16 bytes at offset 0x100 (header)
+                sb.Clear();
+                sb.Append("[m68k-reset] mem[0x100..0x10F]=");
+                for (int i = 0; i < 16; i++)
+                {
+                    if (i > 0) sb.Append(' ');
+                    sb.Append(g_memory[0x100 + i].ToString("X2"));
+                }
+                Console.WriteLine(sb.ToString());
+            }
+            else
+            {
+                Console.WriteLine("[m68k-reset] WARNING: No ROM file to copy!");
             }
 
             // Init PC/SP från vektor-tabellen (0=initial SP, 4=initial PC)
             uint initialSp = read32(0);
             uint initialPc = read32(4);
+
+            Console.WriteLine($"[m68k-reset] vectors: SP=0x{initialSp:X8} PC=0x{initialPc:X8}");
 
             g_initial_PC = initialPc;
             g_reg_PC = initialPc;

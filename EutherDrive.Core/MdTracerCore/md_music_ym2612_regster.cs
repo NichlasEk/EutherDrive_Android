@@ -63,6 +63,10 @@ namespace EutherDrive.Core.MdTracerCore
         private int _ymStatusLogRemaining = TraceYmStatusLimit;
         private long _ymBusyUntilCycle;
         private long _ymBusyDropCount;
+
+        // Counter-based busy flag (ticks down with Z80 cycles)
+        private int _ymBusyCounter;
+        private const int DEFAULT_YM_BUSY_Z80_CYCLES = 84; // ~84 Z80 cycles = 23us at 3.58MHz
         private bool _key28KeyOffLogged;
         private bool _ymIrqAsserted;
         private int _audStatKeyOn;
@@ -192,7 +196,9 @@ namespace EutherDrive.Core.MdTracerCore
                 UpdateYmIrq("statusRead");
             }
             long nowCycle = GetZ80Cycle();
-            bool busy = (EmulateYmBusy || TraceYmBusy || TraceYmStatus) && IsYmBusy(nowCycle);
+            bool busyCycleBased = (EmulateYmBusy || TraceYmBusy || TraceYmStatus) && IsYmBusy(nowCycle);
+            bool busyCounterBased = IsYmBusyCounter; // New counter-based check
+            bool busy = busyCycleBased || busyCounterBased;
             if (EmulateYmBusy && busy)
                 status |= 0x80;
             if (TraceYmStatus)
@@ -202,10 +208,11 @@ namespace EutherDrive.Core.MdTracerCore
             return status;
         }
 
-        public void write8(uint in_address, byte in_val)
+        public void write8(uint in_address, byte in_val, string source = "Z80")
         {
             int w_mode = -1;
             byte w_addr = 0;
+            string _source = source;  // Store source for MaybeLogYmReg
 
             in_address &= 0x0003;
 
@@ -271,6 +278,9 @@ namespace EutherDrive.Core.MdTracerCore
             if ((EmulateYmBusy || TraceYmBusy || TraceYmStatus) && nowCycle >= 0)
                 SetYmBusy(nowCycle, w_mode, w_addr, in_val);
 
+            // Also set the counter-based busy flag
+            SetYmBusyCounter();
+
             // skriv alltid till reg-matrisen
             g_reg[w_mode, w_addr] = in_val;
             if (TraceAudStat)
@@ -284,7 +294,7 @@ namespace EutherDrive.Core.MdTracerCore
                 if ((w_addr >= 0x30 && w_addr <= 0x9F) || (w_addr >= 0xB0 && w_addr <= 0xB6))
                     _audStatParam++;
             }
-            MaybeLogYmReg(w_mode, w_addr, in_val);
+            MaybeLogYmReg(w_mode, w_addr, in_val, _source);
 
             // ------------------------------------------------------------
             // 0x20..0x2B (mode 0 only)
@@ -855,13 +865,13 @@ namespace EutherDrive.Core.MdTracerCore
             _audStatDacDat = 0;
         }
 
-        private void MaybeLogYmReg(int port, byte addr, byte val)
+        private void MaybeLogYmReg(int port, byte addr, byte val, string source)
         {
             if (!TraceYmReg || _ymRegLogRemaining <= 0)
                 return;
             _ymRegLogRemaining--;
             ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
-            Console.WriteLine($"[YMREG] pc=0x{pc:X4} port={port} addr=0x{addr:X2} val=0x{val:X2}");
+            Console.WriteLine($"[YMREG] {source} pc=0x{pc:X4} port={port} addr=0x{addr:X2} val=0x{val:X2}");
         }
 
         private long GetZ80Cycle()
@@ -907,6 +917,36 @@ namespace EutherDrive.Core.MdTracerCore
             ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
             Console.WriteLine($"[YM-BUSY] status pc=0x{pc:X4} cycles={nowCycle} until={_ymBusyUntilCycle} status=0x{status:X2}");
         }
+
+        // Counter-based busy flag implementation
+        private void SetYmBusyCounter()
+        {
+            _ymBusyCounter = DEFAULT_YM_BUSY_Z80_CYCLES;
+            if (TraceYmBusy && _ymBusyLogRemaining > 0)
+            {
+                _ymBusyLogRemaining--;
+                ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+                Console.WriteLine($"[YM-BUSY-COUNTER] set pc=0x{pc:X4} counter={_ymBusyCounter}");
+            }
+        }
+
+        public void DecrementYmBusyCounter(int z80Cycles)
+        {
+            if (_ymBusyCounter <= 0)
+                return;
+
+            int oldCounter = _ymBusyCounter;
+            _ymBusyCounter = Math.Max(0, _ymBusyCounter - z80Cycles);
+
+            if (TraceYmBusy && oldCounter != _ymBusyCounter && _ymBusyCounter == 0 && _ymBusyLogRemaining > 0)
+            {
+                _ymBusyLogRemaining--;
+                ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+                Console.WriteLine($"[YM-BUSY-COUNTER] CLEARED pc=0x{pc:X4} cycles={z80Cycles} old={oldCounter} new=0");
+            }
+        }
+
+        public bool IsYmBusyCounter => _ymBusyCounter > 0;
 
         private void LogYmStatusRead(long nowCycle, byte status, bool clearOnRead, bool busy)
         {

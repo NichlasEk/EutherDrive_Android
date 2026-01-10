@@ -157,9 +157,9 @@ public sealed class MegaDriveBus
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
-            uint z80Addr = addr & 0xFFFF;
+            uint z80Addr = addr & 0x1FFF;
             if (MapZ80OddReadToNext && (z80Addr & 1) != 0)
-                z80Addr = (z80Addr + 1) & 0xFFFF;
+                z80Addr = (z80Addr + 1) & 0x1FFF;
             byte val = md_main.g_md_z80.read8(z80Addr);
             LogZ80WindowRead(addr, val);
             return val;
@@ -239,8 +239,8 @@ public sealed class MegaDriveBus
         {
             if (IsZ80Mailbox(addr) || IsZ80Mailbox(addr + 1))
             {
-                byte mbxHi = md_main.g_md_z80.read8(addr & 0xFFFF);
-                byte mbxLo = md_main.g_md_z80.read8((addr + 1) & 0xFFFF);
+                byte mbxHi = md_main.g_md_z80.read8(addr & 0x1FFF);
+                byte mbxLo = md_main.g_md_z80.read8((addr + 1) & 0x1FFF);
                 ushort mbxVal = (ushort)((mbxHi << 8) | mbxLo);
                 LogZ80WindowRead(addr, mbxVal);
                 md_m68k.RecordBusAccess(addr, 2, false, mbxVal);
@@ -250,13 +250,13 @@ public sealed class MegaDriveBus
             if (MegaDriveBusProfiler.Enabled)
             {
                 long start = Stopwatch.GetTimestamp();
-                windowVal = md_main.g_md_z80.read16(addr & 0xFFFF);
+                windowVal = md_main.g_md_z80.read16(addr & 0x1FFF);
                 MegaDriveBusProfiler.AddReadTicks(Stopwatch.GetTimestamp() - start);
                 LogZ80WindowRead(addr, windowVal);
                 md_m68k.RecordBusAccess(addr, 2, false, windowVal);
                 return windowVal;
             }
-            windowVal = md_main.g_md_z80.read16(addr & 0xFFFF);
+            windowVal = md_main.g_md_z80.read16(addr & 0x1FFF);
             LogZ80WindowRead(addr, windowVal);
             md_m68k.RecordBusAccess(addr, 2, false, windowVal);
             return windowVal;
@@ -328,13 +328,13 @@ public sealed class MegaDriveBus
             if (MegaDriveBusProfiler.Enabled)
             {
                 long start = Stopwatch.GetTimestamp();
-                windowVal = md_main.g_md_z80.read32(addr & 0xFFFF);
+                windowVal = md_main.g_md_z80.read32(addr & 0x1FFF);
                 MegaDriveBusProfiler.AddReadTicks(Stopwatch.GetTimestamp() - start);
                 LogZ80WindowRead(addr, windowVal);
                 md_m68k.RecordBusAccess(addr, 4, false, windowVal);
                 return windowVal;
             }
-            windowVal = md_main.g_md_z80.read32(addr & 0xFFFF);
+            windowVal = md_main.g_md_z80.read32(addr & 0x1FFF);
             LogZ80WindowRead(addr, windowVal);
             md_m68k.RecordBusAccess(addr, 4, false, windowVal);
             return windowVal;
@@ -435,7 +435,7 @@ public sealed class MegaDriveBus
         {
             LogVdpWrite(addr, addr, 8, value, "Z80");
             uint z80Index = addr & 0x1FFF;
-            md_main.g_md_z80.write8(addr & 0xFFFF, value);
+            md_main.g_md_z80.write8(addr & 0x1FFF, value);
             LogZ80WindowWrite(addr, value);
             if (TraceZ80Win && _z80WinLogRemaining > 0)
             {
@@ -544,14 +544,14 @@ public sealed class MegaDriveBus
             {
                 byte mbxHi = (byte)((value >> 8) & 0xFF);
                 byte mbxLo = (byte)(value & 0xFF);
-                md_main.g_md_z80.write8(addr & 0xFFFF, mbxHi);
-                md_main.g_md_z80.write8((addr + 1) & 0xFFFF, mbxLo);
+                md_main.g_md_z80.write8(addr & 0x1FFF, mbxHi);
+                md_main.g_md_z80.write8((addr + 1) & 0x1FFF, mbxLo);
                 LogZ80WindowWrite(addr, value);
                 md_m68k.RecordBusAccess(addr, 2, true, value);
                 return;
             }
             LogVdpWrite(addr, addr, 16, value, "Z80");
-            md_main.g_md_z80.write16(addr & 0xFFFF, value);
+            md_main.g_md_z80.write16(addr & 0x1FFF, value);
             LogZ80WindowWrite(addr, value);
             md_m68k.RecordBusAccess(addr, 2, true, value);
             return;
@@ -642,16 +642,16 @@ public sealed class MegaDriveBus
                 byte mbxB2 = (byte)((value >> 16) & 0xFF);
                 byte mbxB1 = (byte)((value >> 8) & 0xFF);
                 byte mbxB0 = (byte)(value & 0xFF);
-                md_main.g_md_z80.write8(addr & 0xFFFF, mbxB3);
-                md_main.g_md_z80.write8((addr + 1) & 0xFFFF, mbxB2);
-                md_main.g_md_z80.write8((addr + 2) & 0xFFFF, mbxB1);
-                md_main.g_md_z80.write8((addr + 3) & 0xFFFF, mbxB0);
+                md_main.g_md_z80.write8(addr & 0x1FFF, mbxB3);
+                md_main.g_md_z80.write8((addr + 1) & 0x1FFF, mbxB2);
+                md_main.g_md_z80.write8((addr + 2) & 0x1FFF, mbxB1);
+                md_main.g_md_z80.write8((addr + 3) & 0x1FFF, mbxB0);
                 LogZ80WindowWrite(addr, value);
                 md_m68k.RecordBusAccess(addr, 4, true, value);
                 return;
             }
             LogVdpWrite(addr, addr, 32, value, "Z80");
-            md_main.g_md_z80.write32(addr & 0xFFFF, value);
+            md_main.g_md_z80.write32(addr & 0x1FFF, value);
             LogZ80WindowWrite(addr, value);
             md_m68k.RecordBusAccess(addr, 4, true, value);
             return;

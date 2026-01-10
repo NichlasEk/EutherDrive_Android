@@ -82,10 +82,22 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _mbx68kStatLastValue;
         private int _z80WinStatWrites;
         private int _z80WinStatBlocked;
+        private int _z80WinRead8Count;
+        private int _z80WinRead16Count;
+        private int _z80WinRead32Count;
+        private int _z80WinWrite8Count;
+        private int _z80WinWrite16Count;
+        private int _z80WinWrite32Count;
+        private int _z80WinReadBlocked;
+        private int _z80WinWriteBlocked;
+        private int _z80WinAssertRemaining;
+        private readonly int[] _z80WinReadAddrCounts = new int[0x2000];
+        private readonly int[] _z80WinWriteAddrCounts = new int[0x2000];
         private uint _z80WinStatLastAddr;
         private uint _z80WinStatLastPc;
         private uint _z80WinStatLastValue;
         private int _z80WinStatLastSize;
+        private int _z80WinBootRemaining;
         private readonly int[] _z80WinHist = new int[256];
         private int _z80WinHistTotal;
         private bool _z80SafeBootActive;
@@ -110,6 +122,8 @@ namespace EutherDrive.Core.MdTracerCore
         private int _z80SafeBootWriteCount;
         private bool _z80WinWarned;
         private bool _suppressZ80WinRangeByteLog;
+        private bool _suppressZ80WinStatByteLog;
+        private bool _suppressZ80WinAssert;
         private bool _suppressMbxByteLog;
         private int _ymWriteLogRemaining = 64;
         private static readonly bool TraceZ80Win =
@@ -176,6 +190,18 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_TRACE_Z80WIN_HIST_MIN", 1);
         private static readonly bool TraceZ80WinStat =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WINSTAT"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80WinBoot =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN_BOOT"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80WinBootLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80WIN_BOOT_LIMIT", 200);
+        private static readonly int TraceZ80WinTopLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80WIN_TOP_LIMIT", 8);
+        private static readonly bool AssertZ80WinWrite =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80WIN_ASSERT"), "1", StringComparison.Ordinal);
+        private static readonly int AssertZ80WinWriteLimit =
+            ParseTraceLimit("EUTHERDRIVE_Z80WIN_ASSERT_LIMIT", 256);
+        private static readonly bool TraceZ80SigTransitions =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80SIG_TRANS"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Mbx =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80MBX"), "1", StringComparison.Ordinal);
         private static readonly bool TraceMbxSrc =
@@ -712,10 +738,22 @@ namespace EutherDrive.Core.MdTracerCore
             _mbx68kStatWideWrites = 0;
             _z80WinStatWrites = 0;
             _z80WinStatBlocked = 0;
+            _z80WinRead8Count = 0;
+            _z80WinRead16Count = 0;
+            _z80WinRead32Count = 0;
+            _z80WinWrite8Count = 0;
+            _z80WinWrite16Count = 0;
+            _z80WinWrite32Count = 0;
+            _z80WinReadBlocked = 0;
+            _z80WinWriteBlocked = 0;
+            _z80WinAssertRemaining = AssertZ80WinWriteLimit;
             _z80WinStatLastAddr = 0;
             _z80WinStatLastPc = 0;
             _z80WinStatLastValue = 0;
             _z80WinStatLastSize = 0;
+            _z80WinBootRemaining = TraceZ80WinBootLimit;
+            Array.Clear(_z80WinReadAddrCounts, 0, _z80WinReadAddrCounts.Length);
+            Array.Clear(_z80WinWriteAddrCounts, 0, _z80WinWriteAddrCounts.Length);
             for (int i = 0; i < _mbx68kLast.Length; i++)
                 _mbx68kLast[i] = 0xFF;
             _z80Win68kLogged = false;
@@ -994,9 +1032,12 @@ namespace EutherDrive.Core.MdTracerCore
             // 0xA00000–0xA0FFFF  | Z80 bus
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
             {
-                uint z80Addr = in_address;
+                // Map M68K address to Z80 address
+                // M68K 0xA00000 (even) -> Z80 0x0000
+                // M68K 0xA00001 (odd)  -> Z80 0x0001
+                uint z80Addr = in_address & 0x1FFF;
                 if (MapZ80OddReadToNext && (in_address & 1) != 0)
-                    z80Addr = in_address + 1;
+                    z80Addr = (z80Addr + 1) & 0x1FFF;
                 if (TraceZ80Win && _z80OddReadLogRemaining > 0 && (in_address & 0x1FFF) == 0x1FFD)
                 {
                     _z80OddReadLogRemaining--;
@@ -1004,17 +1045,29 @@ namespace EutherDrive.Core.MdTracerCore
                     byte v1ffd = md_main.g_md_z80 != null ? md_main.g_md_z80.PeekZ80Ram(0x1FFD) : (byte)0xFF;
                     byte v1ffe = md_main.g_md_z80 != null ? md_main.g_md_z80.PeekZ80Ram(0x1FFE) : (byte)0xFF;
                     Console.WriteLine(
-                        $"[Z80ODD] pc=0x{md_m68k.g_reg_PC:X6} addr=0x{in_address:X6} map=0x{z80Addr:X6} v1ffc=0x{v1ffc:X2} v1ffd=0x{v1ffd:X2} v1ffe=0x{v1ffe:X2}");
+                        $"[Z80ODD] pc=0x{md_m68k.g_reg_PC:X6} addr=0x{in_address:X6} map=0x{z80Addr:X4} v1ffc=0x{v1ffc:X2} v1ffd=0x{v1ffd:X2} v1ffe=0x{v1ffe:X2}");
                 }
                 if (UseMdTracerCompat)
-                    return md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
+                {
+                    byte compatVal = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
+                    RecordZ80WinReadAccess(in_address, 1, compatVal, blocked: false);
+                    return compatVal;
+                }
                 if (!CanAccessZ80BusRange(in_address, 1))
                 {
                     LogZ80WindowBlocked("R8", in_address);
+                    RecordZ80WinReadAccess(in_address, 1, 0xFF, blocked: true);
                     return 0xFF;
                 }
                 byte val = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
                 LogZ80MailboxRead("8", z80Addr, val);
+                if (TraceZ80Win && _z80WinLogRemaining > 0)
+                {
+                    _z80WinLogRemaining--;
+                    int parity = (int)(in_address & 1); // 0=even (UDS), 1=odd (LDS)
+                    Console.WriteLine($"[Z80WIN] R8 pc68k=0x{md_m68k.g_reg_PC:X6} m68k=0x{in_address:X6} z80=0x{z80Addr:X4}=0x{val:X2} parity={parity}");
+                }
+                RecordZ80WinReadAccess(in_address, 1, val, blocked: false);
                 return val;
             }
 
@@ -1068,25 +1121,34 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
             {
+                // Map M68K address to Z80 address
+                uint z80Addr = in_address & 0x1FFF;
                 if (UseMdTracerCompat)
-                    return md_main.g_md_z80 != null ? md_main.g_md_z80.read16(in_address) : (ushort)0xFFFF;
+                {
+                    ushort compatVal = md_main.g_md_z80 != null ? md_main.g_md_z80.read16(z80Addr) : (ushort)0xFFFF;
+                    RecordZ80WinReadAccess(in_address, 2, compatVal, blocked: false);
+                    return compatVal;
+                }
                 if (!CanAccessZ80BusRange(in_address, 2))
                 {
                     LogZ80WindowBlocked("R16", in_address);
+                    RecordZ80WinReadAccess(in_address, 2, 0xFFFF, blocked: true);
                     return 0xFFFF;
                 }
                 if (MirrorZ80WindowReads && !IsZ80Mailbox(in_address) && !IsZ80Mailbox(in_address + 1))
                 {
                     uint byteAddr = (in_address & 1) == 0 ? in_address : in_address + 1;
-                    byte mbxVal8 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(byteAddr) : (byte)0xFF;
+                    byte mbxVal8 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(byteAddr & 0x1FFF) : (byte)0xFF;
                     ushort mbxMirrorWord = (ushort)((mbxVal8 << 8) | mbxVal8);
                     LogZ80MailboxRead("16", in_address, mbxMirrorWord);
+                    RecordZ80WinReadAccess(in_address, 2, mbxMirrorWord, blocked: false);
                     return mbxMirrorWord;
                 }
-                byte hi = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(in_address) : (byte)0xFF;
-                byte lo = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(in_address + 1) : (byte)0xFF;
+                byte hi = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
+                byte lo = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 1) & 0x1FFF) : (byte)0xFF;
                 ushort word = (ushort)((hi << 8) | lo);
                 LogZ80MailboxRead("16", in_address, word);
+                RecordZ80WinReadAccess(in_address, 2, word, blocked: false);
                 return word;
             }
 
@@ -1144,11 +1206,18 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
             {
+                // Map M68K address to Z80 address
+                uint z80Addr = in_address & 0x1FFF;
                 if (UseMdTracerCompat)
-                    return md_main.g_md_z80 != null ? md_main.g_md_z80.read32(in_address) : 0xFFFF_FFFFu;
+                {
+                    uint compatVal = md_main.g_md_z80 != null ? md_main.g_md_z80.read32(z80Addr) : 0xFFFF_FFFFu;
+                    RecordZ80WinReadAccess(in_address, 4, compatVal, blocked: false);
+                    return compatVal;
+                }
                 if (!CanAccessZ80BusRange(in_address, 4))
                 {
                     LogZ80WindowBlocked("R32", in_address);
+                    RecordZ80WinReadAccess(in_address, 4, 0xFFFF_FFFFu, blocked: true);
                     return 0xFFFF_FFFFu;
                 }
                 if (MirrorZ80WindowReads &&
@@ -1158,18 +1227,20 @@ namespace EutherDrive.Core.MdTracerCore
                     !IsZ80Mailbox(in_address + 3))
                 {
                     uint baseAddr = (in_address & 1) == 0 ? in_address : in_address + 1;
-                    byte hi0 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(baseAddr) : (byte)0xFF;
-                    byte hi1 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(baseAddr + 2) : (byte)0xFF;
+                    byte hi0 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(baseAddr & 0x1FFF) : (byte)0xFF;
+                    byte hi1 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((baseAddr + 2) & 0x1FFF) : (byte)0xFF;
                     uint mirrorVal = (uint)(((hi0 << 8) | hi0) << 16 | ((hi1 << 8) | hi1));
                     LogZ80MailboxRead("32", in_address, mirrorVal);
+                    RecordZ80WinReadAccess(in_address, 4, mirrorVal, blocked: false);
                     return mirrorVal;
                 }
-                byte b0 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(in_address) : (byte)0xFF;
-                byte b1 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(in_address + 1) : (byte)0xFF;
-                byte b2 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(in_address + 2) : (byte)0xFF;
-                byte b3 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(in_address + 3) : (byte)0xFF;
+                byte b0 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
+                byte b1 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 1) & 0x1FFF) : (byte)0xFF;
+                byte b2 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 2) & 0x1FFF) : (byte)0xFF;
+                byte b3 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 3) & 0x1FFF) : (byte)0xFF;
                 uint val = (uint)((b0 << 24) | (b1 << 16) | (b2 << 8) | b3);
                 LogZ80MailboxRead("32", in_address, val);
+                RecordZ80WinReadAccess(in_address, 4, val, blocked: false);
                 return val;
             }
 
@@ -1253,7 +1324,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 if (_ymEnabled)
                 {
-                    md_main.g_md_music?.g_md_ym2612.write8(in_address, in_data);
+                    md_main.g_md_music?.g_md_ym2612.write8(in_address, in_data, "M68K");
                     if (TraceYm && _ymWriteLogRemaining > 0)
                     {
                         _ymWriteLogRemaining--;
@@ -1275,7 +1346,10 @@ namespace EutherDrive.Core.MdTracerCore
                 bool lds = !uds;
                 bool udsOnlyRam = Z80UdsOnly && ((in_address & 0xFFFF) < 0x4000);
                 if (udsOnlyRam && (in_address & 1) != 0)
+                {
+                    RecordZ80WinWriteAccess(in_address, 1, in_data, blocked: true);
                     return;
+                }
                 if (UseMdTracerCompat)
                 {
                     RecordZ80WinStat(in_address, in_data, 1, blocked: false);
@@ -1287,13 +1361,16 @@ namespace EutherDrive.Core.MdTracerCore
                         _z80WinLogRemaining--;
                         uint z80Index = in_address & 0x1FFF;
                         int busReq = _z80BusGranted ? 1 : 0;
-                        int reset = _z80Reset ? 1 : 0;
-                        Console.WriteLine($"[Z80WIN] W8 addr=0x{in_address:X6} -> z80[{z80Index:X4}]=0x{in_data:X2} busReq={busReq} reset={reset}");
+                        int parity = uds ? 0 : 1;  // 0=even (UDS), 1=odd (LDS)
+                        Console.WriteLine($"[Z80WIN] W8 pc68k=0x{md_m68k.g_reg_PC:X6} m68k=0x{in_address:X6} z80=0x{z80Index:X4}=0x{in_data:X2} parity={parity} busReq={busReq}");
                     }
                     MaybeLogMbxByteWrite(1, in_address, in_data, uds, lds, blocked: false);
                     MaybeLogZ80Flag65WinWrite(in_address, in_data);
-                    WriteZ80WindowByte(in_address, in_data);
+                    bool wroteCompat = WriteZ80WindowByte(in_address, in_data);
                     MaybeDumpZ80WinRangeSnapshot((ushort)(in_address & 0x1FFF), 1, false);
+                    if (wroteCompat)
+                        AssertZ80WindowWrite(in_address, 1, in_data);
+                    RecordZ80WinWriteAccess(in_address, 1, in_data, blocked: false);
                     return;
                 }
                 if (!CanAccessZ80BusRange(in_address, 1))
@@ -1308,6 +1385,7 @@ namespace EutherDrive.Core.MdTracerCore
                         int reset = _z80Reset ? 1 : 0;
                         Console.WriteLine($"[Z80WIN][WARN] Write while bus not granted! addr=0x{in_address:X6} val=0x{in_data:X2} busReq={busReq} reset={reset}");
                     }
+                    RecordZ80WinWriteAccess(in_address, 1, in_data, blocked: true);
                     return;
                 }
                 uint z80Addr = in_address;
@@ -1335,7 +1413,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 MaybeLogMbxByteWrite(1, z80Addr, in_data, uds, lds, blocked: false);
                 MaybeLogZ80Flag65WinWrite(z80Addr, in_data);
-                WriteZ80WindowByte(z80Addr, in_data);
+                bool wrote = WriteZ80WindowByte(z80Addr, in_data);
                 RecordZ80WinHist(z80Addr);
                 MaybeLogZ80WinRangeWrite(z80Addr, in_data, false);
                 MaybeDumpZ80WinRangeSnapshot((ushort)(z80Addr & 0x1FFF), 1, false);
@@ -1350,7 +1428,8 @@ namespace EutherDrive.Core.MdTracerCore
                     uint z80Index = z80Addr & 0x1FFF;
                     int busReq = _z80BusGranted ? 1 : 0;
                     int reset = _z80Reset ? 1 : 0;
-                    Console.WriteLine($"[Z80WIN] W8 addr=0x{z80Addr:X6} -> z80[{z80Index:X4}]=0x{in_data:X2} busReq={busReq} reset={reset}");
+                    int parity = (int)(z80Addr & 1); // 0=even, 1=odd
+                    Console.WriteLine($"[Z80WIN] W8 pc68k=0x{md_m68k.g_reg_PC:X6} m68k=0x{z80Addr:X6} z80=0x{z80Index:X4}=0x{in_data:X2} parity={parity} busReq={busReq}");
                 }
                 if (TraceZ80Win && !_z80BusGranted && !_z80WinWarned)
                 {
@@ -1359,6 +1438,10 @@ namespace EutherDrive.Core.MdTracerCore
                     int reset = _z80Reset ? 1 : 0;
                     Console.WriteLine($"[Z80WIN][WARN] Write while bus not granted! addr=0x{z80Addr:X6} val=0x{in_data:X2} busReq={busReq} reset={reset}");
                 }
+                if (wrote)
+                    AssertZ80WindowWrite(z80Addr, 1, in_data);
+                if (!_suppressZ80WinStatByteLog)
+                    RecordZ80WinWriteAccess(in_address, 1, in_data, blocked: false);
                 return;
             }
 
@@ -1432,8 +1515,12 @@ namespace EutherDrive.Core.MdTracerCore
                     byte udsHi = (byte)((in_data >> 8) & 0xFF);
                     bool prev = _suppressZ80WinRangeByteLog;
                     _suppressZ80WinRangeByteLog = true;
+                    bool prevStat = _suppressZ80WinStatByteLog;
+                    _suppressZ80WinStatByteLog = true;
                     write8(aligned, udsHi);
+                    _suppressZ80WinStatByteLog = prevStat;
                     _suppressZ80WinRangeByteLog = prev;
+                    RecordZ80WinWriteAccess(aligned, 2, in_data, blocked: false);
                     return;
                 }
                 if (UseMdTracerCompat)
@@ -1441,6 +1528,9 @@ namespace EutherDrive.Core.MdTracerCore
                     byte hiCompat = (byte)((in_data >> 8) & 0xFF);
                     byte loCompat = (byte)(in_data & 0xFF);
                     bool latchHits = Z80Flag65Latch && Z80WindowHitsFlag65(in_address, 2);
+                    bool wroteWord = true;
+                    bool wroteHi = false;
+                    bool wroteLo = false;
                     RecordZ80WinStat(in_address, in_data, 2, blocked: false);
                     MaybeLogZ80WinRangeWrite16(in_address, in_data, uds: true, lds: true, blocked: false);
                     RecordZ80WinHist(in_address);
@@ -1452,16 +1542,15 @@ namespace EutherDrive.Core.MdTracerCore
                         _z80WinLogRemaining--;
                         uint z80Index = in_address & 0x1FFF;
                         int busReq = _z80BusGranted ? 1 : 0;
-                        int reset = _z80Reset ? 1 : 0;
-                        Console.WriteLine($"[Z80WIN] W16 addr=0x{in_address:X6} -> z80[{z80Index:X4}] val=0x{in_data:X4} busReq={busReq} reset={reset}");
+                        Console.WriteLine($"[Z80WIN] W16 pc68k=0x{md_m68k.g_reg_PC:X6} m68k=0x{in_address:X6} z80=0x{z80Index:X4}=0x{in_data:X4} parity=0 busReq={busReq}");
                     }
                     MaybeLogMbxByteWrite(2, in_address, in_data, uds: true, lds: true, blocked: false);
                     MaybeLogZ80Flag65WinWrite(in_address, hiCompat);
                     MaybeLogZ80Flag65WinWrite(in_address + 1, loCompat);
                     if (latchHits)
                     {
-                        WriteZ80WindowByte(in_address, hiCompat);
-                        WriteZ80WindowByte(in_address + 1, loCompat);
+                        wroteHi = WriteZ80WindowByte(in_address, hiCompat);
+                        wroteLo = WriteZ80WindowByte(in_address + 1, loCompat);
                     }
                     else
                     {
@@ -1478,6 +1567,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 _z80WinLogRemaining--;
                                 Console.WriteLine($"[Z80WIN-PROTECT-COMPAT] addr=0x{in_address:X6} val=0x{in_data:X4} skipped");
                             }
+                            wroteWord = false;
                         }
                         else
                         {
@@ -1486,6 +1576,18 @@ namespace EutherDrive.Core.MdTracerCore
                         }
                     }
                     MaybeDumpZ80WinRangeSnapshot((ushort)(in_address & 0x1FFF), 2, false);
+                    if (latchHits)
+                    {
+                        if (wroteHi)
+                            AssertZ80WindowWrite(in_address, 1, hiCompat);
+                        if (wroteLo)
+                            AssertZ80WindowWrite(in_address + 1, 1, loCompat);
+                    }
+                    else if (wroteWord)
+                    {
+                        AssertZ80WindowWrite(in_address, 2, in_data);
+                    }
+                    RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: false);
                     return;
                 }
                 if (!CanAccessZ80BusRange(in_address, 2))
@@ -1500,6 +1602,7 @@ namespace EutherDrive.Core.MdTracerCore
                         int reset = _z80Reset ? 1 : 0;
                         Console.WriteLine($"[Z80WIN][WARN] Write while bus not granted! addr=0x{in_address:X6} val=0x{in_data:X4} busReq={busReq} reset={reset}");
                     }
+                    RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: true);
                     return;
                 }
                 if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1))
@@ -1513,10 +1616,14 @@ namespace EutherDrive.Core.MdTracerCore
                     bool logged = MaybeLogMbxByteWrite(2, in_address, in_data, uds: true, lds: true, blocked: false);
                     if (logged)
                         _suppressMbxByteLog = true;
+                    bool prevStat = _suppressZ80WinStatByteLog;
+                    _suppressZ80WinStatByteLog = true;
                     write8(in_address, mbxHi);
                     write8(in_address + 1, mbxLo);
+                    _suppressZ80WinStatByteLog = prevStat;
                     _suppressMbxByteLog = prevMbx;
                     _suppressZ80WinRangeByteLog = prev;
+                    RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: false);
                     return;
                 }
                 if (DirectZ80WindowWords)
@@ -1528,13 +1635,18 @@ namespace EutherDrive.Core.MdTracerCore
                     MaybeLogZ80Flag65WinWrite(in_address + 1, logLo);
                     if (Z80Flag65Latch && Z80WindowHitsFlag65(in_address, 2))
                     {
-                        WriteZ80WindowByte(in_address, logHi);
-                        WriteZ80WindowByte(in_address + 1, logLo);
+                        bool wroteHi = WriteZ80WindowByte(in_address, logHi);
+                        bool wroteLo = WriteZ80WindowByte(in_address + 1, logLo);
+                        if (wroteHi)
+                            AssertZ80WindowWrite(in_address, 1, logHi);
+                        if (wroteLo)
+                            AssertZ80WindowWrite(in_address + 1, 1, logLo);
                     }
                     else
                     {
                         MarkZ80SafeBootUploadWrite(in_address);
                         md_main.g_md_z80?.write16(in_address, in_data);
+                        AssertZ80WindowWrite(in_address, 2, in_data);
                     }
                     MaybeDumpZ80WinRangeSnapshot((ushort)(in_address & 0x1FFF), 2, false);
                     MaybeLogZ80WinRangeWrite16(in_address, in_data, uds: true, lds: true, blocked: false);
@@ -1545,8 +1657,10 @@ namespace EutherDrive.Core.MdTracerCore
                         uint z80Index = in_address & 0x1FFF;
                         int busReq = _z80BusGranted ? 1 : 0;
                         int reset = _z80Reset ? 1 : 0;
-                        Console.WriteLine($"[Z80WIN] W16 addr=0x{in_address:X6} -> z80[{z80Index:X4}] val=0x{in_data:X4} busReq={busReq} reset={reset}");
+                        int parity = (int)(in_address & 1); // Word is even-aligned
+                        Console.WriteLine($"[Z80WIN] W16 pc68k=0x{md_m68k.g_reg_PC:X6} m68k=0x{in_address:X6} z80=0x{z80Index:X4}=0x{in_data:X4} parity={parity} busReq={busReq}");
                     }
+                    RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: false);
                     return;
                 }
                 byte hi = (byte)((in_data >> 8) & 0xFF);
@@ -1554,9 +1668,13 @@ namespace EutherDrive.Core.MdTracerCore
                 MaybeLogZ80WinRangeWrite16(in_address, in_data, uds: true, lds: true, blocked: false);
                 bool prevWord = _suppressZ80WinRangeByteLog;
                 _suppressZ80WinRangeByteLog = true;
+                bool prevStatWord = _suppressZ80WinStatByteLog;
+                _suppressZ80WinStatByteLog = true;
                 write8(in_address, hi);
                 write8(in_address + 1, lo);
+                _suppressZ80WinStatByteLog = prevStatWord;
                 _suppressZ80WinRangeByteLog = prevWord;
+                RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: false);
                 return;
             }
 
@@ -1625,9 +1743,13 @@ namespace EutherDrive.Core.MdTracerCore
                     byte udsHi0 = (byte)((in_data >> 8) & 0xFF);
                     bool prev = _suppressZ80WinRangeByteLog;
                     _suppressZ80WinRangeByteLog = true;
+                    bool prevStat = _suppressZ80WinStatByteLog;
+                    _suppressZ80WinStatByteLog = true;
                     write8(aligned, udsHi1);
                     write8(aligned + 2, udsHi0);
+                    _suppressZ80WinStatByteLog = prevStat;
                     _suppressZ80WinRangeByteLog = prev;
+                    RecordZ80WinWriteAccess(aligned, 4, in_data, blocked: false);
                     return;
                 }
                 if (UseMdTracerCompat)
@@ -1637,6 +1759,11 @@ namespace EutherDrive.Core.MdTracerCore
                     byte b1Compat = (byte)((in_data >> 8) & 0xFF);
                     byte b0Compat = (byte)(in_data & 0xFF);
                     bool latchHits = Z80Flag65Latch && Z80WindowHitsFlag65(in_address, 4);
+                    bool wroteWord = true;
+                    bool wroteB3 = false;
+                    bool wroteB2 = false;
+                    bool wroteB1 = false;
+                    bool wroteB0 = false;
                     RecordZ80WinStat(in_address, in_data, 4, blocked: false);
                     MaybeLogZ80WinRangeWrite32(in_address, in_data, uds: true, lds: true, blocked: false);
                     RecordZ80WinHist(in_address);
@@ -1652,8 +1779,7 @@ namespace EutherDrive.Core.MdTracerCore
                         _z80WinLogRemaining--;
                         uint z80Index = in_address & 0x1FFF;
                         int busReq = _z80BusGranted ? 1 : 0;
-                        int reset = _z80Reset ? 1 : 0;
-                        Console.WriteLine($"[Z80WIN] W32 addr=0x{in_address:X6} -> z80[{z80Index:X4}] val=0x{in_data:X8} busReq={busReq} reset={reset}");
+                        Console.WriteLine($"[Z80WIN] W32 pc68k=0x{md_m68k.g_reg_PC:X6} m68k=0x{in_address:X6} z80=0x{z80Index:X4}=0x{in_data:X8} parity=0 busReq={busReq}");
                     }
                     MaybeLogMbxByteWrite(4, in_address, in_data, uds: true, lds: true, blocked: false);
                     MaybeLogZ80Flag65WinWrite(in_address, b3Compat);
@@ -1662,10 +1788,10 @@ namespace EutherDrive.Core.MdTracerCore
                     MaybeLogZ80Flag65WinWrite(in_address + 3, b0Compat);
                     if (latchHits)
                     {
-                        WriteZ80WindowByte(in_address, b3Compat);
-                        WriteZ80WindowByte(in_address + 1, b2Compat);
-                        WriteZ80WindowByte(in_address + 2, b1Compat);
-                        WriteZ80WindowByte(in_address + 3, b0Compat);
+                        wroteB3 = WriteZ80WindowByte(in_address, b3Compat);
+                        wroteB2 = WriteZ80WindowByte(in_address + 1, b2Compat);
+                        wroteB1 = WriteZ80WindowByte(in_address + 2, b1Compat);
+                        wroteB0 = WriteZ80WindowByte(in_address + 3, b0Compat);
                     }
                     else
                     {
@@ -1673,6 +1799,22 @@ namespace EutherDrive.Core.MdTracerCore
                         md_main.g_md_z80?.write32(in_address, in_data);
                     }
                     MaybeDumpZ80WinRangeSnapshot((ushort)(in_address & 0x1FFF), 4, false);
+                    if (latchHits)
+                    {
+                        if (wroteB3)
+                            AssertZ80WindowWrite(in_address, 1, b3Compat);
+                        if (wroteB2)
+                            AssertZ80WindowWrite(in_address + 1, 1, b2Compat);
+                        if (wroteB1)
+                            AssertZ80WindowWrite(in_address + 2, 1, b1Compat);
+                        if (wroteB0)
+                            AssertZ80WindowWrite(in_address + 3, 1, b0Compat);
+                    }
+                    else if (wroteWord)
+                    {
+                        AssertZ80WindowWrite(in_address, 4, in_data);
+                    }
+                    RecordZ80WinWriteAccess(in_address, 4, in_data, blocked: false);
                     return;
                 }
                 if (!CanAccessZ80BusRange(in_address, 4))
@@ -1687,6 +1829,7 @@ namespace EutherDrive.Core.MdTracerCore
                         int reset = _z80Reset ? 1 : 0;
                         Console.WriteLine($"[Z80WIN][WARN] Write while bus not granted! addr=0x{in_address:X6} val=0x{in_data:X8} busReq={busReq} reset={reset}");
                     }
+                    RecordZ80WinWriteAccess(in_address, 4, in_data, blocked: true);
                     return;
                 }
                 if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1) ||
@@ -1703,12 +1846,16 @@ namespace EutherDrive.Core.MdTracerCore
                     bool logged = MaybeLogMbxByteWrite(4, in_address, in_data, uds: true, lds: true, blocked: false);
                     if (logged)
                         _suppressMbxByteLog = true;
+                    bool prevStat = _suppressZ80WinStatByteLog;
+                    _suppressZ80WinStatByteLog = true;
                     write8(in_address, mbxB3);
                     write8(in_address + 1, mbxB2);
                     write8(in_address + 2, mbxB1);
                     write8(in_address + 3, mbxB0);
+                    _suppressZ80WinStatByteLog = prevStat;
                     _suppressMbxByteLog = prevMbx;
                     _suppressZ80WinRangeByteLog = prev;
+                    RecordZ80WinWriteAccess(in_address, 4, in_data, blocked: false);
                     return;
                 }
                 if (DirectZ80WindowWords)
@@ -1718,21 +1865,34 @@ namespace EutherDrive.Core.MdTracerCore
                     byte logB2 = (byte)((in_data >> 16) & 0xFF);
                     byte logB1 = (byte)((in_data >> 8) & 0xFF);
                     byte logB0 = (byte)(in_data & 0xFF);
+                    bool wroteB3 = false;
+                    bool wroteB2 = false;
+                    bool wroteB1 = false;
+                    bool wroteB0 = false;
                     MaybeLogZ80Flag65WinWrite(in_address, logB3);
                     MaybeLogZ80Flag65WinWrite(in_address + 1, logB2);
                     MaybeLogZ80Flag65WinWrite(in_address + 2, logB1);
                     MaybeLogZ80Flag65WinWrite(in_address + 3, logB0);
                     if (Z80Flag65Latch && Z80WindowHitsFlag65(in_address, 4))
                     {
-                        WriteZ80WindowByte(in_address, logB3);
-                        WriteZ80WindowByte(in_address + 1, logB2);
-                        WriteZ80WindowByte(in_address + 2, logB1);
-                        WriteZ80WindowByte(in_address + 3, logB0);
+                        wroteB3 = WriteZ80WindowByte(in_address, logB3);
+                        wroteB2 = WriteZ80WindowByte(in_address + 1, logB2);
+                        wroteB1 = WriteZ80WindowByte(in_address + 2, logB1);
+                        wroteB0 = WriteZ80WindowByte(in_address + 3, logB0);
+                        if (wroteB3)
+                            AssertZ80WindowWrite(in_address, 1, logB3);
+                        if (wroteB2)
+                            AssertZ80WindowWrite(in_address + 1, 1, logB2);
+                        if (wroteB1)
+                            AssertZ80WindowWrite(in_address + 2, 1, logB1);
+                        if (wroteB0)
+                            AssertZ80WindowWrite(in_address + 3, 1, logB0);
                     }
                     else
                     {
                         MarkZ80SafeBootUploadWrite(in_address);
                         md_main.g_md_z80?.write32(in_address, in_data);
+                        AssertZ80WindowWrite(in_address, 4, in_data);
                     }
                     MaybeDumpZ80WinRangeSnapshot((ushort)(in_address & 0x1FFF), 4, false);
                     MaybeLogZ80WinRangeWrite32(in_address, in_data, uds: true, lds: true, blocked: false);
@@ -1742,9 +1902,9 @@ namespace EutherDrive.Core.MdTracerCore
                         _z80WinLogRemaining--;
                         uint z80Index = in_address & 0x1FFF;
                         int busReq = _z80BusGranted ? 1 : 0;
-                        int reset = _z80Reset ? 1 : 0;
-                        Console.WriteLine($"[Z80WIN] W32 addr=0x{in_address:X6} -> z80[{z80Index:X4}] val=0x{in_data:X8} busReq={busReq} reset={reset}");
+                        Console.WriteLine($"[Z80WIN] W32 pc68k=0x{md_m68k.g_reg_PC:X6} m68k=0x{in_address:X6} z80=0x{z80Index:X4}=0x{in_data:X8} parity=0 busReq={busReq}");
                     }
+                    RecordZ80WinWriteAccess(in_address, 4, in_data, blocked: false);
                     return;
                 }
                 byte b3 = (byte)((in_data >> 24) & 0xFF);
@@ -1754,11 +1914,15 @@ namespace EutherDrive.Core.MdTracerCore
                 MaybeLogZ80WinRangeWrite32(in_address, in_data, uds: true, lds: true, blocked: false);
                 bool prevLong = _suppressZ80WinRangeByteLog;
                 _suppressZ80WinRangeByteLog = true;
+                bool prevStatLong = _suppressZ80WinStatByteLog;
+                _suppressZ80WinStatByteLog = true;
                 write8(in_address, b3);
                 write8(in_address + 1, b2);
                 write8(in_address + 2, b1);
                 write8(in_address + 3, b0);
+                _suppressZ80WinStatByteLog = prevStatLong;
                 _suppressZ80WinRangeByteLog = prevLong;
+                RecordZ80WinWriteAccess(in_address, 4, in_data, blocked: false);
                 return;
             }
 
@@ -1891,6 +2055,12 @@ namespace EutherDrive.Core.MdTracerCore
             }
             if (prev != next && TraceZ80Sig)
                 Console.WriteLine($"[Z80SIG] BUSREQ={(next ? 1 : 0)} (stopOn={(next ? 1 : 0)})");
+            if (prev != next && TraceZ80SigTransitions)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine(
+                    $"[Z80SIG-TRANS] frame={frame} type=BUSREQ pc68k=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} prev={(prev ? 1 : 0)} next={(next ? 1 : 0)} busReq={(next ? 1 : 0)} reset={(_z80Reset ? 1 : 0)}");
+            }
             _z80BusAckLogState = -1;
             _z80BusAckLogState8 = -1;
             if (ResetZ80OnBusReqRelease && prev && !next && md_main.g_md_z80 != null &&
@@ -1952,6 +2122,12 @@ namespace EutherDrive.Core.MdTracerCore
             }
             if (prev != next && TraceZ80Sig)
                 Console.WriteLine($"[Z80SIG] RESET={(next ? 1 : 0)} ({(next ? "assert" : "deassert")})");
+            if (prev != next && TraceZ80SigTransitions)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine(
+                    $"[Z80SIG-TRANS] frame={frame} type=RESET pc68k=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} prev={(prev ? 1 : 0)} next={(next ? 1 : 0)} busReq={(_z80BusGranted ? 1 : 0)} reset={(next ? 1 : 0)}");
+            }
             _z80BusAckLogState = -1;
             _z80BusAckLogState8 = -1;
         }
@@ -2128,32 +2304,38 @@ namespace EutherDrive.Core.MdTracerCore
             return true;
         }
 
-        private void WriteZ80WindowByte(uint addr, byte value)
+        private bool WriteZ80WindowByte(uint m68kAddr, byte value)
         {
             if (md_main.g_md_z80 == null)
-                return;
+                return false;
+
+            // Map M68K address to Z80 address:
+            // M68K 0xA01B80 (even) -> Z80 0x1B80
+            // M68K 0xA01B81 (odd)  -> Z80 0x1B81
+            // This matches clownmdemu's byte-lane handling
+            ushort z80Addr = (ushort)(m68kAddr & 0x1FFF);
 
             // [BOOT-PROTECT] Protect boot code area (0x0040-0x0046) during safe boot upload
             // This includes: DI (0x0040), LD SP,nn (0x0041-0x0043), JP nn (0x0044-0x0046)
-            ushort z80Addr = (ushort)(addr & 0x1FFF);
             if (Z80SafeBootEnabled && _z80SafeBootUploadActive && z80Addr >= 0x0040 && z80Addr <= 0x0046)
             {
                 // Skip write to protect boot code (DI, LD SP, JP to driver)
                 if (TraceZ80Win && _z80WinLogRemaining > 0)
                 {
                     _z80WinLogRemaining--;
-                    Console.WriteLine($"[Z80WIN-PROTECT] addr=0x{addr:X6} -> z80[{z80Addr:X4}] val=0x{value:X2} skipped");
+                    Console.WriteLine($"[Z80WIN-PROTECT] addr=0x{m68kAddr:X6} -> z80[{z80Addr:X4}] val=0x{value:X2} skipped");
                 }
-                return;
+                return false;
             }
 
-            MarkZ80SafeBootUploadWrite(addr);
-            if (ShouldForceZ80FlagBit2 && (addr & 0x1FFF) == ForceZ80FlagBit2Target)
+            MarkZ80SafeBootUploadWrite(m68kAddr);
+            if (ShouldForceZ80FlagBit2 && z80Addr == ForceZ80FlagBit2Target)
                 value = (byte)(value | 0x04);
-            if (ShouldSuppressZ80Flag65Write(addr, value, out _))
-                return;
-            md_main.g_md_z80.write8(addr, value);
-            MaybeForceZ80PcOnUpload(addr);
+            if (ShouldSuppressZ80Flag65Write(m68kAddr, value, out _))
+                return false;
+            md_main.g_md_z80.write8(z80Addr, value);
+            MaybeForceZ80PcOnUpload(m68kAddr);
+            return true;
         }
 
         private void MaybeForceZ80PcOnUpload(uint addr)
@@ -2642,6 +2824,181 @@ namespace EutherDrive.Core.MdTracerCore
             _z80WinStatLastSize = size;
         }
 
+        private void RecordZ80WinReadAccess(uint addr, int size, uint value, bool blocked)
+        {
+            if ((addr & 0xFFFF) > 0x1FFF)
+                return;
+            if (TraceZ80WinStat)
+            {
+                switch (size)
+                {
+                    case 1:
+                        _z80WinRead8Count++;
+                        break;
+                    case 2:
+                        _z80WinRead16Count++;
+                        break;
+                    case 4:
+                        _z80WinRead32Count++;
+                        break;
+                }
+                if (blocked)
+                    _z80WinReadBlocked++;
+                int index = (int)(addr & 0x1FFF);
+                if ((uint)index < (uint)_z80WinReadAddrCounts.Length)
+                    _z80WinReadAddrCounts[index]++;
+            }
+            MaybeLogZ80WinBoot("R", addr, size, value, blocked);
+        }
+
+        private void RecordZ80WinWriteAccess(uint addr, int size, uint value, bool blocked)
+        {
+            if ((addr & 0xFFFF) > 0x1FFF)
+                return;
+            if (TraceZ80WinStat)
+            {
+                switch (size)
+                {
+                    case 1:
+                        _z80WinWrite8Count++;
+                        break;
+                    case 2:
+                        _z80WinWrite16Count++;
+                        break;
+                    case 4:
+                        _z80WinWrite32Count++;
+                        break;
+                }
+                if (blocked)
+                    _z80WinWriteBlocked++;
+                int index = (int)(addr & 0x1FFF);
+                if ((uint)index < (uint)_z80WinWriteAddrCounts.Length)
+                    _z80WinWriteAddrCounts[index]++;
+            }
+            MaybeLogZ80WinBoot("W", addr, size, value, blocked);
+        }
+
+        private void AssertZ80WindowWrite(uint addr, int size, uint value)
+        {
+            if (!AssertZ80WinWrite || _z80WinAssertRemaining <= 0 || _suppressZ80WinAssert)
+                return;
+            if ((addr & 0xFFFF) > 0x1FFF)
+                return;
+            if (md_main.g_md_z80 == null)
+                return;
+
+            _z80WinAssertRemaining--;
+
+            ushort z80Addr = (ushort)(addr & 0x1FFF);
+            byte exp0 = 0, exp1 = 0, exp2 = 0, exp3 = 0;
+            byte act0 = md_main.g_md_z80.PeekZ80Ram(z80Addr);
+            byte act1 = md_main.g_md_z80.PeekZ80Ram((ushort)((z80Addr + 1) & 0x1FFF));
+            byte act2 = md_main.g_md_z80.PeekZ80Ram((ushort)((z80Addr + 2) & 0x1FFF));
+            byte act3 = md_main.g_md_z80.PeekZ80Ram((ushort)((z80Addr + 3) & 0x1FFF));
+
+            switch (size)
+            {
+                case 1:
+                    exp0 = (byte)(value & 0xFF);
+                    if (act0 != exp0)
+                        LogZ80WinAssert(addr, size, exp0, 0, 0, 0, act0, act1, act2, act3);
+                    break;
+                case 2:
+                    exp0 = (byte)((value >> 8) & 0xFF);
+                    exp1 = (byte)(value & 0xFF);
+                    if (act0 != exp0 || act1 != exp1)
+                        LogZ80WinAssert(addr, size, exp0, exp1, 0, 0, act0, act1, act2, act3);
+                    break;
+                case 4:
+                    exp0 = (byte)((value >> 24) & 0xFF);
+                    exp1 = (byte)((value >> 16) & 0xFF);
+                    exp2 = (byte)((value >> 8) & 0xFF);
+                    exp3 = (byte)(value & 0xFF);
+                    if (act0 != exp0 || act1 != exp1 || act2 != exp2 || act3 != exp3)
+                        LogZ80WinAssert(addr, size, exp0, exp1, exp2, exp3, act0, act1, act2, act3);
+                    break;
+            }
+        }
+
+        private void LogZ80WinAssert(uint addr, int size, byte exp0, byte exp1, byte exp2, byte exp3,
+            byte act0, byte act1, byte act2, byte act3)
+        {
+            int busReq = _z80BusGranted ? 1 : 0;
+            int reset = _z80Reset ? 1 : 0;
+            ushort z80Addr = (ushort)(addr & 0x1FFF);
+            Console.WriteLine(
+                $"[Z80WIN-ASSERT] pc68k=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} z80=0x{z80Addr:X4} " +
+                $"size={size} exp={exp0:X2} {exp1:X2} {exp2:X2} {exp3:X2} " +
+                $"act={act0:X2} {act1:X2} {act2:X2} {act3:X2} busReq={busReq} reset={reset}");
+        }
+
+        private void MaybeLogZ80WinBoot(string op, uint addr, int size, uint value, bool blocked)
+        {
+            if (!TraceZ80WinBoot || _z80WinBootRemaining <= 0)
+                return;
+            _z80WinBootRemaining--;
+            int busGranted = _z80BusGranted ? 1 : 0;
+            string fmt = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
+            Console.WriteLine(
+                $"[Z80WIN-BOOT] {op} pc68k=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} size={size} " +
+                $"val=0x{value.ToString(fmt)} busGranted={busGranted} blocked={(blocked ? 1 : 0)}");
+        }
+
+        private static string BuildZ80WinTop(int[] counts, int limit)
+        {
+            if (limit <= 0)
+                return "none";
+
+            Span<int> topCount = stackalloc int[limit];
+            Span<int> topAddr = stackalloc int[limit];
+            for (int i = 0; i < limit; i++)
+                topAddr[i] = -1;
+
+            for (int addr = 0; addr < counts.Length; addr++)
+            {
+                int count = counts[addr];
+                if (count <= 0)
+                    continue;
+                for (int i = 0; i < limit; i++)
+                {
+                    if (topAddr[i] == addr)
+                    {
+                        topCount[i] = count;
+                        goto NextAddr;
+                    }
+                }
+                for (int i = 0; i < limit; i++)
+                {
+                    if (count > topCount[i])
+                    {
+                        for (int j = limit - 1; j > i; j--)
+                        {
+                            topCount[j] = topCount[j - 1];
+                            topAddr[j] = topAddr[j - 1];
+                        }
+                        topCount[i] = count;
+                        topAddr[i] = addr;
+                        break;
+                    }
+                }
+NextAddr:;
+            }
+
+            var sb = new StringBuilder();
+            for (int i = 0; i < limit; i++)
+            {
+                if (topAddr[i] < 0)
+                    continue;
+                if (sb.Length > 0)
+                    sb.Append(' ');
+                sb.Append("0x");
+                sb.Append(topAddr[i].ToString("X4"));
+                sb.Append(':');
+                sb.Append(topCount[i]);
+            }
+            return sb.Length == 0 ? "none" : sb.ToString();
+        }
+
         private void RecordZ80WinHist(uint addr)
         {
             if (!TraceZ80WinHist)
@@ -2671,12 +3028,28 @@ namespace EutherDrive.Core.MdTracerCore
                 $"[Z80WIN-STAT] frame={frame} writes={_z80WinStatWrites} blocked={_z80WinStatBlocked} " +
                 $"last=0x{_z80WinStatLastAddr:X6} pc=0x{_z80WinStatLastPc:X6} size={_z80WinStatLastSize} " +
                 $"val=0x{_z80WinStatLastValue:X8} busReq={busReq} reset={reset}");
+            string topRead = BuildZ80WinTop(_z80WinReadAddrCounts, TraceZ80WinTopLimit);
+            string topWrite = BuildZ80WinTop(_z80WinWriteAddrCounts, TraceZ80WinTopLimit);
+            Console.WriteLine(
+                $"[Z80WIN-RWSTAT] frame={frame} r8={_z80WinRead8Count} r16={_z80WinRead16Count} " +
+                $"r32={_z80WinRead32Count} w8={_z80WinWrite8Count} w16={_z80WinWrite16Count} w32={_z80WinWrite32Count} " +
+                $"rBlocked={_z80WinReadBlocked} wBlocked={_z80WinWriteBlocked} topR={topRead} topW={topWrite}");
             _z80WinStatWrites = 0;
             _z80WinStatBlocked = 0;
+            _z80WinRead8Count = 0;
+            _z80WinRead16Count = 0;
+            _z80WinRead32Count = 0;
+            _z80WinWrite8Count = 0;
+            _z80WinWrite16Count = 0;
+            _z80WinWrite32Count = 0;
+            _z80WinReadBlocked = 0;
+            _z80WinWriteBlocked = 0;
             _z80WinStatLastAddr = 0;
             _z80WinStatLastPc = 0;
             _z80WinStatLastValue = 0;
             _z80WinStatLastSize = 0;
+            Array.Clear(_z80WinReadAddrCounts, 0, _z80WinReadAddrCounts.Length);
+            Array.Clear(_z80WinWriteAddrCounts, 0, _z80WinWriteAddrCounts.Length);
         }
 
         internal void FlushZ80WinHist(long frame)

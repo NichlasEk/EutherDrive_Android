@@ -177,11 +177,11 @@ namespace EutherDrive.Core.MdTracerCore
                     else
                     {
                     if (_bootTraceEnabled && _bootTraceRemaining == 200)
-                        MdLog.WriteLine("[m68k boot] trace start");
+                        Console.WriteLine("[m68k boot] trace start");
 
                     if (_bootTraceEnabled && _bootTraceRemaining > 0)
                     {
-                        MdLog.WriteLine($"[m68k boot] PC=0x{g_reg_PC:X6} OP=0x{g_opcode:X4} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} A0=0x{g_reg_addr[0].l:X8} A1=0x{g_reg_addr[1].l:X8}");
+                        Console.WriteLine($"[m68k boot] PC=0x{g_reg_PC:X6} OP=0x{g_opcode:X4}");
                         if (g_opcode == 0x0111 && _bootTraceProbeRemaining > 0)
                         {
                             uint a1 = g_reg_addr[1].l;
