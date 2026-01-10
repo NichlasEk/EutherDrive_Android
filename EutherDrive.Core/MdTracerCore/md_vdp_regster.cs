@@ -479,7 +479,12 @@ namespace EutherDrive.Core.MdTracerCore
                     if (g_vdp_interlace_mode == 1)
                         Warn("Interlace mode 1 not fully implemented.");
 
-                    g_sprite_vmask = (g_vdp_interlace_mode == 0) ? 0x1ff : 0x3ff;
+                    g_sprite_vmask = g_vdp_interlace_mode switch
+                    {
+                        0 => 0x1ff,
+                        2 => 0x3fe, // Interlace mode 2: sprite Y LSB is ignored (even lines only).
+                        _ => 0x3ff
+                    };
 
                     g_vdp_reg_12_0_cellmode2 = (byte)(in_data & 0x01);
                     ApplyHorizontalMode(IsH40Mode());

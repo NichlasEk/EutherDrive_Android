@@ -327,13 +327,14 @@ namespace EutherDrive.Core.MdTracerCore
                                 if (g_game_primap[w_posx] <= w_priority && !g_sprite_line_mask[w_posx])
                                 {
                                     uint w_pic_w;
-                                    int x_in_tile = ((w_reverse & 0x01) != 0) ? (7 - w_cx) : w_cx;
+                                    int x_in_tile = w_cx;
                                     int y_in_tile = w_cy;
-                                    if ((w_reverse & 0x02) != 0)
-                                        y_in_tile = (cellHeight - 1) - w_cy;
 
                                     if (ForceDirectVramReadSprites && g_vdp_interlace_mode == 2)
                                     {
+                                        x_in_tile = ((w_reverse & 0x01) != 0) ? (7 - w_cx) : w_cx;
+                                        if ((w_reverse & 0x02) != 0)
+                                            y_in_tile = (cellHeight - 1) - w_cy;
                                         int tileIndex = w_char_cur & 0x3FF;
                                         int baseAddr = tileIndex << 6;
                                         int byteAddr = baseAddr + (y_in_tile << 2) + ((x_in_tile >> 2) << 1);

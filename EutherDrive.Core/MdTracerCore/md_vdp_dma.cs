@@ -148,6 +148,7 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         ushort writeAddr = (ushort)(g_vdp_reg_dest_address & 0xffff);
                         g_vram[writeAddr] = w_fill_data;
+                        UpdateSpriteCacheByte(writeAddr, w_fill_data);
                         pattern_chk(g_vdp_reg_dest_address, w_fill_data);
                         // Track the write
                         this.RecordVramWriteForTracking(writeAddr, (ushort)(w_fill_data | (w_fill_data << 8)));
@@ -189,6 +190,7 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         byte w_val = g_vram[g_dma_src_addr];
                         g_vram[g_vdp_reg_dest_address] = w_val;
+                        UpdateSpriteCacheByte(g_vdp_reg_dest_address, w_val);
                         pattern_chk(g_vdp_reg_dest_address, w_val);
                         g_dma_src_addr = (g_dma_src_addr + 1) & 0xffff;
                         g_vdp_reg_dest_address = (ushort)((g_vdp_reg_dest_address + g_vdp_reg_15_autoinc) & 0xffff);

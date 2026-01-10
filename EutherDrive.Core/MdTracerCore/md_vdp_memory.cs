@@ -482,6 +482,50 @@ namespace EutherDrive.Core.MdTracerCore
             g_vram[(addr ^ 1) & 0xffff] = (byte)(data & 0xff);
             if (TraceVramWrites)
                 Console.WriteLine($"[VRAM] frame={_frameCounter} addr=0x{(addr & 0xffff):X4} data=0x{data:X4}");
+
+            if (TraceSatWrites)
+            {
+                int baseAddr = g_vdp_reg_5_sprite & (IsH40Mode() ? ~0x3FF : ~0x1FF);
+                int tableSize = IsH40Mode() ? 0x400 : 0x200;
+                int wordAddr = addr & 0xFFFE;
+                if (wordAddr >= baseAddr && wordAddr < baseAddr + tableSize)
+                {
+                    Console.WriteLine(
+                        $"[SAT-WRITE] frame={_frameCounter} scanline={g_scanline} addr=0x{wordAddr:X4} " +
+                        $"val=0x{data:X4} base=0x{baseAddr:X4} size=0x{tableSize:X3}");
+                }
+            }
+
+            int spriteBase = GetSpriteTableBase();
+            int spriteSize = GetSpriteTableSize();
+            int spriteWordAddr = addr & 0xFFFE;
+            if (spriteWordAddr >= spriteBase && spriteWordAddr < spriteBase + spriteSize)
+            {
+                EnsureSpriteTableCache();
+                int offset = spriteWordAddr - g_sprite_cache_base;
+                if ((uint)offset < (uint)g_sprite_table_cache.Length)
+                {
+                    g_sprite_table_cache[offset] = (byte)(data >> 8);
+                    if ((uint)(offset + 1) < (uint)g_sprite_table_cache.Length)
+                        g_sprite_table_cache[offset + 1] = (byte)(data & 0xff);
+                }
+                InvalidateSpriteRowCache();
+            }
+        }
+
+        private void UpdateSpriteCacheByte(int addr, byte value)
+        {
+            int spriteBase = GetSpriteTableBase();
+            int spriteSize = GetSpriteTableSize();
+            int spriteByteAddr = addr & 0xFFFF;
+            if (spriteByteAddr < spriteBase || spriteByteAddr >= spriteBase + spriteSize)
+                return;
+
+            EnsureSpriteTableCache();
+            int offset = spriteByteAddr - g_sprite_cache_base;
+            if ((uint)offset < (uint)g_sprite_table_cache.Length)
+                g_sprite_table_cache[offset] = value;
+            InvalidateSpriteRowCache();
         }
 
         private void cram_set(int idx, ushort data)

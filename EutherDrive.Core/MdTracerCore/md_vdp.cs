@@ -414,6 +414,15 @@ namespace EutherDrive.Core.MdTracerCore
             g_sprite_row_cache_field = -1;
         }
 
+        private void RefreshSpriteTableCache()
+        {
+            if (g_sprite_cache_base < 0 || g_sprite_cache_size <= 0 || g_sprite_table_cache.Length == 0)
+                return;
+
+            for (int i = 0; i < g_sprite_cache_size; i++)
+                g_sprite_table_cache[i] = g_vram[(g_sprite_cache_base + i) & 0xffff];
+        }
+
         private void InvalidateSpriteRowCache()
         {
             g_sprite_row_cache_dirty = true;
@@ -449,6 +458,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (!g_sprite_row_cache_dirty)
                 return;
 
+            RefreshSpriteTableCache();
             g_sprite_row_cache_dirty = false;
             g_sprite_row_cache_field = -1;
 
