@@ -18,7 +18,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         // Render-data
         private bool[]         g_pattern_chk = Array.Empty<bool>();
-        private uint[]         g_renderer_vram = Array.Empty<uint>();
+        internal uint[]        g_renderer_vram = Array.Empty<uint>();
         private VDP_LINE_SNAP[] g_line_snap = Array.Empty<VDP_LINE_SNAP>();
         private uint[]         g_game_cmap = Array.Empty<uint>();
         private uint[]         g_game_primap = Array.Empty<uint>();
@@ -78,10 +78,15 @@ namespace EutherDrive.Core.MdTracerCore
                 // - field=0: scanline N → output linje 2*N (jämna linjer)
                 // - field=1: scanline N → output linje 2*N+1 (udda linjer)
                 // Detta ger 448 linjer totalt i framebufferten
-                
+
+                // Set g_vdp_interlace_field BEFORE taking the snapshot
+                // This ensures the snapshot captures the correct field state
+                int fieldBit = g_vdp_interlace_field;
+                g_vdp_interlace_field = (byte)fieldBit;
+
                 // Beräkna output-linje: scanline * 2 + fält (0 eller 1)
-                int outputLine = (g_scanline << 1) | g_vdp_interlace_field;
-                RenderLineWithField(g_vdp_interlace_field, outputLine);
+                int outputLine = (g_scanline << 1) | fieldBit;
+                RenderLineWithField((byte)fieldBit, outputLine);
                 return;
             }
 
@@ -144,6 +149,7 @@ namespace EutherDrive.Core.MdTracerCore
             LogMdWriteSummary();
             MaybeLogVdpTiming();
             MaybeLogVdpState();
+            LogInterlaceDebug();
         }
 
         // --- Hjälp (valfritt) ---

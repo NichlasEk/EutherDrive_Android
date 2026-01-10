@@ -12,7 +12,10 @@ namespace EutherDrive.Core.MdTracerCore
         private void ResetState()
         {
             if (g_vram != null && g_vram.Length > 0)
+            {
+                TrackVramClear("ResetState()");
                 Array.Clear(g_vram, 0, g_vram.Length);
+            }
 
             if (g_cram != null && g_cram.Length > 0)
                 Array.Clear(g_cram, 0, g_cram.Length);

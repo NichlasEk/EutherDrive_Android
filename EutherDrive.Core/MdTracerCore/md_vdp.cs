@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -39,6 +40,16 @@ namespace EutherDrive.Core.MdTracerCore
         private int _mdDataWritesThisFrame;
         private int _mdVramWritesThisFrame;
         private int _mdCramWritesThisFrame;
+        private int _mdVramWritesToNameTablesThisFrame;
+        private int _mdVramWritesDroppedThisFrame;
+        private int _mdDataWritesDroppedThisFrame;
+        private int _mdDataPortWindowFrame = -1;
+        private int _mdDataPortWindowLogCount;
+        private int[] _mdDataWriteCodeCounts = new int[16];
+        private long _mdVramWritesToNameTablesTotal;
+        private long _mdVramWritesTotal;
+        private bool _mdVramNameTableWriteLogged;
+        private bool _mdVramClearLogged;
         private int _mdNoWriteFrames;
         private bool _mdDataPortLogged;
         private bool _mdCtrlPortLogged;
@@ -55,6 +66,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_INTERLACE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpState =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceDmaStatus =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_STATUS"), "1", StringComparison.Ordinal);
         private static readonly bool ShowOverscan =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SHOW_OVERSCAN"), "1", StringComparison.Ordinal);
         private static readonly System.Diagnostics.Stopwatch _timingStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -67,6 +80,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_SMS_VBLANK"), "1", StringComparison.Ordinal);
         private static readonly bool ForceMdVBlank =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_MD_VBLANK"), "1", StringComparison.Ordinal);
+        private static readonly bool ForceHBlank =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_FORCE_HBLANK"), "1", StringComparison.Ordinal);
 
         private enum InterlaceOutputPolicy
         {
@@ -140,6 +155,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
 
             g_scanline = in_vline;
+            if (ForceHBlank)
+                g_vdp_status_2_hbrank = 1;
 
             if (g_scanline == 0)
             {
@@ -159,15 +176,20 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 _smsBeWritesLastFrame = _smsBeWritesThisFrame;
                 _smsBfWritesLastFrame = _smsBfWritesThisFrame;
+
                 rendering_frame();
                 interrupt_check();
 
+                // Trigger VBlank once per frame at scanline g_display_ysize for all modes.
                 TriggerVBlank();
             }
             else if (g_scanline == g_vertical_line_max - 1) // också definierad i VDP
             {
             // Keep VBlank flag until the next frame even when clearing per-line stats.
-            g_vdp_status_4_frame = (byte)((g_vdp_status_4_frame == 0) ? 1 : 0);
+            if (g_vdp_interlace_mode == 0)
+                g_vdp_status_4_frame = (byte)((g_vdp_status_4_frame == 0) ? 1 : 0);
+            else
+                g_vdp_status_4_frame = g_vdp_interlace_field;
                 g_vdp_status_5_collision = 0;
                 g_vdp_status_6_sprite = 0;
             }
@@ -309,18 +331,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         private int GetTileWordBase(int tileIndex)
         {
-            if (g_vdp_interlace_mode == 2)
-            {
-                int masked = tileIndex & 0x03ff;
-                return masked << 5;
-            }
+            // Normal mode: 32 bytes per pattern (8x8 tiles)
             return (tileIndex & 0x07ff) << 4;
         }
 
         private int GetReversePage(uint reverse)
         {
-            if (g_vdp_interlace_mode == 2)
-                return (reverse & 0x01) != 0 ? VRAM_DATASIZE : 0;
+            // Normal mode: reverse flag selects which page of pattern data
             return (int)(reverse * VRAM_DATASIZE);
         }
 
@@ -332,8 +349,26 @@ namespace EutherDrive.Core.MdTracerCore
             return row << 1;
         }
 
-        private int GetTileWordAddress(int tileIndex, int rowInCell, uint reverse)
+        internal int GetTileWordAddress(int tileIndex, int rowInCell, uint reverse, bool isScrollA = false)
         {
+            if (g_vdp_interlace_mode == 2)
+            {
+                // In interlace mode 2, tile patterns are 8x16 (16 rows, 64 bytes each)
+                //
+                // pattern_chk stores at: w_address >> 1 = (tileIndex*64 + row*4) / 2 = tileIndex*32 + row*2
+                //
+                // So GetTileWordAddress must return: tileIndex*32 + row*2
+
+                // 32 words per pattern (64 bytes / 2)
+                int patternBase = (tileIndex & 0x3FF) << 5;
+
+                // Row offset: 2 words per row (4 bytes / 2)
+                int rowOffset = rowInCell << 1;
+
+                return patternBase + rowOffset;
+            }
+
+            // Normal mode: use the standard formula
             return GetReversePage(reverse) + GetTileWordBase(tileIndex) + GetRowWordOffset(rowInCell, reverse);
         }
 
@@ -364,6 +399,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             g_vdp_interlace_field ^= 0x01;
+            g_vdp_status_4_frame = g_vdp_interlace_field;
             _interlaceFieldAdvanced = true;
             if (TraceVdpInterlace)
             {
@@ -463,6 +499,98 @@ namespace EutherDrive.Core.MdTracerCore
             _smsBfWritesThisFrame++;
         }
 
+        // Public method to track VRAM writes from memory layer
+        public void TrackVramWrite(int address, ushort value)
+        {
+            _mdVramWritesTotal++;
+            _mdVramWritesThisFrame++;
+
+            // Check if write is to name table area (scroll plane A or B)
+            int scrollA_base = g_vdp_reg_2_scrolla & 0xFFFE;
+            int scrollB_base = g_vdp_reg_4_scrollb & 0xFFFE;
+
+            bool isNameTableWrite = (address >= scrollA_base && address < scrollA_base + 0x2000) ||
+                                    (address >= scrollB_base && address < scrollB_base + 0x1000) ||
+                                    (address >= 0xC000 && address < 0xE000) ||  // Common Scroll A
+                                    (address >= 0xE000 && address < 0xF000);   // Common Scroll B
+
+            if (isNameTableWrite)
+            {
+                _mdVramWritesToNameTablesTotal++;
+                _mdVramWritesToNameTablesThisFrame++;
+
+                // Log first few name table writes
+                if (!_mdVramNameTableWriteLogged && _mdVramWritesToNameTablesTotal <= 32)
+                {
+                    Console.WriteLine($"[VRAM-NAME] frame={_frameCounter} addr=0x{address:X4} val=0x{value:X4} " +
+                        $"scrollA=0x{scrollA_base:X4} scrollB=0x{scrollB_base:X4} interlace={g_vdp_interlace_mode}");
+                }
+            }
+        }
+
+        // Wrapper for calling from memory layer (avoids circular reference issues)
+        internal void RecordVramWriteForTracking(int address, ushort value)
+        {
+            TrackVramWrite(address, value);
+        }
+
+        // Track writes to specific scroll regions (for debugging DMA-FILL issues)
+        private int _writesToScrollAThisFrame;
+        private int _writesToScrollBThisFrame;
+        private bool _loggedPostDmaWrites;
+        private int _vramWriteLogCount;
+        private bool _dmaFillLogged;
+
+        // Detailed tracking for all VRAM writes to scroll regions
+        public void LogVramWrite(string source, int address, ushort value, int autoInc, int vdpCode)
+        {
+            // Check if address is in scroll regions
+            bool inScrollA = address >= 0xC000 && address < 0xE000;
+            bool inScrollB = address >= 0xE000 && address < 0x10000;
+            bool inAltScrollB = address >= 0xA000 && address < 0xC000;
+
+            if (inScrollA || inScrollB || inAltScrollB)
+            {
+                if (_vramWriteLogCount < 100)
+                {
+                    string region = inScrollA ? "ScrollA" : (inScrollB ? "ScrollB" : "AltScrollB");
+                    Console.WriteLine($"[VRAM-WRITE-DETAIL] frame={_frameCounter} source={source} {region} addr=0x{address:X4} val=0x{value:X4} inc={autoInc} code=0x{vdpCode:X2}");
+                    _vramWriteLogCount++;
+                }
+
+                // After DMA-FILL at frame 1148, watch for changes
+                if (_frameCounter >= 1148 && _frameCounter < 1200)
+                {
+                    Console.WriteLine($"[VRAM-WATCH] frame={_frameCounter} {source} write to 0x{address:X4} value=0x{value:X4}");
+                }
+            }
+        }
+
+        // Track writes to specific scroll regions
+        public void TrackScrollRegionWrite(int address)
+        {
+            // Scroll A: 0xC000-0xDFFF (typical)
+            // Scroll B: 0xE000-0xFFFF (typical)
+            if (address >= 0xC000 && address < 0xE000)
+            {
+                _writesToScrollAThisFrame++;
+            }
+            else if (address >= 0xE000 && address < 0x10000)
+            {
+                _writesToScrollBThisFrame++;
+            }
+        }
+
+        // Public method to track VRAM clears
+        public void TrackVramClear(string reason)
+        {
+            if (!_mdVramClearLogged)
+            {
+                Console.WriteLine($"[VRAM-CLEAR] frame={_frameCounter} reason={reason}");
+                _mdVramClearLogged = true;
+            }
+        }
+
         private void TriggerVBlank()
         {
             if (_vblankActive)
@@ -470,15 +598,374 @@ namespace EutherDrive.Core.MdTracerCore
 
             _vblankActive = true;
             g_vdp_status_3_vbrank = 1;
+
+            // Log name table non-zero counts at VBlank (once per second approx)
+            LogNameTableStats();
+
+            // Log VRAM page stats (brute force - top 3 pages with most non-zero tiles)
+            LogVramPageStats();
+
+            // Log register snapshot in interlace mode 2
+            LogInterlaceRegisterSnapshot();
+
+            // Per-frame write summary + VRAM page histogram after interlace activation
+            LogInterlaceWriteSummary();
+
+            // DMA status + CPU data-port write stats around interlace frame window
+            LogDmaStatusWindow();
+
+            // Log VRAM write summary at VBlank (once per second approx)
+            if (_frameCounter % 60 == 0 && (_mdVramWritesThisFrame > 0 || _mdVramWritesToNameTablesThisFrame > 0))
+            {
+                Console.WriteLine($"[VRAM-STATS] frame={_frameCounter} interlace={g_vdp_interlace_mode} vblank=1 display={g_vdp_reg_1_6_display} " +
+                    $"vramWrites={_mdVramWritesThisFrame} nameTableWrites={_mdVramWritesToNameTablesThisFrame} dropped={_mdVramWritesDroppedThisFrame} " +
+                    $"totalNameTable={_mdVramWritesToNameTablesTotal} totalVram={_mdVramWritesTotal}");
+            }
+
+            // Reset per-frame counters
+            _mdCtrlWritesThisFrame = 0;
+            _mdDataWritesThisFrame = 0;
+            _mdCramWritesThisFrame = 0;
+            _mdVramWritesThisFrame = 0;
+            _mdVramWritesToNameTablesThisFrame = 0;
+            _mdVramWritesDroppedThisFrame = 0;
+            _mdDataWritesDroppedThisFrame = 0;
+            ResetVramWriteCounters();
+            Array.Clear(_mdDataWriteCodeCounts, 0, _mdDataWriteCodeCounts.Length);
+
             if (g_vdp_status_7_vinterrupt == 0)
             {
                 g_vdp_status_7_vinterrupt = 1;
                 md_m68k.g_interrupt_V_req = true;
                 // Z80 needs VBlank interrupt for sound drivers in both MD and SMS mode
                 md_main.g_md_z80?.irq_request(true, "VDP", 0);
+                Console.WriteLine($"[VINT] TriggerVBlank frame={_frameCounter} scanline={g_scanline} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field}");
             }
             LogTriggerVBlank();
             LogVBlankEdge(1);
+        }
+
+        // Count non-zero words and non-zero tile indices in scroll name tables
+        private void LogNameTableStats()
+        {
+            if (_frameCounter % 60 != 0)
+                return;
+
+            // Read from actual VRAM, not renderer cache
+            int scrollA_base = g_vdp_reg_2_scrolla & 0xFFFE;
+            int scrollB_base = g_vdp_reg_4_scrollb & 0xFFFE;
+
+            int countNonZeroA = 0;
+            int countNonZeroTileA = 0;
+            int countNonZeroB = 0;
+            int countNonZeroTileB = 0;
+
+            int entries = g_scroll_xcell * g_scroll_ycell;
+            if (entries <= 0)
+                entries = 64;
+            if (entries > 0x2000 / 2)
+                entries = 0x2000 / 2;
+
+            // Count words from each scroll table
+            for (int i = 0; i < entries; i++)
+            {
+                // Read word from VRAM (handle byte-swap)
+                int addrA = (scrollA_base + (i << 1)) & 0xFFFE;
+                int addrB = (scrollB_base + (i << 1)) & 0xFFFE;
+                ushort wordA = (ushort)((g_vram[addrA] << 8) | g_vram[addrA ^ 1]);
+                ushort wordB = (ushort)((g_vram[addrB] << 8) | g_vram[addrB ^ 1]);
+
+                if (wordA != 0)
+                {
+                    countNonZeroA++;
+                    if ((wordA & 0x07FF) != 0)
+                        countNonZeroTileA++;
+                }
+                if (wordB != 0)
+                {
+                    countNonZeroB++;
+                    if ((wordB & 0x07FF) != 0)
+                        countNonZeroTileB++;
+                }
+            }
+
+            // Probe: show first non-zero tile if any
+            ushort firstNonZeroA = 0;
+            int firstNonZeroAddrA = 0;
+            int firstNonZeroTileA = 0;
+            for (int i = 0; i < entries; i++)
+            {
+                int addr = (scrollA_base + (i << 1)) & 0xFFFE;
+                ushort word = (ushort)((g_vram[addr] << 8) | g_vram[addr ^ 1]);
+                if (word != 0)
+                {
+                    firstNonZeroA = word;
+                    firstNonZeroAddrA = addr;
+                    firstNonZeroTileA = word & 0x07FF;
+                    break;
+                }
+            }
+
+            ushort firstNonZeroB = 0;
+            int firstNonZeroAddrB = 0;
+            int firstNonZeroTileB = 0;
+            for (int i = 0; i < entries; i++)
+            {
+                int addr = (scrollB_base + (i << 1)) & 0xFFFE;
+                ushort word = (ushort)((g_vram[addr] << 8) | g_vram[addr ^ 1]);
+                if (word != 0)
+                {
+                    firstNonZeroB = word;
+                    firstNonZeroAddrB = addr;
+                    firstNonZeroTileB = word & 0x07FF;
+                    break;
+                }
+            }
+
+            Console.WriteLine($"[NAME-TABLE] frame={_frameCounter} interlace={g_vdp_interlace_mode} " +
+                $"scrollA_base=0x{scrollA_base:X4} scrollB_base=0x{scrollB_base:X4} " +
+                $"nonZeroA={countNonZeroA}/{entries} tileA={countNonZeroTileA} " +
+                $"nonZeroB={countNonZeroB}/{entries} tileB={countNonZeroTileB} " +
+                $"writes={_mdVramWritesThisFrame} " +
+                (firstNonZeroA != 0 ? $"probeA=addr0x{firstNonZeroAddrA:X4} word=0x{firstNonZeroA:X4} tile={firstNonZeroTileA}" : "probeA=none") +
+                " " +
+                (firstNonZeroB != 0 ? $"probeB=addr0x{firstNonZeroAddrB:X4} word=0x{firstNonZeroB:X4} tile={firstNonZeroTileB}" : "probeB=none"));
+        }
+
+        // Trace VDP data-port writes (CPU -> VDP)
+        private void TraceVdpDataWrite(uint in_address, ushort in_data, int code, int destAddr, int autoInc)
+        {
+            // Always count writes to VRAM for stats
+            if ((code & 0x0F) == 1)
+            {
+                int maskedAddr = destAddr & 0xFFFF;
+                int page = maskedAddr >> 12;
+                _vramWritePageCounts[page]++;
+
+                // Track when we first see writes to scroll regions
+                if (maskedAddr >= 0xC000 && maskedAddr < 0xE100 && in_data != 0)
+                {
+                    if (_firstScrollWriteFrame == 0)
+                    {
+                        _firstScrollWriteFrame = (int)_frameCounter;
+                    }
+                    _lastScrollWriteFrame = (int)_frameCounter;
+                }
+            }
+
+            // Log ALL writes to VRAM 0xA000-0xFFFF (always log for debugging)
+            if ((code & 0x0F) == 1)
+            {
+                int maskedAddr = destAddr & 0xFFFF;
+
+                // Log writes around interlace mode 2 activation
+                bool nearInterlace2 = (_frameCounter >= _firstInterlace2Frame - 120) && (_frameCounter <= _firstInterlace2Frame + 300);
+
+                if ((maskedAddr >= 0xA000 || nearInterlace2) && _vramWriteLogCount < 512)
+                {
+                    string target = "VRAM";
+                    Console.WriteLine($"[VRAM-WRITE-CPU] frame={_frameCounter} addr=0x{maskedAddr:X4} target={target} value=0x{in_data:X4} autoInc={autoInc}");
+                    _vramWriteLogCount++;
+                }
+
+                // Watchpoint: first non-zero in scroll regions
+                if (maskedAddr >= 0xC000 && maskedAddr < 0xC100)
+                {
+                    if (_firstNonZeroScrollA == 0 && in_data != 0)
+                    {
+                        _firstNonZeroScrollA = (ushort)in_data;
+                        Console.WriteLine($"[WATCHPOINT-ScrollA] frame={_frameCounter} addr=0x{maskedAddr:X4} value=0x{in_data:X4} FIRST_NON_ZERO");
+                    }
+                }
+                if (maskedAddr >= 0xE000 && maskedAddr < 0xE100)
+                {
+                    if (_firstNonZeroScrollB == 0 && in_data != 0)
+                    {
+                        _firstNonZeroScrollB = (ushort)in_data;
+                        Console.WriteLine($"[WATCHPOINT-ScrollB] frame={_frameCounter} addr=0x{maskedAddr:X4} value=0x{in_data:X4} FIRST_NON_ZERO");
+                    }
+                }
+            }
+        }
+
+        private int _firstScrollWriteFrame = 0;
+        private int _lastScrollWriteFrame = 0;
+        private int _firstInterlace2Frame = 0;
+        private ushort _firstNonZeroScrollA = 0;
+        private ushort _firstNonZeroScrollB = 0;
+        private int[] _vramWritePageCounts = new int[16];
+
+        // Trace VDP control port writes (CPU -> VDP control)
+        private void TraceVdpControlWrite(uint in_address, ushort in_data, bool commandSelect, ushort commandWord)
+        {
+            if (g_vdp_interlace_mode != 2)
+                return;
+
+            // Log only changes to key registers
+            if ((in_data & 0xC000) == 0x8000)
+            {
+                // Register write
+                byte rs = (byte)((in_data >> 8) & 0x1F);
+                byte data = (byte)(in_data & 0xFF);
+
+                // Key registers for scroll/name tables
+                if (rs == 2 || rs == 3 || rs == 4 || rs == 5 || rs == 0x0C || rs == 0x0F)
+                {
+                    if (_vramWriteLogCount < 32)  // Limit control writes too
+                    {
+                        Console.WriteLine($"[VDP-CTRL-WRITE] frame={_frameCounter} reg{rs}=0x{data:X2}");
+                        _vramWriteLogCount++;
+                    }
+                }
+            }
+            else if (!commandSelect)
+            {
+                // Address set command (first word)
+                int code = (in_data >> 14) & 0x3;
+                int addr = in_data & 0x3FFF;
+                string target = code switch
+                {
+                    1 => "VRAM",
+                    3 => "CRAM",
+                    _ => $"UNK({code})"
+                };
+                if (_vramWriteLogCount < 16)
+                {
+                    Console.WriteLine($"[VDP-ADDR-SET] frame={_frameCounter} target={target} addr=0x{addr:X4}");
+                    _vramWriteLogCount++;
+                }
+            }
+        }
+
+        // Reset write counters at VBlank
+        private void ResetVramWriteCounters()
+        {
+            _vramWriteLogCount = 0;
+            for (int i = 0; i < 16; i++) _vramWritePageCounts[i] = 0;
+            _writesToScrollAThisFrame = 0;
+            _writesToScrollBThisFrame = 0;
+        }
+
+        internal void RecordDataPortWriteCode(int code)
+        {
+            int idx = code & 0x0f;
+            if ((uint)idx < (uint)_mdDataWriteCodeCounts.Length)
+                _mdDataWriteCodeCounts[idx]++;
+        }
+
+        // Count non-zero words per 0x1000 page and report top 3
+        private void LogVramPageStats()
+        {
+            if (_frameCounter % 60 != 0)
+                return;
+
+            int[] pageCounts = new int[16];
+            int[] pageNonZeroTiles = new int[16];
+
+            for (int page = 0; page < 16; page++)
+            {
+                int pageStart = page << 12;
+                int nonZero = 0;
+                int nonZeroTiles = 0;
+
+                // Sample 64 words per page (every 8th word)
+                for (int i = 0; i < 64; i++)
+                {
+                    int addr = (pageStart + (i << 4)) & 0xFFFE; // sample every 16 bytes
+                    ushort word = (ushort)((g_vram[addr] << 8) | g_vram[addr ^ 1]);
+                    if (word != 0)
+                    {
+                        nonZero++;
+                        if ((word & 0x07FF) != 0)
+                            nonZeroTiles++;
+                    }
+                }
+                pageCounts[page] = nonZero;
+                pageNonZeroTiles[page] = nonZeroTiles;
+            }
+
+            // Find top 3 pages by nonZeroTiles
+            var topPages = pageNonZeroTiles
+                .Select((count, page) => (count, page))
+                .OrderByDescending(x => x.count)
+                .Take(3)
+                .Where(x => x.count > 0)
+                .ToList();
+
+            string topStr = topPages.Any()
+                ? string.Join(" ", topPages.Select(x => $"0x{x.page << 12:X4}({x.count})"))
+                : "none";
+
+            // In interlace mode 2, also show which pages are being written to
+            if (g_vdp_interlace_mode == 2)
+            {
+                var writePages = _vramWritePageCounts
+                    .Select((count, page) => (count, page))
+                    .Where(x => x.count > 0)
+                    .OrderByDescending(x => x.count)
+                    .Take(3)
+                    .ToList();
+
+                string writeStr = writePages.Any()
+                    ? string.Join(" ", writePages.Select(x => $"0x{x.page << 12:X4}(w={x.count})"))
+                    : "none";
+
+                Console.WriteLine($"[VRAM-PAGE-STATS] frame={_frameCounter} interlace={g_vdp_interlace_mode} topPages={topStr} writePages={writeStr}");
+            }
+            else
+            {
+                Console.WriteLine($"[VRAM-PAGE-STATS] frame={_frameCounter} interlace={g_vdp_interlace_mode} topPages={topStr}");
+            }
+        }
+
+        // Log register snapshot in interlace mode 2
+        private void LogInterlaceRegisterSnapshot()
+        {
+            if (g_vdp_interlace_mode != 2 || _frameCounter % 60 != 0)
+                return;
+
+            // Compute bases - H40 mode is bit 1 of register 12 (stored in bits 6-7 as cellmode)
+            // H32: mask = 0xFC00, H40: mask = 0xFE00
+            // H40 is set when reg12 bit 1 is set, which appears as g_vdp_reg_12_7_cellmode1=1 (bit 7 in raw reg)
+            bool isH40 = (g_vdp_reg_12_7_cellmode1 != 0);
+            int mask = isH40 ? 0xFE00 : 0xFC00;
+
+            int scrollA_base = g_vdp_reg_2_scrolla & mask;
+            int scrollB_base = g_vdp_reg_4_scrollb & mask;
+            int window_base = g_vdp_reg_3_windows & mask;
+            int sprite_base = g_vdp_reg_5_sprite & mask;
+            int hscroll_base = g_vdp_reg_13_hscroll & 0xFC00;
+
+            // Get raw register 12 value (combining bits)
+            byte reg12_raw = (byte)((g_vdp_reg_12_7_cellmode1 << 7) | (g_vdp_reg_12_3_shadow << 3) |
+                                     (g_vdp_reg_12_2_interlacemode << 1) | g_vdp_reg_12_0_cellmode2);
+
+            Console.WriteLine($"[VDP-REGS-INT2] frame={_frameCounter} " +
+                $"reg0C=0x{reg12_raw:X2}(H40={isH40}) " +
+                $"reg02=0x{g_vdp_reg_2_scrolla:X2} reg04=0x{g_vdp_reg_4_scrollb:X2} reg05=0x{g_vdp_reg_5_sprite:X2} " +
+                $"reg03=0x{g_vdp_reg_3_windows:X2} reg0D=0x{g_vdp_reg_13_hscroll:X2} reg0F=0x{g_vdp_reg_15_autoinc:X2} " +
+                $"bases: A=0x{scrollA_base:X4} B=0x{scrollB_base:X4} W=0x{window_base:X4} S=0x{sprite_base:X4} HS=0x{hscroll_base:X4}");
+        }
+
+        private void LogInterlaceWriteSummary()
+        {
+            if (g_vdp_interlace_mode != 2 || _firstInterlace2Frame == 0 || _frameCounter < _firstInterlace2Frame)
+                return;
+
+            string pageHistogram = string.Join(" ",
+                _vramWritePageCounts.Select((count, page) => $"0x{page:X1}={count}"));
+
+            Console.WriteLine(
+                $"[VRAM-WRITE-SUM] frame={_frameCounter} vram={_mdVramWritesThisFrame} cram={_mdCramWritesThisFrame} " +
+                $"ctrl={_mdCtrlWritesThisFrame} data={_mdDataWritesThisFrame} nameTbl={_mdVramWritesToNameTablesThisFrame} " +
+                $"scrollA={_writesToScrollAThisFrame} scrollB={_writesToScrollBThisFrame} dropped={_mdVramWritesDroppedThisFrame}");
+            Console.WriteLine($"[VRAM-PAGE-HIST] frame={_frameCounter} {pageHistogram}");
+            string codeHist = string.Join(" ",
+                _mdDataWriteCodeCounts
+                    .Select((count, code) => count > 0 ? $"0x{code:X1}={count}" : null)
+                    .Where(x => x != null));
+            if (!string.IsNullOrEmpty(codeHist))
+                Console.WriteLine($"[VDP-DATA-CODE] frame={_frameCounter} {codeHist}");
         }
 
         private void ClearVBlank()
@@ -543,6 +1030,73 @@ namespace EutherDrive.Core.MdTracerCore
             _lastTriggerVBlankLogFrame = _frameCounter;
             bool irq = md_m68k.g_interrupt_V_req;
             Console.WriteLine($"[VDP] TriggerVBlank frame={_frameCounter} line={g_scanline} setVBlankFlag=1 irq6Requested={(irq ? 1 : 0)}");
+        }
+
+        private void LogDmaStatusWindow()
+        {
+            if (!TraceDmaStatus)
+                return;
+            if (_frameCounter < 640 || _frameCounter > 700)
+                return;
+
+            int vramWrites = _mdVramWritesThisFrame;
+            int cramWrites = _mdCramWritesThisFrame;
+            int codeVram = _mdDataWriteCodeCounts[1];
+            int codeCram = _mdDataWriteCodeCounts[3];
+            int codeVsram = _mdDataWriteCodeCounts[5];
+            int codeOther = _mdDataWritesThisFrame - (codeVram + codeCram + codeVsram);
+            int scrollA = g_vdp_reg_2_scrolla & 0xFFFE;
+            int scrollB = g_vdp_reg_4_scrollb & 0xFFFE;
+            bool dmaActive = g_vdp_status_1_dma != 0 || g_dma_mode != 0 || g_dma_leng > 0;
+            LogDmaStatusLine(
+                $"[DMA-STATUS] frame={_frameCounter} dmaActive={(dmaActive ? 1 : 0)} dmaMode={g_dma_mode} dmaLen={g_dma_leng} " +
+                $"dmaDest=0x{g_vdp_reg_dest_address:X4} cpuDataWrites={_mdDataWritesThisFrame} cpuDropped={_mdDataWritesDroppedThisFrame} " +
+                $"vramWrites={vramWrites} cramWrites={cramWrites} codeVram={codeVram} codeCram={codeCram} codeVsram={codeVsram} codeOther={codeOther} " +
+                $"scrollA=0x{scrollA:X4} scrollB=0x{scrollB:X4} vramDropped={_mdVramWritesDroppedThisFrame} " +
+                $"gate={(GateCpuWritesDuringDma ? 1 : 0)} gateBypass={(DisableDmaWriteGate ? 1 : 0)}");
+        }
+
+        private void TraceDataPortWindowWrite(uint in_address, ushort in_data)
+        {
+            if (!TraceDmaStatus)
+                return;
+            if (_frameCounter < 640 || _frameCounter > 700)
+                return;
+
+            if (_mdDataPortWindowFrame != (int)_frameCounter)
+            {
+                _mdDataPortWindowFrame = (int)_frameCounter;
+                _mdDataPortWindowLogCount = 0;
+            }
+
+            if (_mdDataPortWindowLogCount >= 16)
+                return;
+            _mdDataPortWindowLogCount++;
+
+            int codeLow = g_vdp_reg_code & 0x0f;
+            string target = codeLow switch
+            {
+                0x01 => "VRAM",
+                0x03 => "CRAM",
+                0x05 => "VSRAM",
+                _ => $"UNK({codeLow})"
+            };
+            LogDmaStatusLine(
+                $"[DATA-WRITE] frame={_frameCounter} addr=0x{g_vdp_reg_dest_address:X4} code=0x{g_vdp_reg_code:X2} " +
+                $"target={target} autoinc=0x{g_vdp_reg_15_autoinc:X2} val=0x{in_data:X4}");
+        }
+
+        private static void LogDmaStatusLine(string line)
+        {
+            Console.WriteLine(line);
+            try
+            {
+                System.IO.File.AppendAllText("rom_start.log", line + Environment.NewLine);
+            }
+            catch
+            {
+                // Ignore logging failures.
+            }
         }
 
         private void LogVBlankEdge(int state)
@@ -623,6 +1177,96 @@ namespace EutherDrive.Core.MdTracerCore
             _mdDataWritesThisFrame = 0;
             _mdVramWritesThisFrame = 0;
             _mdCramWritesThisFrame = 0;
+        }
+
+        private void LogInterlaceDebug()
+        {
+            // Log interlace timing debug info once per second (every 60 frames)
+            if (_frameCounter % 60 != 0)
+                return;
+
+            // Get current HV counter value
+            ushort hvCounter = get_vdp_hvcounter();
+            int hvV = hvCounter >> 8;
+            int hvH = hvCounter & 0xFF;
+
+            // Get VBlank and status bits
+            int vblankBit = g_vdp_status_3_vbrank;
+
+            // Get backdrop color index
+            int backdropIdx = g_vdp_reg_7_backcolor;
+            uint backdropColor = (g_color != null && backdropIdx < g_color.Length) ? g_color[backdropIdx] : 0;
+
+            // Get display enable status
+            int displayEnabled = g_vdp_reg_1_6_display;
+
+            // Get Z80 active state and cycles
+            bool z80Active = md_main.g_md_z80?.g_active ?? false;
+
+            // Get audio write counters per second
+            int ymKeyOn = 0, ymFnum = 0, ymParam = 0, ymDacCmd = 0, ymDacDat = 0;
+            int psgWrites = 0;
+            if (md_ym2612.AudStatEnabled && md_main.g_md_music != null)
+            {
+                md_main.g_md_music.g_md_ym2612.ConsumeAudStatCounters(
+                    out ymKeyOn, out ymFnum, out ymParam, out ymDacCmd, out ymDacDat);
+                psgWrites = md_main.g_md_music.g_md_sn76489.ConsumeAudStatWrites();
+            }
+
+            // Check CRAM colors - count non-black colors
+            int cramNonBlack = 0;
+            if (g_color != null)
+            {
+                for (int i = 0; i < Math.Min(64, g_color.Length); i++)
+                {
+                    uint rgb = g_color[i] & 0x00FFFFFF;
+                    if (rgb != 0) cramNonBlack++;
+                }
+            }
+
+            // Check framebuffer content - count non-black pixels and stats
+            int nonBlackCount = 0;
+            int totalPixels = 0;
+            var uniqueColors = new System.Collections.Generic.HashSet<uint>();
+
+            if (g_game_screen != null)
+            {
+                // Check the full output size (320x448 in interlace mode 2)
+                int outputHeight = (g_vdp_interlace_mode != 0) ? g_display_ysize * 2 : g_display_ysize;
+                int checkCount = Math.Min(g_output_xsize * outputHeight, g_game_screen.Length);
+                totalPixels = checkCount;
+
+                // Sample first 10000 pixels for unique colors (performance)
+                int sampleLimit = Math.Min(10000, checkCount);
+
+                for (int i = 0; i < checkCount; i++)
+                {
+                    uint pixel = g_game_screen[i];
+                    uint rgb = pixel & 0x00FFFFFF; // Ignore alpha
+
+                    if (rgb != 0) // Non-black (RGB != 0)
+                        nonBlackCount++;
+
+                    if (i < sampleLimit)
+                    {
+                        if (rgb != 0) // Only track non-black colors
+                            uniqueColors.Add(rgb);
+                    }
+                }
+            }
+
+            // Get some color palette info
+            uint sampleCram1 = g_color != null && g_color.Length > 0 ? g_color[0] : 0;
+            uint sampleCram16 = g_color != null && g_color.Length > 16 ? g_color[16] : 0;
+            uint sampleCram32 = g_color != null && g_color.Length > 32 ? g_color[32] : 0;
+
+            Console.WriteLine(
+                $"[INTERLACE-DEBUG] frame={_frameCounter} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field} " +
+                $"hvV={hvV} hvH={hvH} vblank={vblankBit} display={displayEnabled} " +
+                $"z80Active={(z80Active ? 1 : 0)} ymKeyOn={ymKeyOn} ymParam={ymParam} psgWrites={psgWrites} " +
+                $"fbPixels={nonBlackCount}/{totalPixels} uniqueColors={uniqueColors.Count} " +
+                $"backdrop={backdropIdx} backdropColor=0x{backdropColor:X8} " +
+                $"cramNonBlack={cramNonBlack} cram0=0x{sampleCram1:X8} cram16=0x{sampleCram16:X8}");
         }
 
     }

@@ -1,5 +1,6 @@
 // Headless test harness for EutherDrive core
 // Usage: dotnet run --project EutherDrive.Headless -- /path/to/rom.md [frames]
+//        dotnet run --project EutherDrive.Headless -- --test-interlace2
 // Default: runs 120 frames
 
 using System;
@@ -15,11 +16,20 @@ class Program
 
     static int Main(string[] args)
     {
+        // Check for special test modes
+        if (args.Length >= 1 && args[0] == "--test-interlace2")
+        {
+            Console.WriteLine("[HEADLESS] Running interlace mode 2 test...");
+            MdVdpInterlaceMode2PatternTest.Run();
+            return 0;
+        }
+
         if (args.Length < 1)
         {
             Console.Error.WriteLine("Usage: EutherDrive.Headless <rom_path> [frames]");
             Console.Error.WriteLine($"  rom_path: Path to ROM file (.md, .bin, .gen, etc.)");
             Console.Error.WriteLine($"  frames:   Number of frames to run (default: {DefaultFrames})");
+            Console.Error.WriteLine("  --test-interlace2: Run interlace mode 2 pattern test");
             return 1;
         }
 

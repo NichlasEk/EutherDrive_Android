@@ -10,6 +10,25 @@ namespace EutherDrive.Core.MdTracerCore
         private int g_dma_leng;
         private bool g_dma_fill_req;
         private ushort g_dma_fill_data;
+        private bool g_dma_immediate_complete = true;
+
+        private void FinishDmaTransfer(int mode)
+        {
+            g_dma_mode = 0;
+            g_dma_leng = 0;
+            g_vdp_status_1_dma = 0;
+            g_vdp_status_8_full = 0;
+            write_dma_leng();
+            switch (mode)
+            {
+                case 1:
+                    write_dma_src_addr(g_dma_src_addr >> 1);
+                    break;
+                case 3:
+                    write_dma_src_addr(g_dma_src_addr);
+                    break;
+            }
+        }
 
         public int dma_status_update()
         {
@@ -33,12 +52,13 @@ namespace EutherDrive.Core.MdTracerCore
                 g_dma_leng -= w_tran;
                 if (g_dma_leng <= 0)
                 {
+                    int prevMode = g_dma_mode;
                     g_dma_mode = 0;
                     g_dma_leng = 0;
                     g_vdp_status_1_dma = 0;
                     g_vdp_status_8_full = 0;
                     write_dma_leng();
-                    switch (g_dma_mode)
+                    switch (prevMode)
                     {
                         case 1:
                             write_dma_src_addr(g_dma_src_addr >> 1);
@@ -59,6 +79,10 @@ namespace EutherDrive.Core.MdTracerCore
             g_dma_mode = 1;
             g_vdp_status_1_dma = 1;
             g_vdp_status_8_full = 1;
+
+            // Log DMA copy operation
+            LogDmaStatusLine($"[DMA-COPY] frame={_frameCounter} len={g_dma_leng} src=0x{g_dma_src_addr:X6} dest=0x{g_vdp_reg_dest_address:X4} regCode=0x{g_vdp_reg_code:X2}");
+
             int w_loop_cnt = g_dma_leng;
             switch (g_vdp_reg_code & 0x0f)
             {
@@ -66,11 +90,16 @@ namespace EutherDrive.Core.MdTracerCore
                     do
                     {
                         ushort w_val = md_m68k.read16(g_dma_src_addr);
-                        vram_write_w(g_vdp_reg_dest_address, w_val);
-                        pattern_chk(g_vdp_reg_dest_address, (byte)(w_val >> 8));
-                        pattern_chk(g_vdp_reg_dest_address + 1, (byte)(w_val & 0xff));
+                        int writeAddr = g_vdp_reg_dest_address;
+                        vram_write_w(writeAddr, w_val);
+                        pattern_chk(writeAddr, (byte)(w_val >> 8));
+                        pattern_chk(writeAddr + 1, (byte)(w_val & 0xff));
+                        // Track DMA copy writes
+                        this.RecordVramWriteForTracking(writeAddr, w_val);
+                        this.TrackScrollRegionWrite(writeAddr & 0xFFFF);
+                        this.LogVramWrite("DMA", writeAddr, w_val, g_vdp_reg_15_autoinc, g_vdp_reg_code);
                         g_dma_src_addr += 2;
-                        g_vdp_reg_dest_address = (ushort)(g_vdp_reg_dest_address + g_vdp_reg_15_autoinc);
+                        g_vdp_reg_dest_address = (ushort)(writeAddr + g_vdp_reg_15_autoinc);
                     } while (--w_loop_cnt > 0);
                     break;
                 case 3:
@@ -93,7 +122,8 @@ namespace EutherDrive.Core.MdTracerCore
                     } while (--w_loop_cnt > 0);
                     break;
             }
-
+            if (g_dma_immediate_complete)
+                FinishDmaTransfer(1);
         }
         private void dma_run_fill_req(ushort in_data)
         {
@@ -102,16 +132,25 @@ namespace EutherDrive.Core.MdTracerCore
             g_dma_mode = 2;
             g_vdp_status_1_dma = 1;
             g_vdp_status_8_full = 1;
+
+            // Log DMA fill operation with detailed address info
+            byte w_fill_data = (byte)((g_dma_fill_data >> 8) & 0x00ff);
+            ushort startAddr = (ushort)(g_vdp_reg_dest_address & 0xffff);
+            ushort endAddr = (ushort)((startAddr + (g_dma_leng - 1) * g_vdp_reg_15_autoinc) & 0xffff);
+            LogDmaStatusLine($"[DMA-FILL] frame={_frameCounter} len={g_dma_leng} data=0x{w_fill_data:X2} dest=0x{startAddr:X4} inc={g_vdp_reg_15_autoinc} end=0x{endAddr:X4} regCode=0x{g_vdp_reg_code:X2}");
+
             int w_loop_cnt = g_dma_leng;
             switch (g_vdp_reg_code & 0x0f)
             {
                 case 1:
                     // DMA fill writes a single byte (the high byte of the data port) to VRAM.
-                    byte w_data = (byte)((g_dma_fill_data >> 8) & 0x00ff);
                     do
                     {
-                        g_vram[g_vdp_reg_dest_address & 0xffff] = w_data;
-                        pattern_chk(g_vdp_reg_dest_address, w_data);
+                        ushort writeAddr = (ushort)(g_vdp_reg_dest_address & 0xffff);
+                        g_vram[writeAddr] = w_fill_data;
+                        pattern_chk(g_vdp_reg_dest_address, w_fill_data);
+                        // Track the write
+                        this.RecordVramWriteForTracking(writeAddr, (ushort)(w_fill_data | (w_fill_data << 8)));
                         g_vdp_reg_dest_address = (ushort)(g_vdp_reg_dest_address + g_vdp_reg_15_autoinc);
                     } while (--w_loop_cnt > 0);
                     break;
@@ -132,6 +171,8 @@ namespace EutherDrive.Core.MdTracerCore
                     } while (--w_loop_cnt > 0);
                     break;
             }
+            if (g_dma_immediate_complete)
+                FinishDmaTransfer(2);
         }
         private void dma_run_copy_req()
         {
@@ -160,6 +201,8 @@ namespace EutherDrive.Core.MdTracerCore
                     MessageBox.Show("md_vdp.dma_run_copy", "error");
                     break;
             }
+            if (g_dma_immediate_complete)
+                FinishDmaTransfer(3);
         }
         //--------------------------------------------------
         private uint read_dma_src_addr()

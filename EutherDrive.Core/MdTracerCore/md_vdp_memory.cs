@@ -9,6 +9,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM"), "1", StringComparison.Ordinal);
         private static readonly bool TraceCramWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CRAM"), "1", StringComparison.Ordinal);
+        private static readonly bool GateCpuWritesDuringDma =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE"), "1", StringComparison.Ordinal);
+        private static readonly bool DisableDmaWriteGate =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE_DISABLE"), "1", StringComparison.Ordinal);
         private static readonly bool StrictVdpAccess =
             ReadEnvDefaultOn("EUTHERDRIVE_VDP_STRICT");
 
@@ -199,6 +203,21 @@ namespace EutherDrive.Core.MdTracerCore
             if (in_address <= 0xc00003)
             {
                 _mdDataWritesThisFrame++;
+                RecordDataPortWriteCode(g_vdp_reg_code);
+
+                bool dmaActive = g_vdp_status_1_dma != 0 || g_dma_mode != 0 || g_dma_leng > 0;
+                if (GateCpuWritesDuringDma && !DisableDmaWriteGate && dmaActive)
+                {
+                    _mdDataWritesDroppedThisFrame++;
+                    if ((g_vdp_reg_code & 0x0f) == 1)
+                        _mdVramWritesDroppedThisFrame++;
+                    return;
+                }
+
+                // Comprehensive VDP data-port write tracing
+                TraceVdpDataWrite(in_address, in_data, g_vdp_reg_code, g_vdp_reg_dest_address, g_vdp_reg_15_autoinc);
+                TraceDataPortWindowWrite(in_address, in_data);
+
                 if (MdTracerCore.MdLog.Enabled && !_mdDataPortLogged)
                 {
                     _mdDataPortLogged = true;
@@ -216,12 +235,20 @@ namespace EutherDrive.Core.MdTracerCore
                 switch (g_vdp_reg_code & 0x0f)
                 {
                     case 1: // VRAM write
-                        _mdVramWritesThisFrame++;
-                        vram_write_w(g_vdp_reg_dest_address, in_data);
-                        pattern_chk(g_vdp_reg_dest_address,   (byte)(in_data >> 8));
-                        pattern_chk(g_vdp_reg_dest_address+1, (byte)(in_data & 0xff));
-                        g_vdp_reg_dest_address = (ushort)((g_vdp_reg_dest_address + g_vdp_reg_15_autoinc) & 0xffff);
+                    {
+                        int writeAddr = g_vdp_reg_dest_address;
+                        vram_write_w(writeAddr, in_data);
+                        pattern_chk(writeAddr, (byte)(in_data >> 8));
+                        pattern_chk(writeAddr + 1, (byte)(in_data & 0xff));
+                        // Track the write using VDP's tracking method
+                        this.RecordVramWriteForTracking(writeAddr, in_data);
+                        // Also track scroll region writes
+                        this.TrackScrollRegionWrite(writeAddr & 0xFFFF);
+                        // Log detailed write info for scroll regions
+                        this.LogVramWrite("CPU", writeAddr & 0xFFFF, in_data, g_vdp_reg_15_autoinc, g_vdp_reg_code);
+                        g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
                         break;
+                    }
 
                     case 3: // CRAM write
                     {
@@ -253,6 +280,10 @@ namespace EutherDrive.Core.MdTracerCore
                     _mdCtrlPortLogged = true;
                     MdTracerCore.MdLog.WriteLine($"[VDP] MD control port write addr=0x{in_address:X6}");
                 }
+
+                // Trace control port writes in interlace mode 2
+                TraceVdpControlWrite(in_address, in_data, g_command_select, g_command_word);
+
                 if (!g_command_select)
                 {
                     if ((in_data & 0xc000) == 0x8000)
@@ -267,14 +298,34 @@ namespace EutherDrive.Core.MdTracerCore
                         // address set (1st word)
                         g_command_select = true;
                         g_command_word   = in_data;
+                        g_vdp_reg_dest_address = (ushort)((in_data & 0x3fff) | (g_vdp_reg_dest_address & (3 << 14)));
+                        g_vdp_reg_code = ((in_data >> 14) & 0x3) | (g_vdp_reg_code & 0x3C);
                     }
                 }
                 else
                 {
                     // address set (2nd word)
                     g_command_select   = false;
-                    g_vdp_reg_code     = (int)((g_command_word >> 14) | ((in_data >> 2) & 0x3c));
-                    g_vdp_reg_dest_address = (ushort)((g_command_word & 0x3fff) | ((in_data & 0x0003) << 14));
+                    int codeMask = g_vdp_reg_1_4_dma == 1 ? 0x3C : 0x1C;
+                    g_vdp_reg_dest_address = (ushort)((g_vdp_reg_dest_address & 0x3fff) | ((in_data & 0x0007) << 14));
+                    g_vdp_reg_code = (g_vdp_reg_code & ~codeMask) | ((in_data >> 2) & codeMask);
+
+                    if (g_vdp_interlace_mode == 2 && _firstInterlace2Frame > 0 && _frameCounter >= _firstInterlace2Frame)
+                    {
+                        int codeLow = g_vdp_reg_code & 0x0f;
+                        string target = codeLow switch
+                        {
+                            0x01 => "VRAM",
+                            0x03 => "CRAM",
+                            0x05 => "VSRAM",
+                            _ => $"UNK({codeLow})"
+                        };
+                        bool dmaRequested = (g_vdp_reg_code & 0x20) != 0;
+                        Console.WriteLine(
+                            $"[VDP-CTRL-DECODE] frame={_frameCounter} target={target} addr=0x{g_vdp_reg_dest_address:X4} " +
+                            $"code=0x{g_vdp_reg_code:X2} autoinc=0x{g_vdp_reg_15_autoinc:X2} dmaReq={(dmaRequested ? 1 : 0)} " +
+                            $"dmaEn={g_vdp_reg_1_4_dma} dmaMode={g_vdp_reg_23_dma_mode} word1=0x{g_command_word:X4} word2=0x{in_data:X4}");
+                    }
 
                     if ((g_vdp_reg_code & 0x20) != 0 && g_vdp_reg_1_4_dma == 1)
                     {
@@ -467,29 +518,84 @@ namespace EutherDrive.Core.MdTracerCore
             int  w_address = in_address & 0xfffe;
             uint w_val     = vram_read_w(w_address);
 
+            // Log VRAM writes in scroll areas for debugging
+            int scrollA_base = g_vdp_reg_2_scrolla & 0xFFFE;
+            int scrollB_base = g_vdp_reg_4_scrollb & 0xFFFE;
+
+            if ((w_address >= scrollA_base && w_address < scrollA_base + 0x2000) ||
+                (w_address >= scrollB_base && w_address < scrollB_base + 0x1000))
+            {
+                var logLine = $"[VRAM-WRITE] addr=0x{w_address:X4} val=0x{w_val:X4} scrollA=0x{scrollA_base:X4} scrollB=0x{scrollB_base:X4} interlace={g_vdp_interlace_mode}\n";
+                System.IO.File.AppendAllText("/tmp/eutherdrive.log", logLine);
+            }
+
+            // In interlace mode 2, also update the cache
+            if (g_vdp_interlace_mode == 2)
+            {
+                if (w_address >= scrollA_base && w_address < scrollA_base + 0x2000)
+                {
+                    int scroll_offset = (w_address - scrollA_base) >> 1;
+                    g_renderer_vram[0x6000 + scroll_offset] = w_val;
+                }
+                else if (w_address >= scrollB_base && w_address < scrollB_base + 0x1000)
+                {
+                    int scroll_offset = (w_address - scrollB_base) >> 1;
+                    g_renderer_vram[0x6800 + scroll_offset] = w_val;
+                }
+            }
+
             uint w_val_h = ((w_val >> 12) & 0x000f)
             | ((w_val >>  4) & 0x00f0)
             | ((w_val <<  4) & 0x0f00)
             | ((w_val << 12) & 0xf000);
 
-            int w_char = (in_address & 0xffe0) >> 5;
-            int w_addr = (in_address & 0xffe0) >> 1;
-            int wx     = (in_address & 0x0002) >> 1;
-            int wy     = (in_address & 0x001f) >> 2;
+            int w_char;
+            int w_addr;
+            int wx;
+            int wy;
 
+            if (g_vdp_interlace_mode == 2)
+            {
+                // Interlace mode 2: 64-byte patterns (8x16 cells)
+                // Each pattern has 16 rows of 4 bytes
+                w_char = (in_address & 0xffc0) >> 6;  // Divide by 64
+                w_addr = (in_address & 0xffc0) >> 1;  // 64-byte aligned base address
+                wx = (in_address & 0x0002) >> 1;
+                wy = (in_address & 0x003c) >> 2;  // 16 rows (0-15)
+            }
+            else
+            {
+                // Normal mode: 32-byte patterns (8x8 cells)
+                w_char = (in_address & 0xffe0) >> 5;
+                w_addr = (in_address & 0xffe0) >> 1;
+                wx = (in_address & 0x0002) >> 1;
+                wy = (in_address & 0x001f) >> 2;
+            }
+
+            // Store pattern data at correct renderer index
             g_renderer_vram[w_address >> 1] = w_val;
 
+            // Debug: log ALL writes to pattern region (0x0000-0x7FFF) for first 100 frames
+            if (w_address < 0x8000 && _frameCounter < 100 && w_val != 0)
+            {
+                int tileIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 6) & 0x1FF : (w_address >> 5) & 0x3FF;
+                int rowIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 2) & 0x0F : (w_address >> 2) & 0x07;
+                Console.WriteLine($"[PATTERN-WRITE] frame={_frameCounter} vram_addr=0x{w_address:X4} val=0x{w_val:X4} renderer_idx={w_address >> 1} tile={tileIdx} row={rowIdx}");
+            }
+
+            // Store pattern data for reverse mode (normal mode)
+            int wy_flip = (g_vdp_interlace_mode == 2) ? (15 - wy) : (7 - wy);
             if (wx == 0)
             {
                 g_renderer_vram[VRAM_DATASIZE + w_addr + (wy << 1) + 1]      = w_val_h;
-                g_renderer_vram[(VRAM_DATASIZE * 2) + w_addr + ((7 - wy) << 1)]     = w_val;
-                g_renderer_vram[(VRAM_DATASIZE * 3) + w_addr + ((7 - wy) << 1) + 1] = w_val_h;
+                g_renderer_vram[(VRAM_DATASIZE * 2) + w_addr + (wy_flip << 1)]     = w_val;
+                g_renderer_vram[(VRAM_DATASIZE * 3) + w_addr + (wy_flip << 1) + 1] = w_val_h;
             }
             else
             {
                 g_renderer_vram[VRAM_DATASIZE + w_addr + (wy << 1)]          = w_val_h;
-                g_renderer_vram[(VRAM_DATASIZE * 2) + w_addr + ((7 - wy) << 1) + 1] = w_val;
-                g_renderer_vram[(VRAM_DATASIZE * 3) + w_addr + ((7 - wy) << 1)]     = w_val_h;
+                g_renderer_vram[(VRAM_DATASIZE * 2) + w_addr + (wy_flip << 1) + 1] = w_val;
+                g_renderer_vram[(VRAM_DATASIZE * 3) + w_addr + (wy_flip << 1)]     = w_val_h;
             }
 
             g_pattern_chk[w_char] = true;
