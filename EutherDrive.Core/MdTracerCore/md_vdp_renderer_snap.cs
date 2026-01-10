@@ -4,6 +4,19 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_vdp
     {
+        private static readonly int TraceSpriteLine =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPRITES_LINE"), out int line)
+                ? line
+                : -1;
+        private static readonly int TraceSpriteId =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPRITE_ID"), out int spriteId)
+                ? spriteId
+                : -1;
+        private static readonly bool TraceSat =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SAT"), "1", StringComparison.Ordinal);
+        private long _lastSatLogFrame = -1;
+        private byte _lastSatLogField = 0xFF;
+
         private void rendering_frame_snap()
         {
             int w_vscroll_mask = (g_vdp_reg_11_2_vscroll == 1) ? 0x000f : 0xffff;
@@ -104,8 +117,34 @@ namespace EutherDrive.Core.MdTracerCore
                 g_line_snap[g_scanline].hscrollB = w_view_xB;
             }
 
+            if (TraceSat && g_scanline == 0 && (_lastSatLogFrame != _frameCounter || _lastSatLogField != g_vdp_interlace_field))
+            {
+                _lastSatLogFrame = _frameCounter;
+                _lastSatLogField = g_vdp_interlace_field;
+                EnsureSpriteTableCache();
+                int baseAddr = g_sprite_cache_base;
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                sb.AppendFormat("[SAT] frame={0} field={1} base=0x{2:X4}", _frameCounter, g_vdp_interlace_field, baseAddr);
+                for (int i = 0; i < 4; i++)
+                {
+                    int addr = baseAddr + (i << 3);
+                    ushort v1 = SpriteCacheReadWord(addr - g_sprite_cache_base);
+                    ushort v2 = SpriteCacheReadWord(addr - g_sprite_cache_base + 2);
+                    ushort v3 = SpriteCacheReadWord(addr - g_sprite_cache_base + 4);
+                    ushort v4 = SpriteCacheReadWord(addr - g_sprite_cache_base + 6);
+                    int y = v1 & g_sprite_vmask;
+                    int link = v2 & 0x007f;
+                    int x = v4 & 0x01ff;
+                    int sizeX = ((v2 >> 10) & 0x03) + 1;
+                    int sizeY = ((v2 >> 8) & 0x03) + 1;
+                    sb.AppendFormat(" | i={0} y={1} x={2} size={3}x{4} link={5} tile=0x{6:X3}", i, y, x, sizeX, sizeY, link, v3 & 0x07ff);
+                }
+                Console.WriteLine(sb.ToString());
+            }
+
             // VScroll A/B
             {
+                int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
                 if (g_vdp_reg_11_2_vscroll == 0)
                 {
                     ushort w_vscrollA = g_vsram[0];
@@ -129,8 +168,8 @@ namespace EutherDrive.Core.MdTracerCore
 
                     for (int i = 0; i < VSRAM_DATASIZE; i++)
                     {
-                        g_line_snap[g_scanline].vscrollA[i] = (w_vscrollA + g_scanline) % g_scroll_ysize;
-                        g_line_snap[g_scanline].vscrollB[i] = (w_vscrollB + g_scanline) % g_scroll_ysize;
+                        g_line_snap[g_scanline].vscrollA[i] = (w_vscrollA + lineY) % g_scroll_ysize;
+                        g_line_snap[g_scanline].vscrollB[i] = (w_vscrollB + lineY) % g_scroll_ysize;
                     }
                 }
                 else
@@ -156,8 +195,8 @@ namespace EutherDrive.Core.MdTracerCore
                             w_vscrollB &= 0x7fe;
                         }
 
-                        g_line_snap[g_scanline].vscrollA[i] = (w_vscrollA + g_scanline) % g_scroll_ysize;
-                        g_line_snap[g_scanline].vscrollB[i] = (w_vscrollB + g_scanline) % g_scroll_ysize;
+                        g_line_snap[g_scanline].vscrollA[i] = (w_vscrollA + lineY) % g_scroll_ysize;
+                        g_line_snap[g_scanline].vscrollB[i] = (w_vscrollB + lineY) % g_scroll_ysize;
                     }
                 }
             }
@@ -192,47 +231,43 @@ namespace EutherDrive.Core.MdTracerCore
 
             // Sprites för aktuell rad
             {
-                int w_link = 0;
+                bool traceSprites = TraceSpriteLine >= 0 && g_scanline == TraceSpriteLine;
+                bool traceSpriteId = TraceSpriteId >= 0;
+                System.Text.StringBuilder? spriteLog = traceSprites
+                    ? new System.Text.StringBuilder()
+                    : null;
                 int w_line_sprite_cnt = 0;
                 int w_line_cell_cnt = 0;
                 int w_sprite_cnt = 0;
-                int w_sprite_mask1 = MAX_SPRITE;
-
                 g_line_snap[g_scanline].sprite_rendrere_num = 0;
 
-                for (int i = 0; i < g_max_sprite_num; i++)
-                {
-                    int    w_addr = g_vdp_reg_5_sprite + (w_link << 3);
-                    ushort w_val1 = vram_read_w(w_addr);
-                    ushort w_val2 = vram_read_w(w_addr + 2);
-                    ushort w_val3 = vram_read_w(w_addr + 4);
-                    ushort w_val4 = vram_read_w(w_addr + 6);
+                UpdateSpriteRowCacheIfNeeded();
+                int lineIndex = (g_vdp_interlace_mode == 2)
+                    ? ((g_scanline << 1) | g_vdp_interlace_field)
+                    : g_scanline;
+                if ((uint)lineIndex >= (uint)g_sprite_row_cache.Length)
+                    return;
+                ref SpriteRowCacheRow row = ref g_sprite_row_cache[lineIndex];
 
-                    int w_now_link = w_link;
-                    w_link = w_val2 & 0x007f;
+                for (int i = 0; i < row.Count; i++)
+                {
+                    int w_now_link = row.SpriteIndices[i];
+                    int w_addr = w_now_link << 3;
+                    ushort w_val1 = SpriteCacheReadWord(w_addr);
+                    int baseAddr = GetSpriteTableBase();
+                    ushort w_val3 = ReadVramWordAligned(baseAddr + w_addr + 4);
+                    ushort w_val4 = ReadVramWordAligned(baseAddr + w_addr + 6);
 
                     int w_top_x      = w_val4 & 0x01ff;
                     int w_top_y      = w_val1 & g_sprite_vmask;
-                    if (g_vdp_interlace_mode == 2)
-                        w_top_y &= ~1;
-                    int w_xcell_size = ((w_val2 >> 10) & 0x0003) + 1;
-                    int w_ycell_size = ((w_val2 >>  8) & 0x0003) + 1;
+                    int w_xcell_size = row.Width[i];
+                    int w_ycell_size = row.Height[i];
 
+                    int spriteBase = (g_vdp_interlace_mode == 2) ? 256 : 128;
                     int w_left   = w_top_x - 128;
-                    int w_top    = w_top_y - 128;
+                    int w_top    = w_top_y - spriteBase;
                     int w_right  = w_left + (w_xcell_size << 3) - 1;
                     int w_bottom = w_top  + (w_ycell_size * cellHeight) - 1;
-
-                    // I interlace mode 2, använd g_scanline direkt för sprite-hittande
-                    // Sprite Y är redan maskerad till jämna värden (& ~1), så sprites
-                    // triggas på samma scanlines oavsett fält
-                    int lineY = g_scanline;
-                    if ((lineY < w_top) || (w_bottom < lineY))
-                        continue;
-
-                    if (w_top_x == 1) w_sprite_mask1 = w_now_link;
-                    if ((w_top_x == 0) && (w_sprite_mask1 != MAX_SPRITE))
-                        break;
 
                     g_line_snap[g_scanline].sprite_left[w_sprite_cnt]       = w_left;
                     g_line_snap[g_scanline].sprite_right[w_sprite_cnt]      = w_right;
@@ -245,10 +280,24 @@ namespace EutherDrive.Core.MdTracerCore
                     g_line_snap[g_scanline].sprite_reverse[w_sprite_cnt]    = (uint)((w_val3 >> 11) & 0x0003);
                     g_line_snap[g_scanline].sprite_char[w_sprite_cnt]       = (uint)(w_val3 & 0x07ff);
 
+                    if (traceSprites && w_sprite_cnt < 12)
+                    {
+                        spriteLog!.AppendFormat(
+                            " id={0} topY={1} leftX={2} yRange=[{3},{4}] char=0x{5:X4} size={6}x{7}",
+                            w_now_link, w_top_y, w_top_x, w_top, w_bottom, w_val3 & 0x07ff, w_xcell_size, w_ycell_size);
+                    }
+                    if (traceSpriteId && w_now_link == TraceSpriteId)
+                    {
+                        int outY = GetOutputLineForScanline(g_scanline);
+                        int spriteHeight = w_ycell_size * cellHeight;
+                        bool visibleThisLine = true;
+                        Console.WriteLine(
+                            $"[SPRITE-PROBE] frame={_frameCounter} field={g_vdp_interlace_field} scanline={g_scanline} outY={outY} " +
+                            $"spriteId={w_now_link} spriteY={w_top_y} spriteHeight={spriteHeight} visibleThisLine={visibleThisLine}");
+                    }
+
                     w_sprite_cnt++;
                     g_line_snap[g_scanline].sprite_rendrere_num = w_sprite_cnt;
-
-                    if (w_link == 0) break;
 
                     w_line_cell_cnt += w_xcell_size;
                     if (g_max_sprite_cell <= w_line_cell_cnt)
@@ -263,6 +312,14 @@ namespace EutherDrive.Core.MdTracerCore
                         g_vdp_status_6_sprite = 1;
                         break;
                     }
+                }
+
+                if (traceSprites)
+                {
+                    Console.WriteLine(
+                        $"[SPRITE-LINE] frame={_frameCounter} scanline={g_scanline} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field} " +
+                        $"sprites={w_sprite_cnt} lineSprites={w_line_sprite_cnt} cells={w_line_cell_cnt} overflow={g_vdp_status_6_sprite}" +
+                        $"{(spriteLog!.Length > 0 ? spriteLog.ToString() : string.Empty)}");
                 }
             }
         }

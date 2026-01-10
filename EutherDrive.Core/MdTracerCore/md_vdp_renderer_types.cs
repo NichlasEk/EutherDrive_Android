@@ -46,5 +46,14 @@ namespace EutherDrive.Core.MdTracerCore
             public uint[] sprite_reverse;
             public uint[] sprite_char;
         }
+
+        private struct SpriteRowCacheRow
+        {
+            public int Count;
+            public byte[] SpriteIndices;
+            public byte[] YInSprite;
+            public byte[] Width;
+            public byte[] Height;
+        }
     }
 }

@@ -201,6 +201,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             g_vdp_reg_3_windows = (ushort)((g_vdp_reg[3] & 0x7e) << 10);
             g_vdp_reg_5_sprite  = (ushort)(((h40Mode ? (g_vdp_reg[5] & 0x7e) : (g_vdp_reg[5] & 0x7f)) << 9));
+            g_sprite_cache_base = -1;
+            InvalidateSpriteRowCache();
 
             if (MdTracerCore.MdLog.Enabled && (!g_hmodeLogged || g_display_xsize != prevDisplayX))
             {
@@ -347,8 +349,20 @@ namespace EutherDrive.Core.MdTracerCore
                 }
 
                 case 5:
+                {
+                    int oldVal = g_vdp_reg_5_sprite;
                     g_vdp_reg_5_sprite = (ushort)(((IsH40Mode() ? (in_data & 0x7e) : (in_data & 0x7f)) << 9));
+                    if (oldVal != g_vdp_reg_5_sprite)
+                    {
+                        g_sprite_cache_base = -1;
+                        InvalidateSpriteRowCache();
+                    }
+                    if (TraceSatWrites && oldVal != g_vdp_reg_5_sprite)
+                    {
+                        Console.WriteLine($"[SAT-REG5] frame={_frameCounter} scanline={g_scanline} old=0x{oldVal:X4} new=0x{g_vdp_reg_5_sprite:X4}");
+                    }
                     break;
+                }
 
                 case 7:
                     g_vdp_reg_7_backcolor = (byte)(in_data & 0x3f);
@@ -370,6 +384,7 @@ namespace EutherDrive.Core.MdTracerCore
                     g_vdp_reg_12_2_interlacemode = (byte)((in_data >> 1) & 0x03);
                     byte prevInterlace = g_vdp_interlace_mode;
                     g_vdp_interlace_mode = DecodeInterlaceMode(g_vdp_reg_12_2_interlacemode);
+                    ApplyInterlaceOverrides();
 
                     // Log reg12 writes when interlace mode might change
                     if (prevInterlace != g_vdp_interlace_mode || _frameCounter < 700)
@@ -387,6 +402,7 @@ namespace EutherDrive.Core.MdTracerCore
                     if (prevInterlace != g_vdp_interlace_mode)
                     {
                         g_vdp_interlace_field = 0;
+                        InvalidateSpriteRowCache();
                         RecomputeScrollSizes();
                         RecomputeWindowBounds();
                         UpdateOutputWidth();

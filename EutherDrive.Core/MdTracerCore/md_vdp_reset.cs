@@ -71,6 +71,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_vdp_reg_12_2_interlacemode = 0;
             g_vdp_interlace_mode = 0;
             g_vdp_interlace_field = 0;
+            ApplyInterlaceOverrides();
             g_vdp_reg_12_0_cellmode2 = 0;
             g_sprite_vmask = 0x1FF;
             g_vdp_reg_13_hscroll = 0;

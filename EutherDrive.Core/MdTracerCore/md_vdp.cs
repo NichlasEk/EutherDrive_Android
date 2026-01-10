@@ -68,6 +68,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceDmaStatus =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_STATUS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSatWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SAT_WRITES"), "1", StringComparison.Ordinal);
         private static readonly bool ShowOverscan =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SHOW_OVERSCAN"), "1", StringComparison.Ordinal);
         private static readonly System.Diagnostics.Stopwatch _timingStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -80,8 +82,9 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_SMS_VBLANK"), "1", StringComparison.Ordinal);
         private static readonly bool ForceMdVBlank =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_MD_VBLANK"), "1", StringComparison.Ordinal);
-        private static readonly bool ForceHBlank =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_FORCE_HBLANK"), "1", StringComparison.Ordinal);
+        private static readonly string? ForceHBlankEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_FORCE_HBLANK");
+        private static readonly bool ForceHBlankEnvSet = ForceHBlankEnv != null;
+        private static bool ForceHBlank = string.Equals(ForceHBlankEnv, "1", StringComparison.Ordinal);
 
         private enum InterlaceOutputPolicy
         {
@@ -91,9 +94,18 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static InterlaceOutputPolicy InterlaceOutput =
             ParseInterlaceOutputPolicy(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_INTERLACE_OUTPUT"));
+        private static readonly bool ForceInterlaceBob =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_FORCE_BOB"), "1", StringComparison.Ordinal);
 
         private byte g_vdp_interlace_field;
         private bool _interlaceFieldAdvanced; // Guard för att förhindra dubbel AdvanceInterlaceField() per frame
+
+        private byte[] g_sprite_table_cache = Array.Empty<byte>();
+        private int g_sprite_cache_base = -1;
+        private int g_sprite_cache_size;
+        private SpriteRowCacheRow[] g_sprite_row_cache = Array.Empty<SpriteRowCacheRow>();
+        private bool g_sprite_row_cache_dirty = true;
+        private int g_sprite_row_cache_field = -1;
 
         // --- UI-agnostiska inparametrar (matas från Avalonia) ---
         public bool MouseClickInterrupt { get; set; }
@@ -127,6 +139,14 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_output_xsize = ShowOverscan ? MaxFrameWidth : g_display_xsize;
             g_output_ysize = GetOutputHeight();
+        }
+
+        private void ApplyInterlaceOverrides()
+        {
+            if (!ForceHBlankEnvSet)
+                ForceHBlank = g_vdp_interlace_mode == 2;
+            if (!ForceDirectVramReadSpritesEnvSet)
+                ForceDirectVramReadSprites = g_vdp_interlace_mode == 2;
         }
 
         private void EnsureFrameBuffer()
@@ -319,7 +339,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int GetHScrollLine(int scanline)
         {
             if (g_vdp_interlace_mode == 2)
-                return scanline >> 1;
+                return GetInterlaceLine(scanline) >> 1;
             return scanline;
         }
 
@@ -362,14 +382,122 @@ namespace EutherDrive.Core.MdTracerCore
                 // 32 words per pattern (64 bytes / 2)
                 int patternBase = (tileIndex & 0x3FF) << 5;
 
-                // Row offset: 2 words per row (4 bytes / 2)
-                int rowOffset = rowInCell << 1;
+                // Row offset: 2 words per row (4 bytes / 2), with vertical flip support.
+                int rowOffset = GetRowWordOffset(rowInCell, reverse);
 
-                return patternBase + rowOffset;
+                // Use the same reverse pages as normal mode for horizontal flip support.
+                return GetReversePage(reverse) + patternBase + rowOffset;
             }
 
             // Normal mode: use the standard formula
             return GetReversePage(reverse) + GetTileWordBase(tileIndex) + GetRowWordOffset(rowInCell, reverse);
+        }
+
+        private int GetSpriteTableBase() => g_vdp_reg_5_sprite & (IsH40Mode() ? ~0x3FF : ~0x1FF);
+
+        private int GetSpriteTableSize() => IsH40Mode() ? 0x400 : 0x200;
+
+        private void EnsureSpriteTableCache()
+        {
+            int baseAddr = GetSpriteTableBase();
+            int size = GetSpriteTableSize();
+            if (g_sprite_cache_base == baseAddr && g_sprite_cache_size == size && g_sprite_table_cache.Length == size)
+                return;
+
+            g_sprite_cache_base = baseAddr;
+            g_sprite_cache_size = size;
+            g_sprite_table_cache = new byte[size];
+            for (int i = 0; i < size; i++)
+                g_sprite_table_cache[i] = g_vram[(baseAddr + i) & 0xffff];
+
+            g_sprite_row_cache_dirty = true;
+            g_sprite_row_cache_field = -1;
+        }
+
+        private void InvalidateSpriteRowCache()
+        {
+            g_sprite_row_cache_dirty = true;
+            g_sprite_row_cache_field = -1;
+        }
+
+        private ushort SpriteCacheReadWord(int offset)
+        {
+            if ((uint)offset >= (uint)g_sprite_table_cache.Length || (uint)(offset + 1) >= (uint)g_sprite_table_cache.Length)
+                return 0;
+            return (ushort)((g_sprite_table_cache[offset] << 8) | g_sprite_table_cache[offset + 1]);
+        }
+
+        private static int DivCeil(int numerator, int denominator)
+        {
+            if (denominator <= 0)
+                return 0;
+            if (numerator <= 0)
+                return 0;
+            return (numerator + denominator - 1) / denominator;
+        }
+
+        private ushort ReadVramWordAligned(int addr)
+        {
+            addr &= 0xFFFE;
+            return (ushort)((g_vram[addr] << 8) | g_vram[addr ^ 1]);
+        }
+
+        private void UpdateSpriteRowCacheIfNeeded()
+        {
+            EnsureSpriteTableCache();
+
+            if (!g_sprite_row_cache_dirty)
+                return;
+
+            g_sprite_row_cache_dirty = false;
+            g_sprite_row_cache_field = -1;
+
+            int lineCount = g_sprite_row_cache.Length;
+            for (int i = 0; i < lineCount; i++)
+                g_sprite_row_cache[i].Count = 0;
+
+            int tileHeightShift = GetCellHeightShift();
+            int blankLines = 128 << (g_vdp_interlace_mode == 2 ? 1 : 0);
+            int screenLineLimit = blankLines + (g_display_ycell << tileHeightShift);
+            int spritesRemaining = g_max_sprite_num;
+            int spriteIndex = 0;
+
+            do
+            {
+                int addr = spriteIndex << 3;
+                ushort w_val1 = SpriteCacheReadWord(addr);
+                ushort w_val2 = SpriteCacheReadWord(addr + 2);
+
+                int spriteY = w_val1 & g_sprite_vmask;
+                int heightTiles = ((w_val2 >> 8) & 0x0003) + 1;
+                int widthTiles = ((w_val2 >> 10) & 0x0003) + 1;
+
+                int startLine = Math.Max(blankLines, spriteY);
+                int endLineExclusive = Math.Min(screenLineLimit, spriteY + (heightTiles << tileHeightShift));
+
+                for (int line = startLine; line < endLineExclusive; line++)
+                {
+                    int rowIndex = line - blankLines;
+                    if ((uint)rowIndex >= (uint)g_sprite_row_cache.Length)
+                        continue;
+                    ref SpriteRowCacheRow row = ref g_sprite_row_cache[rowIndex];
+                    if (row.Count >= g_max_sprite_line)
+                        continue;
+
+                    int slot = row.Count++;
+                    row.SpriteIndices[slot] = (byte)spriteIndex;
+                    row.YInSprite[slot] = (byte)(line - spriteY);
+                    row.Width[slot] = (byte)widthTiles;
+                    row.Height[slot] = (byte)heightTiles;
+                }
+
+                int link = w_val2 & 0x007f;
+                if (link >= g_max_sprite_num)
+                    break;
+
+                spriteIndex = link;
+            }
+            while (spriteIndex != 0 && --spritesRemaining != 0);
         }
 
         private int GetOutputHeight()
@@ -382,7 +510,11 @@ namespace EutherDrive.Core.MdTracerCore
         private int GetOutputLineForScanline(int scanline)
         {
             if (g_vdp_interlace_mode != 0 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
+            {
+                if (ForceInterlaceBob && g_vdp_interlace_mode == 2)
+                    return scanline << 1;
                 return (scanline << 1) | g_vdp_interlace_field;
+            }
             return scanline;
         }
 

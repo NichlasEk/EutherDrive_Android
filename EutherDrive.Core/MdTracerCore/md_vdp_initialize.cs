@@ -25,10 +25,13 @@
             g_game_cmap = new uint[DISPLAY_BUFSIZE];
             g_game_primap = new uint[DISPLAY_BUFSIZE];
             g_game_shadowmap = new uint[DISPLAY_BUFSIZE];
+            g_sprite_line_mask = new bool[DISPLAY_BUFSIZE];
 
             g_game_screen = new uint[DISPLAY_BUFSIZE];
             Array.Fill(g_game_screen, 0xFF000000u);
             g_renderer_vram = new uint[VRAM_DATASIZE * 4];
+            g_game_field_even = new uint[DISPLAY_BUFSIZE];
+            g_game_field_odd = new uint[DISPLAY_BUFSIZE];
 
             // Per-line snapshot buffers
             g_snap_register = new VDP_REGISTER();
@@ -50,6 +53,21 @@
                 g_line_snap[i].sprite_reverse = new uint[MAX_SPRITE];
                 g_line_snap[i].sprite_char = new uint[MAX_SPRITE];
             }
+
+            g_sprite_row_cache = new SpriteRowCacheRow[DISPLAY_YSIZE];
+            for (int i = 0; i < DISPLAY_YSIZE; i++)
+            {
+                g_sprite_row_cache[i] = new SpriteRowCacheRow
+                {
+                    Count = 0,
+                    SpriteIndices = new byte[MAX_SPRITE],
+                    YInSprite = new byte[MAX_SPRITE],
+                    Width = new byte[MAX_SPRITE],
+                    Height = new byte[MAX_SPRITE]
+                };
+            }
+            g_sprite_row_cache_dirty = true;
+            g_sprite_row_cache_field = -1;
 
             g_snap_line_snap = new VDP_LINE_SNAP[DISPLAY_YSIZE];
             for (int i = 0; i < DISPLAY_YSIZE; i++)
