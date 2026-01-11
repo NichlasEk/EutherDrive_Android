@@ -70,6 +70,11 @@ public partial class MainWindow : Window
     private bool _toneTestRunning;
     private bool _psgBlipRunning;
     private bool _audioTimedEnabled;
+    private const int AutoFireRateMin = 5;
+    private const int AutoFireRateMax = 30;
+    private const int AutoFireRateDefault = 12;
+    private int _autoFireRateHz = AutoFireRateDefault;
+    private int _autoFireMask;
     private long _audioLastTicks;
     private double _audioFrameAccumulator;
     private long _audioLastDropLogTicks;
@@ -120,6 +125,8 @@ public partial class MainWindow : Window
 
         _audioTimedEnabled = AudioTimedEnvEnabled;
         UpdatePadTypeFromUi();
+        UpdateAutoFireMask();
+        UpdateAutoFireRateText(_autoFireRateHz);
         if (SixButtonPadCheck != null)
         {
             SixButtonPadCheck.Checked += (_, _) => UpdatePadTypeFromUi();
@@ -293,6 +300,37 @@ public partial class MainWindow : Window
         lock (_keysDown)
             _keysDown.Remove(e.Key);
         e.Handled = true;
+    }
+
+    private void OnAutoFireToggle(object? sender, RoutedEventArgs e)
+    {
+        UpdateAutoFireMask();
+    }
+
+    private void UpdateAutoFireMask()
+    {
+        int mask = 0;
+        if (AutoFireAButton?.IsChecked == true)
+            mask |= 1;
+        if (AutoFireBButton?.IsChecked == true)
+            mask |= 2;
+        if (AutoFireCButton?.IsChecked == true)
+            mask |= 4;
+        Volatile.Write(ref _autoFireMask, mask);
+    }
+
+    private void OnAutoFireRateChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        int rate = (int)Math.Round(e.NewValue);
+        rate = Math.Clamp(rate, AutoFireRateMin, AutoFireRateMax);
+        Volatile.Write(ref _autoFireRateHz, rate);
+        UpdateAutoFireRateText(rate);
+    }
+
+    private void UpdateAutoFireRateText(int rate)
+    {
+        if (AutoFireRateText != null)
+            AutoFireRateText.Text = $"{rate}Hz";
     }
 
     private void ToggleFullScreen()
@@ -1262,6 +1300,8 @@ public partial class MainWindow : Window
         bool z;
         bool mode;
         PadType padType;
+        int autoMask;
+        int autoRate;
         lock (_keysDown)
         {
             up    = _keysDown.Contains(Key.Up);
@@ -1282,9 +1322,32 @@ public partial class MainWindow : Window
             padType = (PadType)Volatile.Read(ref _padTypeRaw);
         }
 
+        autoMask = Volatile.Read(ref _autoFireMask);
+        autoRate = Volatile.Read(ref _autoFireRateHz);
+        long nowTicks = Stopwatch.GetTimestamp();
+        if ((autoMask & 1) != 0 && a)
+            a = IsAutoFireActive(nowTicks, autoRate);
+        if ((autoMask & 2) != 0 && b)
+            b = IsAutoFireActive(nowTicks, autoRate);
+        if ((autoMask & 4) != 0 && c)
+            c = IsAutoFireActive(nowTicks, autoRate);
+
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
 
         // StatusText uppdateras i Tick()
+    }
+
+    private static bool IsAutoFireActive(long nowTicks, int rateHz)
+    {
+        if (rateHz <= 0)
+            return true;
+
+        long periodTicks = (long)(Stopwatch.Frequency / (double)rateHz);
+        if (periodTicks <= 1)
+            return true;
+
+        long halfPeriod = Math.Max(1, periodTicks / 2);
+        return (nowTicks % periodTicks) < halfPeriod;
     }
 
 

@@ -24,6 +24,22 @@
                 ValueChanged="OnMasterVolumeChanged"/>
         <TextBlock Name="MasterVolumeValueText" Width="36" Text="50%" VerticalAlignment="Center"/>
       </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+        <TextBlock Text="Autofire" VerticalAlignment="Center"/>
+        <ToggleButton Name="AutoFireAButton" Content="A" Width="28" IsChecked="False"
+                      Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
+        <ToggleButton Name="AutoFireBButton" Content="B" Width="28" IsChecked="False"
+                      Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
+        <ToggleButton Name="AutoFireCButton" Content="C" Width="28" IsChecked="False"
+                      Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
+        <Slider Name="AutoFireRateSlider"
+                Minimum="5"
+                Maximum="30"
+                Width="90"
+                Value="12"
+                ValueChanged="OnAutoFireRateChanged"/>
+        <TextBlock Name="AutoFireRateText" Width="34" Text="12Hz" VerticalAlignment="Center"/>
+      </StackPanel>
       <TextBlock Name="StatusText" VerticalAlignment="Center"/>
     </StackPanel>
 
