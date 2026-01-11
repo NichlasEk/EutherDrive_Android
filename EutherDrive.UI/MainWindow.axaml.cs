@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -20,12 +21,16 @@ using Avalonia.Threading;
 using EutherDrive.Core;
 using EutherDrive.UI.Audio;
 using EutherDrive.Audio;
+using EutherDrive.Core.Savestates;
+using EutherDrive.UI.Savestates;
 
 namespace EutherDrive.UI;
 
 public partial class MainWindow : Window
 {
     private IEmulatorCore? _core;
+    private readonly SavestateService _savestateService;
+    private readonly SavestateViewModel _savestateViewModel;
 
     // EN bitmap som vi alltid blitar till
     private WriteableBitmap? _wb;
@@ -111,6 +116,16 @@ public partial class MainWindow : Window
 
         HookInput();
 
+        _savestateService = new SavestateService();
+        _savestateViewModel = new SavestateViewModel(
+            _savestateService,
+            () => _core as ISavestateCapable,
+            PauseEmulation,
+            ResumeEmulation,
+            SetStatus);
+        if (SavestatePanel != null)
+            SavestatePanel.DataContext = _savestateViewModel;
+
         LoadSettings();
         if (MasterVolumeSlider != null)
             MasterVolumeSlider.Value = _masterVolumePercent;
@@ -158,6 +173,7 @@ public partial class MainWindow : Window
             {
                 _core.LoadRom(_romPath);
             }
+            _savestateViewModel.Refresh();
         }
         _presentOnUiAction = PresentPendingFrame;
         ApplyFullScreenLayout(WindowState == WindowState.FullScreen);
@@ -286,6 +302,11 @@ public partial class MainWindow : Window
         {
             ToggleFullScreen();
         }
+        else if (HandleSavestateHotkey(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
 
         lock (_keysDown)
             _keysDown.Add(e.Key);
@@ -300,6 +321,30 @@ public partial class MainWindow : Window
         lock (_keysDown)
             _keysDown.Remove(e.Key);
         e.Handled = true;
+    }
+
+    private bool HandleSavestateHotkey(Key key)
+    {
+        return key switch
+        {
+            Key.F5 => TryInvokeCommand(_savestateViewModel.SaveSlot1Command),
+            Key.F6 => TryInvokeCommand(_savestateViewModel.SaveSlot2Command),
+            Key.F7 => TryInvokeCommand(_savestateViewModel.SaveSlot3Command),
+            Key.F8 => TryInvokeCommand(_savestateViewModel.LoadSlot1Command),
+            Key.F9 => TryInvokeCommand(_savestateViewModel.LoadSlot2Command),
+            Key.F10 => TryInvokeCommand(_savestateViewModel.LoadSlot3Command),
+            _ => false
+        };
+    }
+
+    private static bool TryInvokeCommand(ICommand command)
+    {
+        if (command == null)
+            return false;
+        if (!command.CanExecute(null))
+            return false;
+        command.Execute(null);
+        return true;
     }
 
     private void OnAutoFireToggle(object? sender, RoutedEventArgs e)
@@ -466,6 +511,7 @@ public partial class MainWindow : Window
                 // Så du behöver inte _core.Reset() här.
             }
 
+            _savestateViewModel.Refresh();
             ApplyFrameRateModeToCore(resetIfRunning: false);
             StartAudioEngineIfEnabled();
             if (_audioEngine != null)
@@ -527,6 +573,30 @@ public partial class MainWindow : Window
             adapter.Reset();
             StatusText.Text = $"Frame rate set to {_frameRateMode}. Reset applied.";
         }
+    }
+
+    private void SetStatus(string message)
+    {
+        StatusText.Text = message;
+    }
+
+    private bool PauseEmulation()
+    {
+        bool wasRunning = _emuRunning;
+        if (wasRunning)
+        {
+            _timer.Stop();
+            StopEmuLoop();
+        }
+        return wasRunning;
+    }
+
+    private void ResumeEmulation(bool wasRunning)
+    {
+        if (!wasRunning)
+            return;
+        StartEmuLoop();
+        _timer.Start();
     }
 
     private void ApplyMasterVolumeToCore()

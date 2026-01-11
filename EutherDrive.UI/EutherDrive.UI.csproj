@@ -28,6 +28,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <AvaloniaXaml Remove="**\*.axaml" />
+    <AvaloniaXaml Include="**\*.axaml" />
     <AvaloniaResource Include="..\Icons\logo_crop.jpeg">
       <Link>Assets/logo_crop.jpeg</Link>
     </AvaloniaResource>

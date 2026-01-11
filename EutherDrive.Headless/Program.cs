@@ -5,6 +5,7 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using EutherDrive.Core;
 using EutherDrive.Core.MdTracerCore;
 
@@ -22,6 +23,16 @@ class Program
             Console.WriteLine("[HEADLESS] Running interlace mode 2 test...");
             MdVdpInterlaceMode2PatternTest.Run();
             return 0;
+        }
+
+        if (args.Length >= 1 && args[0] == "--test-savestate")
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: EutherDrive.Headless --test-savestate <rom_path>");
+                return 1;
+            }
+            return RunSavestateRoundtrip(args[1]);
         }
 
         if (args.Length < 1)
@@ -74,5 +85,57 @@ class Program
             Console.Error.WriteLine(ex.StackTrace);
             return 1;
         }
+    }
+
+    private static int RunSavestateRoundtrip(string romPath)
+    {
+        if (!File.Exists(romPath))
+        {
+            Console.Error.WriteLine($"Error: ROM file not found: {romPath}");
+            return 1;
+        }
+
+        Console.WriteLine($"[HEADLESS] Savestate roundtrip test: {romPath}");
+        var adapter = new MdTracerAdapter();
+        adapter.LoadRom(romPath);
+
+        for (int i = 0; i < 10; i++)
+            adapter.StepFrame();
+
+        byte[] snapshot;
+        using (var ms = new MemoryStream())
+        using (var writer = new BinaryWriter(ms))
+        {
+            adapter.SaveState(writer);
+            writer.Flush();
+            snapshot = ms.ToArray();
+        }
+
+        for (int i = 0; i < 5; i++)
+            adapter.StepFrame();
+
+        using (var ms = new MemoryStream(snapshot))
+        using (var reader = new BinaryReader(ms))
+        {
+            adapter.LoadState(reader);
+        }
+
+        byte[] snapshotAfter;
+        using (var ms = new MemoryStream())
+        using (var writer = new BinaryWriter(ms))
+        {
+            adapter.SaveState(writer);
+            writer.Flush();
+            snapshotAfter = ms.ToArray();
+        }
+
+        if (!snapshot.SequenceEqual(snapshotAfter))
+        {
+            Console.Error.WriteLine("[HEADLESS] Savestate roundtrip failed: payload mismatch.");
+            return 1;
+        }
+
+        Console.WriteLine("[HEADLESS] Savestate roundtrip ok.");
+        return 0;
     }
 }

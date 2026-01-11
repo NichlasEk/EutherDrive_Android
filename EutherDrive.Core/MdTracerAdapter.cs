@@ -6,11 +6,12 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using EutherDrive.Core.Savestates;
 using EutherDrive.Core.MdTracerCore;
 
 namespace EutherDrive.Core;
 
-public sealed class MdTracerAdapter : IEmulatorCore
+public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 {
     private const int DefaultW = 320;
     private const int DefaultH = 224;
@@ -78,6 +79,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
     private byte[]? _rom;
     private MegaDriveBus? _bus;
     private readonly object _loadLock = new();
+    private readonly object _stateLock = new();
+    private RomIdentity? _romIdentity;
 
     // CPU runner (MDTracer m68k via reflection)
     private MdTracerM68kRunner? _cpu;
@@ -132,6 +135,9 @@ public sealed class MdTracerAdapter : IEmulatorCore
     }
 
     public RomInfo RomInfo { get; private set; } = new RomInfo();
+
+    public RomIdentity? RomIdentity => _romIdentity;
+    public long? FrameCounter => md_main.g_md_vdp?.FrameCounter;
 
     public void SetYmEnabled(bool enabled)
     {
@@ -190,6 +196,7 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 Console.WriteLine("[MdTracerAdapter] LoadRom: 7z archives are unsupported; please extract first.");
                 return;
             }
+            _romIdentity = new RomIdentity(Path.GetFileNameWithoutExtension(path), RomIdentity.ComputeSha256(rawData));
 
             md_main.PowerCycleReset();
             md_main.initialize();
@@ -657,8 +664,10 @@ public sealed class MdTracerAdapter : IEmulatorCore
 
     public void RunFrame()
     {
-        if (_tick == 0)
-            MdTracerCore.MdLog.WriteLine("[MdTracerAdapter] RunFrame start");
+        lock (_stateLock)
+        {
+            if (_tick == 0)
+                MdTracerCore.MdLog.WriteLine("[MdTracerAdapter] RunFrame start");
 
         _tick++;
         if (!_bootRecoverCompleted && (BootRecoverStallFrames > 0 || BootRecoverEdgeToggleThreshold > 0))
@@ -861,18 +870,18 @@ public sealed class MdTracerAdapter : IEmulatorCore
             md_main.g_md_z80?.FlushPcHist(frame);
         }
 
-        if (TracePerf && _cpuReady && _cpu != null)
-        {
-            _accFrameTicks += Stopwatch.GetTimestamp() - frameStart;
-            _perfFrameCount++;
-            MaybeLogPerformance();
-        }
+            if (TracePerf && _cpuReady && _cpu != null)
+            {
+                _accFrameTicks += Stopwatch.GetTimestamp() - frameStart;
+                _perfFrameCount++;
+                MaybeLogPerformance();
+            }
 
         // Blitta VDP RGB555 -> UI BGRA staging buffer
         EnsureFramebufferInitialized("RunFrame");
-        var vdpBuffer = _vdp.GetFrameBuffer();
-        if (vdpBuffer.Length > 0)
-        {
+            var vdpBuffer = _vdp.GetFrameBuffer();
+            if (vdpBuffer.Length > 0)
+            {
             int vdpWidth = _vdp.FrameWidth;
             int vdpHeight = _vdp.FrameHeight;
             if (vdpWidth <= 0)
@@ -880,8 +889,8 @@ public sealed class MdTracerAdapter : IEmulatorCore
             if (vdpHeight <= 0)
                 vdpHeight = 224;
 
-            if (FrameBufferTraceEnabled && ShouldLogPerSecond(ref _lastVdpLogTicks))
-            {
+                if (FrameBufferTraceEnabled && ShouldLogPerSecond(ref _lastVdpLogTicks))
+                {
                 int id = RuntimeHelpers.GetHashCode(vdpBuffer);
                 uint p0 = vdpBuffer.Length > 0 ? vdpBuffer[0] : 0;
                 uint p1 = vdpBuffer.Length > 1 ? vdpBuffer[1] : 0;
@@ -919,12 +928,13 @@ public sealed class MdTracerAdapter : IEmulatorCore
                 }
             }
 
-            ReadOnlySpan<uint> vdpSpan = vdpBuffer;
-            long blitStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
-            BlitArgbToBgra8888(vdpSpan, _frameBufferBack, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
-            _frameBufferBack = Interlocked.Exchange(ref _frameBufferFront, _frameBufferBack);
-            if (TracePerf)
-                PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
+                ReadOnlySpan<uint> vdpSpan = vdpBuffer;
+                long blitStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
+                BlitArgbToBgra8888(vdpSpan, _frameBufferBack, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
+                _frameBufferBack = Interlocked.Exchange(ref _frameBufferFront, _frameBufferBack);
+                if (TracePerf)
+                    PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
+            }
         }
     }
 
@@ -950,6 +960,28 @@ public sealed class MdTracerAdapter : IEmulatorCore
     public uint GetM68kPc()
     {
         return MdTracerCore.md_m68k.g_reg_PC;
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        if (writer == null)
+            throw new ArgumentNullException(nameof(writer));
+        lock (_stateLock)
+        {
+            var serializer = new MdTracerStateSerializer();
+            serializer.Save(writer);
+        }
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        if (reader == null)
+            throw new ArgumentNullException(nameof(reader));
+        lock (_stateLock)
+        {
+            var serializer = new MdTracerStateSerializer();
+            serializer.Load(reader);
+        }
     }
 
     private void MaybeLogPerformance()

@@ -3,6 +3,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:imaging="clr-namespace:Avalonia.Media.Imaging;assembly=Avalonia"
+        xmlns:savestates="clr-namespace:EutherDrive.UI.Savestates"
         mc:Ignorable="d"
         x:Class="EutherDrive.UI.MainWindow">
 
@@ -40,6 +41,29 @@
                 ValueChanged="OnAutoFireRateChanged"/>
         <TextBlock Name="AutoFireRateText" Width="34" Text="12Hz" VerticalAlignment="Center"/>
       </StackPanel>
+      <Border Name="SavestatePanel" Padding="6,4" BorderBrush="#3A3A3A" BorderThickness="1" CornerRadius="4"
+              x:DataType="savestates:SavestateViewModel">
+        <StackPanel Spacing="4">
+          <StackPanel Orientation="Horizontal" Spacing="4">
+            <TextBlock Text="{Binding Slot1Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
+            <Button Content="Save" Command="{Binding SaveSlot1Command}" Padding="6,2" FontSize="11"/>
+            <Button Content="Load" Command="{Binding LoadSlot1Command}" Padding="6,2" FontSize="11"/>
+            <Button Content="Clear" Command="{Binding ClearSlot1Command}" Padding="6,2" FontSize="11"/>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="4">
+            <TextBlock Text="{Binding Slot2Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
+            <Button Content="Save" Command="{Binding SaveSlot2Command}" Padding="6,2" FontSize="11"/>
+            <Button Content="Load" Command="{Binding LoadSlot2Command}" Padding="6,2" FontSize="11"/>
+            <Button Content="Clear" Command="{Binding ClearSlot2Command}" Padding="6,2" FontSize="11"/>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="4">
+            <TextBlock Text="{Binding Slot3Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
+            <Button Content="Save" Command="{Binding SaveSlot3Command}" Padding="6,2" FontSize="11"/>
+            <Button Content="Load" Command="{Binding LoadSlot3Command}" Padding="6,2" FontSize="11"/>
+            <Button Content="Clear" Command="{Binding ClearSlot3Command}" Padding="6,2" FontSize="11"/>
+          </StackPanel>
+        </StackPanel>
+      </Border>
       <TextBlock Name="StatusText" VerticalAlignment="Center"/>
     </StackPanel>
 
