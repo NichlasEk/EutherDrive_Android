@@ -10,10 +10,20 @@ Projektet bygger på kärnkod från [MDTracer](https://github.com/sasayaki-japan
 - Avalonia-baserad frontend (Windows, Linux, macOS, Android)
 - Input-hantering för tangentbord och gamepads
 - Ljudutgång via Pipewire på Linux (planerar android fork)
+- Savestates (3 slots per ROM, en fil per ROM)
 - SRAM-sparning fungerar
 - Interlace-stöd fungerar, inklusive Sonic 2 interlaced-läge
 - PAL/NTSC-switch fungerar
 - Region hantering fungerar
+
+## Kortkommandon (UI)
+- F1: Fullscreen
+- F5: Save Slot 1
+- F6: Save Slot 2
+- F7: Save Slot 3
+- F8: Load Slot 1
+- F9: Load Slot 2
+- F10: Load Slot 3
 
 ## Installation
 Bygg från källkod med .NET 8:
