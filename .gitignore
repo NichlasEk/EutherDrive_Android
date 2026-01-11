@@ -9,6 +9,8 @@ rom_*.log
 # Local UI settings
 eutherdrive_last_rom.txt
 eutherdrive_region.txt
+eutherdrive_settings.json
+savestates/
 
 # Local notes
 MEMO.md
