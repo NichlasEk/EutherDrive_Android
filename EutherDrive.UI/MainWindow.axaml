@@ -41,7 +41,7 @@
                 ValueChanged="OnAutoFireRateChanged"/>
         <TextBlock Name="AutoFireRateText" Width="34" Text="12Hz" VerticalAlignment="Center"/>
       </StackPanel>
-      <Border Name="SavestatePanel" Padding="6,4" BorderBrush="#3A3A3A" BorderThickness="1" CornerRadius="4"
+      <Border Name="SavestatePanel" Padding="6,4" BorderBrush="#2E3844" BorderThickness="1" CornerRadius="6" Background="#161B21"
               x:DataType="savestates:SavestateViewModel">
         <StackPanel Spacing="4">
           <StackPanel Orientation="Horizontal" Spacing="4">
@@ -68,7 +68,7 @@
     </StackPanel>
 
     <!-- Left: info -->
-    <Border Name="InfoPanel" Grid.Row="1" Grid.Column="0" Padding="10" CornerRadius="8">
+    <Border Name="InfoPanel" Grid.Row="1" Grid.Column="0" Padding="10" CornerRadius="8" Background="#181C22" BorderBrush="#2A313B" BorderThickness="1">
       <StackPanel Spacing="8" Width="260">
         <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
         <CheckBox Content="Use 6-button pad" IsChecked="False" Name="SixButtonPadCheck"/>
@@ -86,12 +86,7 @@
         </StackPanel>
         <TextBlock x:Name="RomRegionHintText" Opacity="0.85" FontSize="12"/>
         <Button Content="Use ROM region" Click="OnUseRomRegion" HorizontalAlignment="Left"/>
-        <TextBlock Text="Controls" FontWeight="Bold"/>
-        <TextBlock Text="Arrows: D-pad"/>
-        <TextBlock Text="Z/X/C: A/B/C"/>
-        <TextBlock Text="Enter: Start"/>
-        <TextBlock Text="RightShift: Mode (optional)"/>
-        <TextBlock Text="F1: Fullscreen mode"/>
+        <Button Content="Controls..." Click="OnShowControls" HorizontalAlignment="Left"/>
         <Separator/>
         <TextBlock Text="ROM" FontWeight="Bold"/>
         <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
@@ -121,7 +116,7 @@
     </Border>
 
 <!-- Right: framebuffer -->
-  <Border Name="ScreenBorder" Grid.Row="1" Grid.Column="1" Background="#111" CornerRadius="8" Padding="10">
+  <Border Name="ScreenBorder" Grid.Row="1" Grid.Column="1" Background="#0B0D10" BorderBrush="#1E242C" BorderThickness="1" CornerRadius="8" Padding="10">
     <Border Name="InputSurface" Background="Transparent" Focusable="True">
       <Viewbox Stretch="Uniform">
         <Grid Name="ScreenGrid" Width="320" Height="224">

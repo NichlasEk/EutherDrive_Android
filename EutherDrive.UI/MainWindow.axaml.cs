@@ -14,6 +14,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
@@ -936,6 +937,72 @@ public partial class MainWindow : Window
     private void OnToneTestClick(object? sender, RoutedEventArgs e)
     {
         _ = RunToneTestAsync();
+    }
+
+    private async void OnShowControls(object? sender, RoutedEventArgs e)
+    {
+        var root = new StackPanel { Spacing = 12, Margin = new Thickness(16) };
+        root.Children.Add(new TextBlock
+        {
+            Text = "Controls",
+            FontSize = 18,
+            FontWeight = Avalonia.Media.FontWeight.Bold
+        });
+
+        root.Children.Add(BuildControlsSection("Gameplay",
+            "Arrow keys: D-pad",
+            "Z/X/C: A/B/C",
+            "Enter: Start",
+            "Right Shift: Mode (optional)",
+            "A/S/D: X/Y/Z (6-button mode)"));
+
+        root.Children.Add(BuildControlsSection("Savestates",
+            "F5: Save Slot 1",
+            "F6: Save Slot 2",
+            "F7: Save Slot 3",
+            "F8: Load Slot 1",
+            "F9: Load Slot 2",
+            "F10: Load Slot 3"));
+
+        root.Children.Add(BuildControlsSection("UI",
+            "F1: Fullscreen"));
+
+        var dialog = new Window
+        {
+            Title = "Controls",
+            Width = 420,
+            Height = 380,
+            Background = new SolidColorBrush(Color.Parse("#0F1216")),
+            Content = new ScrollViewer
+            {
+                Content = root
+            },
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+
+        await dialog.ShowDialog(this);
+    }
+
+    private static Control BuildControlsSection(string title, params string[] lines)
+    {
+        var section = new StackPanel { Spacing = 6 };
+        section.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 14,
+            FontWeight = Avalonia.Media.FontWeight.Bold
+        });
+
+        foreach (string line in lines)
+        {
+            section.Children.Add(new TextBlock
+            {
+                Text = line,
+                FontSize = 12
+            });
+        }
+
+        return section;
     }
 
     private void OnPsgBlipClick(object? sender, RoutedEventArgs e)
