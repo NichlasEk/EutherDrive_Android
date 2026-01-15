@@ -78,6 +78,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly bool BootRecoverLog =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOT_RECOVER_LOG"), "1", StringComparison.Ordinal);
 
+    // ASCII streaming mode for live viewer
+    private static readonly bool AsciiStreamEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_ASCII_STREAM"), "1", StringComparison.Ordinal);
+    private static readonly string AsciiSharedMemoryName =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_ASCII_SHARED") ?? "EutherDrive_AsciiViewer_FB";
+
+    // Debug logging for ASCII stream
+    private static readonly bool AsciiStreamDebug = AsciiStreamEnabled &&
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_ASCII_DEBUG"), "1", StringComparison.Ordinal);
+
     // ROM + BUS
     private byte[]? _rom;
     private MegaDriveBus? _bus;
@@ -686,7 +696,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         lock (_stateLock)
         {
             if (_tick == 0)
+            {
                 MdTracerCore.MdLog.WriteLine("[MdTracerAdapter] RunFrame start");
+                if (AsciiStreamEnabled)
+                    Console.WriteLine("[MdTracerAdapter] ASCII stream ENABLED");
+            }
 
         _tick++;
         if (!_bootRecoverCompleted && (BootRecoverStallFrames > 0 || BootRecoverEdgeToggleThreshold > 0))
@@ -958,7 +972,136 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         // Analyze framebuffer if enabled
         FbAnalyzer.AnalyzeFrame();
+
+        // Stream framebuffer for ASCII viewer (runtime toggle)
+        if (_asciiStreamEnabled)
+        {
+            StreamFrameToAsciiViewer();
+        }
     }
+
+    private System.IO.FileStream? _asciiFileStream;
+    private readonly object _asciiStreamLock = new();
+    private long _asciiFrameNumber;
+
+    private void StreamFrameToAsciiViewer()
+    {
+        // Debug: log when this is called
+        bool emptyBuffer = _frameBufferFront.Length == 0;
+        bool zeroWidth = _fbW <= 0;
+        bool zeroHeight = _fbH <= 0;
+
+        if (emptyBuffer || zeroWidth || zeroHeight)
+        {
+            // Only log occasionally to avoid spam
+            if (_asciiFrameNumber % 120 == 0)
+            {
+                LogToAsciiDebug($"[ADAPTER] Skipped: bufferLen={_frameBufferFront.Length} w={_fbW} h={_fbH} frameNum={_asciiFrameNumber}");
+            }
+            return;
+        }
+
+        try
+        {
+            lock (_asciiStreamLock)
+            {
+                // Create file on first frame
+                if (_asciiFileStream == null)
+                {
+                    try
+                    {
+                        // Use temp directory for the framebuffer file
+                        _asciiFilePath = Path.Combine(Path.GetTempPath(), "eutherdrive_ascii_fb.dat");
+                        _asciiFileStream = new System.IO.FileStream(_asciiFilePath,
+                            System.IO.FileMode.Create, System.IO.FileAccess.ReadWrite,
+                            System.IO.FileShare.ReadWrite, 4096);
+
+                        LogToAsciiDebug($"[ADAPTER] File created: {_asciiFilePath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogToAsciiDebug($"[ADAPTER] Failed to create ASCII file: {ex.Message}");
+                        return;
+                    }
+                }
+
+                if (_asciiFileStream == null)
+                    return;
+
+                // Write header: width(4) + height(4) + size(4) + frame(4)
+                byte[] header = new byte[16];
+                BitConverter.GetBytes(_fbW).CopyTo(header, 0);
+                BitConverter.GetBytes(_fbH).CopyTo(header, 4);
+                BitConverter.GetBytes(_fbStride * _fbH).CopyTo(header, 8);
+                BitConverter.GetBytes((int)++_asciiFrameNumber).CopyTo(header, 12);
+
+                _asciiFileStream.SetLength(16 + (uint)_fbStride * _fbH);
+                _asciiFileStream.Position = 0;
+                _asciiFileStream.Write(header, 0, 16);
+                _asciiFileStream.Flush();
+                _asciiFileStream.Flush(); // Double flush for safety
+
+                // Write framebuffer
+                _asciiFileStream.Write(_frameBufferFront, 0, Math.Min(_frameBufferFront.Length, _fbStride * _fbH));
+                _asciiFileStream.Flush();
+                _asciiFileStream.Flush(); // Double flush for safety
+
+                // Debug log for every 10th frame (reduced for debugging)
+                if (_asciiFrameNumber % 10 == 0)
+                {
+                    LogToAsciiDebug($"[ADAPTER] Wrote frame {_asciiFrameNumber} ({_fbW}x{_fbH})");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogToAsciiDebug($"[ADAPTER] Error: {ex.Message}");
+        }
+    }
+
+    private void LogToAsciiDebug(string message)
+    {
+        try
+        {
+            string logPath = "/tmp/eutherdrive_ascii_adapter.log";
+            lock (_asciiStreamLock)
+            {
+                File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
+            }
+        }
+        catch
+        {
+            // Ignore log errors
+        }
+    }
+
+    /// <summary>
+    /// Enable/disable ASCII streaming at runtime (for UI toggle)
+    /// </summary>
+    public void SetAsciiStreamEnabled(bool enabled)
+    {
+        _asciiStreamEnabled = enabled;
+        if (enabled && _asciiFileStream == null)
+        {
+            // Initialize on first enable
+            try
+            {
+                _asciiFilePath = Path.Combine(Path.GetTempPath(), "eutherdrive_ascii_fb.dat");
+                _asciiFileStream = new System.IO.FileStream(_asciiFilePath,
+                    System.IO.FileMode.Create, System.IO.FileAccess.ReadWrite,
+                    System.IO.FileShare.ReadWrite, 4096);
+                Console.WriteLine($"[MdTracerAdapter] ASCII viewer file: {_asciiFilePath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MdTracerAdapter] Failed to create ASCII file: {ex.Message}");
+                _asciiStreamEnabled = false;
+            }
+        }
+    }
+
+    private bool _asciiStreamEnabled;
+    private string? _asciiFilePath;
 
     /// <summary>
     /// Step one frame - for headless testing

@@ -111,6 +111,7 @@
         <CheckBox Content="Interlace Test Mode (448px)" IsChecked="False" Name="InterlaceTestCheck" Checked="OnInterlaceTestToggle" Unchecked="OnInterlaceTestToggle"/>
         <CheckBox Content="Static (no flicker)" IsChecked="True" Name="InterlaceStaticCheck" Checked="OnInterlaceStaticToggle" Unchecked="OnInterlaceStaticToggle" IsEnabled="False"/>
         <CheckBox Content="Force Opaque Pixels" IsChecked="False" Name="ForceOpaqueCheck"/>
+        <CheckBox Content="ASCII Stream (for viewer)" IsChecked="False" Name="AsciiStreamCheck" Checked="OnAsciiStreamToggle" Unchecked="OnAsciiStreamToggle"/>
         <TextBlock Name="InterlaceTestInfo" Opacity="0.7" FontSize="11" TextWrapping="Wrap"/>
       </StackPanel>
     </Border>

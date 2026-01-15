@@ -1358,6 +1358,22 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnAsciiStreamToggle(object? sender, RoutedEventArgs e)
+    {
+        if (_core is MdTracerAdapter adapter)
+        {
+            bool enabled = AsciiStreamCheck?.IsChecked == true;
+            adapter.SetAsciiStreamEnabled(enabled);
+            Console.WriteLine($"[UI] ASCII Stream: {(enabled ? "ENABLED" : "DISABLED")}");
+            StatusText.Text = enabled ? "ASCII Stream ON" : "ASCII Stream OFF";
+        }
+        else
+        {
+            Console.WriteLine("[UI] ASCII Stream: No MdTracerAdapter core");
+            StatusText.Text = "ASCII Stream: N/A";
+        }
+    }
+
     private void Tick()
     {
         if (_core == null)
