@@ -54,11 +54,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private long _bootRecoverLastResetToggles;
     private long _bootRecoverToggleAccum;
     private bool _bootRecoverSigInit;
+    private bool _forceFff600Applied;
+    private bool _forceFff600EnvLogged;
+    private int _forceFff600Frames;
 
     private static readonly bool DumpVectorsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_VECTORS"), "1", StringComparison.Ordinal);
     private static readonly bool FrameBufferTraceEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_TRACE"), "1", StringComparison.Ordinal);
+
+    private readonly SavestateService _savestateService = new SavestateService();
     private static readonly bool TraceAudioEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO"), "1", StringComparison.Ordinal);
     private static readonly bool TraceAudioLevel =
@@ -67,6 +72,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PERF"), "1", StringComparison.Ordinal);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
+    private static readonly int ForceFff600AfterFrames = ParseForceFff600AfterFrames();
+    private static readonly byte ForceFff600Value = ParseHexByteEnv("EUTHERDRIVE_FORCE_FFF600_VALUE", 0x08);
+    private static readonly byte ForceFff600When = ParseHexByteEnv("EUTHERDRIVE_FORCE_FFF600_WHEN", 0x10);
+    private static bool ForceFff600Enabled => ForceFff600AfterFrames > 0;
     private static readonly double Z80CycleMultiplier = ParseZ80CycleMultiplier();
     private static readonly int BootRecoverStallFrames = ParseBootRecoverStallFrames();
     private static readonly int BootRecoverWindowFrames = ParseBootRecoverWindowFrames();
@@ -114,6 +123,22 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (percent < 0) percent = 0;
         else if (percent > 100) percent = 100;
         _masterVolumePercent = percent;
+    }
+
+    public void SetZ80BypassEnabled(bool enabled)
+    {
+        md_bus.SetZ80Bypass(enabled, onlyWhenInactive: true, readValue: 0x01, readAddrs: null);
+        md_main.SetZ80Disabled(enabled);
+    }
+
+    public void SetBootWaitHackEnabled(bool enabled)
+    {
+        md_bus.SetBootWaitHack(enabled);
+    }
+
+    public void SetForceVdpDisplayEnabled(bool enabled)
+    {
+        md_vdp.SetForceDisplayEnabled(enabled);
     }
 
     private void ApplyMasterVolume(short[] buffer, int samples)
@@ -203,6 +228,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             MdTracerCore.MdLog.MaybeLogTraceBuildStamp();
             md_main.g_md_vdp = _vdp;
 
+            // Set up interrupt acknowledge callback for Panorama Cotton debugging
+            _vdp.OnInterruptAck = level =>
+            {
+                long frame = _vdp.FrameCounter;
+                Console.WriteLine($"[VDP-INT-ACK] frame={frame} level={level} pc=0x{MdTracerCore.md_m68k.g_reg_PC:X6}");
+            };
+
             if (isSms)
             {
                 byte[] smsRom = NormalizeSmsRom(rawData);
@@ -255,6 +287,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
                 byte[] vecRom = md_main.g_md_cartridge?.g_file ?? _rom ?? rawData;
                 string header = TryReadSegaString(vecRom);
+                string title = TryReadRomTitle(vecRom);
+                
+                if (title.Contains("PANORAMA COTTON", StringComparison.OrdinalIgnoreCase) ||
+                    path.Contains("panoramacotton", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"[BOOT-HACK] Panorama Cotton detected: hacks disabled by default. title='{title}'");
+                }
                 _bus.Write32(0xFF0000, 0x1234ABCD);
                 uint wramProbe = _bus.Read32(0xFF0000);
                 ConsoleRegion? regionHint = md_rom_utils.DetectRegionFromHeader(vecRom, out string regionRaw);
@@ -332,6 +371,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         return $"Header@0x100: '{text}'";
     }
 
+    private static string TryReadRomTitle(byte[] rom)
+    {
+        const int titleStart = 0x120;
+        const int titleLen = 0x30;
+        if (rom.Length < titleStart + titleLen)
+            return string.Empty;
+        Span<byte> s = stackalloc byte[titleLen];
+        for (int i = 0; i < titleLen; i++)
+            s[i] = rom[titleStart + i];
+        string text = Encoding.ASCII.GetString(s).Trim();
+        return text;
+    }
+
     private static double ParseZ80CycleMultiplier()
     {
         const double fallback = 1.0;
@@ -385,6 +437,62 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0)
             return parsed;
         return fallback;
+    }
+
+    private static int ParseForceFff600AfterFrames()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_FFF600_AFTER_FRAMES");
+        if (string.IsNullOrWhiteSpace(raw))
+            return 0;
+        if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
+            return value;
+        return 0;
+    }
+
+    private static byte ParseHexByteEnv(string name, byte fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            raw = raw.Substring(2);
+        if (byte.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte value))
+            return value;
+        return fallback;
+    }
+
+    private void MaybeForceFff600(long frame)
+    {
+        if (!ForceFff600Enabled || _forceFff600Applied)
+            return;
+
+        var bus = md_main.g_md_bus;
+        if (bus == null)
+            return;
+
+        if (!_forceFff600EnvLogged)
+        {
+            Console.WriteLine($"[FFF600-FORCE-ENV] after={ForceFff600AfterFrames} when=0x{ForceFff600When:X2} value=0x{ForceFff600Value:X2}");
+            _forceFff600EnvLogged = true;
+        }
+
+        byte state = bus.read8(0x00FFF600);
+        if (state == ForceFff600When)
+        {
+            _forceFff600Frames++;
+        }
+        else
+        {
+            _forceFff600Frames = 0;
+        }
+
+        if (_forceFff600Frames >= ForceFff600AfterFrames)
+        {
+            bus.write8(0x00FFF600, ForceFff600Value);
+            _forceFff600Applied = true;
+            Console.WriteLine($"[FFF600-FORCE] frame={frame} old=0x{state:X2} new=0x{ForceFff600Value:X2} after={_forceFff600Frames}");
+        }
     }
 
     private static ConsoleRegion? ParseRegionOverrideEnv()
@@ -668,6 +776,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         {
             if (_tick == 0)
                 MdTracerCore.MdLog.WriteLine("[MdTracerAdapter] RunFrame start");
+            if (_tick == 0)
+            {
+                _forceFff600Applied = false;
+                _forceFff600EnvLogged = false;
+                _forceFff600Frames = 0;
+            }
 
         _tick++;
         if (!_bootRecoverCompleted && (BootRecoverStallFrames > 0 || BootRecoverEdgeToggleThreshold > 0))
@@ -859,6 +973,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 }
             }
 
+            MaybeForceFff600(frame);
             md_main.MaybeInjectMbx(frame);
             md_main.g_md_music?.g_md_ym2612.FlushDacRateFrame(frame);
             md_main.g_md_music?.FlushAudioStats(frame);
@@ -1092,6 +1207,35 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
         }
         return _frameBufferFront;
+    }
+
+    // Check if framebuffer has non-black pixels (for debugging)
+    public bool FrameBufferHasContent()
+    {
+        EnsureFramebufferInitialized("FrameBufferHasContent");
+        // Check the internal game screen (before conversion to RGBA)
+        if (_vdp is Core.MdTracerCore.md_vdp vdp)
+        {
+            var (width, height, hasNonBlack) = vdp.GetFrameBufferInfo();
+            if (hasNonBlack)
+            {
+                Console.WriteLine($"[MdTracerAdapter] Framebuffer HAS content: {width}x{height}");
+                return true;
+            }
+        }
+        Console.WriteLine("[MdTracerAdapter] Framebuffer is black");
+        return false;
+    }
+
+    // Dump framebuffer to PPM file (for debugging)
+    public void DumpFrameBufferToPpm(string filePath)
+    {
+        EnsureFramebufferInitialized("DumpFrameBufferToPpm");
+        if (_vdp is Core.MdTracerCore.md_vdp vdp)
+        {
+            vdp.DumpFrameBufferToPpm(filePath);
+            Console.WriteLine($"[MdTracerAdapter] Dumped framebuffer to {filePath}");
+        }
     }
 
     private void LogFrameBufferIdentity(string reason)
@@ -1681,4 +1825,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         io.SetPad1Input(state, padType);
     }
+
+    public void LoadStateSlot(int slotIndex)
+    {
+        _savestateService.Load(this, slotIndex);
+    }
+
+    public void SaveStateSlot(int slotIndex)
+    {
+        _savestateService.Save(this, slotIndex);
+    }
+
 }

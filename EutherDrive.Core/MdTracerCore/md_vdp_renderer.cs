@@ -110,17 +110,27 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else
             {
-                // Display off: nolla raden i framebuffer
-                int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
-                if ((uint)outputLine < (uint)g_output_ysize)
+                // Display off: preserve framebuffer (for savestate compatibility) OR fill with black
+                if (PreserveFramebufferOnDisplayOff)
                 {
-                    int pos = outputLine * g_output_xsize;
-                    for (int x = 0; x < g_output_xsize; x++)
+                    // Skip filling - preserve existing framebuffer from savestate
+                    if (MdTracerCore.MdLog.Enabled && g_scanline == 0)
+                        MdTracerCore.MdLog.WriteLine($"[VDP] frame={_frameCounter} display=OFF (preserving framebuffer)");
+                }
+                else
+                {
+                    // Traditional behavior: fill with black
+                    int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
+                    if ((uint)outputLine < (uint)g_output_ysize)
                     {
-                        if (targetBuffer != null)
-                            targetBuffer[pos++] = 0xFF000000u;
-                        else
-                            g_game_screen[pos++] = 0xFF000000u;
+                        int pos = outputLine * g_output_xsize;
+                        for (int x = 0; x < g_output_xsize; x++)
+                        {
+                            if (targetBuffer != null)
+                                targetBuffer[pos++] = 0xFF000000u;
+                            else
+                                g_game_screen[pos++] = 0xFF000000u;
+                        }
                     }
                 }
             }
@@ -174,5 +184,52 @@ namespace EutherDrive.Core.MdTracerCore
         // --- Hjälp (valfritt) ---
         // Exponera en enkel pekare till framebuffer om du vill hämta bilden från UI-lagret:
         public uint[] GetFrameBuffer() => g_game_screen;
+
+        // Dump framebuffer to PPM file (for debugging)
+        public void DumpFrameBufferToPpm(string filePath)
+        {
+            if (g_game_screen == null || g_game_screen.Length == 0)
+                return;
+            int width = g_output_xsize;
+            int height = g_output_ysize;
+            using var writer = new StreamWriter(filePath);
+            writer.WriteLine("P3");
+            writer.WriteLine($"{width} {height}");
+            writer.WriteLine("255");
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    uint pixel = g_game_screen[y * width + x];
+                    byte r = (byte)(pixel >> 16);
+                    byte g = (byte)(pixel >> 8);
+                    byte b = (byte)(pixel);
+                    writer.Write($"{r} {g} {b} ");
+                }
+                writer.WriteLine();
+            }
+        }
+
+        // Get framebuffer info
+        public (int width, int height, bool hasNonBlack) GetFrameBufferInfo()
+        {
+            if (g_game_screen == null || g_game_screen.Length == 0)
+                return (0, 0, false);
+            int width = g_output_xsize;
+            int height = g_output_ysize;
+            bool hasNonBlack = false;
+            int checkCount = 0;
+            foreach (uint pixel in g_game_screen)
+            {
+                if (pixel != 0xFF000000u)  // Not pure black
+                {
+                    hasNonBlack = true;
+                    break;
+                }
+                if (++checkCount > 10000)  // Check first 10K pixels
+                    break;
+            }
+            return (width, height, hasNonBlack);
+        }
     }
 }
