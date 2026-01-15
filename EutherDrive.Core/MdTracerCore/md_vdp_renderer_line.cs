@@ -17,6 +17,11 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool DisableSprites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DISABLE_SPRITES"), "1", StringComparison.Ordinal);
 
+        // When display is OFF, preserve framebuffer instead of filling with black
+        // This is important for savestate compatibility when loading states with display off
+        private static readonly bool PreserveFramebufferOnDisplayOff =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PRESERVE_FB_OFF"), "1", StringComparison.Ordinal);
+
         // Helper to read a word from vram[] (handles the MD byte-swap)
         private ushort vram_read_render(int addr)
         {

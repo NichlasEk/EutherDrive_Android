@@ -55,6 +55,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private long _bootRecoverToggleAccum;
     private bool _bootRecoverSigInit;
 
+    // Framebuffer analyzer for live debugging
+    public FramebufferAnalyzer FbAnalyzer { get; } = null!;
+
     private static readonly bool DumpVectorsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_VECTORS"), "1", StringComparison.Ordinal);
     private static readonly bool FrameBufferTraceEnabled =
@@ -135,6 +138,22 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     }
 
     public RomInfo RomInfo { get; private set; } = new RomInfo();
+
+    /// <summary>
+    /// Constructor - initializes framebuffer analyzer
+    /// </summary>
+    public MdTracerAdapter()
+    {
+        FbAnalyzer = new FramebufferAnalyzer(this);
+
+        // Auto-enable if env var is set
+        if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_ANALYZER"), "1", StringComparison.Ordinal))
+        {
+            FbAnalyzer.Enabled = true;
+            FbAnalyzer.ConfigureGrid(8, 6);
+            FbAnalyzer.SetSampleRate(1);
+        }
+    }
 
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => md_main.g_md_vdp?.FrameCounter;
@@ -936,6 +955,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
             }
         }
+
+        // Analyze framebuffer if enabled
+        FbAnalyzer.AnalyzeFrame();
     }
 
     /// <summary>
@@ -982,6 +1004,31 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             var serializer = new MdTracerStateSerializer();
             serializer.Load(reader);
         }
+    }
+
+    /// <summary>
+    /// Check if VDP display is enabled (reg 1, bit 6)
+    /// </summary>
+    public bool IsVdpDisplayOn()
+    {
+        if (_vdp is Core.MdTracerCore.md_vdp vdp)
+        {
+            // reg 1 bit 6 = display enable
+            return vdp.g_vdp_reg_1_6_display != 0;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Get VDP display status (for debugging)
+    /// </summary>
+    public int GetVdpDisplayStatus()
+    {
+        if (_vdp is Core.MdTracerCore.md_vdp vdp)
+        {
+            return vdp.g_vdp_reg_1_6_display;
+        }
+        return -1;
     }
 
     private void MaybeLogPerformance()
@@ -1220,6 +1267,75 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return false;
         lastTicks = now;
         return true;
+    }
+
+    /// <summary>
+    /// Check if framebuffer has non-black content
+    /// </summary>
+    public bool FrameBufferHasContent()
+    {
+        if (_frameBufferFront.Length == 0)
+            return false;
+
+        // Check if any pixel is not transparent (alpha > 0) or has color
+        int checkCount = 0;
+        foreach (byte b in _frameBufferFront)
+        {
+            if (b != 0)
+            {
+                Console.WriteLine($"[MdTracerAdapter] Framebuffer HAS content (first non-zero byte at offset ~{checkCount})");
+                return true;
+            }
+            if (++checkCount > 10000)  // Check first 10K bytes
+                break;
+        }
+        Console.WriteLine("[MdTracerAdapter] Framebuffer is empty/transparent");
+        return false;
+    }
+
+    /// <summary>
+    /// Dump framebuffer to PPM file (for debugging)
+    /// </summary>
+    public void DumpFrameBufferToPpm(string filePath)
+    {
+        if (_frameBufferFront.Length == 0)
+        {
+            Console.WriteLine("[MdTracerAdapter] Cannot dump - framebuffer is empty");
+            return;
+        }
+
+        int width = _fbW;
+        int height = _fbH;
+
+        try
+        {
+            using var writer = new StreamWriter(filePath);
+            writer.WriteLine("P3");
+            writer.WriteLine($"{width} {height}");
+            writer.WriteLine("255");
+
+            // _frameBufferFront is BGRA, so we need to convert back to RGB for PPM
+            for (int y = 0; y < height; y++)
+            {
+                int rowOffset = y * _fbStride;
+                for (int x = 0; x < width; x++)
+                {
+                    int colOffset = rowOffset + (x * 4);
+                    byte b = _frameBufferFront[colOffset + 0];
+                    byte g = _frameBufferFront[colOffset + 1];
+                    byte r = _frameBufferFront[colOffset + 2];
+                    // Skip alpha (colOffset + 3)
+                    writer.Write($"{r} {g} {b} ");
+                }
+                writer.WriteLine();
+            }
+
+            Console.WriteLine($"[MdTracerAdapter] Dumped framebuffer to {filePath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MdTracerAdapter] Failed to dump framebuffer: {ex.Message}");
+        }
     }
 
     private static ushort ReadVdpPixel(Span<ushort> vdpSrc, int srcStridePixels, bool interleaved, int x, int y)
@@ -1681,4 +1797,177 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         io.SetPad1Input(state, padType);
     }
+
+    #region Framebuffer Analyzer
+
+    /// <summary>
+    /// Framebuffer analyzer for live debugging - samples pixels from grid regions
+    /// </summary>
+    public class FramebufferAnalyzer
+    {
+        private readonly MdTracerAdapter _adapter;
+        private int _cols = 8;
+        private int _rows = 6;
+        private int _sampleEveryNFrames = 1;
+        private int _frameCounter;
+        private long _lastLogTicks;
+
+        public bool Enabled { get; set; }
+        public string OutputPrefix { get; set; } = "[FB-ANALYZER]";
+
+        public FramebufferAnalyzer(MdTracerAdapter adapter)
+        {
+            _adapter = adapter;
+        }
+
+        /// <summary>
+        /// Configure grid size (cols x rows)
+        /// </summary>
+        public void ConfigureGrid(int cols, int rows)
+        {
+            _cols = Math.Max(1, Math.Min(16, cols));
+            _rows = Math.Max(1, Math.Min(16, rows));
+        }
+
+        /// <summary>
+        /// Set sampling rate (sample every N frames)
+        /// </summary>
+        public void SetSampleRate(int everyNFrames)
+        {
+            _sampleEveryNFrames = Math.Max(1, everyNFrames);
+        }
+
+        /// <summary>
+        /// Analyze and log framebuffer content at regular intervals
+        /// </summary>
+        public void AnalyzeFrame()
+        {
+            if (!Enabled || _adapter._frameBufferFront.Length == 0)
+                return;
+
+            _frameCounter++;
+            if (_frameCounter % _sampleEveryNFrames != 0)
+                return;
+
+            // When sampling every frame, log every 60 frames (~1 sec at 60fps)
+            // Otherwise log every sample
+            if (_sampleEveryNFrames > 1)
+            {
+                long now = Stopwatch.GetTimestamp();
+                long intervalTicks = Stopwatch.Frequency; // 1 second
+                if (now - _lastLogTicks < intervalTicks)
+                    return;
+                _lastLogTicks = now;
+            }
+            else if (_frameCounter % 60 != 1)
+            {
+                // Only log every 60th frame when sampling every frame
+                return;
+            }
+
+            var fb = _adapter._frameBufferFront;
+            int w = _adapter._fbW;
+            int h = _adapter._fbH;
+            int stride = _adapter._fbStride;
+
+            if (w <= 0 || h <= 0 || stride <= 0)
+                return;
+
+            Console.Error.WriteLine($"{OutputPrefix} Frame {_frameCounter} - {w}x{h} framebuffer analysis:");
+            Console.Error.WriteLine(new string('=', 70));
+
+            int cellW = Math.Max(1, w / _cols);
+            int cellH = Math.Max(1, h / _rows);
+
+            for (int row = 0; row < _rows; row++)
+            {
+                int cy = Math.Min(h - 1, row * cellH + cellH / 2);
+                Console.Error.Write($"Row {row:D2}: ");
+
+                for (int col = 0; col < _cols; col++)
+                {
+                    int cx = Math.Min(w - 1, col * cellW + cellW / 2);
+                    int offset = cy * stride + (cx * 4);
+
+                    if (offset + 3 < fb.Length)
+                    {
+                        byte b = fb[offset + 0];
+                        byte g = fb[offset + 1];
+                        byte r = fb[offset + 2];
+                        byte a = fb[offset + 3];
+
+                        // Determine color name for quick reference
+                        string colorName = GetColorName(r, g, b);
+
+                        Console.Error.Write($"({cx:D3},{cy:D3}){colorName,-8} ");
+                    }
+                    else
+                    {
+                        Console.Error.Write("   OUT OF BOUNDS   ");
+                    }
+                }
+                Console.Error.WriteLine();
+            }
+
+            Console.Error.WriteLine($"{OutputPrefix} Pixel format: BGRA (byte order: B={fb[0]:X2}, G={fb[1]:X2}, R={fb[2]:X2}, A={fb[3]:X2})");
+            Console.Error.WriteLine(new string('=', 70));
+        }
+
+        private static string GetColorName(byte r, byte g, byte b)
+        {
+            // Simple color classification
+            int gray = (r + g + b) / 3;
+            if (gray < 20) return "BLACK";
+            if (gray > 235) return "WHITE";
+            if (r > 200 && g > 200 && b < 50) return "YELLOW";
+            if (r > 200 && g < 50 && b > 200) return "MAGENTA";
+            if (r < 50 && g > 200 && b > 200) return "CYAN";
+            if (r > 200 && g < 50 && b < 50) return "RED";
+            if (r < 50 && g > 200 && b < 50) return "GREEN";
+            if (r < 50 && g < 50 && b > 200) return "BLUE";
+            if (r > 150 && g > 100 && b < 50) return "ORANGE";
+            if (r > 150 && g > 50 && b > 150) return "PINK";
+            if (r > 100 && g > 100 && b > 200) return "LAVENDER";
+            if (gray < 80) return "DARKGRAY";
+            if (gray < 160) return "GRAY";
+            return "LTGRAY";
+        }
+
+        /// <summary>
+        /// Dump hex representation of a specific region
+        /// </summary>
+        public void DumpRegionHex(int x, int y, int width, int height)
+        {
+            var fb = _adapter._frameBufferFront;
+            int stride = _adapter._fbStride;
+
+            Console.WriteLine($"{OutputPrefix} Hex dump region ({x},{y}) {width}x{height}:");
+
+            for (int dy = 0; dy < height; dy++)
+            {
+                int py = y + dy;
+                if (py >= _adapter._fbH) break;
+
+                int offset = py * stride + (x * 4);
+                var line = new StringBuilder();
+
+                for (int dx = 0; dx < width && offset + 3 < fb.Length; dx++)
+                {
+                    byte b = fb[offset + 0];
+                    byte g = fb[offset + 1];
+                    byte r = fb[offset + 2];
+                    byte a = fb[offset + 3];
+
+                    line.Append($"{b:X2}{g:X2}{r:X2}{a:X2} ");
+                    offset += 4;
+
+                    if (dx > 0 && (dx + 1) % 8 == 0)
+                        line.Append(" ");
+                }
+                Console.WriteLine($"  {py:D3}: {line}");
+            }
+        }
+    }
+
+    #endregion
 }

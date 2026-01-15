@@ -20,12 +20,6 @@ class Program
 
     static int Main(string[] args)
     {
-        // Set defaults for headless mode
-        // Preserve framebuffer when display is OFF (important for savestate compatibility)
-        var preserveFbEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_PRESERVE_FB_OFF");
-        if (string.IsNullOrEmpty(preserveFbEnv))
-            Environment.SetEnvironmentVariable("EUTHERDRIVE_PRESERVE_FB_OFF", "1");
-
         // Check for special test modes
         if (args.Length >= 1 && args[0] == "--test-interlace2")
         {
@@ -86,14 +80,37 @@ class Program
             var adapter = new MdTracerAdapter();
             adapter.LoadRom(romPath);
 
+            // Enable framebuffer analyzer if requested
+            if (args.Length > 2 && args[2] == "--analyze-fb")
+            {
+                adapter.FbAnalyzer.Enabled = true;
+                adapter.FbAnalyzer.ConfigureGrid(8, 6);
+                adapter.FbAnalyzer.SetSampleRate(1);
+                Console.WriteLine("[HEADLESS] Framebuffer analyzer enabled");
+            }
+
             // Check for auto-load savestate flag
             bool loadSlot1OnBoot = Environment.GetEnvironmentVariable("EUTHERDRIVE_LOAD_SLOT1_ON_BOOT") == "1";
             if (loadSlot1OnBoot)
             {
                 Console.WriteLine($"[HEADLESS] Auto-loading savestate slot 1...");
+
+                // Debug: show ROM identity
+                Console.WriteLine($"[HEADLESS] ROM identity: name={adapter.RomIdentity?.Name}, hash={BitConverter.ToString(adapter.RomIdentity?.Hash ?? [])}");
+
+                // Use SavestateService to load from the savestates directory
+                var savestateService = new SavestateService("/home/nichlas/EutherDrive/savestates");
+
+                // Debug: list available savestates
+                Console.WriteLine("[HEADLESS] Available savestates:");
+                foreach (var file in Directory.GetFiles("/home/nichlas/EutherDrive/savestates", "*.euthstate"))
+                {
+                    Console.WriteLine($"[HEADLESS]   {Path.GetFileName(file)}");
+                }
+
                 try
                 {
-                    adapter.LoadStateSlot(1);
+                    savestateService.Load(adapter, 1);
                     Console.WriteLine($"[HEADLESS] Savestate slot 1 loaded successfully.");
                 }
                 catch (Exception ex)
@@ -104,16 +121,75 @@ class Program
 
             Console.WriteLine($"[HEADLESS] ROM loaded, starting emulation...");
 
+            // Dump frame 0 before running
+            Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+            adapter.FrameBufferHasContent();
+            adapter.DumpFrameBufferToPpm("/home/nichlas/roms/headless_frame0.ppm");
+
             for (int frame = 0; frame < framesToRun; frame++)
             {
                 adapter.StepFrame();
-                Console.WriteLine($"[HEADLESS] Frame {frame} completed");
+
+                // Log VDP status and framebuffer
+                bool displayOn = adapter.IsVdpDisplayOn();
+                bool hasContent = adapter.FrameBufferHasContent();
+                Console.WriteLine($"[HEADLESS] Frame {frame}: display={displayOn} fb_has_content={hasContent}");
+
+                // Dump framebuffer at interesting points
+                if (frame == 0 || frame == 5 || frame == 10)
+                {
+                    string ppmPath = $"/home/nichlas/roms/headless_frame{frame}.ppm";
+                    adapter.DumpFrameBufferToPpm(ppmPath);
+                    Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                }
 
                 // Early exit if we detect obvious problems
                 var z80Pc = adapter.GetZ80Pc();
                 if (z80Pc == 0 && frame > 5)
                 {
                     Console.WriteLine($"[HEADLESS-WARN] Z80 PC stuck at 0x0000 after frame {frame}");
+                }
+            }
+
+            // Dump frame 0 after running
+            Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+            adapter.FrameBufferHasContent();
+            adapter.DumpFrameBufferToPpm("/home/nichlas/roms/headless_output.ppm");
+
+            // Check framebuffer and dump if requested
+            Console.WriteLine("[HEADLESS] Checking framebuffer...");
+            if (adapter.FrameBufferHasContent())
+            {
+                string ppmPath = Path.Combine(Path.GetDirectoryName(romPath) ?? ".", "headless_output.ppm");
+                adapter.DumpFrameBufferToPpm(ppmPath);
+                Console.WriteLine($"[HEADLESS] Framebuffer dumped to {ppmPath}");
+
+                // Also try to convert to PNG if ImageMagick is available
+                string pngPath = Path.ChangeExtension(ppmPath, ".png");
+                var convertProcess = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "convert",
+                        Arguments = $"\"{ppmPath}\" \"{pngPath}\"",
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                };
+                try
+                {
+                    convertProcess.Start();
+                    convertProcess.WaitForExit(5000);
+                    if (File.Exists(pngPath))
+                    {
+                        Console.WriteLine($"[HEADLESS] Converted to PNG: {pngPath}");
+                    }
+                }
+                catch
+                {
+                    // ImageMagick not available, skip PNG conversion
                 }
             }
 

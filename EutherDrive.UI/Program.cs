@@ -27,7 +27,7 @@ class Program
         if (ShouldSilenceConsole())
         {
             Console.SetOut(TextWriter.Null);
-            Console.SetError(TextWriter.Null);
+            // Keep stderr open for FB analyzer
             Trace.Listeners.Clear();
             Trace.AutoFlush = false;
         }
@@ -35,6 +35,7 @@ class Program
 
     private static bool ShouldSilenceConsole()
     {
+        // If any trace flag is set, enable all console output
         if (IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE"))
         {
             return false;

@@ -110,17 +110,25 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else
             {
-                // Display off: nolla raden i framebuffer
-                int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
-                if ((uint)outputLine < (uint)g_output_ysize)
+                // Display off: preserve framebuffer (for savestate compatibility) OR fill with black
+                if (PreserveFramebufferOnDisplayOff)
                 {
-                    int pos = outputLine * g_output_xsize;
-                    for (int x = 0; x < g_output_xsize; x++)
+                    // Skip filling - preserve existing framebuffer from savestate
+                }
+                else
+                {
+                    // Traditional behavior: fill with black
+                    int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
+                    if ((uint)outputLine < (uint)g_output_ysize)
                     {
-                        if (targetBuffer != null)
-                            targetBuffer[pos++] = 0xFF000000u;
-                        else
-                            g_game_screen[pos++] = 0xFF000000u;
+                        int pos = outputLine * g_output_xsize;
+                        for (int x = 0; x < g_output_xsize; x++)
+                        {
+                            if (targetBuffer != null)
+                                targetBuffer[pos++] = 0xFF000000u;
+                            else
+                                g_game_screen[pos++] = 0xFF000000u;
+                        }
                     }
                 }
             }

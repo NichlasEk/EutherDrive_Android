@@ -166,6 +166,21 @@ public partial class MainWindow : Window
             if (_core is MdTracerAdapter m)
             {
                 m.PowerCycleAndLoadRom(_romPath);
+
+                // Auto-load savestate slot 1 if flag is set
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_LOAD_SLOT1_ON_BOOT") == "1")
+                {
+                    try
+                    {
+                        _savestateService.Load(m, 1);
+                        StatusText.Text = "Loaded savestate slot 1";
+                    }
+                    catch (Exception ex)
+                    {
+                        StatusText.Text = $"Savestate load failed: {ex.Message}";
+                    }
+                }
+
                 UpdateRomInfo(m.RomInfo);
                 ApplyFrameRateModeToCore(resetIfRunning: false);
                 Console.WriteLine(m.RomInfo.Summary);
@@ -488,6 +503,20 @@ public partial class MainWindow : Window
                     if (_core is MdTracerAdapter m)
                     {
                         m.PowerCycleAndLoadRom(_romPath);
+
+                        // Auto-load savestate slot 1 if flag is set
+                        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_LOAD_SLOT1_ON_BOOT") == "1")
+                        {
+                            try
+                            {
+                                _savestateService.Load(m, 1);
+                                StatusText.Text = "Loaded savestate slot 1";
+                            }
+                            catch (Exception ex)
+                            {
+                                StatusText.Text = $"Savestate load failed: {ex.Message}";
+                            }
+                        }
 
                         // Visa i UI direkt (snabbast att se)
                         UpdateRomInfo(m.RomInfo);
@@ -1713,6 +1742,13 @@ public partial class MainWindow : Window
             try
             {
                 core.RunFrame();
+
+                // Framebuffer analyzer for debugging
+                if (core is MdTracerAdapter adapter && adapter.FbAnalyzer.Enabled)
+                {
+                    adapter.FbAnalyzer.AnalyzeFrame();
+                    Console.Error.Flush(); // Ensure output is visible immediately
+                }
             }
             catch (Exception ex)
             {

@@ -4,6 +4,7 @@ obj/
 
 # Emulator logs
 rom_*.log
+*.log
 *.prev
 
 # Local UI settings
