@@ -211,7 +211,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         try
         {
             string ext = Path.GetExtension(path)?.ToLowerInvariant() ?? string.Empty;
-            bool isSms = ext == ".sms" || ext == ".sg" || ext == ".gg";
+            bool isSms = RomArchiveExtractor.IsSmsExtension(ext);
+            string romDisplayName = Path.GetFileNameWithoutExtension(path);
+            string romSourceName = path;
 
             if (!File.Exists(path))
             {
@@ -219,13 +221,31 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 return;
             }
 
-            byte[] rawData = File.ReadAllBytes(path);
-            if (rawData.Length >= 6 && Is7zHeader(rawData))
+            byte[] rawData;
+            if (RomArchiveExtractor.IsArchivePath(path) || RomArchiveExtractor.HasArchiveHeader(path))
             {
-                Console.WriteLine("[MdTracerAdapter] LoadRom: 7z archives are unsupported; please extract first.");
+                if (!RomArchiveExtractor.TryExtractRom(path, out rawData, out string entryName, out bool entryIsSms, out string? error))
+                {
+                    Console.WriteLine($"[MdTracerAdapter] LoadRom: failed to read archive '{path}': {error}");
+                    return;
+                }
+
+                romSourceName = entryName;
+                romDisplayName = Path.GetFileNameWithoutExtension(entryName);
+                isSms = entryIsSms;
+            }
+            else
+            {
+                rawData = File.ReadAllBytes(path);
+            }
+
+            if (rawData.Length == 0)
+            {
+                Console.WriteLine($"[MdTracerAdapter] LoadRom: file '{path}' is empty.");
                 return;
             }
-            _romIdentity = new RomIdentity(Path.GetFileNameWithoutExtension(path), RomIdentity.ComputeSha256(rawData));
+
+            _romIdentity = new RomIdentity(romDisplayName, RomIdentity.ComputeSha256(rawData));
 
             md_main.PowerCycleReset();
             md_main.initialize();
@@ -264,7 +284,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 md_main.g_masterSystemRomSize = 0;
 
                 md_main.g_md_cartridge ??= new md_cartridge();
-                bool loaded = md_main.g_md_cartridge.load(path);
+                bool loaded = md_main.g_md_cartridge.load_from_bytes(rawData, romSourceName);
                 if (!loaded)
                 {
                     Console.WriteLine("[MdTracerAdapter] LoadRom: md_cartridge.load failed, using fallback ROM data.");
@@ -669,11 +689,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         uint pc = _bus.Read32(0x000004);
         Console.WriteLine($"[VECTORS] SP=0x{sp:X8} PC=0x{pc:X8}");
     }
-
-    private static bool Is7zHeader(ReadOnlySpan<byte> header)
-        => header.Length >= 6 &&
-           header[0] == 0x37 && header[1] == 0x7A && header[2] == 0xBC &&
-           header[3] == 0xAF && header[4] == 0x27 && header[5] == 0x1C;
 
     private void ValidateVectors(uint sp, uint pc)
     {

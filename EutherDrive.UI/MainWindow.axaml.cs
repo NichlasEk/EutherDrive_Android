@@ -455,7 +455,7 @@ public partial class MainWindow : Window
             {
                 new FilePickerFileType("ROMs")
                 {
-                    Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.iso", "*.*" }
+                    Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.sms", "*.sg", "*.gg", "*.zip", "*.7z", "*.iso", "*.*" }
                 }
             }
         };

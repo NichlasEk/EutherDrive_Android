@@ -47,6 +47,19 @@ namespace EutherDrive.Core.MdTracerCore
         public int g_smd_header_size;
         public bool g_smd_deinterleaved;
 
+        public bool load_from_bytes(byte[] data, string sourceName)
+        {
+            try
+            {
+                return load_from_data(data, sourceName);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[CARTRIDGE] Load from bytes failed: {ex.Message}");
+                return false;
+            }
+        }
+
         public bool load(string in_romname)
         {
             try
@@ -102,6 +115,15 @@ namespace EutherDrive.Core.MdTracerCore
                     return false;
                 }
             }
+
+            return load_from_data(g_file, in_romname);
+        }
+
+        private bool load_from_data(byte[] data, string sourceName)
+        {
+            g_file_path = sourceName;
+            g_file = data;
+            g_file_size = g_file.Length;
 
             var normalized = md_rom_utils.NormalizeMegaDriveRom(g_file);
             g_file = normalized.Data;
