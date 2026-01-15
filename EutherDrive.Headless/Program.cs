@@ -117,19 +117,6 @@ class Program
                 }
             }
 
-            // Check framebuffer after running
-            Console.WriteLine("[HEADLESS] Checking framebuffer...");
-            if (adapter is Core.MdTracerAdapter mdAdapter)
-            {
-                bool hasContent = mdAdapter.FrameBufferHasContent();
-                if (hasContent)
-                {
-                    string ppmPath = Path.Combine(Path.GetDirectoryName(romPath) ?? ".", "headless_output.ppm");
-                    mdAdapter.DumpFrameBufferToPpm(ppmPath);
-                    Console.WriteLine($"[HEADLESS] Framebuffer dumped to {ppmPath}");
-                }
-            }
-
             Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
             return 0;
         }
