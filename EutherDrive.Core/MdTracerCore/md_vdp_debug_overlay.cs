@@ -2,7 +2,7 @@ using System;
 
 namespace EutherDrive.Core.MdTracerCore;
 
-internal partial class md_vdp
+public partial class md_vdp
 {
     private int _dbgX = 160;
     private int _dbgY = 112;

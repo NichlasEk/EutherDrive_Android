@@ -1,6 +1,6 @@
 namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         // Bus-åtkomst (tills riktiga registerlogiken är portad)
         public byte read8(uint addr)

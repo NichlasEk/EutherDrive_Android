@@ -13,6 +13,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using EutherDrive.Core.MdTracerCore;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -184,6 +185,12 @@ public partial class MainWindow : Window
                 UpdateRomInfo(m.RomInfo);
                 ApplyFrameRateModeToCore(resetIfRunning: false);
                 Console.WriteLine(m.RomInfo.Summary);
+
+                // Sync UI checkbox with VDP class default (preserve framebuffer on display off)
+                if (PreserveFbCheck != null)
+                {
+                    md_vdp.PreserveFramebufferOnDisplayOff = PreserveFbCheck.IsChecked == true;
+                }
             }
             else
             {
@@ -1372,6 +1379,14 @@ public partial class MainWindow : Window
             Console.WriteLine("[UI] ASCII Stream: No MdTracerAdapter core");
             StatusText.Text = "ASCII Stream: N/A";
         }
+    }
+
+    private void OnPreserveFbToggle(object? sender, RoutedEventArgs e)
+    {
+        bool enabled = PreserveFbCheck?.IsChecked == true;
+        md_vdp.PreserveFramebufferOnDisplayOff = enabled;
+        Console.WriteLine($"[UI] Preserve FB on Display Off: {(enabled ? "ENABLED" : "DISABLED")}");
+        StatusText.Text = enabled ? "Preserve FB ON" : "Preserve FB OFF";
     }
 
     private void Tick()

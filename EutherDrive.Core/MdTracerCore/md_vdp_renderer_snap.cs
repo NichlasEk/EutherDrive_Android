@@ -2,7 +2,7 @@
 
 namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         private static readonly int TraceSpriteLine =
             int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPRITES_LINE"), out int line)

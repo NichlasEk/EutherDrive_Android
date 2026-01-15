@@ -1,6 +1,6 @@
 ﻿namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         public void initialize()
         {

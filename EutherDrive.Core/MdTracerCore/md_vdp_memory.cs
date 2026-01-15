@@ -3,7 +3,7 @@ using System.Diagnostics;
 
 namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         private static readonly bool TraceVramWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM"), "1", StringComparison.Ordinal);

@@ -2,7 +2,7 @@
 
 namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         // TEMPORARY: Force direct VRAM reads to eliminate cache mismatch
         // Set to true to read patterns directly from vram[] instead of g_renderer_vram
@@ -18,9 +18,16 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DISABLE_SPRITES"), "1", StringComparison.Ordinal);
 
         // When display is OFF, preserve framebuffer instead of filling with black
-        // This is important for savestate compatibility when loading states with display off
-        private static readonly bool PreserveFramebufferOnDisplayOff =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PRESERVE_FB_OFF"), "1", StringComparison.Ordinal);
+        // Default is TRUE - many games use display toggle as an effect (Mystic Defender, etc.)
+        // Can be toggled at runtime via static property or EUTHERDRIVE_FILL_FB_ON_DISPLAY_OFF=1 env var
+        private static bool _preserveFramebufferOnDisplayOff =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FILL_FB_ON_DISPLAY_OFF"), "1", StringComparison.Ordinal);
+
+        public static bool PreserveFramebufferOnDisplayOff
+        {
+            get => _preserveFramebufferOnDisplayOff;
+            set => _preserveFramebufferOnDisplayOff = value;
+        }
 
         // Helper to read a word from vram[] (handles the MD byte-swap)
         private ushort vram_read_render(int addr)
@@ -169,8 +176,8 @@ namespace EutherDrive.Core.MdTracerCore
                             {
                                 g_game_cmap[wx]   = w_palette + picValueDirect;
                                 g_game_primap[wx] = w_priority;
+                                g_game_shadowmap[wx] = w_priority;
                             }
-                            g_game_shadowmap[wx] = w_priority;
                             w_view_x += 1;
                             w_view_dx += 1;
                             continue; // Skip normal pattern read path
@@ -190,8 +197,8 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         g_game_cmap[wx]   = w_palette + picValue;
                         g_game_primap[wx] = w_priority;
+                        g_game_shadowmap[wx] = w_priority;
                     }
-                    g_game_shadowmap[wx] = w_priority;
                     w_view_x += 1;
                     w_view_dx += 1;
                 }
@@ -377,9 +384,10 @@ namespace EutherDrive.Core.MdTracerCore
                                         }
                                         else if ((w_color & 0x0f) == 0x0e)
                                         {
+                                            // Colors 0x0E, 0x1E, 0x2E: ALWAYS NORMAL (no shadow inheritance)
                                             g_game_cmap[w_posx]     = w_color;
                                             g_game_primap[w_posx]   = w_priority;
-                                            g_game_shadowmap[w_posx]= 0x1000;
+                                            g_game_shadowmap[w_posx] |= w_priority;
                                         }
                                         else
                                         {
@@ -435,6 +443,7 @@ namespace EutherDrive.Core.MdTracerCore
                                     {
                                         g_game_cmap[w_posx]   = w_palette + picValueDirect;
                                         g_game_primap[w_posx] = w_priority;
+                                        g_game_shadowmap[w_posx] |= w_priority;
                                     }
                                 }
                                 else
@@ -446,9 +455,9 @@ namespace EutherDrive.Core.MdTracerCore
                                     {
                                         g_game_cmap[w_posx]   = w_palette + picValue;
                                         g_game_primap[w_posx] = w_priority;
+                                        g_game_shadowmap[w_posx] |= w_priority;
                                     }
                                 }
-                                g_game_shadowmap[w_posx] |= w_priority;
                             }
                             w_posx += 1;
                         }

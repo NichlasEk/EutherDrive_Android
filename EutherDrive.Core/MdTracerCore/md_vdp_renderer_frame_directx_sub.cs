@@ -6,7 +6,7 @@ using SharpDX.D3DCompiler;
 
 namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         private SharpDX.Direct3D12.Resource CreateBufferResource_view_srv(int in_bufsize, int in_struct_size)
         {

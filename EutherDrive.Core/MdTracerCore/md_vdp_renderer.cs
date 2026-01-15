@@ -3,7 +3,7 @@ using System.Diagnostics;
 
 namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         private const int PATTERN_MAX      = 2048;
         private const int DISPLAY_XSIZE    = 320;
@@ -85,9 +85,19 @@ namespace EutherDrive.Core.MdTracerCore
             RenderLineWithField(g_vdp_interlace_field, GetOutputLineForScanline(g_scanline));
         }
 
+        private static readonly bool DebugShadowHighlight =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_SH"), "1", StringComparison.Ordinal);
+
         private void RenderLineWithField(byte field, int outputLineOverride = -1, uint[]? targetBuffer = null)
         {
             g_vdp_interlace_field = (byte)(field & 0x01);
+
+            // Debug log display status every 60 frames
+            if (DebugShadowHighlight && g_scanline == 0 && _frameCounter % 60 == 0)
+            {
+                Debug.WriteLine($"[VDP-DISPLAY] frame={_frameCounter} display={g_vdp_reg_1_6_display} sh_mode={g_vdp_reg_12_3_shadow}");
+            }
+
             if (MdTracerCore.MdLog.Enabled && g_scanline == 0)
                 MdTracerCore.MdLog.WriteLine($"[VDP] frame={_frameCounter} display={g_vdp_reg_1_6_display}");
 

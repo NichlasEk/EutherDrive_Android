@@ -2,7 +2,7 @@
 
 namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         // Debug-buffertar (ARGB32 per pixel), ersätter Bitmap-fälten
         // Storlekarna matchar originalets bilder

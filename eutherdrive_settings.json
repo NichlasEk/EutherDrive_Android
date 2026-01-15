@@ -1,12 +1,11 @@
 {
-  "LastRomPath": "/home/nichlas/roms/sonic2.md",
-  "MasterVolumePercent": 14,
+  "LastRomPath": "/home/nichlas/roms/mysticdefender.md",
+  "MasterVolumePercent": 43,
   "AudioEnabled": true,
   "DefaultRegionOverride": 0,
   "RomRegionOverrides": {
     "serial:GM 00000000-00": 1,
     "serial:GM 00001022-00": 1,
-    "serial:GM 00004054-00": 1,
     "serial:GM 00004093-00": 3,
     "serial:GM 00054002-02": 1,
     "serial:GM ACLD004 -00": 1,
@@ -54,7 +53,10 @@
     "serial:GM T-081426-50": 1,
     "serial:GM T-70226-500": 2,
     "serial:GM T-139036-00": 1,
-    "serial:GM MK-1539 -00": 1
+    "serial:GM MK-1539 -00": 1,
+    "serial:GM T-25123 -00": 3,
+    "serial:GM T-76106 -00": 1,
+    "serial:GM T-56036 -00": 1
   },
   "FrameRateMode": 0
 }

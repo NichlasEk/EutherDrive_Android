@@ -6,7 +6,7 @@ namespace EutherDrive.Core.MdTracerCore
     //----------------------------------------------------------------
     // VDP : chips:315-5313
     //----------------------------------------------------------------
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         internal const ushort VDP_STATUS_VBLANK_MASK = 0x0080;
         private static readonly bool TraceMdVdp =

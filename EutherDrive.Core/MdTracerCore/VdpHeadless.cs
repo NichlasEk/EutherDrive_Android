@@ -3,7 +3,7 @@ using System;
 namespace EutherDrive.Core.MdTracerCore
 {
     // Minimal VDP för port-I/O och en enkel framebuffer. Vi bygger ut successivt.
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         // Portstatus
         private static ushort _ctrlLatch;

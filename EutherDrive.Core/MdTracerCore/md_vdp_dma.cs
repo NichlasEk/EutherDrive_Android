@@ -3,7 +3,7 @@ using System.Xml.Linq;
 
 namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         private int g_dma_mode;
         private uint g_dma_src_addr;

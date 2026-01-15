@@ -3,7 +3,7 @@ using System.Diagnostics;
 
 namespace EutherDrive.Core.MdTracerCore
 {
-    internal partial class md_vdp
+    public partial class md_vdp
     {
         // Småhjälp för "headless" varningar
         private static void Warn(string msg) => Debug.WriteLine($"[VDP] {msg}");
