@@ -363,13 +363,17 @@ namespace EutherDrive.Core.MdTracerCore
                                         }
                                         else if (w_color == 0x3e)
                                         {
+                                            // Palette 3, color 14: Transparent, makes underlying pixel HIGHLIGHT
                                             uint w_map = g_game_shadowmap[w_posx];
                                             if (w_map < 2) g_game_shadowmap[w_posx] = (uint)(w_map + 1);
+                                            // Don't set g_sprite_line_mask - this sprite is transparent
                                         }
                                         else if (w_color == 0x3f)
                                         {
+                                            // Palette 3, color 15: Transparent, makes underlying pixel SHADOW
                                             uint w_map = g_game_shadowmap[w_posx];
                                             if (w_map > 0) g_game_shadowmap[w_posx] = (uint)(w_map - 1);
+                                            // Don't set g_sprite_line_mask - this sprite is transparent
                                         }
                                         else if ((w_color & 0x0f) == 0x0e)
                                         {
@@ -383,7 +387,11 @@ namespace EutherDrive.Core.MdTracerCore
                                             g_game_primap[w_posx] = w_priority;
                                             g_game_shadowmap[w_posx] |= w_priority;
                                         }
-                                        g_sprite_line_mask[w_posx] = true;
+                                        // Only set sprite line mask for non-transparent sprites
+                                        if (w_color != 0x3e && w_color != 0x3f)
+                                        {
+                                            g_sprite_line_mask[w_posx] = true;
+                                        }
                                     }
                                 }
                             }

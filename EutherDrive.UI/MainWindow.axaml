@@ -67,9 +67,10 @@
       <TextBlock Name="StatusText" VerticalAlignment="Center"/>
     </StackPanel>
 
-    <!-- Left: info -->
+    <!-- Left: info (scrollable) -->
     <Border Name="InfoPanel" Grid.Row="1" Grid.Column="0" Padding="10" CornerRadius="8" Background="#181C22" BorderBrush="#2A313B" BorderThickness="1">
-      <StackPanel Spacing="8" Width="260">
+      <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="8" Width="240">
         <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
         <CheckBox Content="Use 6-button pad" IsChecked="False" Name="SixButtonPadCheck"/>
         <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
@@ -113,7 +114,8 @@
         <CheckBox Content="Force Opaque Pixels" IsChecked="False" Name="ForceOpaqueCheck"/>
         <CheckBox Content="ASCII Stream (for viewer)" IsChecked="False" Name="AsciiStreamCheck" Checked="OnAsciiStreamToggle" Unchecked="OnAsciiStreamToggle"/>
         <TextBlock Name="InterlaceTestInfo" Opacity="0.7" FontSize="11" TextWrapping="Wrap"/>
-      </StackPanel>
+        </StackPanel>
+      </ScrollViewer>
     </Border>
 
 <!-- Right: framebuffer -->
