@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 
 namespace EutherDrive.Core.MdTracerCore
@@ -16,24 +16,6 @@ namespace EutherDrive.Core.MdTracerCore
         public void initialize()
         {
             g_ram = new byte[65536];
-
-            // Write Z80 boot ROM (internal boot code at 0x000000 in 68K address space)
-            // This simulates the Z80's internal boot ROM that contains:
-            // - 64 NOPs for reset state (0x0000-0x003F)
-            // - DI (0xF3) at 0x0040
-            // - LD SP, 0xA000 (0x31 00 A0) at 0x0041
-            // - JP 0x0167 (0xC3 67 01) at 0x0044
-            // The boot code jumps to 0x0167 where the actual Z80 driver code is loaded
-            for (int i = 0; i < 64; i++)
-                g_ram[i] = 0x00; // NOPs during reset
-            g_ram[0x40] = 0xF3;      // DI
-            g_ram[0x41] = 0x31;      // LD SP, nn
-            g_ram[0x42] = 0x00;      // low byte of SP
-            g_ram[0x43] = 0x1F;      // high byte of SP (0x1F00 - within Z80 RAM 0x0000-0x1FFF)
-            g_ram[0x44] = 0xC3;      // JP nn
-            g_ram[0x45] = 0x67;      // low byte of target address
-            g_ram[0x46] = 0x01;      // high byte of target address (0x0167)
-
             md_main.BeginZ80ResetCycle();
             reset();
 

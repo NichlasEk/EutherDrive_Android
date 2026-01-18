@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Globalization;
 
@@ -201,6 +201,19 @@ namespace EutherDrive.Core.MdTracerCore
             bool busy = busyCycleBased || busyCounterBased;
             if (EmulateYmBusy && busy)
                 status |= 0x80;
+            
+            // WORKAROUND: For Sonic 2 and other games with Z80 audio issues,
+            // always report YM2612 as not busy (bit 7 = 0)
+            // This prevents Z80 from getting stuck in busy loops
+            // TODO: Implement proper YM2612 busy timing
+            status &= 0x7F; // Clear BUSY flag
+            
+            // DEBUG: Log status reads for Sonic 2 debugging when at driver entry
+            if (md_main.g_md_z80?.DebugPc == 0x0167)
+            {
+                Console.WriteLine($"[SONIC2-YM-STATUS] pc=0x{md_main.g_md_z80.DebugPc:X4} status=0x{status:X2} busy={(busy ? 1 : 0)} EmulateYmBusy={EmulateYmBusy}");
+            }
+            
             if (TraceYmStatus)
                 LogYmStatusRead(nowCycle, status, clearOnRead, busy);
             if (TraceYmBusy && busy)

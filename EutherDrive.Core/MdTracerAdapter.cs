@@ -1095,8 +1095,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     /// </summary>
     public void SetAsciiStreamEnabled(bool enabled)
     {
+        if (_asciiStreamEnabled == enabled)
+            return;
+
         _asciiStreamEnabled = enabled;
-        if (enabled && _asciiFileStream == null)
+        if (enabled)
         {
             // Initialize on first enable
             try
@@ -1111,6 +1114,20 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             {
                 Console.WriteLine($"[MdTracerAdapter] Failed to create ASCII file: {ex.Message}");
                 _asciiStreamEnabled = false;
+            }
+        }
+        else
+        {
+            // Clean up when disabling
+            lock (_asciiStreamLock)
+            {
+                if (_asciiFileStream != null)
+                {
+                    _asciiFileStream.Dispose();
+                    _asciiFileStream = null;
+                }
+                _asciiFilePath = null;
+                _asciiFrameNumber = 0;
             }
         }
     }

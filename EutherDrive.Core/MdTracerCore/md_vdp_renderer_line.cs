@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -477,21 +477,21 @@ namespace EutherDrive.Core.MdTracerCore
                 for (int wx = 0; wx < visibleWidth; wx++)
                 {
                     uint w_colnum = g_game_cmap[wx];
-                    if (w_colnum == 0) w_colnum = g_vdp_reg_7_backcolor;
+                     if (w_colnum == 0) w_colnum = g_vdp_reg_7_backcolor;
 
-                    uint color;
-                    if (g_vdp_reg_12_3_shadow == 0)
-                    {
-                        color = g_color[w_colnum];
-                    }
-                    else
-                    {
-                        uint w_shadow = g_game_shadowmap[wx];
-                        color = (w_shadow == 0) ? g_color_shadow[w_colnum]
-                        : (w_shadow == 2) ? g_color_highlight[w_colnum]
-                        : g_color[w_colnum];
-                    }
-                    destBuffer[w_base + wx] = color;
+                     uint color;
+                     if (g_vdp_reg_12_3_shadow == 0)
+                     {
+                         color = g_color[w_colnum];
+                     }
+                     else
+                     {
+                         uint w_shadow = g_game_shadowmap[wx];
+                         color = (w_shadow == 0) ? g_color_shadow[w_colnum]
+                         : (w_shadow == 2) ? g_color_highlight[w_colnum]
+                         : g_color[w_colnum];
+                     }
+                     destBuffer[w_base + wx] = color;
                 }
 
                 if (outputWidth > visibleWidth)

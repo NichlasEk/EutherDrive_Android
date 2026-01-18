@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Globalization;
 
@@ -57,7 +57,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int Z80WaitBusReqMaxFrames = ParseZ80WaitBusReqMaxFrames();
         private static readonly bool Z80WaitBusReqLog = ReadEnvFlag("EUTHERDRIVE_Z80_WAIT_BUSREQ_LOG");
         // Z80/M68K cycle ratio for NTSC: Z80 ~3.58MHz, M68K ~7.67MHz => ratio ~0.466
-        private static readonly double Z80PerM68kRatio = 3.58 / 7.67;
+        private static readonly double Z80PerM68kRatio = 3.579545 / 7.670000; // More precise ratio
         private static readonly int Z80ContinuousSliceCycles = ParseZ80ContinuousSliceCycles();
         private static bool UseZ80ContinuousScheduling => !g_masterSystemMode && Z80ContinuousSliceCycles > 0;
         private static int SmsCyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * SmsCycleMultiplier));
@@ -68,9 +68,12 @@ namespace EutherDrive.Core.MdTracerCore
         private static long _smsCycleLogAccumActual;
         private const int SmsCycleLogIntervalMs = 1000;
         private static bool _z80FrameScheduleLogged;
-        private static int _z80WaitFrames;
+         private static int _z80WaitFrames;
         private static int _z80StableLowFrames;
         private static bool _z80WaitReleased;
+        private static int _z80SliceCount;
+        private static int _z80TotalCycles;
+        private static int _z80MaxSlice;
         private static bool _z80WaitLogged;
         private static bool _mbxInjected;
         private static bool _mbxInjectAcked;
@@ -179,12 +182,18 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 z80RunPerLine = Z80RunPerLineFrames <= 0 || (frame >= 0 && frame < Z80RunPerLineFrames);
             }
-            bool allowZ80 = ShouldRunZ80(frame);
+             bool allowZ80 = ShouldRunZ80(frame);
+             
+             // DEBUG: Log Z80 scheduling
+             if (frame >= 10 && frame <= 15)
+             {
+                 Console.WriteLine($"[Z80-SCHED-DEBUG] frame={frame} allowZ80={allowZ80} z80RunPerLine={z80RunPerLine} UseZ80ContinuousScheduling={UseZ80ContinuousScheduling}");
+             }
             int z80FrameBudget = z80LineBudget * lines;
-            if (UseZ80ContinuousScheduling && !_z80FrameScheduleLogged)
+             if (UseZ80ContinuousScheduling && !_z80FrameScheduleLogged)
             {
                 _z80FrameScheduleLogged = true;
-                Console.WriteLine($"[Z80SCHED] mode=continuous sliceM68k={Z80ContinuousSliceCycles} ratio={Z80PerM68kRatio:F4}");
+                Console.WriteLine($"[Z80SCHED] mode=continuous sliceM68k={Z80ContinuousSliceCycles} ratio={Z80PerM68kRatio:F4} Z80CyclesPerLine={Z80CyclesPerLine} masterSystemMode={g_masterSystemMode}");
             }
             else if (!z80RunPerLine && !_z80FrameScheduleLogged && MdLog.TraceZ80Win)
             {
@@ -196,7 +205,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 g_md_vdp.run(vline);
 
-                // Continuous Z80 scheduling proportional to M68K cycles
+                 // Continuous Z80 scheduling proportional to M68K cycles
                 // This runs Z80 in small slices throughout each M68K execution slice,
                 // maintaining proper timing for YM busy-polling, mailbox communication, etc.
                 if (!g_masterSystemMode && UseZ80ContinuousScheduling && allowZ80)
@@ -218,18 +227,27 @@ namespace EutherDrive.Core.MdTracerCore
                         // Add Z80 budget proportional to M68K cycles executed
                         z80Budget += m68kSlice * Z80PerM68kRatio;
 
-                        // Run Z80 while we have budget
+                        // Run Z80 in small, even slices for better timing
+                        // Max 32 cycles per slice to prevent audio jitter
                         while (z80Budget >= 1.0)
                         {
-                            if (!(g_md_bus?.Z80BusGranted ?? true))
+                            if (g_md_bus?.Z80BusGranted ?? false)
                             {
-                                // Z80 bus is not granted, it cannot run
+                                // Z80 bus is granted to 68k, Z80 cannot run
                                 // Budget is consumed by M68K time, not Z80 execution
                                 break;
                             }
-                            int z80Cycles = (int)Math.Floor(z80Budget);
+                            int z80Cycles = Math.Min(32, (int)Math.Floor(z80Budget));
+                            if (z80Cycles <= 0) break;
+                            
                             g_md_z80.run(z80Cycles);
                             z80Budget -= z80Cycles;
+                            
+                            // Telemetry: track Z80 execution
+                            _z80SliceCount++;
+                            _z80TotalCycles += z80Cycles;
+                            if (z80Cycles > _z80MaxSlice)
+                                _z80MaxSlice = z80Cycles;
                         }
                     }
                     continue;
@@ -296,8 +314,18 @@ namespace EutherDrive.Core.MdTracerCore
             g_md_bus?.FlushMbx68kStat(frame);
             g_md_bus?.FlushSram(frame.ToString());
             g_md_z80?.FlushZ80MbxPoll(frame);
-            g_md_z80?.FlushZ80WaitLoopHist(frame);
+             g_md_z80?.FlushZ80WaitLoopHist(frame);
             g_md_z80?.FlushPcHist(frame);
+            
+            // Log Z80 telemetry
+            if (frame % 60 == 0 && _z80SliceCount > 0)
+            {
+                double avgSlice = (double)_z80TotalCycles / _z80SliceCount;
+                Console.WriteLine($"[Z80-TIMING] frame={frame} slices={_z80SliceCount} totalCycles={_z80TotalCycles} avgSlice={avgSlice:F1} maxSlice={_z80MaxSlice} expectedPerFrame={Z80CyclesPerLine * lines}");
+                _z80SliceCount = 0;
+                _z80TotalCycles = 0;
+                _z80MaxSlice = 0;
+            }
             g_md_z80?.FlushZ80IntStats(frame); // [INT-STATS] ZINT per-frame stats
 
             if (g_md_z80 != null)
@@ -434,7 +462,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static double ParseZ80CycleMultiplier()
         {
-            const double fallback = 1.0;
+            const double fallback = 0.4668; // Correct ratio: 3.58/7.67 ≈ 0.4668
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_CYCLES_MULT");
             if (string.IsNullOrWhiteSpace(raw))
                 return fallback;
@@ -501,13 +529,13 @@ namespace EutherDrive.Core.MdTracerCore
         {
             // When > 0, enables continuous Z80 scheduling proportional to M68K cycles
             // Value = how many M68K cycles between Z80 slices (smaller = more frequent)
-            // Default 0 = disabled (use per-frame or per-line scheduling)
+            // Default 32 = enabled with good timing for audio
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_CONTINUOUS_SLICE_M68K_CYCLES");
             if (string.IsNullOrWhiteSpace(raw))
-                return 0;
+                return 32; // Default enabled for better audio timing
             if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
                 return value;
-            return 0;
+            return 32; // Default enabled
         }
 
         internal static void ResetZ80WaitState()
@@ -520,12 +548,28 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal static bool ShouldRunZ80(long frame)
         {
+            // DEBUG - always log first 10 frames
+            if (frame <= 10)
+            {
+                bool debugBusReq = g_md_bus?.Z80BusGranted ?? false;
+                bool debugReset = g_md_bus?.Z80Reset ?? false;
+                Console.WriteLine($"[SHOULDRUN] frame={frame} masterSystemMode={g_masterSystemMode} Z80WaitBusReqFrames={Z80WaitBusReqFrames} _z80WaitReleased={_z80WaitReleased} busReq={debugBusReq} reset={debugReset}");
+            }
+            
             if (g_masterSystemMode)
                 return true;
             if (Z80WaitBusReqFrames <= 0)
                 return true;
             if (_z80WaitReleased)
                 return true;
+            
+            // DEBUG: Log Sonic 2 Z80 scheduling
+            if (frame >= 4899 && frame <= 4905)
+            {
+                bool debugBusReq = g_md_bus?.Z80BusGranted ?? false;
+                bool debugZ80Reset = g_md_bus?.Z80Reset ?? false;
+                Console.WriteLine($"[SONIC2-SHOULDRUN] frame={frame} busReq={debugBusReq} z80reset={debugZ80Reset} _z80StableLowFrames={_z80StableLowFrames} _z80WaitFrames={_z80WaitFrames} _z80WaitReleased={_z80WaitReleased}");
+            }
 
             bool busReq = g_md_bus?.Z80BusGranted ?? false;
             bool reset = g_md_bus?.Z80Reset ?? false;

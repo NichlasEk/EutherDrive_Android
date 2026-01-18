@@ -44,11 +44,17 @@ internal static class MdLog
         TraceZ80InstructionLogging || TraceZ80Sig || TraceZ80Step || TraceZ80Ym || TraceZ80Int || TraceZ80Win ||
         TraceVdpLogging;
 
-    internal static void WriteLine(string message)
-    {
-        if (Enabled)
-            Console.WriteLine(message);
-    }
+     internal static void WriteLine(string message)
+     {
+         if (Enabled)
+             Console.WriteLine(message);
+     }
+
+     internal static void WriteLineVdp(string message)
+     {
+         if (TraceVdpLogging)
+             Console.WriteLine(message);
+     }
 
     internal static void MaybeLogTraceBuildStamp()
     {

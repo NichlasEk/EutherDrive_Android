@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -2093,21 +2093,21 @@ namespace EutherDrive.Core.MdTracerCore
                 else
                 {
                     // Sync Z80 and reinitialize FM when reset is released (matching clownmdemu behavior)
-                    // DON'T call reset() here - it would set PC=0 and restart Z80 from boot!
                     md_main.BeginZ80ResetCycle();
                     md_main.g_md_music?.g_md_ym2612.YM2612_Start();
+                    md_main.g_md_z80.reset(); // Reset Z80 when reset is released (sets PC=0)
                     md_main.g_md_z80.ArmPostResetHold();
-                    // Set SP to same value as boot code would (0x1F00) since we skip boot code execution
-                    md_main.g_md_z80.SetStackPointer(0x1F00);
-                    // Force Z80 to execute driver code at 0x0167 after reset release
-                    // This gives the 68K time to upload the driver before Z80 starts executing
-                    // Only do this after safe boot has completed (when busreq is not granted)
-                    if (!_z80BusGranted)
-                    {
-                        md_main.g_md_z80.ArmForcePc(0x0167, "resetRelease");
-                    }
+                    // Set SP to same value as boot code would (0x1B80) since we skip boot code execution
+                md_main.g_md_z80.SetStackPointer(0x1B80);
+                // Z80 PC is now 0, will execute from address 0x0000
+                // For Sonic 2, the boot code at 0x0000 will JP to driver
                 }
-                md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+                 bool newActive = !_z80BusGranted && !_z80Reset;
+                long currentFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine($"[Z80-RESET-RELEASE] frame={currentFrame} reset released, setting g_active={newActive} (busreq={_z80BusGranted}, reset={_z80Reset})");
+                md_main.g_md_z80.g_active = newActive;
+                
+
             }
             Interlocked.Increment(ref _z80ResetWriteCount);
             if (prev != next)

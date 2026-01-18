@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -1535,20 +1535,6 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             int length = Math.Min(0x2000, g_ram.Length);
             Array.Clear(g_ram, 0, length);
-
-            // Restore Z80 boot ROM (simulated internal boot ROM)
-            // This boot ROM is always present in real Genesis hardware.
-            // It provides a small jump stub that the 68K's Z80 driver upload will overwrite.
-            // SP must be within Z80 RAM (0x0000-0x1FFF) for RET to work correctly.
-            for (int i = 0; i < 64; i++)
-                g_ram[i] = 0x00; // NOPs during reset
-            g_ram[0x40] = 0xF3;      // DI
-            g_ram[0x41] = 0x31;      // LD SP, nn
-            g_ram[0x42] = 0x00;      // low byte of SP
-            g_ram[0x43] = 0x1F;      // high byte of SP (0x1F00 - within Z80 RAM 0x0000-0x1FFF)
-            g_ram[0x44] = 0xC3;      // JP nn
-            g_ram[0x45] = 0x67;      // low byte of target address (0x0167 - internal boot ROM driver entry)
-            g_ram[0x46] = 0x01;      // high byte of target address
         }
 
         internal void LatchMailboxWideCmd(byte value)

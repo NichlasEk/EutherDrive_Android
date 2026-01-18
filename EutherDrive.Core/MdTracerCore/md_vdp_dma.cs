@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Xml.Linq;
 
 namespace EutherDrive.Core.MdTracerCore
@@ -82,6 +82,9 @@ namespace EutherDrive.Core.MdTracerCore
 
             // Log DMA copy operation
             LogDmaStatusLine($"[DMA-COPY] frame={_frameCounter} len={g_dma_leng} src=0x{g_dma_src_addr:X6} dest=0x{g_vdp_reg_dest_address:X4} regCode=0x{g_vdp_reg_code:X2}");
+            
+            // Debug DMA window check for name table overlap
+            DebugDmaWindow((uint)g_vdp_reg_dest_address, (uint)g_dma_leng, (byte)g_vdp_reg_code, "DMA-COPY");
 
             int w_loop_cnt = g_dma_leng;
             switch (g_vdp_reg_code & 0x0f)
@@ -138,6 +141,9 @@ namespace EutherDrive.Core.MdTracerCore
             ushort startAddr = (ushort)(g_vdp_reg_dest_address & 0xffff);
             ushort endAddr = (ushort)((startAddr + (g_dma_leng - 1) * g_vdp_reg_15_autoinc) & 0xffff);
             LogDmaStatusLine($"[DMA-FILL] frame={_frameCounter} len={g_dma_leng} data=0x{w_fill_data:X2} dest=0x{startAddr:X4} inc={g_vdp_reg_15_autoinc} end=0x{endAddr:X4} regCode=0x{g_vdp_reg_code:X2}");
+            
+            // Debug DMA window check for name table overlap
+            DebugDmaWindow((uint)startAddr, (uint)g_dma_leng, (byte)g_vdp_reg_code, "DMA-FILL");
 
             int w_loop_cnt = g_dma_leng;
             switch (g_vdp_reg_code & 0x0f)
@@ -182,6 +188,10 @@ namespace EutherDrive.Core.MdTracerCore
             g_dma_mode = 3;
             g_vdp_status_1_dma = 1;
             g_vdp_status_8_full = 1;
+            
+            // Debug DMA window check for name table overlap
+            DebugDmaWindow((uint)g_vdp_reg_dest_address, (uint)g_dma_leng, (byte)g_vdp_reg_code, "DMA-COPY-VRAM");
+
             int w_loop_cnt = g_dma_leng;
             switch (g_vdp_reg_code & 0x0f)
             {

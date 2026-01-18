@@ -1,6 +1,6 @@
 {
-  "LastRomPath": "/home/nichlas/roms/mysticdefender.md",
-  "MasterVolumePercent": 43,
+  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Adventures of Batman and Robin, The (U) [!].gen",
+  "MasterVolumePercent": 23,
   "AudioEnabled": true,
   "DefaultRegionOverride": 0,
   "RomRegionOverrides": {
@@ -53,10 +53,10 @@
     "serial:GM T-081426-50": 1,
     "serial:GM T-70226-500": 2,
     "serial:GM T-139036-00": 1,
-    "serial:GM MK-1539 -00": 1,
+    "serial:GM MK-1054 -00": 1,
     "serial:GM T-25123 -00": 3,
     "serial:GM T-76106 -00": 1,
     "serial:GM T-56036 -00": 1
   },
-  "FrameRateMode": 0
+  "FrameRateMode": 2
 }

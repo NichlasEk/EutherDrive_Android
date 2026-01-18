@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -122,6 +122,7 @@ namespace EutherDrive.Core.MdTracerCore
         private long _z80StatsLastTicks;
         private long _z80StatsInstrCount;
         private int _bootInstrCount;
+        private int _runCount;
         private readonly int[] _pcHist = new int[0x10000];
         private int _pcHistTotal;
         private int _forceZ80FlagJrRemaining = ForceZ80FlagJrLimit;
@@ -264,6 +265,8 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _delayEntryLogged;
         private bool _delayExitLogged;
         private int _djnzLogCount;
+        private int _sonic2DebugCount;
+        private int _z80DebugCount;
         private int _cyclesBudgetAccum;
         private int _cyclesActualAccum;
         private int _resetCallsThisCycle;
@@ -335,16 +338,23 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void run(int in_clock)
         {
-            #if DEBUG
-            // enkel manuell dump om du vill toggla den ibland
-            bool www = false;
-            if (www) pgout();
-            #endif
-
-            MaybeLogZ80Stats();
+            // Simple debug to see if run is called
+            if (_runCount < 5)
+            {
+                _runCount++;
+                Console.WriteLine($"[Z80-RUN-{_runCount}] clock={in_clock} g_active={g_active} PC=0x{g_reg_PC:X4} busGranted={md_main.g_md_bus?.Z80BusGranted ?? false} reset={md_main.g_md_bus?.Z80Reset ?? false}");
+            }
+            
             bool busRequested = md_main.g_md_bus?.Z80BusGranted ?? false;
-            bool reset = md_main.g_md_bus?.Z80Reset ?? false;
-            bool canRun = g_active && !busRequested && !reset;
+            bool z80reset = md_main.g_md_bus?.Z80Reset ?? false;
+            
+            // DEBUG: Log Z80 execution state
+            if (md_main.g_md_vdp?.FrameCounter >= 10 && md_main.g_md_vdp.FrameCounter <= 20)
+            {
+                bool canRunDebug = g_active && !busRequested && !z80reset;
+                Console.WriteLine($"[Z80-RUN] frame={md_main.g_md_vdp.FrameCounter} clock={in_clock} active={g_active} canRun={canRunDebug} busreq={busRequested} reset={z80reset} pc=0x{g_reg_PC:X4}");
+            }
+            bool canRun = g_active && !busRequested && !z80reset;
 
             // Advance budget cycles - these are the cycles allocated to Z80,
             // which should be used for timekeeping (YM2612 busy flag, timers)
@@ -359,13 +369,25 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (HaltOnBusReq && busRequested)
                 return;
-            if (g_active == false) return;
-            if (busRequested || reset)
+            if (g_active == false) 
+            {
+                // DEBUG: Try forcing active
+                if (md_main.g_md_vdp?.FrameCounter >= 10)
+                {
+                    Console.WriteLine($"[Z80-DEBUG] g_active=false at frame={md_main.g_md_vdp.FrameCounter}, forcing true");
+                    g_active = true;
+                }
+                else
+                {
+                    return;
+                }
+            }
+            if (busRequested || z80reset)
             {
                 if (TraceZ80SigTransitions && g_active)
                 {
-                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                    Console.WriteLine($"[Z80RUN-BLOCK] frame={frame} pc=0x{g_reg_PC:X4} busReq={(busRequested ? 1 : 0)} reset={(reset ? 1 : 0)}");
+                    long blockFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                    Console.WriteLine($"[Z80RUN-BLOCK] frame={blockFrame} pc=0x{g_reg_PC:X4} busReq={(busRequested ? 1 : 0)} reset={(z80reset ? 1 : 0)}");
                 }
                 return;
             }
@@ -501,13 +523,49 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (TraceZ80Step && _traceStepRemaining > 0)
             {
-                // [INT-INSTRUMENTATION] Log instruction fetch region
-                bool pcInRam = pcBefore >= 0x0000 && pcBefore <= 0x1FFF;
-                bool pcInBootRom = pcBefore >= 0x0000 && pcBefore <= 0x003F;
-                bool pcInDrv = pcBefore >= 0x0040 && pcBefore <= 0x1FFF;
-                Console.WriteLine($"[Z80STEP] pc=0x{pcBefore:X4} op=0x{opcode:X2} busreq={(busRequested ? 1 : 0)} reset={(reset ? 1 : 0)} fetch={(pcInBootRom ? "BOOTROM" : pcInDrv ? "DRIVER" : pcInRam ? "RAM" : "EXT")}");
                 _traceStepRemaining--;
+                Console.WriteLine($"[Z80STEP] pc=0x{pcBefore:X4} op=0x{opcode:X2} busreq={(busRequested ? 1 : 0)} reset={(z80reset ? 1 : 0)}");
             }
+            
+            // DEBUG: Log first few Z80 instructions after Sonic 2 fix
+            if (md_main.g_md_vdp?.FrameCounter >= 4900 && md_main.g_md_vdp.FrameCounter <= 4910 && _sonic2DebugCount < 10)
+            {
+                _sonic2DebugCount++;
+                Console.WriteLine($"[SONIC2-Z80-STEP] frame={md_main.g_md_vdp.FrameCounter} pc=0x{pcBefore:X4} op=0x{opcode:X2} busreq={(busRequested ? 1 : 0)} reset={(z80reset ? 1 : 0)} active={g_active}");
+            }
+            
+            // DEBUG: Log Z80 instructions at PC 0x0167 (Sonic 2 driver entry)
+            if (pcBefore == 0x0167 && _sonic2DebugCount < 20)
+            {
+                _sonic2DebugCount++;
+                // Also dump bytes around PC to see what code is there
+                string bytes = "";
+                for (int i = -4; i <= 4; i++)
+                {
+                    ushort addr = (ushort)(pcBefore + i);
+                    if (addr >= 0 && addr < 0x2000)
+                    {
+                        byte val = PeekZ80Ram(addr);
+                        bytes += $" {addr:X4}:{val:X2}";
+                    }
+                }
+                Console.WriteLine($"[SONIC2-Z80-0167] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{pcBefore:X4} op=0x{opcode:X2} nextPC=0x{g_reg_PC:X4} active={g_active} bytes={bytes}");
+                
+
+            }
+            // [BOOT-DEBUG] Log when Z80 reaches address 0x0000
+            if (pcBefore == 0x0000 && _z80DebugCount < 10)
+            {
+                _z80DebugCount++;
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine($"[Z80-0000] frame={frame} pc=0x{pcBefore:X4} op=0x{opcode:X2} SP=0x{g_reg_SP:X4} - Executing from address 0x0000");
+                // Dump first 16 bytes of RAM
+                if (g_ram != null && g_ram.Length >= 0x10)
+                {
+                    Console.WriteLine($"[Z80-RAM-0000] 0x0000-0x000F: {g_ram[0x00]:X2} {g_ram[0x01]:X2} {g_ram[0x02]:X2} {g_ram[0x03]:X2} {g_ram[0x04]:X2} {g_ram[0x05]:X2} {g_ram[0x06]:X2} {g_ram[0x07]:X2} {g_ram[0x08]:X2} {g_ram[0x09]:X2} {g_ram[0x0A]:X2} {g_ram[0x0B]:X2} {g_ram[0x0C]:X2} {g_ram[0x0D]:X2} {g_ram[0x0E]:X2} {g_ram[0x0F]:X2}");
+                }
+            }
+            
             // [BOOT-DEBUG] Log when Z80 reaches boot code execution
             if (pcBefore == 0x0040)
             {
@@ -608,9 +666,9 @@ namespace EutherDrive.Core.MdTracerCore
             }
             if (tracePcRange)
             {
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                long pcDebugFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
                 Console.WriteLine(
-                    $"[Z80PC] frame={frame} pc=0x{pcBefore:X4} op=0x{opcode:X2} op2=0x{opcode2:X2} " +
+                    $"[Z80PC] frame={pcDebugFrame} pc=0x{pcBefore:X4} op=0x{opcode:X2} op2=0x{opcode2:X2} " +
                     $"op3=0x{opcode3:X2} op4=0x{opcode4:X2} " +
                     $"A=0x{g_reg_A:X2} BC=0x{g_reg_BC:X4} DE=0x{g_reg_DE:X4} HL=0x{g_reg_HL:X4} SP=0x{g_reg_SP:X4}");
             }
@@ -624,11 +682,42 @@ namespace EutherDrive.Core.MdTracerCore
                 LogSmsDelayExit(pcBefore);
             if (tracePcRange)
             {
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                long pcFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
                 Console.WriteLine(
-                    $"[Z80PC] frame={frame} nextpc=0x{g_reg_PC:X4} F=0x{g_status_flag:X2}");
+                    $"[Z80PC] frame={pcFrame} nextpc=0x{g_reg_PC:X4} F=0x{g_status_flag:X2}");
                 if (_z80PcRangeRemaining != int.MaxValue)
                     _z80PcRangeRemaining--;
+            }
+            
+            // Debug: Always log first 100 instructions
+            if (_bootInstrCount <= 100)
+            {
+                long traceFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine($"[Z80-TRACE-{_bootInstrCount}] frame={traceFrame} pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} op=0x{opcode:X2} active={g_active} SP=0x{g_reg_SP:X4}");
+            }
+            
+            // Debug: Log if we reach sound driver
+            if (pcBefore == 0x0003 && opcode == 0xC3) // JP instruction at address 0x0003
+            {
+                Console.WriteLine($"[Z80-JP-0167] Jumping from 0x{pcBefore:X4} to 0x{g_reg_PC:X4}");
+            }
+            
+            // Debug: Log first few instructions after reset
+            if (_bootInstrCount <= 20)
+            {
+                Console.WriteLine($"[Z80BOOT] instr={_bootInstrCount} pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} opcode=0x{opcode:X2} cycles={g_clock}");
+            }
+            
+            // Debug: Log when Z80 actually executes
+            if (_bootInstrCount == 1)
+            {
+                Console.WriteLine($"[Z80-FIRST-INSTR] pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} opcode=0x{opcode:X2} g_active={g_active}");
+            }
+            
+            // Debug: Log all instructions for first 50
+            if (_bootInstrCount <= 50)
+            {
+                Console.WriteLine($"[Z80-EXEC-{_bootInstrCount}] pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} opcode=0x{opcode:X2} SP=0x{g_reg_SP:X4}");
             }
 
             if (djnzTracePending)
@@ -689,9 +778,9 @@ namespace EutherDrive.Core.MdTracerCore
                 string eaText = logDdcbBit ? $"0x{ddcbEa:X4}" : "----";
                 string memText = logDdcbBit ? $"0x{ddcbMem:X2}" : "--";
                 string bitText = logDdcbBit ? (ddcbBit != 0 ? "1" : "0") : "-";
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                long z80Frame = md_main.g_md_vdp?.FrameCounter ?? -1;
                 Console.WriteLine(
-                    $"[Z80DDCB] frame={frame} pc=0x{pcBefore:X4} ix=0x{g_reg_IX:X4} iy=0x{g_reg_IY:X4} sp=0x{g_reg_SP:X4} " +
+                    $"[Z80DDCB] frame={z80Frame} pc=0x{pcBefore:X4} ix=0x{g_reg_IX:X4} iy=0x{g_reg_IY:X4} sp=0x{g_reg_SP:X4} " +
                     $"d={dispText} ea={eaText} mem={memText} bit2={bitText} F(before)=0x{flagBefore:X2} " +
                     $"F(after)=0x{flagAfter:X2} Z={zFlag} nextpc=0x{pcAfter:X4} instr={instr} taken={(taken ? 1 : 0)}");
                 _z80DdcbBitRemaining--;
@@ -1124,6 +1213,13 @@ NextPc:;
         internal void SetStackPointer(ushort sp)
         {
             g_reg_SP = sp;
+        }
+        
+        internal void ForceJumpToDriver()
+        {
+            // Force Z80 to jump to sound driver at 0x0167
+            Console.WriteLine($"[Z80-FORCE] Forcing jump to 0x0167 from PC=0x{g_reg_PC:X4}");
+            g_reg_PC = 0x0167;
         }
 
         // ---- Prefixgrenar -----------------------------------------------------

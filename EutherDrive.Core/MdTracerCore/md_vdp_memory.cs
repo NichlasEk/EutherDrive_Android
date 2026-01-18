@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 
 namespace EutherDrive.Core.MdTracerCore
@@ -557,10 +557,24 @@ namespace EutherDrive.Core.MdTracerCore
             (uint)(COLOR_HIGHLIGHT[b]);
         }
 
-        private void pattern_chk(int in_address, byte _)
+        private void pattern_chk(int in_address, byte new_byte)
         {
             int  w_address = in_address & 0xfffe;
-            uint w_val     = vram_read_w(w_address);
+            // Konstruera nya word-värdet baserat på vilken byte som skrivs
+            uint w_val;
+            
+            if ((in_address & 1) == 0)
+            {
+                // Writing high byte (even address)
+                byte low_byte = g_vram[w_address + 1];
+                w_val = (uint)((new_byte << 8) | low_byte);
+            }
+            else
+            {
+                // Writing low byte (odd address)  
+                byte high_byte = g_vram[w_address];
+                w_val = (uint)((high_byte << 8) | new_byte);
+            }
 
             // Log VRAM writes in scroll areas for debugging
             int scrollA_base = g_vdp_reg_2_scrolla & 0xFFFE;
