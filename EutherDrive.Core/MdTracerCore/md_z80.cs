@@ -819,10 +819,8 @@ namespace EutherDrive.Core.MdTracerCore
         }
         AccumulateLineCycles(in_clock, cyclesConsumed);
 
-        // Decrement YM2612 busy counter - this is the key fix!
-        // The busy flag should clear after Z80 cycles have elapsed,
-        // allowing the Z80 to proceed past polling loops.
-        md_main.g_md_music?.g_md_ym2612?.DecrementYmBusyCounter(in_clock);
+        // Master cycles are advanced in md_main.cs when Z80 runs
+        // No need to handle YM2612 timing here anymore
     }
 
     private void RecordPcHist(ushort pc)

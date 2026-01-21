@@ -94,6 +94,43 @@ namespace EutherDrive.Core.MdTracerCore
         internal static long SystemCycles => _systemCycles;
         internal static void AdvanceSystemCycles(long cycles) => _systemCycles += cycles;
 
+        // Synkroniseringssystem för gemensam tidsbas (inspirerat av andra emulatorer)
+        private class SyncState
+        {
+            public long CurrentCycle;
+        }
+
+        // Synkroniseringsstatus för varje komponent
+        private static SyncState _syncFm = new SyncState();
+        private static SyncState _syncPsg = new SyncState();
+        private static SyncState _syncZ80 = new SyncState();
+        private static SyncState _syncM68k = new SyncState();
+
+        // Gemensam tidsbas - mastercykler (högsta precision)
+        private static long _masterCycles;
+
+        // Synkroniseringsfunktioner
+        private static long SyncCommon(SyncState sync, long targetCycle, int clockDivisor = 1)
+        {
+            long nativeTargetCycle = targetCycle / clockDivisor;
+            long cyclesToDo = nativeTargetCycle - sync.CurrentCycle;
+            
+            if (cyclesToDo < 0)
+            {
+                // Should not happen if properly synchronized
+                cyclesToDo = 0;
+            }
+            
+            sync.CurrentCycle = nativeTargetCycle;
+            return cyclesToDo;
+        }
+
+        // Hämta aktuell mastercykel
+        internal static long GetMasterCycle() => _masterCycles;
+
+        // Öka mastercykler (anropas när någon CPU kör)
+        internal static void AdvanceMasterCycles(long cycles) => _masterCycles += cycles;
+
         // --- Kärnkomponenter ---
         internal static md_vdp g_md_vdp = new md_vdp();
 
@@ -222,6 +259,7 @@ namespace EutherDrive.Core.MdTracerCore
                         // Run M68K slice
                         g_md_m68k.run(m68kSlice);
                         AdvanceSystemCycles(m68kSlice);
+                        AdvanceMasterCycles(m68kSlice);
                         m68kDone += m68kSlice;
 
                         // Add Z80 budget proportional to M68K cycles executed
@@ -242,6 +280,16 @@ namespace EutherDrive.Core.MdTracerCore
                             
                             g_md_z80.run(z80Cycles);
                             z80Budget -= z80Cycles;
+                            
+                            // Advance master cycles for Z80 execution
+                            // Z80 runs at 3.58MHz, M68K at 7.67MHz
+                            // Convert Z80 cycles to master (M68K) cycles
+                            // Ratio: 7.67 / 3.58 ≈ 2.142
+                            // So 1 Z80 cycle = 1/2.142 M68K cycles ≈ 0.467 M68K cycles
+                            // For simplicity, use integer math: z80Cycles * 100 / 214
+                            long masterCycles = z80Cycles * 100 / 214;
+                            if (masterCycles < 1) masterCycles = 1;
+                            AdvanceMasterCycles(masterCycles);
                             
                             // Telemetry: track Z80 execution
                             _z80SliceCount++;

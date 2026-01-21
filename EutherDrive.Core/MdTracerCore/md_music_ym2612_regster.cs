@@ -63,10 +63,6 @@ namespace EutherDrive.Core.MdTracerCore
         private int _ymStatusLogRemaining = TraceYmStatusLimit;
         private long _ymBusyUntilCycle;
         private long _ymBusyDropCount;
-
-        // Counter-based busy flag (ticks down with Z80 cycles)
-        private int _ymBusyCounter;
-        private const int DEFAULT_YM_BUSY_Z80_CYCLES = 84; // ~84 Z80 cycles = 23us at 3.58MHz
         private bool _key28KeyOffLogged;
         private bool _ymIrqAsserted;
         private int _audStatKeyOn;
@@ -142,7 +138,11 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static int ComputeDefaultYmBusyCycles()
         {
-            int cycles = (int)Math.Round(Z80_CLOCK * 32.0 / 1_000_000.0);
+            // YM2612 BUSY flag is active for 32 FM cycles
+            // FM runs at M68K clock / 7 = 7.67MHz / 7 = 1.095MHz (NTSC)
+            // Our GetZ80Cycle() returns master cycles (M68K cycles)
+            // 32 FM cycles = 32 * 7 = 224 master (M68K) cycles
+            int cycles = 224;
             return cycles > 0 ? cycles : 1;
         }
 
@@ -196,22 +196,25 @@ namespace EutherDrive.Core.MdTracerCore
                 UpdateYmIrq("statusRead");
             }
             long nowCycle = GetZ80Cycle();
-            bool busyCycleBased = (EmulateYmBusy || TraceYmBusy || TraceYmStatus) && IsYmBusy(nowCycle);
-            bool busyCounterBased = IsYmBusyCounter; // New counter-based check
-            bool busy = busyCycleBased || busyCounterBased;
+            bool busy = (EmulateYmBusy || TraceYmBusy || TraceYmStatus) && IsYmBusy(nowCycle);
             if (EmulateYmBusy && busy)
                 status |= 0x80;
-            
-            // WORKAROUND: For Sonic 2 and other games with Z80 audio issues,
-            // always report YM2612 as not busy (bit 7 = 0)
-            // This prevents Z80 from getting stuck in busy loops
-            // TODO: Implement proper YM2612 busy timing
-            status &= 0x7F; // Clear BUSY flag
+            else
+                status &= 0x7F; // Clear BUSY flag if not busy or not emulating
             
             // DEBUG: Log status reads for Sonic 2 debugging when at driver entry
             if (md_main.g_md_z80?.DebugPc == 0x0167)
             {
                 Console.WriteLine($"[SONIC2-YM-STATUS] pc=0x{md_main.g_md_z80.DebugPc:X4} status=0x{status:X2} busy={(busy ? 1 : 0)} EmulateYmBusy={EmulateYmBusy}");
+            }
+            
+            // Enhanced diagnostic logging for busy counter debugging
+            if (TraceYmBusy && busy)
+            {
+                ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+                Console.WriteLine($"[YM-BUSY-DIAG] pc=0x{pc:X4} status=0x{status:X2} busy={busy}");
+                Console.WriteLine($"[YM-BUSY-DIAG]   nowCycle={nowCycle} _ymBusyUntilCycle={_ymBusyUntilCycle}");
+                Console.WriteLine($"[YM-BUSY-DIAG]   busy={busy} (nowCycle < _ymBusyUntilCycle: {nowCycle < _ymBusyUntilCycle})");
             }
             
             if (TraceYmStatus)
@@ -290,9 +293,6 @@ namespace EutherDrive.Core.MdTracerCore
             // Always update the busy timer (extends it if already busy)
             if ((EmulateYmBusy || TraceYmBusy || TraceYmStatus) && nowCycle >= 0)
                 SetYmBusy(nowCycle, w_mode, w_addr, in_val);
-
-            // Also set the counter-based busy flag
-            SetYmBusyCounter();
 
             // skriv alltid till reg-matrisen
             g_reg[w_mode, w_addr] = in_val;
@@ -889,10 +889,9 @@ namespace EutherDrive.Core.MdTracerCore
 
         private long GetZ80Cycle()
         {
-            // Use the system-wide monotonic cycle counter for YM2612 timing.
-            // This ensures the busy flag advances correctly even when Z80 is held in
-            // reset or waiting for bus request, and provides a consistent timebase.
-            return md_main.SystemCycles;
+            // Use the common master cycle timebase for synchronization
+            // All components sync against the same master clock
+            return md_main.GetMasterCycle();
         }
 
         private bool IsYmBusy(long nowCycle)
@@ -931,35 +930,8 @@ namespace EutherDrive.Core.MdTracerCore
             Console.WriteLine($"[YM-BUSY] status pc=0x{pc:X4} cycles={nowCycle} until={_ymBusyUntilCycle} status=0x{status:X2}");
         }
 
-        // Counter-based busy flag implementation
-        private void SetYmBusyCounter()
-        {
-            _ymBusyCounter = DEFAULT_YM_BUSY_Z80_CYCLES;
-            if (TraceYmBusy && _ymBusyLogRemaining > 0)
-            {
-                _ymBusyLogRemaining--;
-                ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
-                Console.WriteLine($"[YM-BUSY-COUNTER] set pc=0x{pc:X4} counter={_ymBusyCounter}");
-            }
-        }
-
-        public void DecrementYmBusyCounter(int z80Cycles)
-        {
-            if (_ymBusyCounter <= 0)
-                return;
-
-            int oldCounter = _ymBusyCounter;
-            _ymBusyCounter = Math.Max(0, _ymBusyCounter - z80Cycles);
-
-            if (TraceYmBusy && oldCounter != _ymBusyCounter && _ymBusyCounter == 0 && _ymBusyLogRemaining > 0)
-            {
-                _ymBusyLogRemaining--;
-                ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
-                Console.WriteLine($"[YM-BUSY-COUNTER] CLEARED pc=0x{pc:X4} cycles={z80Cycles} old={oldCounter} new=0");
-            }
-        }
-
-        public bool IsYmBusyCounter => _ymBusyCounter > 0;
+        // Using common synchronization system like other emulators
+        // No need for separate clock advancement
 
         private void LogYmStatusRead(long nowCycle, byte status, bool clearOnRead, bool busy)
         {

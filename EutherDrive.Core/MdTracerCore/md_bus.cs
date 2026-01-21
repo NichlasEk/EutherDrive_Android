@@ -2036,8 +2036,22 @@ namespace EutherDrive.Core.MdTracerCore
             bool prev = _z80BusGranted;
             byte regByte = DecodeZ80RegByte(raw, uds, lds);
             bool next = (regByte & 0x01) != 0;
+            
+            // FIX: Implement clownmdemu-style BUSREQ handling
+            // When safe boot is active, force BUSREQ to be granted
             if (Z80SafeBootEnabled && _z80SafeBootActive)
                 next = true;
+            
+            // Sync Z80 when BUSREQ changes (like clownmdemu does)
+            if (prev != next && md_main.g_md_z80 != null)
+            {
+                // TODO: Sync Z80 cycles here if needed
+                if (TraceZ80Win)
+                {
+                    Console.WriteLine($"[BUSREQ-CLOWN] prev={prev} next={next} reset={_z80Reset}");
+                }
+            }
+            
             _z80BusGranted = next;
             _z80ForceGrant = false;
             if (md_main.g_md_z80 != null)

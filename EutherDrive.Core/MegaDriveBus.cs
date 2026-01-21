@@ -131,7 +131,11 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
-            byte val = _z80BusRequested ? (byte)0x00 : (byte)0x01;
+            // Implement clownmdemu-style BUSREQ read
+            // Returns 0xFF if bus is not obtained, 0xFE if bus is obtained
+            // z80_bus_obtained = bus_requested && !reset_held
+            bool z80BusObtained = _z80BusRequested && !_z80Reset;
+            byte val = z80BusObtained ? (byte)0xFE : (byte)0xFF;
             LogZ80RegRead(addr, val);
             LogBusAccess("busreq read8", addr, val);
             return val;

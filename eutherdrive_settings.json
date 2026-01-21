@@ -1,5 +1,5 @@
 {
-  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Adventures of Batman and Robin, The (U) [!].gen",
+  "LastRomPath": "/home/nichlas/roms/shinobiIII.md",
   "MasterVolumePercent": 23,
   "AudioEnabled": true,
   "DefaultRegionOverride": 0,
@@ -58,5 +58,5 @@
     "serial:GM T-76106 -00": 1,
     "serial:GM T-56036 -00": 1
   },
-  "FrameRateMode": 2
+  "FrameRateMode": 1
 }
