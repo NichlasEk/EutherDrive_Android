@@ -527,12 +527,34 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[Z80STEP] pc=0x{pcBefore:X4} op=0x{opcode:X2} busreq={(busRequested ? 1 : 0)} reset={(z80reset ? 1 : 0)}");
             }
             
-            // DEBUG: Log first few Z80 instructions after Sonic 2 fix
-            if (md_main.g_md_vdp?.FrameCounter >= 4900 && md_main.g_md_vdp.FrameCounter <= 4910 && _sonic2DebugCount < 10)
-            {
-                _sonic2DebugCount++;
-                Console.WriteLine($"[SONIC2-Z80-STEP] frame={md_main.g_md_vdp.FrameCounter} pc=0x{pcBefore:X4} op=0x{opcode:X2} busreq={(busRequested ? 1 : 0)} reset={(z80reset ? 1 : 0)} active={g_active}");
-            }
+            // DEBUG: Log Z80 instructions at specific PC for debugging
+            // if (md_main.g_md_vdp?.FrameCounter >= 4900 && md_main.g_md_vdp.FrameCounter <= 4910 && _sonic2DebugCount < 10)
+            // {
+            //     _sonic2DebugCount++;
+            //     Console.WriteLine($"[Z80-STEP-DEBUG] frame={md_main.g_md_vdp.FrameCounter} pc=0x{pcBefore:X4} op=0x{opcode:X2} busreq={(busRequested ? 1 : 0)} reset={(z80reset ? 1 : 0)} active={g_active}");
+            // }
+            
+            // DEBUG: Log Z80 instructions at specific PC for debugging
+            // if (pcBefore == 0x0167 && _sonic2DebugCount < 20)
+            // {
+            //     _sonic2DebugCount++;
+            //     // Also dump bytes around PC to see what code is there
+            //     string bytes = "";
+            //     for (int i = -4; i <= 4; i++)
+            //     {
+            //         ushort addr = (ushort)(pcBefore + i);
+            //         if (addr >= 0 && addr < 0x2000) // Z80 RAM range
+            //         {
+            //             byte b = md_main.g_md_bus?.Z80Read8(addr) ?? 0xFF;
+            //             bytes += $"{b:X2} ";
+            //         }
+            //         else
+            //         {
+            //             bytes += "?? ";
+            //         }
+            //     }
+            //     Console.WriteLine($"[Z80-DRIVER-ENTRY-DEBUG] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{pcBefore:X4} op=0x{opcode:X2} bytes: {bytes}");
+            // }
             
             // DEBUG: Log Z80 instructions at PC 0x0167 (Sonic 2 driver entry)
             if (pcBefore == 0x0167 && _sonic2DebugCount < 20)

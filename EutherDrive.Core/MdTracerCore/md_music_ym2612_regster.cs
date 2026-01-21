@@ -140,9 +140,14 @@ namespace EutherDrive.Core.MdTracerCore
         {
             // YM2612 BUSY flag is active for 32 FM cycles
             // FM runs at M68K clock / 7 = 7.67MHz / 7 = 1.095MHz (NTSC)
-            // Our GetZ80Cycle() returns master cycles (M68K cycles)
-            // 32 FM cycles = 32 * 7 = 224 master (M68K) cycles
-            int cycles = 224;
+            // FM_PRESCALER = 6 in clownmdemu, so 32 * 6 = 192 FM cycles
+            // 192 FM cycles = 192 * 7 = 1344 M68K cycles (if FM = M68K/7)
+            // But actually, FM_PRESCALER is for FM internal clock, not busy timing
+            // Let's use clownmdemu's value: 32 * FM_PRESCALER = 192 in their timebase
+            // Their timebase seems to be FM cycles (M68K/7)
+            // So 192 in their timebase = 192 * 7 = 1344 in M68K cycles
+            // Let's try 1344 M68K cycles
+            int cycles = 1344;
             return cycles > 0 ? cycles : 1;
         }
 
@@ -195,6 +200,16 @@ namespace EutherDrive.Core.MdTracerCore
                 g_com_status &= 0xFC;
                 UpdateYmIrq("statusRead");
             }
+            
+            // SIMPLE WORKAROUND: If game is stuck, always return not busy
+            // This is a temporary fix until we implement proper timing
+            // if (EmulateYmBusy)
+            // {
+            //     // Always return not busy for now
+            //     status &= 0x7F;
+            //     return status;
+            // }
+            
             long nowCycle = GetZ80Cycle();
             bool busy = (EmulateYmBusy || TraceYmBusy || TraceYmStatus) && IsYmBusy(nowCycle);
             if (EmulateYmBusy && busy)
@@ -889,9 +904,9 @@ namespace EutherDrive.Core.MdTracerCore
 
         private long GetZ80Cycle()
         {
-            // Use the common master cycle timebase for synchronization
-            // All components sync against the same master clock
-            return md_main.GetMasterCycle();
+            // For Mega Drive mode, use SystemCycles (M68K cycles) as the timebase
+            // YM2612 timing should be based on M68K clock (7.67MHz)
+            return md_main.SystemCycles;
         }
 
         private bool IsYmBusy(long nowCycle)

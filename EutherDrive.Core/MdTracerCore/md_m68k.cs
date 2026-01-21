@@ -45,9 +45,9 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly uint PcWatchStart = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_START") ?? 0x000320;
         private static readonly uint PcWatchEnd = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_END") ?? 0x000340;
         
-        // Sonic 2 Special Stage debugging
-        private static bool _sonic2SpecialStageDebug =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_SONIC2_SPECIAL"), "1", StringComparison.Ordinal);
+        // Special Stage debugging (generic)
+        private static bool _specialStageDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_SPECIAL_STAGE"), "1", StringComparison.Ordinal);
         private static long _lastSpecialStageFrameLogged = -1000;
         private static bool _pcWatchDumped;
         private static bool _pcWatchInRange;
@@ -104,14 +104,14 @@ namespace EutherDrive.Core.MdTracerCore
             Debug.WriteLine($"[m68k] PC={pc:X6}");
         }
         
-        // Sonic 2 Special Stage debugging
-        internal static void TraceSonic2SpecialStage(uint pc, long frame)
+        // Special Stage debugging
+        internal static void TraceSpecialStage(uint pc, long frame)
         {
-            if (!_sonic2SpecialStageDebug)
+            if (!_specialStageDebug)
                 return;
                 
-            // Log PC during frames 4900-4950 (Special Stage transition)
-            if (frame >= 4900 && frame <= 4950)
+            // Log PC during special stage transition frames
+            // if (frame >= 4900 && frame <= 4950)
             {
                 // Always log when PC is at the stuck addresses
                 if (pc == 0x003346 || pc == 0x003342 || pc == 0x003344)
@@ -120,11 +120,11 @@ namespace EutherDrive.Core.MdTracerCore
                     ushort opcode = PeekOpcode(pc);
                     // Also read next word for branch displacement
                     ushort nextWord = PeekOpcode((uint)(pc + 2));
-                    Console.WriteLine($"[SONIC2-STUCK] frame={frame} PC=0x{pc:X6} OP=0x{opcode:X4} NEXT=0x{nextWord:X4}");
+                     Console.WriteLine($"[STUCK-PC] frame={frame} PC=0x{pc:X6} OP=0x{opcode:X4} NEXT=0x{nextWord:X4}");
                 }
                 else if (frame - _lastSpecialStageFrameLogged > 5) // Log other PCs every 5 frames
                 {
-                    Console.WriteLine($"[SONIC2-SPECIAL] frame={frame} PC=0x{pc:X6}");
+                    Console.WriteLine($"[SPECIAL-STAGE] frame={frame} PC=0x{pc:X6}");
                     _lastSpecialStageFrameLogged = frame;
                 }
             }
@@ -163,11 +163,11 @@ namespace EutherDrive.Core.MdTracerCore
                 // md_main.g_form_code_trace.CPU_Trace(g_reg_PC);
                 TraceCpu(g_reg_PC); // headless
                 
-                // Sonic 2 Special Stage debugging
-                if (_sonic2SpecialStageDebug && md_main.g_md_vdp != null)
+                // Special Stage debugging
+                if (_specialStageDebug && md_main.g_md_vdp != null)
                 {
                     long frame = md_main.g_md_vdp.FrameCounter;
-                    TraceSonic2SpecialStage(g_reg_PC, frame);
+                    TraceSpecialStage(g_reg_PC, frame);
                 }
 
                 interrupt_chk();
@@ -544,14 +544,14 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 case 0x00C00004:
                     _countC00004++;
-                    // Log VDP status reads during Sonic 2 Special Stage
-                    if (_sonic2SpecialStageDebug && md_main.g_md_vdp != null)
+                    // Log VDP status reads during special stage
+                    if (_specialStageDebug && md_main.g_md_vdp != null)
                     {
                         long frame = md_main.g_md_vdp.FrameCounter;
-                        if (frame >= 4900 && frame <= 4950)
-                        {
-                            Console.WriteLine($"[SONIC2-VDP-STATUS-READ] frame={frame} PC=0x{g_reg_PC:X6}");
-                        }
+                        // if (frame >= 4900 && frame <= 4950)
+                        // {
+                        //     Console.WriteLine($"[SPECIAL-STAGE-VDP-STATUS-READ] frame={frame} PC=0x{g_reg_PC:X6}");
+                        // }
                     }
                     break;
                 case 0x00C00008:

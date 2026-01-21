@@ -286,8 +286,9 @@ namespace EutherDrive.Core.MdTracerCore
                             // Convert Z80 cycles to master (M68K) cycles
                             // Ratio: 7.67 / 3.58 ≈ 2.142
                             // So 1 Z80 cycle = 1/2.142 M68K cycles ≈ 0.467 M68K cycles
-                            // For simplicity, use integer math: z80Cycles * 100 / 214
-                            long masterCycles = z80Cycles * 100 / 214;
+                            // Use floating point to avoid rounding to 0 for small values
+                            double masterCyclesDouble = z80Cycles / (7.67 / 3.58);
+                            long masterCycles = (long)Math.Ceiling(masterCyclesDouble);
                             if (masterCycles < 1) masterCycles = 1;
                             AdvanceMasterCycles(masterCycles);
                             

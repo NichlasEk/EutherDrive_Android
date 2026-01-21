@@ -748,11 +748,11 @@ namespace EutherDrive.Core.MdTracerCore
                     _vramWriteLogCount++;
                 }
 
-                // After DMA-FILL at frame 1148, watch for changes
-                if (_frameCounter >= 1148 && _frameCounter < 1200)
-                {
-                    Console.WriteLine($"[VRAM-WATCH] frame={_frameCounter} {source} write to 0x{address:X4} value=0x{value:X4}");
-                }
+                // After DMA-FILL, watch for changes (debug)
+                // if (_frameCounter >= 1148 && _frameCounter < 1200)
+                // {
+                //     Console.WriteLine($"[VRAM-WATCH] frame={_frameCounter} {source} write to 0x{address:X4} value=0x{value:X4}");
+                // }
             }
         }
 
@@ -795,8 +795,8 @@ namespace EutherDrive.Core.MdTracerCore
                   ApplyLatchedRegister12();
               }
 
-              // [VDP-FRAME] per-frame summary for frames 4904–4909 only
-              if (_frameCounter >= 4904 && _frameCounter <= 4909)
+              // [VDP-FRAME] per-frame summary (debug)
+              // if (_frameCounter >= 4904 && _frameCounter <= 4909)
               {
                   byte reg12Data = (byte)((g_vdp_reg_12_7_cellmode1 << 7) | (g_vdp_reg_12_3_shadow << 3) | (g_vdp_reg_12_2_interlacemode << 1) | g_vdp_reg_12_0_cellmode2);
                   int width = IsH40Mode() ? 320 : 256;
@@ -855,8 +855,8 @@ namespace EutherDrive.Core.MdTracerCore
                   Console.WriteLine($"[HSCROLL-REG] frame={_frameCounter} reg11=0x{reg11:X2} hscrollMode={hscrollMode} vscrollMode={vscrollMode} extMode={extMode} reg13=0x{reg13:X4} base=0x{hscrollBase:X4}");
               }
 
-              // [HSCROLL] dump for frame window 4904-4910
-              if (Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_HSCROLL") == "1" && _frameCounter >= 4904 && _frameCounter <= 4910)
+              // [HSCROLL] dump for debugging
+              if (Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_HSCROLL") == "1") // && _frameCounter >= 4904 && _frameCounter <= 4910
               {
                   // Dump HScroll values for y=0..31
                   for (int y = 0; y < 32; y++)
@@ -1639,8 +1639,8 @@ namespace EutherDrive.Core.MdTracerCore
           {
               if (!DebugDmaWin) return;
               
-              // Only log frames 4904-4915 for Sonic 2 Special Stage
-              if (_frameCounter < 4904 || _frameCounter > 4915) return;
+               // Frame range check for debugging
+               // if (_frameCounter < 4904 || _frameCounter > 4915) return;
               
                int baseA = g_vdp_reg_2_scrolla;
                int baseB = g_vdp_reg_4_scrollb;

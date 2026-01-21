@@ -310,40 +310,17 @@ namespace EutherDrive.Core.MdTracerCore
                      g_vdp_reg_1_4_dma      = (byte)((in_data >> 4) & 0x01);
                      g_vdp_reg_1_3_cellmode = (byte)((in_data >> 3) & 0x01);
                      
-                     // SPECIAL FIX FOR SONIC 2 SPECIAL STAGE: Force display ON after frame 4910
-                     // AND force register 12 to 0x08 (H32 mode with shadow)
-                     if (_frameCounter >= 4910)
-                     {
-                         if (g_vdp_reg_1_6_display == 0)
-                         {
-                             Console.WriteLine($"[SONIC2-FIX] frame={_frameCounter} Forcing display ON (was OFF)");
-                             g_vdp_reg_1_6_display = 1;
-                         }
-                         
-                         // Also force register 12 to 0x08 if it's not already set
-                         if (g_vdp_reg_12_7_cellmode1 == 0 && g_vdp_reg_12_3_shadow == 0)
-                         {
-                             Console.WriteLine($"[SONIC2-FIX] frame={_frameCounter} Forcing register 12 to 0x08");
-                             g_vdp_reg_12_7_cellmode1 = 0; // H32 mode
-                             g_vdp_reg_12_3_shadow = 1;    // Shadow ON
-                             g_vdp_reg_12_2_interlacemode = 0; // No interlace
-                             g_vdp_reg_12_0_cellmode2 = 0; // H32 mode
-                             
-                             // Update derived values
-                             g_vdp_interlace_mode = 0;
-                             ApplyInterlaceOverrides();
-                             ApplyHorizontalMode(false); // H32 mode
-                         }
-                     }
+                      // REMOVED: SPECIAL FIX FOR SONIC 2 SPECIAL STAGE
+                      // Game should handle its own display and mode switching
                     if (MdTracerCore.MdLog.Enabled && prevDisplay != g_vdp_reg_1_6_display)
                     {
                         MdTracerCore.MdLog.WriteLine($"[VDP] reg1 display {prevDisplay} -> {g_vdp_reg_1_6_display} data=0x{in_data:X2}");
                     }
-                     // Always log reg1 writes during critical frames for Sonic 2 Special Stage debugging
-                     if (_frameCounter >= 4900 && _frameCounter <= 4950)
-                     {
-                         Console.WriteLine($"[VDP-REG1-DEBUG] frame={_frameCounter} prev={prevDisplay} new={g_vdp_reg_1_6_display} data=0x{in_data:X2} raw=0x{in_data:X2}");
-                     }
+                      // Log reg1 writes during debugging
+                      // if (_frameCounter >= 4900 && _frameCounter <= 4950)
+                      // {
+                      //     Console.WriteLine($"[VDP-REG1-DEBUG] frame={_frameCounter} prev={prevDisplay} new={g_vdp_reg_1_6_display} data=0x{in_data:X2} raw=0x{in_data:X2}");
+                      // }
                      // Also log ANY reg1 write that turns display ON (bit 6 = 1)
                      if (g_vdp_reg_1_6_display == 1)
                      {
@@ -424,8 +401,8 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
 
                  case 12:
-                      // Register 12 is latched on V-Int (takes effect at next VBlank)
-                      // This is critical for Sonic 2 Special Stage H40->H32 transition
+                       // Register 12 is latched on V-Int (takes effect at next VBlank)
+                       // Critical for H40->H32 transition in some games
                       _reg12_latched_7_cellmode1     = (byte)((in_data >> 7) & 0x01);
                       _reg12_latched_3_shadow        = (byte)((in_data >> 3) & 0x01);
                       _reg12_latched_2_interlacemode = (byte)((in_data >> 1) & 0x03);
