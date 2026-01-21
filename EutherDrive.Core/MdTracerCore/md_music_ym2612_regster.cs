@@ -142,12 +142,9 @@ namespace EutherDrive.Core.MdTracerCore
             // FM runs at M68K clock / 7 = 7.67MHz / 7 = 1.095MHz (NTSC)
             // FM_PRESCALER = 6 in clownmdemu, so 32 * 6 = 192 FM cycles
             // 192 FM cycles = 192 * 7 = 1344 M68K cycles (if FM = M68K/7)
-            // But actually, FM_PRESCALER is for FM internal clock, not busy timing
-            // Let's use clownmdemu's value: 32 * FM_PRESCALER = 192 in their timebase
-            // Their timebase seems to be FM cycles (M68K/7)
-            // So 192 in their timebase = 192 * 7 = 1344 in M68K cycles
-            // Let's try 1344 M68K cycles
-            int cycles = 1344;
+            // Convert to Z80 cycles: 1344 M68K cycles * (3.58 / 7.67) ≈ 627 Z80 cycles
+            // But GetZ80Cycle() now returns Z80 budget cycles, so we need Z80 cycles
+            int cycles = 627; // Z80 cycles
             return cycles > 0 ? cycles : 1;
         }
 
@@ -904,8 +901,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         private long GetZ80Cycle()
         {
-            // For Mega Drive mode, use SystemCycles (M68K cycles) as the timebase
-            // YM2612 timing should be based on M68K clock (7.67MHz)
+            // For YM2612 busy timing, use Z80's budget cycles
+            // These advance whenever Z80.run() is called, even if Z80 is halted/reset
+            // This ensures time progresses even when Z80 is waiting for YM2612
+            if (md_main.g_md_z80 != null)
+            {
+                return md_main.g_md_z80.BudgetCycles;
+            }
             return md_main.SystemCycles;
         }
 

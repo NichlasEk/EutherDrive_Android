@@ -281,16 +281,18 @@ namespace EutherDrive.Core.MdTracerCore
                             g_md_z80.run(z80Cycles);
                             z80Budget -= z80Cycles;
                             
-                            // Advance master cycles for Z80 execution
+                            // Advance system cycles for Z80 execution
                             // Z80 runs at 3.58MHz, M68K at 7.67MHz
-                            // Convert Z80 cycles to master (M68K) cycles
+                            // Convert Z80 cycles to M68K cycles for SystemCycles timebase
                             // Ratio: 7.67 / 3.58 ≈ 2.142
                             // So 1 Z80 cycle = 1/2.142 M68K cycles ≈ 0.467 M68K cycles
                             // Use floating point to avoid rounding to 0 for small values
-                            double masterCyclesDouble = z80Cycles / (7.67 / 3.58);
-                            long masterCycles = (long)Math.Ceiling(masterCyclesDouble);
-                            if (masterCycles < 1) masterCycles = 1;
-                            AdvanceMasterCycles(masterCycles);
+                            double systemCyclesDouble = z80Cycles / (7.67 / 3.58);
+                            long systemCycles = (long)Math.Ceiling(systemCyclesDouble);
+                            if (systemCycles > 0)
+                            {
+                                AdvanceSystemCycles(systemCycles);
+                            }
                             
                             // Telemetry: track Z80 execution
                             _z80SliceCount++;
@@ -314,10 +316,17 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         int m68kCycles = m68kSlice + (s == slices - 1 ? m68kRemainder : 0);
                         int z80Cycles = z80Slice + (s == slices - 1 ? z80Remainder : 0);
-                        if (Z80RunBeforeM68k)
+                         if (Z80RunBeforeM68k)
                         {
                             if (allowZ80 && z80Cycles > 0)
+                            {
                                 g_md_z80.run(z80Cycles);
+                                // Convert Z80 cycles to M68K cycles for SystemCycles
+                                double systemCyclesDouble = z80Cycles / (7.67 / 3.58);
+                                long systemCycles = (long)Math.Ceiling(systemCyclesDouble);
+                                if (systemCycles < 1) systemCycles = 1;
+                                AdvanceSystemCycles(systemCycles);
+                            }
                             if (m68kCycles > 0)
                             {
                                 g_md_m68k.run(m68kCycles);
@@ -332,7 +341,14 @@ namespace EutherDrive.Core.MdTracerCore
                                 AdvanceSystemCycles(m68kCycles);
                             }
                             if (allowZ80 && z80Cycles > 0)
+                            {
                                 g_md_z80.run(z80Cycles);
+                                // Convert Z80 cycles to M68K cycles for SystemCycles
+                                double systemCyclesDouble = z80Cycles / (7.67 / 3.58);
+                                long systemCycles = (long)Math.Ceiling(systemCyclesDouble);
+                                if (systemCycles < 1) systemCycles = 1;
+                                AdvanceSystemCycles(systemCycles);
+                            }
                         }
                     }
                     continue;
@@ -341,19 +357,46 @@ namespace EutherDrive.Core.MdTracerCore
                 if (!g_masterSystemMode)
                 {
                     if (allowZ80 && z80RunPerLine && Z80RunBeforeM68k)
+                    {
                         g_md_z80.run(z80LineBudget);
+                        // Convert Z80 cycles to M68K cycles for SystemCycles
+                        double systemCyclesDouble = z80LineBudget / (7.67 / 3.58);
+                        long systemCycles = (long)Math.Ceiling(systemCyclesDouble);
+                        if (systemCycles < 1) systemCycles = 1;
+                        AdvanceSystemCycles(systemCycles);
+                    }
                     g_md_m68k.run(VDL_LINE_RENDER_MC68_CLOCK);
                     AdvanceSystemCycles(VDL_LINE_RENDER_MC68_CLOCK);
                     if (allowZ80 && z80RunPerLine && !Z80RunBeforeM68k)
+                    {
                         g_md_z80.run(z80LineBudget);
+                        // Convert Z80 cycles to M68K cycles for SystemCycles
+                        double systemCyclesDouble = z80LineBudget / (7.67 / 3.58);
+                        long systemCycles = (long)Math.Ceiling(systemCyclesDouble);
+                        if (systemCycles < 1) systemCycles = 1;
+                        AdvanceSystemCycles(systemCycles);
+                    }
                 }
                 else if (allowZ80 && z80RunPerLine)
                 {
                     g_md_z80.run(z80LineBudget);
+                    // For Master System mode, we might not need SystemCycles advancement
+                    // but let's do it for consistency
+                    double systemCyclesDouble = z80LineBudget / (7.67 / 3.58);
+                    long systemCycles = (long)Math.Ceiling(systemCyclesDouble);
+                    if (systemCycles < 1) systemCycles = 1;
+                    AdvanceSystemCycles(systemCycles);
                 }
             }
             if (allowZ80 && !z80RunPerLine)
+            {
                 g_md_z80.run(z80FrameBudget);
+                // Convert Z80 cycles to M68K cycles for SystemCycles
+                double systemCyclesDouble = z80FrameBudget / (7.67 / 3.58);
+                long systemCycles = (long)Math.Ceiling(systemCyclesDouble);
+                if (systemCycles < 1) systemCycles = 1;
+                AdvanceSystemCycles(systemCycles);
+            }
 
             MaybeInjectMbx(frame);
             g_md_music?.g_md_ym2612.FlushDacRateFrame(frame);
