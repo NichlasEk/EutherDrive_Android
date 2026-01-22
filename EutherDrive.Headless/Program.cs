@@ -280,20 +280,12 @@ class Program
             adapter.LoadRom(romPath);
 
             int? slotOverride = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
-            byte[]? payload = TryLoadSavestatePayload(
-                savestatePath,
-                adapter.RomIdentity,
-                slotOverride,
-                out string? loadError);
-            if (payload == null)
-            {
-                Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {loadError}");
-                return 1;
-            }
-
-            using var payloadStream = new MemoryStream(payload, writable: false);
-            using var payloadReader = new BinaryReader(payloadStream, Encoding.UTF8, leaveOpen: false);
-            adapter.LoadState(payloadReader);
+            
+            // Use SavestateService like UI does - it expects files in savestates/ directory
+            Console.WriteLine($"[HEADLESS] Using SavestateService (UI approach)...");
+            var savestateService = new SavestateService("../savestates");
+            savestateService.Load(adapter, slotOverride ?? 1);
+            Console.WriteLine($"[HEADLESS] Savestate loaded successfully via SavestateService");
 
             for (int frame = 0; frame < framesToRun; frame++)
             {

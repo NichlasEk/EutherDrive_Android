@@ -245,22 +245,56 @@ internal static class StateBinarySerializer
 
     private static void ReadArrayInto(BinaryReader reader, object target, FieldInfo field, Type elementType)
     {
-        int rank = reader.ReadInt32();
-        bool isReadonly = field.IsInitOnly;
-        if (rank < 0)
+        try
         {
-            if (!isReadonly)
-                field.SetValue(target, null);
-            return;
-        }
+            int rank = reader.ReadInt32();
+            bool isReadonly = field.IsInitOnly;
+            
+            // DEBUG: Log if rank is huge
+            if (rank > 10)
+            {
+                Console.WriteLine($"[DEBUG-StateBinarySerializer] ReadArrayInto: field={field.Name} type={field.FieldType} rank={rank} (HUGE!)");
+                // Try to read next bytes to see what's in the stream
+                long pos = reader.BaseStream.Position;
+                byte[] next16 = new byte[Math.Min(16, reader.BaseStream.Length - pos)];
+                if (next16.Length > 0)
+                {
+                    reader.BaseStream.Read(next16, 0, next16.Length);
+                    reader.BaseStream.Position = pos;
+                    Console.WriteLine($"[DEBUG] Next {next16.Length} bytes: {BitConverter.ToString(next16)}");
+                }
+                
+                // If rank is unreasonable (corrupt data), try to recover
+                // _z80MbxPollDataLast should be byte[16] = rank=1, length=16
+                // But we see rank=128 (0x80). Maybe it's actually 0x01 (rank=1) with wrong endianness?
+                // Or maybe the byte 0x80 represents something else?
+                // For now, throw a clearer error
+                throw new InvalidDataException($"Array rank {rank} is unreasonable for field {field.Name}. Savestate file may be corrupt.");
+            }
+            
+            if (rank < 0)
+            {
+                if (!isReadonly)
+                    field.SetValue(target, null);
+                return;
+            }
+            if (rank == 0)
+            {
+                // Handle rank=0 as empty array (shouldn't happen but UI savestates work)
+                // Create an empty array with rank=1, length=0
+                Array emptyArray = Array.CreateInstance(elementType, 0);
+                if (!isReadonly)
+                    field.SetValue(target, emptyArray);
+                return;
+            }
 
-        int[] lengths = new int[rank];
-        int total = 1;
-        for (int i = 0; i < rank; i++)
-        {
-            lengths[i] = reader.ReadInt32();
-            total *= lengths[i];
-        }
+            int[] lengths = new int[rank];
+            int total = 1;
+            for (int i = 0; i < rank; i++)
+            {
+                lengths[i] = reader.ReadInt32();
+                total *= lengths[i];
+            }
 
         Array? existing = (Array?)field.GetValue(target);
         Array buffer;
@@ -307,6 +341,12 @@ internal static class StateBinarySerializer
             object? value = ReadValue(reader, elementType);
             ToIndices(i, strides, indices);
             buffer.SetValue(value, indices);
+        }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DEBUG-StateBinarySerializer] ReadArrayInto failed: field={field?.Name} type={elementType?.Name} error={ex.Message}");
+            throw;
         }
     }
 
