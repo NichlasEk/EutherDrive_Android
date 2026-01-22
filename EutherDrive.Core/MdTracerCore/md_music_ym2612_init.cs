@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -139,6 +139,10 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[DACRATE] env='{TraceDacRateRaw}' enabled={TraceDacRate}");
                 _dacRateBannerLogged = true;
             }
+            
+            // Reset Z80 safe boot state when YM2612 is (re)started
+            ResetZ80SafeBootState();
+            
             //regster
             g_reg_30_multi = new double[NUM_CHANNELS, NUM_SLOT];
             g_reg_30_dt = new int[NUM_CHANNELS, NUM_SLOT];

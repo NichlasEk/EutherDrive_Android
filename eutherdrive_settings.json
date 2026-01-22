@@ -1,5 +1,5 @@
 {
-  "LastRomPath": "/home/nichlas/roms/shinobiIII.md",
+  "LastRomPath": "/home/nichlas/roms/strider.md",
   "MasterVolumePercent": 23,
   "AudioEnabled": true,
   "DefaultRegionOverride": 0,
@@ -48,16 +48,19 @@
     "serial:GM T-60016 -00": 2,
     "serial:GM T-47046 -00": 1,
     "serial:GM 00004007-00": 1,
-    "serial:GM MK-1058 -00": 1,
     "serial:GM T-081236 00": 1,
     "serial:GM T-081426-50": 1,
     "serial:GM T-70226-500": 2,
     "serial:GM T-139036-00": 1,
-    "serial:GM MK-1054 -00": 1,
     "serial:GM T-25123 -00": 3,
     "serial:GM T-76106 -00": 1,
     "serial:GM T-56036 -00": 1,
-    "serial:GM 00001112-00": 1
+    "serial:GM 00001112-00": 1,
+    "serial:GM 00001051-02": 1,
+    "serial:GM 00001009-00": 1,
+    "serial:GM   G-4116-00": 3,
+    "serial:GM MK-1054 -00": 3,
+    "serial:GM 00002501-24": 1
   },
-  "FrameRateMode": 1
+  "FrameRateMode": 2
 }

@@ -148,6 +148,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD"), "1", StringComparison.Ordinal);
         private static readonly ushort ForceZ80PcOnUploadStart =
             ParseZ80Addr("EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_START") ?? 0x0D00;
+        private static readonly bool EmulateYmBusy =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_EMULATE_YM_BUSY"), "1", StringComparison.Ordinal);
         private static readonly ushort ForceZ80PcOnUploadEnd =
             ParseZ80Addr("EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_END") ?? 0x0E50;
         private static readonly ushort ForceZ80PcOnUploadTarget =
@@ -773,8 +775,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal void TickZ80SafeBoot(long frame)
         {
+            Console.WriteLine($"[Z80SAFE-TICK-DEBUG] frame={frame} enabled={Z80SafeBootEnabled} active={_z80SafeBootActive}");
             if (!Z80SafeBootEnabled || !_z80SafeBootActive)
+            {
+                if (frame % 60 == 0)
+                    Console.WriteLine($"[Z80SAFE-TICK] frame={frame} enabled={Z80SafeBootEnabled} active={_z80SafeBootActive}");
                 return;
+            }
             long now = frame >= 0 ? frame : SafeBootFrameNow();
             if (!_z80SafeBootBusReqGrantedLogged)
             {
@@ -793,6 +800,16 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (_z80SafeBootUploadActive)
             {
+                // CRITICAL FIX FOR SHINOBI III AND YM BUSY EMULATION:
+                // If YM busy emulation is enabled, release Z80 reset IMMEDIATELY on first tick
+                // Shinobi III doesn't do Z80 uploads and gets stuck if reset is held
+                if (EmulateYmBusy)
+                {
+                    Console.WriteLine($"[Z80SAFE-YMBUSY] frame={now} IMMEDIATE Z80 reset release for YM busy emulation");
+                    ReleaseZ80SafeBootReset(now);
+                    return;
+                }
+                
                 // Only release reset after seeing actual uploads AND quiet period
                 // DON'T auto-release on timeout - let 68K control timing
                 if (_z80SafeBootSawUpload)
@@ -808,6 +825,15 @@ namespace EutherDrive.Core.MdTracerCore
                     if ((now - _z80SafeBootStartFrame) % 100 == 0)
                     {
                         Console.WriteLine($"[Z80SAFE-WARN] frame={now} no uploads yet, Z80 held in reset");
+                    }
+                    
+                    // FORCE release Z80 reset after 50 frames when YM busy emulation is enabled
+                    // Some games (Sonic 1, Shinobi III) get stuck during boot with YM busy emulation
+                    // Reduced from 200 to 50 because games freeze at SEGA logo (~frame 50-70)
+                    if (now - _z80SafeBootStartFrame >= 50)
+                    {
+                        Console.WriteLine($"[Z80SAFE-FORCE] frame={now} forcing Z80 reset release due to timeout with YM busy emulation");
+                        ReleaseZ80SafeBootReset(now);
                     }
                 }
                 return;
@@ -865,6 +891,8 @@ namespace EutherDrive.Core.MdTracerCore
             _z80SafeBootSawUpload = false;
             _z80SafeBootBusReqGrantedLogged = false;
             _z80SafeBootResetReleaseFrame = -1;
+            _z80SafeBootStartFrame = -1;
+            _z80SafeBootLastUploadFrame = -1;
             _z80BusGranted = false;
             _z80Reset = false;
             if (md_main.g_md_z80 != null)
@@ -878,18 +906,38 @@ namespace EutherDrive.Core.MdTracerCore
             if (_z80Reset)
             {
                 _z80Reset = false;
+                _z80ResetChanged = true;
                 if (md_main.g_md_z80 != null)
                 {
                     // Sync Z80 and reinitialize FM when reset is released (matching clownmdemu behavior)
                     // DON'T call reset() here - it would set PC=0!
                     md_main.BeginZ80ResetCycle();
+                    // CRITICAL FIX: YM2612_Start() must be called BEFORE Z80 starts running
+                    // to ensure YM2612 state is initialized before Z80 can write to it
                     md_main.g_md_music?.g_md_ym2612.YM2612_Start();
                     md_main.g_md_z80.ArmPostResetHold();
+                    
+                    // CRITICAL FIX FOR YM BUSY EMULATION:
+                    // When YM busy emulation is enabled, Z80 MUST be able to run immediately
+                    // Otherwise it gets stuck waiting for busreq release while YM is busy
+                    Console.WriteLine($"[Z80SAFE-DEBUG] EmulateYmBusy={EmulateYmBusy} at frame={frame}");
+                    if (EmulateYmBusy)
+                    {
+                        // Release busreq immediately for YM busy emulation
+                        _z80BusGranted = false;
+                        _z80BusGrantedChanged = true;
+                        Console.WriteLine($"[Z80SAFE-YMBUSY] Immediate busreq release for YM busy emulation at frame={frame}");
+                    }
+                    
                     md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
                 }
             }
             Console.WriteLine($"[Z80SAFE] reset released frame={frame} - uploads will NOT be protected after this!");
             LogZ80SafeBootVerify();
+            
+            // Notify YM2612 that Z80 safe boot is complete
+            // This allows YM2612 busy emulation to start working
+            md_main.g_md_music?.g_md_ym2612.MarkZ80SafeBootComplete();
         }
 
         private void ReleaseZ80SafeBootBusReq(long frame)
@@ -946,8 +994,32 @@ namespace EutherDrive.Core.MdTracerCore
             return Z80SafeBootEnabled && _z80SafeBootUploadActive;
         }
 
-        internal bool Z80BusGranted => _z80BusGranted;
-        internal bool Z80Reset => _z80Reset;
+        internal bool Z80BusGranted 
+        { 
+            get 
+            {
+                if (TraceZ80SigTransitions && _z80BusGrantedChanged)
+                {
+                    Console.WriteLine($"[BUS-GRANTED] Z80BusGranted getter returning {_z80BusGranted}");
+                    _z80BusGrantedChanged = false;
+                }
+                return _z80BusGranted;
+            }
+        }
+        private bool _z80BusGrantedChanged = false;
+        internal bool Z80Reset 
+        { 
+            get 
+            {
+                if (TraceZ80SigTransitions && _z80ResetChanged)
+                {
+                    Console.WriteLine($"[BUS-RESET] Z80Reset getter returning {_z80Reset}");
+                    _z80ResetChanged = false;
+                }
+                return _z80Reset;
+            }
+        }
+        private bool _z80ResetChanged = false;
         internal void PeekZ80SignalStats(out long busReqWrites, out long busReqToggles, out long resetWrites, out long resetToggles)
         {
             busReqWrites = Interlocked.Read(ref _z80BusReqWriteCount);

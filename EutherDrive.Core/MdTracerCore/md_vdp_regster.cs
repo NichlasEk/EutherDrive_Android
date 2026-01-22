@@ -400,23 +400,24 @@ namespace EutherDrive.Core.MdTracerCore
                     g_vdp_reg_11_1_hscroll = (byte)(in_data & 0x03);
                     break;
 
-                 case 12:
-                       // Register 12 is latched on V-Int (takes effect at next VBlank)
-                       // Critical for H40->H32 transition in some games
-                      _reg12_latched_7_cellmode1     = (byte)((in_data >> 7) & 0x01);
-                      _reg12_latched_3_shadow        = (byte)((in_data >> 3) & 0x01);
-                      _reg12_latched_2_interlacemode = (byte)((in_data >> 1) & 0x03);
-                      _reg12_latched_0_cellmode2     = (byte)(in_data & 0x01);
-                      _reg12_latch_pending = true;
-                      
-                      // [REG12-W] on reg12 write: frame, data byte (0x??), rs1(bit7), rs0(bit0), shadow(bit3), interlace(bits1-2)
-                      byte rs1 = (byte)((in_data >> 7) & 0x01);
-                      byte rs0 = (byte)(in_data & 0x01);
-                      byte shadow = (byte)((in_data >> 3) & 0x01);
-                      byte interlace = (byte)((in_data >> 1) & 0x03);
-                      Console.WriteLine($"[REG12-W] frame={_frameCounter} data=0x{in_data:X2} rs1={rs1} rs0={rs0} shadow={shadow} interlace={interlace}");
-                      
-                      break;
+                  case 12:
+                        // Register 12 is latched on V-Int (takes effect at next VBlank)
+                        // Critical for H40->H32 transition in some games
+                       _reg12_latched_7_cellmode1     = (byte)((in_data >> 7) & 0x01);
+                       _reg12_latched_3_shadow        = (byte)((in_data >> 3) & 0x01);
+                       _reg12_latched_2_interlacemode = (byte)((in_data >> 1) & 0x03);
+                       _reg12_latched_0_cellmode2     = (byte)(in_data & 0x01);
+                       _reg12_latch_pending = true;
+                       
+                       // [REG12-W] on reg12 write: frame, data byte (0x??), rs1(bit7), rs0(bit0), shadow(bit3), interlace(bits1-2)
+                       byte rs1 = (byte)((in_data >> 7) & 0x01);
+                       byte rs0 = (byte)(in_data & 0x01);
+                       byte shadow = (byte)((in_data >> 3) & 0x01);
+                       byte interlace = (byte)((in_data >> 1) & 0x03);
+                       bool newH40 = rs1 != 0 || rs0 != 0;
+                       Console.WriteLine($"[REG12-W] frame={_frameCounter} data=0x{in_data:X2} rs1={rs1} rs0={rs0} shadow={shadow} interlace={interlace} H40={newH40} PENDING");
+                       
+                       break;
 
                 case 13:
                     g_vdp_reg_13_hscroll = (ushort)((in_data & 0x7f) << 10);

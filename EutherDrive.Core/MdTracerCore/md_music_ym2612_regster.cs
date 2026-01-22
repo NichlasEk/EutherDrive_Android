@@ -14,6 +14,15 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YMIRQ"), "1", StringComparison.Ordinal);
         private static readonly bool EmulateYmBusy =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_EMULATE_YM_BUSY"), "1", StringComparison.Ordinal);
+        
+        // Track if Z80 safe boot is complete
+        private static bool _z80SafeBootComplete = false;
+        private static readonly bool Z80SafeBootEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_SAFE_BOOT"), "1", StringComparison.Ordinal);
+        private static long _safeBootCompleteFrame = 0;
+        // Short warmup period after safe boot (10ms ≈ 80,000 M68K cycles at 8MHz)
+        private static long _ymBusyEnableAtCycle = 0;
+        private const long WarmupCycles10ms = 80000; // 10ms at 8MHz
         private static readonly bool TraceYmBusy =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_BUSY"), "1", StringComparison.Ordinal);
         private static readonly bool TraceYmStatus =
@@ -142,9 +151,19 @@ namespace EutherDrive.Core.MdTracerCore
             // FM runs at M68K clock / 7 = 7.67MHz / 7 = 1.095MHz (NTSC)
             // FM_PRESCALER = 6 in clownmdemu, so 32 * 6 = 192 FM cycles
             // 192 FM cycles = 192 * 7 = 1344 M68K cycles (if FM = M68K/7)
-            // Convert to Z80 cycles: 1344 M68K cycles * (3.58 / 7.67) ≈ 627 Z80 cycles
-            // But GetZ80Cycle() now returns Z80 budget cycles, so we need Z80 cycles
-            int cycles = 627; // Z80 cycles
+            
+            // Try different values to find the perfect one
+            // Environment variable can override: EUTHERDRIVE_YM_BUSY_M68K_CYCLES=xxx
+            string? envValue = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_BUSY_M68K_CYCLES");
+            if (!string.IsNullOrWhiteSpace(envValue) && int.TryParse(envValue, out int envCycles) && envCycles > 0)
+            {
+                return envCycles;
+            }
+            
+            // Default: 224 M68K cycles (original value that worked for some games)
+            // 1344 M68K cycles (from clownmdemu calculation)
+            // Let's use 224 for now as it seems to work for Sonic 2
+            int cycles = 224; // M68K cycles
             return cycles > 0 ? cycles : 1;
         }
 
@@ -241,6 +260,11 @@ namespace EutherDrive.Core.MdTracerCore
             int w_mode = -1;
             byte w_addr = 0;
             string _source = source;  // Store source for MaybeLogYmReg
+            
+            if (TraceYmBusy)
+            {
+                Console.WriteLine($"[YM-BUSY-SOURCE] write8 called with source={source} addr=0x{in_address:X6} val=0x{in_val:X2}");
+            }
 
             in_address &= 0x0003;
 
@@ -293,6 +317,10 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
 
             long nowCycle = GetZ80Cycle();
+            if (TraceYmBusy && nowCycle < 0)
+            {
+                Console.WriteLine($"[YM-BUSY-CYCLE] nowCycle={nowCycle} (negative!)");
+            }
             bool busy = (EmulateYmBusy || TraceYmBusy) && nowCycle >= 0 && IsYmBusy(nowCycle);
 
             // Don't drop writes when YM is busy - just process them and extend the busy timer
@@ -303,8 +331,29 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // Always update the busy timer (extends it if already busy)
-            if ((EmulateYmBusy || TraceYmBusy || TraceYmStatus) && nowCycle >= 0)
-                SetYmBusy(nowCycle, w_mode, w_addr, in_val);
+            // BUT: Don't set busy timer for M68K writes during Z80 safe boot
+            // M68K may initialize YM2612 before Z80 starts, and we don't want
+            // Z80 to see busy flags from M68K's initialization
+            bool shouldSetBusy = (EmulateYmBusy || TraceYmBusy || TraceYmStatus) && nowCycle >= 0;
+            if (shouldSetBusy)
+            {
+                // Only set busy timer if:
+                // 1. Z80 safe boot is complete, OR
+                // 2. This is a Z80 write (not M68K), OR  
+                // 3. We're not in Z80 safe boot at all
+                if (_z80SafeBootComplete || source == "Z80" || !Z80SafeBootEnabled)
+                {
+                    if (TraceYmBusy && !_z80SafeBootComplete && source == "M68K")
+                    {
+                        Console.WriteLine($"[YM-BUSY-WRITE8] Setting busy timer for M68K write during Z80 safe boot: _z80SafeBootComplete={_z80SafeBootComplete} source={source} Z80SafeBootEnabled={Z80SafeBootEnabled}");
+                    }
+                    SetYmBusy(nowCycle, w_mode, w_addr, in_val, source);
+                }
+                else if (TraceYmBusy)
+                {
+                    Console.WriteLine($"[YM-BUSY] Skipping busy timer for {source} write during Z80 safe boot: port={w_mode} addr=0x{w_addr:X2} val=0x{in_val:X2} _z80SafeBootComplete={_z80SafeBootComplete} Z80SafeBootEnabled={Z80SafeBootEnabled}");
+                }
+            }
 
             // skriv alltid till reg-matrisen
             g_reg[w_mode, w_addr] = in_val;
@@ -901,27 +950,111 @@ namespace EutherDrive.Core.MdTracerCore
 
         private long GetZ80Cycle()
         {
-            // For YM2612 busy timing, use Z80's budget cycles
-            // These advance whenever Z80.run() is called, even if Z80 is halted/reset
+            // For YM2612 busy timing, use SystemCycles (M68K cycles) as master timebase
             // This ensures time progresses even when Z80 is waiting for YM2612
-            if (md_main.g_md_z80 != null)
-            {
-                return md_main.g_md_z80.BudgetCycles;
-            }
+            // SystemCycles should advance whenever either M68K or Z80 runs
             return md_main.SystemCycles;
         }
 
         private bool IsYmBusy(long nowCycle)
         {
+            // Don't emulate YM busy during Z80 safe boot
+            // Some games get stuck if YM busy is emulated before Z80 is fully initialized
+            if (!_z80SafeBootComplete)
+            {
+                return false;
+            }
+            
+            // Short warmup period after safe boot (10ms)
+            // This gives Z80 time to initialize YM2612 without busy timing interference
+            if (nowCycle < _ymBusyEnableAtCycle)
+            {
+                return false;
+            }
+            
             return nowCycle >= 0 && nowCycle < _ymBusyUntilCycle;
         }
-
-        private void SetYmBusy(long nowCycle, int port, byte addr, byte val)
+        
+        public void MarkZ80SafeBootComplete()
         {
+            _z80SafeBootComplete = true;
+            _safeBootCompleteFrame = md_main.g_md_vdp?.FrameCounter ?? 0;
+            // Enable YM busy emulation after short warmup (10ms)
+            _ymBusyEnableAtCycle = md_main.SystemCycles + WarmupCycles10ms;
+            if (TraceYmBusy)
+                Console.WriteLine($"[YM-BUSY] Z80 safe boot complete at frame={_safeBootCompleteFrame}, YM busy emulation will start after {WarmupCycles10ms} cycles (~10ms)");
+        }
+        
+        public void ResetZ80SafeBootState()
+        {
+            _z80SafeBootComplete = false;
+            _safeBootCompleteFrame = 0;
+            _ymBusyEnableAtCycle = 0;
+            // DON'T reset _ymBusyUntilCycle here! M68K may have already set it
+            // _ymBusyUntilCycle = long.MinValue + 1;
+            _ymBusyDropCount = 0;
+            if (TraceYmBusy)
+                Console.WriteLine($"[YM-BUSY] Z80 safe boot state reset - complete={_z80SafeBootComplete} busyUntil={_ymBusyUntilCycle} enableAt={_ymBusyEnableAtCycle}");
+        }
+        
+        public void FullReset()
+        {
+            ResetZ80SafeBootState();
+            // Reset any other YM2612 state that might persist between runs
+            _dacWriteCount = 0;
+            _dacEnableCount = 0;
+            _dacDisableCount = 0;
+            _dacSum = 0;
+            _dacRateWriteCount = 0;
+            _dacRateDeltaCount = 0;
+            _dacRateDeltaTotal = 0;
+            
+            // Reset YM2612 busy state completely
+            // Use long.MinValue + 1 to avoid potential underflow issues
+            _ymBusyUntilCycle = long.MinValue + 1;
+            _ymBusyDropCount = 0;
+            
+            // Reset frame counter for delayed YM busy enable
+            _safeBootCompleteFrame = 0;
+            _ymBusyEnableAtCycle = 0;
+            
+            // Force YM2612 to reinitialize completely on next access
+            // This ensures all internal state is fresh
+            
+            if (TraceYmBusy)
+                Console.WriteLine($"[YM-BUSY] Full reset completed - all state cleared, busyUntil={_ymBusyUntilCycle}");
+        }
+
+        private void SetYmBusy(long nowCycle, int port, byte addr, byte val, string source = "Z80")
+        {
+            // CRITICAL: Don't set busy timer if YM busy emulation is disabled
+            // This includes during Z80 safe boot and warmup period
+            if (!EmulateYmBusy)
+            {
+                // Still log if tracing is enabled
+                if (TraceYmBusy)
+                    LogYmBusyWrite("set", nowCycle, port, addr, val, -1);
+                return;
+            }
+            
+            // Check if YM busy emulation should be active
+            // IsYmBusy() returns false during safe boot and warmup
+            if (!IsYmBusy(nowCycle))
+            {
+                // YM busy emulation is disabled, don't set timer
+                // But still log if tracing is enabled
+                if (TraceYmBusy)
+                    LogYmBusyWrite("set", nowCycle, port, addr, val, -1);
+                return;
+            }
+            
+            // Only set busy timer if YM busy emulation is actually enabled
+            // and we're past safe boot and warmup period
             long newUntil = nowCycle + YmBusyZ80Cycles;
             if (newUntil <= _ymBusyUntilCycle)
                 return;
             _ymBusyUntilCycle = newUntil;
+            
             if (TraceYmBusy)
                 LogYmBusyWrite("set", nowCycle, port, addr, val, -1);
         }

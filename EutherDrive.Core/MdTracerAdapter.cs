@@ -536,7 +536,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     public void Reset()
     {
-        Console.WriteLine("[MdTracerAdapter] Reset begin");
+        Console.WriteLine("[MdTracerAdapter] Reset begin - SHINOBI DEBUG");
         Console.WriteLine($"[MdTracerAdapter] Reset _cpuReady={_cpuReady} _cpu={(_cpu != null ? "ok" : "null")}");
         _tick = 0;
 
@@ -548,7 +548,23 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _lastAppliedFrameRateMode = GetEffectiveFrameRateMode();
         ApplyFrameRateMode(_lastAppliedFrameRateMode);
         ResetAudioFrameState();
-        md_main.g_md_music?.reset();
+        // Reset YM2612 state including Z80 safe boot flags
+        // Ensure music system is initialized before resetting
+        md_main.g_md_music ??= new md_music();
+        
+        // CRITICAL FIX: Always call reset() on music system to ensure YM2612_Start() is called
+        // FullReset() assumes YM2612_Start() has already initialized arrays
+        md_main.g_md_music.reset();
+        
+        if (md_main.g_md_music.g_md_ym2612 != null)
+        {
+            Console.WriteLine($"[RESET-DEBUG] Calling YM2612.FullReset()");
+            md_main.g_md_music.g_md_ym2612.FullReset();
+        }
+        else
+        {
+            Console.WriteLine($"[RESET-DEBUG] YM2612 is null even after initialization");
+        }
 
         // Stub (så VDP-testet fortsätter)
         md_main.EnsureCpuStubs();
@@ -832,8 +848,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
             int vlines = ApplyFrameRateMode(effectiveFrameRateMode);
             long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-            bool allowZ80 = md_main.ShouldRunZ80(frame);
-            uint pcAfter = md_m68k.g_reg_PC;
+                bool allowZ80 = md_main.ShouldRunZ80(frame);
+                
+                // CRITICAL: Tick Z80 safe boot timer BEFORE Z80 runs
+                // This allows Z80 to run immediately when reset is released
+                md_main.g_md_bus?.TickZ80SafeBoot(frame);
+                
+                uint pcAfter = md_m68k.g_reg_PC;
             if (_cpuReady && _cpu != null)
             {
                 long cpuTicks = 0;
