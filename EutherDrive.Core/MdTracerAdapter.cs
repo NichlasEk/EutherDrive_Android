@@ -1199,6 +1199,36 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         {
             var serializer = new MdTracerStateSerializer();
             serializer.Load(reader);
+            
+            // After loading state, reset Z80 to ensure it runs properly
+            if (md_main.g_md_z80 != null)
+            {
+                // Reset Z80 state completely - this sets g_active = true
+                md_main.g_md_z80.reset();
+            }
+            
+            // Ensure Z80 bus state is correct
+            if (md_main.g_md_bus != null)
+            {
+                var busType = md_main.g_md_bus.GetType();
+                
+                // Set Z80 bus to normal running state (not granted, not reset)
+                var busGrantedField = busType.GetField("_z80BusGranted", 
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var resetField = busType.GetField("_z80Reset", 
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                
+                if (busGrantedField != null) busGrantedField.SetValue(md_main.g_md_bus, false);
+                if (resetField != null) resetField.SetValue(md_main.g_md_bus, false);
+                
+                // Force Z80 safe boot to be inactive
+                var safeBootField = busType.GetField("_z80SafeBootActive", 
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (safeBootField != null)
+                {
+                    safeBootField.SetValue(md_main.g_md_bus, false);
+                }
+            }
         }
     }
 
