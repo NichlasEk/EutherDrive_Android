@@ -808,26 +808,9 @@ namespace EutherDrive.Core.MdTracerCore
                   Console.WriteLine($"[VDP-FRAME] frame={_frameCounter} reg12=0x{reg12Data:X2} width={width} reg1.display={reg1Display} reg2.base=0x{reg2Base:X4} reg4.base=0x{reg4Base:X4} reg16=0x{reg16PlaneSize:X2}");
               }
               
-              // SPECIAL FIX FOR SONIC 2 SPECIAL STAGE: Force correct registers
-              if (_frameCounter == 4910)
-              {
-                  Console.WriteLine($"[SONIC2-FINAL-FIX] frame={_frameCounter} Setting register 12=0x08 and display=ON");
-                  
-                  // Set register 12 to 0x08 (H32 mode, shadow ON)
-                  g_vdp_reg_12_7_cellmode1 = 0;
-                  g_vdp_reg_12_3_shadow = 1;
-                  g_vdp_reg_12_2_interlacemode = 0;
-                  g_vdp_reg_12_0_cellmode2 = 0;
-                  
-                  // Update derived values
-                  g_vdp_interlace_mode = 0;
-                  ApplyInterlaceOverrides();
-                  ApplyHorizontalMode(false); // H32 mode
-                  
-                  // Force display ON
-                  g_vdp_reg_1_6_display = 1;
-                  g_vdp_reg[1] |= 0x40; // Set bit 6
-              }
+               // REMOVED: Sonic 2 special stage hack that was causing H32 mode in all games at frame 4910
+               // This hack forced register 12 to 0x08 (H32 mode, shadow ON) and display ON
+               // It was triggering in ALL games, not just Sonic 2, causing resolution bugs
 
               // [BD] backdrop logging gated by EUTHERDRIVE_DEBUG_BD=1
               if (Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_BD") == "1")

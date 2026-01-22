@@ -151,6 +151,13 @@ namespace EutherDrive.Core.MdTracerCore
             g_dma_fill_req = false;
             g_dma_fill_data = 0;
 
+            // Reset latched register 12 values to prevent H40 mode from persisting after reset
+            _reg12_latched_7_cellmode1 = 0;
+            _reg12_latched_3_shadow = 0;
+            _reg12_latched_2_interlacemode = 0;
+            _reg12_latched_0_cellmode2 = 0;
+            _reg12_latch_pending = false;
+
             ApplyHorizontalMode(IsH40Mode());
             ClearVBlank();
         }
