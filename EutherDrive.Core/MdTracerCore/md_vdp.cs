@@ -135,9 +135,15 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void SyncFrameSizeFromVdp()
         {
+            int oldWidth = FrameWidth;
+            int oldHeight = FrameHeight;
             UpdateOutputWidth();
             FrameWidth = g_output_xsize;
             FrameHeight = g_output_ysize;
+            if (oldWidth != FrameWidth || oldHeight != FrameHeight)
+            {
+                Console.WriteLine($"[VDP-FRAME-SIZE] Changed: {oldWidth}x{oldHeight} -> {FrameWidth}x{FrameHeight} interlace={g_vdp_interlace_mode} display_ysize={g_display_ysize}");
+            }
             EnsureFrameBuffer();
         }
 
@@ -178,8 +184,8 @@ namespace EutherDrive.Core.MdTracerCore
              g_vdp_reg_12_2_interlacemode = _reg12_latched_2_interlacemode;
              g_vdp_reg_12_0_cellmode2     = _reg12_latched_0_cellmode2;
              
-             g_vdp_interlace_mode = DecodeInterlaceMode(g_vdp_reg_12_2_interlacemode);
-             ApplyInterlaceOverrides();
+              g_vdp_interlace_mode = DecodeInterlaceMode(g_vdp_reg_12_2_interlacemode);
+              ApplyInterlaceOverrides();
              
               bool newH40 = IsH40Mode();
               
@@ -188,16 +194,17 @@ namespace EutherDrive.Core.MdTracerCore
               int width = newH40 ? 320 : 256;
               Console.WriteLine($"[REG12-APPLY] frame={_frameCounter} applied=0x{appliedData:X2} width={width}");
              
-             if (prevInterlace != g_vdp_interlace_mode)
-             {
-                 g_vdp_interlace_field = 0;
-                 InvalidateSpriteRowCache();
-                 RecomputeScrollSizes();
-                 RecomputeWindowBounds();
-                 UpdateOutputWidth();
-                 if (g_game_screen != null && g_game_screen.Length > 0)
-                     Array.Fill(g_game_screen, 0xFF000000u);
-             }
+              if (prevInterlace != g_vdp_interlace_mode)
+              {
+                  Console.WriteLine($"[VDP-INTERLACE-CHANGE] frame={_frameCounter} prev={prevInterlace} new={g_vdp_interlace_mode} reg12_interlacemode={g_vdp_reg_12_2_interlacemode}");
+                  g_vdp_interlace_field = 0;
+                  InvalidateSpriteRowCache();
+                  RecomputeScrollSizes();
+                  RecomputeWindowBounds();
+                  UpdateOutputWidth();
+                  if (g_game_screen != null && g_game_screen.Length > 0)
+                      Array.Fill(g_game_screen, 0xFF000000u);
+              }
              
              if (prevH40 != newH40)
              {
@@ -275,12 +282,20 @@ namespace EutherDrive.Core.MdTracerCore
                 g_vdp_c00008_hvcounter = (ushort)(((MouseClickPosX >> 1) & 0x00ff)
                 + (MouseClickPosY << 8));
             }
-            else
+            else if (g_vdp_interlace_mode == 2)
             {
+                // Mode 2 (double resolution): double Y and add field bit
                 int interlaceY = (MouseClickPosY << 1) | g_vdp_interlace_field;
                 g_vdp_c00008_hvcounter = (ushort)(((MouseClickPosX >> 1) & 0x00ff)
                 + ((interlaceY << 8) & 0xfe00)
                 + (interlaceY & 0x0100));
+            }
+            else
+            {
+                // Mode 1: don't double Y, but still need field handling?
+                // Actually for HV counter in mode 1, Y is not doubled
+                g_vdp_c00008_hvcounter = (ushort)(((MouseClickPosX >> 1) & 0x00ff)
+                + (MouseClickPosY << 8));
             }
         }
 
@@ -372,16 +387,25 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (g_vdp_interlace_mode == 0)
                 return scanline;
-            return (scanline << 1) | g_vdp_interlace_field;
+            if (g_vdp_interlace_mode == 2)
+                return (scanline << 1) | g_vdp_interlace_field;
+            // Mode 1: don't double scanlines, just return as-is
+            // Field handling is done elsewhere (HV counter, etc.)
+            return scanline;
         }
 
         private int GetRenderLine(int scanline)
         {
             if (g_vdp_interlace_mode == 0)
                 return scanline;
-            if (InterlaceOutput == InterlaceOutputPolicy.SingleField)
-                return scanline << 1;
-            return (scanline << 1) | g_vdp_interlace_field;
+            if (g_vdp_interlace_mode == 2)
+            {
+                if (InterlaceOutput == InterlaceOutputPolicy.SingleField)
+                    return scanline << 1;
+                return (scanline << 1) | g_vdp_interlace_field;
+            }
+            // Mode 1: don't double scanlines for rendering
+            return scanline;
         }
 
         private int GetHScrollLine(int scanline)
@@ -560,14 +584,26 @@ namespace EutherDrive.Core.MdTracerCore
 
         private int GetOutputHeight()
         {
-            if (g_vdp_interlace_mode != 0 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
-                return g_display_ysize * 2;
-            return g_display_ysize;
+            int height = g_display_ysize;
+            // Only double height for interlace mode 2 (double resolution)
+            // Mode 1 (standard interlace) should NOT double the height
+            bool shouldDouble = g_vdp_interlace_mode == 2 && InterlaceOutput == InterlaceOutputPolicy.DoubleField;
+            if (shouldDouble)
+                height = g_display_ysize * 2;
+            
+            if (TraceVdpInterlace || shouldDouble)
+            {
+                Console.WriteLine($"[VDP-OUTPUT-HEIGHT-DETAIL] g_display_ysize={g_display_ysize} g_vdp_interlace_mode={g_vdp_interlace_mode} InterlaceOutput={InterlaceOutput} shouldDouble={shouldDouble} => {height}");
+            }
+            
+            return height;
         }
 
         private int GetOutputLineForScanline(int scanline)
         {
-            if (g_vdp_interlace_mode != 0 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
+            // Only apply field interlace for mode 2 (double resolution) when DoubleField policy is used
+            // Mode 1 should not double scanlines
+            if (g_vdp_interlace_mode == 2 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
             {
                 if (ForceInterlaceBob && g_vdp_interlace_mode == 2)
                     return scanline << 1;
@@ -604,8 +640,10 @@ namespace EutherDrive.Core.MdTracerCore
                 string.Equals(raw, "single", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(raw, "bob", StringComparison.OrdinalIgnoreCase))
             {
+                Console.WriteLine($"[VDP-INTERLACE] Parsed InterlaceOutputPolicy: SingleField (raw='{raw}')");
                 return InterlaceOutputPolicy.SingleField;
             }
+            Console.WriteLine($"[VDP-INTERLACE] Parsed InterlaceOutputPolicy: DoubleField (raw='{raw}')");
             return InterlaceOutputPolicy.DoubleField;
         }
 
@@ -1535,7 +1573,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (g_game_screen != null)
             {
                 // Check the full output size (320x448 in interlace mode 2)
-                int outputHeight = (g_vdp_interlace_mode != 0) ? g_display_ysize * 2 : g_display_ysize;
+                int outputHeight = (g_vdp_interlace_mode == 2) ? g_display_ysize * 2 : g_display_ysize;
                 int checkCount = Math.Min(g_output_xsize * outputHeight, g_game_screen.Length);
                 totalPixels = checkCount;
 

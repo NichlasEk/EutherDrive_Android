@@ -233,13 +233,18 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static byte DecodeInterlaceMode(byte raw)
         {
-            return raw switch
+            byte result = raw switch
             {
                 0 => 0,
                 1 => 1,
                 3 => 2,
                 _ => 0
             };
+            if (raw != result)
+            {
+                Console.WriteLine($"[VDP-INTERLACE-DECODE] raw={raw} => result={result}");
+            }
+            return result;
         }
 
         private ushort build_vdp_status_word()
