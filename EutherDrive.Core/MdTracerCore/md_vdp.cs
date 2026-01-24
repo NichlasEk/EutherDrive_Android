@@ -194,17 +194,20 @@ namespace EutherDrive.Core.MdTracerCore
               int width = newH40 ? 320 : 256;
               Console.WriteLine($"[REG12-APPLY] frame={_frameCounter} applied=0x{appliedData:X2} width={width}");
              
-              if (prevInterlace != g_vdp_interlace_mode)
-              {
-                  Console.WriteLine($"[VDP-INTERLACE-CHANGE] frame={_frameCounter} prev={prevInterlace} new={g_vdp_interlace_mode} reg12_interlacemode={g_vdp_reg_12_2_interlacemode}");
-                  g_vdp_interlace_field = 0;
-                  InvalidateSpriteRowCache();
-                  RecomputeScrollSizes();
-                  RecomputeWindowBounds();
-                  UpdateOutputWidth();
-                  if (g_game_screen != null && g_game_screen.Length > 0)
-                      Array.Fill(g_game_screen, 0xFF000000u);
-              }
+                   if (prevInterlace != g_vdp_interlace_mode)
+                   {
+                       Console.WriteLine($"[VDP-INTERLACE-CHANGE] frame={_frameCounter} prev={prevInterlace} new={g_vdp_interlace_mode} reg12_interlacemode={g_vdp_reg_12_2_interlacemode}");
+                       g_vdp_interlace_field = 0;
+                       InvalidateSpriteRowCache();
+                       RecomputeScrollSizes();
+                       RecomputeWindowBounds();
+                       UpdateOutputWidth();
+                       if (g_game_screen != null && g_game_screen.Length > 0)
+                       {
+                           Console.WriteLine($"[VDP-DEBUG] Filling g_game_screen with 0xFF000000 at frame {_frameCounter}, length={g_game_screen.Length}");
+                           Array.Fill(g_game_screen, 0xFF000000u);
+                       }
+                   }
              
              if (prevH40 != newH40)
              {
@@ -655,10 +658,10 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             _lastStateLogFrame = _frameCounter;
 
-            int planeA = g_vdp_reg_2_scrolla >> 1;
-            int planeB = g_vdp_reg_4_scrollb >> 1;
-            int window = g_vdp_reg_3_windows >> 1;
-            int sprite = g_vdp_reg_5_sprite >> 1;
+            int planeA = (g_vdp_reg_2_scrolla & (IsH40Mode() ? 0xFE00 : 0xFC00)) >> 1;
+            int planeB = (g_vdp_reg_4_scrollb & (IsH40Mode() ? 0xFE00 : 0xFC00)) >> 1;
+            int window = (g_vdp_reg_3_windows & (IsH40Mode() ? 0xFE00 : 0xFC00)) >> 1;
+            int sprite = (g_vdp_reg_5_sprite & (IsH40Mode() ? ~0x3FF : ~0x1FF)) >> 1;
             int hscroll = g_vdp_reg_13_hscroll >> 1;
 
             uint sampleA = (uint)((uint)planeA < (uint)g_renderer_vram.Length ? g_renderer_vram[planeA] : 0);
@@ -833,18 +836,18 @@ namespace EutherDrive.Core.MdTracerCore
                   ApplyLatchedRegister12();
               }
 
-              // [VDP-FRAME] per-frame summary (debug)
-              // if (_frameCounter >= 4904 && _frameCounter <= 4909)
-              {
-                  byte reg12Data = (byte)((g_vdp_reg_12_7_cellmode1 << 7) | (g_vdp_reg_12_3_shadow << 3) | (g_vdp_reg_12_2_interlacemode << 1) | g_vdp_reg_12_0_cellmode2);
-                  int width = IsH40Mode() ? 320 : 256;
-                  byte reg1Display = (byte)((g_vdp_reg[1] >> 6) & 0x01); // bit 6 = display enable
-                   int reg2Base = g_vdp_reg_2_scrolla;
-                  int reg4Base = g_vdp_reg_4_scrollb;
-                  byte reg16PlaneSize = g_vdp_reg[16];
-                  
-                  Console.WriteLine($"[VDP-FRAME] frame={_frameCounter} reg12=0x{reg12Data:X2} width={width} reg1.display={reg1Display} reg2.base=0x{reg2Base:X4} reg4.base=0x{reg4Base:X4} reg16=0x{reg16PlaneSize:X2}");
-              }
+               // [VDP-FRAME] per-frame summary (debug)
+               // if (_frameCounter >= 4904 && _frameCounter <= 4909)
+               {
+                   byte reg12Data = (byte)((g_vdp_reg_12_7_cellmode1 << 7) | (g_vdp_reg_12_3_shadow << 3) | (g_vdp_reg_12_2_interlacemode << 1) | g_vdp_reg_12_0_cellmode2);
+                   int width = IsH40Mode() ? 320 : 256;
+                   byte reg1Display = (byte)((g_vdp_reg[1] >> 6) & 0x01); // bit 6 = display enable
+                    int reg2Base = g_vdp_reg_2_scrolla;
+                   int reg4Base = g_vdp_reg_4_scrollb;
+                   byte reg16PlaneSize = g_vdp_reg[16];
+                   
+                   Console.WriteLine($"[VDP-FRAME] frame={_frameCounter} scanline={g_scanline} reg12=0x{reg12Data:X2} width={width} reg1.display={reg1Display} reg2.base=0x{reg2Base:X4} reg4.base=0x{reg4Base:X4} reg16=0x{reg16PlaneSize:X2}");
+               }
               
                // REMOVED: Sonic 2 special stage hack that was causing H32 mode in all games at frame 4910
                // This hack forced register 12 to 0x08 (H32 mode, shadow ON) and display ON

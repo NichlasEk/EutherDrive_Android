@@ -101,23 +101,30 @@ namespace EutherDrive.Core.MdTracerCore
             if (MdTracerCore.MdLog.Enabled && g_scanline == 0)
                 MdTracerCore.MdLog.WriteLine($"[VDP] frame={_frameCounter} display={g_vdp_reg_1_6_display}");
 
-            if (g_vdp_reg_1_6_display == 1)
-            {
-                if (md_main.g_masterSystemMode && !_smsFirstLineRendered && g_scanline == 0)
-                {
-                    _smsFirstLineRendered = true;
-                    if (MdTracerCore.MdLog.Enabled)
-                        MdTracerCore.MdLog.WriteLine("[SMS VDP] first scanline rendered");
-                }
-                // Ta snapshot av VDP-tillstånd för den här linjen
-                rendering_line_snap();
+             if (g_vdp_reg_1_6_display == 1)
+             {
+                 if (md_main.g_masterSystemMode && !_smsFirstLineRendered && g_scanline == 0)
+                 {
+                     _smsFirstLineRendered = true;
+                     if (MdTracerCore.MdLog.Enabled)
+                         MdTracerCore.MdLog.WriteLine("[SMS VDP] first scanline rendered");
+                 }
+                 
+                 // DEBUG: Log when rendering starts
+                 if ((_frameCounter - 7059) < 5 && g_scanline < 10)
+                 {
+                     Console.WriteLine($"[VDP-RENDER] frame={_frameCounter} scanline={g_scanline} display=ON");
+                 }
+                 
+                 // Ta snapshot av VDP-tillstånd för den här linjen
+                 rendering_line_snap();
 
-                // Beräkna output line
-                int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
+                 // Beräkna output line
+                 int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
 
-                // Alltid CPU-rendering i headless
-                rendering_line_cpu(outputLine, targetBuffer);
-            }
+                 // Alltid CPU-rendering i headless
+                 rendering_line_cpu(outputLine, targetBuffer);
+             }
               else
               {
                   // Display off: preserve framebuffer (for savestate compatibility) OR fill with black
@@ -197,6 +204,14 @@ namespace EutherDrive.Core.MdTracerCore
 
         // --- Hjälp (valfritt) ---
         // Exponera en enkel pekare till framebuffer om du vill hämta bilden från UI-lagret:
-        public uint[] GetFrameBuffer() => g_game_screen;
+        public uint[] GetFrameBuffer()
+        {
+            // DEBUG: Log first pixel value
+            if (_frameCounter < 5 && g_game_screen.Length > 0)
+            {
+                Console.WriteLine($"[VDP-DEBUG] GetFrameBuffer called at frame {_frameCounter}, g_game_screen[0]=0x{g_game_screen[0]:X8}, length={g_game_screen.Length}");
+            }
+            return g_game_screen;
+        }
     }
 }

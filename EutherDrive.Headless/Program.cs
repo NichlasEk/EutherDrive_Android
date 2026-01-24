@@ -119,21 +119,32 @@ class Program
                 }
             }
 
-            Console.WriteLine($"[HEADLESS] ROM loaded, starting emulation...");
+             Console.WriteLine($"[HEADLESS] ROM loaded, starting emulation...");
 
-            // Dump frame 0 before running
-            Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
-            adapter.FrameBufferHasContent();
-            adapter.DumpFrameBufferToPpm("/home/nichlas/roms/headless_frame0.ppm");
+             // Warm-up: run some frames after savestate load to let VDP stabilize
+             if (loadSlot1OnBoot)
+             {
+                 Console.WriteLine($"[HEADLESS] Running 60 warm-up frames after savestate load...");
+                 for (int i = 0; i < 60; i++)
+                 {
+                     adapter.StepFrame();
+                 }
+                 Console.WriteLine($"[HEADLESS] Warm-up complete");
+             }
 
-            for (int frame = 0; frame < framesToRun; frame++)
-            {
-                adapter.StepFrame();
+             // Dump frame 0 before running (after warm-up)
+             Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+             adapter.FrameBufferHasContent();
+             adapter.DumpFrameBufferToPpm("/home/nichlas/roms/headless_frame0.ppm");
 
-                // Log VDP status and framebuffer
-                bool displayOn = adapter.IsVdpDisplayOn();
-                bool hasContent = adapter.FrameBufferHasContent();
-                Console.WriteLine($"[HEADLESS] Frame {frame}: display={displayOn} fb_has_content={hasContent}");
+             for (int frame = 0; frame < framesToRun; frame++)
+             {
+                 adapter.StepFrame();
+
+                 // Log VDP status and framebuffer
+                 bool displayOn = adapter.IsVdpDisplayOn();
+                 bool hasContent = adapter.FrameBufferHasContent();
+                 Console.WriteLine($"[HEADLESS] Frame {frame}: display={displayOn} fb_has_content={hasContent}");
 
                 // Dump framebuffer at interesting points
                 if (frame == 0 || frame == 5 || frame == 10)
@@ -228,8 +239,9 @@ class Program
             snapshot = ms.ToArray();
         }
 
-        for (int i = 0; i < 5; i++)
-            adapter.StepFrame();
+        // DEBUG: Don't run frames before loading savestate
+        // for (int i = 0; i < 5; i++)
+        //     adapter.StepFrame();
 
         using (var ms = new MemoryStream(snapshot))
         using (var reader = new BinaryReader(ms))
@@ -283,7 +295,7 @@ class Program
             
             // Use SavestateService like UI does - it expects files in savestates/ directory
             Console.WriteLine($"[HEADLESS] Using SavestateService (UI approach)...");
-            var savestateService = new SavestateService("../savestates");
+            var savestateService = new SavestateService("/home/nichlas/EutherDrive/savestates");
             savestateService.Load(adapter, slotOverride ?? 1);
             Console.WriteLine($"[HEADLESS] Savestate loaded successfully via SavestateService");
 

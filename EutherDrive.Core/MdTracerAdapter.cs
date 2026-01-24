@@ -682,7 +682,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         {
             var vdpBuffer = _vdp.GetFrameBuffer();
             int vdpId = vdpBuffer.Length == 0 ? 0 : RuntimeHelpers.GetHashCode(vdpBuffer);
-            Console.WriteLine($"[MdTracerAdapter] Framebuffer source at {reason}: vdp=0x{vdpId:X8}");
+            Console.WriteLine($"[MdTracerAdapter] Framebuffer source at {reason}: vdp=0x{vdpId:X8} length={vdpBuffer.Length}");
         }
     }
 
@@ -948,7 +948,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         // Blitta VDP RGB555 -> UI BGRA staging buffer
         EnsureFramebufferInitialized("RunFrame");
-            var vdpBuffer = _vdp.GetFrameBuffer();
+             var vdpBuffer = _vdp.GetFrameBuffer();
             if (vdpBuffer.Length > 0)
             {
             int vdpWidth = _vdp.FrameWidth;
@@ -1540,7 +1540,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             writer.WriteLine($"{width} {height}");
             writer.WriteLine("255");
 
-            // _frameBufferFront is BGRA, so we need to convert back to RGB for PPM
+             // _frameBufferFront is BGRA, so we need to convert back to RGB for PPM
             for (int y = 0; y < height; y++)
             {
                 int rowOffset = y * _fbStride;
