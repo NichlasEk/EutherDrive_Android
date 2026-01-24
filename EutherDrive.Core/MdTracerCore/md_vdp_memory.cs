@@ -174,7 +174,8 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            // MD VDP-portarna är 16-bit, men 8-bitars writes mappas ofta som repeterat värde
+            // MD VDP ports are 16-bit. Byte writes: the byte is written to both high and low byte
+            // This is how real hardware works - byte write duplicates to both bytes
             ushort w = (ushort)((in_data << 8) | in_data);
             write16(in_address, w);
         }
@@ -310,7 +311,8 @@ namespace EutherDrive.Core.MdTracerCore
                     g_vdp_reg_dest_address = (ushort)((g_vdp_reg_dest_address & 0x3fff) | ((in_data & 0x0007) << 14));
                     g_vdp_reg_code = (g_vdp_reg_code & ~codeMask) | ((in_data >> 2) & codeMask);
 
-                    if (g_vdp_interlace_mode == 2 && _firstInterlace2Frame > 0 && _frameCounter >= _firstInterlace2Frame)
+                     // Always log VDP command decoding for debugging
+                    if (_frameCounter < 100) // Only log early frames
                     {
                         int codeLow = g_vdp_reg_code & 0x0f;
                         string target = codeLow switch
@@ -528,15 +530,29 @@ namespace EutherDrive.Core.MdTracerCore
             InvalidateSpriteRowCache();
         }
 
-        private void cram_set(int idx, ushort data)
+         private void cram_set(int idx, ushort data)
         {
-            g_cram[idx] = data;
+            // CRAM: only low 12 bits matter (bits 0-11) for 0x0BGR format
+            // Mask out high bits to handle byte-write duplication
+            ushort cramData = (ushort)(data & 0x0FFF);
+            g_cram[idx] = cramData;
+            
             if (TraceCramWrites)
-                Console.WriteLine($"[CRAM] frame={_frameCounter} index=0x{(idx & 0x3f):X2} data=0x{data:X4}");
+                Console.WriteLine($"[CRAM] frame={_frameCounter} index=0x{(idx & 0x3f):X2} raw=0x{data:X4} masked=0x{cramData:X4}");
 
-            int r = (data & 0x000e) >> 1;
-            int g = (data & 0x00e0) >> 5;
-            int b = (data & 0x0e00) >> 9;
+            // CRAM format according to Genesis documentation:
+            // Bits 0-3: Red (4 bits, but only bits 1-3 used = 3-bit intensity)
+            // Bits 4-7: Green (4 bits, but only bits 5-7 used = 3-bit intensity)  
+            // Bits 8-11: Blue (4 bits, but only bits 9-11 used = 3-bit intensity)
+            // Format: 0x0BGR (Blue in high nibble, Green in middle, Red in low nibble)
+            int rNib = (cramData & 0x000F);       // Bits 0-3: Red nibble
+            int gNib = (cramData & 0x00F0) >> 4;  // Bits 4-7: Green nibble
+            int bNib = (cramData & 0x0F00) >> 8;  // Bits 8-11: Blue nibble
+            
+            // MD uses 3-bit intensity stored in bits 1..3 of each nibble (values 0,2,4..E)
+            int r = rNib >> 1;   // 0..7
+            int g = gNib >> 1;   // 0..7
+            int b = bNib >> 1;   // 0..7
 
             g_color[idx] =
             0xff000000u |
