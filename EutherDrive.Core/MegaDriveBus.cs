@@ -161,8 +161,11 @@ public sealed class MegaDriveBus
 
         if (IsZ80Window(addr) && md_main.g_md_z80 != null)
         {
-            uint z80Addr = addr & 0x1FFF;
-            if (MapZ80OddReadToNext && (z80Addr & 1) != 0)
+            // Z80 window mapping: M68K A0 may not be connected to Z80 bus
+            // For byte reads: ignore A0? Or handle via MapZ80OddReadToNext?
+            // Original mapping that should work for most games:
+            uint z80Addr = (addr >> 1) & 0x1FFF;
+            if (MapZ80OddReadToNext && (addr & 1) != 0)
                 z80Addr = (z80Addr + 1) & 0x1FFF;
             byte val = md_main.g_md_z80.read8(z80Addr);
             LogZ80WindowRead(addr, val);
