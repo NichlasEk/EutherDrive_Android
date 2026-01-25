@@ -57,11 +57,25 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void dma_run_memory_req()
         {
-            g_dma_src_addr = read_dma_src_addr() << 1; // Convert word address to byte address
+            uint srcWordAddr = read_dma_src_addr();
+            g_dma_src_addr = srcWordAddr << 1; // Convert word address to byte address
             g_dma_leng = read_dma_leng();
             g_dma_mode = 1;
             g_vdp_status_1_dma = 1;
             g_vdp_status_8_full = 1;
+            
+            // Log DMA start in exact format for analysis
+            string startTarget = "UNKNOWN";
+            switch (g_vdp_reg_code & 0x0f)
+            {
+                case 1: startTarget = "VRAM"; break;
+                case 3: startTarget = "CRAM"; break;
+                case 5: startTarget = "VSRAM"; break;
+            }
+            
+            Console.WriteLine($"[DMA-START] reason=CMD addr=0x{g_vdp_reg_dest_address:X4} cd=0x{g_vdp_reg_code:X2} " +
+                             $"len=0x{g_dma_leng:X4} srcRegs=(15=0x{g_vdp_reg_21_dma_source_low:X2} 16=0x{g_vdp_reg_22_dma_source_mid:X2} 17=0x{g_vdp_reg_23_5_dma_high:X2}) " +
+                             $"srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} inc=0x{g_vdp_reg_15_autoinc:X2} mode={g_vdp_reg_23_dma_mode} target={startTarget}");
 
             // Log DMA copy operation with detailed info
             string target = "UNKNOWN";
@@ -72,31 +86,65 @@ namespace EutherDrive.Core.MdTracerCore
                 case 5: target = "VSRAM"; break;
             }
             
-            LogDmaStatusLine($"[DMA-COPY-DETAIL] frame={_frameCounter} len={g_dma_leng} src=0x{g_dma_src_addr:X6} dest=0x{g_vdp_reg_dest_address:X4} target={target} reg15=0x{g_vdp_reg_15_autoinc:X2} regCode=0x{g_vdp_reg_code:X2}");
+            // Enhanced logging for Predator 2 debugging
+            ushort reg21 = g_vdp_reg_21_dma_source_low;
+            ushort reg22 = g_vdp_reg_22_dma_source_mid;
+            ushort reg23_5 = g_vdp_reg_23_5_dma_high;
             
-            // Debug: dump first 32 bytes from source
-            if (_frameCounter < 100) // Only log early frames
+            LogDmaStatusLine($"[DMA-COPY-DETAIL] frame={_frameCounter} len={g_dma_leng} srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} dest=0x{g_vdp_reg_dest_address:X4} target={target} reg15=0x{g_vdp_reg_15_autoinc:X2} regCode=0x{g_vdp_reg_code:X2} regs=0x{reg23_5:X2}{reg22:X2}{reg21:X2}");
+            
+            // Enhanced Predator 2 debugging: log raw register values and computed addresses
+            Console.WriteLine($"[DMA-DEBUG-RAW] frame={_frameCounter} reg21=0x{reg21:X2} reg22=0x{reg22:X2} reg23_5=0x{reg23_5:X2} srcWordAddr=0x{srcWordAddr:X6} srcByteAddr=0x{g_dma_src_addr:X6} (srcWord<<1)");
+            
+            // Special handling for length=0 (means 0x10000 words on real VDP)
+            int actualLength = g_dma_leng;
+            if (actualLength == 0)
             {
-                Console.Write($"[DMA-SRC-DUMP] src=0x{g_dma_src_addr:X6}: ");
-                for (int i = 0; i < 32 && i < g_dma_leng * 2; i += 2)
+                actualLength = 0x10000;
+                Console.WriteLine($"[DMA-LENGTH-ZERO] frame={_frameCounter} Using length=0x{actualLength:X4} instead of 0");
+            }
+            
+            // Debug: dump first 32 bytes from source AND destination before/after
+            if (_frameCounter >= 560 && _frameCounter < 600) // Log frames around title screen transition
+            {
+                // Dump source data
+                Console.Write($"[DMA-SRC-DUMP] srcByte=0x{g_dma_src_addr:X6}: ");
+                for (int i = 0; i < 32 && i < actualLength * 2; i += 2)
                 {
-                    ushort val = md_m68k.read16((uint)(g_dma_src_addr + i));
+                    ushort val = ReadDmaSourceWord((uint)(g_dma_src_addr + i));
                     Console.Write($"{val:X4} ");
                 }
                 Console.WriteLine();
+                
+                // Dump destination BEFORE DMA (if VRAM/CRAM/VSRAM)
+                if (target == "VRAM")
+                {
+                    Console.Write($"[DMA-DEST-BEFORE] VRAM 0x{g_vdp_reg_dest_address:X4}: ");
+                    for (int i = 0; i < 16 && i < actualLength; i++)
+                    {
+                        ushort val = vram_read_w(g_vdp_reg_dest_address + i * 2);
+                        Console.Write($"{val:X4} ");
+                    }
+                    Console.WriteLine();
+                }
             }
             
             // Debug DMA window check for name table overlap
             DebugDmaWindow((uint)g_vdp_reg_dest_address, (uint)g_dma_leng, (byte)g_vdp_reg_code, "DMA-COPY");
 
             // Like clownmdemu: DMA runs immediately
+            // Handle length=0 special case (means 0x10000 words on real VDP)
             int w_loop_cnt = g_dma_leng;
+            if (w_loop_cnt == 0)
+            {
+                w_loop_cnt = 0x10000;
+            }
             int debugWriteCount = 0;
             
             while (true)
             {
                 // Read from source (byte address)
-                ushort w_val = md_m68k.read16(g_dma_src_addr);
+                ushort w_val = ReadDmaSourceWord(g_dma_src_addr);
                 int writeAddr = g_vdp_reg_dest_address;
                 
                 switch (g_vdp_reg_code & 0x0f)
@@ -112,7 +160,7 @@ namespace EutherDrive.Core.MdTracerCore
                         // Debug logging
                         if (debugWriteCount < 8 && _frameCounter < 100)
                         {
-                            Console.WriteLine($"[DMA-WRITE-{debugWriteCount}] addr=0x{writeAddr:X4} val=0x{w_val:X4} reg15=0x{g_vdp_reg_15_autoinc:X2} nextAddr=0x{(writeAddr + g_vdp_reg_15_autoinc):X4}");
+                            Console.WriteLine($"[DMA-WRITE-{debugWriteCount}] addr=0x{writeAddr:X4} val=0x{w_val:X4} reg15=0x{g_vdp_reg_15_autoinc:X2} nextAddr=0x{(writeAddr + g_vdp_reg_15_autoinc):X4} src=0x{g_dma_src_addr:X6}");
                             debugWriteCount++;
                         }
                         break;
@@ -294,6 +342,15 @@ namespace EutherDrive.Core.MdTracerCore
             return (uint)(g_vdp_reg_21_dma_source_low
                         + (g_vdp_reg_22_dma_source_mid << 8)
                         + (g_vdp_reg_23_5_dma_high << 16));
+        }
+
+        private ushort ReadDmaSourceWord(uint address)
+        {
+            var bus = md_main.g_md_bus;
+            if (bus != null)
+                return bus.read16(address);
+
+            return md_m68k.read16(address);
         }
 
         private void write_dma_src_addr(uint in_addr)
