@@ -26,6 +26,17 @@ namespace EutherDrive.Core.MdTracerCore
         internal bool DebugLastReadWasBanked => _lastReadWasBanked;
         internal long DebugTotalCycles => _totalCycles;
         internal long BudgetCycles => _budgetCycles;  // Always advances when run() is called
+        internal long DebugSystemCycleDelta => _systemCycleDelta;
+
+        internal void BeginSystemCycleSlice()
+        {
+            _systemCycleDelta = 0;
+        }
+
+        internal void EndSystemCycleSlice()
+        {
+            _systemCycleDelta = 0;
+        }
 
         // Bank register access for M68K bus writes (shift-register style)
         internal uint GetBankRegister() => g_bank_register;
@@ -117,6 +128,7 @@ namespace EutherDrive.Core.MdTracerCore
         private long _instrThrottleCounter;
         private long _totalCycles;
         private long _budgetCycles;  // Cycles budgeted to Z80 (always advances)
+        [NonSerialized] private long _systemCycleDelta;
         private bool _z80Dumped;
         private bool _pcLeftBootRangeSinceLastSummary;
         private long _z80StatsLastTicks;
@@ -712,6 +724,7 @@ namespace EutherDrive.Core.MdTracerCore
             _bootInstrCount++;
             _totalCycles += g_clock;
             cyclesConsumed += g_clock;
+            _systemCycleDelta += g_clock;
             md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(g_clock);
 
             if (log0576After)

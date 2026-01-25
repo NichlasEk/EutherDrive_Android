@@ -953,11 +953,20 @@ namespace EutherDrive.Core.MdTracerCore
             // For YM2612 busy timing, use SystemCycles (M68K cycles) as master timebase
             // This ensures time progresses even when Z80 is waiting for YM2612
             // SystemCycles should advance whenever either M68K or Z80 runs
-            return md_main.SystemCycles;
+            long baseCycles = md_main.SystemCycles;
+            if (md_main.g_md_z80 == null)
+                return baseCycles;
+            long z80Delta = md_main.g_md_z80.DebugSystemCycleDelta;
+            long deltaM68k = md_main.ConvertZ80ToM68kCyclesApprox(z80Delta);
+            return baseCycles + deltaM68k;
         }
 
-        private bool IsYmBusy(long nowCycle)
+        private bool IsYmBusyEnabled(long nowCycle)
         {
+            if (!Z80SafeBootEnabled)
+            {
+                return nowCycle >= 0;
+            }
             // Don't emulate YM busy during Z80 safe boot
             // Some games get stuck if YM busy is emulated before Z80 is fully initialized
             if (!_z80SafeBootComplete)
@@ -972,7 +981,12 @@ namespace EutherDrive.Core.MdTracerCore
                 return false;
             }
             
-            return nowCycle >= 0 && nowCycle < _ymBusyUntilCycle;
+            return nowCycle >= 0;
+        }
+
+        private bool IsYmBusy(long nowCycle)
+        {
+            return IsYmBusyEnabled(nowCycle) && nowCycle < _ymBusyUntilCycle;
         }
         
         public void MarkZ80SafeBootComplete()
@@ -987,9 +1001,9 @@ namespace EutherDrive.Core.MdTracerCore
         
         public void ResetZ80SafeBootState()
         {
-            _z80SafeBootComplete = false;
+            _z80SafeBootComplete = !Z80SafeBootEnabled;
             _safeBootCompleteFrame = 0;
-            _ymBusyEnableAtCycle = 0;
+            _ymBusyEnableAtCycle = _z80SafeBootComplete ? md_main.SystemCycles : 0;
             // DON'T reset _ymBusyUntilCycle here! M68K may have already set it
             // _ymBusyUntilCycle = long.MinValue + 1;
             _ymBusyDropCount = 0;
@@ -1039,7 +1053,7 @@ namespace EutherDrive.Core.MdTracerCore
             
             // Check if YM busy emulation should be active
             // IsYmBusy() returns false during safe boot and warmup
-            if (!IsYmBusy(nowCycle))
+            if (!IsYmBusyEnabled(nowCycle))
             {
                 // YM busy emulation is disabled, don't set timer
                 // But still log if tracing is enabled

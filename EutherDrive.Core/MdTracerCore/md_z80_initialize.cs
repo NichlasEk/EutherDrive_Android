@@ -282,36 +282,38 @@ namespace EutherDrive.Core.MdTracerCore
                 op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
             };
 
-            g_operand_cb = new Action[]
+            g_operand_cb = new Action[256];
+            int cbIndex = 0;
+            Action[] rotOps = { op_RLC_r, op_RRC_r, op_RL_r, op_RR_r, op_SLA_r, op_SRA_r, op_SLL_r, op_SRL_r };
+            Action[] rotOpsHL = { op_RLC_HL, op_RRC_HL, op_RL_HL, op_RR_HL, op_SLA_HL, op_SRA_HL, op_SLL_HL, op_SRL_HL };
+            for (int op = 0; op < rotOps.Length; op++)
             {
-                //0x00
-                op_RLC_r, op_RLC_r, op_RLC_r, op_RLC_r, op_RLC_r, op_RLC_r, op_RLC_HL, op_RLC_r,
-                op_RRC_r, op_RRC_r, op_RRC_r, op_RRC_r, op_RRC_r, op_RRC_r, op_RRC_HL, op_RRC_r,
-                //0x10
-                op_RL_r,  op_RL_r,  op_RL_r,  op_RL_r,  op_RL_r,  op_RL_r,  op_RL_HL,  op_RL_r,
-                op_RR_r,  op_RR_r,  op_RR_r,  op_RR_r,  op_RR_r,  op_RR_r,  op_RR_HL,  op_RR_r,
-                //0x20
-                op_SLA_r, op_SLA_r, op_SLA_r, op_SLA_r, op_SLA_r, op_SLA_r, op_SLA_HL, op_SLA_r,
-                op_SRA_r, op_SRA_r, op_SRA_r, op_SRA_r, op_SRA_r, op_SRA_r, op_SRA_HL, op_SRA_r,
-                //0x30
-                op_SLL_r, op_SLL_r, op_SLL_r, op_SLL_r, op_SLL_r, op_SLL_r, op_SLL_HL, op_SLL_r,
-                op_SRL_r, op_SRL_r, op_SRL_r, op_SRL_r, op_SRL_r, op_SRL_r, op_SRL_HL, op_SRL_r,
-                //0x40..0x7F
-                op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_HL, op_BIT_b_r,
-                op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_HL, op_BIT_b_r,
-                op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_HL, op_BIT_b_r,
-                op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_r, op_BIT_b_HL, op_BIT_b_r,
-                //0x80..0xBF
-                op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_HL, op_RES_b_r,
-                op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_HL, op_RES_b_r,
-                op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_HL, op_RES_b_r,
-                op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_r, op_RES_b_HL, op_RES_b_r,
-                //0xC0..0xFF
-                op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_HL, op_SET_b_r,
-                op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_HL, op_SET_b_r,
-                op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_HL, op_SET_b_r,
-                op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_r, op_SET_b_HL, op_SET_b_r,
-            };
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_cb[cbIndex++] = r == 6 ? rotOpsHL[op] : rotOps[op];
+                }
+            }
+            for (int bit = 0; bit < 8; bit++)
+            {
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_cb[cbIndex++] = r == 6 ? op_BIT_b_HL : op_BIT_b_r;
+                }
+            }
+            for (int bit = 0; bit < 8; bit++)
+            {
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_cb[cbIndex++] = r == 6 ? op_RES_b_HL : op_RES_b_r;
+                }
+            }
+            for (int bit = 0; bit < 8; bit++)
+            {
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_cb[cbIndex++] = r == 6 ? op_SET_b_HL : op_SET_b_r;
+                }
+            }
 
             g_operand      = EnsureOpcodeTableLength(g_operand);
             g_operand_dd   = EnsureOpcodeTableLength(g_operand_dd);
