@@ -221,14 +221,24 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
+        private static int DecodeScrollSize(int raw)
+        {
+            switch (raw & 0x03)
+            {
+                case 0: return 32;
+                case 1: return 64;
+                default: return 128;
+            }
+        }
+
         private void RecomputeScrollSizes()
         {
-            g_scroll_ycell = 32 * (g_vdp_reg_16_5_scrollV + 1);
+            g_scroll_ycell = DecodeScrollSize(g_vdp_reg_16_5_scrollV);
             int yShift = g_vdp_interlace_mode == 2 ? 4 : 3;
             g_scroll_ysize = g_scroll_ycell << yShift;
             g_scroll_ysize_mask = g_scroll_ysize - 1;
 
-            g_scroll_xcell = 32 * (g_vdp_reg_16_1_scrollH + 1);
+            g_scroll_xcell = DecodeScrollSize(g_vdp_reg_16_1_scrollH);
             g_scroll_xsize = g_scroll_xcell << 3;
             g_scroll_xsize_mask = g_scroll_xsize - 1;
         }

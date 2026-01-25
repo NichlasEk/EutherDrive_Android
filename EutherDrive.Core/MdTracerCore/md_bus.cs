@@ -145,7 +145,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int Z80BusReqStableThreshold =
             ParseNonNegativeInt("EUTHERDRIVE_Z80_BUSREQ_STABLE_TICKS", 0);
         private static readonly bool Z80SafeBootEnabled =
-            ReadEnvDefaultOn("EUTHERDRIVE_Z80_SAFE_BOOT");
+            ReadEnvDefaultOff("EUTHERDRIVE_Z80_SAFE_BOOT");
         private static readonly int Z80SafeBootDelayFrames =
             ParseSafeBootDelayFrames("EUTHERDRIVE_Z80_SAFE_BOOT_DELAY", 1);
         private const int Z80SafeBootBusReqTimeoutFrames = 2;
@@ -459,6 +459,14 @@ namespace EutherDrive.Core.MdTracerCore
             string? raw = Environment.GetEnvironmentVariable(name);
             if (string.IsNullOrEmpty(raw))
                 return true;
+            return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ReadEnvDefaultOff(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrEmpty(raw))
+                return false;
             return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -1214,7 +1222,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // 0xFF0000–0xFFFFFF  | Work RAM (mirrors)
-            if (in_address >= 0xFF0000)
+            if (in_address >= 0xE00000)
             {
                 byte val = md_m68k.read8(in_address);
                 LogBusWatch(in_address, 1, write: false, value: val);
@@ -1346,7 +1354,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return val;
             }
 
-            if (in_address >= 0xFF0000)
+            if (in_address >= 0xE00000)
             {
                 ushort val = md_m68k.read16(in_address);
                 LogBusWatch(in_address, 2, write: false, value: val);
@@ -1461,7 +1469,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return val;
             }
 
-            if (in_address >= 0xFF0000)
+            if (in_address >= 0xE00000)
             {
                 uint val = md_m68k.read32(in_address);
                 LogBusWatch(in_address, 4, write: false, value: val);
@@ -1587,7 +1595,7 @@ namespace EutherDrive.Core.MdTracerCore
                 SramLog($"[SRAM-CTRL-WRITE] addr=0x{in_address:X6} data=0x{in_data:X2}");
             }
 
-            if (in_address >= 0xFF0000)
+            if (in_address >= 0xE00000)
             {
                 md_m68k.write8(in_address, in_data);
                 return;
@@ -1776,7 +1784,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
 
-            if (in_address >= 0xFF0000)
+            if (in_address >= 0xE00000)
             {
                 md_m68k.write16(in_address, in_data);
                 return;
