@@ -123,36 +123,37 @@ namespace EutherDrive.Core.MdTracerCore
                 op_NOP, op_LD_sp_ix, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
             };
 
-            g_operand_ddcb = new Action[]
+            g_operand_ddcb = new Action[256];
+            int ddcbIndex = 0;
+            Action[] ddcbRotOps = { op_RLC_IXD, op_RRC_IXD, op_RL_IXD, op_RR_IXD, op_SLA_IXD, op_SRA_IXD, op_SLL_IXD, op_SRL_IXD };
+            for (int op = 0; op < ddcbRotOps.Length; op++)
             {
-                //0x00
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RLC_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RRC_IXD, op_NOP,
-                //0x10
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RL_IXD,  op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RR_IXD,  op_NOP,
-                //0x20
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SLA_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SRA_IXD, op_NOP,
-                //0x30
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SLL_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SRL_IXD, op_NOP,
-                //0x40..0x7F (BIT b,(IX+d))
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_BIT_b_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_BIT_b_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_BIT_b_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_BIT_b_IXD, op_NOP,
-                //0x80..0xBF (RES b,(IX+d))
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RES_b_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RES_b_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RES_b_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RES_b_IXD, op_NOP,
-                //0xC0..0xFF (SET b,(IX+d))
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SET_b_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SET_b_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SET_b_IXD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SET_b_IXD, op_NOP,
-            };
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_ddcb[ddcbIndex++] = r == 6 ? ddcbRotOps[op] : op_NOP;
+                }
+            }
+            for (int bit = 0; bit < 8; bit++)
+            {
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_ddcb[ddcbIndex++] = r == 6 ? op_BIT_b_IXD : op_NOP;
+                }
+            }
+            for (int bit = 0; bit < 8; bit++)
+            {
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_ddcb[ddcbIndex++] = r == 6 ? op_RES_b_IXD : op_NOP;
+                }
+            }
+            for (int bit = 0; bit < 8; bit++)
+            {
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_ddcb[ddcbIndex++] = r == 6 ? op_SET_b_IXD : op_NOP;
+                }
+            }
 
             g_operand_fd = new Action[]
             {
@@ -206,36 +207,37 @@ namespace EutherDrive.Core.MdTracerCore
                 op_NOP, op_LD_sp_iy, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
             };
 
-            g_operand_fdcb = new Action[]
+            g_operand_fdcb = new Action[256];
+            int fdcbIndex = 0;
+            Action[] fdcbRotOps = { op_RLC_IYD, op_RRC_IYD, op_RL_IYD, op_RR_IYD, op_SLA_IYD, op_SRA_IYD, op_SLL_IYD, op_SRL_IYD };
+            for (int op = 0; op < fdcbRotOps.Length; op++)
             {
-                //0x00
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RLC_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RRC_IYD, op_NOP,
-                //0x10
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RL_IYD,  op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RR_IYD,  op_NOP,
-                //0x20
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SLA_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SRA_IYD, op_NOP,
-                //0x30
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SLL_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SRL_IYD, op_NOP,
-                //0x40..0x7F
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_BIT_b_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_BIT_b_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_BIT_b_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_BIT_b_IYD, op_NOP,
-                //0x80..0xBF
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RES_b_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RES_b_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RES_b_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_RES_b_IYD, op_NOP,
-                //0xC0..0xFF
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SET_b_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SET_b_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SET_b_IYD, op_NOP,
-                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_SET_b_IYD, op_NOP,
-            };
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_fdcb[fdcbIndex++] = r == 6 ? fdcbRotOps[op] : op_NOP;
+                }
+            }
+            for (int bit = 0; bit < 8; bit++)
+            {
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_fdcb[fdcbIndex++] = r == 6 ? op_BIT_b_IYD : op_NOP;
+                }
+            }
+            for (int bit = 0; bit < 8; bit++)
+            {
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_fdcb[fdcbIndex++] = r == 6 ? op_RES_b_IYD : op_NOP;
+                }
+            }
+            for (int bit = 0; bit < 8; bit++)
+            {
+                for (int r = 0; r < 8; r++)
+                {
+                    g_operand_fdcb[fdcbIndex++] = r == 6 ? op_SET_b_IYD : op_NOP;
+                }
+            }
 
             g_operand_ed = new Action[]
             {
@@ -275,7 +277,13 @@ namespace EutherDrive.Core.MdTracerCore
                 //0xb0
                 op_LDIR, op_CPIR, op_INIR, op_OUTIR, op_NOP, op_NOP, op_NOP, op_NOP,
                 op_LDDR, op_CPDR, op_INDR, op_OUTDR, op_NOP, op_NOP, op_NOP, op_NOP,
-                //0xc0..0xff (allt NOP i den här emu:n)
+                //0xc0
+                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
+                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
+                //0xd0
+                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
+                op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
+                //0xe0..0xff (allt NOP i den här emu:n)
                 op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
                 op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
                 op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP, op_NOP,
