@@ -344,7 +344,8 @@ namespace EutherDrive.Core.MdTracerCore
                 _runCount++;
                 Console.WriteLine($"[Z80-RUN-{_runCount}] clock={in_clock} g_active={g_active} PC=0x{g_reg_PC:X4} busGranted={md_main.g_md_bus?.Z80BusGranted ?? false} reset={md_main.g_md_bus?.Z80Reset ?? false}");
             }
-            
+
+            md_main.g_md_bus?.ApplyZ80BusReqLatch();
             bool busRequested = md_main.g_md_bus?.Z80BusGranted ?? false;
             bool z80reset = md_main.g_md_bus?.Z80Reset ?? false;
             
@@ -405,6 +406,19 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock_total += in_clock;
             while (g_clock_total >= 0)
             {
+                md_main.g_md_bus?.ApplyZ80BusReqLatch();
+                busRequested = md_main.g_md_bus?.Z80BusGranted ?? false;
+                z80reset = md_main.g_md_bus?.Z80Reset ?? false;
+                if (busRequested || z80reset)
+                {
+                    if (TraceZ80SigTransitions && g_active)
+                    {
+                        long blockFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                        Console.WriteLine($"[Z80RUN-BLOCK] frame={blockFrame} pc=0x{g_reg_PC:X4} busReq={(busRequested ? 1 : 0)} reset={(z80reset ? 1 : 0)}");
+                    }
+                    return;
+                }
+
                 if (TraceZ80Stats)
                     _z80StatsInstrCount++;
 

@@ -151,6 +151,13 @@ All logging i EutherDrive är nu gated bakom environment variables. Detta gör s
   - `\[Z80SAFE\]`
   - `\[Z80SCHED\]`
 
+### `EUTHERDRIVE_TRACE_Z80BUSACK_READS=1`
+- **Beskrivning**: Loggar BUSACK-läsningar från `0xA11100`:
+  - `\[Z80BUSACK-RD\]`
+
+### `EUTHERDRIVE_TRACE_Z80BUSACK_READS_LIMIT`
+- **Beskrivning**: Begränsar antal BUSACK-läsloggar (default 64).
+
 ### `EUTHERDRIVE_TRACE_Z80INT=1`
 - **Beskrivning**: Aktiverar logging för följande prefix:
   - `\[Z80-INT-IM1\]`
@@ -169,6 +176,23 @@ All logging i EutherDrive är nu gated bakom environment variables. Detta gör s
 - **Beskrivning**: Aktiverar logging för följande prefix:
   - `\[Z80-?WIN\]`
   - `\[Z80WIN-HIST\]`
+
+### `EUTHERDRIVE_TRACE_Z80WIN_DROP=1`
+- **Beskrivning**: Loggar droppade 68k-skrivningar till Z80-busfönstret:
+  - `\[Z80WIN-DROP\]`
+
+### `EUTHERDRIVE_TRACE_Z80WIN_DROP_LIMIT`
+- **Beskrivning**: Begränsar antal `Z80WIN-DROP`-loggar (default 64).
+
+### `EUTHERDRIVE_TRACE_BUS_WATCH`
+- **Beskrivning**: Loggar läs/skriv på exakt M68K-bussadress:
+  - `\[BUSWATCH\]`
+
+### `EUTHERDRIVE_TRACE_BUS_WATCH_LIMIT`
+- **Beskrivning**: Begränsar antal BUSWATCH-loggar (default 64).
+
+### `EUTHERDRIVE_TRACE_BUS_WATCH_ALL=1`
+- **Beskrivning**: Loggar även om adressen inte matchar exakt (all reads/writes som passerar loggen).
 
 ### `EUTHERDRIVE_TRACE_Z80YM=1`
 - **Beskrivning**: Aktiverar logging för följande prefix:
@@ -224,6 +248,16 @@ All logging i EutherDrive är nu gated bakom environment variables. Detta gör s
 ### `EUTHERDRIVE_TRACE_Z80_RET=1`
 - **Beskrivning**: Aktiverar logging för följande prefix:
   - `\[Z80-RET\]`
+
+### `EUTHERDRIVE_TRACE_PC_FRAME=1`
+- **Beskrivning**: Loggar M68K-PC per frame:
+  - `\[PCFRAME\]`
+
+### `EUTHERDRIVE_TRACE_PC_FRAME_EVERY`
+- **Beskrivning**: Logga var N:te frame (default 60; 0 = varje frame).
+
+### `EUTHERDRIVE_Z80_BUSREQ_STABLE_TICKS`
+- **Beskrivning**: Antal Z80-instruktions-ticks som BUSREQ måste vara stabilt innan grant (default 0).
 
 ## Användningsexempel
 

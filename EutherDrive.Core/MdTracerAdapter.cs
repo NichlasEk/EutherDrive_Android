@@ -77,6 +77,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly int BootRecoverEdgeStableFrames = ParseBootRecoverEdgeStableFrames();
     private static readonly bool BootRecoverLog =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOT_RECOVER_LOG"), "1", StringComparison.Ordinal);
+    private static readonly bool TracePcPerFrame =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_FRAME"), "1", StringComparison.Ordinal);
+    private static readonly int TracePcEveryFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_PC_FRAME_EVERY", 60);
 
     // ASCII streaming mode for live viewer
     private static readonly bool AsciiStreamEnabled =
@@ -432,6 +435,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (string.IsNullOrWhiteSpace(raw))
             return fallback;
         if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0)
+            return parsed;
+        return fallback;
+    }
+
+    private static int ParseNonNegativeInt(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed >= 0)
             return parsed;
         return fallback;
     }
@@ -848,6 +861,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
             int vlines = ApplyFrameRateMode(effectiveFrameRateMode);
             long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (TracePcPerFrame && TracePcEveryFrames >= 0)
+            {
+                if (TracePcEveryFrames == 0 || (frame >= 0 && frame % TracePcEveryFrames == 0))
+                    Console.WriteLine($"[PCFRAME] frame={frame} pc=0x{md_m68k.g_reg_PC:X6}");
+            }
                 bool allowZ80 = md_main.ShouldRunZ80(frame);
                 
                 // CRITICAL: Tick Z80 safe boot timer BEFORE Z80 runs

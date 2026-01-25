@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -45,6 +46,9 @@ namespace EutherDrive.Core.MdTracerCore
         // ------------------------------------------------------------
          public static MegaDriveBus? Current { get; set; }
         private bool _z80BusGranted = false;
+        [NonSerialized] private bool _z80BusReqRequested = false;
+        [NonSerialized] private bool _z80BusReqLastRequested = false;
+        [NonSerialized] private int _z80BusReqStableCount;
         private bool _z80ForceGrant = false;
         private bool _z80Reset;
         private long _z80BusReqWriteCount;
@@ -53,6 +57,7 @@ namespace EutherDrive.Core.MdTracerCore
         private long _z80ResetToggleCount;
         private int _z80BusAckLogState = -1;
         private int _z80BusAckLogState8 = -1;
+        [NonSerialized] private int _z80BusAckReadLogRemaining = 64;
         private int _z80BusReqLogRemaining = 64;
         private int _z80OddReadLogRemaining = 32;
         private int _z80RegReadLogRemaining = 32;
@@ -90,6 +95,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _z80WinWrite32Count;
         private int _z80WinReadBlocked;
         private int _z80WinWriteBlocked;
+        [NonSerialized] private int _z80WinDropRemaining;
         private int _z80WinAssertRemaining;
         private readonly int[] _z80WinReadAddrCounts = new int[0x2000];
         private readonly int[] _z80WinWriteAddrCounts = new int[0x2000];
@@ -134,6 +140,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_RESET_ON_BUSREQ_RELEASE"), "1", StringComparison.Ordinal);
         private static readonly int ResetZ80OnBusReqReleaseLimit =
             ParseTraceLimit("EUTHERDRIVE_Z80_RESET_ON_BUSREQ_RELEASE_LIMIT", 1);
+        private static readonly bool Z80BusReqInvert =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_BUSREQ_INVERT"), "1", StringComparison.Ordinal);
+        private static readonly int Z80BusReqStableThreshold =
+            ParseNonNegativeInt("EUTHERDRIVE_Z80_BUSREQ_STABLE_TICKS", 0);
         private static readonly bool Z80SafeBootEnabled =
             ReadEnvDefaultOn("EUTHERDRIVE_Z80_SAFE_BOOT");
         private static readonly int Z80SafeBootDelayFrames =
@@ -168,6 +178,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN_REGS"), "1", StringComparison.Ordinal);
         private static readonly int TraceZ80WinLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_Z80WIN_LIMIT", 64);
+        private static readonly bool TraceZ80WinDrop =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN_DROP"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80WinDropLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80WIN_DROP_LIMIT", 64);
         private static readonly ushort? TraceZ80WinRangeStart =
             ParseZ80WinRangeOffset("EUTHERDRIVE_TRACE_Z80WIN_RANGE_START");
         private static readonly ushort? TraceZ80WinRangeEnd =
@@ -204,6 +218,16 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_Z80WIN_ASSERT_LIMIT", 256);
         private static readonly bool TraceZ80SigTransitions =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80SIG_TRANS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80BusAckReads =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80BUSACK_READS"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80BusAckReadsLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80BUSACK_READS_LIMIT", 64);
+        private static readonly uint? TraceBusWatchAddr =
+            ParseWatchAddr("EUTHERDRIVE_TRACE_BUS_WATCH");
+        private static readonly int TraceBusWatchLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_BUS_WATCH_LIMIT", 64);
+        private static readonly bool TraceBusWatchAll =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS_WATCH_ALL"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Mbx =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80MBX"), "1", StringComparison.Ordinal);
         private static readonly bool TraceMbxSrc =
@@ -254,7 +278,8 @@ namespace EutherDrive.Core.MdTracerCore
             ForceZ80FlagBit2 || ForceZ80FlagBit2Addr.HasValue;
         private static readonly bool TraceMbx68kStat =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MBX68KSTAT"), "1", StringComparison.Ordinal);
-        private static bool MapZ80OddReadToNext => ReadEnvDefaultOn("EUTHERDRIVE_Z80_ODD_READ_TO_NEXT");
+        private static bool MapZ80OddReadToNext =>
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_ODD_READ_TO_NEXT"), "1", StringComparison.Ordinal);
         private static bool TraceZ80Sig => MdLog.TraceZ80Sig;
         private static bool MirrorZ80Mailbox => ReadEnvDefaultOn("EUTHERDRIVE_MBX_MIRROR");
         private static readonly bool UseMdTracerCompat =
@@ -334,6 +359,46 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private static int ParseSafeBootDelayFrames(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value < 0 ? fallback : value;
+        }
+
+        private static uint? ParseWatchAddr(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                raw = raw.Substring(2);
+            if (uint.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint value))
+                return value;
+            if (uint.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+                return value;
+            return null;
+        }
+
+        [NonSerialized] private int _busWatchRemaining = TraceBusWatchLimit;
+
+        private void LogBusWatch(uint addr, int size, bool write, uint value)
+        {
+            if (!TraceBusWatchAddr.HasValue || _busWatchRemaining <= 0)
+                return;
+            if (addr != TraceBusWatchAddr.Value && !TraceBusWatchAll)
+                return;
+            _busWatchRemaining--;
+            char rw = write ? 'W' : 'R';
+            string fmt = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
+            Console.WriteLine($"[BUSWATCH] {rw}{size} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{value.ToString(fmt)}");
+        }
+
+        private static int ParseNonNegativeInt(string name, int fallback)
         {
             string? raw = Environment.GetEnvironmentVariable(name);
             if (string.IsNullOrWhiteSpace(raw))
@@ -699,6 +764,9 @@ namespace EutherDrive.Core.MdTracerCore
         {
             SaveSramIfNeeded("reset");
             _z80BusGranted = false;
+            _z80BusReqRequested = false;
+            _z80BusReqLastRequested = false;
+            _z80BusReqStableCount = 0;
             _z80ForceGrant = false;
             _z80Reset = Z80ResetAssertOnBoot;
             _sramLock = false;
@@ -722,8 +790,10 @@ namespace EutherDrive.Core.MdTracerCore
             _z80ResetToggleCount = 0;
             _z80BusAckLogState = -1;
             _z80BusAckLogState8 = -1;
+            _z80BusAckReadLogRemaining = TraceZ80BusAckReadsLimit;
             _z80BusReqLogRemaining = 64;
             _z80OddReadLogRemaining = 32;
+            _busWatchRemaining = TraceBusWatchLimit;
             _mbx68kLogRemaining = 128;
             _mbx68kReadLogRemaining = 64;
             _mbx68kEdgeRemaining = TraceMbx68kEdgeLimit;
@@ -748,6 +818,7 @@ namespace EutherDrive.Core.MdTracerCore
             _z80WinWrite32Count = 0;
             _z80WinReadBlocked = 0;
             _z80WinWriteBlocked = 0;
+            _z80WinDropRemaining = TraceZ80WinDropLimit;
             _z80WinAssertRemaining = AssertZ80WinWriteLimit;
             _z80WinStatLastAddr = 0;
             _z80WinStatLastPc = 0;
@@ -865,6 +936,9 @@ namespace EutherDrive.Core.MdTracerCore
             _z80SafeBootResetReleaseFrame = -1;
             _z80SafeBootWriteCount = 0;
 
+            _z80BusReqRequested = true;
+            _z80BusReqLastRequested = true;
+            _z80BusReqStableCount = 0;
             _z80BusGranted = true;
             md_main.g_md_z80.g_active = false;
             Console.WriteLine($"[Z80SAFE] busreq asserted frame={frame}");
@@ -893,6 +967,9 @@ namespace EutherDrive.Core.MdTracerCore
             _z80SafeBootResetReleaseFrame = -1;
             _z80SafeBootStartFrame = -1;
             _z80SafeBootLastUploadFrame = -1;
+            _z80BusReqRequested = false;
+            _z80BusReqLastRequested = false;
+            _z80BusReqStableCount = 0;
             _z80BusGranted = false;
             _z80Reset = false;
             if (md_main.g_md_z80 != null)
@@ -924,6 +1001,9 @@ namespace EutherDrive.Core.MdTracerCore
                     if (EmulateYmBusy)
                     {
                         // Release busreq immediately for YM busy emulation
+                        _z80BusReqRequested = false;
+                        _z80BusReqLastRequested = false;
+                        _z80BusReqStableCount = 0;
                         _z80BusGranted = false;
                         _z80BusGrantedChanged = true;
                         Console.WriteLine($"[Z80SAFE-YMBUSY] Immediate busreq release for YM busy emulation at frame={frame}");
@@ -942,6 +1022,9 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void ReleaseZ80SafeBootBusReq(long frame)
         {
+            _z80BusReqRequested = false;
+            _z80BusReqLastRequested = false;
+            _z80BusReqStableCount = 0;
             _z80BusGranted = false;
             if (md_main.g_md_z80 != null)
                 md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
@@ -1040,6 +1123,50 @@ namespace EutherDrive.Core.MdTracerCore
             _ymEnabled = enabled;
         }
 
+        internal void ApplyZ80BusReqLatch()
+        {
+            if (md_main.g_md_z80 == null)
+                return;
+            if (_z80Reset)
+                return;
+            if (_z80BusReqRequested != _z80BusReqLastRequested)
+            {
+                _z80BusReqLastRequested = _z80BusReqRequested;
+                _z80BusReqStableCount = 0;
+            }
+            else if (_z80BusReqStableCount != int.MaxValue)
+            {
+                _z80BusReqStableCount++;
+            }
+
+            if (!_z80BusReqRequested && _z80BusGranted)
+            {
+                _z80BusGranted = false;
+                _z80BusGrantedChanged = true;
+                md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+                if (TraceZ80SigTransitions)
+                {
+                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                    Console.WriteLine($"[Z80BUSREQ-LATCH] frame={frame} grant=0");
+                }
+                return;
+            }
+
+            if (_z80BusReqRequested && !_z80BusGranted)
+            {
+                if (Z80BusReqStableThreshold > 0 && _z80BusReqStableCount < Z80BusReqStableThreshold)
+                    return;
+                _z80BusGranted = true;
+                _z80BusGrantedChanged = true;
+                md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+                if (TraceZ80SigTransitions)
+                {
+                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                    Console.WriteLine($"[Z80BUSREQ-LATCH] frame={frame} grant=1");
+                }
+            }
+        }
+
 
         public byte read8(uint in_address)
         {
@@ -1048,13 +1175,16 @@ namespace EutherDrive.Core.MdTracerCore
             if (IsZ80BusReq(in_address))
             {
                 byte val = BuildBusAckRead8();
+                LogBusWatch(in_address, 1, write: false, value: val);
                 LogZ80BusAckRead8(in_address, val);
+                LogZ80BusAckReadDetail(in_address, val, 1);
                 return val;
             }
 
             if (IsZ80Reset(in_address))
             {
                 ushort val = BuildResetReadValue();
+                LogBusWatch(in_address, 2, write: false, value: val);
                 LogZ80RegRead(in_address, val);
                 return (byte)(val & 0x01);
             }
@@ -1077,29 +1207,53 @@ namespace EutherDrive.Core.MdTracerCore
 
             // 0x000000–0x3FFFFF  | ROM / cart
             if (in_address <= 0x3FFFFF)
-                return md_m68k.read8(in_address);
+            {
+                byte val = md_m68k.read8(in_address);
+                LogBusWatch(in_address, 1, write: false, value: val);
+                return val;
+            }
 
             // 0xFF0000–0xFFFFFF  | Work RAM (mirrors)
             if (in_address >= 0xFF0000)
-                return md_m68k.read8(in_address);
+            {
+                byte val = md_m68k.read8(in_address);
+                LogBusWatch(in_address, 1, write: false, value: val);
+                return val;
+            }
 
             // 0xC00000–0xDFFFFF  | VDP space
             if (in_address >= 0xC00000 && in_address <= 0xDFFFFF)
-                return md_main.g_md_vdp != null ? md_main.g_md_vdp.read8(in_address) : (byte)0xFF;
+            {
+                byte val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read8(in_address) : (byte)0xFF;
+                LogBusWatch(in_address, 1, write: false, value: val);
+                return val;
+            }
 
             // 0xA10000–0xA10FFF  | I/O (controllers, etc)
             if (in_address >= 0xA10000 && in_address <= 0xA10FFF)
-                return md_main.g_md_io != null ? md_main.g_md_io.read8(in_address) : (byte)0xFF;
+            {
+                byte val = md_main.g_md_io != null ? md_main.g_md_io.read8(in_address) : (byte)0xFF;
+                LogBusWatch(in_address, 1, write: false, value: val);
+                return val;
+            }
 
             // 0xA04000–0xA04003   | YM2612 (read)
             if (in_address >= 0xA04000 && in_address <= 0xA04003)
-                return _ymEnabled && md_main.g_md_music != null
+            {
+                byte val = _ymEnabled && md_main.g_md_music != null
                     ? md_main.g_md_music.g_md_ym2612.read8(in_address)
                     : (byte)0xFF;
+                LogBusWatch(in_address, 1, write: false, value: val);
+                return val;
+            }
 
             // 0xA11000–0xA1FFFF  | Control
             if (in_address >= 0xA11000 && in_address <= 0xA1FFFF)
-                return md_main.g_md_control != null ? md_main.g_md_control.read8(in_address) : (byte)0xFF;
+            {
+                byte val = md_main.g_md_control != null ? md_main.g_md_control.read8(in_address) : (byte)0xFF;
+                LogBusWatch(in_address, 1, write: false, value: val);
+                return val;
+            }
 
             // 0xA00000–0xA0FFFF  | Z80 bus
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
@@ -1122,13 +1276,17 @@ namespace EutherDrive.Core.MdTracerCore
                 if (UseMdTracerCompat)
                 {
                     byte compatVal = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
+                    MaybeLogZ80WinRangeRead(in_address, compatVal, 1, blocked: false);
                     RecordZ80WinReadAccess(in_address, 1, compatVal, blocked: false);
+                    LogBusWatch(in_address, 1, write: false, value: compatVal);
                     return compatVal;
                 }
                 if (!CanAccessZ80BusRange(in_address, 1))
                 {
                     LogZ80WindowBlocked("R8", in_address);
+                    MaybeLogZ80WinRangeRead(in_address, 0xFF, 1, blocked: true);
                     RecordZ80WinReadAccess(in_address, 1, 0xFF, blocked: true);
+                    LogBusWatch(in_address, 1, write: false, value: 0xFF);
                     return 0xFF;
                 }
                 byte val = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
@@ -1139,7 +1297,9 @@ namespace EutherDrive.Core.MdTracerCore
                     int parity = (int)(in_address & 1); // 0=even (UDS), 1=odd (LDS)
                     Console.WriteLine($"[Z80WIN] R8 pc68k=0x{md_m68k.g_reg_PC:X6} m68k=0x{in_address:X6} z80=0x{z80Addr:X4}=0x{val:X2} parity={parity}");
                 }
+                MaybeLogZ80WinRangeRead(in_address, val, 1, blocked: false);
                 RecordZ80WinReadAccess(in_address, 1, val, blocked: false);
+                LogBusWatch(in_address, 1, write: false, value: val);
                 return val;
             }
 
@@ -1155,13 +1315,16 @@ namespace EutherDrive.Core.MdTracerCore
             if (IsZ80BusReq(in_address))
             {
                 ushort val = BuildBusAckRead16();
+                LogBusWatch(in_address, 2, write: false, value: val);
                 LogZ80BusAckRead(in_address, val);
+                LogZ80BusAckReadDetail(in_address, val, 2);
                 return val;
             }
 
             if (IsZ80Reset(in_address))
             {
                 ushort val = BuildResetReadValue();
+                LogBusWatch(in_address, 2, write: false, value: val);
                 LogZ80RegRead(in_address, val);
                 return val;
             }
@@ -1177,19 +1340,39 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             if (in_address <= 0x3FFFFF)
-                return md_m68k.read16(in_address);
+            {
+                ushort val = md_m68k.read16(in_address);
+                LogBusWatch(in_address, 2, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xFF0000)
-                return md_m68k.read16(in_address);
+            {
+                ushort val = md_m68k.read16(in_address);
+                LogBusWatch(in_address, 2, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xC00000 && in_address <= 0xDFFFFF)
-                return md_main.g_md_vdp != null ? md_main.g_md_vdp.read16(in_address) : (ushort)0xFFFF;
+            {
+                ushort val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read16(in_address) : (ushort)0xFFFF;
+                LogBusWatch(in_address, 2, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xA10000 && in_address <= 0xA10FFF)
-                return md_main.g_md_io != null ? md_main.g_md_io.read16(in_address) : (ushort)0xFFFF;
+            {
+                ushort val = md_main.g_md_io != null ? md_main.g_md_io.read16(in_address) : (ushort)0xFFFF;
+                LogBusWatch(in_address, 2, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xA11000 && in_address <= 0xA1FFFF)
-                return md_main.g_md_control != null ? md_main.g_md_control.read16(in_address) : (ushort)0xFFFF;
+            {
+                ushort val = md_main.g_md_control != null ? md_main.g_md_control.read16(in_address) : (ushort)0xFFFF;
+                LogBusWatch(in_address, 2, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
             {
@@ -1198,13 +1381,17 @@ namespace EutherDrive.Core.MdTracerCore
                 if (UseMdTracerCompat)
                 {
                     ushort compatVal = md_main.g_md_z80 != null ? md_main.g_md_z80.read16(z80Addr) : (ushort)0xFFFF;
+                    MaybeLogZ80WinRangeRead(in_address, compatVal, 2, blocked: false);
                     RecordZ80WinReadAccess(in_address, 2, compatVal, blocked: false);
+                    LogBusWatch(in_address, 2, write: false, value: compatVal);
                     return compatVal;
                 }
                 if (!CanAccessZ80BusRange(in_address, 2))
                 {
                     LogZ80WindowBlocked("R16", in_address);
+                    MaybeLogZ80WinRangeRead(in_address, 0xFFFF, 2, blocked: true);
                     RecordZ80WinReadAccess(in_address, 2, 0xFFFF, blocked: true);
+                    LogBusWatch(in_address, 2, write: false, value: 0xFFFF);
                     return 0xFFFF;
                 }
                 if (MirrorZ80WindowReads && !IsZ80Mailbox(in_address) && !IsZ80Mailbox(in_address + 1))
@@ -1213,14 +1400,18 @@ namespace EutherDrive.Core.MdTracerCore
                     byte mbxVal8 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(byteAddr & 0x1FFF) : (byte)0xFF;
                     ushort mbxMirrorWord = (ushort)((mbxVal8 << 8) | mbxVal8);
                     LogZ80MailboxRead("16", in_address, mbxMirrorWord);
+                    MaybeLogZ80WinRangeRead(in_address, mbxMirrorWord, 2, blocked: false);
                     RecordZ80WinReadAccess(in_address, 2, mbxMirrorWord, blocked: false);
+                    LogBusWatch(in_address, 2, write: false, value: mbxMirrorWord);
                     return mbxMirrorWord;
                 }
                 byte hi = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
                 byte lo = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 1) & 0x1FFF) : (byte)0xFF;
                 ushort word = (ushort)((hi << 8) | lo);
                 LogZ80MailboxRead("16", in_address, word);
+                MaybeLogZ80WinRangeRead(in_address, word, 2, blocked: false);
                 RecordZ80WinReadAccess(in_address, 2, word, blocked: false);
+                LogBusWatch(in_address, 2, write: false, value: word);
                 return word;
             }
 
@@ -1236,6 +1427,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 ushort word = BuildBusAckRead16();
                 uint val = (uint)((word << 16) | word);
+                LogBusWatch(in_address, 4, write: false, value: val);
                 LogZ80BusAckRead(in_address, word);
                 return val;
             }
@@ -1244,6 +1436,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 ushort word = BuildResetReadValue();
                 uint val = (uint)((word << 16) | word);
+                LogBusWatch(in_address, 4, write: false, value: val);
                 LogZ80RegRead(in_address, val);
                 return val;
             }
@@ -1262,19 +1455,39 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             if (in_address <= 0x3FFFFF)
-                return md_m68k.read32(in_address);
+            {
+                uint val = md_m68k.read32(in_address);
+                LogBusWatch(in_address, 4, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xFF0000)
-                return md_m68k.read32(in_address);
+            {
+                uint val = md_m68k.read32(in_address);
+                LogBusWatch(in_address, 4, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xC00000 && in_address <= 0xDFFFFF)
-                return md_main.g_md_vdp != null ? md_main.g_md_vdp.read32(in_address) : 0xFFFF_FFFFu;
+            {
+                uint val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read32(in_address) : 0xFFFF_FFFFu;
+                LogBusWatch(in_address, 4, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xA10000 && in_address <= 0xA10FFF)
-                return md_main.g_md_io != null ? md_main.g_md_io.read32(in_address) : 0xFFFF_FFFF;
+            {
+                uint val = md_main.g_md_io != null ? md_main.g_md_io.read32(in_address) : 0xFFFF_FFFF;
+                LogBusWatch(in_address, 4, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xA11000 && in_address <= 0xA1FFFF)
-                return md_main.g_md_control != null ? md_main.g_md_control.read32(in_address) : 0xFFFF_FFFF;
+            {
+                uint val = md_main.g_md_control != null ? md_main.g_md_control.read32(in_address) : 0xFFFF_FFFF;
+                LogBusWatch(in_address, 4, write: false, value: val);
+                return val;
+            }
 
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
             {
@@ -1283,13 +1496,17 @@ namespace EutherDrive.Core.MdTracerCore
                 if (UseMdTracerCompat)
                 {
                     uint compatVal = md_main.g_md_z80 != null ? md_main.g_md_z80.read32(z80Addr) : 0xFFFF_FFFFu;
+                    MaybeLogZ80WinRangeRead(in_address, compatVal, 4, blocked: false);
                     RecordZ80WinReadAccess(in_address, 4, compatVal, blocked: false);
+                    LogBusWatch(in_address, 4, write: false, value: compatVal);
                     return compatVal;
                 }
                 if (!CanAccessZ80BusRange(in_address, 4))
                 {
                     LogZ80WindowBlocked("R32", in_address);
+                    MaybeLogZ80WinRangeRead(in_address, 0xFFFF_FFFFu, 4, blocked: true);
                     RecordZ80WinReadAccess(in_address, 4, 0xFFFF_FFFFu, blocked: true);
+                    LogBusWatch(in_address, 4, write: false, value: 0xFFFF_FFFFu);
                     return 0xFFFF_FFFFu;
                 }
                 if (MirrorZ80WindowReads &&
@@ -1303,7 +1520,9 @@ namespace EutherDrive.Core.MdTracerCore
                     byte hi1 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((baseAddr + 2) & 0x1FFF) : (byte)0xFF;
                     uint mirrorVal = (uint)(((hi0 << 8) | hi0) << 16 | ((hi1 << 8) | hi1));
                     LogZ80MailboxRead("32", in_address, mirrorVal);
+                    MaybeLogZ80WinRangeRead(in_address, mirrorVal, 4, blocked: false);
                     RecordZ80WinReadAccess(in_address, 4, mirrorVal, blocked: false);
+                    LogBusWatch(in_address, 4, write: false, value: mirrorVal);
                     return mirrorVal;
                 }
                 byte b0 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
@@ -1312,7 +1531,9 @@ namespace EutherDrive.Core.MdTracerCore
                 byte b3 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 3) & 0x1FFF) : (byte)0xFF;
                 uint val = (uint)((b0 << 24) | (b1 << 16) | (b2 << 8) | b3);
                 LogZ80MailboxRead("32", in_address, val);
+                MaybeLogZ80WinRangeRead(in_address, val, 4, blocked: false);
                 RecordZ80WinReadAccess(in_address, 4, val, blocked: false);
+                LogBusWatch(in_address, 4, write: false, value: val);
                 return val;
             }
 
@@ -1326,6 +1547,7 @@ namespace EutherDrive.Core.MdTracerCore
         public void write8(uint in_address, byte in_data)
         {
             in_address &= 0x00FF_FFFF;
+            LogBusWatch(in_address, 1, write: true, value: in_data);
 
             if (IsZ80BusReq(in_address))
             {
@@ -1524,6 +1746,7 @@ namespace EutherDrive.Core.MdTracerCore
         public void write16(uint in_address, ushort in_data)
         {
             in_address &= 0x00FF_FFFF;
+            LogBusWatch(in_address, 2, write: true, value: in_data);
 
             if (IsZ80BusReq(in_address))
             {
@@ -1561,6 +1784,20 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address >= 0xC00000 && in_address <= 0xDFFFFF)
             {
+                // Log ALL VDP control port writes for Predator 2 debugging
+                if (in_address == 0xC00004)
+                {
+                    Console.WriteLine($"[BUS-VDP-WRITE16] addr=0x{in_address:X8} raw=0x{in_data:X4}");
+                    
+                    // Also decode if it's a register write
+                    if ((in_data & 0x8000) != 0)
+                    {
+                        uint reg = (uint)((in_data >> 8) & 0x1F);
+                        byte data = (byte)(in_data & 0xFF);
+                        Console.WriteLine($"[BUS-VDP-REG] reg=0x{reg:X2} data=0x{data:X2}");
+                    }
+                }
+                
                 md_main.g_md_vdp?.write16(in_address, in_data);
                 return;
             }
@@ -1756,6 +1993,7 @@ namespace EutherDrive.Core.MdTracerCore
         public void write32(uint in_address, uint in_data)
         {
             in_address &= 0x00FF_FFFF;
+            LogBusWatch(in_address, 4, write: true, value: in_data);
 
             if (IsZ80BusReq(in_address))
             {
@@ -2105,9 +2343,11 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void HandleZ80BusReqWrite(uint addr, ushort raw, bool uds, bool lds, uint logValue)
         {
-            bool prev = _z80BusGranted;
+            bool prev = _z80BusReqRequested;
             byte regByte = DecodeZ80RegByte(raw, uds, lds);
             bool next = (regByte & 0x01) != 0;
+            if (Z80BusReqInvert)
+                next = !next;
             
             // FIX: Implement clownmdemu-style BUSREQ handling
             // When safe boot is active, force BUSREQ to be granted
@@ -2123,11 +2363,9 @@ namespace EutherDrive.Core.MdTracerCore
                     Console.WriteLine($"[BUSREQ-CLOWN] prev={prev} next={next} reset={_z80Reset}");
                 }
             }
-            
-            _z80BusGranted = next;
+
+            _z80BusReqRequested = next;
             _z80ForceGrant = false;
-            if (md_main.g_md_z80 != null)
-                md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
             Interlocked.Increment(ref _z80BusReqWriteCount);
             if (prev != next)
                 Interlocked.Increment(ref _z80BusReqToggleCount);
@@ -2663,7 +2901,7 @@ namespace EutherDrive.Core.MdTracerCore
         private ushort BuildBusAckRead16()
         {
             byte status = BuildBusAckRead8();
-            return (ushort)((status << 8) | status);
+            return (ushort)(status << 8);
         }
 
         private ushort BuildResetReadValue()
@@ -2739,6 +2977,36 @@ namespace EutherDrive.Core.MdTracerCore
                 $"[Z80WIN-W] pc68k=0x{md_m68k.g_reg_PC:X6} W8 addr=0x{addr:X6} z80=0x{z80Index:X4} " +
                 $"val=0x{value:X2} bytes={bytesInfo} uds={(uds ? 1 : 0)} lds={(lds ? 1 : 0)} " +
                 $"busReq={busReq} busAck={busAck} reset={reset} blocked={(blocked ? 1 : 0)}{regInfo}");
+            if (_z80WinRangeLogRemaining != int.MaxValue)
+                _z80WinRangeLogRemaining--;
+        }
+
+        private void MaybeLogZ80WinRangeRead(uint addr, uint value, int size, bool blocked)
+        {
+            if (!TraceZ80WinRangeStart.HasValue || !TraceZ80WinRangeEnd.HasValue)
+                return;
+            if (_z80WinRangeLogRemaining <= 0)
+                return;
+            ushort start = TraceZ80WinRangeStart.Value;
+            ushort end = TraceZ80WinRangeEnd.Value;
+            if (start > end)
+            {
+                ushort tmp = start;
+                start = end;
+                end = tmp;
+            }
+            ushort z80Index = (ushort)(addr & 0x1FFF);
+            int span = size == 4 ? 3 : size == 2 ? 1 : 0;
+            ushort z80IndexEnd = (ushort)((z80Index + span) & 0x1FFF);
+            if ((z80Index < start || z80Index > end) && (z80IndexEnd < start || z80IndexEnd > end))
+                return;
+            int busReq = _z80BusGranted ? 1 : 0;
+            int reset = _z80Reset ? 1 : 0;
+            int busAck = (BuildBusAckRead8() & 0x01) != 0 ? 1 : 0;
+            string fmt = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
+            Console.WriteLine(
+                $"[Z80WIN-R] pc68k=0x{md_m68k.g_reg_PC:X6} R{size * 8} addr=0x{addr:X6} z80=0x{z80Index:X4} " +
+                $"val=0x{value.ToString(fmt)} busReq={busReq} busAck={busAck} reset={reset} blocked={(blocked ? 1 : 0)}");
             if (_z80WinRangeLogRemaining != int.MaxValue)
                 _z80WinRangeLogRemaining--;
         }
@@ -2876,6 +3144,15 @@ namespace EutherDrive.Core.MdTracerCore
                 $"[Z80BUSACK8] pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr & 0xFFFFFE:X6} -> 0x{value:X2} (bit0=BUSACK; 1=Z80 RUNNING, 0=BUS GRANTED)");
         }
 
+        private void LogZ80BusAckReadDetail(uint addr, uint value, int size)
+        {
+            if (!TraceZ80BusAckReads || _z80BusAckReadLogRemaining <= 0)
+                return;
+            _z80BusAckReadLogRemaining--;
+            string fmt = size == 1 ? "X2" : "X4";
+            Console.WriteLine($"[Z80BUSACK-RD] pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr & 0xFFFFFE:X6} size={size} val=0x{value.ToString(fmt)}");
+        }
+
         private void LogZ80Win68kOnce(string size, uint addr, uint value)
         {
             if (!MbxSyncTrace.IsEnabled)
@@ -2941,6 +3218,17 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if ((addr & 0xFFFF) > 0x1FFF)
                 return;
+            if (blocked && TraceZ80WinDrop && _z80WinDropRemaining > 0)
+            {
+                _z80WinDropRemaining--;
+                int busReq = _z80BusGranted ? 1 : 0;
+                int reset = _z80Reset ? 1 : 0;
+                int busAck = (!_z80BusGranted && !_z80Reset) ? 1 : 0;
+                string fmt = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
+                Console.WriteLine(
+                    $"[Z80WIN-DROP] pc68k=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} size={size} " +
+                    $"val=0x{value.ToString(fmt)} busReq={busReq} busAck={busAck} reset={reset}");
+            }
             if (TraceZ80WinStat)
             {
                 switch (size)

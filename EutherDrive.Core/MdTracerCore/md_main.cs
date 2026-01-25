@@ -100,6 +100,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int Z80WaitBusReqFrames = ParseZ80WaitBusReqFrames();
         private static readonly int Z80WaitBusReqMaxFrames = ParseZ80WaitBusReqMaxFrames();
         private static readonly bool Z80WaitBusReqLog = ReadEnvFlag("EUTHERDRIVE_Z80_WAIT_BUSREQ_LOG");
+        private static readonly bool TracePcPerFrame = ReadEnvFlag("EUTHERDRIVE_TRACE_PC_FRAME");
+        private static readonly int TracePcEveryFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_PC_FRAME_EVERY", 60);
         // Z80/M68K cycle ratio for NTSC: Z80 ~3.58MHz, M68K ~7.67MHz => ratio ~0.466
         private static readonly double Z80PerM68kRatio = 3.579545 / 7.670000; // More precise ratio
         private static readonly int Z80ContinuousSliceCycles = ParseZ80ContinuousSliceCycles();
@@ -257,6 +259,11 @@ namespace EutherDrive.Core.MdTracerCore
 
             int lines = g_md_vdp.g_vertical_line_max;
             long frame = g_md_vdp?.FrameCounter ?? -1;
+            if (TracePcPerFrame && TracePcEveryFrames >= 0)
+            {
+                if (TracePcEveryFrames == 0 || (frame >= 0 && frame % TracePcEveryFrames == 0))
+                    Console.WriteLine($"[PCFRAME] frame={frame} pc=0x{md_m68k.g_reg_PC:X6}");
+            }
             
             // DEBUG: Log frame number
             if (frame >= 10 && frame <= 20)
@@ -627,6 +634,16 @@ namespace EutherDrive.Core.MdTracerCore
                 return false;
             raw = raw.Trim();
             return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int ParseNonNegativeInt(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value >= 0)
+                return value;
+            return fallback;
         }
 
         private static int ParseZ80RunPerLineFrames()
