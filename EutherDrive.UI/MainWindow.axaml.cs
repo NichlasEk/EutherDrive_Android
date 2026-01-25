@@ -111,12 +111,16 @@ public partial class MainWindow : Window
     private double _emuTargetFps = 60.0;
     private int _padTypeRaw = (int)PadType.ThreeButton;
     private WindowState _prevWindowState = WindowState.Normal;
+    private DispatcherTimer? _cursorHideTimer;
+    private bool _cursorHidden;
+    private Point _lastMousePosition;
 
     public MainWindow(string? romPath = null)
     {
         InitializeComponent();
 
         HookInput();
+        HookMouseMovement();
 
         _savestateService = new SavestateService();
         _savestateViewModel = new SavestateViewModel(
@@ -137,6 +141,7 @@ public partial class MainWindow : Window
 
         Focusable = true;
         AttachedToVisualTree += (_, __) => Focus();
+        PropertyChanged += OnWindowPropertyChanged;
 
         StatusText.Text = "Idle";
 
@@ -309,6 +314,20 @@ public partial class MainWindow : Window
             if (args.Source is TextBox)
                 return;
             Focus();
+            if (WindowState == WindowState.FullScreen && _cursorHidden)
+            {
+                ShowCursor();
+                ResetCursorHideTimer();
+            }
+        };
+    }
+
+    private void HookMouseMovement()
+    {
+        PointerMoved += (_, args) =>
+        {
+            var position = args.GetPosition(this);
+            HandleMouseMovement(position);
         };
     }
 
@@ -401,6 +420,16 @@ public partial class MainWindow : Window
             AutoFireRateText.Text = $"{rate}Hz";
     }
 
+    private void HandleMouseMovement(Point position)
+    {
+        if (WindowState == WindowState.FullScreen && _cursorHidden)
+        {
+            ShowCursor();
+            ResetCursorHideTimer();
+        }
+        _lastMousePosition = position;
+    }
+
     private void ToggleFullScreen()
     {
         if (WindowState == WindowState.FullScreen)
@@ -409,12 +438,77 @@ public partial class MainWindow : Window
                 ? WindowState.Normal
                 : _prevWindowState;
             ApplyFullScreenLayout(false);
+            StopCursorHideTimer();
+            ShowCursor();
             return;
         }
 
         _prevWindowState = WindowState;
         WindowState = WindowState.FullScreen;
         ApplyFullScreenLayout(true);
+        StartCursorHideTimer();
+    }
+
+    private void StartCursorHideTimer()
+    {
+        StopCursorHideTimer();
+        _cursorHideTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Normal, (_, _) =>
+        {
+            if (WindowState == WindowState.FullScreen && !_cursorHidden)
+            {
+                HideCursor();
+            }
+        });
+        _cursorHideTimer.Start();
+    }
+
+    private void StopCursorHideTimer()
+    {
+        _cursorHideTimer?.Stop();
+        _cursorHideTimer = null;
+    }
+
+    private void ResetCursorHideTimer()
+    {
+        if (WindowState == WindowState.FullScreen && _cursorHideTimer != null)
+        {
+            _cursorHideTimer.Stop();
+            _cursorHideTimer.Start();
+        }
+    }
+
+    private void HideCursor()
+    {
+        if (!_cursorHidden)
+        {
+            Cursor = new Cursor(StandardCursorType.None);
+            _cursorHidden = true;
+        }
+    }
+
+    private void ShowCursor()
+    {
+        if (_cursorHidden)
+        {
+            Cursor = Cursor.Default;
+            _cursorHidden = false;
+        }
+    }
+
+    private void OnWindowPropertyChanged(object? sender, Avalonia.AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property == Window.WindowStateProperty)
+        {
+            if (WindowState != WindowState.FullScreen)
+            {
+                StopCursorHideTimer();
+                ShowCursor();
+            }
+            else
+            {
+                StartCursorHideTimer();
+            }
+        }
     }
 
     private void ApplyFullScreenLayout(bool fullScreen)
