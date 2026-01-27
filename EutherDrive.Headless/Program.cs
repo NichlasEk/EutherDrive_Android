@@ -11,12 +11,59 @@ using System.Text;
 using EutherDrive.Core;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.Savestates;
+using EutherDrive.Audio;
 
 namespace EutherDrive.Headless;
+
+// Simple audio sink for headless mode that just consumes audio without playing it
+internal sealed class HeadlessAudioSink : IAudioSink
+{
+    private long _totalSamples;
+    private long _lastLogTime;
+    private int _sampleRate;
+    private int _channels;
+    
+    public void Start(int sampleRate, int channels)
+    {
+        _sampleRate = sampleRate;
+        _channels = channels;
+        Console.WriteLine($"[HEADLESS-AUDIO] Started: sampleRate={sampleRate}, channels={channels}");
+    }
+    
+    public void Submit(ReadOnlySpan<short> interleaved)
+    {
+        _totalSamples += interleaved.Length;
+        
+        // Log every second
+        long now = Environment.TickCount64;
+        if (now - _lastLogTime > 1000)
+        {
+            _lastLogTime = now;
+            Console.WriteLine($"[HEADLESS-AUDIO] Consumed {_totalSamples} samples total ({_totalSamples / _channels} frames)");
+        }
+    }
+    
+    public void Stop()
+    {
+        Console.WriteLine($"[HEADLESS-AUDIO] Stopped");
+    }
+    
+    public void Dispose()
+    {
+        Console.WriteLine($"[HEADLESS-AUDIO] Final: {_totalSamples} samples consumed ({_totalSamples / _channels} frames)");
+    }
+}
 
 class Program
 {
     private const int DefaultFrames = 120;
+
+    private static void LogEnv(string name)
+    {
+        string? value = Environment.GetEnvironmentVariable(name);
+        if (!string.IsNullOrEmpty(value))
+            Console.WriteLine($"[HEADLESS] env {name}={value}");
+    }
 
     static int Main(string[] args)
     {
@@ -74,11 +121,36 @@ class Program
 
         Console.WriteLine($"[HEADLESS] Loading ROM: {romPath}");
         Console.WriteLine($"[HEADLESS] Running {framesToRun} frames");
+        LogEnv("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES");
+        LogEnv("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES_EVERY");
+        LogEnv("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE");
+        LogEnv("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_EVERY");
+        LogEnv("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_START_FRAME");
+
+        string dumpDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_DIR")
+            ?? Path.GetDirectoryName(romPath)
+            ?? ".";
+        Directory.CreateDirectory(dumpDir);
 
         try
         {
             var adapter = new MdTracerAdapter();
             adapter.LoadRom(romPath);
+            
+            // Initialize audio engine for headless mode (enables YM2612 timing)
+            AudioEngine? audioEngine = null;
+            bool enableAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
+            if (enableAudio)
+            {
+                Console.WriteLine("[HEADLESS] Audio engine enabled (EUTHERDRIVE_HEADLESS_AUDIO=1)");
+                var audioSink = new HeadlessAudioSink();
+                audioEngine = new AudioEngine(audioSink, 44100, 2);
+                audioEngine.Start();
+            }
+            else
+            {
+                Console.WriteLine("[HEADLESS] Audio engine disabled (set EUTHERDRIVE_HEADLESS_AUDIO=1 to enable)");
+            }
 
             // Enable framebuffer analyzer if requested
             if (args.Length > 2 && args[2] == "--analyze-fb")
@@ -135,21 +207,34 @@ class Program
              // Dump frame 0 before running (after warm-up)
              Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
              adapter.FrameBufferHasContent();
-             adapter.DumpFrameBufferToPpm("/home/nichlas/roms/headless_frame0.ppm");
+             adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_frame0.ppm"));
 
-             for (int frame = 0; frame < framesToRun; frame++)
-             {
-                 adapter.StepFrame();
+              for (int frame = 0; frame < framesToRun; frame++)
+              {
+                  adapter.StepFrame();
+                  
+                  // Generate audio for this frame (enables YM2612 timing)
+                  if (audioEngine != null && adapter is MdTracerAdapter mdAdapter)
+                  {
+                      // Generate audio for approximately one frame
+                      // At 44100 Hz, 60 fps = 735 samples per frame (44100/60)
+                      // But GetAudioBuffer() handles frame accumulation internally
+                      var audio = mdAdapter.GetAudioBuffer(out int sampleRate, out int channels);
+                      if (!audio.IsEmpty)
+                      {
+                          audioEngine.Submit(audio);
+                      }
+                  }
 
-                 // Log VDP status and framebuffer
-                 bool displayOn = adapter.IsVdpDisplayOn();
-                 bool hasContent = adapter.FrameBufferHasContent();
-                 Console.WriteLine($"[HEADLESS] Frame {frame}: display={displayOn} fb_has_content={hasContent}");
+                  // Log VDP status and framebuffer
+                  bool displayOn = adapter.IsVdpDisplayOn();
+                  bool hasContent = adapter.FrameBufferHasContent();
+                  Console.WriteLine($"[HEADLESS] Frame {frame}: display={displayOn} fb_has_content={hasContent}");
 
                 // Dump framebuffer at interesting points
                 if (frame == 0 || frame == 5 || frame == 10)
                 {
-                    string ppmPath = $"/home/nichlas/roms/headless_frame{frame}.ppm";
+                    string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
                     adapter.DumpFrameBufferToPpm(ppmPath);
                     Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
                 }
@@ -165,13 +250,13 @@ class Program
             // Dump frame 0 after running
             Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
             adapter.FrameBufferHasContent();
-            adapter.DumpFrameBufferToPpm("/home/nichlas/roms/headless_output.ppm");
+            adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_output.ppm"));
 
             // Check framebuffer and dump if requested
             Console.WriteLine("[HEADLESS] Checking framebuffer...");
             if (adapter.FrameBufferHasContent())
             {
-                string ppmPath = Path.Combine(Path.GetDirectoryName(romPath) ?? ".", "headless_output.ppm");
+                string ppmPath = Path.Combine(dumpDir, "headless_output.ppm");
                 adapter.DumpFrameBufferToPpm(ppmPath);
                 Console.WriteLine($"[HEADLESS] Framebuffer dumped to {ppmPath}");
 
@@ -288,6 +373,11 @@ class Program
 
         try
         {
+            string dumpDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_DIR")
+                ?? Path.GetDirectoryName(romPath)
+                ?? ".";
+            Directory.CreateDirectory(dumpDir);
+
             var adapter = new MdTracerAdapter();
             adapter.LoadRom(romPath);
 
@@ -299,11 +389,26 @@ class Program
             savestateService.Load(adapter, slotOverride ?? 1);
             Console.WriteLine($"[HEADLESS] Savestate loaded successfully via SavestateService");
 
+            Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+            adapter.FrameBufferHasContent();
+            adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_frame0.ppm"));
+
             for (int frame = 0; frame < framesToRun; frame++)
             {
                 adapter.StepFrame();
                 Console.WriteLine($"[HEADLESS] Frame {frame} completed");
+
+                if (frame == 0 || frame == 5 || frame == 10)
+                {
+                    string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                    adapter.DumpFrameBufferToPpm(ppmPath);
+                    Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                }
             }
+
+            Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+            adapter.FrameBufferHasContent();
+            adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_output.ppm"));
 
             Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
             return 0;

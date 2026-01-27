@@ -7,6 +7,7 @@ General
 - EUTHERDRIVE_PERF_STATS=1: bus perf stats.
 - EUTHERDRIVE_REGION=auto|jp|us|eu: force console region (defaults to auto).
 - EUTHERDRIVE_TRACE_IO=1: log IO reads (0xA10001, 0xA10003..0xA1001F).
+- EUTHERDRIVE_HEADLESS_DUMP_DIR=<path>: override headless frame dump directory (default: ROM directory).
 
 UI
 - EUTHERDRIVE_UI_HEARTBEAT=1: UI heartbeat log.
@@ -20,7 +21,10 @@ VDP
 - EUTHERDRIVE_TRACE_VDP_TIMING=1: VDP timing log.
 - EUTHERDRIVE_TRACE_VDP_FB=1: VDP framebuffer sampling.
 - EUTHERDRIVE_TRACE_VRAM=1: VRAM vs renderer VRAM sampling.
+- EUTHERDRIVE_TRACE_VRAM_RANGE=<start-end>: log VRAM writes in range (hex; e.g. 0xC000-0xC7FF).
 - EUTHERDRIVE_TRACE_CRAM=1: CRAM write log.
+- EUTHERDRIVE_TRACE_NAMETABLE_ROW_DUMP=1: dump Plane A/B nametable rows + key VDP regs (scanline 0 and 112).
+- EUTHERDRIVE_TRACE_PATTERN_TILE_DUMP=1: dump 8x8 tile patterns for first few nametable entries.
 - EUTHERDRIVE_FORCE_MD_VBLANK=1: force MD vblank.
 - EUTHERDRIVE_FORCE_SMS_VBLANK=1: force SMS vblank.
 
@@ -53,6 +57,7 @@ Z80
 - EUTHERDRIVE_SKIP_SMS_DELAYS=1: skip SMS delays.
 - EUTHERDRIVE_Z80_RESET_HOLD_Z80_CYCLES=<int>: hold Z80 execution for N cycles after reset deassert.
 - EUTHERDRIVE_Z80_RESET_HOLD_LIMIT=<int>: limit [Z80RESET-HOLD] logs (0 = unlimited).
+- EUTHERDRIVE_Z80_SAFE_BOOT=1|0: enable/disable Z80 safe boot (default: 0/off).
 - EUTHERDRIVE_Z80FLAG65_READ_FROM_MBX=1: override Z80 reads at 0x0065 from mailbox RAM (read-only).
 - EUTHERDRIVE_Z80FLAG65_READ_ADDR=<hex|dec>: Z80 flag addr to override (default 0x0065).
 - EUTHERDRIVE_Z80FLAG65_READ_SOURCE=<hex|dec>: source mailbox addr in Z80 RAM (default 0x1B8F).

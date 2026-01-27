@@ -88,8 +88,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         Environment.GetEnvironmentVariable("EUTHERDRIVE_ASCII_SHARED") ?? "EutherDrive_AsciiViewer_FB";
 
     // Debug logging for ASCII stream
-    private static readonly bool AsciiStreamDebug = AsciiStreamEnabled &&
+    private static readonly bool AsciiStreamDebug =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_ASCII_DEBUG"), "1", StringComparison.Ordinal);
+
+    // DIAG-FRAME tracking
+    private static long _lastDiagnosticFrame = -1;
 
     // ROM + BUS
     private byte[]? _rom;
@@ -386,7 +389,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     private static double ParseZ80CycleMultiplier()
     {
-        const double fallback = 1.0;
+        const double fallback = 1.0; // Z80 runs at full 3.58MHz, bus contention handled via stalls
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_CYCLES_MULT");
         if (string.IsNullOrWhiteSpace(raw))
             return fallback;
@@ -448,6 +451,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return parsed;
         return fallback;
     }
+
+    private static bool IsEnvFlagSet(string name)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+        raw = raw.Trim();
+        return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static readonly int TraceZ80FrameCyclesEvery =
+        ParseNonNegativeInt("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES_EVERY", 60);
 
     private static ConsoleRegion? ParseRegionOverrideEnv()
     {
@@ -906,9 +921,22 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     {
                         _cpu.RunSome(budget: cpuBudget);
                     }
+                    md_main.AdvanceSystemCycles(cpuBudget);
+                    md_main.AddM68kCycles(cpuBudget);
 
                     if (allowZ80)
+                    {
+                        md_main.g_md_z80?.BeginSystemCycleSlice();
                         md_main.g_md_z80?.run(z80Budget);
+                        md_main.g_md_z80?.EndSystemCycleSlice();
+                        // Track Z80 cycles for Aladdin debug
+                        md_main.AddZ80Cycles(z80Budget);
+                    }
+                    if (allowZ80)
+                    {
+                        long z80System = md_main.ConvertZ80ToM68kCyclesApprox(z80Budget);
+                        md_main.AdvanceSystemCycles(z80System);
+                    }
                 }
 
                 if (TracePerf)
@@ -953,8 +981,59 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             md_main.g_md_bus?.FlushZ80WinStat(frame);
             md_main.g_md_bus?.FlushMbx68kStat(frame);
             md_main.g_md_bus?.TickZ80SafeBoot(frame);
-            md_main.g_md_z80?.FlushZ80MbxPoll(frame);
+             md_main.g_md_z80?.FlushZ80MbxPoll(frame);
             md_main.g_md_z80?.FlushPcHist(frame);
+            if (md_main.g_md_z80 != null)
+            {
+                var (actual, budget) = md_main.g_md_z80.ConsumeFrameCycleStats();
+                if (IsEnvFlagSet("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES") &&
+                    (TraceZ80FrameCyclesEvery <= 0 || frame % TraceZ80FrameCyclesEvery == 0))
+                {
+                    Console.WriteLine($"[Z80-CYCLES] frame={frame} actual={actual} budget={budget}");
+                }
+                md_main.g_md_z80.FlushZ80AudioRate(frame);
+            }
+            
+            // Per-frame diagnostic logging for Genesis mode (when md_main.RunFrame() is not called)
+            if (md_main.ReadEnvFlag("EUTHERDRIVE_DIAG_FRAME"))
+            {
+                long currentFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                if (currentFrame != _lastDiagnosticFrame)
+                {
+                    _lastDiagnosticFrame = currentFrame;
+                    // Get Z80 cycles from md_main
+                    long z80Cycles = md_main.Z80TotalCycles;
+                     // Get M68K cycles and YM advance calls
+                     long m68kCyclesThisFrame = md_main.M68kCyclesThisFrame;
+                     Console.WriteLine($"[DIAG-FRAME] frame={currentFrame} z80Cycles={z80Cycles} m68kCycles={m68kCyclesThisFrame} ymAdvanceCalls={md_main.YmAdvanceCallsLastFrame}");
+                     
+                     // Force YM2612 to advance if it hasn't been advancing
+                     // This fixes "elastic music" where tempo changes with button presses
+                     if (md_main.YmAdvanceCallsLastFrame == 0 && md_main.g_md_music?.g_md_ym2612 != null)
+                     {
+                         md_main.g_md_music.g_md_ym2612.ForceAdvanceOneFrame(m68kCyclesThisFrame);
+                         if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMING") == "1")
+                         {
+                             Console.WriteLine($"[YM-TIMING] Forced advance for frame {currentFrame} (ymAdvanceCalls was 0, m68kCycles={m68kCyclesThisFrame})");
+                         }
+                     }
+                     
+                     // Reset for next frame
+                     md_main.ResetYmAdvanceCalls();
+                     md_main.ResetM68kCyclesThisFrame();
+                 }
+             }
+
+            // ALADDIN-DEBUG logging for Z80 cycle analysis
+            if (frame % 1 == 0)
+            {
+                int lines = md_main.g_md_vdp?.g_vertical_line_max ?? 262;
+                int expectedZ80PerFrame = md_main.GetZ80CyclesPerLine() * lines;
+                Console.WriteLine($"[ALADDIN-DEBUG] frame={frame}: Z80={md_main.Z80TotalCycles} (expected={expectedZ80PerFrame}) slices={md_main.Z80SliceCount}");
+                Console.WriteLine($"[ALADDIN-DEBUG] frame={frame}: IRQs={md_main.Z80IrqCount} TimerA={md_main.YmTimerAOverflows} TimerB={md_main.YmTimerBOverflows} BusySets={md_main.YmBusySets} BusyClears={md_main.YmBusyClears}");
+                md_main.ResetZ80Telemetry();
+                md_main.ResetAladdinDebug();
+            }
         }
 
             if (TracePerf && _cpuReady && _cpu != null)
@@ -1218,14 +1297,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             var serializer = new MdTracerStateSerializer();
             serializer.Load(reader);
             
-            // After loading state, reset Z80 to ensure it runs properly
-            if (md_main.g_md_z80 != null)
-            {
-                // Reset Z80 state completely - this sets g_active = true
-                md_main.g_md_z80.reset();
-            }
+            // Z80 state is already loaded by the serializer, no need to reset it
+            // The savestate contains Z80 registers, PC, and internal state
             
-            // Ensure Z80 bus state is correct
+            // Ensure Z80 bus state is correct (but don't reset Z80 CPU)
             if (md_main.g_md_bus != null)
             {
                 var busType = md_main.g_md_bus.GetType();
@@ -1621,6 +1696,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _psgFrameAccumulator -= frames;
         int samples = frames * PsgChannels;
         bool trackAudioLevel = TraceAudioLevel;
+        
+        // Audio buffer timing logging for debugging elastic music
+        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_BUFFER") == "1")
+        {
+            Console.WriteLine($"[AUDIO-BUFFER] GetAudioBuffer: frame={frame} frames={frames} samples={samples} _psgFrameAccumulator={_psgFrameAccumulator:F2} targetFps={GetTargetFps()}");
+        }
         long mixSumSq = 0;
         if (_psgFrameBuffer.Length < samples)
             _psgFrameBuffer = new short[samples];
@@ -1673,6 +1754,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             if (_ymFrameBuffer.Length < samples)
                 _ymFrameBuffer = new short[samples];
 
+            // Audio buffer timing logging for debugging elastic music
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_BUFFER") == "1")
+            {
+                Console.WriteLine($"[AUDIO-BUFFER] GetAudioBufferForFrames: Calling YM2612_UpdateBatch: frames={frames} samples={samples} SystemCycles={md_main.SystemCycles}");
+            }
+            
             music.g_md_ym2612.YM2612_UpdateBatch(_ymFrameBuffer, frames);
 
             int mixMin = 0;

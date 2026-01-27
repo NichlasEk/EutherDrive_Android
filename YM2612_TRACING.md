@@ -99,7 +99,7 @@ Tracing hjälper oss identifiera om:
 3. `/home/nichlas/EutherDrive/EutherDrive.Headless/Program.cs`
    - Lade till `adapter.DumpYmPortStats()` anrop vid avslut
 
-### 7. Nästa Steg
+ ### 7. Nästa Steg
 
 Efter att ha kört tracingen, analysera loggarna för att se:
 1. Vad är `rawStatus` värdena? (innan `&= 0x7F`)
@@ -108,3 +108,113 @@ Efter att ha kört tracingen, analysera loggarna för att se:
 4. Stämmer BUSY biten (bit 7) med vad vi förväntar oss?
 
 Detta kommer hjälpa oss lösa varför Z80 fastnar i busy-loopen trots att koden tvingar `BUSY=0`.
+
+## Headless Audio Debugging (NYTT!)
+
+### Problem med "Elastic Music"
+Musiken i Aladdin (och andra spel) blir "elastisk" - tempot ändras när man trycker på knappar (B-spam). Problemet:
+- **Utan knapptryckningar**: Få YM-writes → YM-tiden står stilla → musik går långsamt
+- **Med knapptryckningar**: Många YM-writes → YM avancerar vid varje write → musik går i rätt tempo
+
+### Orsak: Event-driven YM2612 Timing
+YM2612 avancerade bara när:
+1. `YM2612_Update()` eller `YM2612_UpdateBatch()` anropades (vid audio rendering)
+2. YM register writes skedde
+
+I headless mode renderades **ingen audio**, så YM-tiden stod stilla (`ymAdvanceCalls=0`).
+
+### Lösning: Headless Audio Engine
+Nu kan headless mode rendera audio på samma sätt som UI!
+
+#### Steg 1: Aktivera headless audio
+```bash
+export EUTHERDRIVE_HEADLESS_AUDIO=1
+export EUTHERDRIVE_YM=1
+export EUTHERDRIVE_DIAG_FRAME=1
+```
+
+#### Steg 2: Kör headless med audio
+```bash
+cd /home/nichlas/EutherDrive
+dotnet run --project EutherDrive.Headless -- ~/roms/Aladdin.md 60
+```
+
+#### Steg 3: Analysera output
+```
+[HEADLESS] Audio engine enabled (EUTHERDRIVE_HEADLESS_AUDIO=1)
+[HEADLESS-AUDIO] Started: sampleRate=44100, channels=2
+[DIAG-FRAME] frame=1 z80Cycles=59736 m68kCycles=255712 ymAdvanceCalls=0
+[HEADLESS-AUDIO] Consumed 1470 samples total (735 frames)
+[DIAG-FRAME] frame=2 z80Cycles=59736 m68kCycles=255712 ymAdvanceCalls=1
+...
+```
+
+### Ytterligare Debugging Flaggor
+
+#### YM Timing Logging
+```bash
+export EUTHERDRIVE_TRACE_YM_TIMING=1
+export EUTHERDRIVE_TRACE_YM_WRITE_TIMING=1
+export EUTHERDRIVE_TRACE_AUDIO_BUFFER=1
+```
+
+Dessa visar:
+- När YM2612 avancerar (`YM-TIMING`)
+- När YM register skrivs (`YM-WRITE-TIMING`) 
+- När audio genereras (`AUDIO-BUFFER`)
+
+#### Force Advance Fallback
+Om `ymAdvanceCalls=0` trots audio, triggas automatisk force advance:
+```
+[YM-TIMING] Forced advance for frame X (ymAdvanceCalls was 0, m68kCycles=255712)
+[YM-TIMING-FORCE] deltaCycles=255712 timerTicks=3551,56 ticks=3551
+```
+
+### Tekniska Implementationer
+
+#### 1. HeadlessAudioSink
+En enkel `IAudioSink` implementation som bara konsumerar audio utan att spela upp den.
+
+#### 2. AudioEngine i Headless
+Headless använder samma `AudioEngine` som UI, men med en dummy sink.
+
+#### 3. YM2612_UpdateBatch Counting
+Fixat bugg där `ymAdvanceCalls` inte räknades i `YM2612_UpdateBatch()`.
+
+#### 4. ForceAdvanceOneFrame()
+Ny metod som tvingar YM2612 att avancera varje frame om den inte gör det automatiskt.
+
+### Filer Uppdaterade
+
+1. **`EutherDrive.Headless/Program.cs`**
+   - Lagt till `HeadlessAudioSink` klass
+   - Lagt till audio engine initiering
+   - Lagt till audio generation i frame-loopen
+
+2. **`EutherDrive.Headless/EutherDrive.Headless.csproj`**
+   - Lagt till referens till `EutherDrive.Audio` projekt
+
+3. **`EutherDrive.Core/MdTracerCore/md_music_ym2612_core.cs`**
+   - Lagt till `IncrementYmAdvanceCalls()` i `YM2612_UpdateBatch()`
+   - Lagt till `ForceAdvanceOneFrame()` metod
+   - Lagt till YM timing logging
+
+4. **`EutherDrive.Core/MdTracerAdapter.cs`**
+   - Lagt till force advance logik när `ymAdvanceCalls=0`
+   - Lagt till audio buffer logging
+
+5. **`EutherDrive.Core/MdTracerCore/md_music_ym2612_regster.cs`**
+   - Lagt till YM write timing logging
+
+### Resultat
+Nu kan vi debugga audio-problem i headless mode:
+- ✅ YM2612 avancerar kontinuerligt (`ymAdvanceCalls=1` per frame)
+- ✅ Audio genereras och konsumeras
+- ✅ "Elastic music" problemet är löst
+- ✅ Samma kodväg som UI för audio rendering
+
+### Tips för Audio Debugging
+1. **Starta alltid med**: `EUTHERDRIVE_HEADLESS_AUDIO=1 EUTHERDRIVE_YM=1`
+2. **Kontrollera**: `ymAdvanceCalls` ska vara `> 0`
+3. **Om `ymAdvanceCalls=0`**: Aktivera `EUTHERDRIVE_TRACE_YM_TIMING=1` för att se varför
+4. **För timing-problem**: Använd `EUTHERDRIVE_DIAG_FRAME=1` för per-frame statistik

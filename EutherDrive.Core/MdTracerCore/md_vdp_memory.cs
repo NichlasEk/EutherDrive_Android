@@ -174,8 +174,87 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            // MD VDP ports are 16-bit. Byte writes: the byte is written to both high and low byte
-            // This is how real hardware works - byte write duplicates to both bytes
+            in_address &= 0x00FF_FFFF;
+
+            if (in_address <= 0xc00003)
+            {
+                _mdDataWritesThisFrame++;
+                RecordDataPortWriteCode(g_vdp_reg_code);
+
+                bool dmaActive = g_vdp_status_1_dma != 0 || g_dma_mode != 0 || g_dma_leng > 0;
+                if (GateCpuWritesDuringDma && !DisableDmaWriteGate && dmaActive)
+                {
+                    _mdDataWritesDroppedThisFrame++;
+                    if ((g_vdp_reg_code & 0x0f) == 1)
+                        _mdVramWritesDroppedThisFrame++;
+                    return;
+                }
+
+                if (g_dma_fill_req)
+                {
+                    g_dma_fill_req = false;
+                    ushort fillWord = (ushort)((in_data << 8) | in_data);
+                    dma_run_fill_req(fillWord);
+                    return;
+                }
+
+                int writeAddr = g_vdp_reg_dest_address;
+
+                switch (g_vdp_reg_code & 0x0f)
+                {
+                    case 1: // VRAM byte write
+                    {
+                        g_vram[writeAddr & 0xFFFF] = in_data;
+                        pattern_chk(writeAddr, in_data);
+
+                        int wordAddr = writeAddr & 0xFFFE;
+                        ushort wordVal = vram_read_w(wordAddr);
+                        TraceVdpDataWrite(in_address, wordVal, g_vdp_reg_code, writeAddr, g_vdp_reg_15_autoinc);
+                        TraceDataPortWindowWrite(in_address, wordVal);
+                        this.RecordVramWriteForTracking(wordAddr, wordVal);
+                        this.TrackScrollRegionWrite(wordAddr & 0xFFFF);
+                        this.LogVramWrite("CPU8", wordAddr & 0xFFFF, wordVal, g_vdp_reg_15_autoinc, g_vdp_reg_code);
+                        break;
+                    }
+
+                    case 3: // CRAM byte write
+                    {
+                        _mdCramWritesThisFrame++;
+                        TraceVdpDataWrite(in_address, (ushort)((in_data << 8) | in_data), g_vdp_reg_code, writeAddr, g_vdp_reg_15_autoinc);
+                        TraceDataPortWindowWrite(in_address, (ushort)((in_data << 8) | in_data));
+                        int col = (writeAddr >> 1) & 0x3f;
+                        ushort existing = g_cram[col];
+                        ushort next = (ushort)((writeAddr & 1) == 0
+                            ? ((in_data << 8) | (existing & 0x00ff))
+                            : ((existing & 0xff00) | in_data));
+                        cram_set(col, next);
+                        break;
+                    }
+
+                    case 5: // VSRAM byte write
+                    {
+                        TraceVdpDataWrite(in_address, (ushort)((in_data << 8) | in_data), g_vdp_reg_code, writeAddr, g_vdp_reg_15_autoinc);
+                        TraceDataPortWindowWrite(in_address, (ushort)((in_data << 8) | in_data));
+                        int waddr = (writeAddr >> 1) & 0x3f;
+                        if (waddr < 40)
+                        {
+                            ushort existing = g_vsram[waddr];
+                            g_vsram[waddr] = (ushort)((writeAddr & 1) == 0
+                                ? ((in_data << 8) | (existing & 0x00ff))
+                                : ((existing & 0xff00) | in_data));
+                        }
+                        break;
+                    }
+
+                    default:
+                        break;
+                }
+
+                g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
+                return;
+            }
+
+            // Default: mirror byte to both halves and use 16-bit path.
             ushort w = (ushort)((in_data << 8) | in_data);
             write16(in_address, w);
         }
@@ -284,6 +363,10 @@ namespace EutherDrive.Core.MdTracerCore
 
                 // Trace control port writes in interlace mode 2
                 TraceVdpControlWrite(in_address, in_data, g_command_select, g_command_word);
+                
+                // Log ALL control port writes for Predator 2 debugging
+                // Always log for now to capture the issue
+                Console.WriteLine($"[VDP-CTRL] frame={_frameCounter} addr=0x{in_address:X6} raw=0x{in_data:X4}");
 
                 if (!g_command_select)
                 {
@@ -292,6 +375,15 @@ namespace EutherDrive.Core.MdTracerCore
                         // register write
                         byte rs   = (byte)((in_data >> 8) & 0x1f);
                         byte data = (byte)(in_data & 0xff);
+                        
+                        // Log DMA register writes for Predator 2 debugging
+                        if (rs >= 0x13 && rs <= 0x17) // Registers 19-23
+                        {
+                            Console.WriteLine($"[VDP-MEM-REG] frame={_frameCounter} raw=0x{in_data:X4} reg=0x{rs:X2} data=0x{data:X2}");
+                            // Also log as VDP-CTRL for consistency
+                            Console.WriteLine($"[VDP-CTRL-REG] frame={_frameCounter} addr=0x{in_address:X6} raw=0x{in_data:X4} reg=0x{rs:X2} data=0x{data:X2}");
+                        }
+                        
                         set_vdp_register(rs, data);
                     }
                     else
@@ -331,6 +423,7 @@ namespace EutherDrive.Core.MdTracerCore
 
                     if ((g_vdp_reg_code & 0x20) != 0 && g_vdp_reg_1_4_dma == 1)
                     {
+                        // Log DMA trigger - will be logged in dma_run_memory_req
                         switch (g_vdp_reg_23_dma_mode)
                         {
                             case 0:
@@ -592,15 +685,17 @@ namespace EutherDrive.Core.MdTracerCore
                 w_val = (uint)((high_byte << 8) | new_byte);
             }
 
-            // Log VRAM writes in scroll areas for debugging
+            // Log VRAM writes in scroll areas for debugging (gated)
             int scrollA_base = g_vdp_reg_2_scrolla & 0xFFFE;
             int scrollB_base = g_vdp_reg_4_scrollb & 0xFFFE;
 
-            if ((w_address >= scrollA_base && w_address < scrollA_base + 0x2000) ||
-                (w_address >= scrollB_base && w_address < scrollB_base + 0x1000))
+            if (TraceVramWrites &&
+                ((w_address >= scrollA_base && w_address < scrollA_base + 0x2000) ||
+                 (w_address >= scrollB_base && w_address < scrollB_base + 0x1000)))
             {
-                var logLine = $"[VRAM-WRITE] addr=0x{w_address:X4} val=0x{w_val:X4} scrollA=0x{scrollA_base:X4} scrollB=0x{scrollB_base:X4} interlace={g_vdp_interlace_mode}\n";
-                System.IO.File.AppendAllText("/tmp/eutherdrive.log", logLine);
+                MdTracerCore.MdLog.WriteLine(
+                    $"[VRAM-WRITE] addr=0x{w_address:X4} val=0x{w_val:X4} " +
+                    $"scrollA=0x{scrollA_base:X4} scrollB=0x{scrollB_base:X4} interlace={g_vdp_interlace_mode}");
             }
 
             // In interlace mode 2, also update the cache

@@ -110,12 +110,15 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool Z80WaitBusReqLog = ReadEnvFlag("EUTHERDRIVE_Z80_WAIT_BUSREQ_LOG");
         private static readonly bool TracePcPerFrame = ReadEnvFlag("EUTHERDRIVE_TRACE_PC_FRAME");
         private static readonly int TracePcEveryFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_PC_FRAME_EVERY", 60);
+        private static readonly bool TraceZ80FrameCycles = ReadEnvFlag("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES");
+        private static readonly int TraceZ80FrameCyclesEvery = ParseNonNegativeInt("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES_EVERY", 60);
         // Z80/M68K cycle ratio for NTSC: Z80 ~3.58MHz, M68K ~7.67MHz => ratio ~0.466
         private static readonly double Z80PerM68kRatio = 3.579545 / 7.670000; // More precise ratio
         private static readonly int Z80ContinuousSliceCycles = ParseZ80ContinuousSliceCycles();
         private static bool UseZ80ContinuousScheduling => !g_masterSystemMode && Z80ContinuousSliceCycles > 0;
         private static int SmsCyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * SmsCycleMultiplier));
         private static int Z80CyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * Z80CycleMultiplier));
+        public static int GetZ80CyclesPerLine() => Z80CyclesPerLine;
         private static readonly Stopwatch _smsCycleLogTimer = Stopwatch.StartNew();
         private static long _smsCycleLogLastMs;
         private static long _smsCycleLogAccumBudget;
@@ -128,6 +131,86 @@ namespace EutherDrive.Core.MdTracerCore
         private static int _z80SliceCount;
         private static int _z80TotalCycles;
         private static int _z80MaxSlice;
+        
+        public static int Z80SliceCount 
+        { 
+            get => _z80SliceCount;
+            set => _z80SliceCount = value;
+        }
+        
+        public static int Z80TotalCycles 
+        { 
+            get => _z80TotalCycles;
+            set => _z80TotalCycles = value;
+        }
+        
+        public static int Z80MaxSlice 
+        { 
+            get => _z80MaxSlice;
+            set => _z80MaxSlice = value;
+        }
+        
+        public static void ResetZ80Telemetry()
+        {
+            _z80SliceCount = 0;
+            _z80TotalCycles = 0;
+            _z80MaxSlice = 0;
+        }
+        
+        public static void AddZ80Cycles(int cycles)
+        {
+            _z80TotalCycles += cycles;
+            _z80SliceCount++;
+            if (cycles > _z80MaxSlice)
+                _z80MaxSlice = cycles;
+        }
+        
+        // ALADDIN DEBUG: Track IRQs and timer events
+        private static int _z80IrqCount;
+        private static int _ymTimerAOverflows;
+        private static int _ymTimerBOverflows;
+        private static int _ymBusySets;
+        private static int _ymBusyClears;
+        private static int _m68kCyclesThisFrame;
+        private static int _timerControlCalls;
+        
+        // Per-frame diagnostics
+        private static long _lastDiagnosticFrame = -1;
+        private static int _z80CyclesLastFrame;
+        private static int _ymAdvanceCallsLastFrame;
+        private static int _ymSamplesProducedLastFrame;
+        private static int _psgAdvanceCallsLastFrame;
+        
+        public static int Z80IrqCount => _z80IrqCount;
+        public static int YmTimerAOverflows => _ymTimerAOverflows;
+        public static int YmTimerBOverflows => _ymTimerBOverflows;
+        public static int YmBusySets => _ymBusySets;
+        public static int YmBusyClears => _ymBusyClears;
+        public static int TimerControlCalls => _timerControlCalls;
+        
+        public static void ResetAladdinDebug()
+        {
+            _z80IrqCount = 0;
+            _ymTimerAOverflows = 0;
+            _ymTimerBOverflows = 0;
+            _ymBusySets = 0;
+            _ymBusyClears = 0;
+        }
+        
+        public static void IncrementZ80Irq() => _z80IrqCount++;
+        public static void IncrementYmTimerAOverflow() => _ymTimerAOverflows++;
+        public static void IncrementYmTimerBOverflow() => _ymTimerBOverflows++;
+        public static void IncrementYmBusySet() => _ymBusySets++;
+        public static void IncrementYmBusyClear() => _ymBusyClears++;
+        public static void AddM68kCycles(int cycles) => _m68kCyclesThisFrame += cycles;
+        public static void IncrementTimerControlCalls() => _timerControlCalls++;
+        public static void IncrementYmAdvanceCalls() => _ymAdvanceCallsLastFrame++;
+        
+        // Public accessors for DIAG-FRAME logging
+        public static int M68kCyclesThisFrame => _m68kCyclesThisFrame;
+        public static int YmAdvanceCallsLastFrame => _ymAdvanceCallsLastFrame;
+        public static void ResetYmAdvanceCalls() => _ymAdvanceCallsLastFrame = 0;
+        public static void ResetM68kCyclesThisFrame() => _m68kCyclesThisFrame = 0;
         private static bool _z80WaitLogged;
         private static bool _mbxInjected;
         private static bool _mbxInjectAcked;
@@ -490,20 +573,42 @@ namespace EutherDrive.Core.MdTracerCore
              g_md_z80?.FlushZ80WaitLoopHist(frame);
             g_md_z80?.FlushPcHist(frame);
             
-            // Log Z80 telemetry
-            if (frame % 60 == 0 && _z80SliceCount > 0)
+            // Log Z80 telemetry - ALADDIN DEBUG
+            if (frame % 1 == 0) // Log EVERY frame for debugging
             {
-                double avgSlice = (double)_z80TotalCycles / _z80SliceCount;
-                Console.WriteLine($"[Z80-TIMING] frame={frame} slices={_z80SliceCount} totalCycles={_z80TotalCycles} avgSlice={avgSlice:F1} maxSlice={_z80MaxSlice} expectedPerFrame={Z80CyclesPerLine * lines}");
+                int expectedZ80PerFrame = Z80CyclesPerLine * lines;
+                int expectedM68kPerFrame = VDL_LINE_RENDER_MC68_CLOCK * lines;
+                Console.WriteLine($"[TIMING-DEBUG] frame={frame}: Z80={_z80TotalCycles} m68k={_m68kCyclesThisFrame} timerCtrl={TimerControlCalls} z80Active={g_md_z80?.g_active ?? false}");
+                
+                // Per-frame diagnostic logging
+                if (ReadEnvFlag("EUTHERDRIVE_DIAG_FRAME"))
+                {
+                    long currentFrame = g_md_vdp?.FrameCounter ?? -1;
+                    if (currentFrame != _lastDiagnosticFrame)
+                    {
+                        _lastDiagnosticFrame = currentFrame;
+                        _z80CyclesLastFrame = (int)_z80TotalCycles;
+                        // Reset for next frame
+                        Console.WriteLine($"[DIAG-FRAME] frame={currentFrame} z80Cycles={_z80CyclesLastFrame} m68kCycles={_m68kCyclesThisFrame} ymAdvanceCalls={_ymAdvanceCallsLastFrame}");
+                        _ymAdvanceCallsLastFrame = 0;
+                    }
+                }
                 _z80SliceCount = 0;
                 _z80TotalCycles = 0;
                 _z80MaxSlice = 0;
+                _m68kCyclesThisFrame = 0;
+                _timerControlCalls = 0;
             }
             g_md_z80?.FlushZ80IntStats(frame); // [INT-STATS] ZINT per-frame stats
 
             if (g_md_z80 != null)
             {
                 var (actual, budget) = g_md_z80.ConsumeFrameCycleStats();
+                bool traceCycles = TraceZ80FrameCycles || ReadEnvFlag("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES");
+                if (traceCycles && (TraceZ80FrameCyclesEvery <= 0 || frame % TraceZ80FrameCyclesEvery == 0))
+                {
+                    Console.WriteLine($"[Z80-CYCLES] frame={frame} actual={actual} budget={budget}");
+                }
                 _smsCycleLogAccumActual += actual;
                 _smsCycleLogAccumBudget += budget;
                 long now = _smsCycleLogTimer.ElapsedMilliseconds;
@@ -515,6 +620,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _smsCycleLogAccumBudget = 0;
                     _smsCycleLogAccumActual = 0;
                 }
+                g_md_z80.FlushZ80AudioRate(frame);
             }
         }
 
@@ -635,7 +741,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static double ParseZ80CycleMultiplier()
         {
-            const double fallback = 0.4668; // Correct ratio: 3.58/7.67 ≈ 0.4668
+            const double fallback = 1.0; // Z80 runs at full 3.58MHz, bus contention handled via wait states
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_CYCLES_MULT");
             if (string.IsNullOrWhiteSpace(raw))
                 return fallback;
@@ -649,7 +755,7 @@ namespace EutherDrive.Core.MdTracerCore
             return fallback;
         }
 
-        private static bool ReadEnvFlag(string name)
+        public static bool ReadEnvFlag(string name)
         {
             string? raw = Environment.GetEnvironmentVariable(name);
             if (string.IsNullOrWhiteSpace(raw))
@@ -790,7 +896,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             catch (System.Exception ex)
             {
-                Debug.WriteLine($"[md_main] Z80 reset skipped: {ex.Message}");
+                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MAIN"), "1", StringComparison.Ordinal))
+                    Console.WriteLine($"[md_main] SafeResetZ80 failed: {ex.Message}");
             }
         }
     }

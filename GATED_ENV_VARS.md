@@ -116,6 +116,23 @@ All logging i EutherDrive är nu gated bakom environment variables. Detta gör s
   - `\[VINT-SKIP\]`
   - `\[VINT\]`
 
+### `EUTHERDRIVE_TRACE_NAMETABLE_ROW_DUMP=1`
+- **Beskrivning**: Aktiverar logging för följande prefix:
+  - `\[NT-REG\]`
+  - `\[NT-BASE\]`
+  - `\[NT-A\]`
+  - `\[NT-B\]`
+  - `\[NT-A-DEC\]`
+  - `\[NT-B-DEC\]`
+  - `\[HSCROLL-SAMPLE\]`
+
+### `EUTHERDRIVE_TRACE_PATTERN_TILE_DUMP=1`
+- **Beskrivning**: Aktiverar logging för följande prefix:
+  - `\[TILE-A\]`
+  - `\[TILE-A-ROW\]`
+  - `\[TILE-B\]`
+  - `\[TILE-B-ROW\]`
+
 ### `EUTHERDRIVE_TRACE_VRAM=1`
 - **Beskrivning**: Aktiverar logging för följande prefix:
   - `\[PATTERN-WRITE\]`
@@ -128,6 +145,10 @@ All logging i EutherDrive är nu gated bakom environment variables. Detta gör s
   - `\[VRAM-WRITE-CPU\]`
   - `\[VRAM-WRITE-DETAIL\]`
   - `\[VRAM\]`
+
+### `EUTHERDRIVE_TRACE_VRAM_RANGE=<start-end>`
+- **Beskrivning**: Loggar VRAM-writes i valt adressintervall:
+  - `\[VRAM-RANGE\]`
 
 ### `EUTHERDRIVE_TRACE_YM=1`
 - **Beskrivning**: Aktiverar logging för följande prefix:

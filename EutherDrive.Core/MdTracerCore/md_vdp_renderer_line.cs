@@ -47,6 +47,25 @@ namespace EutherDrive.Core.MdTracerCore
             return (uint)((word >> ((3 - (x & 3)) << 2)) & 0x0f);
         }
 
+        private uint ReadPatternPixelDirect(int tileIndex, int xInTile, int yInTile, uint reverse)
+        {
+            if (g_vdp_interlace_mode == 2)
+                return ReadPatternPixelMode2Direct(tileIndex, xInTile, yInTile, reverse);
+
+            int x = ((reverse & 0x01) != 0) ? (7 - xInTile) : xInTile;
+            int y = ((reverse & 0x02) != 0) ? (7 - yInTile) : yInTile;
+            int baseAddr = (tileIndex & 0x07FF) << 5;
+            int byteAddr = baseAddr + (y << 2) + ((x >> 2) << 1);
+            ushort word = vram_read_render(byteAddr);
+            return (uint)((word >> ((3 - (x & 3)) << 2)) & 0x0f);
+        }
+
+        private ushort ReadNameTableWord(int wordIndex)
+        {
+            int byteAddr = (wordIndex << 1) & 0xFFFF;
+            return vram_read_render(byteAddr);
+        }
+
         private void rendering_line_cpu(int outputLine, uint[]? targetBuffer = null)
         {
             uint[] destBuffer = targetBuffer ?? g_game_screen;
@@ -55,6 +74,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 w_vscroll_mask = 0x000f;
             }
+            TraceNameTableRowDumpIfNeeded();
             int renderLine = GetRenderLine(g_scanline);
             int cellShift = GetCellHeightShift();
 
@@ -132,14 +152,32 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_view_addr = 0;
                 int w_view_dx = 8;
                 int w_view_dy = 0;
-                int w_screen_adrdr = g_vdp_reg_4_scrollb >> 1;
+                int scrollB_byte_addr = g_vdp_reg_4_scrollb & (IsH40Mode() ? 0xFE00 : 0xFC00);
+                int w_screen_adrdr = scrollB_byte_addr >> 1;
                 int w_pic_addr = 0;
 
-                // Debug log first entry in interlace mode 2
-                if (g_vdp_interlace_mode == 2 && g_scanline == 0)
+                 // Debug log first entry in interlace mode 2
+                if (g_vdp_interlace_mode == 2 && g_scanline == 0 && MdTracerCore.MdLog.Enabled)
                 {
-                    var logLine = $"[RENDER] field={g_vdp_interlace_field} scrollB_addr=0x{w_screen_adrdr:X4} cacheB=0x{g_renderer_vram[0x6800]:X4} cacheA=0x{g_renderer_vram[0x6000]:X4}\n";
-                    System.IO.File.AppendAllText("/tmp/eutherdrive_render.log", logLine);
+                    MdTracerCore.MdLog.WriteLine(
+                        $"[RENDER] field={g_vdp_interlace_field} scrollB_addr=0x{w_screen_adrdr:X4} " +
+                        $"cacheB=0x{g_renderer_vram[0x6800]:X4} cacheA=0x{g_renderer_vram[0x6000]:X4}");
+                }
+                
+                // DEBUG: Log first few tiles of Plane B
+                if (g_scanline == 100 && _frameCounter >= 100 && _frameCounter <= 110)
+                {
+                    int debug_scrollB_byte_addr = g_vdp_reg_4_scrollb & (IsH40Mode() ? 0xFE00 : 0xFC00);
+                    int debug_scrollB_word_addr = debug_scrollB_byte_addr >> 1;
+                    Console.WriteLine($"[DEBUG-PLANE-B] frame={_frameCounter} scanline={g_scanline} reg4=0x{g_vdp_reg_4_scrollb:X4} byte_addr=0x{debug_scrollB_byte_addr:X4} word_addr=0x{debug_scrollB_word_addr:X4}");
+                    // Check VRAM directly too
+                    for (int i = 0; i < 10; i++)
+                    {
+                        uint cacheVal = g_renderer_vram[debug_scrollB_word_addr + i];
+                        uint vramAddr = (uint)(debug_scrollB_byte_addr + (i << 1));
+                        ushort vramVal = vram_read_render((int)vramAddr);
+                        Console.WriteLine($"[DEBUG-PLANE-B] tile[{i}] cache@0x{debug_scrollB_word_addr + i:X4}=0x{cacheVal:X4} vram@0x{vramAddr:X4}=0x{vramVal:X4} pri={(vramVal>>15)&1} char={vramVal&0x7FF}");
+                    }
                 }
 
                 for (int wx = 0; wx < g_display_xsize; wx++)
@@ -155,44 +193,31 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         w_view_x %= g_scroll_xsize;
                         w_view_dx = w_view_x & 7;
-                        uint w_val = g_renderer_vram[w_view_addr + (w_view_x >> 3)];
+                        uint w_val = ReadNameTableWord(w_view_addr + (w_view_x >> 3));
                         w_priority = ((w_val >> 15) & 0x0001);
                         w_palette  = (((w_val >> 13) & 0x0003) << 4);
                         w_reverse  = ((w_val >> 11) & 0x0003);
                         w_char     =  (w_val & 0x07ff);
 
-                        // DIRECT VRAM MODE: Read pattern directly from vram[]
-                        if (ForceDirectVramReadPlanes && g_vdp_interlace_mode == 2)
-                        {
-                            uint picValueDirect = ReadPatternPixelMode2Direct((int)w_char, w_view_dx, w_view_dy, w_reverse);
-
-                            // Debug: log first tile read
-                            if (wx == 0 && _frameCounter < 5)
-                            {
-                                Console.WriteLine($"[DIRECT-VRAM] frame={_frameCounter} scanline={g_scanline} wx={wx} tile={w_char} row={w_view_dy} pic={picValueDirect}");
-                            }
-
-                            if (picValueDirect != 0)
-                            {
-                                g_game_cmap[wx]   = w_palette + picValueDirect;
-                                g_game_primap[wx] = w_priority;
-                                g_game_shadowmap[wx] = w_priority;
-                            }
-                            w_view_x += 1;
-                            w_view_dx += 1;
-                            continue; // Skip normal pattern read path
-                        }
-
-                        w_pic_addr = GetTileWordAddress((int)w_char, w_view_dy, w_reverse);
+                        bool useDirectPixel = ForceDirectVramReadPlanes || w_reverse != 0;
+                        w_pic_addr = useDirectPixel ? -1 : GetTileWordAddress((int)w_char, w_view_dy, w_reverse);
 
                         // Debug: log first pattern read
-                        if (g_scanline == 100 && wx == 0 && _frameCounter == 100)
+                        if (g_scanline == 100 && wx == 0 && _frameCounter == 100 && w_pic_addr >= 0)
                         {
                             Console.WriteLine($"[RENDER-READ] frame={_frameCounter} scanline={g_scanline} tile={w_char} row={w_view_dy} pic_addr={w_pic_addr} rvram[{w_pic_addr}]=0x{g_renderer_vram[w_pic_addr]:X4}");
                         }
                     }
-                    uint w_pic_w = g_renderer_vram[w_pic_addr + (w_view_dx >> 2)];
-                    uint picValue = (uint)((w_pic_w >> ((3 - (w_view_dx & 3)) << 2)) & 0x0f);
+                    uint picValue;
+                    if (w_pic_addr < 0)
+                    {
+                        picValue = ReadPatternPixelDirect((int)w_char, w_view_dx, w_view_dy, w_reverse);
+                    }
+                    else
+                    {
+                        uint w_pic_w = g_renderer_vram[w_pic_addr + (w_view_dx >> 2)];
+                        picValue = (uint)((w_pic_w >> ((3 - (w_view_dx & 3)) << 2)) & 0x0f);
+                    }
                     if (picValue != 0)
                     {
                         g_game_cmap[wx]   = w_palette + picValue;
@@ -218,7 +243,23 @@ namespace EutherDrive.Core.MdTracerCore
                     int w_view_addr = 0;
                     int w_view_dx = 8;
                     int w_view_dy = 0;
-                    int w_screen_adrdr = g_vdp_reg_2_scrolla >> 1;
+                     int scrollA_byte_addr = g_vdp_reg_2_scrolla & (IsH40Mode() ? 0xFE00 : 0xFC00);
+                     int w_screen_adrdr = scrollA_byte_addr >> 1;
+                     
+                 // DEBUG: Log first few tiles of Plane A
+                 if (g_scanline == 100 && _frameCounter >= 100 && _frameCounter <= 110)
+                 {
+                     int debug_scrollA_byte_addr = g_vdp_reg_2_scrolla & (IsH40Mode() ? 0xFE00 : 0xFC00);
+                     int debug_scrollA_word_addr = debug_scrollA_byte_addr >> 1;
+                     Console.WriteLine($"[DEBUG-PLANE-A] frame={_frameCounter} scanline={g_scanline} reg2=0x{g_vdp_reg_2_scrolla:X4} byte_addr=0x{debug_scrollA_byte_addr:X4} word_addr=0x{debug_scrollA_word_addr:X4}");
+                     for (int i = 0; i < 10; i++)
+                     {
+                         uint cacheVal = g_renderer_vram[debug_scrollA_word_addr + i];
+                         uint vramAddr = (uint)(debug_scrollA_byte_addr + (i << 1));
+                         ushort vramVal = vram_read_render((int)vramAddr);
+                         Console.WriteLine($"[DEBUG-PLANE-A] tile[{i}] cache@0x{debug_scrollA_word_addr + i:X4}=0x{cacheVal:X4} vram@0x{vramAddr:X4}=0x{vramVal:X4} pri={(vramVal>>15)&1} char={vramVal&0x7FF}");
+                     }
+                 }
                     int w_pic_addr = 0;
 
                     for (int wx = 0; wx < g_display_xsize; wx++)
@@ -234,41 +275,29 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             w_view_x %= g_scroll_xsize;
                             w_view_dx = w_view_x & 7;
-                            uint w_val = g_renderer_vram[w_view_addr + (w_view_x >> 3)];
+                            uint w_val = ReadNameTableWord(w_view_addr + (w_view_x >> 3));
                             w_priority = ((w_val >> 15) & 0x0001);
                             w_palette  = (((w_val >> 13) & 0x0003) << 4);
                             w_reverse  = ((w_val >> 11) & 0x0003);
                             w_char     =  (w_val & 0x07ff);
 
-                            // DIRECT VRAM MODE: Read pattern directly from vram[]
-                            if (ForceDirectVramReadPlanes && g_vdp_interlace_mode == 2)
-                            {
-                                uint picValueDirect = ReadPatternPixelMode2Direct((int)w_char, w_view_dx, w_view_dy, w_reverse);
-
-                                if (((g_screenA_right_x != 0)
-                                    && (g_screenA_left_x <= wx) && (wx <= g_screenA_right_x)
-                                    && (g_game_primap[wx] <= w_priority)))
-                                {
-                                    if (picValueDirect != 0)
-                                    {
-                                        g_game_cmap[wx]   = w_palette + picValueDirect;
-                                        g_game_primap[wx] = w_priority;
-                                    }
-                                    g_game_shadowmap[wx] |= w_priority;
-                                }
-                                w_view_x += 1;
-                                w_view_dx += 1;
-                                continue;
-                            }
-
-                            w_pic_addr = GetTileWordAddress((int)w_char, w_view_dy, w_reverse);
+                            bool useDirectPixel = ForceDirectVramReadPlanes || w_reverse != 0;
+                            w_pic_addr = useDirectPixel ? -1 : GetTileWordAddress((int)w_char, w_view_dy, w_reverse);
                         }
                         if (((g_screenA_right_x != 0)
                             && (g_screenA_left_x <= wx) && (wx <= g_screenA_right_x)
                             && (g_game_primap[wx] <= w_priority)))
                         {
-                            uint w_pic_w = g_renderer_vram[w_pic_addr + (w_view_dx >> 2)];
-                            uint picValue = (uint)((w_pic_w >> ((3 - (w_view_dx & 3)) << 2)) & 0x0f);
+                            uint picValue;
+                            if (w_pic_addr < 0)
+                            {
+                                picValue = ReadPatternPixelDirect((int)w_char, w_view_dx, w_view_dy, w_reverse);
+                            }
+                            else
+                            {
+                                uint w_pic_w = g_renderer_vram[w_pic_addr + (w_view_dx >> 2)];
+                                picValue = (uint)((w_pic_w >> ((3 - (w_view_dx & 3)) << 2)) & 0x0f);
+                            }
                             if (picValue != 0)
                             {
                                 g_game_cmap[wx]   = w_palette + picValue;
@@ -420,11 +449,23 @@ namespace EutherDrive.Core.MdTracerCore
                     // Window-rader behöver full interlace-linje i mode 2 för korrekt tile-rad.
                     int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
                     int w_view_dy = GetRowInCell(lineY);
-                    int w_addr = (g_vdp_reg_3_windows >> 1) + ((lineY >> cellShift) * g_scroll_xcell) + w_xcell_st;
+                     int w_addr = (g_vdp_reg_3_windows >> 1) + ((lineY >> cellShift) * g_scroll_xcell) + w_xcell_st;
+                     
+                     // DEBUG: Log window info
+                     if (g_scanline == 100 && _frameCounter >= 7058 && _frameCounter <= 7060)
+                     {
+                         Console.WriteLine($"[DEBUG-WINDOW] frame={_frameCounter} scanline={g_scanline} base=0x{(g_vdp_reg_3_windows >> 1):X4} (reg3=0x{g_vdp_reg_3_windows:X4})");
+                         Console.WriteLine($"[DEBUG-WINDOW] xcell_st={w_xcell_st} xcell_ed={w_xcell_ed} lineY={lineY}");
+                         for (int i = 0; i < 5 && (w_xcell_st + i) <= w_xcell_ed; i++)
+                         {
+                             uint val = g_renderer_vram[w_addr + i];
+                             Console.WriteLine($"[DEBUG-WINDOW] tile[{i}]=0x{val:X4} pri={(val>>15)&1} char={val&0x7FF}");
+                         }
+                     }
                     int w_posx = w_xcell_st << 3;
                     for (int w_cx = w_xcell_st; w_cx <= w_xcell_ed; w_cx++)
                     {
-                        uint w_val = g_renderer_vram[w_addr++];
+                        uint w_val = ReadNameTableWord(w_addr++);
                         uint w_priority = ((w_val >> 15) & 0x0001);
                         uint w_palette  = (((w_val >> 13) & 0x0003) << 4);
                         uint w_reverse_bits = (w_val >> 11) & 0x0003;
@@ -435,9 +476,9 @@ namespace EutherDrive.Core.MdTracerCore
                             if ((g_game_cmap[w_posx] == 0) || (g_game_primap[w_posx] <= w_priority))
                             {
                                 // DIRECT VRAM MODE: Read pattern directly from vram[]
-                                if (ForceDirectVramReadPlanes && g_vdp_interlace_mode == 2)
+                                if (ForceDirectVramReadPlanes || w_reverse_bits != 0)
                                 {
-                                    uint picValueDirect = ReadPatternPixelMode2Direct((int)w_char, w_dx, w_view_dy, w_reverse_bits);
+                                    uint picValueDirect = ReadPatternPixelDirect((int)w_char, w_dx, w_view_dy, w_reverse_bits);
 
                                     if (picValueDirect != 0)
                                     {

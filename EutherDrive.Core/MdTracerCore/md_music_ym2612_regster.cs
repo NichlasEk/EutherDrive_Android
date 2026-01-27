@@ -12,13 +12,19 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YMREG"), "1", StringComparison.Ordinal);
         private static readonly bool TraceYmIrq =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YMIRQ"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmTimer =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMER"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmKey =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_KEY"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmWriteStats =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_WRITE_STATS"), "1", StringComparison.Ordinal);
         private static readonly bool EmulateYmBusy =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_EMULATE_YM_BUSY"), "1", StringComparison.Ordinal);
         
         // Track if Z80 safe boot is complete
         private static bool _z80SafeBootComplete = false;
         private static readonly bool Z80SafeBootEnabled =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_SAFE_BOOT"), "1", StringComparison.Ordinal);
+            ReadEnvDefaultOff("EUTHERDRIVE_Z80_SAFE_BOOT");
         private static long _safeBootCompleteFrame = 0;
         // Short warmup period after safe boot (10ms ≈ 80,000 M68K cycles at 8MHz)
         private static long _ymBusyEnableAtCycle = 0;
@@ -43,7 +49,21 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int Key28LogLimit = ParseKey28LogLimit();
         private static readonly int TraceYmBusyLimit = ParseYmBusyLimit();
         private static readonly int TraceYmStatusLimit = ParseYmStatusLimit();
+        private static readonly int TraceYmTimerLimit = ParseYmTimerLimit();
+        private static readonly int TraceYmKeyLimit = ParseYmKeyLimit();
+        private static readonly int TraceYmWriteStatsLimit = ParseYmWriteStatsLimit();
         private static readonly int YmBusyZ80Cycles = ParseYmBusyZ80Cycles();
+        
+        // Track previous busy state for transition detection
+        private static bool _previousBusy = false;
+
+        private static bool ReadEnvDefaultOff(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrEmpty(raw))
+                return false;
+            return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+        }
 
         private long _dacWriteCount;
         private long _dacEnableCount;
@@ -70,6 +90,20 @@ namespace EutherDrive.Core.MdTracerCore
         private int _ymDacBankLogRemaining = TraceYmDacBankLimit;
         private int _ymBusyLogRemaining = TraceYmBusyLimit;
         private int _ymStatusLogRemaining = TraceYmStatusLimit;
+        private int _ymTimerLogRemaining = TraceYmTimerLimit;
+        private int _ymKeyLogRemaining = TraceYmKeyLimit;
+        private int _ymWriteStatLogRemaining = TraceYmWriteStatsLimit;
+        private int _dacDebugWriteCount = 0;
+        private int _timerAEvents;
+        private int _timerBEvents;
+        private int _keyOnSlots;
+        private int _keyOffSlots;
+        private int _keyWrites;
+        private int _ymAddrWrites;
+        private int _ymDataWrites;
+        private byte _ymLastAddr;
+        private byte _ymLastVal;
+        private string _ymLastSource = "none";
         private long _ymBusyUntilCycle;
         private long _ymBusyDropCount;
         private bool _key28KeyOffLogged;
@@ -132,6 +166,45 @@ namespace EutherDrive.Core.MdTracerCore
             return value;
         }
 
+        private static int ParseYmTimerLimit()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMER_LIMIT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 256;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return 256;
+            if (value <= 0)
+                return int.MaxValue;
+            return value;
+        }
+
+        private static int ParseYmKeyLimit()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_KEY_LIMIT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 256;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return 256;
+            if (value <= 0)
+                return int.MaxValue;
+            return value;
+        }
+
+        private static int ParseYmWriteStatsLimit()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_WRITE_STATS_LIMIT");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 256;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return 256;
+            if (value <= 0)
+                return int.MaxValue;
+            return value;
+        }
+
         private static int ParseYmBusyZ80Cycles()
         {
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_BUSY_Z80_CYCLES");
@@ -160,10 +233,10 @@ namespace EutherDrive.Core.MdTracerCore
                 return envCycles;
             }
             
-            // Default: 224 M68K cycles (original value that worked for some games)
-            // 1344 M68K cycles (from clownmdemu calculation)
-            // Let's use 224 for now as it seems to work for Sonic 2
-            int cycles = 224; // M68K cycles
+            // Default: 1344 M68K cycles (correct YM2612 busy timing)
+            // 224 M68K cycles was too short, causing music to play too fast in Aladdin
+            // 32 FM cycles * 7 M68K cycles per FM cycle * 6 prescaler = 1344 M68K cycles
+            int cycles = 1344; // M68K cycles
             return cycles > 0 ? cycles : 1;
         }
 
@@ -182,6 +255,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _timerBCount = 256 << 4;
         private double _timerTickFrac;
         private bool _timersDrivenByZ80;
+        private long _lastSystemCycles = -1;
         private int g_reg_2a_dac_data = 0x100;  // Match clownmdemu: 0x100 = silence
         private int g_reg_2b_dac;
 
@@ -228,10 +302,29 @@ namespace EutherDrive.Core.MdTracerCore
             
             long nowCycle = GetZ80Cycle();
             bool busy = (EmulateYmBusy || TraceYmBusy || TraceYmStatus) && IsYmBusy(nowCycle);
+            
+            // ALADDIN DEBUG: Track busy clears
+            bool wasBusy = _previousBusy;
             if (EmulateYmBusy && busy)
+            {
                 status |= 0x80;
+                if (!wasBusy)
+                {
+                    // Busy just became set (though SetYmBusy should have tracked this)
+                }
+            }
             else
+            {
                 status &= 0x7F; // Clear BUSY flag if not busy or not emulating
+                if (wasBusy && !busy && (EmulateYmBusy || TraceYmBusy || TraceYmStatus))
+                {
+                    // Busy just cleared (transition from busy to not busy)
+                    md_main.IncrementYmBusyClear();
+                }
+            }
+            
+            // Update previous busy state
+            _previousBusy = busy;
             
             // DEBUG: Log status reads for Sonic 2 debugging when at driver entry
             if (md_main.g_md_z80?.DebugPc == 0x0167)
@@ -240,12 +333,18 @@ namespace EutherDrive.Core.MdTracerCore
             }
             
             // Enhanced diagnostic logging for busy counter debugging
+            ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
             if (TraceYmBusy && busy)
             {
-                ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
                 Console.WriteLine($"[YM-BUSY-DIAG] pc=0x{pc:X4} status=0x{status:X2} busy={busy}");
                 Console.WriteLine($"[YM-BUSY-DIAG]   nowCycle={nowCycle} _ymBusyUntilCycle={_ymBusyUntilCycle}");
                 Console.WriteLine($"[YM-BUSY-DIAG]   busy={busy} (nowCycle < _ymBusyUntilCycle: {nowCycle < _ymBusyUntilCycle})");
+            }
+            
+            // Special logging for Aladdin's wait loop addresses
+            if (pc == 0x0DC2 || pc == 0x0DF7 || pc == 0x0DFB || pc == 0x0DB5 || pc == 0x0DB7 || pc == 0x0DC7 || pc == 0x0DC9 || pc == 0x0DD9 || pc == 0x0DDB || pc == 0x0DEB || pc == 0x0DED || pc == 0x0DFD)
+            {
+                Console.WriteLine($"[ALADDIN-YM-STATUS] pc=0x{pc:X4} status=0x{status:X2} busy={(busy ? 1 : 0)} nowCycle={nowCycle} busyUntil={_ymBusyUntilCycle} diff={_ymBusyUntilCycle - nowCycle}");
             }
             
             if (TraceYmStatus)
@@ -273,6 +372,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 0:
                 {
                     g_reg_addr1 = in_val;
+                    _ymAddrWrites++;
                     if (TraceAudStat && in_val == 0x2A)
                         _audStatDacCmd++;
                     if (TraceYmReg && in_val == 0x28 && _key28LogRemaining > 0)
@@ -294,6 +394,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 2:
                 {
                     g_reg_addr2 = in_val;
+                    _ymAddrWrites++;
                     if (TraceAudStat && in_val == 0x2A)
                         _audStatDacCmd++;
                     if (TraceYmReg && in_val == 0x28 && _key28LogRemaining > 0)
@@ -316,7 +417,18 @@ namespace EutherDrive.Core.MdTracerCore
             if (w_mode == -1)
                 return;
 
-            long nowCycle = GetZ80Cycle();
+             _ymDataWrites++;
+             _ymLastAddr = w_addr;
+             _ymLastVal = in_val;
+             _ymLastSource = source;
+
+             long nowCycle = GetZ80Cycle();
+             
+             // Log YM write timing for debugging elastic music
+             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_WRITE_TIMING") == "1")
+             {
+                 Console.WriteLine($"[YM-WRITE-TIMING] source={source} addr=0x{w_addr:X2} val=0x{in_val:X2} SystemCycles={md_main.SystemCycles} Z80Cycle={nowCycle}");
+             }
             if (TraceYmBusy && nowCycle < 0)
             {
                 Console.WriteLine($"[YM-BUSY-CYCLE] nowCycle={nowCycle} (negative!)");
@@ -404,6 +516,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 g_com_timerA_cnt = g_com_timerA = newTimerA;
                             }
                             UpdateTimerA();
+                            MaybeLogYmTimerReg(0x24, in_val);
                             break;
                         }
 
@@ -417,6 +530,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 g_com_timerA_cnt = g_com_timerA = newTimerA;
                             }
                             UpdateTimerA();
+                            MaybeLogYmTimerReg(0x25, in_val);
                             break;
                         }
 
@@ -431,6 +545,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 g_com_timerB_cnt = g_com_timerB;
                             }
                             UpdateTimerB();
+                            MaybeLogYmTimerReg(0x26, in_val);
                             break;
                         }
 
@@ -456,6 +571,7 @@ namespace EutherDrive.Core.MdTracerCore
                             if (g_reg_27_load_B)
                                 _timerBCount = _timerBReload;
                             UpdateYmIrq("reg27");
+                            MaybeLogYmTimerReg(0x27, in_val);
                             break;
                         }
 
@@ -463,9 +579,15 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             if ((in_val & 0x03) != 0x03)
                             {
+                                int slotMask = (in_val >> 4) & 0x0F;
+                                int ch = (in_val & 0x07);
+                                int onCount = CountBits(slotMask);
+                                _keyWrites++;
+                                _keyOnSlots += onCount;
+                                _keyOffSlots += 4 - onCount;
+                                MaybeLogYmKey(in_val, ch, slotMask, source);
                                 if (TraceYmReg && _key28LogRemaining > 0)
                                 {
-                                    int slotMask = (in_val >> 4) & 0x0F;
                                     if (slotMask != 0)
                                     {
                                         _key28LogRemaining--;
@@ -481,6 +603,8 @@ namespace EutherDrive.Core.MdTracerCore
                                     }
                                 }
                                 int w_ch = KEYON_MAP[in_val & 0x07];
+                                if (w_ch < 0)
+                                    break;
 
                                 if ((in_val & 0x10) != 0) Slot_Key_on(w_ch, 0); else Slot_Key_off(w_ch, 0);
                                 if ((in_val & 0x20) != 0) Slot_Key_on(w_ch, 1); else Slot_Key_off(w_ch, 1);
@@ -492,25 +616,41 @@ namespace EutherDrive.Core.MdTracerCore
 
                         // case 0x29: Not implemented as processing is not required
 
-                        case 0x2A:
-                        {
-                            if (TraceDac)
-                            {
-                                _dacWriteCount++;
-                                _dacLastValue = in_val;
-                                _dacSum += in_val;
-                                _dacHistogram[in_val >> 4]++;
-                                if (in_val < _dacMinValue)
-                                    _dacMinValue = in_val;
-                                if (in_val > _dacMaxValue)
-                                    _dacMaxValue = in_val;
-                                byte centerValue = DacInputSigned ? (byte)0x00 : (byte)0x80;
-                                if (in_val == centerValue)
-                                    _dacCenterCount++;
-                                else
-                                _dacNonCenterCount++;
-                                MaybeLogDac();
-                            }
+                         case 0x2A:
+                         {
+                             // DEBUG: Log ALL DAC writes
+                             _dacDebugWriteCount++;
+                             if (_dacDebugWriteCount <= 50 || _dacDebugWriteCount % 100 == 0)
+                             {
+                                 long cycles = md_main.SystemCycles;
+                                 int signedVal = (sbyte)in_val;
+                                 int unsignedVal = in_val & 0xFF;
+                                 int shiftedVal = DacInputSigned ? 
+                                     ((int)(sbyte)in_val + 0x80) & 0xFF : 
+                                     in_val & 0xFF;
+                                 int dac9bit = ((shiftedVal << 1) & 0x1FE) | (g_reg_2a_dac_data & 1);
+                                 int finalSigned = dac9bit - 0x100;
+                                 
+                                 Console.WriteLine($"[DAC-DEBUG {_dacDebugWriteCount}] val=0x{in_val:X2} ({signedVal}) -> shifted=0x{shiftedVal:X2} -> dac9bit=0x{dac9bit:X3} -> final={finalSigned} enabled={_dacEnabled} g_reg_2b_dac=0x{g_reg_2b_dac:X2}");
+                             }
+                             
+                             if (TraceDac)
+                             {
+                                 _dacWriteCount++;
+                                 _dacLastValue = in_val;
+                                 _dacSum += in_val;
+                                 _dacHistogram[in_val >> 4]++;
+                                 if (in_val < _dacMinValue)
+                                     _dacMinValue = in_val;
+                                 if (in_val > _dacMaxValue)
+                                     _dacMaxValue = in_val;
+                                 byte centerValue = DacInputSigned ? (byte)0x00 : (byte)0x80;
+                                 if (in_val == centerValue)
+                                     _dacCenterCount++;
+                                 else
+                                 _dacNonCenterCount++;
+                                 MaybeLogDac();
+                             }
                             if (!_dacRateBannerLogged && TraceDacRateRaw != null)
                             {
                                 Console.WriteLine($"[DACRATE] env='{TraceDacRateRaw}' enabled={TraceDacRate}");
@@ -585,21 +725,24 @@ namespace EutherDrive.Core.MdTracerCore
                             break;
                         }
 
-                        case 0x2B:
-                        {
-                            if (TraceDac)
-                            {
-                                bool enabled = (in_val & 0x80) != 0;
-                                if (enabled)
-                                    _dacEnableCount++;
-                                else
-                                    _dacDisableCount++;
-                                _dacEnabled = enabled;
-                                MaybeLogDac();
-                            }
-                            g_reg_2b_dac = in_val & 0x80;
-                            break;
-                        }
+                         case 0x2B:
+                         {
+                             bool enabled = (in_val & 0x80) != 0;
+                             // DEBUG: Log DAC enable/disable
+                             Console.WriteLine($"[DAC-ENABLE] val=0x{in_val:X2} enabled={enabled} (bit7={((in_val & 0x80) != 0)})");
+                             
+                             if (TraceDac)
+                             {
+                                 if (enabled)
+                                     _dacEnableCount++;
+                                 else
+                                     _dacDisableCount++;
+                                 _dacEnabled = enabled;
+                                 MaybeLogDac();
+                             }
+                             g_reg_2b_dac = in_val & 0x80;
+                             break;
+                         }
                     }
                 }
 
@@ -948,17 +1091,63 @@ namespace EutherDrive.Core.MdTracerCore
             Console.WriteLine($"[YMREG] {source} pc=0x{pc:X4} port={port} addr=0x{addr:X2} val=0x{val:X2}");
         }
 
+        private void MaybeLogYmTimerReg(byte reg, byte val)
+        {
+            if (!TraceYmTimer || _ymTimerLogRemaining <= 0)
+                return;
+            if (_ymTimerLogRemaining != int.MaxValue)
+                _ymTimerLogRemaining--;
+            ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+            Console.WriteLine(
+                $"[YMTIMER-REG] pc=0x{pc:X4} reg=0x{reg:X2} val=0x{val:X2} " +
+                $"A_reload={_timerAReload} B_reload={_timerBReload} enA={(g_reg_27_enable_A ? 1 : 0)} enB={(g_reg_27_enable_B ? 1 : 0)} " +
+                $"mode=0x{g_reg_27_mode:X2}");
+        }
+
+        private void MaybeLogYmKey(byte inVal, int channel, int slotMask, string source)
+        {
+            if (!TraceYmKey || _ymKeyLogRemaining <= 0)
+                return;
+            if (_ymKeyLogRemaining != int.MaxValue)
+                _ymKeyLogRemaining--;
+            ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+            Console.WriteLine(
+                $"[YMKEY] src={source} pc=0x{pc:X4} val=0x{inVal:X2} ch={channel} slotmask=0x{slotMask:X1}");
+        }
+
+        private static int CountBits(int value)
+        {
+            int count = 0;
+            int v = value & 0x0F;
+            while (v != 0)
+            {
+                count += v & 1;
+                v >>= 1;
+            }
+            return count;
+        }
+
         private long GetZ80Cycle()
         {
-            // For YM2612 busy timing, use SystemCycles (M68K cycles) as master timebase
-            // This ensures time progresses even when Z80 is waiting for YM2612
-            // SystemCycles should advance whenever either M68K or Z80 runs
-            long baseCycles = md_main.SystemCycles;
-            if (md_main.g_md_z80 == null)
-                return baseCycles;
-            long z80Delta = md_main.g_md_z80.DebugSystemCycleDelta;
-            long deltaM68k = md_main.ConvertZ80ToM68kCyclesApprox(z80Delta);
-            return baseCycles + deltaM68k;
+            // ALADDIN FIX: Use a timebase that always advances
+            // SystemCycles freezes when Z80 waits in tight loops and M68K isn't running
+            // We need a monotonic clock for YM2612 busy timing
+            
+            // Use frame-based time: frames * cycles_per_frame + offset
+            long frame = md_main.g_md_vdp?.FrameCounter ?? 0;
+            long cyclesPerFrame = 53693175 / 60; // ~894,886 M68K cycles per frame (7.67MHz / 60Hz)
+            long baseCycles = frame * cyclesPerFrame;
+            
+            // Add offset within current frame (scanline-based)
+            int scanline = md_main.g_md_vdp?.g_scanline ?? 0;
+            long cyclesPerScanline = cyclesPerFrame / 262;
+            baseCycles += scanline * cyclesPerScanline;
+            
+            // Add small offset for within-scanline progress
+            // This ensures time always moves forward, even when CPUs are waiting
+            baseCycles += md_main.SystemCycles % 1000; // Use modulo to avoid huge numbers
+            
+            return baseCycles;
         }
 
         private bool IsYmBusyEnabled(long nowCycle)
@@ -1026,6 +1215,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Reset YM2612 busy state completely
             // Use long.MinValue + 1 to avoid potential underflow issues
             _ymBusyUntilCycle = long.MinValue + 1;
+            _previousBusy = false;
             _ymBusyDropCount = 0;
             
             // Reset frame counter for delayed YM busy enable
@@ -1039,7 +1229,7 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[YM-BUSY] Full reset completed - all state cleared, busyUntil={_ymBusyUntilCycle}");
         }
 
-        private void SetYmBusy(long nowCycle, int port, byte addr, byte val, string source = "Z80")
+         private void SetYmBusy(long nowCycle, int port, byte addr, byte val, string source = "Z80")
         {
             // CRITICAL: Don't set busy timer if YM busy emulation is disabled
             // This includes during Z80 safe boot and warmup period
@@ -1064,10 +1254,17 @@ namespace EutherDrive.Core.MdTracerCore
             
             // Only set busy timer if YM busy emulation is actually enabled
             // and we're past safe boot and warmup period
-            long newUntil = nowCycle + YmBusyZ80Cycles;
-            if (newUntil <= _ymBusyUntilCycle)
+            // CRITICAL FIX: Don't extend busy timer if already busy
+            // YM busy should be fixed duration from first write, not extended on subsequent writes
+            if (IsYmBusy(nowCycle))
                 return;
+            
+            long newUntil = nowCycle + YmBusyZ80Cycles;
+            
+            // ALADDIN DEBUG: Track busy sets
+            bool wasBusy = IsYmBusy(nowCycle);
             _ymBusyUntilCycle = newUntil;
+            md_main.IncrementYmBusySet();
             
             if (TraceYmBusy)
                 LogYmBusyWrite("set", nowCycle, port, addr, val, -1);
@@ -1123,6 +1320,37 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
             md_main.g_md_z80?.irq_request(shouldAssert, "YM", g_com_status);
+        }
+
+        internal void FlushTimerStats(long frame)
+        {
+            if (TraceYmTimer && (_timerAEvents != 0 || _timerBEvents != 0))
+            {
+                Console.WriteLine(
+                    $"[YMTIMER] frame={frame} A={_timerAEvents} B={_timerBEvents} " +
+                    $"A_count={_timerACount} B_count={_timerBCount} A_reload={_timerAReload} B_reload={_timerBReload} " +
+                    $"enA={(g_reg_27_enable_A ? 1 : 0)} enB={(g_reg_27_enable_B ? 1 : 0)} mode=0x{g_reg_27_mode:X2}");
+            }
+            if (TraceYmKey && _keyWrites > 0)
+            {
+                Console.WriteLine(
+                    $"[YMKEYSTAT] frame={frame} writes={_keyWrites} onSlots={_keyOnSlots} offSlots={_keyOffSlots}");
+            }
+            if (TraceYmWriteStats && _ymWriteStatLogRemaining > 0)
+            {
+                if (_ymWriteStatLogRemaining != int.MaxValue)
+                    _ymWriteStatLogRemaining--;
+                Console.WriteLine(
+                    $"[YMWRITE] frame={frame} addrWrites={_ymAddrWrites} dataWrites={_ymDataWrites} " +
+                    $"lastAddr=0x{_ymLastAddr:X2} lastVal=0x{_ymLastVal:X2} lastSrc={_ymLastSource}");
+            }
+            _timerAEvents = 0;
+            _timerBEvents = 0;
+            _keyWrites = 0;
+            _keyOnSlots = 0;
+            _keyOffSlots = 0;
+            _ymAddrWrites = 0;
+            _ymDataWrites = 0;
         }
     }
 }

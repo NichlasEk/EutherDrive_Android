@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -63,7 +63,7 @@ namespace EutherDrive.Core.MdTracerCore
                 dest: g_scrollA_pixels,
                 width: SCROLL_TEX_WIDTH,
                 height: SCROLL_TEX_HEIGHT,
-                tableWordIndex: g_vdp_reg_2_scrolla >> 1
+                tableWordIndex: (g_vdp_reg_2_scrolla & (IsH40Mode() ? 0xFE00 : 0xFC00)) >> 1
             );
 
             // --- Scroll B ---
@@ -71,14 +71,15 @@ namespace EutherDrive.Core.MdTracerCore
                 dest: g_scrollB_pixels,
                 width: SCROLL_TEX_WIDTH,
                 height: SCROLL_TEX_HEIGHT,
-                tableWordIndex: g_vdp_reg_4_scrollb >> 1
+                tableWordIndex: (g_vdp_reg_4_scrollb & (IsH40Mode() ? 0xFE00 : 0xFC00)) >> 1
             );
 
             // --- Window ---
             Array.Clear(g_scrollW_pixels, 0, g_scrollW_pixels.Length);
             for (int wy = 0; wy < g_scroll_ycell; wy++)
             {
-                int wordIndex = (g_vdp_reg_3_windows >> 1) + (wy * g_scroll_xcell);
+                 int window_byte_addr = g_vdp_reg_3_windows & (IsH40Mode() ? 0xFE00 : 0xFC00);
+                 int wordIndex = (window_byte_addr >> 1) + (wy * g_scroll_xcell);
                 for (int wx = 0; wx < g_scroll_xcell; wx++, wordIndex++)
                 {
                     uint w = g_snap_renderer_vram[wordIndex];
@@ -163,7 +164,8 @@ namespace EutherDrive.Core.MdTracerCore
             int link = 0;
             for (int i = 0; i < g_max_sprite_num; i++)
             {
-                int addr = (g_vdp_reg_5_sprite >> 1) + (link << 2);
+                 int sprite_byte_addr = g_vdp_reg_5_sprite & (IsH40Mode() ? ~0x3FF : ~0x1FF);
+                 int addr = (sprite_byte_addr >> 1) + (link << 2);
                 ushort val2 = (ushort)g_snap_renderer_vram[addr + 1];
                 link = val2 & 0x007F;
                 if (link >= g_max_sprite_num) break;
@@ -173,7 +175,8 @@ namespace EutherDrive.Core.MdTracerCore
             // Rita alla sprites (enkelt, utan priority-mix—det här är en debugsurface)
             for (int i = g_max_sprite_num - 1; i >= 0; i--)
             {
-                int addr = (g_vdp_reg_5_sprite >> 1) + (i << 2);
+                 int sprite_byte_addr = g_vdp_reg_5_sprite & (IsH40Mode() ? ~0x3FF : ~0x1FF);
+                 int addr = (sprite_byte_addr >> 1) + (i << 2);
                 ushort v1 = (ushort)g_snap_renderer_vram[addr + 0];
                 ushort v2 = (ushort)g_snap_renderer_vram[addr + 1];
                 ushort v3 = (ushort)g_snap_renderer_vram[addr + 2];

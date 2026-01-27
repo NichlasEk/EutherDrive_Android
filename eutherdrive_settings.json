@@ -1,6 +1,6 @@
 {
-  "LastRomPath": "/home/nichlas/roms/strider.md",
-  "MasterVolumePercent": 23,
+  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Sonic The Hedgehog 2 (W) (REV00) [!].gen",
+  "MasterVolumePercent": 5,
   "AudioEnabled": true,
   "DefaultRegionOverride": 0,
   "RomRegionOverrides": {
@@ -41,7 +41,7 @@
     "serial:GM T-95016-00": 1,
     "serial:GM T-95053-00": 3,
     "serial:MK-1136": 1,
-    "serial:GM MK-1537 -00": 3,
+    "serial:GM MK-1537 -00": 2,
     "serial:GM T-47016 -00": 1,
     "serial:GM MK-1142 -00": 2,
     "serial:GM T-48123 -00": 1,
@@ -59,8 +59,13 @@
     "serial:GM 00001051-02": 1,
     "serial:GM 00001009-00": 1,
     "serial:GM   G-4116-00": 3,
-    "serial:GM MK-1054 -00": 3,
-    "serial:GM 00002501-24": 1
+    "serial:GM MK-1054 -00": 1,
+    "serial:GM 00002501-24": 1,
+    "serial:GM T-139086-50": 2,
+    "serial:GM T-081076 00": 1,
+    "serial:GM T-239026-00": 2,
+    "serial:GM G-4132  -00": 3,
+    "serial:GM T-XXXXX- 00": 1
   },
   "FrameRateMode": 2
 }

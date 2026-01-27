@@ -107,8 +107,8 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 w_addr >>= 1;
 
-                int w_hscrollA = (int)(g_renderer_vram[w_addr]     & 0x3ff);
-                int w_hscrollB = (int)(g_renderer_vram[w_addr + 1] & 0x3ff);
+                int w_hscrollA = (int)(vram_read_render(w_addr << 1) & 0x3ff);
+                int w_hscrollB = (int)(vram_read_render((w_addr + 1) << 1) & 0x3ff);
 
                 int w_view_xA = ((g_scroll_xsize << 2) - w_hscrollA) % g_scroll_xsize;
                 int w_view_xB = ((g_scroll_xsize << 2) - w_hscrollB) % g_scroll_xsize;
