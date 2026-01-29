@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using EutherDrive.Core;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.Savestates;
@@ -136,6 +137,36 @@ class Program
         {
             var adapter = new MdTracerAdapter();
             adapter.LoadRom(romPath);
+            object coreAudioLock = new();
+            const int audioSampleRate = 44100;
+            const int audioChannels = 2;
+            const int audioBufferChunkFrames = 256;
+            int audioTargetFrames = GetHeadlessAudioTargetFrames(audioSampleRate);
+            bool audioThrottle = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO_THROTTLE") != "0";
+            long audioLastSystemCycles = 0;
+            double audioFrameAccumulator = 0;
+            double audioCyclesScale = 1.0;
+            double systemCyclesScale = 1.0;
+            bool traceAudioCycles = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_CYCLES") == "1";
+            long audioCycleLogLastTicks = 0;
+            {
+                string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_CYCLES_SCALE");
+                if (!string.IsNullOrWhiteSpace(raw)
+                    && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+                    && value > 0)
+                {
+                    audioCyclesScale = value;
+                }
+            }
+            {
+                string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_SYSTEM_CYCLES_SCALE");
+                if (!string.IsNullOrWhiteSpace(raw)
+                    && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+                    && value > 0)
+                {
+                    systemCyclesScale = value;
+                }
+            }
             
             // Initialize audio engine for headless mode (enables YM2612 timing)
             AudioEngine? audioEngine = null;
@@ -144,7 +175,29 @@ class Program
             {
                 Console.WriteLine("[HEADLESS] Audio engine enabled (EUTHERDRIVE_HEADLESS_AUDIO=1)");
                 var audioSink = new HeadlessAudioSink();
-                audioEngine = new AudioEngine(audioSink, 44100, 2);
+                
+                // Read buffer frames from environment variable, default to 8192
+                int bufferFrames = 8192;
+                string? bufferFramesRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_BUFFER_FRAMES");
+                if (!string.IsNullOrWhiteSpace(bufferFramesRaw)
+                    && int.TryParse(bufferFramesRaw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int bufferValue)
+                    && bufferValue > 0)
+                {
+                    bufferFrames = bufferValue;
+                }
+                
+                // Read batch frames from environment variable, default to 1024
+                int batchFrames = 1024;
+                string? batchFramesRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_BATCH_FRAMES");
+                if (!string.IsNullOrWhiteSpace(batchFramesRaw)
+                    && int.TryParse(batchFramesRaw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int batchValue)
+                    && batchValue > 0)
+                {
+                    batchFrames = batchValue;
+                }
+                
+                Console.WriteLine($"[HEADLESS] Audio buffer: {bufferFrames} frames, batch: {batchFrames} frames");
+                audioEngine = new AudioEngine(audioSink, 44100, 2, framesPerBatch: batchFrames, bufferFrames: bufferFrames);
                 audioEngine.Start();
             }
             else
@@ -170,20 +223,35 @@ class Program
                 // Debug: show ROM identity
                 Console.WriteLine($"[HEADLESS] ROM identity: name={adapter.RomIdentity?.Name}, hash={BitConverter.ToString(adapter.RomIdentity?.Hash ?? [])}");
 
-                // Use SavestateService to load from the savestates directory
-                var savestateService = new SavestateService("/home/nichlas/EutherDrive/savestates");
+                string savestateRoot = GetSavestateRoot();
+                var savestateService = new SavestateService(savestateRoot);
 
                 // Debug: list available savestates
-                Console.WriteLine("[HEADLESS] Available savestates:");
-                foreach (var file in Directory.GetFiles("/home/nichlas/EutherDrive/savestates", "*.euthstate"))
+                Console.WriteLine($"[HEADLESS] Available savestates in: {savestateRoot}");
+                if (Directory.Exists(savestateRoot))
                 {
-                    Console.WriteLine($"[HEADLESS]   {Path.GetFileName(file)}");
+                    foreach (var file in Directory.GetFiles(savestateRoot, "*.euthstate"))
+                    {
+                        Console.WriteLine($"[HEADLESS]   {Path.GetFileName(file)}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("[HEADLESS]   (savestate directory missing)");
                 }
 
                 try
                 {
                     savestateService.Load(adapter, 1);
                     Console.WriteLine($"[HEADLESS] Savestate slot 1 loaded successfully.");
+
+                    // After load, reset audio timing so SystemCycles deltas start clean.
+                    audioLastSystemCycles = 0;
+                    audioFrameAccumulator = 0;
+
+                    // Ensure YM stays enabled if requested.
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") == "1")
+                        adapter.SetYmEnabled(true);
                 }
                 catch (Exception ex)
                 {
@@ -211,18 +279,67 @@ class Program
 
               for (int frame = 0; frame < framesToRun; frame++)
               {
-                  adapter.StepFrame();
-                  
-                  // Generate audio for this frame (enables YM2612 timing)
-                  if (audioEngine != null && adapter is MdTracerAdapter mdAdapter)
+                  lock (coreAudioLock)
                   {
-                      // Generate audio for approximately one frame
-                      // At 44100 Hz, 60 fps = 735 samples per frame (44100/60)
-                      // But GetAudioBuffer() handles frame accumulation internally
-                      var audio = mdAdapter.GetAudioBuffer(out int sampleRate, out int channels);
-                      if (!audio.IsEmpty)
+                      adapter.StepFrame();
+                  }
+
+                  if (audioEngine != null)
+                  {
+                      long currentCycles = adapter.GetSystemCycles();
+                      if (audioLastSystemCycles == 0)
                       {
-                          audioEngine.Submit(audio);
+                          audioLastSystemCycles = currentCycles;
+                      }
+                      else
+                      {
+                          long deltaCycles = currentCycles - audioLastSystemCycles;
+                          if (deltaCycles > 0)
+                          {
+                              audioLastSystemCycles = currentCycles;
+                              double m68kClockHz = adapter.GetM68kClockHz();
+                              if (m68kClockHz <= 0)
+                                  break;
+                              audioFrameAccumulator += (deltaCycles * systemCyclesScale) * audioCyclesScale * (audioSampleRate / m68kClockHz);
+
+                              if (traceAudioCycles && System.Diagnostics.Stopwatch.GetTimestamp() - audioCycleLogLastTicks > System.Diagnostics.Stopwatch.Frequency)
+                              {
+                                  audioCycleLogLastTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+                                  double expectedPerFrame = m68kClockHz / adapter.GetTargetFps();
+                                  Console.WriteLine($"[AUDIO-CYCLES] deltaCycles={deltaCycles} expectedPerFrame={expectedPerFrame:F1} ratio={(deltaCycles / expectedPerFrame):F3}");
+                              }
+                              int frames = (int)audioFrameAccumulator;
+                              if (frames > 0)
+                              {
+                                  audioFrameAccumulator -= frames;
+                                  int loops = 0;
+                                  while (frames > 0 && loops < 32)
+                                  {
+                                      int chunk = frames < audioBufferChunkFrames ? frames : audioBufferChunkFrames;
+                                      var audio = adapter.GetAudioBufferForFrames(chunk, out int sampleRate, out int channels);
+                                      if (!audio.IsEmpty && sampleRate == audioSampleRate && channels == audioChannels)
+                                      {
+                                          audioEngine.Submit(audio);
+                                          frames -= chunk;
+                                      }
+                                      else
+                                      {
+                                          break;
+                                      }
+                                      loops++;
+                                  }
+                              }
+                          }
+                      }
+                  }
+
+                  if (audioEngine != null && audioThrottle)
+                  {
+                      int waitLoops = 0;
+                      while (audioEngine.BufferedFrames > audioTargetFrames && waitLoops < 200)
+                      {
+                          Thread.Sleep(1);
+                          waitLoops++;
                       }
                   }
 
@@ -381,13 +498,38 @@ class Program
             var adapter = new MdTracerAdapter();
             adapter.LoadRom(romPath);
 
+            const int audioSampleRate = 44100;
+            const int audioChannels = 2;
+            const int audioBufferChunkFrames = 256;
+            long audioLastSystemCycles = 0;
+            double audioFrameAccumulator = 0;
+            AudioEngine? audioEngine = null;
+            int audioTargetFrames = GetHeadlessAudioTargetFrames(audioSampleRate);
+            bool audioThrottle = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO_THROTTLE") != "0";
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1")
+            {
+                var audioSink = new HeadlessAudioSink();
+                audioEngine = new AudioEngine(audioSink, audioSampleRate, audioChannels);
+                audioEngine.Start();
+            }
+
             int? slotOverride = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
-            
-            // Use SavestateService like UI does - it expects files in savestates/ directory
-            Console.WriteLine($"[HEADLESS] Using SavestateService (UI approach)...");
-            var savestateService = new SavestateService("/home/nichlas/EutherDrive/savestates");
-            savestateService.Load(adapter, slotOverride ?? 1);
-            Console.WriteLine($"[HEADLESS] Savestate loaded successfully via SavestateService");
+
+            Console.WriteLine($"[HEADLESS] Loading savestate payload from file: {savestatePath}");
+            var payload = TryLoadSavestatePayload(savestatePath, adapter.RomIdentity, slotOverride, out var error);
+            if (payload == null)
+            {
+                Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {error}");
+                return 1;
+            }
+            using var stateStream = new MemoryStream(payload, writable: false);
+            using var stateReader = new BinaryReader(stateStream);
+            adapter.LoadState(stateReader);
+            Console.WriteLine($"[HEADLESS] Savestate loaded successfully from file");
+            audioLastSystemCycles = 0;
+            audioFrameAccumulator = 0;
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") == "1")
+                adapter.SetYmEnabled(true);
 
             Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
             adapter.FrameBufferHasContent();
@@ -396,6 +538,57 @@ class Program
             for (int frame = 0; frame < framesToRun; frame++)
             {
                 adapter.StepFrame();
+                if (audioEngine != null)
+                {
+                    long currentCycles = adapter.GetSystemCycles();
+                    if (audioLastSystemCycles == 0)
+                    {
+                        audioLastSystemCycles = currentCycles;
+                    }
+                    else
+                    {
+                        long deltaCycles = currentCycles - audioLastSystemCycles;
+                        if (deltaCycles > 0)
+                        {
+                            audioLastSystemCycles = currentCycles;
+                            double m68kClockHz = adapter.GetM68kClockHz();
+                            if (m68kClockHz > 0)
+                            {
+                                audioFrameAccumulator += deltaCycles * (audioSampleRate / m68kClockHz);
+                                int frames = (int)audioFrameAccumulator;
+                                if (frames > 0)
+                                {
+                                    audioFrameAccumulator -= frames;
+                                    int loops = 0;
+                                    while (frames > 0 && loops < 32)
+                                    {
+                                        int chunk = frames < audioBufferChunkFrames ? frames : audioBufferChunkFrames;
+                                        var audio = adapter.GetAudioBufferForFrames(chunk, out int sampleRate, out int channels);
+                                        if (!audio.IsEmpty && sampleRate == audioSampleRate && channels == audioChannels)
+                                        {
+                                            audioEngine.Submit(audio);
+                                            frames -= chunk;
+                                        }
+                                        else
+                                        {
+                                            break;
+                                        }
+                                        loops++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (audioEngine != null && audioThrottle)
+                {
+                    int waitLoops = 0;
+                    while (audioEngine.BufferedFrames > audioTargetFrames && waitLoops < 200)
+                    {
+                        Thread.Sleep(1);
+                        waitLoops++;
+                    }
+                }
                 Console.WriteLine($"[HEADLESS] Frame {frame} completed");
 
                 if (frame == 0 || frame == 5 || frame == 10)
@@ -525,5 +718,25 @@ class Program
         if (int.TryParse(raw.Trim(), out int value))
             return value;
         return null;
+    }
+
+    private static string GetSavestateRoot()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_SAVESTATE_DIR");
+        if (!string.IsNullOrWhiteSpace(raw))
+            return raw;
+        return Path.Combine(Directory.GetCurrentDirectory(), "savestates");
+    }
+
+    private static int GetHeadlessAudioTargetFrames(int sampleRate)
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO_TARGET_MS");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int ms)
+            && ms > 0)
+        {
+            return (int)(sampleRate * (ms / 1000.0));
+        }
+        return (int)(sampleRate * 0.10);
     }
 }

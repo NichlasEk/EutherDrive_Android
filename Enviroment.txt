@@ -20,8 +20,29 @@ VDP
 - EUTHERDRIVE_TRACE_MD_VDP=1: MD VDP log (core).
 - EUTHERDRIVE_TRACE_VDP_TIMING=1: VDP timing log.
 - EUTHERDRIVE_TRACE_VDP_FB=1: VDP framebuffer sampling.
+- EUTHERDRIVE_TRACE_VDP_STATUS_READ=1: log VDP status reads (C00004) with vblank/overflow/collision bits.
+- EUTHERDRIVE_TRACE_SPRITE_OVERFLOW_FRAME=1: log per-frame max sprites/cells per line + overflow flag.
 - EUTHERDRIVE_TRACE_VRAM=1: VRAM vs renderer VRAM sampling.
 - EUTHERDRIVE_TRACE_VRAM_RANGE=<start-end>: log VRAM writes in range (hex; e.g. 0xC000-0xC7FF).
+- EUTHERDRIVE_TRACE_VRAM_RANGE_LIMIT=<int>: limit [VRAM-RANGE] logs (0 = unlimited; default 200).
+- EUTHERDRIVE_TRACE_VRAM_RANGE_SKIP_FILL=1: skip [VRAM-RANGE] logs for DMA-FILL writes.
+- EUTHERDRIVE_TRACE_DMA_SRC=1: log DMA source reads (address/value) for VDP DMA.
+- EUTHERDRIVE_TRACE_DMA_SRC_LIMIT=<int>: limit [DMA-SRC-READ] logs (0 = unlimited; default 128).
+- EUTHERDRIVE_TRACE_TILE_FETCH=1: log tile fetches in renderer (per scanline).
+- EUTHERDRIVE_TRACE_TILE_FETCH_SCANLINE=<int>: scanline to log (default 112).
+- EUTHERDRIVE_TRACE_TILE_FETCH_LIMIT=<int>: max [TILEFETCH] logs per frame (0 = unlimited; default 128).
+- EUTHERDRIVE_TRACE_SCROLL_LINE=1: log hscroll/vscroll sampling for a scanline.
+- EUTHERDRIVE_TRACE_SCROLL_LINE_SCANLINE=<int>: scanline to log (default 112).
+- EUTHERDRIVE_TRACE_SCROLL_LINE_LIMIT=<int>: max [SCROLLLINE] logs per frame (0 = unlimited; default 32).
+- EUTHERDRIVE_FORCE_SCROLL_ZERO=1: force H/V scroll to 0 during rendering (debug).
+
+RAM
+- EUTHERDRIVE_TRACE_RAM_RANGE=<start-end>: log RAM reads/writes in range (hex; e.g. 0xFF0000-0xFF0FFF).
+- EUTHERDRIVE_TRACE_RAM_RANGE_LIMIT=<int>: limit [RAM-RANGE] logs (0 = unlimited; default 200).
+- EUTHERDRIVE_TRACE_RAM_RANGE_NONZERO=1: only log non-zero RAM range values.
+- EUTHERDRIVE_TRACE_RAM_RANGE_FIRST_PER_FRAME=1: only log first matching RAM range event per frame.
+- EUTHERDRIVE_TRACE_RAM_RANGE_WRITE_COUNTER=1: count RAM writes in range per frame and log a summary.
+- EUTHERDRIVE_TRACE_RAM_RANGE_FIRST_WRITE=1: log first write per frame in range (even if value is 0).
 - EUTHERDRIVE_TRACE_CRAM=1: CRAM write log.
 - EUTHERDRIVE_TRACE_NAMETABLE_ROW_DUMP=1: dump Plane A/B nametable rows + key VDP regs (scanline 0 and 112).
 - EUTHERDRIVE_TRACE_PATTERN_TILE_DUMP=1: dump 8x8 tile patterns for first few nametable entries.
@@ -31,12 +52,16 @@ VDP
 CPU / 68k
 - EUTHERDRIVE_TRACE_MD_STALL=1: stall watchdog log.
 - EUTHERDRIVE_TRACE_PC=1: PC watch logs.
+- EUTHERDRIVE_TRACE_PC_TAP_LIST=<addr,addr,...>: log regs + disasm when PC hits any listed address.
+- EUTHERDRIVE_TRACE_PC_TAP_PEEK_LIST=<start-end,...>: dump RAM bytes for listed ranges on PC tap.
+- EUTHERDRIVE_TRACE_PC_TAP_ONCE_PER_FRAME=1: log at most once per frame per tapped PC.
 - EUTHERDRIVE_TRACE_DBRA=1: DBRA trace.
 - EUTHERDRIVE_TRACE_TRAP=1: TRAP trace.
 - EUTHERDRIVE_TRACE_CALLPARAM=1: log stack argument near 0x02EB60..0x02EB80.
 - EUTHERDRIVE_TRACE_MOVEA_PARAM=1: log MOVEA.L (A7+8) param near 0x02EB80..0x02EBC0.
 - EUTHERDRIVE_TRACE_ROMCOPY=1: ROM copy trace.
 - EUTHERDRIVE_TRACE_RESETVECT=1: reset vector trace.
+- EUTHERDRIVE_TRACE_MEM_WATCH_LIST=<addr,addr,...>: log reads/writes to any listed address (hex or dec).
 - EUTHERDRIVE_FORCE_B154_READ=<byte>: force 68k reads at 0xFFB154 to this value (hex or dec).
 - EUTHERDRIVE_FORCE_B154_READ_LIMIT=<int>: limit [B154-OVERRIDE] logs (0 = unlimited).
 
@@ -77,6 +102,22 @@ Z80
 - EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_END=<hex|dec>: range end (default 0x0E50).
 - EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_TARGET=<hex|dec>: forced PC target (default 0x0D00).
 - EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_LIMIT=<int>: limit [Z80PC-ARM] logs (0 = unlimited).
+- EUTHERDRIVE_Z80_VBLANK_IRQ_PULSE=<int>: auto-clear Z80 VBlank IRQ after N Z80 cycles (default 171).
+- EUTHERDRIVE_Z80_YM_WAIT=<int>: extra Z80 wait cycles for YM2612 port access (default 4).
+- EUTHERDRIVE_Z80_PSG_WAIT=<int>: extra Z80 wait cycles for PSG writes (default 4).
+- EUTHERDRIVE_Z80_BANK_WAIT=<int>: extra Z80 wait cycles for 68k banked reads/writes (default 16).
+- EUTHERDRIVE_TRACE_Z80BANK_READ_LIMIT=<int>: limit [Z80BANKRD] logs (0 = unlimited).
+- EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES=1: log Z80 actual/budget cycle stats per frame.
+- EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES_EVERY=<int>: frame interval for Z80 cycle logs (default 60).
+- EUTHERDRIVE_TRACE_Z80_AUDIO_RATE=1: log YM status read/PSG write rates from Z80 cycles.
+- EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_EVERY=<int>: frame interval for audio rate logs (default 60).
+- EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_START_FRAME=<int>: delay audio rate logs until this frame (default 0).
+- EUTHERDRIVE_TRACE_YM_TIMER=1: log YM2612 timer register writes and per-frame timer event counts.
+- EUTHERDRIVE_TRACE_YM_TIMER_LIMIT=<int>: limit [YMTIMER-REG] logs (default 256).
+- EUTHERDRIVE_TRACE_YM_KEY=1: log YM2612 key on/off writes and per-frame key stats.
+- EUTHERDRIVE_TRACE_YM_KEY_LIMIT=<int>: limit [YMKEY] logs (default 256).
+- EUTHERDRIVE_TRACE_YM_WRITE_STATS=1: log YM2612 per-frame write counts and last register write.
+- EUTHERDRIVE_TRACE_YM_WRITE_STATS_LIMIT=<int>: limit [YMWRITE] logs (default 256).
 - EUTHERDRIVE_TRACE_Z80_PC_RANGE_START=<hex|dec>: log Z80 opcodes in this PC range (start).
 - EUTHERDRIVE_TRACE_Z80_PC_RANGE_END=<hex|dec>: log Z80 opcodes in this PC range (end).
 - EUTHERDRIVE_TRACE_Z80_PC_RANGE_LIMIT=<int>: limit [Z80PC] logs (0 = unlimited).

@@ -101,6 +101,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (MdTracerCore.MdLog.Enabled && g_scanline == 0)
                 MdTracerCore.MdLog.WriteLine($"[VDP] frame={_frameCounter} display={g_vdp_reg_1_6_display}");
 
+            // Sprite overflow is evaluated per scanline regardless of display enable.
+            EvaluateSpriteOverflowForLine(g_scanline);
+
              if (g_vdp_reg_1_6_display == 1)
              {
                  if (md_main.g_masterSystemMode && !_smsFirstLineRendered && g_scanline == 0)

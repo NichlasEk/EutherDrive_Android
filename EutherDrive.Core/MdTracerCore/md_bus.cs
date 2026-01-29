@@ -228,6 +228,22 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_TRACE_BUS_WATCH_LIMIT", 64);
         private static readonly bool TraceBusWatchAll =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS_WATCH_ALL"), "1", StringComparison.Ordinal);
+        private static readonly string? TraceRamRangeEnv =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE");
+        private static readonly bool TraceRamRangeEnabled =
+            TryParseAddrRange(TraceRamRangeEnv, out _traceRamRangeStart, out _traceRamRangeEnd);
+        private static readonly int TraceRamRangeLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_RAM_RANGE_LIMIT", 200);
+        private static readonly bool TraceRamRangeNonZero =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_NONZERO"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRamRangeFirstPerFrame =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_FIRST_PER_FRAME"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRamRangeWriteCounter =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_WRITE_COUNTER"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRamRangeFirstWritePerFrame =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_FIRST_WRITE"), "1", StringComparison.Ordinal);
+        private static uint _traceRamRangeStart;
+        private static uint _traceRamRangeEnd;
         private static readonly bool TraceZ80Mbx =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80MBX"), "1", StringComparison.Ordinal);
         private static readonly bool TraceMbxSrc =
@@ -385,6 +401,12 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         [NonSerialized] private int _busWatchRemaining = TraceBusWatchLimit;
+        [NonSerialized] private int _ramRangeRemaining = TraceRamRangeLimit;
+        [NonSerialized] private long _ramRangeLastFrame = -1;
+        [NonSerialized] private bool _ramRangeLoggedThisFrame;
+        [NonSerialized] private long _ramRangeCountFrame = -1;
+        [NonSerialized] private int _ramRangeWriteCount;
+        [NonSerialized] private bool _ramRangeFirstWriteLogged;
 
         private void LogBusWatch(uint addr, int size, bool write, uint value)
         {
@@ -396,6 +418,98 @@ namespace EutherDrive.Core.MdTracerCore
             char rw = write ? 'W' : 'R';
             string fmt = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
             Console.WriteLine($"[BUSWATCH] {rw}{size} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{value.ToString(fmt)}");
+        }
+
+        private void LogRamRange(uint addr, int size, bool write, uint value)
+        {
+            if (!TraceRamRangeEnabled || _ramRangeRemaining <= 0)
+                return;
+            if (addr < _traceRamRangeStart || addr > _traceRamRangeEnd)
+                return;
+            if (TraceRamRangeWriteCounter || TraceRamRangeFirstWritePerFrame)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                if (frame != _ramRangeCountFrame)
+                {
+                    if (TraceRamRangeWriteCounter && _ramRangeCountFrame >= 0 && _ramRangeWriteCount > 0)
+                    {
+                        Console.WriteLine($"[RAM-RANGE-SUMMARY] frame={_ramRangeCountFrame} writes={_ramRangeWriteCount}");
+                    }
+                    _ramRangeCountFrame = frame;
+                    _ramRangeWriteCount = 0;
+                    _ramRangeFirstWriteLogged = false;
+                }
+                if (write)
+                {
+                    _ramRangeWriteCount++;
+                    if (TraceRamRangeFirstWritePerFrame && !_ramRangeFirstWriteLogged)
+                    {
+                        _ramRangeFirstWriteLogged = true;
+                        string fmtFirst = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
+                        Console.WriteLine(
+                            $"[RAM-RANGE-FIRST] frame={frame} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} size={size} val=0x{value.ToString(fmtFirst)}");
+                    }
+                }
+            }
+            if (TraceRamRangeNonZero && value == 0)
+                return;
+            if (TraceRamRangeFirstPerFrame)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                if (frame != _ramRangeLastFrame)
+                {
+                    _ramRangeLastFrame = frame;
+                    _ramRangeLoggedThisFrame = false;
+                }
+                if (_ramRangeLoggedThisFrame)
+                    return;
+                _ramRangeLoggedThisFrame = true;
+            }
+            if (_ramRangeRemaining != int.MaxValue)
+                _ramRangeRemaining--;
+            char rw = write ? 'W' : 'R';
+            string fmt = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
+            Console.WriteLine($"[RAM-RANGE] {rw}{size} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{value.ToString(fmt)}");
+        }
+
+        private static bool TryParseAddrRange(string? raw, out uint start, out uint end)
+        {
+            start = 0;
+            end = 0;
+            if (string.IsNullOrWhiteSpace(raw))
+                return false;
+            string trimmed = raw.Trim();
+            int sep = trimmed.IndexOf(':');
+            if (sep < 0)
+                sep = trimmed.IndexOf('-');
+            if (sep <= 0 || sep >= trimmed.Length - 1)
+                return false;
+            string left = trimmed.Substring(0, sep);
+            string right = trimmed.Substring(sep + 1);
+            if (!TryParseAddrToken(left, out start) || !TryParseAddrToken(right, out end))
+                return false;
+            if (end < start)
+            {
+                uint tmp = start;
+                start = end;
+                end = tmp;
+            }
+            return true;
+        }
+
+        private static bool TryParseAddrToken(string token, out uint value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(token))
+                return false;
+            string trimmed = token.Trim();
+            if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                trimmed = trimmed.Substring(2);
+            if (uint.TryParse(trimmed, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value))
+                return true;
+            if (uint.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+                return true;
+            return false;
         }
 
         private static int ParseNonNegativeInt(string name, int fallback)
@@ -1226,6 +1340,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 byte val = md_m68k.read8(in_address);
                 LogBusWatch(in_address, 1, write: false, value: val);
+                LogRamRange(in_address, 1, write: false, value: val);
                 return val;
             }
 
@@ -1312,7 +1427,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // Okänt område → "open bus"
-            Debug.WriteLine($"[BUS] read8 @0x{in_address:X6} (open)");
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[BUS] read8 open bus addr=0x{in_address:X6}");
             return 0xFF;
         }
 
@@ -1358,6 +1474,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 ushort val = md_m68k.read16(in_address);
                 LogBusWatch(in_address, 2, write: false, value: val);
+                LogRamRange(in_address, 2, write: false, value: val);
                 return val;
             }
 
@@ -1423,7 +1540,8 @@ namespace EutherDrive.Core.MdTracerCore
                 return word;
             }
 
-            Debug.WriteLine($"[BUS] read16 @0x{in_address:X6} (open)");
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[BUS] read16 open bus addr=0x{in_address:X6}");
             return 0xFFFF;
         }
 
@@ -1473,6 +1591,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 uint val = md_m68k.read32(in_address);
                 LogBusWatch(in_address, 4, write: false, value: val);
+                LogRamRange(in_address, 4, write: false, value: val);
                 return val;
             }
 
@@ -1545,7 +1664,8 @@ namespace EutherDrive.Core.MdTracerCore
                 return val;
             }
 
-            Debug.WriteLine($"[BUS] read32 @0x{in_address:X6} (open)");
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[BUS] read32 open bus addr=0x{in_address:X6}");
             return 0xFFFF_FFFF;
         }
 
@@ -1597,6 +1717,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address >= 0xE00000)
             {
+                LogRamRange(in_address, 1, write: true, value: in_data);
                 md_m68k.write8(in_address, in_data);
                 return;
             }
@@ -1604,7 +1725,18 @@ namespace EutherDrive.Core.MdTracerCore
             // 0xC00010/11 SN76489 (PSG) – tills ljud kopplas in, ignorera
             if (in_address == 0xC00010 || in_address == 0xC00011)
             {
-                md_main.g_md_music?.g_md_sn76489.write8(in_data);
+                Console.WriteLine($"[PSG-HIT] address=0x{in_address:X6} data=0x{in_data:X2} PC=0x{md_m68k.g_reg_PC:X6}");
+                if (md_main.g_md_music == null)
+                {
+                    Console.WriteLine($"[PSG-ERROR] md_main.g_md_music is null!");
+                    return;
+                }
+                if (md_main.g_md_music.g_md_sn76489 == null)
+                {
+                    Console.WriteLine($"[PSG-ERROR] g_md_sn76489 is null!");
+                    return;
+                }
+                md_main.g_md_music.g_md_sn76489.write8(in_data);
                 md_psg_trace.TraceWrite("68K", in_address, in_data, md_m68k.g_reg_PC);
                 return;
             }
@@ -1624,6 +1756,8 @@ namespace EutherDrive.Core.MdTracerCore
             // 0xA04000–0xA04003 YM2612
             if (in_address >= 0xA04000 && in_address <= 0xA04003)
             {
+                // DEBUG: Log all YM writes from 68K
+                Console.WriteLine($"[68K-YM-WRITE] addr=0x{in_address:X6} val=0x{in_data:X2} PC=0x{md_m68k.g_reg_PC:X6} music={md_main.g_md_music != null} ym={md_main.g_md_music?.g_md_ym2612 != null}");
                 if (_ymEnabled)
                 {
                     md_main.g_md_music?.g_md_ym2612.write8(in_address, in_data, "M68K");
@@ -1748,7 +1882,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // Övrigt: no-op
-            Debug.WriteLine($"[BUS] write8 @0x{in_address:X6} = 0x{in_data:X2} (ignored)");
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[BUS] write8 ignored addr=0x{in_address:X6} val=0x{in_data:X2}");
         }
 
         public void write16(uint in_address, ushort in_data)
@@ -1786,6 +1921,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address >= 0xE00000)
             {
+                LogRamRange(in_address, 2, write: true, value: in_data);
                 md_m68k.write16(in_address, in_data);
                 return;
             }
@@ -1922,6 +2058,21 @@ namespace EutherDrive.Core.MdTracerCore
                     RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: true);
                     return;
                 }
+                // Real hardware only latches the upper byte on 68k word writes to the Z80 bus.
+                // Mirror clownmdemu behavior: write high byte to even address, ignore low byte.
+                {
+                    uint aligned = in_address & 0xFFFFFEu;
+                    byte udsHi = (byte)((in_data >> 8) & 0xFF);
+                    bool prev = _suppressZ80WinRangeByteLog;
+                    _suppressZ80WinRangeByteLog = true;
+                    bool prevStat = _suppressZ80WinStatByteLog;
+                    _suppressZ80WinStatByteLog = true;
+                    write8(aligned, udsHi);
+                    _suppressZ80WinStatByteLog = prevStat;
+                    _suppressZ80WinRangeByteLog = prev;
+                    RecordZ80WinWriteAccess(aligned, 2, in_data, blocked: false);
+                    return;
+                }
                 if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1))
                 {
                     MaybeLogZ80WinRangeWrite16(in_address, in_data, uds: true, lds: true, blocked: false);
@@ -1995,7 +2146,8 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
 
-            Debug.WriteLine($"[BUS] write16 @0x{in_address:X6} = 0x{in_data:X4} (ignored)");
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[BUS] write16 ignored addr=0x{in_address:X6} val=0x{in_data:X4}");
         }
 
         public void write32(uint in_address, uint in_data)
@@ -2040,6 +2192,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address >= 0xFF0000)
             {
+                LogRamRange(in_address, 4, write: true, value: in_data);
                 md_m68k.write32(in_address, in_data);
                 return;
             }
@@ -2250,7 +2403,8 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
 
-            Debug.WriteLine($"[BUS] write32 @0x{in_address:X6} = 0x{in_data:X8} (ignored)");
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[BUS] write32 ignored addr=0x{in_address:X6} val=0x{in_data:X8}");
         }
 
         private void LogZ80RegRead(uint addr, uint val)

@@ -205,6 +205,7 @@ namespace EutherDrive.Core.MdTracerCore
         public static void AddM68kCycles(int cycles) => _m68kCyclesThisFrame += cycles;
         public static void IncrementTimerControlCalls() => _timerControlCalls++;
         public static void IncrementYmAdvanceCalls() => _ymAdvanceCallsLastFrame++;
+        public static void IncrementYmAdvanceCallsBy(int count) => _ymAdvanceCallsLastFrame += count;
         
         // Public accessors for DIAG-FRAME logging
         public static int M68kCyclesThisFrame => _m68kCyclesThisFrame;
@@ -229,10 +230,17 @@ namespace EutherDrive.Core.MdTracerCore
         // We use M68K cycles as the base unit (VDL_LINE_RENDER_MC68_CLOCK per line).
         private static long _systemCycles;
         internal static long SystemCycles => _systemCycles;
-        internal static void AdvanceSystemCycles(long cycles) => _systemCycles += cycles;
+        internal static void AdvanceSystemCycles(long cycles)
+        {
+            _systemCycles += cycles;
+            
+            // DON'T sync YM2612 here - it causes too many calls
+            // YM2612 will be synced at frame boundaries via EnsureAdvanceEachFrame()
+            // or when audio is rendered via YM2612_Update()
+        }
 
         // Synkroniseringssystem för gemensam tidsbas (inspirerat av andra emulatorer)
-        private class SyncState
+        internal class SyncState
         {
             public long CurrentCycle;
         }
@@ -242,15 +250,25 @@ namespace EutherDrive.Core.MdTracerCore
         private static SyncState _syncPsg = new SyncState();
         private static SyncState _syncZ80 = new SyncState();
         private static SyncState _syncM68k = new SyncState();
+        
+        internal static SyncState GetSyncFm() => _syncFm;
 
         // Gemensam tidsbas - mastercykler (högsta precision)
-        private static long _masterCycles;
+        // Använder samma som SystemCycles för att undvika timing-konflikter
+        private static int _syncCommonDebugCount;
 
         // Synkroniseringsfunktioner
-        private static long SyncCommon(SyncState sync, long targetCycle, int clockDivisor = 1)
+        internal static long SyncCommon(SyncState sync, long targetCycle, int clockDivisor = 1)
         {
             long nativeTargetCycle = targetCycle / clockDivisor;
             long cyclesToDo = nativeTargetCycle - sync.CurrentCycle;
+            
+            // DEBUG: Log first few sync calls
+            if (_syncCommonDebugCount < 10)
+            {
+                _syncCommonDebugCount++;
+                Console.WriteLine($"[SYNC-COMMON-DEBUG] call#{_syncCommonDebugCount}: sync.CurrentCycle={sync.CurrentCycle} targetCycle={targetCycle} nativeTargetCycle={nativeTargetCycle} cyclesToDo={cyclesToDo}");
+            }
             
             if (cyclesToDo < 0)
             {
@@ -263,10 +281,19 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         // Hämta aktuell mastercykel
-        internal static long GetMasterCycle() => _masterCycles;
+        internal static long GetMasterCycle() => SystemCycles;
 
         // Öka mastercykler (anropas när någon CPU kör)
-        internal static void AdvanceMasterCycles(long cycles) => _masterCycles += cycles;
+        internal static void AdvanceMasterCycles(long cycles)
+        {
+            AdvanceSystemCycles(cycles);
+            
+            // DEBUG: Log first few advances
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MASTER_CYCLES") == "1")
+            {
+                Console.WriteLine($"[MASTER-CYCLES-DEBUG] +{cycles} = {SystemCycles}");
+            }
+        }
 
         // --- Kärnkomponenter ---
         internal static md_vdp g_md_vdp = new md_vdp();
@@ -414,7 +441,6 @@ namespace EutherDrive.Core.MdTracerCore
                         // Run M68K slice
                         g_md_m68k.run(m68kSlice);
                         AdvanceSystemCycles(m68kSlice);
-                        AdvanceMasterCycles(m68kSlice);
                         m68kDone += m68kSlice;
 
                         // Add Z80 budget proportional to M68K cycles executed
@@ -434,19 +460,15 @@ namespace EutherDrive.Core.MdTracerCore
                             if (z80Cycles <= 0) break;
 
                             g_md_z80.BeginSystemCycleSlice();
+                            
+                                // Advance system cycles for Z80 execution BEFORE running Z80
+                                // Z80 runs at 3.58MHz, M68K at 7.67MHz
+                                // Convert Z80 cycles to M68K cycles for SystemCycles timebase
+                                // Convert Z80 cycles to M68K cycles using fraction accumulator
+                                // This must be done BEFORE running Z80 so that TickTimersFromZ80Cycles()
+                                // sees the correct SystemCycles value
                             g_md_z80.run(z80Cycles);
                             z80Budget -= z80Cycles;
-                            
-                            // Advance system cycles for Z80 execution
-                            // Z80 runs at 3.58MHz, M68K at 7.67MHz
-                            // Convert Z80 cycles to M68K cycles for SystemCycles timebase
-                            // Convert Z80 cycles to M68K cycles using fraction accumulator
-                            int systemCycles = ConvertZ80ToM68kCycles(z80Cycles);
-                            if (systemCycles > 0)
-                            {
-                                DebugLogSystemCycles("RunFrame-slice", z80Cycles, systemCycles);
-                                AdvanceSystemCycles(systemCycles);
-                            }
                             g_md_z80.EndSystemCycleSlice();
                             
                             // Telemetry: track Z80 execution
@@ -477,10 +499,6 @@ namespace EutherDrive.Core.MdTracerCore
                             {
                                 g_md_z80.BeginSystemCycleSlice();
                                 g_md_z80.run(z80Cycles);
-                                // Convert Z80 cycles to M68K cycles for SystemCycles
-                                int systemCycles = ConvertZ80ToM68kCycles(z80Cycles);
-                                if (systemCycles < 1) systemCycles = 1;
-                                AdvanceSystemCycles(systemCycles);
                                 g_md_z80.EndSystemCycleSlice();
                             }
                             if (m68kCycles > 0)
@@ -489,7 +507,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 AdvanceSystemCycles(m68kCycles);
                             }
                         }
-                        else
+                         else
                         {
                             if (m68kCycles > 0)
                             {
@@ -500,10 +518,6 @@ namespace EutherDrive.Core.MdTracerCore
                             {
                                 g_md_z80.BeginSystemCycleSlice();
                                 g_md_z80.run(z80Cycles);
-                                // Convert Z80 cycles to M68K cycles for SystemCycles
-                                int systemCycles = ConvertZ80ToM68kCycles(z80Cycles);
-                                if (systemCycles < 1) systemCycles = 1;
-                                AdvanceSystemCycles(systemCycles);
                                 g_md_z80.EndSystemCycleSlice();
                             }
                         }
@@ -517,10 +531,6 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         g_md_z80.BeginSystemCycleSlice();
                         g_md_z80.run(z80LineBudget);
-                        // Convert Z80 cycles to M68K cycles for SystemCycles
-                        int systemCycles = ConvertZ80ToM68kCycles(z80LineBudget);
-                        if (systemCycles < 1) systemCycles = 1;
-                        AdvanceSystemCycles(systemCycles);
                         g_md_z80.EndSystemCycleSlice();
                     }
                     g_md_m68k.run(VDL_LINE_RENDER_MC68_CLOCK);
@@ -529,11 +539,6 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         g_md_z80.BeginSystemCycleSlice();
                         g_md_z80.run(z80LineBudget);
-                        // Convert Z80 cycles to M68K cycles for SystemCycles
-                        int systemCycles = ConvertZ80ToM68kCycles(z80LineBudget);
-                        if (systemCycles < 1) systemCycles = 1;
-                        DebugLogSystemCycles("RunFrame-linebudget", z80LineBudget, systemCycles);
-                        AdvanceSystemCycles(systemCycles);
                         g_md_z80.EndSystemCycleSlice();
                     }
                 }
@@ -554,11 +559,14 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 g_md_z80.BeginSystemCycleSlice();
                 g_md_z80.run(z80FrameBudget);
-                // Convert Z80 cycles to M68K cycles for SystemCycles
-                int systemCycles = ConvertZ80ToM68kCycles(z80FrameBudget);
-                if (systemCycles < 1) systemCycles = 1;
-                DebugLogSystemCycles("RunFrame-framebudget", z80FrameBudget, systemCycles);
-                AdvanceSystemCycles(systemCycles);
+                if (g_masterSystemMode)
+                {
+                    // Convert Z80 cycles to M68K cycles for SystemCycles
+                    int systemCycles = ConvertZ80ToM68kCycles(z80FrameBudget);
+                    if (systemCycles < 1) systemCycles = 1;
+                    DebugLogSystemCycles("RunFrame-framebudget", z80FrameBudget, systemCycles);
+                    AdvanceSystemCycles(systemCycles);
+                }
                 g_md_z80.EndSystemCycleSlice();
             }
 

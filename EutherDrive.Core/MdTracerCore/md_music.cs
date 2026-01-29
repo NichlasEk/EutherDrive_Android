@@ -16,7 +16,10 @@ namespace EutherDrive.Core.MdTracerCore
         internal void FlushAudioStats(long frame)
         {
             if (!md_ym2612.AudStatEnabled)
+            {
+                g_md_ym2612.FlushTimerStats(frame);
                 return;
+            }
 
             g_md_ym2612.ConsumeAudStatCounters(
                 out int keyOn, out int fnum, out int param, out int dacCmd, out int dacDat);
@@ -25,6 +28,7 @@ namespace EutherDrive.Core.MdTracerCore
             Console.WriteLine(
                 $"[AUDSTAT] frame={frame} ym_keyon={keyOn} ym_fnum={fnum} ym_param={param} " +
                 $"ym_dac_cmd={dacCmd} ym_dac_dat={dacDat} psg={psgWrites}");
+            g_md_ym2612.FlushTimerStats(frame);
         }
     }
 }

@@ -7,10 +7,24 @@ namespace EutherDrive.Core.MdTracerCore
     //----------------------------------------------------------------
     internal partial class md_ym2612
     {
+        private static readonly int FmVolumeDivisor = GetFmVolumeDivisor();
+        private double _sampleCycleFrac;
         private static readonly bool AudioMuteDac =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_MUTE_DAC"), "1", StringComparison.Ordinal);
         private static readonly bool AudioMuteFmPsg =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_MUTE_FMPSG"), "1", StringComparison.Ordinal);
+        private static int GetFmVolumeDivisor()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_FM_VOLUME_DIVISOR");
+            if (!string.IsNullOrWhiteSpace(raw)
+                && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value)
+                && value > 0)
+            {
+                return value;
+            }
+            // Default to 64 to reduce overly hot FM output.
+            return 64;
+        }
 
         public (int out1, int out2) YM2612_Update()
         {
@@ -26,17 +40,18 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[YM-TIMING] YM2612_Update called at SystemCycles={md_main.SystemCycles}");
             }
             
-            // Advance timers based on master SystemCycles first
-            AdvanceTimersFromSystemCycles();
+            // Advance timers based on audio time (single-sample step)
+            AdvanceTimersForSamples(1);
             
             int w_out_l = 0;
             int w_out_r = 0;
 
-            // FM_VOLUME_DIVISOR controls the final output level
-            // Original was 32 for reasonable volume
-            // Increased to 64 to lower volume (user reported headphones cracking)
-            const int FM_VOLUME_DIVISOR = 64;
-
+            // FM volume divisor controls final output level; env override allows tuning.
+            int FM_VOLUME_DIVISOR = FmVolumeDivisor;
+            
+            // SIMPLE FIX: Advance operators by ONE audio sample
+            // The original code advanced operators here (lfo_calc, phase_generator, envelop_generator)
+            // We keep that but need to ensure timing is correct
             lfo_calc();
             for (int w_ch = 0; w_ch < NUM_CHANNELS; w_ch++)
             {
@@ -103,18 +118,20 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[YM-TIMING] YM2612_UpdateBatch called at SystemCycles={md_main.SystemCycles} frames={frames}");
             }
 
-            // Advance timers based on master SystemCycles first (once per batch)
-            AdvanceTimersFromSystemCycles();
+            // Advance timers based on audio time (batch step)
+            if (frames > 0)
+                AdvanceTimersForSamples(frames);
             
             for (int i = 0; i < maxFrames; i++)
             {
-                // Update LFO once per sample
-                lfo_calc();
-                
                 int w_out_l = 0;
                 int w_out_r = 0;
-                const int FM_VOLUME_DIVISOR = 64;
-
+                int FM_VOLUME_DIVISOR = FmVolumeDivisor;
+                
+                // SIMPLE FIX: Advance operators by ONE audio sample
+                // The original code advanced operators here (lfo_calc, phase_generator, envelop_generator)
+                // We keep that but need to ensure timing is correct
+                lfo_calc();
                 for (int w_ch = 0; w_ch < NUM_CHANNELS; w_ch++)
                 {
                     register_change(w_ch);
@@ -163,7 +180,11 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (g_reg_22_lfo_enable == true)
             {
-                g_com_lfo_cnt += g_reg_22_lfo_inc;
+                // Scale LFO increment to match YM step scaling.
+                double total = g_com_lfo_frac + (g_reg_22_lfo_inc * YmStepScale);
+                int step = (int)total;
+                g_com_lfo_frac = total - step;
+                g_com_lfo_cnt += step;
                 int w_cnt = (g_com_lfo_cnt >> CNT_LOW_BIT) & CNT_MASK;
                 g_com_lfo_freq_cnt = LFO_FREQ_TABLE[w_cnt];
                 g_com_lfo_env_cnt = LFO_ENV_TABLE[w_cnt];
@@ -184,18 +205,27 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     //phase_generator
                     int finc = (int)((float)g_slot_fnum[in_ch, w_slot_m]
-                        * (1 << g_reg_a4_block[in_ch, w_slot_m]))>> 1;
+                        * (1 << g_reg_a4_block[in_ch, w_slot_m])) >> 1;
                     int kc = g_slot_keycode[in_ch, w_slot_m];
-                    g_slot_phase_inc[in_ch, w_slot] = 
-                        (int)((finc + DT_TABLE[g_reg_30_dt[in_ch, w_slot], kc])
-                        * EMU_CORRECTION
-                        * g_reg_30_multi[in_ch, w_slot]);
+                    double phaseInc = (finc + DT_TABLE[g_reg_30_dt[in_ch, w_slot], kc])
+                        * g_reg_30_multi[in_ch, w_slot];
+                    phaseInc *= YmStepScale;
+                    g_slot_phase_inc_f[in_ch, w_slot] = phaseInc;
+                    g_slot_phase_inc[in_ch, w_slot] = (int)phaseInc;
                     //envelop_generator
                     int ksr = kc >> g_reg_50_key_scale[in_ch, w_slot];
-                    g_slot_env_incA[in_ch, w_slot] = (int)ENV_RATE_A_TABLE[g_slot_env_indexA[in_ch, w_slot] + ksr];
-                    g_slot_env_incD[in_ch, w_slot] = (int)ENV_RATE_D_TABLE[g_slot_env_indexD[in_ch, w_slot] + ksr];
-                    g_slot_env_incS[in_ch, w_slot] = (int)ENV_RATE_D_TABLE[g_slot_env_indexS[in_ch, w_slot] + ksr];
-                    g_slot_env_incR[in_ch, w_slot] = (int)ENV_RATE_D_TABLE[g_slot_env_indexR[in_ch, w_slot] + ksr];
+                    double envA = ENV_RATE_A_TABLE[g_slot_env_indexA[in_ch, w_slot] + ksr] * YmStepScale;
+                    double envD = ENV_RATE_D_TABLE[g_slot_env_indexD[in_ch, w_slot] + ksr] * YmStepScale;
+                    double envS = ENV_RATE_D_TABLE[g_slot_env_indexS[in_ch, w_slot] + ksr] * YmStepScale;
+                    double envR = ENV_RATE_D_TABLE[g_slot_env_indexR[in_ch, w_slot] + ksr] * YmStepScale;
+                    g_slot_env_incA_f[in_ch, w_slot] = envA;
+                    g_slot_env_incD_f[in_ch, w_slot] = envD;
+                    g_slot_env_incS_f[in_ch, w_slot] = envS;
+                    g_slot_env_incR_f[in_ch, w_slot] = envR;
+                    g_slot_env_incA[in_ch, w_slot] = (int)envA;
+                    g_slot_env_incD[in_ch, w_slot] = (int)envD;
+                    g_slot_env_incS[in_ch, w_slot] = (int)envS;
+                    g_slot_env_incR[in_ch, w_slot] = (int)envR;
                 }
             }
         }
@@ -203,13 +233,17 @@ namespace EutherDrive.Core.MdTracerCore
         {
             for (int w_slot = 0; w_slot < NUM_SLOT; w_slot++)
             {
-                int w_lfo_inc = 0;
+                double w_lfo_inc = 0;
                 if (g_reg_22_lfo_enable == true)
                 {
-                    w_lfo_inc = (int)(g_slot_phase_inc[in_ch, w_slot] * (g_reg_b4_pms[in_ch] * g_com_lfo_freq_cnt)) >> CNT_LOW_BIT;
+                    double lfoMul = (g_reg_b4_pms[in_ch] * g_com_lfo_freq_cnt) / (double)(1 << CNT_LOW_BIT);
+                    w_lfo_inc = g_slot_phase_inc_f[in_ch, w_slot] * lfoMul;
                 }
                 g_slot_op_calc[in_ch, w_slot] = g_slot_freq_cnt[in_ch, w_slot];
-                g_slot_freq_cnt[in_ch, w_slot] += g_slot_phase_inc[in_ch, w_slot] + w_lfo_inc;
+                double total = g_slot_phase_frac[in_ch, w_slot] + g_slot_phase_inc_f[in_ch, w_slot] + w_lfo_inc;
+                int step = (int)total;
+                g_slot_phase_frac[in_ch, w_slot] = total - step;
+                g_slot_freq_cnt[in_ch, w_slot] += step;
             }
         }
 
@@ -332,30 +366,33 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 g_slot_env_out[in_ch, w_slot] = w_env;
 
-                int w_inc = 0;
+                double w_inc = 0;
                 ENV_COND w_cond = g_slot_env_cond[in_ch, w_slot];
                 switch (w_cond)
                 {
                     case ENV_COND.ATTACK:
-                        w_inc = g_slot_env_incA[in_ch, w_slot];
+                        w_inc = g_slot_env_incA_f[in_ch, w_slot];
                         break;
                     case ENV_COND.DECAY:
-                        w_inc = g_slot_env_incD[in_ch, w_slot];
+                        w_inc = g_slot_env_incD_f[in_ch, w_slot];
                         break;
                     case ENV_COND.SUBSTAIN:
                         if (g_slot_env_cnt[in_ch, w_slot] < ENV_LEN_END)
                         {
-                            w_inc = g_slot_env_incS[in_ch, w_slot];
+                            w_inc = g_slot_env_incS_f[in_ch, w_slot];
                         }
                         break;
                     case ENV_COND.RELEASE:
                         if (g_slot_env_cnt[in_ch, w_slot] < ENV_LEN_END)
                         {
-                            w_inc = g_slot_env_incR[in_ch, w_slot];
+                            w_inc = g_slot_env_incR_f[in_ch, w_slot];
                         }
                         break;
                 }
-                g_slot_env_cnt[in_ch, w_slot] += w_inc;
+                double total = g_slot_env_frac[in_ch, w_slot] + w_inc;
+                int step = (int)total;
+                g_slot_env_frac[in_ch, w_slot] = total - step;
+                g_slot_env_cnt[in_ch, w_slot] += step;
                 if (g_slot_env_cnt[in_ch, w_slot] >= g_slot_env_cmp[in_ch, w_slot])
                 {
                     switch (w_cond)
@@ -449,80 +486,123 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void TickTimersFromZ80Cycles(int z80Cycles)
         {
-            // Still needed for Z80-driven timing when Z80 is active
+            // Sync YM2612 when Z80 executes, but not for every tiny cycle
+            // Accumulate Z80 cycles and only sync when enough have passed
+            
             if (z80Cycles <= 0)
                 return;
-            _timersDrivenByZ80 = true;
-            double oldFrac = _timerTickFrac;
-            _timerTickFrac += z80Cycles * (YM2612_CLOCK / 72.0) / Z80_CLOCK;
-            int ticks = (int)_timerTickFrac;
-            if (ticks <= 0)
-                return;
             
-            // ALADDIN DEBUG: Log timer ticks
-            if (md_main.g_md_z80?.DebugPc == 0x0DC2 || md_main.g_md_z80?.DebugPc == 0x0DF7)
+            // Accumulate Z80 cycles
+            _z80CycleAccumulator += z80Cycles;
+            
+            // Only sync when we have accumulated "enough" Z80 cycles
+            // This prevents too many AdvanceTimersFromSystemCycles() calls but ensures YM2612 advances
+            const int Z80_CYCLES_PER_SYNC = 256; // Sync every ~256 Z80 cycles
+            
+            if (_z80CycleAccumulator >= Z80_CYCLES_PER_SYNC)
             {
-                Console.WriteLine($"[ALADDIN-TIMER] z80Cycles={z80Cycles} oldFrac={oldFrac:F2} newFrac={_timerTickFrac:F2} ticks={ticks} timerA={_timerACount} reload={_timerAReload} enabled={g_reg_27_enable_A}");
+                // Reset accumulator
+                _z80CycleAccumulator = 0;
+                
+                // DON'T call AdvanceTimersFromSystemCycles() here
+                // It's now called from EnsureAdvanceEachFrame() each frame
+                // This prevents double-counting and ensures consistent timing
+                
+                // Log for debugging
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_TIMING") == "1")
+                {
+                    Console.WriteLine($"[Z80-TIMING-SYNC] TickTimersFromZ80Cycles accumulated {z80Cycles} cycles (AdvanceTimersFromSystemCycles now frame-based)");
+                }
             }
-            
-            _timerTickFrac -= ticks;
-            StepTimers(ticks);
         }
 
         public void AdvanceTimersFromSystemCycles()
         {
-            if (md_main.g_md_z80 != null && md_main.g_md_z80.g_active)
+            // Advance Timer A/B based on elapsed SystemCycles
+            // This fixes "elastic music" where tempo depends on when audio is generated
+            
+            // Get current SystemCycles
+            long currentSystemCycles = md_main.SystemCycles;
+            
+            // First call: initialize _lastSyncSystemCycles to current time
+            // This prevents huge elapsedCycles on first call
+            if (_lastSyncSystemCycles == 0)
             {
-                // When Z80 is active, timers are driven by Z80 cycles
-                // Don't double-advance from SystemCycles
-                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMING") == "1")
-                {
-                    Console.WriteLine($"[YM-TIMING] Z80 active, skipping SystemCycles advance");
-                }
+                _lastSyncSystemCycles = currentSystemCycles;
                 return;
             }
             
-            long currentCycles = md_main.SystemCycles;
-            if (_lastSystemCycles < 0)
-            {
-                _lastSystemCycles = currentCycles;
-                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMING") == "1")
-                {
-                    Console.WriteLine($"[YM-TIMING] First call, setting _lastSystemCycles={currentCycles}");
-                }
-                return;
-            }
+            long elapsedCycles = currentSystemCycles - _lastSyncSystemCycles;
             
-            long deltaCycles = currentCycles - _lastSystemCycles;
-            if (deltaCycles <= 0)
+            if (elapsedCycles <= 0)
                 return;
-                
-            _lastSystemCycles = currentCycles;
+            
+            // Update last sync cycle
+            _lastSyncSystemCycles = currentSystemCycles;
             
             // Convert M68K cycles to YM2612 timer ticks
             // YM2612 clock: 7.67MHz (7670454 Hz)
-            // M68K clock: 7.67MHz (same bus)
             // Timer ticks at 72Hz (YM2612_CLOCK / 72)
-            // So: deltaCycles * (YM2612_CLOCK / 72) / M68K_CLOCK
-            // Since YM2612_CLOCK ≈ M68K_CLOCK, simplifies to: deltaCycles / 72
-            double timerTicks = deltaCycles / 72.0;
+            // So: elapsedCycles * (YM2612_CLOCK / 72) / M68K_CLOCK
+            // Since YM2612_CLOCK ≈ M68K_CLOCK, simplifies to: elapsedCycles / 72
+            // So 72 M68K cycles ≈ 1 timer tick at YM2612_CLOCK / 72 rate
             
-            if (timerTicks <= 0)
-                return;
-                
-            double oldFrac = _timerTickFrac;
-            _timerTickFrac += timerTicks;
-            int ticks = (int)_timerTickFrac;
+            // Accumulate master cycles for timer ticks
+            _timerTickFrac += elapsedCycles;
+            
+            // Calculate how many complete timer ticks we have
+            // 72 M68K cycles = 1 YM2612 timer tick (at YM2612_CLOCK / 72 rate)
+            const long CYCLES_PER_TIMER_TICK = 72;
+            int ticks = (int)(_timerTickFrac / CYCLES_PER_TIMER_TICK);
             if (ticks <= 0)
                 return;
                 
+            // Keep remainder for next time
+            _timerTickFrac = _timerTickFrac % CYCLES_PER_TIMER_TICK;
+            
+            // Count this as a YM advance call (for DIAG-FRAME logging)
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_DIAG_FRAME") == "1" && ticks > 0)
+            {
+                md_main.IncrementYmAdvanceCalls();
+            }
+            
             // Debug logging for timer advancement
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMING") == "1")
             {
-                Console.WriteLine($"[YM-TIMING] deltaCycles={deltaCycles} timerTicks={timerTicks:F2} oldFrac={oldFrac:F2} newFrac={_timerTickFrac:F2} ticks={ticks} timerA={_timerACount}");
+                Console.WriteLine($"[YM-TIMING-ADVANCE] elapsedCycles={elapsedCycles} ticks={ticks} timerA={_timerACount} SystemCycles={md_main.SystemCycles}");
             }
                 
-            _timerTickFrac -= ticks;
+            StepTimers(ticks);
+        }
+
+        private void AdvanceTimersForSamples(int frames)
+        {
+            if (frames <= 0)
+                return;
+
+            double cyclesPerSample = (double)YM2612_CLOCK / YM2612_SAMPLING;
+            double total = _sampleCycleFrac + (frames * cyclesPerSample);
+            long deltaCycles = (long)total;
+            _sampleCycleFrac = total - deltaCycles;
+            AdvanceTimersFromDeltaCycles(deltaCycles);
+        }
+
+        private void AdvanceTimersFromDeltaCycles(long deltaCycles)
+        {
+            if (deltaCycles <= 0)
+                return;
+
+            _timerTickFrac += deltaCycles;
+            const long CYCLES_PER_TIMER_TICK = 72;
+            int ticks = (int)(_timerTickFrac / CYCLES_PER_TIMER_TICK);
+            if (ticks <= 0)
+                return;
+
+            _timerTickFrac %= CYCLES_PER_TIMER_TICK;
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_DIAG_FRAME") == "1" && ticks > 0)
+            {
+                md_main.IncrementYmAdvanceCalls();
+            }
             StepTimers(ticks);
         }
 
@@ -571,45 +651,9 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
         
-        public void ForceAdvanceOneFrame(long deltaCycles = 0)
+        public void EnsureAdvanceEachFrame()
         {
-            // Force YM2612 to advance by one frame's worth of time
-            // This ensures chip timing progresses even when no audio is generated
-            long currentCycles = md_main.SystemCycles;
-            if (_lastSystemCycles < 0)
-            {
-                _lastSystemCycles = currentCycles;
-                return;
-            }
-            
-            // Use provided deltaCycles or default to one frame's worth
-            if (deltaCycles <= 0)
-            {
-                // Default to approximately one frame's worth of M68K cycles
-                // 255712 cycles per frame (from DIAG-FRAME logs for NTSC)
-                deltaCycles = 255712;
-            }
-            
-            _lastSystemCycles += deltaCycles;
-            
-            // Convert to YM2612 timer ticks
-            double timerTicks = deltaCycles / 72.0;
-            if (timerTicks <= 0)
-                return;
-                
-            double oldFrac = _timerTickFrac;
-            _timerTickFrac += timerTicks;
-            int ticks = (int)_timerTickFrac;
-            if (ticks <= 0)
-                return;
-                
-            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMING") == "1")
-            {
-                Console.WriteLine($"[YM-TIMING-FORCE] deltaCycles={deltaCycles} timerTicks={timerTicks:F2} ticks={ticks}");
-            }
-                
-            _timerTickFrac -= ticks;
-            StepTimers(ticks);
+            // No-op: YM2612 time advances only when rendering audio.
         }
     }
 }

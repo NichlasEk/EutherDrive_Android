@@ -1,4 +1,4 @@
-﻿namespace EutherDrive.Core.MdTracerCore
+namespace EutherDrive.Core.MdTracerCore
 {
     //----------------------------------------------------------------
     //PSG  : chips: Texas Instruments SN76489
@@ -66,6 +66,12 @@
                     }
                     g_psg_clock[w_ch] += g_freq[w_ch];
                 }
+                
+                // DEBUG: Log PSG state
+                // if (w_ch == 0 && g_vol[0] > 0)
+                // {
+                //     Console.WriteLine($"[PSG-DEBUG] ch={w_ch} vol={g_vol[w_ch]} freq={g_freq[w_ch]} duty={g_duty[w_ch]} out={g_channel_out[w_ch]}");
+                // }
             }
 
             //noise

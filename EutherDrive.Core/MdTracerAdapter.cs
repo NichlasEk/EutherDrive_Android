@@ -117,6 +117,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     private const int PsgSampleRate = 44100;
     private const int PsgChannels = 2;
+    private const int YmInternalSampleRate = 53267;
+    private static readonly double YmResampleScale = GetYmResampleScale();
+    private static readonly double FmMixGain = GetFmMixGain();
     private bool _ymEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM"), "1", StringComparison.Ordinal);
     private readonly bool _psgDisabled =
@@ -124,6 +127,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private double _psgFrameAccumulator;
     private short[] _psgFrameBuffer = Array.Empty<short>();
     private short[] _ymFrameBuffer = Array.Empty<short>();
+    private short[] _ymInternalBuffer = Array.Empty<short>();
+    private double _ymResamplePhase;
+    private bool _ymResampleHasCarry;
+    private short _ymResampleCarryL;
+    private short _ymResampleCarryR;
+    private readonly SimpleLowPassFilter? _mixLowPass;
     private int _psgFrameSamples;
     private long _psgLastFrame = -1;
     private volatile int _masterVolumePercent = 50;
@@ -147,10 +156,86 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         for (int i = 0; i < samples; i++)
         {
             int scaled = buffer[i] * percent / 100;
-            if (scaled > short.MaxValue) scaled = short.MaxValue;
+        if (scaled > short.MaxValue) scaled = short.MaxValue;
             else if (scaled < short.MinValue) scaled = short.MinValue;
             buffer[i] = (short)scaled;
         }
+    }
+
+    private sealed class SimpleLowPassFilter
+    {
+        private readonly double _alpha;
+        private double _left;
+        private double _right;
+
+        public SimpleLowPassFilter(int sampleRate, double cutoffHz)
+        {
+            if (cutoffHz <= 0)
+                cutoffHz = 8000;
+            double dt = 1.0 / sampleRate;
+            double rc = 1.0 / (2.0 * Math.PI * cutoffHz);
+            _alpha = dt / (rc + dt);
+        }
+
+        public void Reset()
+        {
+            _left = 0;
+            _right = 0;
+        }
+
+        public void Apply(short[] buffer, int samples)
+        {
+            for (int i = 0; i < samples; i += 2)
+            {
+                double l = _left + _alpha * (buffer[i] - _left);
+                double r = _right + _alpha * (buffer[i + 1] - _right);
+                _left = l;
+                _right = r;
+                buffer[i] = (short)Math.Clamp((int)Math.Round(l), short.MinValue, short.MaxValue);
+                buffer[i + 1] = (short)Math.Clamp((int)Math.Round(r), short.MinValue, short.MaxValue);
+            }
+        }
+    }
+
+    private static SimpleLowPassFilter? CreateLowPassIfEnabled(int sampleRate)
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_LP_HZ");
+        double cutoff;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            cutoff = 14000;
+        }
+        else if (!double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out cutoff))
+        {
+            return null;
+        }
+        if (cutoff <= 0)
+            return null;
+        return new SimpleLowPassFilter(sampleRate, cutoff);
+    }
+
+    private static double GetYmResampleScale()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_SCALE");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+            && value > 0)
+        {
+            return value;
+        }
+        return 1.0;
+    }
+
+    private static double GetFmMixGain()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_FM_MIX_GAIN");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+            && value > 0)
+        {
+            return value;
+        }
+        return 1.0;
     }
 
     public RomInfo RomInfo { get; private set; } = new RomInfo();
@@ -161,6 +246,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     public MdTracerAdapter()
     {
         FbAnalyzer = new FramebufferAnalyzer(this);
+        _mixLowPass = CreateLowPassIfEnabled(PsgSampleRate);
 
         // Auto-enable if env var is set
         if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_ANALYZER"), "1", StringComparison.Ordinal))
@@ -676,6 +762,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _psgFrameAccumulator = 0;
         _psgFrameSamples = 0;
         _psgLastFrame = -1;
+        _ymResamplePhase = 0;
+        _ymResampleHasCarry = false;
     }
 
     public void PowerCycleAndLoadRom(string path) => LoadRom(path);
@@ -932,11 +1020,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                         // Track Z80 cycles for Aladdin debug
                         md_main.AddZ80Cycles(z80Budget);
                     }
-                    if (allowZ80)
-                    {
-                        long z80System = md_main.ConvertZ80ToM68kCyclesApprox(z80Budget);
-                        md_main.AdvanceSystemCycles(z80System);
-                    }
                 }
 
                 if (TracePerf)
@@ -1007,14 +1090,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                      long m68kCyclesThisFrame = md_main.M68kCyclesThisFrame;
                      Console.WriteLine($"[DIAG-FRAME] frame={currentFrame} z80Cycles={z80Cycles} m68kCycles={m68kCyclesThisFrame} ymAdvanceCalls={md_main.YmAdvanceCallsLastFrame}");
                      
-                     // Force YM2612 to advance if it hasn't been advancing
+                     // CRITICAL FIX: Always ensure YM2612 advances each frame
                      // This fixes "elastic music" where tempo changes with button presses
-                     if (md_main.YmAdvanceCallsLastFrame == 0 && md_main.g_md_music?.g_md_ym2612 != null)
+                     // YM2612 must advance on time, not just when audio is generated
+                     if (md_main.g_md_music?.g_md_ym2612 != null)
                      {
-                         md_main.g_md_music.g_md_ym2612.ForceAdvanceOneFrame(m68kCyclesThisFrame);
-                         if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMING") == "1")
+                         md_main.g_md_music.g_md_ym2612.EnsureAdvanceEachFrame();
+                         if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMING") == "1" && md_main.YmAdvanceCallsLastFrame == 0)
                          {
-                             Console.WriteLine($"[YM-TIMING] Forced advance for frame {currentFrame} (ymAdvanceCalls was 0, m68kCycles={m68kCyclesThisFrame})");
+                             Console.WriteLine($"[YM-TIMING] Ensured advance for frame {currentFrame} (ymAdvanceCalls was 0)");
                          }
                      }
                      
@@ -1042,6 +1126,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 _perfFrameCount++;
                 MaybeLogPerformance();
             }
+
+        // Ensure YM2612 advances each frame (fix for elastic music)
+        if (md_main.g_md_music?.g_md_ym2612 != null)
+        {
+            md_main.g_md_music.g_md_ym2612.EnsureAdvanceEachFrame();
+        }
 
         // Blitta VDP RGB555 -> UI BGRA staging buffer
         EnsureFramebufferInitialized("RunFrame");
@@ -1757,10 +1847,63 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             // Audio buffer timing logging for debugging elastic music
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_BUFFER") == "1")
             {
-                Console.WriteLine($"[AUDIO-BUFFER] GetAudioBufferForFrames: Calling YM2612_UpdateBatch: frames={frames} samples={samples} SystemCycles={md_main.SystemCycles}");
+                Console.WriteLine($"[AUDIO-BUFFER] GetAudioBufferForFrames: Resampling YM: frames={frames} samples={samples} SystemCycles={md_main.SystemCycles}");
             }
-            
-            music.g_md_ym2612.YM2612_UpdateBatch(_ymFrameBuffer, frames);
+
+            // Resample YM from internal rate (~53.2kHz) to output rate (44.1kHz).
+            double ratio = (YmInternalSampleRate * YmResampleScale) / PsgSampleRate;
+            double phase = _ymResamplePhase;
+            int neededInternal = (int)Math.Floor(phase + ((frames - 1) * ratio)) + 2;
+            if (neededInternal < 2)
+                neededInternal = 2;
+            int internalSamples = neededInternal * PsgChannels;
+            if (_ymInternalBuffer.Length < internalSamples)
+                _ymInternalBuffer = new short[internalSamples];
+
+            int writeOffsetFrames = 0;
+            if (_ymResampleHasCarry)
+            {
+                _ymInternalBuffer[0] = _ymResampleCarryL;
+                _ymInternalBuffer[1] = _ymResampleCarryR;
+                writeOffsetFrames = 1;
+            }
+
+            int genFrames = neededInternal - writeOffsetFrames;
+            if (genFrames > 0)
+            {
+                var dst = _ymInternalBuffer.AsSpan(writeOffsetFrames * PsgChannels, genFrames * PsgChannels);
+                music.g_md_ym2612.YM2612_UpdateBatch(dst, genFrames);
+            }
+
+            for (int i = 0; i < frames; i++)
+            {
+                int baseIndex = (int)phase;
+                double frac = phase - baseIndex;
+                int src = baseIndex * PsgChannels;
+                int srcNext = src + PsgChannels;
+
+                int ymL0 = _ymInternalBuffer[src];
+                int ymR0 = _ymInternalBuffer[src + 1];
+                int ymL1 = _ymInternalBuffer[srcNext];
+                int ymR1 = _ymInternalBuffer[srcNext + 1];
+
+                int ymL = (int)(ymL0 + (ymL1 - ymL0) * frac);
+                int ymR = (int)(ymR0 + (ymR1 - ymR0) * frac);
+
+                int dst = i * PsgChannels;
+                _ymFrameBuffer[dst] = (short)ymL;
+                _ymFrameBuffer[dst + 1] = (short)ymR;
+
+                phase += ratio;
+            }
+
+            int lastIndex = (neededInternal - 1) * PsgChannels;
+            _ymResampleCarryL = _ymInternalBuffer[lastIndex];
+            _ymResampleCarryR = _ymInternalBuffer[lastIndex + 1];
+            _ymResampleHasCarry = true;
+            _ymResamplePhase = phase - (neededInternal - 1);
+            if (_ymResamplePhase < 0)
+                _ymResamplePhase = 0;
 
             int mixMin = 0;
             int mixMax = 0;
@@ -1772,6 +1915,14 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             for (int i = 0; i < samples; i++)
             {
                 int ymSample = _ymFrameBuffer[i];
+                if (FmMixGain != 1.0)
+                {
+                    double scaled = ymSample * FmMixGain;
+                    if (scaled > short.MaxValue) ymSample = short.MaxValue;
+                    else if (scaled < short.MinValue) ymSample = short.MinValue;
+                    else ymSample = (int)Math.Round(scaled);
+                    _ymFrameBuffer[i] = (short)ymSample;
+                }
                 if (!ymMinMaxInit)
                 {
                     ymMinMaxInit = true;
@@ -1881,6 +2032,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         }
 
         ApplyMasterVolume(_psgFrameBuffer, samples);
+        _mixLowPass?.Apply(_psgFrameBuffer, samples);
         _psgFrameSamples = samples;
         return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
     }
@@ -1963,11 +2115,72 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             if (_ymFrameBuffer.Length < samples)
                 _ymFrameBuffer = new short[samples];
 
-            music.g_md_ym2612.YM2612_UpdateBatch(_ymFrameBuffer, frames);
+            // Resample YM from internal rate (~53.2kHz) to output rate (44.1kHz).
+            double ratio = (YmInternalSampleRate * YmResampleScale) / PsgSampleRate;
+            double phase = _ymResamplePhase;
+            int neededInternal = (int)Math.Floor(phase + ((frames - 1) * ratio)) + 2;
+            if (neededInternal < 2)
+                neededInternal = 2;
+            int internalSamples = neededInternal * PsgChannels;
+            if (_ymInternalBuffer.Length < internalSamples)
+                _ymInternalBuffer = new short[internalSamples];
+
+            int writeOffsetFrames = 0;
+            if (_ymResampleHasCarry)
+            {
+                _ymInternalBuffer[0] = _ymResampleCarryL;
+                _ymInternalBuffer[1] = _ymResampleCarryR;
+                writeOffsetFrames = 1;
+            }
+
+            int genFrames = neededInternal - writeOffsetFrames;
+            if (genFrames > 0)
+            {
+                var dst = _ymInternalBuffer.AsSpan(writeOffsetFrames * PsgChannels, genFrames * PsgChannels);
+                music.g_md_ym2612.YM2612_UpdateBatch(dst, genFrames);
+            }
+
+            for (int i = 0; i < frames; i++)
+            {
+                int baseIndex = (int)phase;
+                double frac = phase - baseIndex;
+                int src = baseIndex * PsgChannels;
+                int srcNext = src + PsgChannels;
+
+                int ymL0 = _ymInternalBuffer[src];
+                int ymR0 = _ymInternalBuffer[src + 1];
+                int ymL1 = _ymInternalBuffer[srcNext];
+                int ymR1 = _ymInternalBuffer[srcNext + 1];
+
+                int ymL = (int)(ymL0 + (ymL1 - ymL0) * frac);
+                int ymR = (int)(ymR0 + (ymR1 - ymR0) * frac);
+
+                int dst = i * PsgChannels;
+                _ymFrameBuffer[dst] = (short)ymL;
+                _ymFrameBuffer[dst + 1] = (short)ymR;
+
+                phase += ratio;
+            }
+
+            int lastIndex = (neededInternal - 1) * PsgChannels;
+            _ymResampleCarryL = _ymInternalBuffer[lastIndex];
+            _ymResampleCarryR = _ymInternalBuffer[lastIndex + 1];
+            _ymResampleHasCarry = true;
+            _ymResamplePhase = phase - (neededInternal - 1);
+            if (_ymResamplePhase < 0)
+                _ymResamplePhase = 0;
 
             for (int i = 0; i < samples; i++)
             {
                 int ymSample = _ymFrameBuffer[i];
+                if (FmMixGain != 1.0)
+                {
+                    double scaled = ymSample * FmMixGain;
+                    if (scaled > short.MaxValue) ymSample = short.MaxValue;
+                    else if (scaled < short.MinValue) ymSample = short.MinValue;
+                    else ymSample = (int)Math.Round(scaled);
+                    _ymFrameBuffer[i] = (short)ymSample;
+                }
                 if (!ymMinMaxInit)
                 {
                     ymMinMaxInit = true;
@@ -2077,8 +2290,27 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         }
 
         ApplyMasterVolume(_psgFrameBuffer, samples);
+        _mixLowPass?.Apply(_psgFrameBuffer, samples);
         _psgFrameSamples = samples;
         return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
+    }
+
+    public long GetSystemCycles()
+    {
+        return md_main.SystemCycles;
+    }
+
+    public double GetM68kCyclesPerSecond()
+    {
+        int cyclesPerLine = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
+        int lines = GetEffectiveFrameRateMode() == FrameRateMode.Hz50 ? VLINES_PAL : VLINES_NTSC;
+        return cyclesPerLine * lines * GetTargetFps();
+    }
+
+    public double GetM68kClockHz()
+    {
+        // Approx hardware master clock for M68K (NTSC/PAL).
+        return GetEffectiveFrameRateMode() == FrameRateMode.Hz50 ? 7600489.0 : 7670454.0;
     }
 
     public bool WritePsg(byte value)

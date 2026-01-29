@@ -16,7 +16,7 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
     private readonly IntPtr _device;
     private readonly IntPtr _context;
     private readonly int _source;
-    private readonly int[] _buffers = new int[2];
+    private readonly int[] _buffers = new int[4]; // Increased from 2 to 4 for better buffering
     private readonly int[] _scratch = new int[1];
     private byte[] _tempBuffer = Array.Empty<byte>();
     private int _nextBuffer;
@@ -47,8 +47,8 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
             var sourceArray = new int[1];
             alGenSources(1, sourceArray);
             LogAlError("alGenSources");
-            var buffers = new int[2];
-            alGenBuffers(2, buffers);
+            var buffers = new int[4];
+            alGenBuffers(4, buffers);
             LogAlError("alGenBuffers");
             var output = new OpenAlAudioOutput(device, context, sourceArray[0], buffers);
             return output;
@@ -162,7 +162,7 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
         alSourcei(_source, AL_BUFFER, 0);
         alDeleteSources(1, new[] { _source });
 
-        alDeleteBuffers(_buffers.Length, _buffers);
+        alDeleteBuffers(4, _buffers);
         alcMakeContextCurrent(IntPtr.Zero);
         alcDestroyContext(_context);
         alcCloseDevice(_device);

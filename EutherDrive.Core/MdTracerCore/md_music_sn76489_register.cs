@@ -1,4 +1,4 @@
-﻿namespace EutherDrive.Core.MdTracerCore
+namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_sn76489
     {
@@ -11,6 +11,10 @@
             if (TraceAudStat)
                 _audStatWrites++;
 
+            // DEBUG: Log all PSG writes
+            string type = (in_val & 0x80) != 0 ? "latch" : "data";
+            Console.WriteLine($"[PSG-WRITE] val=0x{in_val:X2} ({type})");
+            
             if ((in_val & 0x80) != 0)
             {
                 int w_num = (in_val >> 5) & 0x03;

@@ -9,6 +9,14 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_z80
     {
+        private static readonly int Z80YmWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_YM_WAIT", 4);
+        private static readonly int Z80PsgWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_PSG_WAIT", 4);
+        private static readonly int Z80BankWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_BANK_WAIT", 16);
+        private static readonly bool TraceZ80AudioRate =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80AudioRateEvery = ParseWaitCycles("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_EVERY", 60);
+        private static readonly int TraceZ80AudioRateStartFrame = ParseWaitCycles("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_START_FRAME", 0);
+        private const double Z80_CLOCK = 3579545.0;
         private byte[] g_ram = Array.Empty<byte>();
         private uint g_bank_register; // Z80 bankregister (9-bit index)
         private const int SmsLogLimit = 48;
@@ -27,7 +35,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static bool _forceStatus7Logged;
         private int _ymWriteLogRemaining = 64;
         private int _z80BankRegLogRemaining = 16;
-        private int _z80BankReadLogRemaining = 32;
+        private static readonly int TraceZ80BankReadLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80BANK_READ_LIMIT");
+        private int _z80BankReadLogRemaining = TraceZ80BankReadLimit;
         private int _z80MailboxReadLogRemaining = 256;
         private int _z80MailboxWideLogRemaining = 128;
         private int _z80MailboxWideReadAllRemaining = 128;
@@ -47,6 +56,18 @@ namespace EutherDrive.Core.MdTracerCore
         private int _z80MbxPollDataRemaining;
         private readonly byte[] _z80MbxPollDataLast = new byte[0x10];
         private bool _z80MbxPollDataLastValid;
+        private long _ymStatusLastCycle;
+        private bool _ymStatusHasLast;
+        private long _ymStatusDeltaTotal;
+        private long _ymStatusDeltaMin = long.MaxValue;
+        private long _ymStatusDeltaMax;
+        private long _ymStatusDeltaCount;
+        private long _psgWriteLastCycle;
+        private bool _psgWriteHasLast;
+        private long _psgWriteDeltaTotal;
+        private long _psgWriteDeltaMin = long.MaxValue;
+        private long _psgWriteDeltaMax;
+        private long _psgWriteDeltaCount;
         // Wait loop polling histogram (for 0x11C3-0x11DB NOP loop)
         private static readonly int[] _waitLoopPollHist = new int[0x2000]; // Full Z80 RAM histogram
         private static readonly bool TraceZ80WaitLoop =
@@ -327,6 +348,26 @@ namespace EutherDrive.Core.MdTracerCore
             return value;
         }
 
+        private static int ParseWaitCycles(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value < 0 ? fallback : value;
+        }
+
+        private static bool IsEnvFlagSet(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return false;
+            raw = raw.Trim();
+            return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static int ParseZ80BootIoLimit()
         {
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_BOOT_IO_LIMIT");
@@ -338,6 +379,80 @@ namespace EutherDrive.Core.MdTracerCore
             if (value <= 0)
                 return int.MaxValue;
             return value;
+        }
+
+        private void RecordYmStatusRead()
+        {
+            if (!TraceZ80AudioRate && !IsEnvFlagSet("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE"))
+                return;
+            long now = _totalCycles;
+            if (_ymStatusHasLast)
+            {
+                long delta = now - _ymStatusLastCycle;
+                if (delta > 0)
+                {
+                    _ymStatusDeltaTotal += delta;
+                    _ymStatusDeltaCount++;
+                    if (delta < _ymStatusDeltaMin) _ymStatusDeltaMin = delta;
+                    if (delta > _ymStatusDeltaMax) _ymStatusDeltaMax = delta;
+                }
+            }
+            _ymStatusLastCycle = now;
+            _ymStatusHasLast = true;
+        }
+
+        private void RecordPsgWrite()
+        {
+            if (!TraceZ80AudioRate && !IsEnvFlagSet("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE"))
+                return;
+            long now = _totalCycles;
+            if (_psgWriteHasLast)
+            {
+                long delta = now - _psgWriteLastCycle;
+                if (delta > 0)
+                {
+                    _psgWriteDeltaTotal += delta;
+                    _psgWriteDeltaCount++;
+                    if (delta < _psgWriteDeltaMin) _psgWriteDeltaMin = delta;
+                    if (delta > _psgWriteDeltaMax) _psgWriteDeltaMax = delta;
+                }
+            }
+            _psgWriteLastCycle = now;
+            _psgWriteHasLast = true;
+        }
+
+        internal void FlushZ80AudioRate(long frame)
+        {
+            if (!TraceZ80AudioRate && !IsEnvFlagSet("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE"))
+                return;
+            if (frame < TraceZ80AudioRateStartFrame)
+                return;
+            if (TraceZ80AudioRateEvery > 0 && frame % TraceZ80AudioRateEvery != 0)
+                return;
+
+            long ymCount = _ymStatusDeltaCount;
+            long psgCount = _psgWriteDeltaCount;
+            double ymAvg = ymCount > 0 ? (double)_ymStatusDeltaTotal / ymCount : 0.0;
+            double psgAvg = psgCount > 0 ? (double)_psgWriteDeltaTotal / psgCount : 0.0;
+            double ymHz = ymAvg > 0 ? Z80_CLOCK / ymAvg : 0.0;
+            double psgHz = psgAvg > 0 ? Z80_CLOCK / psgAvg : 0.0;
+            long ymMin = ymCount > 0 ? _ymStatusDeltaMin : 0;
+            long ymMax = ymCount > 0 ? _ymStatusDeltaMax : 0;
+            long psgMin = psgCount > 0 ? _psgWriteDeltaMin : 0;
+            long psgMax = psgCount > 0 ? _psgWriteDeltaMax : 0;
+
+            Console.WriteLine(
+                $"[Z80AUDIO] frame={frame} ymReads={ymCount} ymAvgCycles={ymAvg:0.##} ymMin={ymMin} ymMax={ymMax} ymEstHz={ymHz:0.##} " +
+                $"psgWrites={psgCount} psgAvgCycles={psgAvg:0.##} psgMin={psgMin} psgMax={psgMax} psgEstHz={psgHz:0.##}");
+
+            _ymStatusDeltaTotal = 0;
+            _ymStatusDeltaCount = 0;
+            _ymStatusDeltaMin = long.MaxValue;
+            _ymStatusDeltaMax = 0;
+            _psgWriteDeltaTotal = 0;
+            _psgWriteDeltaCount = 0;
+            _psgWriteDeltaMin = long.MaxValue;
+            _psgWriteDeltaMax = 0;
         }
 
         private static int ParseZ80YmLimit()
@@ -962,11 +1077,15 @@ namespace EutherDrive.Core.MdTracerCore
             else if (a <= 0x5FFF)
             {
                 // YM2612
+                if (a <= 0x4003 && Z80YmWaitCycles > 0)
+                    AddWaitCycles(Z80YmWaitCycles);
                 w_out = UseMdTracerCompat
                     ? md_main.g_md_music.g_md_ym2612.read8(a)
                     : (a == 0x4000 || a == 0x4002
                         ? md_main.g_md_music.g_md_ym2612.ReadStatus(false)
                         : md_main.g_md_music.g_md_ym2612.read8(a));
+                if (a == 0x4000 || a == 0x4002)
+                    RecordYmStatusRead();
                 if (ShouldTraceBootIo())
                     LogBootIo("read", a, w_out);
                 if (TraceZ80Ym && (a == 0x4000 || a == 0x4002) && _z80YmLogRemaining > 0)
@@ -1008,6 +1127,8 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 // 68k bankfönster, 0x8000..0xFFFF => 32 KB
                 // Maskera alltid till 32KB offset och OR:a med bankbasen.
+                if (Z80BankWaitCycles > 0)
+                    AddWaitCycles(Z80BankWaitCycles);
                 bool forceB154 = ForceZ80B154Map &&
                                  (a == ForceZ80B154Z80Addr ||
                                   (ForceZ80B154Z80Addr2.HasValue && a == ForceZ80B154Z80Addr2.Value));
@@ -1183,9 +1304,13 @@ namespace EutherDrive.Core.MdTracerCore
                 MaybeLogZ80AfterFlagRet("Z80AFTERRET-RAM", "write", ramAddr, in_data);
                 return;
             }
-            else if (a >= 0x4000 && a <= 0x5FFF)
+             else if (a >= 0x4000 && a <= 0x5FFF)
             {
                 // YM2612
+                // DEBUG: Log ALL Z80 YM writes
+                Console.WriteLine($"[Z80-YM-ALL] addr=0x{a:X4} val=0x{in_data:X2} PC=0x{DebugPc:X4}");
+                if (a <= 0x4003 && Z80YmWaitCycles > 0)
+                    AddWaitCycles(Z80YmWaitCycles);
                 md_main.g_md_music.g_md_ym2612.write8(a, in_data, "Z80");
                 if (ShouldTraceBootIo())
                     LogBootIo("write", a, in_data);
@@ -1231,8 +1356,12 @@ namespace EutherDrive.Core.MdTracerCore
             else if (a == 0x7F11)
             {
                 // SN76489 PSG
+                Console.WriteLine($"[Z80-PSG-WRITE] addr=0x{a:X4} val=0x{in_data:X2} PC=0x{DebugPc:X4}");
+                if (Z80PsgWaitCycles > 0)
+                    AddWaitCycles(Z80PsgWaitCycles);
                 md_psg_trace.TraceWrite("Z80", a, in_data, DebugPc);
                 md_main.g_md_music.g_md_sn76489.write8(in_data);
+                RecordPsgWrite();
                 if (ShouldTraceBootIo())
                     LogBootIo("write", a, in_data);
                 if (TraceZ80Ym && _z80YmLogRemaining > 0)
@@ -1253,6 +1382,8 @@ namespace EutherDrive.Core.MdTracerCore
             else if (a >= 0x8000)
             {
                 // 68k bankfönster (32KB)
+                if (Z80BankWaitCycles > 0)
+                    AddWaitCycles(Z80BankWaitCycles);
                 bool forceB154 = ForceZ80B154Map &&
                                  (a == ForceZ80B154Z80Addr ||
                                   (ForceZ80B154Z80Addr2.HasValue && a == ForceZ80B154Z80Addr2.Value));
@@ -1334,7 +1465,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (TraceZ80Bank)
             {
                 _z80BankRegLogRemaining = 32;
-                _z80BankReadLogRemaining = 32;
+                _z80BankReadLogRemaining = TraceZ80BankReadLimit;
                 _z80BankStatSecond = -1;
                 _z80BankStatReadCount = 0;
                 _z80BankStatLastPc = 0;

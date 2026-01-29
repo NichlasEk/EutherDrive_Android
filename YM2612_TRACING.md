@@ -213,8 +213,100 @@ Nu kan vi debugga audio-problem i headless mode:
 - ✅ "Elastic music" problemet är löst
 - ✅ Samma kodväg som UI för audio rendering
 
+## YM2612 Timing Architecture Fix (NYTT!)
+
+### Problem med "Elastic Music" i UI-mode
+Trots headless fix fungerade musiken fortfarande elastiskt i **UI-mode**:
+- Audio fungerade (ljud hördes)
+- Men musiktempot ändrades med knapptryckningar
+- Problem: YM2612 timing var fortfarande event-driven
+
+### Rotorsak: Konflikterande Timing System
+Två system försökte avancera YM2612 timers:
+1. **`AdvanceTimersFromSystemCycles()`**: Baserat på `SystemCycles` (M68K cycles)
+2. **`TickTimersFromZ80Cycles()`**: Baserat på Z80 cycles
+
+När Z80 var aktiv:
+- `TickTimersFromZ80Cycles()` avancerade timers från Z80 execution
+- `AdvanceTimersFromSystemCycles()` returnerade direkt (för att undvika dubbel-avancering)
+- Men audio generation anropade `AdvanceTimersFromSystemCycles()` → gjorde ingenting!
+
+### Lösning: Enhetligt Timing System
+Inspirerad av **clownmdemu-core**:
+
+#### 1. **Endast `SystemCycles` driver YM2612**
+- `SystemCycles` är masterklockan (M68K cycles)
+- All komponenter (M68K, Z80) avancerar `SystemCycles`
+- YM2612 avancerar baserat på förflutna `SystemCycles`
+
+#### 2. **`AdvanceTimersFromSystemCycles()` alltid aktiv**
+- Tar bort Z80-check: fungerar även när Z80 är aktiv
+- Beräknar delta: `currentSystemCycles - _lastSystemCycles`
+- Konverterar till YM2612 timer ticks: `deltaCycles / 72.0`
+
+#### 3. **Z80 avancerar `SystemCycles`, inte YM2612 direkt**
+- Z80 execution → avancerar `SystemCycles`
+- `SystemCycles` delta → avancerar YM2612
+- **Inga `TickTimersFromZ80Cycles()` anrop längre**
+
+#### 4. **Regelbundna uppdateringar**
+- `EnsureAdvanceEachFrame()` anropas varje frame
+- Anropar `UpdateFromElapsedSystemCycles()` → `AdvanceTimersFromSystemCycles()`
+- Säkerställer YM2612 avancerar även utan audio generation
+
+### Implementation
+```csharp
+// 1. Z80 avancerar SystemCycles, inte YM2612 direkt
+// (Inga TickTimersFromZ80Cycles() anrop)
+
+// 2. AdvanceTimersFromSystemCycles() fungerar alltid
+public void AdvanceTimersFromSystemCycles()
+{
+    // Tar bort: if (Z80 active) return;
+    // Avancerar alltid baserat på SystemCycles
+}
+
+// 3. Regelbunden uppdatering
+public void EnsureAdvanceEachFrame()
+{
+    UpdateFromElapsedSystemCycles(); // Anropar AdvanceTimersFromSystemCycles()
+}
+```
+
+### Filer Uppdaterade
+1. **`md_music_ym2612_core.cs`**
+   - Tar bort Z80-check i `AdvanceTimersFromSystemCycles()`
+   - Lägger till `UpdateFromElapsedSystemCycles()`
+   - Deprekerar `TickTimersFromZ80Cycles()` (gör ingenting)
+   - Tar bort `ForceAdvanceOneFrame()` (onödig med ny arkitektur)
+
+2. **`md_z80.cs`**
+   - Tar bort alla `TickTimersFromZ80Cycles()` anrop
+   - Z80 avancerar endast `SystemCycles`
+
+3. **`MdTracerAdapter.cs`**
+   - `EnsureAdvanceEachFrame()` anropar `UpdateFromElapsedSystemCycles()`
+
+### Förväntat Beteende
+- **UI-mode**: Musik tempot är konsekvent, oberoende av knapptryckningar
+- **Headless mode**: Fortfarande korrekt timing med audio engine
+- **Alla lägen**: YM2612 avancerar baserat på faktisk förfluten tid (`SystemCycles`)
+
+### Debugging Flaggor
+```bash
+# Spåra YM2612 timing
+export EUTHERDRIVE_TRACE_YM_TIMING=1
+
+# Spåra Z80 timing (varnar om deprecated anrop)
+export EUTHERDRIVE_TRACE_Z80_TIMING=1
+
+# Per-frame statistik
+export EUTHERDRIVE_DIAG_FRAME=1
+```
+
 ### Tips för Audio Debugging
 1. **Starta alltid med**: `EUTHERDRIVE_HEADLESS_AUDIO=1 EUTHERDRIVE_YM=1`
 2. **Kontrollera**: `ymAdvanceCalls` ska vara `> 0`
 3. **Om `ymAdvanceCalls=0`**: Aktivera `EUTHERDRIVE_TRACE_YM_TIMING=1` för att se varför
 4. **För timing-problem**: Använd `EUTHERDRIVE_DIAG_FRAME=1` för per-frame statistik
+5. **För Z80 timing**: `EUTHERDRIVE_TRACE_Z80_TIMING=1` varnar om deprecated `TickTimersFromZ80Cycles()` anrop

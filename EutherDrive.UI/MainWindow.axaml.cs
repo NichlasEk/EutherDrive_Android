@@ -14,6 +14,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using EutherDrive.Core.MdTracerCore;
+using EutherDrive.Audio;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -31,6 +32,7 @@ namespace EutherDrive.UI;
 public partial class MainWindow : Window
 {
     private IEmulatorCore? _core;
+    private readonly object _coreAudioLock = new();
     private readonly SavestateService _savestateService;
     private readonly SavestateViewModel _savestateViewModel;
 
@@ -56,12 +58,17 @@ public partial class MainWindow : Window
 
     // Input “håll nere”
     private readonly HashSet<Key> _keysDown = new();
-    private OpenAlAudioOutput? _audioOutput;
+    private IAudioSink? _audioOutput;
     private AudioEngine? _audioEngine;
     private bool _audioEnabled = true;
     private bool _audioFormatMismatchLogged;
     private const int AudioSampleRate = 44100;
     private const int AudioChannels = 2;
+    private const int AudioBufferChunkFrames = 256;
+    private static readonly double AudioCyclesScale = GetAudioCyclesScale();
+    private static readonly double SystemCyclesScale = GetSystemCyclesScale();
+    private static readonly bool TraceAudioCycles =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_CYCLES") == "1";
     private static readonly bool AudioEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO") == "1";
     private static readonly bool AudioTimedEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED") != "0";
     private static readonly bool YmEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") == "1";
@@ -71,7 +78,23 @@ public partial class MainWindow : Window
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDLVL") == "1";
     private static readonly bool TracePerf =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PERF") == "1";
+    private static readonly bool TraceAudioQueue =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_QUEUE") == "1";
+    private static readonly bool AudioCatchupEnabled =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_CATCHUP") == "1";
+    private static readonly bool AudioPullEnabled =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PULL") == "1";
+    private static readonly bool TraceAudioPull =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_PULL") == "1";
+    private static readonly bool AudioPllEnabled =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PLL") == "1";
     private const int AudioMaxFramesPerTick = 4096;
+    private static readonly int AudioTargetBufferedFrames = GetAudioTargetBufferedFrames();
+    private static readonly int AudioMaxCatchupFramesPerTick = GetAudioMaxCatchupFramesPerTick();
+    private static readonly double AudioPllMax = GetAudioPllMax();
+    private static readonly int AudioEngineBufferFrames = GetAudioEngineBufferFrames();
+    private static readonly int AudioEngineBatchFrames = GetAudioEngineBatchFrames();
+    private static readonly int AudioPullMaxFrames = GetAudioPullMaxFrames();
     private TextWriter? _originalConsoleOut;
     private StreamWriter? _romLogWriter;
     private bool _toneTestRunning;
@@ -84,7 +107,18 @@ public partial class MainWindow : Window
     private int _autoFireMask;
     private long _audioLastTicks;
     private double _audioFrameAccumulator;
+    private long _audioLastSystemCycles;
+    private long _audioCycleLogLastTicks;
     private long _audioLastDropLogTicks;
+    private long _audioQueueLogLastTicks;
+    private bool _audioPullMode;
+    private short[] _audioPullBuffer = Array.Empty<short>();
+    private short[] _audioPullOutBuffer = Array.Empty<short>();
+    private int _audioPullBufferedSamples;
+    private long _audioPullLogLastTicks;
+    private volatile bool _audioPullReady;
+    private long _audioPullLastFrameCounter = -1;
+    private long _audioPullLastFrameCounterTicks;
     private int _masterVolumePercent = DefaultMasterVolumePercent;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _defaultRegionOverride = ConsoleRegion.Auto;
@@ -98,6 +132,7 @@ public partial class MainWindow : Window
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
     private const string LegacyLastRomPathFileName = "eutherdrive_last_rom.txt";
     private const int DefaultMasterVolumePercent = 50;
+    private const int DefaultCpuCyclesPerLine = 488;
 
     // UI heartbeat
     private readonly bool _heartbeatEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HEARTBEAT") == "1";
@@ -121,6 +156,17 @@ public partial class MainWindow : Window
 
         HookInput();
         HookMouseMovement();
+
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is Exception ex)
+                LogException(ex, "UnhandledException");
+        };
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            LogException(e.Exception, "UnobservedTaskException");
+            e.SetObserved();
+        };
 
         _savestateService = new SavestateService();
         _savestateViewModel = new SavestateViewModel(
@@ -168,6 +214,7 @@ public partial class MainWindow : Window
             _romPath = romPath;
             _core = new MdTracerAdapter();
             ApplyMasterVolumeToCore();
+            ApplyDefaultCpuCyclesPerLine();
             SaveSettings();
             if (_core is MdTracerAdapter m)
             {
@@ -574,6 +621,7 @@ public partial class MainWindow : Window
     {
         try
         {
+            Console.WriteLine($"[UI] Start clicked. romPath='{_romPath}' exists={(!string.IsNullOrWhiteSpace(_romPath) && File.Exists(_romPath))}");
             _timer.Stop();
             StopEmuLoop();
             _frames = 0;
@@ -594,16 +642,22 @@ public partial class MainWindow : Window
             else
             {
             _core = new MdTracerAdapter();   // <-- Steg A core
+                Console.WriteLine("[UI] Core created (MdTracerAdapter).");
                 ApplyMasterVolumeToCore();
+                ApplyDefaultCpuCyclesPerLine();
 
                 if (!string.IsNullOrWhiteSpace(_romPath))
                 {
+                    Console.WriteLine($"[UI] Loading ROM: {_romPath}");
                     StartRomLog();
                     _timer.Stop();
 
                     if (_core is MdTracerAdapter m)
                     {
                         m.PowerCycleAndLoadRom(_romPath);
+                        Console.WriteLine("[UI] ROM loaded into core.");
+                        _audioPullReady = true;
+                        PrimePullAudio();
 
                         // Auto-load savestate slot 1 if flag is set
                         if (Environment.GetEnvironmentVariable("EUTHERDRIVE_LOAD_SLOT1_ON_BOOT") == "1")
@@ -630,6 +684,8 @@ public partial class MainWindow : Window
                     else
                     {
                         _core.LoadRom(_romPath);
+                        _audioPullReady = true;
+                        PrimePullAudio();
                         SaveSettings();
                     }
                 }
@@ -654,10 +710,21 @@ public partial class MainWindow : Window
             else
             {
                 _audioOutput?.Dispose();
-                _audioOutput = OpenAlAudioOutput.TryCreate();
-                StatusText.Text = _audioOutput is null
-                    ? "Audio output unavailable"
-                    : "Audio output ready";
+                
+                // Test: Use NullAudioSink to debug audio sync issues
+                bool useNullAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_NULL_AUDIO") == "1";
+                if (useNullAudio)
+                {
+                    _audioOutput = new NullAudioSink();
+                    StatusText.Text = "Null audio (debug)";
+                }
+                else
+                {
+                    _audioOutput = OpenAlAudioOutput.TryCreate();
+                    StatusText.Text = _audioOutput is null
+                        ? "Audio output unavailable"
+                        : "Audio output ready";
+                }
             }
 
 
@@ -674,7 +741,19 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = $"Start failed: {ex.Message}";
-            Console.WriteLine(ex.ToString());
+            LogException(ex, "Start");
+            _audioPullReady = false;
+        }
+    }
+
+    private static void LogException(Exception ex, string context)
+    {
+        Console.WriteLine($"[UI-ERROR] {context}: {ex.Message}");
+        Console.WriteLine(ex.ToString());
+        if (ex.InnerException != null)
+        {
+            Console.WriteLine($"[UI-ERROR] {context} inner: {ex.InnerException.Message}");
+            Console.WriteLine(ex.InnerException.ToString());
         }
     }
 
@@ -704,6 +783,15 @@ public partial class MainWindow : Window
             adapter.Reset();
             StatusText.Text = $"Frame rate set to {_frameRateMode}. Reset applied.";
         }
+    }
+
+    private void ApplyDefaultCpuCyclesPerLine()
+    {
+        if (_core is not MdTracerAdapter adapter)
+            return;
+        adapter.SetCpuCyclesPerLine(DefaultCpuCyclesPerLine);
+        if (CpuCyclesTextBox != null)
+            CpuCyclesTextBox.Text = DefaultCpuCyclesPerLine.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private void SetStatus(string message)
@@ -1213,7 +1301,7 @@ public partial class MainWindow : Window
     {
         StopAudioEngine();
         _audioEnabled = AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled;
-        _audioTimedEnabled = AudioTimedEnvEnabled && _audioEnabled;
+        _audioTimedEnabled = _audioEnabled && AudioTimedEnvEnabled;
         ApplyAudioOptionsToCore();
         if (!_audioEnabled)
         {
@@ -1221,8 +1309,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        _audioEngine = new AudioEngine(new PwCatAudioSink(), AudioSampleRate, AudioChannels);
+        _audioEngine = new AudioEngine(new PwCatAudioSink(), AudioSampleRate, AudioChannels, framesPerBatch: AudioEngineBatchFrames, bufferFrames: AudioEngineBufferFrames);
+        _audioEngine.SetTargetBufferedFrames(AudioTargetBufferedFrames);
         _audioEngine.Start();
+        if (AudioPullEnabled)
+        {
+            _audioPullMode = true;
+            _audioPullReady = false;
+            _audioEngine.EnablePullMode(AudioPullProducer, targetBufferedFrames: AudioTargetBufferedFrames, maxFramesPerPull: AudioPullMaxFrames);
+            PrimePullAudio();
+        }
+        else
+        {
+            _audioPullMode = false;
+            _audioPullReady = false;
+        }
         _audioFormatMismatchLogged = false;
         ResetAudioTiming();
     }
@@ -1234,6 +1335,8 @@ public partial class MainWindow : Window
 
         _audioEngine.Stop();
         _audioEngine = null;
+        _audioPullMode = false;
+        _audioPullReady = false;
         ResetAudioTiming();
     }
 
@@ -1241,120 +1344,7 @@ public partial class MainWindow : Window
     {
         if (_audioEngine == null || _core == null)
             return;
-
-        if (_audioTimedEnabled && _core is MdTracerAdapter adapter)
-        {
-            long now = Stopwatch.GetTimestamp();
-            if (_audioLastTicks == 0)
-            {
-                _audioLastTicks = now;
-                return;
-            }
-
-            double elapsed = (now - _audioLastTicks) / (double)Stopwatch.Frequency;
-            _audioLastTicks = now;
-            _audioFrameAccumulator += elapsed * AudioSampleRate;
-            int frames = (int)_audioFrameAccumulator;
-            if (frames <= 0)
-                return;
-
-            if (frames > AudioMaxFramesPerTick)
-            {
-                frames = AudioMaxFramesPerTick;
-                _audioFrameAccumulator = 0;
-                if (AudioStatsEnabled)
-                    _audioEngine?.ReportTimedClamp();
-                long logNow = now;
-                if (logNow - _audioLastDropLogTicks > Stopwatch.Frequency)
-                {
-                    _audioLastDropLogTicks = logNow;
-                    Console.WriteLine($"[AudioEngine] timed audio clamped to {AudioMaxFramesPerTick} frames.");
-                }
-            }
-            else
-            {
-                _audioFrameAccumulator -= frames;
-            }
-
-            long genStart = AudioStatsEnabled ? Stopwatch.GetTimestamp() : 0;
-            var timed = adapter.GetAudioBufferForFrames(frames, out int timedRate, out int timedChannels);
-            long genTicks = AudioStatsEnabled ? Stopwatch.GetTimestamp() - genStart : 0;
-            if (timed.IsEmpty)
-            {
-                if (TraceAudioLevel)
-                    Console.WriteLine($"[AUDLVL] timed EMPTY framesReq={frames} rate={timedRate} ch={timedChannels}");
-                return;
-            }
-
-            if (TraceAudioLevel)
-            {
-                int timedPeak = 0;
-                for (int i = 0; i < timed.Length; i++)
-                {
-                    int v = timed[i];
-                    if (v < 0) v = -v;
-                    if (v > timedPeak) timedPeak = v;
-                }
-                Console.WriteLine($"[AUDLVL] timed peak={timedPeak} samples={timed.Length} rate={timedRate} ch={timedChannels} framesReq={frames}");
-            }
-
-            if (timedRate != AudioSampleRate || timedChannels != AudioChannels)
-            {
-                if (!_audioFormatMismatchLogged)
-                {
-                    _audioFormatMismatchLogged = true;
-                    Console.WriteLine($"[AudioEngine] core audio format mismatch: {timedRate} Hz, {timedChannels} ch (expected {AudioSampleRate} Hz, {AudioChannels} ch)");
-                }
-                return;
-            }
-
-            _audioEngine.Submit(timed);
-            if (AudioStatsEnabled)
-            {
-                int producedFrames = timed.Length / timedChannels;
-                _audioEngine.ReportGenerateBatch(producedFrames, genTicks, timedMode: true);
-            }
-            return;
-        }
-
-        long genStartFrame = AudioStatsEnabled ? Stopwatch.GetTimestamp() : 0;
-        var audio = _core.GetAudioBuffer(out int sampleRate, out int channels);
-        long genTicksFrame = AudioStatsEnabled ? Stopwatch.GetTimestamp() - genStartFrame : 0;
-        if (audio.IsEmpty)
-        {
-            if (TraceAudioLevel)
-                Console.WriteLine("[AUDLVL] frame EMPTY");
-            return;
-        }
-
-        if (TraceAudioLevel)
-        {
-            int framePeak = 0;
-            for (int i = 0; i < audio.Length; i++)
-            {
-                int v = audio[i];
-                if (v < 0) v = -v;
-                if (v > framePeak) framePeak = v;
-            }
-            Console.WriteLine($"[AUDLVL] frame peak={framePeak} samples={audio.Length} rate={sampleRate} ch={channels}");
-        }
-
-        if (sampleRate != AudioSampleRate || channels != AudioChannels)
-        {
-            if (!_audioFormatMismatchLogged)
-            {
-                _audioFormatMismatchLogged = true;
-                Console.WriteLine($"[AudioEngine] core audio format mismatch: {sampleRate} Hz, {channels} ch (expected {AudioSampleRate} Hz, {AudioChannels} ch)");
-                }
-                return;
-            }
-
-        _audioEngine.Submit(audio);
-        if (AudioStatsEnabled)
-        {
-            int producedFrames = audio.Length / channels;
-            _audioEngine.ReportGenerateBatch(producedFrames, genTicksFrame, timedMode: false);
-        }
+        // Audio is filled in the emu loop when the ring buffer is low.
     }
 
     private void ResetAudioTiming()
@@ -1362,6 +1352,11 @@ public partial class MainWindow : Window
         _audioLastTicks = 0;
         _audioFrameAccumulator = 0;
         _audioLastDropLogTicks = 0;
+        _audioLastSystemCycles = 0;
+        _audioPullBufferedSamples = 0;
+        _audioPullReady = false;
+        _audioPullLastFrameCounter = -1;
+        _audioPullLastFrameCounterTicks = 0;
     }
 
     private void ApplyAudioOptionsToCore()
@@ -1850,8 +1845,23 @@ public partial class MainWindow : Window
             if (now < nextTick)
             {
                 int sleepMs = (int)((nextTick - now) * 1000 / Stopwatch.Frequency);
-                if (sleepMs > 1)
-                    Thread.Sleep(sleepMs - 1);
+                if (sleepMs > 2)
+                {
+                    Thread.Sleep(sleepMs - 2);
+                    // Spin-wait for last ~2ms for better accuracy
+                    while (Stopwatch.GetTimestamp() < nextTick)
+                    {
+                        Thread.Sleep(0); // Yield
+                    }
+                }
+                else
+                {
+                    // Spin-wait for short intervals
+                    while (Stopwatch.GetTimestamp() < nextTick)
+                    {
+                        Thread.Sleep(0); // Yield
+                    }
+                }
                 continue;
             }
 
@@ -1863,10 +1873,17 @@ public partial class MainWindow : Window
             if (core == null)
                 continue;
 
-            ApplyInputToCore(core);
             try
             {
-                core.RunFrame();
+                lock (_coreAudioLock)
+                {
+                    ApplyInputToCore(core);
+                    core.RunFrame();
+                    GenerateAudioFromSystemCycles(core);
+                }
+
+                if (AudioCatchupEnabled && _audioEngine != null && !_audioPullMode)
+                    CatchUpAudio(core);
 
                 // Framebuffer analyzer for debugging
                 if (core is MdTracerAdapter adapter && adapter.FbAnalyzer.Enabled)
@@ -1883,6 +1900,247 @@ public partial class MainWindow : Window
             ProducePsgForFrame();
             SubmitAudio();
         }
+    }
+
+    private void CatchUpAudio(IEmulatorCore core)
+    {
+        if (_audioEngine == null || core is not MdTracerAdapter adapter)
+            return;
+
+        int buffered = _audioEngine.BufferedFrames;
+        if (buffered >= AudioTargetBufferedFrames)
+            return;
+
+        int framesToCatch = Math.Min(AudioMaxCatchupFramesPerTick, AudioTargetBufferedFrames - buffered);
+        if (framesToCatch <= 0)
+            return;
+
+        int safety = 0;
+        while (framesToCatch > 0 && safety < AudioMaxCatchupFramesPerTick)
+        {
+            ApplyInputToCore(adapter);
+            adapter.RunFrame();
+            GenerateAudioFromSystemCycles(adapter);
+            framesToCatch -= (int)(AudioSampleRate / GetLiveTargetFps());
+            safety++;
+        }
+    }
+
+
+    private void PrimePullAudio()
+    {
+        if (!_audioPullMode || _core is not MdTracerAdapter adapter)
+            return;
+        lock (_coreAudioLock)
+        {
+            if (!_audioPullReady)
+                return;
+            for (int i = 0; i < 3; i++)
+            {
+                ApplyInputToCore(adapter);
+                adapter.RunFrame();
+                GenerateAudioFromSystemCycles(adapter);
+            }
+        }
+    }
+
+    private ReadOnlySpan<short> AudioPullProducer(int frames)
+    {
+        // Audio generation is driven by the emu loop; pull producer stays empty.
+        return ReadOnlySpan<short>.Empty;
+    }
+
+    private void AppendPullAudio(ReadOnlySpan<short> audio)
+    {
+        if (audio.IsEmpty)
+            return;
+
+        int newSamples = _audioPullBufferedSamples + audio.Length;
+        if (_audioPullBuffer.Length < newSamples)
+        {
+            int newSize = _audioPullBuffer.Length == 0 ? 4096 : _audioPullBuffer.Length;
+            while (newSize < newSamples)
+                newSize *= 2;
+            var next = new short[newSize];
+            if (_audioPullBufferedSamples > 0)
+                Array.Copy(_audioPullBuffer, 0, next, 0, _audioPullBufferedSamples);
+            _audioPullBuffer = next;
+        }
+
+        audio.CopyTo(_audioPullBuffer.AsSpan(_audioPullBufferedSamples));
+        _audioPullBufferedSamples = newSamples;
+    }
+
+    private void GenerateAudioFromSystemCycles(IEmulatorCore core)
+    {
+        if (_audioEngine == null || core is not MdTracerAdapter adapter)
+            return;
+
+        long currentCycles = adapter.GetSystemCycles();
+        if (_audioLastSystemCycles == 0)
+        {
+            _audioLastSystemCycles = currentCycles;
+            return;
+        }
+
+        long deltaCycles = currentCycles - _audioLastSystemCycles;
+        if (deltaCycles <= 0)
+            return;
+
+        _audioLastSystemCycles = currentCycles;
+        double cyclesPerSecond = adapter.GetM68kCyclesPerSecond();
+        if (cyclesPerSecond <= 0)
+            cyclesPerSecond = adapter.GetM68kClockHz();
+        if (cyclesPerSecond <= 0)
+            return;
+        double rateScale = 1.0;
+        if (!_audioPullMode && AudioPllEnabled && _audioEngine != null && AudioTargetBufferedFrames > 0)
+        {
+            int buffered = _audioEngine.BufferedFrames;
+            double error = (AudioTargetBufferedFrames - buffered) / (double)AudioTargetBufferedFrames;
+            if (error > 1.0) error = 1.0;
+            else if (error < -1.0) error = -1.0;
+            rateScale = 1.0 + (error * AudioPllMax);
+        }
+        _audioFrameAccumulator += (deltaCycles * SystemCyclesScale) * AudioCyclesScale * rateScale * (AudioSampleRate / cyclesPerSecond);
+
+        if (TraceAudioCycles && Stopwatch.GetTimestamp() - _audioCycleLogLastTicks > Stopwatch.Frequency)
+        {
+            _audioCycleLogLastTicks = Stopwatch.GetTimestamp();
+            double expectedPerFrame = cyclesPerSecond / adapter.GetTargetFps();
+            Console.WriteLine($"[AUDIO-CYCLES] deltaCycles={deltaCycles} expectedPerFrame={expectedPerFrame:F1} ratio={(deltaCycles / expectedPerFrame):F3}");
+        }
+        int frames = (int)_audioFrameAccumulator;
+        if (frames <= 0)
+            return;
+
+        _audioFrameAccumulator -= frames;
+        if (frames > AudioMaxFramesPerTick)
+            frames = AudioMaxFramesPerTick;
+
+        while (frames > 0)
+        {
+            int chunk = frames < AudioBufferChunkFrames ? frames : AudioBufferChunkFrames;
+            var audio = adapter.GetAudioBufferForFrames(chunk, out int rate, out int channels);
+            if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
+            {
+                // Always submit to the ring buffer so audio is produced even in pull mode.
+                _audioEngine.Submit(audio);
+                frames -= chunk;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (TraceAudioQueue && _audioEngine != null && Stopwatch.GetTimestamp() - _audioQueueLogLastTicks > Stopwatch.Frequency)
+        {
+            _audioQueueLogLastTicks = Stopwatch.GetTimestamp();
+            Console.WriteLine(
+                $"[AUDIO-QUEUE] buffered={_audioEngine.BufferedFrames} target={AudioTargetBufferedFrames} " +
+                $"rateScale={rateScale:F4} acc={_audioFrameAccumulator:F2}");
+        }
+    }
+
+    private static double GetAudioCyclesScale()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_CYCLES_SCALE");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+            && value > 0)
+        {
+            return value;
+        }
+        return 1.0;
+    }
+
+    private static double GetSystemCyclesScale()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_SYSTEM_CYCLES_SCALE");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+            && value > 0)
+        {
+            return value;
+        }
+        // Default: no scaling unless explicitly overridden.
+        return 1.0;
+    }
+
+    private static int GetAudioTargetBufferedFrames()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TARGET_MS");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int ms)
+            && ms > 0)
+        {
+            return (int)(AudioSampleRate * (ms / 1000.0));
+        }
+        // Default ~200ms target buffer for steadier audio under load.
+        return (int)(AudioSampleRate * 0.20);
+    }
+
+    private static int GetAudioMaxCatchupFramesPerTick()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_CATCHUP_FRAMES");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value)
+            && value > 0)
+        {
+            return value;
+        }
+        // Default cap to avoid runaway catch-up.
+        return 8;
+    }
+
+    private static double GetAudioPllMax()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PLL_MAX");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+            && value > 0)
+        {
+            return value;
+        }
+        // Default ±0.3% rate correction.
+        return 0.003;
+    }
+
+    private static int GetAudioEngineBufferFrames()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_BUFFER_FRAMES");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value)
+            && value > 0)
+        {
+            return value;
+        }
+        return 16384;
+    }
+
+    private static int GetAudioEngineBatchFrames()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_BATCH_FRAMES");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value)
+            && value > 0)
+        {
+            return value;
+        }
+        return 256;
+    }
+
+    private static int GetAudioPullMaxFrames()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PULL_MAX_FRAMES");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value)
+            && value > 0)
+        {
+            return value;
+        }
+        return 2048;
     }
 
     private double GetLiveTargetFps()

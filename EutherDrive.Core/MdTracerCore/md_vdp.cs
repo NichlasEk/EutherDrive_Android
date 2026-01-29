@@ -16,8 +16,9 @@ namespace EutherDrive.Core.MdTracerCore
              string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_NTCHK"), "1", StringComparison.Ordinal);
          private static readonly bool DebugVdpFrame =
              string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_VDPFRAME"), "1", StringComparison.Ordinal);
-         private static readonly bool DebugDmaWin =
-             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_DMAWIN"), "1", StringComparison.Ordinal);
+        private static readonly bool DebugDmaWin =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_DMAWIN"), "1", StringComparison.Ordinal);
+        private static readonly int Z80VblankIrqPulseCycles = ParseZ80VblankIrqPulseCycles();
         public int g_scanline;
         private int g_hinterrupt_counter;
         private bool _smsCommandPending;
@@ -63,18 +64,25 @@ namespace EutherDrive.Core.MdTracerCore
         [NonSerialized]
         private int _traceVramRangeLogCount;
         private bool _vblankActive;
+        private bool _z80VblankIntActive;
         private bool _forceVBlankLogged;
         private long _lastForcedVBlankFrame = -1;
         private bool _forceMdVBlankLogged;
         private long _lastForcedMdVBlankFrame = -1;
         private long _lastTriggerVBlankLogFrame = -1;
         private long _lastStatusReadLogFrame = -1;
+        private int _spriteOverflowMaxSprites;
+        private int _spriteOverflowMaxCells;
+        private bool _spriteOverflowAny;
+        private long _spriteOverflowLastFrame = -1;
         private static readonly bool TraceVdpTiming =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_TIMING"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpInterlace =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_INTERLACE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpState =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSpriteOverflowFrame =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPRITE_OVERFLOW_FRAME"), "1", StringComparison.Ordinal);
         private static readonly bool TraceNameTableRowDump =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NAMETABLE_ROW_DUMP"), "1", StringComparison.Ordinal);
         private static readonly bool TracePatternTileDump =
@@ -86,8 +94,23 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly string? TraceVramRangeEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_RANGE");
         private static readonly bool TraceVramRangeEnabled =
             TryParseVramRange(TraceVramRangeEnv, out _traceVramRangeStart, out _traceVramRangeEnd);
+        private static readonly int TraceVramRangeLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_RANGE_LIMIT", 200);
+        private static readonly bool TraceVramRangeSkipFill =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_RANGE_SKIP_FILL"), "1", StringComparison.Ordinal);
         private static int _traceVramRangeStart;
         private static int _traceVramRangeEnd;
+
+        private static int ParseZ80VblankIrqPulseCycles()
+        {
+            const int fallback = 171;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_VBLANK_IRQ_PULSE");
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0)
+                return parsed;
+            return fallback;
+        }
         private static readonly bool ShowOverscan =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SHOW_OVERSCAN"), "1", StringComparison.Ordinal);
         private static readonly System.Diagnostics.Stopwatch _timingStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -277,6 +300,10 @@ namespace EutherDrive.Core.MdTracerCore
                 // Trigger VBlank once per frame at scanline g_display_ysize for all modes.
                 TriggerVBlank();
             }
+            else if (g_scanline == g_display_ysize + 1)
+            {
+                ClearZ80VBlankInterrupt();
+            }
             else if (g_scanline == g_vertical_line_max - 1) // också definierad i VDP
             {
             // Keep VBlank flag until the next frame even when clearing per-line stats.
@@ -284,8 +311,6 @@ namespace EutherDrive.Core.MdTracerCore
                 g_vdp_status_4_frame = (byte)((g_vdp_status_4_frame == 0) ? 1 : 0);
             else
                 g_vdp_status_4_frame = g_vdp_interlace_field;
-                g_vdp_status_5_collision = 0;
-                g_vdp_status_6_sprite = 0;
             }
 
             // Nollställ guard för fält-växling först EFTER att alla nested run() anrop är klara.
@@ -523,12 +548,37 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (TracePatternTileDump)
             {
-                for (int i = 0; i < Math.Min(4, maxWords); i++)
+                int maxDump = Math.Min(4, maxWords);
+                int[] nonZero = new int[maxWords];
+                int nonZeroCount = 0;
+                for (int i = 0; i < maxWords; i++)
                 {
                     int byteAddr = ((rowWordBase + i) << 1) & 0xFFFF;
                     ushort raw = ReadVramWordRaw(byteAddr);
                     int tile = raw & 0x07FF;
-                    DumpTilePattern(label, i, tile);
+                    if (tile != 0 && nonZeroCount < nonZero.Length)
+                        nonZero[nonZeroCount++] = i;
+                }
+                if (nonZeroCount > 0)
+                {
+                    for (int idx = 0; idx < Math.Min(maxDump, nonZeroCount); idx++)
+                    {
+                        int i = nonZero[idx];
+                        int byteAddr = ((rowWordBase + i) << 1) & 0xFFFF;
+                        ushort raw = ReadVramWordRaw(byteAddr);
+                        int tile = raw & 0x07FF;
+                        DumpTilePattern(label, i, tile);
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < maxDump; i++)
+                    {
+                        int byteAddr = ((rowWordBase + i) << 1) & 0xFFFF;
+                        ushort raw = ReadVramWordRaw(byteAddr);
+                        int tile = raw & 0x07FF;
+                        DumpTilePattern(label, i, tile);
+                    }
                 }
             }
         }
@@ -598,8 +648,33 @@ namespace EutherDrive.Core.MdTracerCore
             return row << 1;
         }
 
-        internal int GetTileWordAddress(int tileIndex, int rowInCell, uint reverse, bool isScrollA = false)
+        internal enum TileRebaseKind
         {
+            None = 0,
+            PlaneA = 1,
+            PlaneB = 2,
+            Window = 3
+        }
+
+        private int GetTileRebaseOffsetWords(TileRebaseKind rebaseKind)
+        {
+            if (g_vdp_reg_1_7_vram128 == 0)
+                return 0;
+
+            bool useRebase = rebaseKind switch
+            {
+                TileRebaseKind.PlaneA => g_vdp_reg_14_plane_a_rebase != 0,
+                TileRebaseKind.PlaneB => g_vdp_reg_14_plane_b_rebase != 0,
+                TileRebaseKind.Window => g_vdp_reg_14_plane_a_rebase != 0,
+                _ => false
+            };
+
+            return useRebase ? VRAM_DATASIZE : 0; // 0x10000 bytes -> 0x8000 words
+        }
+
+        internal int GetTileWordAddress(int tileIndex, int rowInCell, uint reverse, TileRebaseKind rebaseKind = TileRebaseKind.None)
+        {
+            int rebaseOffset = GetTileRebaseOffsetWords(rebaseKind);
             if (g_vdp_interlace_mode == 2)
             {
                 // In interlace mode 2, tile patterns are 8x16 (16 rows, 64 bytes each)
@@ -615,11 +690,11 @@ namespace EutherDrive.Core.MdTracerCore
                 int rowOffset = GetRowWordOffset(rowInCell, reverse);
 
                 // Use the same reverse pages as normal mode for horizontal flip support.
-                return GetReversePage(reverse) + patternBase + rowOffset;
+                return GetReversePage(reverse) + rebaseOffset + patternBase + rowOffset;
             }
 
             // Normal mode: use the standard formula
-            return GetReversePage(reverse) + GetTileWordBase(tileIndex) + GetRowWordOffset(rowInCell, reverse);
+            return GetReversePage(reverse) + rebaseOffset + GetTileWordBase(tileIndex) + GetRowWordOffset(rowInCell, reverse);
         }
 
         private int GetSpriteTableBase() => g_vdp_reg_5_sprite & (IsH40Mode() ? ~0x3FF : ~0x1FF);
@@ -693,7 +768,12 @@ namespace EutherDrive.Core.MdTracerCore
 
             int lineCount = g_sprite_row_cache.Length;
             for (int i = 0; i < lineCount; i++)
+            {
                 g_sprite_row_cache[i].Count = 0;
+                g_sprite_row_cache[i].TotalSprites = 0;
+                g_sprite_row_cache[i].TotalCells = 0;
+                g_sprite_row_cache[i].Overflow = false;
+            }
 
             int tileHeightShift = GetCellHeightShift();
             int blankLines = 128 << (g_vdp_interlace_mode == 2 ? 1 : 0);
@@ -720,6 +800,10 @@ namespace EutherDrive.Core.MdTracerCore
                     if ((uint)rowIndex >= (uint)g_sprite_row_cache.Length)
                         continue;
                     ref SpriteRowCacheRow row = ref g_sprite_row_cache[rowIndex];
+                    row.TotalSprites++;
+                    row.TotalCells += widthTiles;
+                    if (row.TotalSprites > g_max_sprite_line || row.TotalCells > g_max_sprite_cell)
+                        row.Overflow = true;
                     if (row.Count >= g_max_sprite_line)
                         continue;
 
@@ -737,6 +821,45 @@ namespace EutherDrive.Core.MdTracerCore
                 spriteIndex = link;
             }
             while (spriteIndex != 0 && --spritesRemaining != 0);
+        }
+
+        private void EvaluateSpriteOverflowForLine(int scanline)
+        {
+            UpdateSpriteRowCacheIfNeeded();
+
+            int lineIndex = (g_vdp_interlace_mode == 2)
+                ? ((scanline << 1) | g_vdp_interlace_field)
+                : scanline;
+            if ((uint)lineIndex >= (uint)g_sprite_row_cache.Length)
+                return;
+
+            ref SpriteRowCacheRow row = ref g_sprite_row_cache[lineIndex];
+            if (row.Overflow)
+                g_vdp_status_6_sprite = 1;
+
+            if (!TraceSpriteOverflowFrame)
+                return;
+
+            if (_spriteOverflowLastFrame != _frameCounter || scanline == 0)
+            {
+                _spriteOverflowLastFrame = _frameCounter;
+                _spriteOverflowMaxSprites = 0;
+                _spriteOverflowMaxCells = 0;
+                _spriteOverflowAny = false;
+            }
+
+            if (row.TotalSprites > _spriteOverflowMaxSprites)
+                _spriteOverflowMaxSprites = row.TotalSprites;
+            if (row.TotalCells > _spriteOverflowMaxCells)
+                _spriteOverflowMaxCells = row.TotalCells;
+            if (row.Overflow)
+                _spriteOverflowAny = true;
+
+            if (scanline == g_display_ysize - 1)
+            {
+                Console.WriteLine(
+                    $"[SPRITE-OVERFLOW] frame={_frameCounter} maxSprites={_spriteOverflowMaxSprites} maxCells={_spriteOverflowMaxCells} overflow={(_spriteOverflowAny ? 1 : 0)}");
+            }
         }
 
         private int GetOutputHeight()
@@ -830,6 +953,18 @@ namespace EutherDrive.Core.MdTracerCore
                 end = tmp;
             }
             return true;
+        }
+
+        private static int ParseTraceLimit(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            if (value <= 0)
+                return int.MaxValue;
+            return value;
         }
 
         private static bool TryParseHexU16(string token, out int value)
@@ -976,7 +1111,9 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (TraceVramRangeEnabled && address >= _traceVramRangeStart && address <= _traceVramRangeEnd)
             {
-                if (_traceVramRangeLogCount < 200)
+                if (TraceVramRangeSkipFill && source == "DMA-FILL")
+                    return;
+                if (_traceVramRangeLogCount < TraceVramRangeLimit)
                 {
                     uint pc = md_main.g_md_m68k != null ? md_m68k.g_reg_PC : 0u;
                     uint dmaSrc = g_dma_src_addr;
@@ -1167,6 +1304,9 @@ namespace EutherDrive.Core.MdTracerCore
                 md_m68k.g_interrupt_V_req = true;
                 // Z80 needs VBlank interrupt for sound drivers in both MD and SMS mode
                 md_main.g_md_z80?.irq_request(true, "VDP", 0);
+                if (Z80VblankIrqPulseCycles > 0)
+                    md_main.g_md_z80?.ArmIrqAutoClear("VDP", Z80VblankIrqPulseCycles);
+                _z80VblankIntActive = true;
                 Console.WriteLine($"[VINT] TriggerVBlank frame={_frameCounter} scanline={g_scanline} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field}");
             }
             LogTriggerVBlank();
@@ -1534,7 +1674,16 @@ namespace EutherDrive.Core.MdTracerCore
             md_m68k.g_interrupt_V_req = false;
             // Clear Z80 INT for sound drivers in both MD and SMS mode
             md_main.g_md_z80?.irq_request(false, "VDP", 0);
+            _z80VblankIntActive = false;
             LogVBlankEdge(0);
+        }
+
+        private void ClearZ80VBlankInterrupt()
+        {
+            if (!_z80VblankIntActive)
+                return;
+            _z80VblankIntActive = false;
+            md_main.g_md_z80?.irq_request(false, "VDP", 0);
         }
 
         private void ForceVBlankForTest()

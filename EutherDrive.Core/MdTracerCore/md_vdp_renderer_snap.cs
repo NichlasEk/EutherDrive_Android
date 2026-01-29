@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -14,8 +15,26 @@ namespace EutherDrive.Core.MdTracerCore
                 : -1;
         private static readonly bool TraceSat =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SAT"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceScrollLine =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SCROLL_LINE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceScrollLineScanline =
+            ParseTraceIntLocal("EUTHERDRIVE_TRACE_SCROLL_LINE_SCANLINE", 112);
+        private static readonly int TraceScrollLineLimit =
+            ParseTraceIntLocal("EUTHERDRIVE_TRACE_SCROLL_LINE_LIMIT", 32);
         private long _lastSatLogFrame = -1;
         private byte _lastSatLogField = 0xFF;
+        private long _traceScrollLineFrame = -1;
+        private int _traceScrollLineRemaining = TraceScrollLineLimit;
+
+        private static int ParseTraceIntLocal(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value < 0 ? fallback : value;
+        }
 
         private void rendering_frame_snap()
         {
@@ -95,26 +114,50 @@ namespace EutherDrive.Core.MdTracerCore
         private void rendering_line_snap()
         {
             int cellHeight = GetCellHeightPixels();
+            if (TraceScrollLine && g_scanline == TraceScrollLineScanline && _traceScrollLineFrame != _frameCounter)
+            {
+                _traceScrollLineFrame = _frameCounter;
+                _traceScrollLineRemaining = TraceScrollLineLimit;
+            }
 
             // HScroll A/B
             {
                 int hscrollLine = GetHScrollLine(g_scanline);
                 int w_addr = g_vdp_reg_13_hscroll;
-                switch (g_vdp_reg_11_1_hscroll)
+                int hscrollMask = g_vdp_reg_11_1_hscroll switch
                 {
-                    case 2: w_addr += (hscrollLine & 0xfff8) << 2; break;
-                    case 3: w_addr +=  hscrollLine             << 2; break;
-                }
+                    1 => 0x0007, // per 8-line block (tile row)
+                    2 => 0x00F8, // per 8-line groups
+                    3 => 0x00FF, // per line
+                    _ => 0x0000  // full screen
+                };
+                w_addr += (hscrollLine & hscrollMask) << 2;
                 w_addr >>= 1;
 
-                int w_hscrollA = (int)(vram_read_render(w_addr << 1) & 0x3ff);
-                int w_hscrollB = (int)(vram_read_render((w_addr + 1) << 1) & 0x3ff);
+                int raw_hscrollA = (int)(vram_read_render(w_addr << 1) & 0x3ff);
+                int raw_hscrollB = (int)(vram_read_render((w_addr + 1) << 1) & 0x3ff);
+                int w_hscrollA = (raw_hscrollA & 0x200) != 0 ? (raw_hscrollA | ~0x3ff) : raw_hscrollA;
+                int w_hscrollB = (raw_hscrollB & 0x200) != 0 ? (raw_hscrollB | ~0x3ff) : raw_hscrollB;
 
-                int w_view_xA = ((g_scroll_xsize << 2) - w_hscrollA) % g_scroll_xsize;
-                int w_view_xB = ((g_scroll_xsize << 2) - w_hscrollB) % g_scroll_xsize;
+                int modA = w_hscrollA % g_scroll_xsize;
+                if (modA < 0) modA += g_scroll_xsize;
+                int modB = w_hscrollB % g_scroll_xsize;
+                if (modB < 0) modB += g_scroll_xsize;
+                int w_view_xA = (g_scroll_xsize - modA) % g_scroll_xsize;
+                int w_view_xB = (g_scroll_xsize - modB) % g_scroll_xsize;
 
                 g_line_snap[g_scanline].hscrollA = w_view_xA;
                 g_line_snap[g_scanline].hscrollB = w_view_xB;
+                if (TraceScrollLine && g_scanline == TraceScrollLineScanline && _traceScrollLineRemaining > 0)
+                {
+                    if (_traceScrollLineRemaining != int.MaxValue)
+                        _traceScrollLineRemaining--;
+                    Console.WriteLine(
+                        $"[SCROLLLINE] frame={_frameCounter} scanline={g_scanline} hmode={g_vdp_reg_11_1_hscroll} " +
+                        $"hbase=0x{g_vdp_reg_13_hscroll:X4} hline={hscrollLine} addr=0x{(w_addr << 1):X4} " +
+                        $"hsA=0x{w_hscrollA:X3} hsB=0x{w_hscrollB:X3} viewA={w_view_xA} viewB={w_view_xB} " +
+                        $"xsize={g_scroll_xsize}");
+                }
             }
 
             if (TraceSat && g_scanline == 0 && (_lastSatLogFrame != _frameCounter || _lastSatLogField != g_vdp_interlace_field))
@@ -171,9 +214,23 @@ namespace EutherDrive.Core.MdTracerCore
                         g_line_snap[g_scanline].vscrollA[i] = (w_vscrollA + lineY) % g_scroll_ysize;
                         g_line_snap[g_scanline].vscrollB[i] = (w_vscrollB + lineY) % g_scroll_ysize;
                     }
+                    if (TraceScrollLine && g_scanline == TraceScrollLineScanline && _traceScrollLineRemaining > 0)
+                    {
+                        if (_traceScrollLineRemaining != int.MaxValue)
+                            _traceScrollLineRemaining--;
+                        Console.WriteLine(
+                            $"[SCROLLLINE] frame={_frameCounter} scanline={g_scanline} vmode=full lineY={lineY} " +
+                            $"vsA=0x{w_vscrollA:X3} vsB=0x{w_vscrollB:X3} viewA={g_line_snap[g_scanline].vscrollA[0]} " +
+                            $"viewB={g_line_snap[g_scanline].vscrollB[0]} ysize={g_scroll_ysize}");
+                    }
                 }
                 else
                 {
+                    int sampleCount = 0;
+                    ushort[] sampleVsA = new ushort[4];
+                    ushort[] sampleVsB = new ushort[4];
+                    int[] sampleViewA = new int[4];
+                    int[] sampleViewB = new int[4];
                     for (int i = 0; i < VSRAM_DATASIZE; i++)
                     {
                         ushort w_vscrollA = g_vsram[i << 1];
@@ -197,6 +254,26 @@ namespace EutherDrive.Core.MdTracerCore
 
                         g_line_snap[g_scanline].vscrollA[i] = (w_vscrollA + lineY) % g_scroll_ysize;
                         g_line_snap[g_scanline].vscrollB[i] = (w_vscrollB + lineY) % g_scroll_ysize;
+                        if (TraceScrollLine && g_scanline == TraceScrollLineScanline && sampleCount < 4)
+                        {
+                            sampleVsA[sampleCount] = w_vscrollA;
+                            sampleVsB[sampleCount] = w_vscrollB;
+                            sampleViewA[sampleCount] = g_line_snap[g_scanline].vscrollA[i];
+                            sampleViewB[sampleCount] = g_line_snap[g_scanline].vscrollB[i];
+                            sampleCount++;
+                        }
+                    }
+                    if (TraceScrollLine && g_scanline == TraceScrollLineScanline && _traceScrollLineRemaining > 0)
+                    {
+                        if (_traceScrollLineRemaining != int.MaxValue)
+                            _traceScrollLineRemaining--;
+                        var sb = new System.Text.StringBuilder();
+                        sb.Append($"[SCROLLLINE] frame={_frameCounter} scanline={g_scanline} vmode=percell lineY={lineY} ysize={g_scroll_ysize}");
+                        for (int i = 0; i < sampleCount; i++)
+                        {
+                            sb.Append($" i={i} vsA=0x{sampleVsA[i]:X3} vsB=0x{sampleVsB[i]:X3} viewA={sampleViewA[i]} viewB={sampleViewB[i]}");
+                        }
+                        Console.WriteLine(sb.ToString());
                     }
                 }
             }
@@ -239,6 +316,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_line_sprite_cnt = 0;
                 int w_line_cell_cnt = 0;
                 int w_sprite_cnt = 0;
+                bool overflowLine = false;
                 g_line_snap[g_scanline].sprite_rendrere_num = 0;
 
                 UpdateSpriteRowCacheIfNeeded();
@@ -302,14 +380,14 @@ namespace EutherDrive.Core.MdTracerCore
                     w_line_cell_cnt += w_xcell_size;
                     if (g_max_sprite_cell <= w_line_cell_cnt)
                     {
-                        g_vdp_status_6_sprite = 1;
+                        overflowLine = true;
                         break;
                     }
 
                     w_line_sprite_cnt += 1;
                     if (g_max_sprite_line <= w_line_sprite_cnt)
                     {
-                        g_vdp_status_6_sprite = 1;
+                        overflowLine = true;
                         break;
                     }
                 }
@@ -318,7 +396,7 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     Console.WriteLine(
                         $"[SPRITE-LINE] frame={_frameCounter} scanline={g_scanline} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field} " +
-                        $"sprites={w_sprite_cnt} lineSprites={w_line_sprite_cnt} cells={w_line_cell_cnt} overflow={g_vdp_status_6_sprite}" +
+                        $"sprites={w_sprite_cnt} lineSprites={w_line_sprite_cnt} cells={w_line_cell_cnt} overflow={overflowLine}" +
                         $"{(spriteLog!.Length > 0 ? spriteLog.ToString() : string.Empty)}");
                 }
             }

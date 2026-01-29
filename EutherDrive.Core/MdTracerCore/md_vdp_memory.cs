@@ -39,8 +39,12 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (StrictVdpAccess)
                 throw new InvalidOperationException($"VDP: {where}");
-            Debug.WriteLine($"[VDP] {where}");
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[VDP] {where}");
         }
+
+        private static bool TraceStatusRead =>
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATUS_READ"), "1", StringComparison.Ordinal);
 
         private static bool ReadEnvDefaultOn(string name)
         {
@@ -82,7 +86,13 @@ namespace EutherDrive.Core.MdTracerCore
                     md_m68k.RecordVdpStatusRead(status);
                     ushort postStatus = (ushort)(status & ~VDP_STATUS_VBLANK_MASK);
                     LogStatusRead(status, postStatus);
+                    if (TraceStatusRead)
+                    {
+                        Console.WriteLine($"[VDP-STATUS-RD] frame={_frameCounter} status=0x{status:X4} vblank={((status & VDP_STATUS_VBLANK_MASK) != 0 ? 1 : 0)} overflow={((status & 0x0040) != 0 ? 1 : 0)} collision={((status & 0x0020) != 0 ? 1 : 0)}");
+                    }
                     g_vdp_status_7_vinterrupt = 0;
+                    g_vdp_status_6_sprite = 0;
+                    g_vdp_status_5_collision = 0;
                     md_m68k.g_interrupt_V_req = false;
                     if (md_main.g_masterSystemMode)
                         md_main.g_md_z80?.irq_request(false, "VDP", 0);
@@ -127,7 +137,13 @@ namespace EutherDrive.Core.MdTracerCore
                 md_m68k.RecordVdpStatusRead(w_out);
                 ushort postStatus = (ushort)(w_out & ~VDP_STATUS_VBLANK_MASK);
                 LogStatusRead(w_out, postStatus);
+                if (TraceStatusRead)
+                {
+                    Console.WriteLine($"[VDP-STATUS-RD] frame={_frameCounter} status=0x{w_out:X4} vblank={((w_out & VDP_STATUS_VBLANK_MASK) != 0 ? 1 : 0)} overflow={((w_out & 0x0040) != 0 ? 1 : 0)} collision={((w_out & 0x0020) != 0 ? 1 : 0)}");
+                }
                 g_vdp_status_7_vinterrupt = 0; // ack on status read
+                g_vdp_status_6_sprite = 0;
+                g_vdp_status_5_collision = 0;
                 md_m68k.g_interrupt_V_req = false;
                 if (md_main.g_masterSystemMode)
                     md_main.g_md_z80?.irq_request(false, "VDP", 0);
@@ -204,7 +220,8 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     case 1: // VRAM byte write
                     {
-                        g_vram[writeAddr & 0xFFFF] = in_data;
+                        int vramIndex = ((writeAddr & 1) == 0) ? writeAddr : (writeAddr ^ 1);
+                        g_vram[vramIndex & 0xFFFF] = in_data;
                         pattern_chk(writeAddr, in_data);
 
                         int wordAddr = writeAddr & 0xFFFE;

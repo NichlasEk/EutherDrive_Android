@@ -55,8 +55,8 @@ public static class MdVdpInterlaceMode2PatternTest
         Console.WriteLine($"[TEST] Wrote pattern data to 0x{patternAddr:X4}");
 
         // Now verify GetTileWordAddress returns correct address
-        int tileAddr = vdp.GetTileWordAddress(1, 0, 0, true);
-        Console.WriteLine($"[TEST] GetTileWordAddress(1, 0, 0, true) = 0x{tileAddr:X4}");
+        int tileAddr = vdp.GetTileWordAddress(1, 0, 0);
+        Console.WriteLine($"[TEST] GetTileWordAddress(1, 0, 0) = 0x{tileAddr:X4}");
         Console.WriteLine($"[TEST] Expected: 0x{(patternAddr >> 1):X4}");
 
         // Check what renderer_vram contains at the scroll entry location

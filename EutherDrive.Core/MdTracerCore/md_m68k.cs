@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Diagnostics;
 using System.Globalization;
+using System.Collections.Generic;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -78,13 +79,23 @@ namespace EutherDrive.Core.MdTracerCore
         private const uint StallWatchLowStart = 0x000710;
         private const uint StallWatchLowEnd = 0x000730;
         private static readonly uint? TraceMemWatchAddr = ParseWatchAddr("EUTHERDRIVE_TRACE_MEM_WATCH");
+        private static readonly HashSet<uint> TraceMemWatchAddrs =
+            ParseWatchAddrList("EUTHERDRIVE_TRACE_MEM_WATCH_LIST");
         private static readonly int MemWatchLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_MEM_WATCH_LIMIT");
         private static readonly bool MemWatchAll =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MEM_WATCH_ALL"), "1", StringComparison.Ordinal);
+        private static readonly HashSet<uint> TracePcTapAddrs =
+            ParseWatchAddrList("EUTHERDRIVE_TRACE_PC_TAP_LIST");
+        private static readonly List<(uint Start, uint End)> TracePcTapPeekRanges =
+            ParseWatchRangeList("EUTHERDRIVE_TRACE_PC_TAP_PEEK_LIST");
+        private static readonly bool TracePcTapOncePerFrame =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_TAP_ONCE_PER_FRAME"), "1", StringComparison.Ordinal);
         private static int _memWatchLogRemaining = MemWatchLimit;
         private static bool _memWatchLastValid;
         private static uint _memWatchLastValue;
         private static byte _memWatchLastSize;
+        private static long _pcTapLastFrame = -1;
+        private static uint _pcTapLastPc;
         private uint _stallLastPc;
         private uint _stallSecondLastPc;
         private uint _stallOscCurrent;
@@ -146,6 +157,7 @@ namespace EutherDrive.Core.MdTracerCore
         public void run(int in_clock)
         {
             g_clock_total += in_clock;
+            md_main.AddM68kCycles(in_clock);
             int iter = 0;
             while (g_clock_now < g_clock_total)
             {
@@ -162,6 +174,7 @@ namespace EutherDrive.Core.MdTracerCore
 
                 // md_main.g_form_code_trace.CPU_Trace(g_reg_PC);
                 TraceCpu(g_reg_PC); // headless
+                MaybeLogPcTap(g_reg_PC);
                 
                 // Special Stage debugging
                 if (_specialStageDebug && md_main.g_md_vdp != null)
@@ -524,6 +537,16 @@ namespace EutherDrive.Core.MdTracerCore
                         _memWatchLogRemaining--;
                 }
             }
+            if (TraceMemWatchAddrs.Count > 0 && TraceMemWatchAddrs.Contains(address) && _memWatchLogRemaining > 0)
+            {
+                if (write || MemWatchAll)
+                {
+                    char rw = write ? 'W' : 'R';
+                    Console.WriteLine($"[MEMWATCH] {rw}{size} pc=0x{g_reg_PC:X6} addr=0x{address:X6} val=0x{FormatAccessValue(value, size)}");
+                    if (_memWatchLogRemaining != int.MaxValue)
+                        _memWatchLogRemaining--;
+                }
+            }
             if (!TraceMdStall && !_pcWatchEnabled)
                 return;
             _stallAccessBuffer[_stallAccessIndex] = new StallAccess { Address = address, Size = size, IsWrite = write, Value = value };
@@ -592,6 +615,75 @@ namespace EutherDrive.Core.MdTracerCore
             return value & 0x00FF_FFFF;
         }
 
+        private static HashSet<uint> ParseWatchAddrList(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            var result = new HashSet<uint>();
+            if (string.IsNullOrWhiteSpace(raw))
+                return result;
+            string[] tokens = raw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (string token in tokens)
+            {
+                string trimmed = token.Trim();
+                if (trimmed.Length == 0)
+                    continue;
+                string parsed = trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                    ? trimmed.Substring(2)
+                    : trimmed;
+                if (uint.TryParse(parsed, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint value) ||
+                    uint.TryParse(parsed, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+                {
+                    result.Add(value & 0x00FF_FFFF);
+                }
+            }
+            return result;
+        }
+
+        private static List<(uint Start, uint End)> ParseWatchRangeList(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            var result = new List<(uint, uint)>();
+            if (string.IsNullOrWhiteSpace(raw))
+                return result;
+            string[] tokens = raw.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (string token in tokens)
+            {
+                string trimmed = token.Trim();
+                if (trimmed.Length == 0)
+                    continue;
+                int sep = trimmed.IndexOf('-');
+                if (sep <= 0 || sep >= trimmed.Length - 1)
+                    continue;
+                string left = trimmed.Substring(0, sep);
+                string right = trimmed.Substring(sep + 1);
+                if (!TryParseAddrToken(left, out uint start) || !TryParseAddrToken(right, out uint end))
+                    continue;
+                if (end < start)
+                {
+                    uint tmp = start;
+                    start = end;
+                    end = tmp;
+                }
+                result.Add((start & 0x00FF_FFFF, end & 0x00FF_FFFF));
+            }
+            return result;
+        }
+
+        private static bool TryParseAddrToken(string token, out uint value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(token))
+                return false;
+            string trimmed = token.Trim();
+            if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                trimmed = trimmed.Substring(2);
+            if (uint.TryParse(trimmed, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value))
+                return true;
+            if (uint.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+                return true;
+            return false;
+        }
+
         private static int ParseWatchLimit(string name)
         {
             string? raw = Environment.GetEnvironmentVariable(name);
@@ -632,6 +724,57 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             MaybeLogChecksumProgress(pc, opcode);
+        }
+
+        private static void MaybeLogPcTap(uint pc)
+        {
+            if (TracePcTapAddrs.Count == 0 || !TracePcTapAddrs.Contains(pc))
+                return;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (TracePcTapOncePerFrame && frame == _pcTapLastFrame && pc == _pcTapLastPc)
+                return;
+            _pcTapLastFrame = frame;
+            _pcTapLastPc = pc;
+
+            Console.WriteLine(
+                $"[PCTAP] frame={frame} pc=0x{pc:X6} SR=0x{g_reg_SR:X4} " +
+                $"D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} D2=0x{g_reg_data[2].l:X8} D3=0x{g_reg_data[3].l:X8} " +
+                $"D4=0x{g_reg_data[4].l:X8} D5=0x{g_reg_data[5].l:X8} D6=0x{g_reg_data[6].l:X8} D7=0x{g_reg_data[7].l:X8} " +
+                $"A0=0x{g_reg_addr[0].l:X8} A1=0x{g_reg_addr[1].l:X8} A2=0x{g_reg_addr[2].l:X8} A3=0x{g_reg_addr[3].l:X8} " +
+                $"A4=0x{g_reg_addr[4].l:X8} A5=0x{g_reg_addr[5].l:X8} A6=0x{g_reg_addr[6].l:X8} A7=0x{g_reg_addr[7].l:X8} " +
+                $"{FormatRecentAccesses(32)}");
+
+            DumpPcWindowRange(pc, 32, 64);
+
+            for (int i = 0; i < TracePcTapPeekRanges.Count; i++)
+            {
+                var range = TracePcTapPeekRanges[i];
+                DumpPcTapRange(range.Start, range.End);
+            }
+        }
+
+        private static void DumpPcTapRange(uint start, uint end)
+        {
+            if (end < start)
+                return;
+            const int bytesPerLine = 16;
+            uint addr = start;
+            while (addr <= end)
+            {
+                var sb = new StringBuilder();
+                sb.AppendFormat("[PCTAP-PEEK] addr=0x{0:X6}:", addr);
+                uint lineEnd = addr + (uint)bytesPerLine - 1;
+                if (lineEnd > end)
+                    lineEnd = end;
+                for (uint a = addr; a <= lineEnd; a++)
+                {
+                    sb.AppendFormat(" {0:X2}", PeekMem8(a));
+                }
+                Console.WriteLine(sb.ToString());
+                if (lineEnd == uint.MaxValue)
+                    break;
+                addr = lineEnd + 1;
+            }
         }
 
         private static void MaybeLogChecksumProgress(uint pc, ushort opcode)
@@ -701,7 +844,7 @@ namespace EutherDrive.Core.MdTracerCore
             uint addr = pc;
             int remaining = (int)length;
             int instrCount = 0;
-            while (remaining > 0 && instrCount < 8)
+            while (remaining > 0 && instrCount < 16)
             {
                 ushort op = PeekMem16(addr);
                 var info = g_opcode_info != null ? g_opcode_info[op] : null;

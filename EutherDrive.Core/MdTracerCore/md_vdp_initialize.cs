@@ -1,4 +1,4 @@
-﻿namespace EutherDrive.Core.MdTracerCore
+namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
@@ -60,6 +60,9 @@
                 g_sprite_row_cache[i] = new SpriteRowCacheRow
                 {
                     Count = 0,
+                    TotalSprites = 0,
+                    TotalCells = 0,
+                    Overflow = false,
                     SpriteIndices = new byte[MAX_SPRITE],
                     YInSprite = new byte[MAX_SPRITE],
                     Width = new byte[MAX_SPRITE],
@@ -119,7 +122,7 @@
             g_scroll_ysize = 256;
             g_scroll_xsize_mask = 0x00ff;
             g_scroll_ysize_mask = 0x00ff;
-            g_vertical_line_max = 262;
+            g_vertical_line_max = 262; // NTSC (60Hz)
             UpdateOutputWidth();
 
             // VDP status / regs

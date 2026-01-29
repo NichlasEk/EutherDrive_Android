@@ -1,16 +1,46 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Xml.Linq;
 
 namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
+        private static readonly bool TraceDmaSourceReads =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_SRC"), "1", StringComparison.Ordinal);
+        private static readonly int TraceDmaSourceReadLimit =
+            ParseDmaTraceLimit("EUTHERDRIVE_TRACE_DMA_SRC_LIMIT", 128);
+        [NonSerialized] private int _traceDmaSourceRemaining;
+        [NonSerialized] private long _traceDmaSourceFrame = -1;
         private int g_dma_mode;
         private uint g_dma_src_addr;
         private int g_dma_leng;
         private bool g_dma_fill_req;
         private ushort g_dma_fill_data;
         private bool g_dma_immediate_complete = true;
+
+        private static int ParseDmaTraceLimit(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value <= 0 ? int.MaxValue : value;
+        }
+
+        private static string ClassifyDmaSourceRegion(uint address)
+        {
+            if (address <= 0x3FFFFF)
+                return "ROM";
+            if (address >= 0xE00000)
+                return "RAM";
+            if (address >= 0xA00000 && address <= 0xA0FFFF)
+                return "Z80";
+            if (address >= 0xC00000 && address <= 0xDFFFFF)
+                return "VDP";
+            return "OTHER";
+        }
 
         private void FinishDmaTransfer(int mode)
         {
@@ -58,7 +88,9 @@ namespace EutherDrive.Core.MdTracerCore
         private void dma_run_memory_req()
         {
             uint srcWordAddr = read_dma_src_addr();
-            g_dma_src_addr = srcWordAddr << 1; // Convert word address to byte address
+            uint srcHigh = g_vdp_reg_23_5_dma_high;
+            ushort srcLow = (ushort)((g_vdp_reg_22_dma_source_mid << 8) | g_vdp_reg_21_dma_source_low);
+            g_dma_src_addr = (srcHigh << 17) | ((uint)srcLow << 1);
             g_dma_leng = read_dma_leng();
             g_dma_mode = 1;
             g_vdp_status_1_dma = 1;
@@ -71,6 +103,16 @@ namespace EutherDrive.Core.MdTracerCore
                 case 1: startTarget = "VRAM"; break;
                 case 3: startTarget = "CRAM"; break;
                 case 5: startTarget = "VSRAM"; break;
+            }
+
+            if (TraceDmaSourceReads)
+            {
+                _traceDmaSourceRemaining = TraceDmaSourceReadLimit;
+                _traceDmaSourceFrame = _frameCounter;
+                string region = ClassifyDmaSourceRegion(g_dma_src_addr);
+                Console.WriteLine(
+                    $"[DMA-SRC-TRACE-START] frame={_frameCounter} srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} " +
+                    $"region={region} len=0x{g_dma_leng:X4} dest=0x{g_vdp_reg_dest_address:X4} code=0x{g_vdp_reg_code:X2}");
             }
             
             Console.WriteLine($"[DMA-START] reason=CMD addr=0x{g_vdp_reg_dest_address:X4} cd=0x{g_vdp_reg_code:X2} " +
@@ -143,8 +185,10 @@ namespace EutherDrive.Core.MdTracerCore
             
             while (true)
             {
-                // Read from source (byte address)
-                ushort w_val = ReadDmaSourceWord(g_dma_src_addr);
+                // Read from source (byte address) with 128KiB wrap bug (low word wraps, high stays)
+                uint srcByteAddr = (srcHigh << 17) | ((uint)srcLow << 1);
+                g_dma_src_addr = srcByteAddr;
+                ushort w_val = ReadDmaSourceWord(srcByteAddr);
                 int writeAddr = g_vdp_reg_dest_address;
                 
                 switch (g_vdp_reg_code & 0x0f)
@@ -180,7 +224,7 @@ namespace EutherDrive.Core.MdTracerCore
                         break;
                 }
                 
-                g_dma_src_addr += 2;
+                srcLow = (ushort)(srcLow + 1);
                 g_vdp_reg_dest_address = (ushort)(writeAddr + g_vdp_reg_15_autoinc);
                 
                 // Decrement and wrap: --length, length &= 0xFFFF
@@ -191,6 +235,8 @@ namespace EutherDrive.Core.MdTracerCore
                 if (w_loop_cnt == 0)
                     break;
             }
+
+            g_dma_src_addr = (srcHigh << 17) | ((uint)srcLow << 1);
             
             // DMA complete
             FinishDmaTransfer(1);
@@ -347,10 +393,17 @@ namespace EutherDrive.Core.MdTracerCore
         private ushort ReadDmaSourceWord(uint address)
         {
             var bus = md_main.g_md_bus;
-            if (bus != null)
-                return bus.read16(address);
-
-            return md_m68k.read16(address);
+            ushort value = bus != null ? bus.read16(address) : md_m68k.read16(address);
+            if (TraceDmaSourceReads && _traceDmaSourceRemaining > 0)
+            {
+                if (_traceDmaSourceRemaining != int.MaxValue)
+                    _traceDmaSourceRemaining--;
+                string region = ClassifyDmaSourceRegion(address);
+                Console.WriteLine(
+                    $"[DMA-SRC-READ] frame={_frameCounter} addr=0x{address:X6} region={region} val=0x{value:X4} " +
+                    $"dest=0x{g_vdp_reg_dest_address:X4} code=0x{g_vdp_reg_code:X2} dmaMode={g_dma_mode}");
+            }
+            return value;
         }
 
         private void write_dma_src_addr(uint in_addr)

@@ -55,7 +55,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[CARTRIDGE] Load from bytes failed: {ex.Message}");
+                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CARTRIDGE"), "1", StringComparison.Ordinal))
+                    Console.WriteLine($"[CARTRIDGE] load_from_bytes failed: {ex.Message}");
                 return false;
             }
         }
@@ -71,7 +72,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FileNotFoundException)
             {
-                Debug.WriteLine($"[CARTRIDGE] Load failed: {ex.Message}");
+                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CARTRIDGE"), "1", StringComparison.Ordinal))
+                    Console.WriteLine($"[CARTRIDGE] load failed '{in_romname}': {ex.Message}");
                 return false;
             }
 
@@ -100,7 +102,8 @@ namespace EutherDrive.Core.MdTracerCore
 
                     if (pick == null)
                     {
-                        Debug.WriteLine("[CARTRIDGE] ZIP contained no files.");
+                        if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CARTRIDGE"), "1", StringComparison.Ordinal))
+                            Console.WriteLine($"[CARTRIDGE] zip load failed '{in_romname}': no valid entries");
                         return false;
                     }
 
@@ -111,7 +114,8 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[CARTRIDGE] ZIP read failed: {ex.Message}");
+                    if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CARTRIDGE"), "1", StringComparison.Ordinal))
+                        Console.WriteLine($"[CARTRIDGE] zip load failed '{in_romname}': {ex.Message}");
                     return false;
                 }
             }
@@ -134,7 +138,8 @@ namespace EutherDrive.Core.MdTracerCore
             // Minimistorlek för att rymma headern vi läser (0x1F2)
             if (g_file_size < 0x1F3)
             {
-                Debug.WriteLine($"[CARTRIDGE] File too small: {g_file_size} bytes.");
+                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CARTRIDGE"), "1", StringComparison.Ordinal))
+                    Console.WriteLine($"[CARTRIDGE] header too small: size=0x{g_file_size:X}");
                 return false;
             }
 
@@ -144,7 +149,8 @@ namespace EutherDrive.Core.MdTracerCore
             g_system_type_sega  = g_system_type_raw.StartsWith("SEGA", StringComparison.OrdinalIgnoreCase);
             g_system_type_known = IsKnownSystemType(g_system_type);
             if (!g_system_type_sega)
-                Debug.WriteLine($"[CARTRIDGE] System type missing SEGA: '{g_system_type_raw}'.");
+                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CARTRIDGE"), "1", StringComparison.Ordinal))
+                    Console.WriteLine($"[CARTRIDGE] non-SEGA system type '{g_system_type_raw}'");
 
             g_copyright         = get_string(0x110, 0x11F);
             g_game_title1       = get_string(0x120, 0x14F);

@@ -68,6 +68,7 @@ namespace EutherDrive.Core.MdTracerCore
         private long _dacWriteCount;
         private long _dacEnableCount;
         private long _dacDisableCount;
+
         private long _dacSum;
         private long _dacRateWriteCount;
         private long _dacRateDeltaCount;
@@ -253,9 +254,12 @@ namespace EutherDrive.Core.MdTracerCore
         private int _timerBReload = 256 << 4;
         private int _timerACount = 1024;
         private int _timerBCount = 256 << 4;
-        private double _timerTickFrac;
+        private double _timerTickFrac;  // Fixed-point accumulator: units = M68K cycles, 72 cycles = 1 timer tick
         private bool _timersDrivenByZ80;
         private long _lastSystemCycles = -1;
+        private int _z80CycleAccumulator;  // Accumulate Z80 cycles for batched SyncFM() calls
+        private long _lastSyncSystemCycles;  // Last SystemCycles when SyncFM() was called
+        private long _operatorLeftoverCycles;  // Leftover M68K cycles for operator timing (clownmdemu-style)
         private int g_reg_2a_dac_data = 0x100;  // Match clownmdemu: 0x100 = silence
         private int g_reg_2b_dac;
 
@@ -284,6 +288,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         public byte ReadStatus(bool clearOnRead)
         {
+            // Do not advance YM time here; it is driven by audio rendering only.
+            
             byte status = g_com_status;
             if (clearOnRead && (status & 0x03) != 0)
             {
@@ -359,6 +365,8 @@ namespace EutherDrive.Core.MdTracerCore
             int w_mode = -1;
             byte w_addr = 0;
             string _source = source;  // Store source for MaybeLogYmReg
+            
+            // Do not advance YM time here; it is driven by audio rendering only.
             
             if (TraceYmBusy)
             {
@@ -496,7 +504,9 @@ namespace EutherDrive.Core.MdTracerCore
                             if ((in_val & 0x08) == 0x08)
                             {
                                 g_reg_22_lfo_enable = true;
-                                g_reg_22_lfo_inc = LFO_INC_MAP[in_val & 0x07];
+                                int lfoInc = LFO_INC_MAP[in_val & 0x07];
+                                int scaled = (int)Math.Round(lfoInc * YmStepScale);
+                                g_reg_22_lfo_inc = Math.Max(1, scaled);
                             }
                             else
                             {

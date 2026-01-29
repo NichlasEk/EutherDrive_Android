@@ -50,6 +50,9 @@ namespace EutherDrive.Core.MdTracerCore
         private struct SpriteRowCacheRow
         {
             public int Count;
+            public int TotalSprites;
+            public int TotalCells;
+            public bool Overflow;
             public byte[] SpriteIndices;
             public byte[] YInSprite;
             public byte[] Width;

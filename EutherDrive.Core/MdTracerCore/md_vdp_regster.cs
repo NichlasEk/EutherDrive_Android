@@ -6,7 +6,11 @@ namespace EutherDrive.Core.MdTracerCore
     public partial class md_vdp
     {
         // Småhjälp för "headless" varningar
-        private static void Warn(string msg) => Debug.WriteLine($"[VDP] {msg}");
+        private static void Warn(string msg)
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[VDP] {msg}");
+        }
         private static readonly bool TraceDmaRegs =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_REGS"), "1", StringComparison.Ordinal);
 
@@ -69,6 +73,7 @@ namespace EutherDrive.Core.MdTracerCore
         public byte g_vdp_reg_1_5_vinterrupt;
         public byte g_vdp_reg_1_4_dma;
         public byte g_vdp_reg_1_3_cellmode;
+        public byte g_vdp_reg_1_7_vram128;
         public int  g_vdp_reg_2_scrolla;
         public int  g_vdp_reg_3_windows;
         public int  g_vdp_reg_4_scrollb;
@@ -94,6 +99,8 @@ namespace EutherDrive.Core.MdTracerCore
         public byte g_vdp_reg_15_autoinc;
         public int  g_vdp_reg_16_5_scrollV;
         public int  g_vdp_reg_16_1_scrollH;
+        public byte g_vdp_reg_14_plane_a_rebase;
+        public byte g_vdp_reg_14_plane_b_rebase;
         public byte g_vdp_reg_17_7_windows;
         public byte g_vdp_reg_17_4_basspointer;
         public byte g_vdp_reg_18_7_windows;
@@ -320,8 +327,10 @@ namespace EutherDrive.Core.MdTracerCore
                     g_vdp_reg_0_1_hvcounter  = (byte)((in_data >> 1) & 0x01);
                     break;
 
-                 case 1:
+                case 1:
                      byte prevDisplay = g_vdp_reg_1_6_display;
+                     byte prevVram128 = g_vdp_reg_1_7_vram128;
+                     g_vdp_reg_1_7_vram128  = (byte)((in_data >> 7) & 0x01);
                      g_vdp_reg_1_6_display  = (byte)((in_data >> 6) & 0x01);
                      g_vdp_reg_1_5_vinterrupt = (byte)((in_data >> 5) & 0x01);
                      g_vdp_reg_1_4_dma      = (byte)((in_data >> 4) & 0x01);
@@ -342,6 +351,10 @@ namespace EutherDrive.Core.MdTracerCore
                      if (g_vdp_reg_1_6_display == 1)
                      {
                          Console.WriteLine($"[DISPLAY-ON] frame={_frameCounter} reg1=0x{in_data:X2} (display enabled)");
+                     }
+                     if (prevVram128 != g_vdp_reg_1_7_vram128)
+                     {
+                         Console.WriteLine($"[VDP-REG1] frame={_frameCounter} vram128 {prevVram128} -> {g_vdp_reg_1_7_vram128} (bit7)");
                      }
                     
 
@@ -439,6 +452,19 @@ namespace EutherDrive.Core.MdTracerCore
                 case 13:
                     g_vdp_reg_13_hscroll = (ushort)((in_data & 0x7f) << 10);
                     break;
+
+                case 14:
+                {
+                    byte prevA = g_vdp_reg_14_plane_a_rebase;
+                    byte prevB = g_vdp_reg_14_plane_b_rebase;
+                    g_vdp_reg_14_plane_a_rebase = (byte)((in_data & 0x01) != 0 ? 1 : 0);
+                    g_vdp_reg_14_plane_b_rebase = (byte)(((in_data & 0x10) != 0 && g_vdp_reg_14_plane_a_rebase != 0) ? 1 : 0);
+                    if (prevA != g_vdp_reg_14_plane_a_rebase || prevB != g_vdp_reg_14_plane_b_rebase)
+                    {
+                        Console.WriteLine($"[VDP-REG14] frame={_frameCounter} data=0x{in_data:X2} rebaseA={g_vdp_reg_14_plane_a_rebase} rebaseB={g_vdp_reg_14_plane_b_rebase}");
+                    }
+                    break;
+                }
 
                 case 15:
                     g_vdp_reg_15_autoinc = in_data;

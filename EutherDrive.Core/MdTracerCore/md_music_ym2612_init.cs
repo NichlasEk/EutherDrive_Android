@@ -9,11 +9,16 @@ namespace EutherDrive.Core.MdTracerCore
         private const int NUM_SLOT = 4;
         private const uint YM2612_CLOCK = 7670454;
         private const double Z80_CLOCK = 3579545.0;
-        private const int YM2612_SAMPLING = 44100;
+        // Internal YM2612 output rate is ~YM2612_CLOCK / 144 ≈ 53.27kHz.
+        private const int YM2612_SAMPLING = 53267;
         private const double PI = 3.14159265358979323846;
         private const double EMU_CORRECTION = ((double)YM2612_CLOCK / 8000000f) * (8000000f / (double)YM2612_SAMPLING / 144f);
         private const int TIMER_CPU = (int)(EMU_CORRECTION * 4096.0);
         private const int DAC_SHIFT = 6;
+        
+        // YM2612 runs at ~53.267 kHz but we step at 44.1 kHz. Default to 1.0 and
+        // allow runtime override to avoid pitch/tempo over-correction.
+        private static readonly double YmStepScale = GetYmStepScale();
 
         private const int CNT_BIT = 20;
         private const int CNT_HIGH_BIT = 10;
@@ -36,7 +41,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int[] SLOT_MAP = { 0, 2, 1, 3 };
         private int[] CH3CSM_MAP = { 2, 1, 3, 0 };
         private uint[] KEYCODE_TABLE = { 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 3, 3, 3, 3, 3, 3 };
-        private int[] KEYON_MAP = { 0, 1, 2, 0, 3, 4, 5, 0 };
+        private int[] KEYON_MAP = { 0, 1, 2, -1, 3, 4, 5, -1 };
         private double[] MULTIPLE_TABLE = { 0.5f, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
 
         private int[,] DT_TABLE = new int[8, 32]
@@ -50,26 +55,36 @@ namespace EutherDrive.Core.MdTracerCore
             { 1, -1, -1, -1, -2, -2, -2, -2, -2, -3, -3, -3, -4, -4, -4, -5, - 5, -6, -6, -7, -8, -8, -9, -10, -11, -12, -13, -14, -16, -16, -16, -16 },
             { 2, -2, -2, -2, -2, -3, -3, -3, -4, -4, -4, -5, -5, -6, -6, -7, - 8 , -8, -9, -10, -11, -12, -13, -14, -16, -17, -19, -20, -22, -22, -22, -22 }
         };
-        private int[] LFO_INC_MAP = {(int)(3.98f / 0.053f * EMU_CORRECTION)
-                                    ,(int)(5.56f / 0.053f * EMU_CORRECTION)
-                                    ,(int)(6.02f / 0.053f * EMU_CORRECTION)
-                                    ,(int)(6.37f / 0.053f * EMU_CORRECTION)
-                                    ,(int)(6.88f / 0.053f * EMU_CORRECTION)
-                                    ,(int)(9.63f / 0.053f * EMU_CORRECTION)
-                                    ,(int)(48.1f / 0.053f * EMU_CORRECTION)
-                                    ,(int)(72.2f / 0.053f * EMU_CORRECTION)
+        private int[] LFO_INC_MAP = {(int)(3.98f / 0.053f)
+                                    ,(int)(5.56f / 0.053f)
+                                    ,(int)(6.02f / 0.053f)
+                                    ,(int)(6.37f / 0.053f)
+                                    ,(int)(6.88f / 0.053f)
+                                    ,(int)(9.63f / 0.053f)
+                                    ,(int)(48.1f / 0.053f)
+                                    ,(int)(72.2f / 0.053f)
         };
         private double[] LFO_PMS_MAP = { 0
-                                    ,(Math.Pow(2, 3.4 / 1200f) - 1) * EMU_CORRECTION
-                                    ,(Math.Pow(2, 6.7 / 1200f) - 1) * EMU_CORRECTION
-                                    ,(Math.Pow(2, 10 / 1200f) - 1) * EMU_CORRECTION
-                                    ,(Math.Pow(2, 14 / 1200f) - 1) * EMU_CORRECTION
-                                    ,(Math.Pow(2, 20 / 1200f) - 1) * EMU_CORRECTION
-                                    ,(Math.Pow(2, 40 / 1200f) - 1) * EMU_CORRECTION
-                                    ,(Math.Pow(2, 80 / 1200f) - 1) * EMU_CORRECTION
+                                    ,(Math.Pow(2, 3.4 / 1200f) - 1)
+                                    ,(Math.Pow(2, 6.7 / 1200f) - 1)
+                                    ,(Math.Pow(2, 10 / 1200f) - 1)
+                                    ,(Math.Pow(2, 14 / 1200f) - 1)
+                                    ,(Math.Pow(2, 20 / 1200f) - 1)
+                                    ,(Math.Pow(2, 40 / 1200f) - 1)
+                                    ,(Math.Pow(2, 80 / 1200f) - 1)
         };
 
         private uint[] LFO_AMS_MAP = { 31, 4, 1, 0 };
+
+        private static double GetYmStepScale()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_STEP_SCALE");
+            if (!string.IsNullOrWhiteSpace(raw) && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value) && value > 0)
+                return value;
+
+            // Default: internal sampling already matches YM rate, no extra scaling.
+            return 1.0;
+        }
         private enum ENV_COND
         {
             ATTACK,
@@ -86,6 +101,7 @@ namespace EutherDrive.Core.MdTracerCore
         private byte[,] g_reg = new byte[0, 0];
         private int g_dac_high_level;
         private int g_com_lfo_cnt;
+        private double g_com_lfo_frac;
         private int g_com_lfo_env_cnt;
         private int g_com_lfo_freq_cnt;
         private int g_com_timerA;
@@ -107,14 +123,21 @@ namespace EutherDrive.Core.MdTracerCore
         private int[,] g_slot_op_calc = new int[0, 0];
         private int[,] g_slot_phase_out = new int[0, 0];
         private int[,] g_slot_phase_inc = new int[0, 0];
+        private double[,] g_slot_phase_inc_f = new double[0, 0];
+        private double[,] g_slot_phase_frac = new double[0, 0];
         private ENV_COND[,] g_slot_env_cond = new ENV_COND[0, 0];
         private int[,] g_slot_env_incA = new int[0, 0];
         private int[,] g_slot_env_incD = new int[0, 0];
         private int[,] g_slot_env_incS = new int[0, 0];
         private int[,] g_slot_env_incR = new int[0, 0];
+        private double[,] g_slot_env_incA_f = new double[0, 0];
+        private double[,] g_slot_env_incD_f = new double[0, 0];
+        private double[,] g_slot_env_incS_f = new double[0, 0];
+        private double[,] g_slot_env_incR_f = new double[0, 0];
         private int[,] g_slot_env_cnt = new int[0, 0];
         private int[,] g_slot_env_cmp = new int[0, 0];
         private int[,] g_slot_env_out = new int[0, 0];
+        private double[,] g_slot_env_frac = new double[0, 0];
         private int[,] g_slot_env_indexA = new int[0, 0];
         private int[,] g_slot_env_indexD = new int[0, 0];
         private int[,] g_slot_env_indexS = new int[0, 0];
@@ -142,6 +165,12 @@ namespace EutherDrive.Core.MdTracerCore
             
             // Reset Z80 safe boot state when YM2612 is (re)started
             ResetZ80SafeBootState();
+            
+            // Initialize sync system for clownmdemu-style timing
+            // Set _syncFm.CurrentCycle to current master cycle
+            long masterCycle = md_main.GetMasterCycle();
+            md_main.GetSyncFm().CurrentCycle = masterCycle;
+            Console.WriteLine($"[YM-SYNC-INIT] YM2612_Start: Setting sync.CurrentCycle={md_main.GetSyncFm().CurrentCycle} masterCycle={masterCycle} SystemCycles={md_main.SystemCycles}");
             
             //regster
             g_reg_30_multi = new double[NUM_CHANNELS, NUM_SLOT];
@@ -177,14 +206,21 @@ namespace EutherDrive.Core.MdTracerCore
             g_slot_op_calc = new int[NUM_CHANNELS, NUM_SLOT];
             g_slot_phase_out = new int[NUM_CHANNELS, NUM_SLOT];
             g_slot_phase_inc = new int[NUM_CHANNELS, NUM_SLOT];
+            g_slot_phase_inc_f = new double[NUM_CHANNELS, NUM_SLOT];
+            g_slot_phase_frac = new double[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_cond = new ENV_COND[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_incA = new int[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_incD = new int[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_incS = new int[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_incR = new int[NUM_CHANNELS, NUM_SLOT];
+            g_slot_env_incA_f = new double[NUM_CHANNELS, NUM_SLOT];
+            g_slot_env_incD_f = new double[NUM_CHANNELS, NUM_SLOT];
+            g_slot_env_incS_f = new double[NUM_CHANNELS, NUM_SLOT];
+            g_slot_env_incR_f = new double[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_cnt = new int[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_cmp = new int[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_out = new int[NUM_CHANNELS, NUM_SLOT];
+            g_slot_env_frac = new double[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_indexA = new int[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_indexD = new int[NUM_CHANNELS, NUM_SLOT];
             g_slot_env_indexS = new int[NUM_CHANNELS, NUM_SLOT];
@@ -225,7 +261,7 @@ namespace EutherDrive.Core.MdTracerCore
             for (int i = 4; i < 64; i++)
             {
                 double y = 1.476751 * Math.Exp(0.17438 * i);
-                ENV_RATE_A_TABLE[i] = (uint)(y);
+                ENV_RATE_A_TABLE[i] = (uint)y;
                 ENV_RATE_D_TABLE[i] = (uint)(y / 14);
             }
             for (int i = 64; i < 96; i++)
@@ -308,8 +344,10 @@ namespace EutherDrive.Core.MdTracerCore
             _timerBReload = 256 << 4;
             _timerACount = _timerAReload;
             _timerBCount = _timerBReload;
-            _timerTickFrac = 0.0;
+            _timerTickFrac = 0;
             _timersDrivenByZ80 = false;
+            _z80CycleAccumulator = 0;
+            _lastSyncSystemCycles = 0;
         }
     }
 }

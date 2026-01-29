@@ -1,0 +1,34 @@
+Audio/Z80/YM debug status (2025-01-25)
+
+What changed recently
+- Z80 timing fixes: EI delay, IRQ acknowledge cycles, Z80 g_clock loop fix.
+- Added Z80 wait cycles for YM reads and PSG writes.
+- Added Z80 banked read/write wait cycles (EUTHERDRIVE_Z80_BANK_WAIT, default 16).
+- YM busy timing uses SystemCycles; headless now advances SystemCycles per frame and runs Z80 inside a Begin/EndSystemCycleSlice.
+- Added YM busy emulation flag: EUTHERDRIVE_EMULATE_YM_BUSY.
+- Fixed YM KEYON channel mapping to match clownmdemu gap: {0,1,2,-1,3,4,5,-1}.
+- M68K write16 to Z80 window now writes upper byte only (matches clownmdemu behavior).
+
+Key instrumentation added
+- YM timers: EUTHERDRIVE_TRACE_YM_TIMER (+ limit).
+- YM key on/off: EUTHERDRIVE_TRACE_YM_KEY (+ limit).
+- YM write stats: EUTHERDRIVE_TRACE_YM_WRITE_STATS (+ limit).
+- DAC stats: EUTHERDRIVE_TRACE_DAC.
+- Z80 audio rate: EUTHERDRIVE_TRACE_Z80_AUDIO_RATE (+ every/start frame).
+- Z80 bank read limit: EUTHERDRIVE_TRACE_Z80BANK_READ_LIMIT (0 = unlimited).
+
+Findings so far
+- Aladdin: DAC bank traces show Z80 PCM reads from banked 68k region around 0x1D0000, sequential reads in 0x1Fxx Z80 window. YM key on/off activity looks normal. Audio still sounds wrong (fast/backwards/incomplete), likely not just speed.
+- Quackshot: YM write stats show mostly reg 0x27 writes, few key-on events; missing music suggests driver upload or Z80 mailbox handshake still suspect. Need to see Z80 window writes/MBX sync and YM writes with focused logging.
+
+Open hypotheses
+- Some games may be sensitive to how VDP/VRAM writes interact with DMA gating; check for dropped VDP writes and use VRAM range logs to confirm actual tile updates.
+- For missing music: Z80 driver upload or mailbox handshakes may be partial; look for dropped writes in Z80 window or wrong word/byte write behavior.
+
+Recent logs produced
+- quackshot_audio_stats.log
+- quackshot_mem_audio.log (focus: Z80WIN/MBX/YM key+write)
+- aladdin_dacbank.log, aladdin_ymwrite.log, aladdin_dac_stats.log, aladdin_z80win_1fxx.log, aladdin_z80ram_1fxx.log
+
+Notes on savestates
+- Some savestates failed to load (md_vdp g_color array error); for audio issues, cold boot may be required.

@@ -6,6 +6,8 @@ namespace EutherDrive.Audio;
 
 public sealed class AudioEngine : IDisposable
 {
+    public delegate ReadOnlySpan<short> AudioProducer(int frames);
+
     private static readonly bool TraceStats =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_STATS"), "1", StringComparison.Ordinal);
 
@@ -16,6 +18,9 @@ public sealed class AudioEngine : IDisposable
     private readonly int _bufferFrames;
     private readonly short[] _ring;
     private readonly short[] _batch;
+    private AudioProducer? _producer;
+    private int _targetBufferedFrames;
+    private int _maxProduceFrames;
     private readonly object _lock = new();
     private readonly AutoResetEvent _dataEvent = new(false);
     private Thread? _thread;
@@ -53,6 +58,15 @@ public sealed class AudioEngine : IDisposable
     private long _lastGenFrames;
     private long _lastDrainBatches;
     private long _lastDrainBatchFrames;
+    private long _pullLastTicks;
+    private double _pullFrameAccumulator;
+    private long _drainNextTicks;
+    private double _drainTicksPerFrame;
+    private long _primingUntilTicks;
+    private static readonly bool TimedDrainEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN"), "0", StringComparison.Ordinal)
+            ? false
+            : true;
 
     public AudioEngine(IAudioSink sink, int sampleRate, int channels, int framesPerBatch = 1024, int bufferFrames = 8192)
     {
@@ -70,12 +84,16 @@ public sealed class AudioEngine : IDisposable
         _channels = channels;
         _framesPerBatch = framesPerBatch;
         _bufferFrames = bufferFrames;
+        _drainTicksPerFrame = Stopwatch.Frequency / (double)_sampleRate;
 
         _ring = new short[bufferFrames * channels];
         _batch = new short[framesPerBatch * channels];
+
     }
 
     public bool IsRunning => _running;
+    public bool IsPullMode => _producer != null;
+    public int BufferedFrames => Volatile.Read(ref _currentBufferedFrames);
 
     public void Start()
     {
@@ -84,9 +102,33 @@ public sealed class AudioEngine : IDisposable
 
         ResetStats();
         _sink.Start(_sampleRate, _channels);
+        _drainNextTicks = 0;
+        _primingUntilTicks = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 0.5);
         _running = true;
         _thread = new Thread(DrainLoop) { IsBackground = true, Name = "AudioEngine" };
         _thread.Start();
+    }
+
+    public void EnablePullMode(AudioProducer producer, int? targetBufferedFrames = null, int? maxFramesPerPull = null)
+    {
+        _producer = producer ?? throw new ArgumentNullException(nameof(producer));
+        int target = targetBufferedFrames ?? Math.Max(_framesPerBatch, _bufferFrames - _framesPerBatch);
+        _targetBufferedFrames = Math.Min(_bufferFrames, Math.Max(_framesPerBatch, target));
+        _maxProduceFrames = Math.Max(1, maxFramesPerPull ?? _framesPerBatch);
+        _pullLastTicks = 0;
+        _pullFrameAccumulator = 0;
+    }
+
+    public void DisablePullMode()
+    {
+        _producer = null;
+    }
+
+    public void SetTargetBufferedFrames(int targetFrames)
+    {
+        if (targetFrames <= 0)
+            return;
+        _targetBufferedFrames = Math.Min(_bufferFrames, Math.Max(_framesPerBatch, targetFrames));
     }
 
     public void Submit(ReadOnlySpan<short> interleaved)
@@ -158,6 +200,22 @@ public sealed class AudioEngine : IDisposable
     {
         while (_running)
         {
+            TryFillFromProducer();
+
+            if (TimedDrainEnabled && _targetBufferedFrames > 0 && _primingUntilTicks != 0)
+            {
+                int primingBuffered = Volatile.Read(ref _currentBufferedFrames);
+                if (primingBuffered < _targetBufferedFrames)
+                {
+                    if (Stopwatch.GetTimestamp() < _primingUntilTicks)
+                    {
+                        _dataEvent.WaitOne(5);
+                        continue;
+                    }
+                }
+                _primingUntilTicks = 0;
+            }
+
             int toRead = 0;
             int currentFrames = 0;
 
@@ -189,18 +247,97 @@ public sealed class AudioEngine : IDisposable
                 Interlocked.Increment(ref _drainBatchesTotal);
                 Interlocked.Add(ref _drainBatchFramesTotal, frames);
                 UpdateBufferedStats(currentFrames);
+                if (TimedDrainEnabled)
+                    PaceDrain(frames);
             }
             else
             {
                 int missingFrames = _batch.Length / _channels;
                 Interlocked.Increment(ref _underrunEventsTotal);
                 Interlocked.Add(ref _underrunFramesTotal, missingFrames);
-                _dataEvent.WaitOne(10);
+                if (TimedDrainEnabled)
+                {
+                    PaceDrain(_framesPerBatch);
+                }
+                else
+                {
+                    _dataEvent.WaitOne(10);
+                }
             }
 
             if (TraceStats)
                 MaybeLogStats();
         }
+    }
+
+    private void PaceDrain(int frames)
+    {
+        if (frames <= 0)
+            return;
+
+        long now = Stopwatch.GetTimestamp();
+        if (_drainNextTicks == 0 || now - _drainNextTicks > Stopwatch.Frequency)
+            _drainNextTicks = now;
+
+        _drainNextTicks += (long)(frames * _drainTicksPerFrame);
+        long waitTicks = _drainNextTicks - Stopwatch.GetTimestamp();
+        if (waitTicks <= 0)
+            return;
+
+        int sleepMs = (int)(waitTicks * 1000 / Stopwatch.Frequency);
+        if (sleepMs > 1)
+        {
+            Thread.Sleep(sleepMs - 1);
+        }
+        while (Stopwatch.GetTimestamp() < _drainNextTicks)
+        {
+            Thread.Sleep(0);
+        }
+    }
+
+    private void TryFillFromProducer()
+    {
+        var producer = _producer;
+        if (producer == null)
+            return;
+
+        long now = Stopwatch.GetTimestamp();
+        if (_pullLastTicks == 0)
+        {
+            _pullLastTicks = now;
+            return;
+        }
+
+        double elapsed = (now - _pullLastTicks) / (double)Stopwatch.Frequency;
+        _pullLastTicks = now;
+        _pullFrameAccumulator += elapsed * _sampleRate;
+        int frames = (int)_pullFrameAccumulator;
+        if (frames <= 0)
+            return;
+
+        int currentFrames = Volatile.Read(ref _currentBufferedFrames);
+        int need = _targetBufferedFrames - currentFrames;
+        if (need <= 0)
+            return;
+
+        if (frames > need)
+            frames = need;
+        if (frames > _maxProduceFrames)
+            frames = _maxProduceFrames;
+
+        long genStart = TraceStats ? Stopwatch.GetTimestamp() : 0;
+        ReadOnlySpan<short> data = producer(frames);
+        long genTicks = TraceStats ? Stopwatch.GetTimestamp() - genStart : 0;
+
+        int producedFrames = data.Length / _channels;
+        if (producedFrames <= 0)
+            return;
+
+        _pullFrameAccumulator -= producedFrames;
+
+        Submit(data);
+        if (TraceStats)
+            ReportGenerateBatch(producedFrames, genTicks, timedMode: true);
     }
 
     public void ReportGenerateBatch(int framesProduced, long genTicks, bool timedMode)
@@ -375,5 +512,9 @@ public sealed class AudioEngine : IDisposable
         _lastGenFrames = 0;
         _lastDrainBatches = 0;
         _lastDrainBatchFrames = 0;
+        _pullLastTicks = 0;
+        _pullFrameAccumulator = 0;
+        _drainNextTicks = 0;
+        _primingUntilTicks = 0;
     }
 }

@@ -113,8 +113,26 @@ All logging i EutherDrive är nu gated bakom environment variables. Detta gör s
   - `\[VDP-SMS-DISPLAY\]`
   - `\[VDP-SMS\]`
   - `\[VDP\]`
+
+### `EUTHERDRIVE_TRACE_VDP_STATUS_READ=1`
+Enables VDP status read logging.
+- Tags:
+  - `\[VDP-STATUS-RD\]`
+
+### `EUTHERDRIVE_TRACE_SPRITE_OVERFLOW_FRAME=1`
+Logs per-frame sprite overflow summary (max sprites/cells per line).
+- Tags:
+  - `\[SPRITE-OVERFLOW\]`
   - `\[VINT-SKIP\]`
   - `\[VINT\]`
+
+### `EUTHERDRIVE_TRACE_DMA_SRC=1`
+- **Beskrivning**: Aktiverar logging för följande prefix:
+  - `\[DMA-SRC-TRACE-START\]`
+  - `\[DMA-SRC-READ\]`
+
+### `EUTHERDRIVE_TRACE_DMA_SRC_LIMIT=<int>`
+- **Beskrivning**: Begränsar antalet `\[DMA-SRC-READ\]` loggar per DMA (0 = unlimited, default 128).
 
 ### `EUTHERDRIVE_TRACE_NAMETABLE_ROW_DUMP=1`
 - **Beskrivning**: Aktiverar logging för följande prefix:
@@ -149,6 +167,66 @@ All logging i EutherDrive är nu gated bakom environment variables. Detta gör s
 ### `EUTHERDRIVE_TRACE_VRAM_RANGE=<start-end>`
 - **Beskrivning**: Loggar VRAM-writes i valt adressintervall:
   - `\[VRAM-RANGE\]`
+
+### `EUTHERDRIVE_TRACE_VRAM_RANGE_LIMIT=<int>`
+- **Beskrivning**: Begränsar `\[VRAM-RANGE\]`-loggar (0 = obegränsat; default 200).
+
+### `EUTHERDRIVE_TRACE_VRAM_RANGE_SKIP_FILL=1`
+- **Beskrivning**: Hoppar över `DMA-FILL` i `\[VRAM-RANGE\]`-loggarna.
+
+### `EUTHERDRIVE_TRACE_TILE_FETCH=1`
+- **Beskrivning**: Loggar tile-fetch i renderern:
+  - `\[TILEFETCH\]`
+
+### `EUTHERDRIVE_TRACE_TILE_FETCH_SCANLINE=<int>`
+- **Beskrivning**: Väljer vilken scanline som loggas (default 112).
+
+### `EUTHERDRIVE_TRACE_TILE_FETCH_LIMIT=<int>`
+- **Beskrivning**: Begränsar `\[TILEFETCH\]`-loggar per frame (0 = obegränsat; default 128).
+
+### `EUTHERDRIVE_TRACE_SCROLL_LINE=1`
+- **Beskrivning**: Loggar scroll‑sampling i renderern:
+  - `\[SCROLLLINE\]`
+
+### `EUTHERDRIVE_TRACE_SCROLL_LINE_SCANLINE=<int>`
+- **Beskrivning**: Väljer vilken scanline som loggas (default 112).
+
+### `EUTHERDRIVE_TRACE_SCROLL_LINE_LIMIT=<int>`
+- **Beskrivning**: Begränsar `\[SCROLLLINE\]`-loggar per frame (0 = obegränsat; default 32).
+
+### `EUTHERDRIVE_FORCE_SCROLL_ZERO=1`
+- **Beskrivning**: Forcerar H/V‑scroll till 0 under rendering (debug).
+
+### `EUTHERDRIVE_TRACE_RAM_RANGE=<start-end>`
+- **Beskrivning**: Loggar RAM-läsningar/skrivningar i valt adressintervall:
+  - `\[RAM-RANGE\]`
+
+### `EUTHERDRIVE_TRACE_RAM_RANGE_LIMIT=<int>`
+- **Beskrivning**: Begränsar `\[RAM-RANGE\]`-loggar (0 = obegränsat; default 200).
+
+### `EUTHERDRIVE_TRACE_RAM_RANGE_NONZERO=1`
+- **Beskrivning**: Loggar bara icke‑nollvärden i `\[RAM-RANGE\]`.
+
+### `EUTHERDRIVE_TRACE_RAM_RANGE_FIRST_PER_FRAME=1`
+- **Beskrivning**: Loggar bara första matchande `\[RAM-RANGE\]` per frame.
+
+### `EUTHERDRIVE_TRACE_RAM_RANGE_WRITE_COUNTER=1`
+- **Beskrivning**: Raknar writes i RAM-intervall per frame och loggar summering (`[RAM-RANGE-SUMMARY]`).
+
+### `EUTHERDRIVE_TRACE_RAM_RANGE_FIRST_WRITE=1`
+- **Beskrivning**: Loggar forsta write per frame i RAM-intervall (`[RAM-RANGE-FIRST]`).
+
+### `EUTHERDRIVE_TRACE_MEM_WATCH_LIST=<addr,addr,...>`
+- **Beskrivning**: Loggar läs/skriv på valda adresser (hex eller dec) via `\[MEMWATCH\]`.
+
+### `EUTHERDRIVE_TRACE_PC_TAP_LIST=<addr,addr,...>`
+- **Beskrivning**: Loggar register + disasm nar PC matchar angivna adresser.
+
+### `EUTHERDRIVE_TRACE_PC_TAP_PEEK_LIST=<start-end,...>`
+- **Beskrivning**: Dumpar RAM-bytes for angivna intervall vid PC-tap.
+
+### `EUTHERDRIVE_TRACE_PC_TAP_ONCE_PER_FRAME=1`
+- **Beskrivning**: Loggar hogst en gang per frame per PC-tap.
 
 ### `EUTHERDRIVE_TRACE_YM=1`
 - **Beskrivning**: Aktiverar logging för följande prefix:
@@ -219,12 +297,47 @@ All logging i EutherDrive är nu gated bakom environment variables. Detta gör s
 - **Beskrivning**: Aktiverar logging för följande prefix:
   - `\[Z80YM\]`
 
+### `EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES=1`
+- **Beskrivning**: Aktiverar logging för följande prefix:
+  - `\[Z80-CYCLES\]`
+
+### `EUTHERDRIVE_TRACE_Z80_AUDIO_RATE=1`
+- **Beskrivning**: Aktiverar logging för följande prefix:
+  - `\[Z80AUDIO\]`
+
+### `EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES_EVERY=<int>`
+### `EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_EVERY=<int>`
+### `EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_START_FRAME=<int>`
+
+### `EUTHERDRIVE_TRACE_YM_TIMER=1`
+- **Beskrivning**: Aktiverar logging för följande prefix:
+  - `\[YMTIMER\]`
+  - `\[YMTIMER-REG\]`
+
+### `EUTHERDRIVE_TRACE_YM_TIMER_LIMIT=<int>`
+
+### `EUTHERDRIVE_TRACE_YM_KEY=1`
+- **Beskrivning**: Aktiverar logging för följande prefix:
+  - `\[YMKEY\]`
+  - `\[YMKEYSTAT\]`
+
+### `EUTHERDRIVE_TRACE_YM_KEY_LIMIT=<int>`
+
+### `EUTHERDRIVE_TRACE_YM_WRITE_STATS=1`
+- **Beskrivning**: Aktiverar logging för följande prefix:
+  - `\[YMWRITE\]`
+
+### `EUTHERDRIVE_TRACE_YM_WRITE_STATS_LIMIT=<int>`
+
 ### `EUTHERDRIVE_TRACE_Z80_BANK=1`
 - **Beskrivning**: Aktiverar logging för följande prefix:
   - `\[Z80-BANK\]`
   - `\[Z80BANKRD\]`
   - `\[Z80BANKREG68K\]`
   - `\[Z80BANKREG\]`
+
+### `EUTHERDRIVE_TRACE_Z80BANK_READ_LIMIT=<int>`
+- **Beskrivning**: Begränsar `\[Z80BANKRD\]`-loggar (0 = obegränsat).
 
 ### `EUTHERDRIVE_TRACE_Z80_BOOT=1`
 - **Beskrivning**: Aktiverar logging för följande prefix:
@@ -280,6 +393,9 @@ All logging i EutherDrive är nu gated bakom environment variables. Detta gör s
 ### `EUTHERDRIVE_Z80_BUSREQ_STABLE_TICKS`
 - **Beskrivning**: Antal Z80-instruktions-ticks som BUSREQ måste vara stabilt innan grant (default 0).
 
+### `EUTHERDRIVE_Z80_BANK_WAIT`
+- **Beskrivning**: Extra Z80-wait-cycles för 68k-banked reads/writes (default 16).
+
 ## Användningsexempel
 
 ```bash
@@ -313,8 +429,18 @@ dotnet run --project EutherDrive.UI
 - **Med gating**: Normala prestandanivåer
 - **Rekommenderat**: Använd endast de env-vars du behöver för debugging
 
+### `EUTHERDRIVE_TRACE_PAD=1`
+- **Beskrivning**: Aktiverar logging för pad-port access ($A10003, $A10005, $A10009, $A1000B)
+- **Loggar**: `[PAD-READ]`, `[PAD-WRITE]`, `[PAD-CTRL-READ]`, `[PAD-HANDSHAKE]`, `[PAD-6BTN-HIGH]`, `[PAD-6BTN-LOW]`
+
+### `EUTHERDRIVE_DIAG_FRAME=1`
+- **Beskrivning**: Aktiverar per-frame diagnostisk logging för timing-analys
+- **Loggar**: `[DIAG-FRAME]` med Z80 cycles, M68K cycles, YM advance calls per frame
+- **Användning**: För att analysera om knapptryckningar påverkar Z80 timing och musik tempo
+
 ## Uppdateringshistorik
 
 - **2025-01-17**: Komplett gating implementerad. Alla 567 Console.WriteLine-anrop är nu gated.
 - **Implementerat av**: opencode assistant under analys av SMS-emuleringsdebugging
 - **Metod**: Automatisk konvertering via Python-script
+- **2025-01-26**: Lagt till `EUTHERDRIVE_TRACE_PAD` och `EUTHERDRIVE_DIAG_FRAME` för debugging av pad-port timing problem

@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using EutherDrive.Core;
 
 namespace EutherDrive.Core.MdTracerCore
@@ -22,6 +23,8 @@ namespace EutherDrive.Core.MdTracerCore
         private long _ioReadLastTicks;
         private static readonly bool TraceIo =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_IO"), "1", StringComparison.Ordinal);
+        private static readonly bool TracePad =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PAD"), "1", StringComparison.Ordinal);
         private const byte VersionBits = 0x20;
 
         // Global pekare (som md_bus.Current)
@@ -43,6 +46,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
             uint addr = in_address & 0xFFFFFF;
             byte result;
+            if (TracePad && (addr == 0xA10003 || addr == 0xA10005))
+                File.AppendAllText("pad_debug.log", $"[PAD-DEBUG] TracePad={TracePad} addr=0x{addr:X6}\n");
             switch (addr)
             {
                 case 0xA10000:
@@ -54,18 +59,26 @@ namespace EutherDrive.Core.MdTracerCore
                 case 0xA10002:
                 case 0xA10003:
                     result = ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type);
+                    if (TracePad)
+                        File.AppendAllText("pad_debug.log", $"[PAD-READ] addr=0x{addr:X6} TH={_pad1Th} result=0x{result:X2} padType={_pad1Type} stage={_pad1Handshake.Stage}\n");
                     break;
                 case 0xA10004:
                 case 0xA10005:
                     result = ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type);
+                    if (TracePad)
+                        File.AppendAllText("pad_debug.log", $"[PAD-READ] addr=0x{addr:X6} TH={_pad2Th} result=0x{result:X2} padType={_pad2Type} stage={_pad2Handshake.Stage}\n");
                     break;
                 case 0xA10008:
                 case 0xA10009:
                     result = (byte)(_pad1Th ? 0x40 : 0x00);
+                    if (TracePad)
+                        File.AppendAllText("pad_debug.log", $"[PAD-CTRL-READ] addr=0x{addr:X6} TH={_pad1Th} result=0x{result:X2}\n");
                     break;
                 case 0xA1000A:
                 case 0xA1000B:
                     result = (byte)(_pad2Th ? 0x40 : 0x00);
+                    if (TracePad)
+                        File.AppendAllText("pad_debug.log", $"[PAD-CTRL-READ] addr=0x{addr:X6} TH={_pad2Th} result=0x{result:X2}\n");
                     break;
                 default:
                     result = 0x00;
@@ -134,12 +147,18 @@ namespace EutherDrive.Core.MdTracerCore
                 case 0xA10003:
                 case 0xA10008:
                 case 0xA10009:
+                    bool oldTh = _pad1Th;
                     _pad1Th = (in_val & 0x40) != 0;
+                    if (TracePad)
+                        File.AppendAllText("pad_debug.log", $"[PAD-WRITE] addr=0x{addr:X6} val=0x{in_val:X2} TH={oldTh}->{_pad1Th} padType={_pad1Type}\n");
                     break;
                 case 0xA10005:
                 case 0xA1000A:
                 case 0xA1000B:
+                    bool oldTh2 = _pad2Th;
                     _pad2Th = (in_val & 0x40) != 0;
+                    if (TracePad && oldTh2 != _pad2Th)
+                        File.AppendAllText("pad_debug.log", $"[PAD-WRITE] addr=0x{addr:X6} val=0x{in_val:X2} TH={oldTh2}->{_pad2Th} padType={_pad2Type}\n");
                     break;
                 default:
                     break;
@@ -278,7 +297,11 @@ namespace EutherDrive.Core.MdTracerCore
             else
             {
                 if (handshake.LastThHigh != thHigh && handshake.Stage < 6)
+                {
                     handshake.Stage++;
+                    if (TracePad)
+                        File.AppendAllText("pad_debug.log", $"[PAD-HANDSHAKE] TH={handshake.LastThHigh}->{thHigh} stage={handshake.Stage}\n");
+                }
                 handshake.LastThHigh = thHigh;
             }
 
@@ -304,6 +327,8 @@ namespace EutherDrive.Core.MdTracerCore
                 }
 
                 v |= 0x40; // TH = 1
+                if (TracePad && sixButton && handshake.Stage >= 6)
+                    File.AppendAllText("pad_debug.log", $"[PAD-6BTN-HIGH] stage={handshake.Stage} result=0x{v:X2}\n");
                 return v;
             }
 
@@ -325,6 +350,8 @@ namespace EutherDrive.Core.MdTracerCore
                 v &= 0xF3; // bits 3-2 = 0
 
             v &= 0xBF; // TH = 0
+            if (TracePad && sixButton)
+                File.AppendAllText("pad_debug.log", $"[PAD-6BTN-LOW] stage={stage} specialLow={specialLow} result=0x{v:X2}\n");
             return v;
         }
 

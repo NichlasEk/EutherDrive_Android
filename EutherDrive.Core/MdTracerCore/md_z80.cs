@@ -144,12 +144,16 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _forcePcPending;
         private ushort _forcePcTarget;
         private string _forcePcReason = string.Empty;
+        private int _iff1Delay;
+        private int _waitCycles;
 
         // [INT-STATS] ZINT interrupt counting per frame
         private int _zintAssertCount;
         private int _zintClearCount;
         private int _zintServiceCount;
         private long _zintLastFrameLogged = -1;
+        private int _irqAutoClearCycles;
+        private string? _irqAutoClearSource;
 
         // [Z80-BANK] Log banked memory entry once
         private bool _z80BankEntryLogged;
@@ -416,7 +420,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             g_clock_total += in_clock;
-            while (g_clock_total >= 0)
+            while (g_clock_total > 0)
             {
                 md_main.g_md_bus?.ApplyZ80BusReqLatch();
                 busRequested = md_main.g_md_bus?.Z80BusGranted ?? false;
@@ -459,6 +463,12 @@ namespace EutherDrive.Core.MdTracerCore
                         g_IFF2 = false;
                         g_halt = false;
 
+                        const int irqCycles = 13;
+                        _totalCycles += irqCycles;
+                        cyclesConsumed += irqCycles;
+                        md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(irqCycles);
+                        g_clock_total -= irqCycles;
+
                         switch (g_interruptMode)
                         {
                             case 0:
@@ -472,7 +482,7 @@ namespace EutherDrive.Core.MdTracerCore
                                     ushort pcPushed = g_reg_PC;
                                     bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
                                     bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
-                                    Console.WriteLine($"[Z80-INT-IM1] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+                                    Console.WriteLine($"[Z80-INT-IM1] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")} src={_irqSource} status=0x{_irqStatus:X2}");
                                     stack_push(g_reg_PCH);
                                     stack_push(g_reg_PCL);
                                     g_reg_PC = 0x0038;
@@ -488,7 +498,7 @@ namespace EutherDrive.Core.MdTracerCore
                                     ushort pcPushed = g_reg_PC;
                                     bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
                                     bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
-                                    Console.WriteLine($"[Z80-INT-IM2] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+                                    Console.WriteLine($"[Z80-INT-IM2] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")} src={_irqSource} status=0x{_irqStatus:X2}");
                                     // IM 2: vektor via I-register
                                     stack_push(g_reg_PCH);
                                     stack_push(g_reg_PCL);
@@ -721,11 +731,19 @@ namespace EutherDrive.Core.MdTracerCore
                     $"A=0x{g_reg_A:X2} BC=0x{g_reg_BC:X4} DE=0x{g_reg_DE:X4} HL=0x{g_reg_HL:X4} SP=0x{g_reg_SP:X4}");
             }
             g_operand[opcode]();   // exekvera en instruktion
+            if (_waitCycles > 0)
+            {
+                g_clock += _waitCycles;
+                _waitCycles = 0;
+            }
             _bootInstrCount++;
             _totalCycles += g_clock;
             cyclesConsumed += g_clock;
             _systemCycleDelta += g_clock;
+            // Advance YM2612 based on elapsed SystemCycles
             md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(g_clock);
+            TickIrqAutoClear(g_clock);
+            ApplyEiDelay();
 
             if (log0576After)
                 LogSmsDelayExit(pcBefore);
@@ -1120,6 +1138,51 @@ NextPc:;
             LogZ80Int(in_val, source, status, "signal");
     }
 
+    internal void ArmIrqAutoClear(string source, int cycles)
+    {
+        if (cycles <= 0)
+            return;
+        _irqAutoClearCycles = cycles;
+        _irqAutoClearSource = source;
+    }
+
+    private void AddWaitCycles(int cycles)
+    {
+        if (cycles > 0)
+            _waitCycles += cycles;
+    }
+
+    private void TickIrqAutoClear(int cycles)
+    {
+        if (_irqAutoClearCycles <= 0)
+            return;
+        if (!g_interrupt_irq)
+        {
+            _irqAutoClearCycles = 0;
+            _irqAutoClearSource = null;
+            return;
+        }
+        if (_irqAutoClearSource == null || !string.Equals(_irqAutoClearSource, _irqSource, StringComparison.Ordinal))
+            return;
+        _irqAutoClearCycles -= cycles;
+        if (_irqAutoClearCycles > 0)
+            return;
+        _irqAutoClearCycles = 0;
+        _irqAutoClearSource = null;
+        irq_request(false, _irqSource, _irqStatus);
+    }
+
+    private void ApplyEiDelay()
+    {
+        if (_iff1Delay <= 0)
+            return;
+        _iff1Delay--;
+        if (_iff1Delay > 0)
+            return;
+        g_IFF1 = true;
+        g_IFF2 = true;
+    }
+
     internal void ArmPostResetHold()
     {
         if (Z80ResetHoldCycles <= 0)
@@ -1137,6 +1200,20 @@ NextPc:;
 
         private void LogZ80Int(bool asserted, string source, byte status, string reason)
         {
+            // Always track VDP IRQ counts for debugging, even if tracing is off
+            if (source == "VDP")
+            {
+                if (asserted)
+                {
+                    _zintAssertCount++;
+                    // ALADDIN DEBUG: Track IRQ count
+                    md_main.IncrementZ80Irq();
+                    Console.WriteLine($"[Z80INT-DEBUG] IncrementZ80Irq called, frame={md_main.g_md_vdp?.FrameCounter ?? -1}");
+                }
+                else
+                    _zintClearCount++;
+            }
+            
             if (!MdTracerCore.MdLog.TraceZ80Int)
                 return;
             string state = asserted ? "asserted" : "cleared";
@@ -1146,7 +1223,12 @@ NextPc:;
             if (source == "VDP")
             {
                 if (asserted)
+                {
                     _zintAssertCount++;
+                    // ALADDIN DEBUG: Track IRQ count
+                    md_main.IncrementZ80Irq();
+                    Console.WriteLine($"[Z80INT-DEBUG] IncrementZ80Irq called, frame={frame}");
+                }
                 else
                     _zintClearCount++;
             }
@@ -1215,6 +1297,10 @@ NextPc:;
             g_halt = false;
             g_IFF1 = false;
             g_IFF2 = false;
+            _iff1Delay = 0;
+            _waitCycles = 0;
+            _irqAutoClearCycles = 0;
+            _irqAutoClearSource = null;
 
             g_bank_register = Z80BankDefault;
             ResetMailboxShadow();

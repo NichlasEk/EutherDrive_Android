@@ -18,4 +18,9 @@ public sealed class NullAudioSink : IAudioSink
     {
         // no-op
     }
+
+    public void Dispose()
+    {
+        // no-op
+    }
 }

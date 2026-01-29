@@ -1684,14 +1684,14 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_IFF1 = false;
             g_IFF2 = false;
+            _iff1Delay = 0;
             SmsControlLog($"[md_z80 SMS irq_ctrl] DI at PC=0x{g_reg_PC:X4}");
             g_reg_PC += 1;
             g_clock = 4;
         }
         private void op_EI()
         {
-            g_IFF1 = true;
-            g_IFF2 = true;
+            _iff1Delay = 2;
             SmsControlLog($"[md_z80 SMS irq_ctrl] EI at PC=0x{g_reg_PC:X4}");
             g_reg_PC += 1;
             g_clock = 4;
