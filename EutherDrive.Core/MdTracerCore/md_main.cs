@@ -253,6 +253,29 @@ namespace EutherDrive.Core.MdTracerCore
         
         internal static SyncState GetSyncFm() => _syncFm;
 
+        internal static void SyncZ80ToSystemCycles()
+        {
+            if (g_md_z80 == null)
+                return;
+            if (g_md_bus != null && (g_md_bus.Z80BusGranted || g_md_bus.Z80Reset))
+                return;
+            long target = SystemCycles;
+            long delta = target - _syncZ80.CurrentCycle;
+            if (delta <= 0)
+            {
+                _syncZ80.CurrentCycle = target;
+                return;
+            }
+            int z80Cycles = (int)Math.Round(delta * Z80PerM68kRatio);
+            if (z80Cycles <= 0)
+            {
+                _syncZ80.CurrentCycle = target;
+                return;
+            }
+            _syncZ80.CurrentCycle = target;
+            g_md_z80.run(z80Cycles);
+        }
+
         // Gemensam tidsbas - mastercykler (högsta precision)
         // Använder samma som SystemCycles för att undvika timing-konflikter
         private static int _syncCommonDebugCount;

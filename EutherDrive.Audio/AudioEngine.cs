@@ -63,6 +63,14 @@ public sealed class AudioEngine : IDisposable
     private long _drainNextTicks;
     private double _drainTicksPerFrame;
     private long _primingUntilTicks;
+    private readonly bool _outputPllEnabled;
+    private readonly double _outputPllMax;
+    private double _outputPllRatio = 1.0;
+    private short[] _outputPllScratch = Array.Empty<short>();
+    private static readonly bool OutputPllEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL"), "0", StringComparison.Ordinal)
+            ? false
+            : true;
     private static readonly bool TimedDrainEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN"), "0", StringComparison.Ordinal)
             ? false
@@ -85,6 +93,8 @@ public sealed class AudioEngine : IDisposable
         _framesPerBatch = framesPerBatch;
         _bufferFrames = bufferFrames;
         _drainTicksPerFrame = Stopwatch.Frequency / (double)_sampleRate;
+        _outputPllEnabled = OutputPllEnabled;
+        _outputPllMax = GetOutputPllMax();
 
         _ring = new short[bufferFrames * channels];
         _batch = new short[framesPerBatch * channels];
@@ -136,6 +146,21 @@ public sealed class AudioEngine : IDisposable
         if (!_running || interleaved.IsEmpty)
             return;
 
+        if (_outputPllEnabled && _targetBufferedFrames > 0)
+        {
+            ReadOnlySpan<short> resampled = ResampleForOutputPll(interleaved);
+            if (!resampled.IsEmpty)
+            {
+                SubmitInternal(resampled);
+                return;
+            }
+        }
+
+        SubmitInternal(interleaved);
+    }
+
+    private void SubmitInternal(ReadOnlySpan<short> interleaved)
+    {
         int toWrite;
         int dropped = 0;
         int currentFrames = 0;
@@ -293,6 +318,66 @@ public sealed class AudioEngine : IDisposable
         {
             Thread.Sleep(0);
         }
+    }
+
+    private ReadOnlySpan<short> ResampleForOutputPll(ReadOnlySpan<short> interleaved)
+    {
+        int inSamples = interleaved.Length;
+        int inFrames = inSamples / _channels;
+        if (inFrames <= 1)
+            return interleaved;
+
+        int buffered = Volatile.Read(ref _currentBufferedFrames);
+        double error = (_targetBufferedFrames - buffered) / (double)_targetBufferedFrames;
+        if (error > 1.0) error = 1.0;
+        else if (error < -1.0) error = -1.0;
+        const double deadZone = 0.10;
+        if (Math.Abs(error) < deadZone)
+        {
+            _outputPllRatio = 1.0;
+            return interleaved;
+        }
+        double targetRatio = 1.0 + (error * _outputPllMax);
+        if (targetRatio < 0.98) targetRatio = 0.98;
+        if (targetRatio > 1.02) targetRatio = 1.02;
+
+        _outputPllRatio += (targetRatio - _outputPllRatio) * 0.05;
+        double ratio = _outputPllRatio;
+        int outFrames = (int)Math.Round(inFrames * ratio);
+        if (outFrames < 1)
+            outFrames = 1;
+        if (outFrames == inFrames)
+            return interleaved;
+
+        int outSamples = outFrames * _channels;
+        if (_outputPllScratch.Length < outSamples)
+            _outputPllScratch = new short[outSamples];
+
+        for (int i = 0; i < outFrames; i++)
+        {
+            double srcPos = i / ratio;
+            int idx = (int)srcPos;
+            double frac = srcPos - idx;
+            if (idx >= inFrames - 1)
+            {
+                idx = inFrames - 2;
+                frac = 1.0;
+            }
+            int src = idx * _channels;
+            int srcNext = src + _channels;
+            int dst = i * _channels;
+            for (int ch = 0; ch < _channels; ch++)
+            {
+                int s0 = interleaved[src + ch];
+                int s1 = interleaved[srcNext + ch];
+                int s = (int)Math.Round(s0 + (s1 - s0) * frac);
+                if (s > short.MaxValue) s = short.MaxValue;
+                else if (s < short.MinValue) s = short.MinValue;
+                _outputPllScratch[dst + ch] = (short)s;
+            }
+        }
+
+        return _outputPllScratch.AsSpan(0, outSamples);
     }
 
     private void TryFillFromProducer()
@@ -516,5 +601,18 @@ public sealed class AudioEngine : IDisposable
         _pullFrameAccumulator = 0;
         _drainNextTicks = 0;
         _primingUntilTicks = 0;
+        _outputPllRatio = 1.0;
+    }
+
+    private static double GetOutputPllMax()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL_MAX");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+            && value > 0)
+        {
+            return value;
+        }
+        return 0.005;
     }
 }

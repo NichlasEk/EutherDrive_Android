@@ -439,17 +439,31 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void Slot_Key_on(int in_ch, int in_slot)
         {
-            if (g_slot_env_cond[in_ch, in_slot] == ENV_COND.RELEASE)
+            // YM2612 key-on should reset phase/envelope for the slot.
+            g_slot_freq_cnt[in_ch, in_slot] = 0;
+            g_slot_phase_frac[in_ch, in_slot] = 0;
+            g_slot_phase_out[in_ch, in_slot] = 0;
+            g_slot_op_calc[in_ch, in_slot] = 0;
+            if (in_slot == 0)
             {
-                g_slot_freq_cnt[in_ch, in_slot] = 0;
-                if (g_slot_CNT_MASK[in_ch, 0] == true)
-                {
-                    g_slot_env_cnt[in_ch, in_slot] = (int)(ENV_D2A[ENV_TABLE[g_slot_env_cnt[in_ch, in_slot] >> CNT_LOW_BIT]] + ENV_LEN_ATTACK);
-                }
-                g_slot_CNT_MASK[in_ch, 0] = true;
-                g_slot_env_cmp[in_ch, in_slot] = ENV_LEN_DECAY;
-                g_slot_env_cond[in_ch, in_slot] = ENV_COND.ATTACK;
+                // Feedback uses slot 0 history.
+                g_slot_phase_out[in_ch, 1] = 0;
             }
+
+            if (g_slot_CNT_MASK[in_ch, in_slot])
+            {
+                g_slot_env_cnt[in_ch, in_slot] =
+                    (int)(ENV_D2A[ENV_TABLE[g_slot_env_cnt[in_ch, in_slot] >> CNT_LOW_BIT]] + ENV_LEN_ATTACK);
+            }
+            else
+            {
+                g_slot_env_cnt[in_ch, in_slot] = ENV_LEN_ATTACK;
+                g_slot_env_frac[in_ch, in_slot] = 0;
+            }
+
+            g_slot_CNT_MASK[in_ch, in_slot] = true;
+            g_slot_env_cmp[in_ch, in_slot] = ENV_LEN_DECAY;
+            g_slot_env_cond[in_ch, in_slot] = ENV_COND.ATTACK;
         }
         private void Slot_Key_off(int in_ch, int in_slot)
         {

@@ -133,6 +133,10 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _pcLeftBootRangeSinceLastSummary;
         private long _z80StatsLastTicks;
         private long _z80StatsInstrCount;
+        private long _z80StatsCycleCount;
+        private long _z80StatsBudgetCount;
+        private long _z80StatsIrqCount;
+        private long _z80StatsBlockedCount;
         private int _bootInstrCount;
         private int _runCount;
         private readonly int[] _pcHist = new int[0x10000];
@@ -333,7 +337,15 @@ namespace EutherDrive.Core.MdTracerCore
 
             double elapsedSec = (double)elapsedTicks / Stopwatch.Frequency;
             long instrDelta = _z80StatsInstrCount;
+            long cycleDelta = _z80StatsCycleCount;
+            long budgetDelta = _z80StatsBudgetCount;
+            long irqDelta = _z80StatsIrqCount;
+            long blockedDelta = _z80StatsBlockedCount;
             _z80StatsInstrCount = 0;
+            _z80StatsCycleCount = 0;
+            _z80StatsBudgetCount = 0;
+            _z80StatsIrqCount = 0;
+            _z80StatsBlockedCount = 0;
             _z80StatsLastTicks = now;
 
             bool busRequested = md_main.g_md_bus?.Z80BusGranted ?? false;
@@ -345,11 +357,15 @@ namespace EutherDrive.Core.MdTracerCore
             md_main.g_md_bus?.ConsumeZ80SignalStats(out busReqWrites, out busReqToggles, out resetWrites, out resetToggles);
 
             double ips = instrDelta / elapsedSec;
+            double cps = cycleDelta / elapsedSec;
+            double budgetCps = budgetDelta / elapsedSec;
+            double util = budgetDelta > 0 ? (cycleDelta * 100.0) / budgetDelta : 0.0;
             Console.WriteLine(
-                $"[Z80Stats] dt={elapsedSec:0.00}s instr={instrDelta} ips={ips:0} active={(g_active ? 1 : 0)} " +
-                $"halt={(g_halt ? 1 : 0)} pc=0x{g_reg_PC:X4} busReq={(busRequested ? 1 : 0)} " +
-                $"reset={(reset ? 1 : 0)} busReqW={busReqWrites} busReqT={busReqToggles} " +
-                $"resetW={resetWrites} resetT={resetToggles}");
+                $"[Z80Stats] dt={elapsedSec:0.00}s instr={instrDelta} ips={ips:0} cycles={cycleDelta} cps={cps:0} " +
+                $"budget={budgetDelta} budgetCps={budgetCps:0} util={util:0.0}% irq={irqDelta} blocked={blockedDelta} " +
+                $"active={(g_active ? 1 : 0)} halt={(g_halt ? 1 : 0)} pc=0x{g_reg_PC:X4} " +
+                $"busReq={(busRequested ? 1 : 0)} reset={(reset ? 1 : 0)} busReqW={busReqWrites} " +
+                $"busReqT={busReqToggles} resetW={resetWrites} resetT={resetToggles}");
         }
 
         public void run(int in_clock)
@@ -377,6 +393,8 @@ namespace EutherDrive.Core.MdTracerCore
             // which should be used for timekeeping (YM2612 busy flag, timers)
             // regardless of whether Z80 actually executes.
             _budgetCycles += in_clock;
+            if (TraceZ80Stats)
+                _z80StatsBudgetCount += in_clock;
 
             if (TraceZ80Step && !_lastCanRun && canRun)
             {
@@ -401,6 +419,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             if (busRequested || z80reset)
             {
+                if (TraceZ80Stats)
+                    _z80StatsBlockedCount++;
                 if (TraceZ80SigTransitions && g_active)
                 {
                     long blockFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
@@ -444,6 +464,8 @@ namespace EutherDrive.Core.MdTracerCore
                     _z80ResetHoldRemaining -= burn;
                     _totalCycles += burn;
                     cyclesConsumed += burn;
+                    if (TraceZ80Stats)
+                        _z80StatsCycleCount += burn;
                     md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(burn);
                     g_clock_total -= burn;
                     continue;
@@ -454,6 +476,8 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 if (g_IFF1)
                 {
+                    if (TraceZ80Stats)
+                        _z80StatsIrqCount++;
                     SmsControlLog($"[md_z80 SMS irq] IM{g_interruptMode} pending PC=0x{g_reg_PC:X4}");
                     if (g_halt) g_reg_PC += 1;
 
@@ -740,6 +764,8 @@ namespace EutherDrive.Core.MdTracerCore
             _totalCycles += g_clock;
             cyclesConsumed += g_clock;
             _systemCycleDelta += g_clock;
+            if (TraceZ80Stats)
+                _z80StatsCycleCount += g_clock;
             // Advance YM2612 based on elapsed SystemCycles
             md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(g_clock);
             TickIrqAutoClear(g_clock);
@@ -885,6 +911,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock_total -= g_clock;
         }
         AccumulateLineCycles(in_clock, cyclesConsumed);
+        MaybeLogZ80Stats();
 
         // Master cycles are advanced in md_main.cs when Z80 runs
         // No need to handle YM2612 timing here anymore

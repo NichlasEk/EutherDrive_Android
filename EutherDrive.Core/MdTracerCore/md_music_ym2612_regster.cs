@@ -16,8 +16,14 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMER"), "1", StringComparison.Ordinal);
         private static readonly bool TraceYmKey =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_KEY"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmAttack =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_ATTACK"), "1", StringComparison.Ordinal);
         private static readonly bool TraceYmWriteStats =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_WRITE_STATS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmWriteRing =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_WRITE_RING"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmMuteEvent =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_MUTE_EVENT"), "1", StringComparison.Ordinal);
         private static readonly bool EmulateYmBusy =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_EMULATE_YM_BUSY"), "1", StringComparison.Ordinal);
         
@@ -53,6 +59,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TraceYmKeyLimit = ParseYmKeyLimit();
         private static readonly int TraceYmWriteStatsLimit = ParseYmWriteStatsLimit();
         private static readonly int YmBusyZ80Cycles = ParseYmBusyZ80Cycles();
+        private static readonly int YmWriteRingSize = ParseYmWriteRingSize();
         
         // Track previous busy state for transition detection
         private static bool _previousBusy = false;
@@ -93,7 +100,17 @@ namespace EutherDrive.Core.MdTracerCore
         private int _ymStatusLogRemaining = TraceYmStatusLimit;
         private int _ymTimerLogRemaining = TraceYmTimerLimit;
         private int _ymKeyLogRemaining = TraceYmKeyLimit;
+        private int _ymAttackLogRemaining = 256;
         private int _ymWriteStatLogRemaining = TraceYmWriteStatsLimit;
+
+        private readonly byte[] _ymWriteRingAddr = new byte[YmWriteRingSize];
+        private readonly byte[] _ymWriteRingVal = new byte[YmWriteRingSize];
+        private readonly byte[] _ymWriteRingPort = new byte[YmWriteRingSize];
+        private readonly string?[] _ymWriteRingSrc = new string?[YmWriteRingSize];
+        private readonly ushort[] _ymWriteRingPc = new ushort[YmWriteRingSize];
+        private readonly long[] _ymWriteRingCycle = new long[YmWriteRingSize];
+        private int _ymWriteRingHead;
+        private int _ymWriteRingCount;
         private int _dacDebugWriteCount = 0;
         private int _timerAEvents;
         private int _timerBEvents;
@@ -105,6 +122,8 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _ymLastAddr;
         private byte _ymLastVal;
         private string _ymLastSource = "none";
+        private long _lastKeyOnCycle = -1;
+        private long _ymMuteLastCycle = -1;
         private long _ymBusyUntilCycle;
         private long _ymBusyDropCount;
         private bool _key28KeyOffLogged;
@@ -204,6 +223,19 @@ namespace EutherDrive.Core.MdTracerCore
             if (value <= 0)
                 return int.MaxValue;
             return value;
+        }
+        
+        private static int ParseYmWriteRingSize()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_WRITE_RING_SIZE");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 2048;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return 2048;
+            if (value <= 0)
+                return 2048;
+            return value < 128 ? 128 : value;
         }
 
         private static int ParseYmBusyZ80Cycles()
@@ -426,11 +458,16 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
 
              _ymDataWrites++;
-             _ymLastAddr = w_addr;
-             _ymLastVal = in_val;
-             _ymLastSource = source;
+            _ymLastAddr = w_addr;
+            _ymLastVal = in_val;
+            _ymLastSource = source;
 
-             long nowCycle = GetZ80Cycle();
+            long nowCycle = GetZ80Cycle();
+            
+            if (TraceYmWriteRing)
+            {
+                RecordYmWrite(w_mode, w_addr, in_val, source, nowCycle);
+            }
              
              // Log YM write timing for debugging elastic music
              if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_WRITE_TIMING") == "1")
@@ -489,6 +526,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _audStatParam++;
             }
             MaybeLogYmReg(w_mode, w_addr, in_val, _source);
+            MaybeLogYmMuteEvent(w_mode, w_addr, in_val, nowCycle);
 
             // ------------------------------------------------------------
             // 0x20..0x2B (mode 0 only)
@@ -596,6 +634,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 _keyOnSlots += onCount;
                                 _keyOffSlots += 4 - onCount;
                                 MaybeLogYmKey(in_val, ch, slotMask, source);
+                                MaybeLogYmAttack(in_val, ch, slotMask, source);
                                 if (TraceYmReg && _key28LogRemaining > 0)
                                 {
                                     if (slotMask != 0)
@@ -971,6 +1010,42 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
+        private void RecordYmWrite(int port, byte addr, byte val, string source, long cycle)
+        {
+            int idx = _ymWriteRingHead;
+            _ymWriteRingAddr[idx] = addr;
+            _ymWriteRingVal[idx] = val;
+            _ymWriteRingPort[idx] = (byte)port;
+            _ymWriteRingSrc[idx] = source;
+            _ymWriteRingPc[idx] = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+            _ymWriteRingCycle[idx] = cycle;
+            _ymWriteRingHead = (idx + 1) % YmWriteRingSize;
+            if (_ymWriteRingCount < YmWriteRingSize)
+                _ymWriteRingCount++;
+        }
+
+        public void DumpRecentYmWrites(string reason, int maxCount)
+        {
+            if (!TraceYmWriteRing || maxCount <= 0 || _ymWriteRingCount == 0)
+                return;
+
+            int count = maxCount > _ymWriteRingCount ? _ymWriteRingCount : maxCount;
+            Console.WriteLine($"[YMWRITE-RING] reason={reason} count={count} size={YmWriteRingSize}");
+            int start = _ymWriteRingHead - count;
+            if (start < 0)
+                start += YmWriteRingSize;
+            for (int i = 0; i < count; i++)
+            {
+                int idx = start + i;
+                if (idx >= YmWriteRingSize)
+                    idx -= YmWriteRingSize;
+                Console.WriteLine(
+                    $"[YMWRITE-RING] idx={i} port={_ymWriteRingPort[idx]} addr=0x{_ymWriteRingAddr[idx]:X2} " +
+                    $"val=0x{_ymWriteRingVal[idx]:X2} src={_ymWriteRingSrc[idx]} pc=0x{_ymWriteRingPc[idx]:X4} " +
+                    $"cycle={_ymWriteRingCycle[idx]}");
+            }
+        }
+
         private void UpdateTimerA()
         {
             int reload = 1024 - g_reg_24_timerA;
@@ -1101,6 +1176,56 @@ namespace EutherDrive.Core.MdTracerCore
             Console.WriteLine($"[YMREG] {source} pc=0x{pc:X4} port={port} addr=0x{addr:X2} val=0x{val:X2}");
         }
 
+        private void MaybeLogYmMuteEvent(int port, byte addr, byte val, long nowCycle)
+        {
+            if (!TraceYmMuteEvent)
+                return;
+            if (addr < 0x40 || addr > 0x4F || (addr & 0x03) == 0x03)
+                return;
+            if ((val & 0x7F) != 0x7F)
+                return;
+            if (!IsAllTlMuted())
+                return;
+
+            if (nowCycle >= 0 && _ymMuteLastCycle >= 0)
+            {
+                long minDelta = (long)Z80_CLOCK;
+                if (nowCycle - _ymMuteLastCycle < minDelta)
+                    return;
+            }
+
+            _ymMuteLastCycle = nowCycle;
+            ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+            string mbx = md_main.g_md_z80 != null ? md_main.g_md_z80.GetMailboxDump() : string.Empty;
+            string lastMbx = md_main.g_md_z80 != null ? md_main.g_md_z80.GetMailboxLastNonZeroDump() : string.Empty;
+            long lastMbxFrame = md_main.g_md_z80 != null ? md_main.g_md_z80.GetMailboxLastNonZeroFrame() : -1;
+            ushort lastAddr = md_main.g_md_z80 != null ? md_main.g_md_z80.GetMailboxLastWriteAddr() : (ushort)0;
+            byte lastVal = md_main.g_md_z80 != null ? md_main.g_md_z80.GetMailboxLastWriteVal() : (byte)0;
+            long lastFrame = md_main.g_md_z80 != null ? md_main.g_md_z80.GetMailboxLastWriteFrame() : -1;
+            ushort lastNzAddr = md_main.g_md_z80 != null ? md_main.g_md_z80.GetMailboxLastNonZeroAddr() : (ushort)0;
+            byte lastNzVal = md_main.g_md_z80 != null ? md_main.g_md_z80.GetMailboxLastNonZeroVal() : (byte)0;
+            long lastNzFrame = md_main.g_md_z80 != null ? md_main.g_md_z80.GetMailboxLastNonZeroWriteFrame() : -1;
+            Console.WriteLine(
+                $"[YM-MUTE] pc=0x{pc:X4} port={port} addr=0x{addr:X2} val=0x{val:X2} " +
+                $"cycle={nowCycle} mailbox={mbx} lastMbx={lastMbx} lastMbxFrame={lastMbxFrame} " +
+                $"lastWrite=0x{lastAddr:X4}:0x{lastVal:X2}@{lastFrame} lastNz=0x{lastNzAddr:X4}:0x{lastNzVal:X2}@{lastNzFrame}");
+        }
+
+        private bool IsAllTlMuted()
+        {
+            for (int port = 0; port < 2; port++)
+            {
+                for (int addr = 0x40; addr <= 0x4E; addr++)
+                {
+                    if ((addr & 0x03) == 0x03)
+                        continue;
+                    if (g_reg[port, addr] != 0x7F)
+                        return false;
+                }
+            }
+            return true;
+        }
+
         private void MaybeLogYmTimerReg(byte reg, byte val)
         {
             if (!TraceYmTimer || _ymTimerLogRemaining <= 0)
@@ -1123,6 +1248,44 @@ namespace EutherDrive.Core.MdTracerCore
             ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
             Console.WriteLine(
                 $"[YMKEY] src={source} pc=0x{pc:X4} val=0x{inVal:X2} ch={channel} slotmask=0x{slotMask:X1}");
+        }
+
+        private void MaybeLogYmAttack(byte inVal, int channel, int slotMask, string source)
+        {
+            if (!TraceYmAttack || _ymAttackLogRemaining <= 0)
+                return;
+            if (slotMask == 0)
+                return;
+            if (_ymAttackLogRemaining != int.MaxValue)
+                _ymAttackLogRemaining--;
+            long nowCycle = md_main.SystemCycles;
+            _lastKeyOnCycle = nowCycle;
+            int ar0 = GetOpRate(channel, 0, 0x50);
+            int ar1 = GetOpRate(channel, 1, 0x50);
+            int ar2 = GetOpRate(channel, 2, 0x50);
+            int ar3 = GetOpRate(channel, 3, 0x50);
+            int dr0 = GetOpRate(channel, 0, 0x60);
+            int dr1 = GetOpRate(channel, 1, 0x60);
+            int dr2 = GetOpRate(channel, 2, 0x60);
+            int dr3 = GetOpRate(channel, 3, 0x60);
+            int rr0 = GetOpRate(channel, 0, 0x80);
+            int rr1 = GetOpRate(channel, 1, 0x80);
+            int rr2 = GetOpRate(channel, 2, 0x80);
+            int rr3 = GetOpRate(channel, 3, 0x80);
+            ushort pc = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugPc : (ushort)0xFFFF;
+            Console.WriteLine(
+                $"[YM-ATTACK] cyc={nowCycle} pc=0x{pc:X4} src={source} ch={channel} slotmask=0x{slotMask:X1} " +
+                $"AR={ar0:X2},{ar1:X2},{ar2:X2},{ar3:X2} " +
+                $"DR={dr0:X2},{dr1:X2},{dr2:X2},{dr3:X2} " +
+                $"RR={rr0:X2},{rr1:X2},{rr2:X2},{rr3:X2}");
+        }
+
+        private int GetOpRate(int channel, int op, int baseAddr)
+        {
+            int addr = baseAddr + (op * 4) + channel;
+            int high = g_reg[0, addr];
+            int low = g_reg[1, addr];
+            return ((high & 0x1F) << 5) | (low & 0x1F);
         }
 
         private static int CountBits(int value)

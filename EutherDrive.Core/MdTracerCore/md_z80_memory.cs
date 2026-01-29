@@ -40,7 +40,16 @@ namespace EutherDrive.Core.MdTracerCore
         private int _z80MailboxReadLogRemaining = 256;
         private int _z80MailboxWideLogRemaining = 128;
         private int _z80MailboxWideReadAllRemaining = 128;
+        private int _mbxRawZ80Remaining = TraceMbxRawZ80Limit;
         private readonly byte[] _z80MailboxSnapshot = new byte[0x10];
+        private string _mbxLastNonZeroDump = string.Empty;
+        private long _mbxLastNonZeroFrame = -1;
+        private ushort _mbxLastWriteAddr;
+        private byte _mbxLastWriteVal;
+        private long _mbxLastWriteFrame = -1;
+        private ushort _mbxLastNonZeroAddr;
+        private byte _mbxLastNonZeroVal;
+        private long _mbxLastNonZeroWriteFrame = -1;
         private readonly byte[] _mbxShadow = new byte[0x10];
         private bool _mbxShadowValid;
         private bool _mbxWideCmdLatchValid;
@@ -105,6 +114,12 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MBXSYNC"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Mbx =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80MBX"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceMbxRawZ80 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MBX_RAW_Z80"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceMbxRawZ80NonZero =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MBX_RAW_Z80_NONZERO"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMbxRawZ80Limit =
+            ParseWatchLimit("EUTHERDRIVE_TRACE_MBX_RAW_Z80_LIMIT", 256);
         private static readonly bool TraceZ80Flag65 =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_0065"), "1", StringComparison.Ordinal);
         private static readonly int TraceZ80Flag65Limit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_0065_LIMIT");
@@ -164,7 +179,7 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80MBX_WIDE_CMD"), "1", StringComparison.Ordinal);
         private static readonly bool LatchZ80MbxWideCmd =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_MBX_WIDE_CMD_LATCH"), "1", StringComparison.Ordinal);
-        private static readonly bool MirrorZ80Mailbox = ReadEnvDefaultOn("EUTHERDRIVE_MBX_MIRROR");
+        private static readonly bool MirrorZ80Mailbox = ReadEnvDefaultOff("EUTHERDRIVE_MBX_MIRROR");
         private static readonly bool UseMdTracerCompat =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_MDTRACER_COMPAT"), "1", StringComparison.Ordinal);
         private static readonly bool Z80WindowWide =
@@ -249,6 +264,14 @@ namespace EutherDrive.Core.MdTracerCore
             string? raw = Environment.GetEnvironmentVariable(name);
             if (string.IsNullOrEmpty(raw))
                 return true;
+            return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ReadEnvDefaultOff(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrEmpty(raw))
+                return false;
             return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -770,6 +793,20 @@ namespace EutherDrive.Core.MdTracerCore
             Console.WriteLine($"[Z80RAMRD] pc=0x{DebugPc:X4} addr=0x{ramAddr:X4} val=0x{value:X2} hl=0x{g_reg_HL:X4}{watchInfo}");
         }
 
+        private void MaybeLogMbxRawZ80Read(ushort ramAddr, byte value)
+        {
+            if (!TraceMbxRawZ80)
+                return;
+            if (ramAddr < 0x1B00 || ramAddr > 0x1BFF)
+                return;
+            if (TraceMbxRawZ80NonZero && value == 0x00)
+                return;
+            if (_mbxRawZ80Remaining <= 0)
+                return;
+            _mbxRawZ80Remaining--;
+            Console.WriteLine($"[MBXRAWZ80] pc=0x{DebugPc:X4} addr=0x{ramAddr:X4} val=0x{value:X2}");
+        }
+
         private void MaybeLogZ80ReadRange(ushort addr, byte value)
         {
             if (!TraceZ80ReadRangeStart.HasValue || !TraceZ80ReadRangeEnd.HasValue)
@@ -1000,6 +1037,7 @@ namespace EutherDrive.Core.MdTracerCore
                 w_out = g_ram[ramAddr];
                 w_out = MaybeOverrideFlag65Read(ramAddr, w_out);
                 w_out = ApplyForceZ80FlagBit2(ramAddr, w_out);
+                MaybeLogMbxRawZ80Read(ramAddr, w_out);
                 if (ShouldTraceZ80Ram1800(ramAddr))
                     LogZ80Ram1800("R", ramAddr, w_out);
                 bool isMbxPoll = TraceZ80MbxPoll && ramAddr >= 0x1B00 && ramAddr <= 0x1B8F;
@@ -1485,6 +1523,10 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 _z80MailboxWideReadAllRemaining = 256;
             }
+            if (TraceMbxRawZ80)
+            {
+                _mbxRawZ80Remaining = TraceMbxRawZ80Limit;
+            }
             if (TraceZ80Flag65)
             {
                 _z80Flag65ReadRemaining = TraceZ80Flag65Limit;
@@ -1624,11 +1666,28 @@ namespace EutherDrive.Core.MdTracerCore
         internal void RecordMailboxWriteFrom68k(uint addr, byte value)
         {
             uint low = addr & 0x1FFF;
+            if (low >= 0x1B00 && low <= 0x1BFF)
+            {
+                _mbxLastWriteAddr = (ushort)low;
+                _mbxLastWriteVal = value;
+                _mbxLastWriteFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                if (value != 0x00)
+                {
+                    _mbxLastNonZeroAddr = (ushort)low;
+                    _mbxLastNonZeroVal = value;
+                    _mbxLastNonZeroWriteFrame = _mbxLastWriteFrame;
+                }
+            }
             if (low < 0x1B80 || low > 0x1B8F)
                 return;
             int offset = (int)(low - 0x1B80);
             _mbxShadow[offset] = value;
             _mbxShadowValid = true;
+            if (value != 0x00)
+            {
+                _mbxLastNonZeroDump = BuildMailboxDump();
+                _mbxLastNonZeroFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            }
         }
 
         private string BuildMailboxDump()
@@ -1647,6 +1706,46 @@ namespace EutherDrive.Core.MdTracerCore
         internal string GetMailboxDump()
         {
             return BuildMailboxDump();
+        }
+
+        internal string GetMailboxLastNonZeroDump()
+        {
+            return _mbxLastNonZeroDump;
+        }
+
+        internal long GetMailboxLastNonZeroFrame()
+        {
+            return _mbxLastNonZeroFrame;
+        }
+
+        internal ushort GetMailboxLastWriteAddr()
+        {
+            return _mbxLastWriteAddr;
+        }
+
+        internal byte GetMailboxLastWriteVal()
+        {
+            return _mbxLastWriteVal;
+        }
+
+        internal long GetMailboxLastWriteFrame()
+        {
+            return _mbxLastWriteFrame;
+        }
+
+        internal ushort GetMailboxLastNonZeroAddr()
+        {
+            return _mbxLastNonZeroAddr;
+        }
+
+        internal byte GetMailboxLastNonZeroVal()
+        {
+            return _mbxLastNonZeroVal;
+        }
+
+        internal long GetMailboxLastNonZeroWriteFrame()
+        {
+            return _mbxLastNonZeroWriteFrame;
         }
 
         internal byte PeekMailboxByte(int index)

@@ -1,5 +1,5 @@
 {
-  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Aladdin (Europe).md",
+  "LastRomPath": "/home/nichlas/roms/sonic2.md",
   "MasterVolumePercent": 11,
   "AudioEnabled": true,
   "DefaultRegionOverride": 0,
@@ -79,7 +79,10 @@
     "serial:GM MK-1841-00": 2,
     "serial:GM T-95026-00": 2,
     "serial:GM 00004049-01": 1,
-    "serial:GM T-113076 00": 1
+    "serial:GM T-113076 00": 1,
+    "serial:GM T-12053 -00": 3,
+    "serial:GM T-48116 -00": 2,
+    "serial:GM T-70196 -00": 3
   },
-  "FrameRateMode": 2
+  "FrameRateMode": 1
 }

@@ -68,6 +68,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDLVL"), "1", StringComparison.Ordinal);
     private static readonly bool TracePerf =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PERF"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceYmSilence =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_ON_SILENCE"), "1", StringComparison.Ordinal);
+    private static readonly int TraceYmSilenceFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_ON_SILENCE_FRAMES", 60);
+    private static readonly int TraceYmSilenceDump = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_ON_SILENCE_DUMP", 128);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
     private static readonly double Z80CycleMultiplier = ParseZ80CycleMultiplier();
@@ -136,6 +140,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private int _psgFrameSamples;
     private long _psgLastFrame = -1;
     private volatile int _masterVolumePercent = 50;
+    private int _ymSilentFrames;
+    private bool _ymSilenceLogged;
 
     public void SetMasterVolumePercent(int percent)
     {
@@ -200,18 +206,39 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static SimpleLowPassFilter? CreateLowPassIfEnabled(int sampleRate)
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_LP_HZ");
-        double cutoff;
         if (string.IsNullOrWhiteSpace(raw))
-        {
-            cutoff = 14000;
-        }
-        else if (!double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out cutoff))
-        {
             return null;
-        }
+        if (!double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double cutoff))
+            return null;
         if (cutoff <= 0)
             return null;
         return new SimpleLowPassFilter(sampleRate, cutoff);
+    }
+
+    private static int ReadInterleavedSample(short[] buffer, int frames, int channels, int frame, int channel)
+    {
+        if (frames <= 0)
+            return 0;
+        if (frame < 0)
+            frame = 0;
+        else if (frame >= frames)
+            frame = frames - 1;
+        int idx = (frame * channels) + channel;
+        if ((uint)idx >= (uint)buffer.Length)
+            return 0;
+        return buffer[idx];
+    }
+
+    private static int CubicInterpolate(int p0, int p1, int p2, int p3, double t)
+    {
+        double a0 = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+        double a1 = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+        double a2 = -0.5 * p0 + 0.5 * p2;
+        double a3 = p1;
+        double v = ((a0 * t + a1) * t + a2) * t + a3;
+        if (v > short.MaxValue) v = short.MaxValue;
+        else if (v < short.MinValue) v = short.MinValue;
+        return (int)Math.Round(v);
     }
 
     private static double GetYmResampleScale()
@@ -1839,6 +1866,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int ymMin = 0;
         int ymMax = 0;
         bool ymMinMaxInit = false;
+        int ymPeak = 0;
+        int ymNonZero = 0;
         if (wantYm)
         {
             if (_ymFrameBuffer.Length < samples)
@@ -1879,16 +1908,23 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             {
                 int baseIndex = (int)phase;
                 double frac = phase - baseIndex;
-                int src = baseIndex * PsgChannels;
-                int srcNext = src + PsgChannels;
+                int f0 = baseIndex - 1;
+                int f1 = baseIndex;
+                int f2 = baseIndex + 1;
+                int f3 = baseIndex + 2;
 
-                int ymL0 = _ymInternalBuffer[src];
-                int ymR0 = _ymInternalBuffer[src + 1];
-                int ymL1 = _ymInternalBuffer[srcNext];
-                int ymR1 = _ymInternalBuffer[srcNext + 1];
-
-                int ymL = (int)(ymL0 + (ymL1 - ymL0) * frac);
-                int ymR = (int)(ymR0 + (ymR1 - ymR0) * frac);
+                int ymL = CubicInterpolate(
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
+                    frac);
+                int ymR = CubicInterpolate(
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
+                    frac);
 
                 int dst = i * PsgChannels;
                 _ymFrameBuffer[dst] = (short)ymL;
@@ -1908,8 +1944,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             int mixMin = 0;
             int mixMax = 0;
             bool mixMinMaxInit = false;
-            int ymPeak = 0;
-            int ymNonZero = 0;
             int mixPeak = 0;
             int mixNonZero = 0;
             for (int i = 0; i < samples; i++)
@@ -2031,6 +2065,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
         }
 
+        MaybeDumpYmSilence(music, wantYm, ymPeak, ymNonZero);
+
         ApplyMasterVolume(_psgFrameBuffer, samples);
         _mixLowPass?.Apply(_psgFrameBuffer, samples);
         _psgFrameSamples = samples;
@@ -2103,11 +2139,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int ymMin = 0;
         int ymMax = 0;
         bool ymMinMaxInit = false;
+        int ymPeak = 0;
+        int ymNonZero = 0;
         int mixMin = 0;
         int mixMax = 0;
         bool mixMinMaxInit = false;
-        int ymPeak = 0;
-        int ymNonZero = 0;
         int mixPeak = 0;
         int mixNonZero = 0;
         if (wantYm)
@@ -2144,16 +2180,23 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             {
                 int baseIndex = (int)phase;
                 double frac = phase - baseIndex;
-                int src = baseIndex * PsgChannels;
-                int srcNext = src + PsgChannels;
+                int f0 = baseIndex - 1;
+                int f1 = baseIndex;
+                int f2 = baseIndex + 1;
+                int f3 = baseIndex + 2;
 
-                int ymL0 = _ymInternalBuffer[src];
-                int ymR0 = _ymInternalBuffer[src + 1];
-                int ymL1 = _ymInternalBuffer[srcNext];
-                int ymR1 = _ymInternalBuffer[srcNext + 1];
-
-                int ymL = (int)(ymL0 + (ymL1 - ymL0) * frac);
-                int ymR = (int)(ymR0 + (ymR1 - ymR0) * frac);
+                int ymL = CubicInterpolate(
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
+                    frac);
+                int ymR = CubicInterpolate(
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
+                    frac);
 
                 int dst = i * PsgChannels;
                 _ymFrameBuffer[dst] = (short)ymL;
@@ -2289,10 +2332,33 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
         }
 
+        MaybeDumpYmSilence(music, wantYm, ymPeak, ymNonZero);
+
         ApplyMasterVolume(_psgFrameBuffer, samples);
         _mixLowPass?.Apply(_psgFrameBuffer, samples);
         _psgFrameSamples = samples;
         return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
+    }
+
+    private void MaybeDumpYmSilence(md_music music, bool wantYm, int ymPeak, int ymNonZero)
+    {
+        if (!TraceYmSilence || !wantYm)
+            return;
+
+        if (ymPeak == 0 && ymNonZero == 0)
+        {
+            _ymSilentFrames++;
+            if (!_ymSilenceLogged && _ymSilentFrames >= TraceYmSilenceFrames)
+            {
+                music.g_md_ym2612.DumpRecentYmWrites("silence", TraceYmSilenceDump);
+                _ymSilenceLogged = true;
+            }
+        }
+        else
+        {
+            _ymSilentFrames = 0;
+            _ymSilenceLogged = false;
+        }
     }
 
     public long GetSystemCycles()
