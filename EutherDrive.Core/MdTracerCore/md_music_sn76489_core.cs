@@ -98,7 +98,7 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     if (g_duty[NOISE_CHANNEL] == true)
                     {
-                        // Following clownmdemu-core PSG_ShiftRegisterClock():
+                        // Following otheremumdemu-core PSG_ShiftRegisterClock():
                         // For white noise: feedback from bit 13 XOR bit 10 (shift >> 13) ^ (shift >> 10)
                         // For periodic noise: feedback from bit 0 (LSB)
                         int w_bit1;

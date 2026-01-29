@@ -12,8 +12,8 @@ YM2612 timing var **event-driven** istället för **time-driven**:
 - I **headless mode**: `ymAdvanceCalls=0` för alla frames (ingen audio rendering)
 - I **UI-mode**: Audio fungerade men tempo var fortfarande elastiskt
 
-## Analys av clownmdemu-core
-Efter att ha analyserat clownmdemu-core upptäckte vi:
+## Analys av otheremumdemu-core
+Efter att ha analyserat otheremumdemu-core upptäckte vi:
 
 1. **Enhetligt timing system**: Alla komponenter synkas till master clock
 2. **YM2612 avancerar bara från sync points**: `FM_Update(cycles_to_do)`
@@ -24,7 +24,7 @@ Efter att ha analyserat clownmdemu-core upptäckte vi:
 ## Implementerade lösningar
 
 ### 1. **SyncFM() Funktion** (`md_music_ym2612_core.cs`)
-Implementerade `SyncFM()` som liknar clownmdemu-core's `FM_Update(cycles_to_do)`:
+Implementerade `SyncFM()` som liknar otheremumdemu-core's `FM_Update(cycles_to_do)`:
 ```csharp
 public void SyncFM()
 {
@@ -74,7 +74,7 @@ public void YM2612_Start()
 {
     // ... existing code ...
     
-    // Initialize sync system for clownmdemu-style timing
+    // Initialize sync system for otheremumdemu-style timing
     md_main.GetSyncFm().CurrentCycle = md_main.GetMasterCycle();
 }
 ```
@@ -164,6 +164,6 @@ internal static long SyncCommon(SyncState sync, long targetCycle, int clockDivis
    - La till sync initiering i `YM2612_Start()`
 
 ## Slutsats
-Vi har lyckats implementera ett **enhetligt timing system** likt clownmdemu-core som fixar "elastic music" problemet. Alla komponenter är nu synkade till en gemensam master clock, vilket ger konsekvent timing men kan göra spelet segt på grund av korrekt (men möjligen för långsam) emulering.
+Vi har lyckats implementera ett **enhetligt timing system** likt otheremumdemu-core som fixar "elastic music" problemet. Alla komponenter är nu synkade till en gemensam master clock, vilket ger konsekvent timing men kan göra spelet segt på grund av korrekt (men möjligen för långsam) emulering.
 
 Nästa steg är att optimera performance och justera timing för att få rätt balans mellan korrekthet och prestanda.

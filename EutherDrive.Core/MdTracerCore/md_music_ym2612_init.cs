@@ -166,7 +166,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Reset Z80 safe boot state when YM2612 is (re)started
             ResetZ80SafeBootState();
             
-            // Initialize sync system for clownmdemu-style timing
+            // Initialize sync system for otheremumdemu-style timing
             // Set _syncFm.CurrentCycle to current master cycle
             long masterCycle = md_main.GetMasterCycle();
             md_main.GetSyncFm().CurrentCycle = masterCycle;

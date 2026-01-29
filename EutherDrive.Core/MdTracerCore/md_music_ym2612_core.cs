@@ -66,7 +66,7 @@ namespace EutherDrive.Core.MdTracerCore
                     if (!AudioMuteFmPsg)
                     {
                         // g_ch_out has been shifted right by OUT_DOWN_BIT (9) in slot_mixer
-                        // clownmdemu does: sample * 128 / 8 = sample * 16
+                        // otheremumdemu does: sample * 128 / 8 = sample * 16
                         // So we shift left 7 (multiply by 128) then divide by 8 = multiply by 16
                         int ch_output = (g_ch_out[w_ch] << 7) / FM_VOLUME_DIVISOR;
                         if (g_reg_b4_l[w_ch] == true) w_out_l += (int)(ch_output * md_main.g_md_music.g_out_vol[w_ch]);
@@ -78,7 +78,7 @@ namespace EutherDrive.Core.MdTracerCore
                     int w_dac = dac_control();
                     if (!AudioMuteDac)
                     {
-                        // Match clownmdemu-core: DAC sample should be same scaling as FM samples
+                        // Match otheremumdemu-core: DAC sample should be same scaling as FM samples
                         // FM samples get: (sample * 128) / FM_VOLUME_DIVISOR
                         // So DAC should be: w_dac * 128 / FM_VOLUME_DIVISOR
                         int dac_output = (w_dac << 7) / FM_VOLUME_DIVISOR;
@@ -487,7 +487,7 @@ namespace EutherDrive.Core.MdTracerCore
             // But since values are always even, we can just use the value directly
             // after adjusting for the bit 0 that was preserved
             int w_dac = (int)g_reg_2a_dac_data - 0x100;
-            // Match clownmdemu-core: no extra scaling, DAC should be same range as FM samples
+            // Match otheremumdemu-core: no extra scaling, DAC should be same range as FM samples
             return w_dac;
         }
         private void timer_control()

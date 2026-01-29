@@ -255,7 +255,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             // YM2612 BUSY flag is active for 32 FM cycles
             // FM runs at M68K clock / 7 = 7.67MHz / 7 = 1.095MHz (NTSC)
-            // FM_PRESCALER = 6 in clownmdemu, so 32 * 6 = 192 FM cycles
+            // FM_PRESCALER = 6 in otheremumdemu, so 32 * 6 = 192 FM cycles
             // 192 FM cycles = 192 * 7 = 1344 M68K cycles (if FM = M68K/7)
             
             // Try different values to find the perfect one
@@ -291,8 +291,8 @@ namespace EutherDrive.Core.MdTracerCore
         private long _lastSystemCycles = -1;
         private int _z80CycleAccumulator;  // Accumulate Z80 cycles for batched SyncFM() calls
         private long _lastSyncSystemCycles;  // Last SystemCycles when SyncFM() was called
-        private long _operatorLeftoverCycles;  // Leftover M68K cycles for operator timing (clownmdemu-style)
-        private int g_reg_2a_dac_data = 0x100;  // Match clownmdemu: 0x100 = silence
+        private long _operatorLeftoverCycles;  // Leftover M68K cycles for operator timing (otheremumdemu-style)
+        private int g_reg_2a_dac_data = 0x100;  // Match otheremumdemu: 0x100 = silence
         private int g_reg_2b_dac;
 
         private double[,] g_reg_30_multi = new double[0, 0];
@@ -746,7 +746,7 @@ namespace EutherDrive.Core.MdTracerCore
                                     _ymDacBankLogRemaining--;
                             }
                             // Convert 8-bit input to 9-bit unsigned DAC value
-                            // Clownmdemu does: dac_sample &= 1; dac_sample |= data << 1;
+                            // Otheremumdemu does: dac_sample &= 1; dac_sample |= data << 1;
                             // This maps input 0x00..0xFF to 9-bit values where:
                             // - Input 0x80 (silence in unsigned 8-bit) -> 0x100 (256, signed 0)
                             // - Input 0x00 -> 0x00 (signed -128)

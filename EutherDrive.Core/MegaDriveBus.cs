@@ -131,7 +131,7 @@ public sealed class MegaDriveBus
     {
         if (IsZ80BusReq(addr))
         {
-            // Implement clownmdemu-style BUSREQ read
+            // Implement otheremumdemu-style BUSREQ read
             // Returns 0xFF if bus is not obtained, 0xFE if bus is obtained
             // z80_bus_obtained = bus_requested && !reset_held
             bool z80BusObtained = _z80BusRequested && !_z80Reset;

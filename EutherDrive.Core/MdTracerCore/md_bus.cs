@@ -1128,7 +1128,7 @@ namespace EutherDrive.Core.MdTracerCore
                 _z80ResetChanged = true;
                 if (md_main.g_md_z80 != null)
                 {
-                    // Sync Z80 and reinitialize FM when reset is released (matching clownmdemu behavior)
+                    // Sync Z80 and reinitialize FM when reset is released (matching otheremumdemu behavior)
                     // DON'T call reset() here - it would set PC=0!
                     md_main.BeginZ80ResetCycle();
                     // CRITICAL FIX: YM2612_Start() must be called BEFORE Z80 starts running
@@ -2149,7 +2149,7 @@ namespace EutherDrive.Core.MdTracerCore
                     return;
                 }
                 // Real hardware only latches the upper byte on 68k word writes to the Z80 bus.
-                // Mirror clownmdemu behavior: write high byte to even address, ignore low byte.
+                // Mirror otheremumdemu behavior: write high byte to even address, ignore low byte.
                 {
                     uint aligned = in_address & 0xFFFFFEu;
                     byte udsHi = (byte)((in_data >> 8) & 0xFF);
@@ -2644,12 +2644,12 @@ namespace EutherDrive.Core.MdTracerCore
             if (Z80BusReqInvert)
                 next = !next;
             
-            // FIX: Implement clownmdemu-style BUSREQ handling
+            // FIX: Implement otheremumdemu-style BUSREQ handling
             // When safe boot is active, force BUSREQ to be granted
             if (Z80SafeBootEnabled && _z80SafeBootActive)
                 next = true;
             
-            // Sync Z80 when BUSREQ changes (like clownmdemu does)
+            // Sync Z80 when BUSREQ changes (like otheremumdemu does)
             if (prev != next && md_main.g_md_z80 != null)
             {
                 if (OtherEmuMode)
@@ -2715,7 +2715,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 else
                 {
-                    // Sync Z80 and reinitialize FM when reset is released (matching clownmdemu behavior)
+                    // Sync Z80 and reinitialize FM when reset is released (matching otheremumdemu behavior)
                     if (OtherEmuMode)
                         md_main.SyncZ80ToSystemCycles();
                     md_main.BeginZ80ResetCycle();
@@ -2937,7 +2937,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Map M68K address to Z80 address:
             // M68K 0xA01B80 (even) -> Z80 0x1B80
             // M68K 0xA01B81 (odd)  -> Z80 0x1B81
-            // This matches clownmdemu's byte-lane handling
+            // This matches otheremumdemu's byte-lane handling
             ushort z80Addr = (ushort)(m68kAddr & 0x1FFF);
 
             // [BOOT-PROTECT] Protect boot code area (0x0040-0x0046) during safe boot upload

@@ -65,7 +65,7 @@ namespace EutherDrive.Core.MdTracerCore
             int w_clock = 0;
             int w_tran = 0;
             
-            // With immediate DMA (clownmdemu style), dma_status_update()
+            // With immediate DMA (otheremumdemu style), dma_status_update()
             // only needs to handle DMA timing/cleanup if DMA is still active
             // But with our immediate DMA implementation, DMA completes immediately
             // So this function should return 0 clock cost
@@ -174,7 +174,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Debug DMA window check for name table overlap
             DebugDmaWindow((uint)g_vdp_reg_dest_address, (uint)g_dma_leng, (byte)g_vdp_reg_code, "DMA-COPY");
 
-            // Like clownmdemu: DMA runs immediately
+            // Like otheremumdemu: DMA runs immediately
             // Handle length=0 special case (means 0x10000 words on real VDP)
             int w_loop_cnt = g_dma_leng;
             if (w_loop_cnt == 0)
@@ -261,7 +261,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Debug DMA window check for name table overlap
             DebugDmaWindow((uint)startAddr, (uint)g_dma_leng, (byte)g_vdp_reg_code, "DMA-FILL");
 
-            // Like clownmdemu: DMA FILL runs immediately
+            // Like otheremumdemu: DMA FILL runs immediately
             int w_loop_cnt = g_dma_leng;
             int debugWriteCount = 0;
             ushort currentAddr = startAddr;
@@ -340,7 +340,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Debug DMA window check for name table overlap
             DebugDmaWindow((uint)startAddr, (uint)g_dma_leng, (byte)g_vdp_reg_code, "DMA-COPY-VRAM");
 
-            // Like clownmdemu: DMA COPY runs immediately
+            // Like otheremumdemu: DMA COPY runs immediately
             int w_loop_cnt = g_dma_leng;
             int debugWriteCount = 0;
             ushort currentSrc = (ushort)g_dma_src_addr;

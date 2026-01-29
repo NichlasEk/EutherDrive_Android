@@ -6,8 +6,8 @@ What changed recently
 - Added Z80 banked read/write wait cycles (EUTHERDRIVE_Z80_BANK_WAIT, default 16).
 - YM busy timing uses SystemCycles; headless now advances SystemCycles per frame and runs Z80 inside a Begin/EndSystemCycleSlice.
 - Added YM busy emulation flag: EUTHERDRIVE_EMULATE_YM_BUSY.
-- Fixed YM KEYON channel mapping to match clownmdemu gap: {0,1,2,-1,3,4,5,-1}.
-- M68K write16 to Z80 window now writes upper byte only (matches clownmdemu behavior).
+- Fixed YM KEYON channel mapping to match otheremumdemu gap: {0,1,2,-1,3,4,5,-1}.
+- M68K write16 to Z80 window now writes upper byte only (matches otheremumdemu behavior).
 
 Key instrumentation added
 - YM timers: EUTHERDRIVE_TRACE_YM_TIMER (+ limit).

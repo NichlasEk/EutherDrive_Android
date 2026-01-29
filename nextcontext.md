@@ -4,7 +4,7 @@ Goal
 - Fix heavy graphics corruption in Madou (~/roms/madou.md). Name tables look sane but rendered output is corrupted; suspect scroll/VRAM pattern issues.
 
 Recent Code Changes
-- DMA source addressing now matches hardware 128KiB wrap behavior: source low word wraps while high stays fixed (matches clownmdemu). File: `EutherDrive.Core/MdTracerCore/md_vdp_dma.cs`.
+- DMA source addressing now matches hardware 128KiB wrap behavior: source low word wraps while high stays fixed (matches otheremumdemu). File: `EutherDrive.Core/MdTracerCore/md_vdp_dma.cs`.
 - HScroll table indexing updated to use per-mode masks (mode 1/2/3) instead of treating mode 1 as full-screen. File: `EutherDrive.Core/MdTracerCore/md_vdp_renderer_snap.cs`.
 - HScroll values now treated as signed 10-bit with safe modulo wrap (negative scroll). File: `EutherDrive.Core/MdTracerCore/md_vdp_renderer_snap.cs`.
 - Added reg14 tile rebase plumbing (no 128k VRAM yet); TileRebaseKind is internal; direct VRAM read masks to 64KB. Files: `md_vdp_regster.cs`, `md_vdp.cs`, `md_vdp_renderer_line.cs`.
