@@ -263,7 +263,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TraceMbxRaw68kLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_MBX_RAW_68K_LIMIT", 256);
         private static readonly bool OtherEmuMode =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_OTHER_EMU_MODE"), "1", StringComparison.Ordinal);
+            ReadEnvDefaultOn("EUTHERDRIVE_OTHER_EMU_MODE");
         private static readonly bool TraceMbx68kEdge =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MBX68K_EDGE"), "1", StringComparison.Ordinal);
         private static readonly int TraceMbx68kEdgeLimit =
