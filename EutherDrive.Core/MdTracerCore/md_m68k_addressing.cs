@@ -134,6 +134,11 @@ namespace EutherDrive.Core.MdTracerCore
                         case 1: w_out = g_reg_data[in_reg].w; break;
                         default: w_out = g_reg_data[in_reg].l; break;
                     }
+                    // Debug logging for Madou ANDI.W bug
+                    if (in_reg == 0 && in_size == 1 && g_reg_PC == 0x013A54)
+                    {
+                        Console.WriteLine($"[ADDR_READ_DEBUG] PC=0x{g_reg_PC:X6} D{in_reg}=0x{g_reg_data[in_reg].l:X8} read size={in_size} result=0x{w_out:X8}");
+                    }
                     break;
                 case 1:
                     switch (in_size)
@@ -169,18 +174,24 @@ namespace EutherDrive.Core.MdTracerCore
             switch (w_mode)
             {
                 case 0:
+                    uint old_dreg = g_reg_data[in_reg].l;
                     switch (in_size)
                     {
-                        case 0: g_reg_data[in_reg].b0 = (byte)in_val; break;
-                        case 1: g_reg_data[in_reg].w = (ushort)in_val; break;
+                        case 0: g_reg_data[in_reg].l = (g_reg_data[in_reg].l & 0xFFFFFF00) | (in_val & 0x000000FF); break;
+                        case 1: g_reg_data[in_reg].l = (g_reg_data[in_reg].l & 0xFFFF0000) | (in_val & 0x0000FFFF); break;
                         default: g_reg_data[in_reg].l = in_val; break;
+                    }
+                    // Debug logging for Madou ANDI.W bug
+                    if (in_reg == 0 && in_size == 1 && (old_dreg == 0x07000000 || g_reg_PC == 0x013A54))
+                    {
+                        Console.WriteLine($"[ADDR_WRITE_DEBUG] PC=0x{g_reg_PC:X6} D{in_reg} old=0x{old_dreg:X8} new=0x{g_reg_data[in_reg].l:X8} size={in_size} val=0x{in_val:X8}");
                     }
                     break;
                 case 1:
                     switch (in_size)
                     {
-                        case 0: g_reg_addr[in_reg].b0 = (byte)in_val; break;
-                        case 1: g_reg_addr[in_reg].w = (ushort)in_val; break;
+                        case 0: g_reg_addr[in_reg].l = (g_reg_addr[in_reg].l & 0xFFFFFF00) | (in_val & 0x000000FF); break;
+                        case 1: g_reg_addr[in_reg].l = (g_reg_addr[in_reg].l & 0xFFFF0000) | (in_val & 0x0000FFFF); break;
                         default: g_reg_addr[in_reg].l = in_val; break;
                     }
                     break;

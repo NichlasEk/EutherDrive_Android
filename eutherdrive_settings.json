@@ -1,8 +1,15 @@
 {
-  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Decap Attack (UE) [!].gen",
-  "MasterVolumePercent": 10,
+  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Madou Monogatari I (J) [!].gen",
+  "RecentRomPaths": [
+    "/run/media/nichlas/Atlas/roms/Genesis/Madou Monogatari I (J) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Gley Lancer (J) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Gods (E) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Phantom 2040 (E) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Psycho Pinball (E) (Sep 1994) (M5) [o1][h1C].gen"
+  ],
+  "MasterVolumePercent": 12,
   "AudioEnabled": true,
-  "DefaultRegionOverride": 0,
+  "DefaultRegionOverride": 1,
   "RomRegionOverrides": {
     "serial:GM 00000000-00": 1,
     "serial:GM 00001022-00": 1,
@@ -21,7 +28,6 @@
     "serial:GM T- 15106-00": 1,
     "serial:GM T-025143-00": 3,
     "serial:GM T-081176 00": 1,
-    "serial:GM T-120086-50": 2,
     "serial:GM T-130036-50": 2,
     "serial:GM T-13086-00": 1,
     "serial:GM T-14076 -00": 1,
@@ -82,7 +88,12 @@
     "serial:GM T-113076 00": 1,
     "serial:GM T-12053 -00": 3,
     "serial:GM T-48116 -00": 2,
-    "serial:GM T-70196 -00": 3
+    "serial:GM T-70196 -00": 3,
+    "serial:GM T-15166 -50": 2,
+    "serial:GM G-5519  -00": 2,
+    "serial:GM MK-1352 -00": 3,
+    "serial:GM T-113036-00": 2,
+    "serial:GM T-139036-50": 2
   },
   "FrameRateMode": 1
 }

@@ -506,14 +506,14 @@ namespace EutherDrive.Core.MdTracerCore
 
                 case 21:
                     g_vdp_reg_21_dma_source_low = in_data;
-                    Console.WriteLine($"[VDP-REG-DMA-SRC] frame={_frameCounter} reg21=0x{in_data:X2} (DMA source low)");
+                    Console.WriteLine($"[VDP-REG-DMA-SRC] frame={_frameCounter} reg21=0x{in_data:X2} (DMA source low) PC=0x{md_m68k.g_reg_PC:X6}");
                     if (TraceDmaRegs)
                         Console.WriteLine($"[VDP-DMA-REG] frame={_frameCounter} pc=0x{md_m68k.g_reg_PC:X6} A0=0x{md_m68k.g_reg_addr[0].l:X8} D0=0x{md_m68k.g_reg_data[0].l:X8} D1=0x{md_m68k.g_reg_data[1].l:X8} r19=0x{g_vdp_reg_19_dma_counter_low:X2} r20=0x{g_vdp_reg_20_dma_counter_high:X2} r21=0x{g_vdp_reg_21_dma_source_low:X2} r22=0x{g_vdp_reg_22_dma_source_mid:X2} r23=0x{g_vdp_reg_23_5_dma_high:X2}");
                     break;
 
                 case 22:
                     g_vdp_reg_22_dma_source_mid = in_data;
-                    Console.WriteLine($"[VDP-REG-DMA-SRC] frame={_frameCounter} reg22=0x{in_data:X2} (DMA source mid)");
+                    Console.WriteLine($"[VDP-REG-DMA-SRC] frame={_frameCounter} reg22=0x{in_data:X2} (DMA source mid) PC=0x{md_m68k.g_reg_PC:X6}");
                     if (TraceDmaRegs)
                         Console.WriteLine($"[VDP-DMA-REG] frame={_frameCounter} pc=0x{md_m68k.g_reg_PC:X6} A0=0x{md_m68k.g_reg_addr[0].l:X8} D0=0x{md_m68k.g_reg_data[0].l:X8} D1=0x{md_m68k.g_reg_data[1].l:X8} r19=0x{g_vdp_reg_19_dma_counter_low:X2} r20=0x{g_vdp_reg_20_dma_counter_high:X2} r21=0x{g_vdp_reg_21_dma_source_low:X2} r22=0x{g_vdp_reg_22_dma_source_mid:X2} r23=0x{g_vdp_reg_23_5_dma_high:X2}");
                     break;

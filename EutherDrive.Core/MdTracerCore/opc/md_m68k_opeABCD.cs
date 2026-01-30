@@ -26,7 +26,7 @@ namespace EutherDrive.Core.MdTracerCore
             else          { g_status_C = false; }
 
             g_work_data.b0 = (byte)((high << 4) | low);
-            g_reg_data[g_op1].b0 = g_work_data.b0;
+            write_g_reg_data(g_op1, 0, g_work_data.b0);
 
             if (g_work_data.b0 != 0)
                 g_status_Z = false;     // Z är kumulativ för ABCD

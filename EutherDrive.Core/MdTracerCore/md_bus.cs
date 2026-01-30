@@ -1340,6 +1340,12 @@ namespace EutherDrive.Core.MdTracerCore
         public byte read8(uint in_address)
         {
             in_address &= 0x00FF_FFFF;
+            
+            // Debug logging for Madou palette reads (DMA)
+            if ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0))
+            {
+                Console.WriteLine($"[BUS-READ8-DEBUG] addr=0x{in_address:X8} PC=0x{g_reg_PC:X6}");
+            }
 
             if (IsZ80BusReq(in_address))
             {
@@ -1723,6 +1729,17 @@ namespace EutherDrive.Core.MdTracerCore
         {
             in_address &= 0x00FF_FFFF;
             LogBusWatch(in_address, 1, write: true, value: in_data);
+            
+            // Debug logging for Madou palette writes and VDP register writes
+            if ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0))
+            {
+                Console.WriteLine($"[BUS-WRITE8-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6}");
+            }
+            // Also log writes to VDP data port (C00000) and control port (C00004)
+            if (in_address == 0xC00000 || in_address == 0xC00004)
+            {
+                Console.WriteLine($"[VDP-PORT-WRITE] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6}");
+            }
 
             if (IsZ80BusReq(in_address))
             {
@@ -1940,6 +1957,12 @@ namespace EutherDrive.Core.MdTracerCore
         {
             in_address &= 0x00FF_FFFF;
             LogBusWatch(in_address, 2, write: true, value: in_data);
+            
+            // Debug logging for Madou palette writes
+            if ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0))
+            {
+                Console.WriteLine($"[BUS-WRITE16-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X4} PC=0x{g_reg_PC:X6}");
+            }
 
             if (IsZ80BusReq(in_address))
             {
