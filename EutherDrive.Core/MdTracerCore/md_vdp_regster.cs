@@ -13,6 +13,8 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private static readonly bool TraceDmaRegs =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_REGS"), "1", StringComparison.Ordinal);
+        private static readonly bool DmaModeAltDecode =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_MODE_ALT"), "1", StringComparison.Ordinal);
 
         // Helper to find where scroll data is actually stored in VRAM
         // Scans through candidate bases and returns the first one with non-zero data
@@ -517,7 +519,27 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
 
                 case 23:
-                    if ((in_data & 0x80) != 0)
+                    if (DmaModeAltDecode)
+                    {
+                        g_vdp_reg_23_5_dma_high = (byte)(in_data & 0x7f);
+                        switch ((in_data >> 6) & 0x03)
+                        {
+                            case 0x00:
+                                g_vdp_reg_23_dma_mode = 1; // memory-to-vram
+                                break;
+                            case 0x01:
+                                g_vdp_reg_23_dma_mode = 2; // fill
+                                break;
+                            case 0x02:
+                                g_vdp_reg_23_dma_mode = 3; // copy
+                                break;
+                            default:
+                                g_vdp_reg_23_dma_mode = 1;
+                                break;
+                        }
+                        Console.WriteLine($"[VDP-REG-DMA-SRC] frame={_frameCounter} reg23=0x{in_data:X2} mode={g_vdp_reg_23_dma_mode} alt=1 (DMA source high, mode set)");
+                    }
+                    else if ((in_data & 0x80) != 0)
                     {
                         g_vdp_reg_23_5_dma_high = (byte)(in_data & 0x3f);
                         g_vdp_reg_23_dma_mode = (byte)((in_data & 0x40) != 0 ? 3 : 2); // copy : fill

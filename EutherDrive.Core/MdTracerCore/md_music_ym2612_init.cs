@@ -79,10 +79,29 @@ namespace EutherDrive.Core.MdTracerCore
         private static double GetYmStepScale()
         {
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_STEP_SCALE");
-            if (!string.IsNullOrWhiteSpace(raw) && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value) && value > 0)
-                return value;
+            Console.WriteLine($"[YM-STEP-SCALE-DEBUG] Raw env var value: '{raw}'");
+            
+            if (!string.IsNullOrWhiteSpace(raw))
+            {
+                // Try parsing with invariant culture first (dot as decimal separator)
+                if (double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value) && value > 0)
+                {
+                    Console.WriteLine($"[YM-STEP-SCALE] Setting YmStepScale={value.ToString(System.Globalization.CultureInfo.InvariantCulture)} from env var");
+                    return value;
+                }
+                
+                // If that fails, try with current culture
+                if (double.TryParse(raw, out double value2) && value2 > 0)
+                {
+                    Console.WriteLine($"[YM-STEP-SCALE] Setting YmStepScale={value2.ToString(System.Globalization.CultureInfo.InvariantCulture)} from env var (current culture)");
+                    return value2;
+                }
+                
+                Console.WriteLine($"[YM-STEP-SCALE] Failed to parse '{raw}' as double");
+            }
 
             // Default: internal sampling already matches YM rate, no extra scaling.
+            Console.WriteLine($"[YM-STEP-SCALE] Using default YmStepScale=1.0");
             return 1.0;
         }
         private enum ENV_COND

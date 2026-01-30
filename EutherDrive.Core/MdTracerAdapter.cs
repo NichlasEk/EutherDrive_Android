@@ -129,19 +129,22 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private readonly bool _psgDisabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_PSG"), "1", StringComparison.Ordinal);
     private double _psgFrameAccumulator;
-    private short[] _psgFrameBuffer = Array.Empty<short>();
-    private short[] _ymFrameBuffer = Array.Empty<short>();
-    private short[] _ymInternalBuffer = Array.Empty<short>();
-    private double _ymResamplePhase;
-    private bool _ymResampleHasCarry;
-    private short _ymResampleCarryL;
-    private short _ymResampleCarryR;
-    private readonly SimpleLowPassFilter? _mixLowPass;
-    private int _psgFrameSamples;
     private long _psgLastFrame = -1;
+    private bool _audioGeneratedThisFrame = false;
     private volatile int _masterVolumePercent = 50;
     private int _ymSilentFrames;
     private bool _ymSilenceLogged;
+    private SimpleLowPassFilter? _mixLowPass;
+    private int _psgFrameSamples;
+    private double _ymResamplePhase;
+    private bool _ymResampleHasCarry;
+    private short[] _psgFrameBuffer = Array.Empty<short>();
+    private short[] _ymFrameBuffer = Array.Empty<short>();
+    private short[] _ymInternalBuffer = Array.Empty<short>();
+    private short _ymResampleCarryL;
+    private short _ymResampleCarryR;
+    private bool _audioSystemReady = false;
+    private int _audioWarmupFrames = 0;
 
     public void SetMasterVolumePercent(int percent)
     {
@@ -706,6 +709,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         {
             Console.WriteLine($"[RESET-DEBUG] YM2612 is null even after initialization");
         }
+        
+        // CRITICAL FIX: Reset Z80 when system resets to ensure proper timing synchronization
+        // Z80 must start from address 0 at the same time as M68K and YM2612
+        if (md_main.g_md_z80 != null)
+        {
+            Console.WriteLine($"[RESET-DEBUG] Resetting Z80 for timing synchronization");
+            ResetZ80Only();
+        }
+        
+        // CRITICAL FIX: Generate initial audio samples to avoid underrun
+        // YM2612 and PSG need to generate samples before first GetAudioBuffer() call
+        // Note: This must be called AFTER ResetAudioFrameState() to avoid being reset
+        // Actually, let's call it at the end of Reset()
 
         // Stub (så VDP-testet fortsätter)
         md_main.EnsureCpuStubs();
@@ -727,6 +743,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         Array.Clear(_frameBufferBack, 0, _frameBufferBack.Length);
         Console.WriteLine($"[MdTracerAdapter] Reset framebuffer { _fbW }x{ _fbH } stride={ _fbStride }");
         LogFrameBufferIdentity("Reset");
+        
+        // CRITICAL FIX: Generate initial audio samples to avoid underrun
+        // YM2612 and PSG need to generate samples before first GetAudioBuffer() call
+        // Called here at the end of Reset() after ResetAudioFrameState()
+        Console.WriteLine($"[RESET-DEBUG] Calling GenerateInitialAudioSamples()...");
+        GenerateInitialAudioSamples();
+        Console.WriteLine($"[RESET-DEBUG] GenerateInitialAudioSamples() completed");
     }
 
     public void SetFrameRateMode(FrameRateMode mode)
@@ -786,14 +809,77 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     private void ResetAudioFrameState()
     {
-        _psgFrameAccumulator = 0;
+        // CRITICAL FIX: Start with some accumulated samples to avoid audio buffer underflow
+        // When system starts, audio buffer expects ~735 samples per frame (44.1kHz / 60fps)
+        // If we start at 0, first GetAudioBuffer() will request 735 samples immediately
+        // but YM2612 hasn't generated that many yet. Start with 0.5 frames of accumulator
+        // to give YM2612 time to warm up.
+        _psgFrameAccumulator = (double)PsgSampleRate / GetTargetFps() * 0.5;
         _psgFrameSamples = 0;
         _psgLastFrame = -1;
         _ymResamplePhase = 0;
         _ymResampleHasCarry = false;
+        // Note: _audioSystemReady is managed separately
+        // _audioWarmupFrames is not used anymore
+        
+        Console.WriteLine($"[AUDIO-TIMING] ResetAudioFrameState: _psgFrameAccumulator={_psgFrameAccumulator:F2} (0.5 frames ahead)");
     }
 
     public void PowerCycleAndLoadRom(string path) => LoadRom(path);
+    
+    private void GenerateInitialAudioSamples()
+    {
+        Console.WriteLine($"[AUDIO-TIMING] Generating initial audio samples to pre-fill buffer...");
+        
+        var music = md_main.g_md_music;
+        if (music == null)
+        {
+            Console.WriteLine($"[AUDIO-TIMING] music is null, cannot generate initial samples");
+            return;
+        }
+        
+        // Generate enough samples for 3 frames (2205 samples at 44.1kHz / 60fps)
+        // This ensures audio buffer has samples ready when first requested
+        int framesToGenerate = 3;
+        int samplesToGenerate = framesToGenerate * (int)(PsgSampleRate / GetTargetFps());
+        
+        Console.WriteLine($"[AUDIO-TIMING] Generating {framesToGenerate} frames ({samplesToGenerate} samples)");
+        
+        bool wantPsg = !_psgDisabled;
+        bool wantYm = _ymEnabled;
+        
+        // Generate PSG samples
+        if (wantPsg)
+        {
+            var psg = music.g_md_sn76489;
+            Console.WriteLine($"[AUDIO-TIMING] Generating {samplesToGenerate} PSG samples");
+            for (int i = 0; i < samplesToGenerate; i++)
+            {
+                psg.SN76489_Update(); // Generate samples into PSG's internal buffer
+            }
+        }
+        
+        // Generate YM2612 samples
+        if (wantYm && music.g_md_ym2612 != null)
+        {
+            var ym = music.g_md_ym2612;
+            // YM generates at internal rate (~53.267 kHz)
+            int ymSamplesToGenerate = framesToGenerate * (int)(YmInternalSampleRate / GetTargetFps());
+            Console.WriteLine($"[AUDIO-TIMING] Generating {ymSamplesToGenerate} YM samples");
+            for (int i = 0; i < ymSamplesToGenerate; i++)
+            {
+                ym.YM2612_Update(); // Generate samples into YM's internal buffer
+            }
+            
+            // Also advance YM timers
+            ym.EnsureAdvanceEachFrame();
+        }
+        
+        // Mark audio system as ready immediately
+        _audioSystemReady = true;
+        _audioWarmupFrames = 0;
+        Console.WriteLine($"[AUDIO-TIMING] Initial audio samples generated. Audio system is ready.");
+    }
 
     private void EnsureFramebufferInitialized(string reason)
     {
@@ -1798,10 +1884,30 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return ReadOnlySpan<short>.Empty;
 
         long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-        if (frame == _psgLastFrame)
-            return _psgFrameSamples > 0 ? _psgFrameBuffer.AsSpan(0, _psgFrameSamples) : ReadOnlySpan<short>.Empty;
+        
+        // Audio system should be ready after GenerateInitialAudioSamples()
+        // If not, something went wrong
+        if (!_audioSystemReady)
+        {
+            Console.WriteLine($"[AUDIO-TIMING-WARNING] Audio system not ready in GetAudioBuffer()!");
+            return ReadOnlySpan<short>.Empty;
+        }
+        
+        // Lock to prevent concurrent audio generation
+        lock (_stateLock)
+        {
+            if (frame == _psgLastFrame)
+            {
+                // If audio was already generated this frame by GetAudioBufferForFrames,
+                // don't generate it again
+                if (_audioGeneratedThisFrame)
+                    return _psgFrameSamples > 0 ? _psgFrameBuffer.AsSpan(0, _psgFrameSamples) : ReadOnlySpan<short>.Empty;
+                // Otherwise, it's from GetAudioBuffer() earlier in same frame
+                return _psgFrameSamples > 0 ? _psgFrameBuffer.AsSpan(0, _psgFrameSamples) : ReadOnlySpan<short>.Empty;
+            }
 
         _psgLastFrame = frame;
+        _audioGeneratedThisFrame = false; // Reset for new frame
         _psgFrameAccumulator += (double)PsgSampleRate / GetTargetFps();
         int frames = (int)_psgFrameAccumulator;
         if (frames <= 0)
@@ -2070,7 +2176,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         ApplyMasterVolume(_psgFrameBuffer, samples);
         _mixLowPass?.Apply(_psgFrameBuffer, samples);
         _psgFrameSamples = samples;
+        _audioGeneratedThisFrame = true; // Mark that we generated audio
         return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
+        } // End of lock(_stateLock)
     }
 
     public ReadOnlySpan<short> GetAudioBufferForFrames(int frames, out int sampleRate, out int channels)
@@ -2090,11 +2198,31 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (!wantPsg && !wantYm)
             return ReadOnlySpan<short>.Empty;
 
-        int samples = frames * PsgChannels;
-        bool trackAudioLevel = TraceAudioLevel;
-        long mixSumSq = 0;
-        if (_psgFrameBuffer.Length < samples)
-            _psgFrameBuffer = new short[samples];
+        // Audio system should be ready after GenerateInitialAudioSamples()
+        // If not, something went wrong
+        if (!_audioSystemReady)
+        {
+            Console.WriteLine($"[AUDIO-TIMING-WARNING] Audio system not ready in GetAudioBufferForFrames()!");
+            return ReadOnlySpan<short>.Empty;
+        }
+
+        // Lock to prevent concurrent audio generation
+        lock (_stateLock)
+        {
+            // Mark that audio is being generated this frame
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (frame != _psgLastFrame)
+            {
+                _psgLastFrame = frame;
+                _audioGeneratedThisFrame = false;
+            }
+            _audioGeneratedThisFrame = true;
+            
+            int samples = frames * PsgChannels;
+            bool trackAudioLevel = TraceAudioLevel;
+            long mixSumSq = 0;
+            if (_psgFrameBuffer.Length < samples)
+                _psgFrameBuffer = new short[samples];
 
         int psgMin = 0;
         int psgMax = 0;
@@ -2338,6 +2466,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _mixLowPass?.Apply(_psgFrameBuffer, samples);
         _psgFrameSamples = samples;
         return _psgFrameBuffer.AsSpan(0, _psgFrameSamples);
+        } // End of lock(_stateLock)
     }
 
     private void MaybeDumpYmSilence(md_music music, bool wantYm, int ymPeak, int ymNonZero)

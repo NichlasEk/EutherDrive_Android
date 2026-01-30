@@ -231,6 +231,7 @@ namespace EutherDrive.Core.MdTracerCore
                         this.RecordVramWriteForTracking(wordAddr, wordVal);
                         this.TrackScrollRegionWrite(wordAddr & 0xFFFF);
                         this.LogVramWrite("CPU8", wordAddr & 0xFFFF, wordVal, g_vdp_reg_15_autoinc, g_vdp_reg_code);
+                        g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
                         break;
                     }
 
@@ -245,6 +246,7 @@ namespace EutherDrive.Core.MdTracerCore
                             ? ((in_data << 8) | (existing & 0x00ff))
                             : ((existing & 0xff00) | in_data));
                         cram_set(col, next);
+                        g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
                         break;
                     }
 
@@ -260,6 +262,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 ? ((in_data << 8) | (existing & 0x00ff))
                                 : ((existing & 0xff00) | in_data));
                         }
+                        g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
                         break;
                     }
 

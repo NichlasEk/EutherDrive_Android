@@ -262,6 +262,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MBX_RAW_68K_NONZERO"), "1", StringComparison.Ordinal);
         private static readonly int TraceMbxRaw68kLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_MBX_RAW_68K_LIMIT", 256);
+        private static readonly bool ForceZ80ReadyFlag =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_Z80_READY"), "1", StringComparison.Ordinal);
         private static readonly bool OtherEmuMode =
             ReadEnvDefaultOn("EUTHERDRIVE_OTHER_EMU_MODE");
         private static readonly bool TraceMbx68kEdge =
@@ -2014,13 +2016,13 @@ namespace EutherDrive.Core.MdTracerCore
                     uint aligned = in_address & 0xFFFFFEu;
                     MaybeLogZ80WinRangeWrite16(aligned, in_data, uds: true, lds: false, blocked: false);
                     byte udsHi = (byte)((in_data >> 8) & 0xFF);
-                    bool prev = _suppressZ80WinRangeByteLog;
+                    bool prevRangeLogUds = _suppressZ80WinRangeByteLog;
                     _suppressZ80WinRangeByteLog = true;
-                    bool prevStat = _suppressZ80WinStatByteLog;
+                    bool prevStatUds = _suppressZ80WinStatByteLog;
                     _suppressZ80WinStatByteLog = true;
                     write8(aligned, udsHi);
-                    _suppressZ80WinStatByteLog = prevStat;
-                    _suppressZ80WinRangeByteLog = prev;
+                    _suppressZ80WinStatByteLog = prevStatUds;
+                    _suppressZ80WinRangeByteLog = prevRangeLogUds;
                     RecordZ80WinWriteAccess(aligned, 2, in_data, blocked: false);
                     return;
                 }
@@ -2045,15 +2047,36 @@ namespace EutherDrive.Core.MdTracerCore
                         RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: true);
                         return;
                     }
+                    if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1))
+                    {
+                        MaybeLogZ80WinRangeWrite16(in_address, in_data, uds: true, lds: true, blocked: false);
+                        byte mbxHi = (byte)((in_data >> 8) & 0xFF);
+                        byte mbxLo = (byte)(in_data & 0xFF);
+                        bool prevRangeLogMbx = _suppressZ80WinRangeByteLog;
+                        _suppressZ80WinRangeByteLog = true;
+                        bool prevMbx = _suppressMbxByteLog;
+                        bool logged = MaybeLogMbxByteWrite(2, in_address, in_data, uds: true, lds: true, blocked: false);
+                        if (logged)
+                            _suppressMbxByteLog = true;
+                        bool prevStatMbx = _suppressZ80WinStatByteLog;
+                        _suppressZ80WinStatByteLog = true;
+                        write8(in_address, mbxHi);
+                        write8(in_address + 1, mbxLo);
+                        _suppressZ80WinStatByteLog = prevStatMbx;
+                        _suppressMbxByteLog = prevMbx;
+                        _suppressZ80WinRangeByteLog = prevRangeLogMbx;
+                        RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: false);
+                        return;
+                    }
                     uint aligned = in_address & 0xFFFFFEu;
                     byte udsHi = (byte)((in_data >> 8) & 0xFF);
-                    bool prev = _suppressZ80WinRangeByteLog;
+                    bool prevRangeLog = _suppressZ80WinRangeByteLog;
                     _suppressZ80WinRangeByteLog = true;
-                    bool prevStat = _suppressZ80WinStatByteLog;
+                    bool prevStatRange = _suppressZ80WinStatByteLog;
                     _suppressZ80WinStatByteLog = true;
                     write8(aligned, udsHi);
-                    _suppressZ80WinStatByteLog = prevStat;
-                    _suppressZ80WinRangeByteLog = prev;
+                    _suppressZ80WinStatByteLog = prevStatRange;
+                    _suppressZ80WinRangeByteLog = prevRangeLog;
                     RecordZ80WinWriteAccess(aligned, 2, in_data, blocked: false);
                     return;
                 }
@@ -2148,39 +2171,24 @@ namespace EutherDrive.Core.MdTracerCore
                     RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: true);
                     return;
                 }
-                // Real hardware only latches the upper byte on 68k word writes to the Z80 bus.
-                // Mirror otheremumdemu behavior: write high byte to even address, ignore low byte.
-                {
-                    uint aligned = in_address & 0xFFFFFEu;
-                    byte udsHi = (byte)((in_data >> 8) & 0xFF);
-                    bool prev = _suppressZ80WinRangeByteLog;
-                    _suppressZ80WinRangeByteLog = true;
-                    bool prevStat = _suppressZ80WinStatByteLog;
-                    _suppressZ80WinStatByteLog = true;
-                    write8(aligned, udsHi);
-                    _suppressZ80WinStatByteLog = prevStat;
-                    _suppressZ80WinRangeByteLog = prev;
-                    RecordZ80WinWriteAccess(aligned, 2, in_data, blocked: false);
-                    return;
-                }
                 if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1))
                 {
                     MaybeLogZ80WinRangeWrite16(in_address, in_data, uds: true, lds: true, blocked: false);
                     byte mbxHi = (byte)((in_data >> 8) & 0xFF);
                     byte mbxLo = (byte)(in_data & 0xFF);
-                    bool prev = _suppressZ80WinRangeByteLog;
+                    bool prevRangeLogMbx = _suppressZ80WinRangeByteLog;
                     _suppressZ80WinRangeByteLog = true;
                     bool prevMbx = _suppressMbxByteLog;
                     bool logged = MaybeLogMbxByteWrite(2, in_address, in_data, uds: true, lds: true, blocked: false);
                     if (logged)
                         _suppressMbxByteLog = true;
-                    bool prevStat = _suppressZ80WinStatByteLog;
+                    bool prevStatMbx = _suppressZ80WinStatByteLog;
                     _suppressZ80WinStatByteLog = true;
                     write8(in_address, mbxHi);
                     write8(in_address + 1, mbxLo);
-                    _suppressZ80WinStatByteLog = prevStat;
+                    _suppressZ80WinStatByteLog = prevStatMbx;
                     _suppressMbxByteLog = prevMbx;
-                    _suppressZ80WinRangeByteLog = prev;
+                    _suppressZ80WinRangeByteLog = prevRangeLogMbx;
                     RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: false);
                     return;
                 }
@@ -2219,6 +2227,21 @@ namespace EutherDrive.Core.MdTracerCore
                         Console.WriteLine($"[Z80WIN] W16 pc68k=0x{md_m68k.g_reg_PC:X6} m68k=0x{in_address:X6} z80=0x{z80Index:X4}=0x{in_data:X4} parity={parity} busReq={busReq}");
                     }
                     RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: false);
+                    return;
+                }
+                // Real hardware only latches the upper byte on 68k word writes to the Z80 bus.
+                // Mirror otheremumdemu behavior: write high byte to even address, ignore low byte.
+                {
+                    uint aligned = in_address & 0xFFFFFEu;
+                    byte udsHi = (byte)((in_data >> 8) & 0xFF);
+                    bool prevRangeLog = _suppressZ80WinRangeByteLog;
+                    _suppressZ80WinRangeByteLog = true;
+                    bool prevStat = _suppressZ80WinStatByteLog;
+                    _suppressZ80WinStatByteLog = true;
+                    write8(aligned, udsHi);
+                    _suppressZ80WinStatByteLog = prevStat;
+                    _suppressZ80WinRangeByteLog = prevRangeLog;
+                    RecordZ80WinWriteAccess(aligned, 2, in_data, blocked: false);
                     return;
                 }
                 byte hi = (byte)((in_data >> 8) & 0xFF);
@@ -2302,14 +2325,14 @@ namespace EutherDrive.Core.MdTracerCore
                     MaybeLogZ80WinRangeWrite32(aligned, in_data, uds: true, lds: false, blocked: false);
                     byte udsHi1 = (byte)((in_data >> 24) & 0xFF);
                     byte udsHi0 = (byte)((in_data >> 8) & 0xFF);
-                    bool prev = _suppressZ80WinRangeByteLog;
+                    bool prevRangeLogUds = _suppressZ80WinRangeByteLog;
                     _suppressZ80WinRangeByteLog = true;
-                    bool prevStat = _suppressZ80WinStatByteLog;
+                    bool prevStatUds = _suppressZ80WinStatByteLog;
                     _suppressZ80WinStatByteLog = true;
                     write8(aligned, udsHi1);
                     write8(aligned + 2, udsHi0);
-                    _suppressZ80WinStatByteLog = prevStat;
-                    _suppressZ80WinRangeByteLog = prev;
+                    _suppressZ80WinStatByteLog = prevStatUds;
+                    _suppressZ80WinRangeByteLog = prevRangeLogUds;
                     RecordZ80WinWriteAccess(aligned, 4, in_data, blocked: false);
                     return;
                 }
@@ -2338,17 +2361,43 @@ namespace EutherDrive.Core.MdTracerCore
                         RecordZ80WinWriteAccess(in_address, 4, in_data, blocked: true);
                         return;
                     }
+                    if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1) ||
+                        IsZ80MailboxWriteRange(in_address + 2) || IsZ80MailboxWriteRange(in_address + 3))
+                    {
+                        MaybeLogZ80WinRangeWrite32(in_address, in_data, uds: true, lds: true, blocked: false);
+                        byte mbxB3 = (byte)((in_data >> 24) & 0xFF);
+                        byte mbxB2 = (byte)((in_data >> 16) & 0xFF);
+                        byte mbxB1 = (byte)((in_data >> 8) & 0xFF);
+                        byte mbxB0 = (byte)(in_data & 0xFF);
+                        bool prevRangeLogMbx = _suppressZ80WinRangeByteLog;
+                        _suppressZ80WinRangeByteLog = true;
+                        bool prevMbx = _suppressMbxByteLog;
+                        bool logged = MaybeLogMbxByteWrite(4, in_address, in_data, uds: true, lds: true, blocked: false);
+                        if (logged)
+                            _suppressMbxByteLog = true;
+                        bool prevStatMbx = _suppressZ80WinStatByteLog;
+                        _suppressZ80WinStatByteLog = true;
+                        write8(in_address, mbxB3);
+                        write8(in_address + 1, mbxB2);
+                        write8(in_address + 2, mbxB1);
+                        write8(in_address + 3, mbxB0);
+                        _suppressZ80WinStatByteLog = prevStatMbx;
+                        _suppressMbxByteLog = prevMbx;
+                        _suppressZ80WinRangeByteLog = prevRangeLogMbx;
+                        RecordZ80WinWriteAccess(in_address, 4, in_data, blocked: false);
+                        return;
+                    }
                     uint aligned = in_address & 0xFFFFFEu;
                     byte udsHi1 = (byte)((in_data >> 24) & 0xFF);
                     byte udsHi0 = (byte)((in_data >> 8) & 0xFF);
-                    bool prev = _suppressZ80WinRangeByteLog;
+                    bool prevRangeLog = _suppressZ80WinRangeByteLog;
                     _suppressZ80WinRangeByteLog = true;
-                    bool prevStat = _suppressZ80WinStatByteLog;
+                    bool prevStatRange = _suppressZ80WinStatByteLog;
                     _suppressZ80WinStatByteLog = true;
                     write8(aligned, udsHi1);
                     write8(aligned + 2, udsHi0);
-                    _suppressZ80WinStatByteLog = prevStat;
-                    _suppressZ80WinRangeByteLog = prev;
+                    _suppressZ80WinStatByteLog = prevStatRange;
+                    _suppressZ80WinRangeByteLog = prevRangeLog;
                     RecordZ80WinWriteAccess(aligned, 4, in_data, blocked: false);
                     return;
                 }
@@ -2723,9 +2772,14 @@ namespace EutherDrive.Core.MdTracerCore
                     md_main.g_md_z80.reset(); // Reset Z80 when reset is released (sets PC=0)
                     md_main.g_md_z80.ArmPostResetHold();
                     // Set SP to same value as boot code would (0x1B80) since we skip boot code execution
-                md_main.g_md_z80.SetStackPointer(0x1B80);
-                // Z80 PC is now 0, will execute from address 0x0000
-                // For Sonic 2, the boot code at 0x0000 will JP to driver
+                    md_main.g_md_z80.SetStackPointer(0x1B80);
+                    // Z80 PC is now 0, will execute from address 0x0000
+                    // For Sonic 2, the boot code at 0x0000 will JP to driver
+                    if (ForceZ80ReadyFlag)
+                    {
+                        md_main.g_md_z80.write8(0x1B80, 0x80);
+                        Console.WriteLine("[Z80-READY-INJECT] addr=0x1B80 val=0x80");
+                    }
                     ApplyZ80BusReqLatch();
                     bool newActive = !_z80BusGranted && !_z80Reset;
                     long currentFrame = md_main.g_md_vdp?.FrameCounter ?? -1;

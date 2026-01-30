@@ -112,6 +112,9 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TracePcEveryFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_PC_FRAME_EVERY", 60);
         private static readonly bool TraceZ80FrameCycles = ReadEnvFlag("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES");
         private static readonly int TraceZ80FrameCyclesEvery = ParseNonNegativeInt("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES_EVERY", 60);
+        private static readonly bool ForceSeega = ReadEnvFlag("EUTHERDRIVE_FORCE_SEEGA");
+        private static readonly int ForceSeegaFrame = ParseNonNegativeInt("EUTHERDRIVE_FORCE_SEEGA_FRAME", 20);
+        private static readonly uint ForceSeegaPtr = ParseForceSeegaPtr();
         // Z80/M68K cycle ratio for NTSC: Z80 ~3.58MHz, M68K ~7.67MHz => ratio ~0.466
         private static readonly double Z80PerM68kRatio = 3.579545 / 7.670000; // More precise ratio
         private static readonly int Z80ContinuousSliceCycles = ParseZ80ContinuousSliceCycles();
@@ -220,6 +223,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static bool _mbxInjectArmedLogged;
         private static bool _mbxInjectEnvLogged;
         private static bool _mbxInjectConfigLoaded;
+        private static bool _forceSeegaDone;
         private static ushort _injectMbxAddr;
         private static byte _injectMbxValue;
         private static long _injectMbxFrame;
@@ -400,6 +404,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             int lines = g_md_vdp.g_vertical_line_max;
             long frame = g_md_vdp?.FrameCounter ?? -1;
+            if (ForceSeega && !_forceSeegaDone && frame >= ForceSeegaFrame)
+            {
+                md_m68k.write32(0xFFF680, ForceSeegaPtr);
+                md_m68k.write16(0xFFF6F8, 0x0000);
+                Console.WriteLine($"[SEEGA-INJECT] frame={frame} ptr=0x{ForceSeegaPtr:X8}");
+                _forceSeegaDone = true;
+            }
             if (TracePcPerFrame && TracePcEveryFrames >= 0)
             {
                 if (TracePcEveryFrames == 0 || (frame >= 0 && frame % TracePcEveryFrames == 0))
@@ -801,6 +812,22 @@ namespace EutherDrive.Core.MdTracerCore
             if (string.IsNullOrWhiteSpace(raw))
                 return fallback;
             if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value >= 0)
+                return value;
+            return fallback;
+        }
+
+        private static uint ParseForceSeegaPtr()
+        {
+            const uint fallback = 0x00002020;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_SEEGA_PTR");
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                raw = raw.Substring(2);
+            if (uint.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint value))
+                return value;
+            if (uint.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
                 return value;
             return fallback;
         }

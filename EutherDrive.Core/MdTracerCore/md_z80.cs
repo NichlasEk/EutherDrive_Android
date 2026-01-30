@@ -120,6 +120,10 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_Z80_RESET_HOLD_LIMIT", 8);
         private static readonly bool DumpZ80Ram =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_Z80_RAM"), "1", StringComparison.Ordinal);
+        private static readonly int DumpZ80RamFrame =
+            ParseTraceLimit("EUTHERDRIVE_DUMP_Z80_RAM_FRAME", -1);
+        private static readonly bool DumpZ80RamExtra =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_Z80_RAM_EXTRA"), "1", StringComparison.Ordinal);
         private static readonly bool HaltOnBusReq =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_HALT_ON_BUSREQ"), "1", StringComparison.Ordinal);
         private static readonly uint Z80BankDefault = ParseZ80BankDefault();
@@ -130,6 +134,7 @@ namespace EutherDrive.Core.MdTracerCore
         private long _budgetCycles;  // Cycles budgeted to Z80 (always advances)
         [NonSerialized] private long _systemCycleDelta;
         private bool _z80Dumped;
+        private bool _z80DumpedFrame;
         private bool _pcLeftBootRangeSinceLastSummary;
         private long _z80StatsLastTicks;
         private long _z80StatsInstrCount;
@@ -616,6 +621,10 @@ namespace EutherDrive.Core.MdTracerCore
             //     Console.WriteLine($"[Z80-DRIVER-ENTRY-DEBUG] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{pcBefore:X4} op=0x{opcode:X2} bytes: {bytes}");
             // }
             
+            long frameNow = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (DumpZ80RamFrame >= 0 && !_z80DumpedFrame && frameNow >= DumpZ80RamFrame)
+                MaybeDumpZ80RamFrame($"frame>={DumpZ80RamFrame}");
+
             // DEBUG: Log Z80 instructions at PC 0x0167 (Sonic 2 driver entry)
             if (pcBefore == 0x0167 && _sonic2DebugCount < 20)
             {
@@ -631,7 +640,7 @@ namespace EutherDrive.Core.MdTracerCore
                         bytes += $" {addr:X4}:{val:X2}";
                     }
                 }
-                Console.WriteLine($"[SONIC2-Z80-0167] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{pcBefore:X4} op=0x{opcode:X2} nextPC=0x{g_reg_PC:X4} active={g_active} bytes={bytes}");
+                Console.WriteLine($"[SONIC2-Z80-0167] frame={frameNow} pc=0x{pcBefore:X4} op=0x{opcode:X2} nextPC=0x{g_reg_PC:X4} active={g_active} bytes={bytes}");
                 
 
             }
@@ -639,8 +648,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (pcBefore == 0x0000 && _z80DebugCount < 10)
             {
                 _z80DebugCount++;
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                Console.WriteLine($"[Z80-0000] frame={frame} pc=0x{pcBefore:X4} op=0x{opcode:X2} SP=0x{g_reg_SP:X4} - Executing from address 0x0000");
+                Console.WriteLine($"[Z80-0000] frame={frameNow} pc=0x{pcBefore:X4} op=0x{opcode:X2} SP=0x{g_reg_SP:X4} - Executing from address 0x0000");
                 // Dump first 16 bytes of RAM
                 if (g_ram != null && g_ram.Length >= 0x10)
                 {
@@ -651,8 +659,7 @@ namespace EutherDrive.Core.MdTracerCore
             // [BOOT-DEBUG] Log when Z80 reaches boot code execution
             if (pcBefore == 0x0040)
             {
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                Console.WriteLine($"[Z80-BOOT-CODE] frame={frame} pc=0x{pcBefore:X4} SP=0x{g_reg_SP:X4} - Entering boot code (DI, LD SP, JP)");
+                Console.WriteLine($"[Z80-BOOT-CODE] frame={frameNow} pc=0x{pcBefore:X4} SP=0x{g_reg_SP:X4} - Entering boot code (DI, LD SP, JP)");
                 // Dump boot code bytes to verify it hasn't been overwritten
                 if (g_ram != null && g_ram.Length >= 0x50)
                 {
@@ -668,15 +675,13 @@ namespace EutherDrive.Core.MdTracerCore
             // [BOOT-DEBUG] Log when Z80 reaches driver entry
             if (pcBefore == 0x0167)
             {
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                Console.WriteLine($"[Z80-DRIVER-ENTRY] frame={frame} pc=0x{pcBefore:X4} SP=0x{g_reg_SP:X4} - Jumping to Z80 driver!");
+                Console.WriteLine($"[Z80-DRIVER-ENTRY] frame={frameNow} pc=0x{pcBefore:X4} SP=0x{g_reg_SP:X4} - Jumping to Z80 driver!");
             }
             // [Z80-BANK] Log when Z80 enters banked memory area (0x8000+)
             if (pcBefore >= 0x8000 && pcBefore <= 0xFFFF && !_z80BankEntryLogged)
             {
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
                 uint bankBase = GetBankBase();
-                Console.WriteLine($"[Z80-BANK] frame={frame} pc=0x{pcBefore:X4} bankReg=0x{g_bank_register:X3} bankBase=0x{bankBase:X6} - Entering banked memory!");
+                Console.WriteLine($"[Z80-BANK] frame={frameNow} pc=0x{pcBefore:X4} bankReg=0x{g_bank_register:X3} bankBase=0x{bankBase:X6} - Entering banked memory!");
                 _z80BankEntryLogged = true;
             }
             bool log0576After = TraceSmsDelay && !_delayExitLogged && pcBefore == 0x0576;
@@ -1018,12 +1023,34 @@ NextPc:;
         if (g_ram == null || g_ram.Length == 0)
             return;
         _z80Dumped = true;
+        DumpZ80RamCore(reason);
+    }
+
+    private void MaybeDumpZ80RamFrame(string reason)
+    {
+        if (!DumpZ80Ram || _z80DumpedFrame)
+            return;
+        if (g_ram == null || g_ram.Length == 0)
+            return;
+        _z80DumpedFrame = true;
+        DumpZ80RamCore(reason);
+    }
+
+    private void DumpZ80RamCore(string reason)
+    {
         Console.WriteLine(
             $"[Z80DUMP] reason={reason} PC=0x{g_reg_PC:X4} SP=0x{g_reg_SP:X4} " +
             $"A=0x{g_reg_A:X2} BC=0x{g_reg_BC:X4} " +
             $"DE=0x{g_reg_DE:X4} HL=0x{g_reg_HL:X4} IX=0x{g_reg_IX:X4} " +
             $"IY=0x{g_reg_IY:X4} I=0x{g_reg_I:X2} R=0x{g_reg_R:X2} bank=0x{g_bank_register:X6}");
         DumpZ80Region(0x0000, 0x0200);
+        if (DumpZ80RamExtra)
+        {
+            DumpZ80Region(0x0500, 0x0200);
+            DumpZ80Region(0x0600, 0x0200);
+            DumpZ80Region(0x0900, 0x0200);
+            DumpZ80Region(0x0B00, 0x0200);
+        }
         DumpZ80Region(0x1B80, 0x0080);
     }
 
