@@ -13,8 +13,13 @@
     <!-- Controls -->
     <StackPanel Name="TopControlsPanel" Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10">
       <Button Content="Open ROM…" Click="OnOpenRom"/>
+      <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+        <TextBlock Text="Recent" VerticalAlignment="Center"/>
+        <ComboBox Name="RecentRomCombo" Width="220" SelectionChanged="OnRecentRomSelected"/>
+      </StackPanel>
       <Button Content="Start" Click="OnStart"/>
       <Button Content="Stop" Click="OnStop"/>
+      <Button Content="About" Click="OnAbout"/>
       <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
         <TextBlock Text="Master vol" VerticalAlignment="Center"/>
         <Slider Name="MasterVolumeSlider"

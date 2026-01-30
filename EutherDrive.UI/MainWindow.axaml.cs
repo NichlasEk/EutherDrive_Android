@@ -55,6 +55,8 @@ public partial class MainWindow : Window
     private IEmulatorCore? _pendingPresentCore;
 
     private string? _romPath;
+    private readonly List<string> _recentRomPaths = new();
+    private bool _recentRomUpdating;
 
     // Input “håll nere”
     private readonly HashSet<Key> _keysDown = new();
@@ -179,6 +181,7 @@ public partial class MainWindow : Window
             SavestatePanel.DataContext = _savestateViewModel;
 
         LoadSettings();
+        UpdateRecentRomCombo();
         if (MasterVolumeSlider != null)
             MasterVolumeSlider.Value = _masterVolumePercent;
         UpdateMasterVolumeText();
@@ -212,6 +215,7 @@ public partial class MainWindow : Window
         {
             StatusText.Text = $"Loading from CLI: {romPath}";
             _romPath = romPath;
+            AddRecentRom(_romPath);
             _core = new MdTracerAdapter();
             ApplyMasterVolumeToCore();
             ApplyDefaultCpuCyclesPerLine();
@@ -614,7 +618,7 @@ public partial class MainWindow : Window
         _romPath = files[0].TryGetLocalPath();
         RomPathText.Text = _romPath ?? files[0].Name;
         StatusText.Text = "ROM selected";
-        SaveSettings();
+        AddRecentRom(_romPath);
     }
 
     private void OnStart(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -679,14 +683,14 @@ public partial class MainWindow : Window
 
                         // OCH i terminal (om du kör från terminal)
                         Console.WriteLine(m.RomInfo.Summary);
-                        SaveSettings();
+                        AddRecentRom(_romPath);
                     }
                     else
                     {
                         _core.LoadRom(_romPath);
                         _audioPullReady = true;
                         PrimePullAudio();
-                        SaveSettings();
+                        AddRecentRom(_romPath);
                     }
                 }
                 else
@@ -755,6 +759,94 @@ public partial class MainWindow : Window
             Console.WriteLine($"[UI-ERROR] {context} inner: {ex.InnerException.Message}");
             Console.WriteLine(ex.InnerException.ToString());
         }
+    }
+
+    private void AddRecentRom(string? path, bool save = true, bool updateCombo = true)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        string fullPath = path;
+        _recentRomPaths.RemoveAll(p => string.Equals(p, fullPath, StringComparison.OrdinalIgnoreCase));
+        _recentRomPaths.Insert(0, fullPath);
+        if (_recentRomPaths.Count > 5)
+            _recentRomPaths.RemoveRange(5, _recentRomPaths.Count - 5);
+
+        if (save)
+            SaveSettings();
+
+        if (updateCombo)
+        {
+            Dispatcher.UIThread.Post(UpdateRecentRomCombo, DispatcherPriority.Background);
+        }
+    }
+
+    private void UpdateRecentRomCombo()
+    {
+        if (RecentRomCombo == null)
+            return;
+
+        _recentRomUpdating = true;
+        try
+        {
+            RecentRomCombo.Items.Clear();
+            ComboBoxItem? selected = null;
+            foreach (var path in _recentRomPaths)
+            {
+                string name = Path.GetFileName(path);
+                var item = new ComboBoxItem { Content = name, Tag = path };
+                ToolTip.SetTip(item, path);
+                RecentRomCombo.Items.Add(item);
+                if (!string.IsNullOrWhiteSpace(_romPath)
+                    && string.Equals(path, _romPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    selected = item;
+                }
+            }
+            RecentRomCombo.SelectedItem = selected;
+        }
+        finally
+        {
+            _recentRomUpdating = false;
+        }
+    }
+
+    private void OnRecentRomSelected(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_recentRomUpdating || RecentRomCombo?.SelectedItem is not ComboBoxItem item)
+            return;
+
+        if (item.Tag is string path && !string.IsNullOrWhiteSpace(path))
+        {
+            _romPath = path;
+            if (RomPathText != null)
+                RomPathText.Text = _romPath;
+            StatusText.Text = "ROM selected (recent)";
+            AddRecentRom(_romPath);
+        }
+    }
+
+    private async void OnAbout(object? sender, RoutedEventArgs e)
+    {
+        var text = new TextBlock
+        {
+            Text = "Made by Nichlas and AI",
+            Margin = new Thickness(16),
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+        };
+
+        var dialog = new Window
+        {
+            Title = "About",
+            Width = 260,
+            Height = 120,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = text
+        };
+
+        await dialog.ShowDialog(this);
     }
 
     private void ApplyRegionOverrideToCore(bool resetIfRunning)
@@ -957,6 +1049,7 @@ public partial class MainWindow : Window
     private sealed class UiSettings
     {
         public string? LastRomPath { get; set; }
+        public List<string>? RecentRomPaths { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public bool AudioEnabled { get; set; } = true;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
@@ -998,6 +1091,21 @@ public partial class MainWindow : Window
             if (RomPathText != null)
                 RomPathText.Text = _romPath;
         }
+
+        _recentRomPaths.Clear();
+        if (settings.RecentRomPaths != null)
+        {
+            foreach (var path in settings.RecentRomPaths)
+            {
+                if (!string.IsNullOrWhiteSpace(path))
+                    AddRecentRom(path, save: false, updateCombo: false);
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(settings.LastRomPath))
+        {
+            AddRecentRom(settings.LastRomPath, save: false, updateCombo: false);
+        }
+        UpdateRecentRomCombo();
 
         _masterVolumePercent = ClampPercent(settings.MasterVolumePercent);
         _audioEnabled = settings.AudioEnabled;
@@ -1045,6 +1153,7 @@ public partial class MainWindow : Window
         var settings = new UiSettings
         {
             LastRomPath = _romPath,
+            RecentRomPaths = _recentRomPaths.ToList(),
             MasterVolumePercent = _masterVolumePercent,
             AudioEnabled = _audioEnabled,
             DefaultRegionOverride = _defaultRegionOverride,
