@@ -809,20 +809,36 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     private void ResetAudioFrameState()
     {
-        // CRITICAL FIX: Start with some accumulated samples to avoid audio buffer underflow
-        // When system starts, audio buffer expects ~735 samples per frame (44.1kHz / 60fps)
-        // If we start at 0, first GetAudioBuffer() will request 735 samples immediately
-        // but YM2612 hasn't generated that many yet. Start with 0.5 frames of accumulator
-        // to give YM2612 time to warm up.
-        _psgFrameAccumulator = (double)PsgSampleRate / GetTargetFps() * 0.5;
+        // TEST: Try NEGATIVE accumulator to see if audio starts earlier
+        // Original: 0.5 frames (367.5 samples) to avoid underflow
+        // Previous test: 0.0 frames
+        // New test: -0.5 frames (-367.5 samples) - start "behind" to catch up?
+        // GEMS games need negative audio accumulator for correct timing
+        // Check if this is a GEMS game (Aladdin, Quackshot, etc.)
+        // Use EUTHERDRIVE_GEMS_TIMING=1 to force GEMS timing without pitch change
+        string? gemsTimingEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_GEMS_TIMING");
+        bool isGemsTiming = gemsTimingEnv != null && gemsTimingEnv.Equals("1", StringComparison.OrdinalIgnoreCase);
+        
+        // Also check YmStepScale for backward compatibility
+        if (!isGemsTiming)
+        {
+            string? ymStepScaleEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_STEP_SCALE");
+            if (!string.IsNullOrEmpty(ymStepScaleEnv))
+            {
+                if (double.TryParse(ymStepScaleEnv, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double scale))
+                    isGemsTiming = scale > 1.1 && scale < 1.3; // GEMS range: 1.2079
+            }
+        }
+        
+        double accumulatorFrames = isGemsTiming ? -5.0 : 0.5;
+        _psgFrameAccumulator = (double)PsgSampleRate / GetTargetFps() * accumulatorFrames;
         _psgFrameSamples = 0;
         _psgLastFrame = -1;
         _ymResamplePhase = 0;
         _ymResampleHasCarry = false;
         // Note: _audioSystemReady is managed separately
-        // _audioWarmupFrames is not used anymore
         
-        Console.WriteLine($"[AUDIO-TIMING] ResetAudioFrameState: _psgFrameAccumulator={_psgFrameAccumulator:F2} (0.5 frames ahead)");
+        Console.WriteLine($"[AUDIO-TIMING] ResetAudioFrameState: _psgFrameAccumulator={_psgFrameAccumulator:F2} (isGemsTiming={isGemsTiming}, accumulatorFrames={accumulatorFrames:F1})");
     }
 
     public void PowerCycleAndLoadRom(string path) => LoadRom(path);

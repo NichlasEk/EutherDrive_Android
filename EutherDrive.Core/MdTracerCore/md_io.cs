@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics;
-using System.IO;
 using EutherDrive.Core;
 
 namespace EutherDrive.Core.MdTracerCore
@@ -13,11 +12,6 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _pad1Th = true;
         private bool _pad2Th = true;
 
-        private byte _pad1DataReg;
-        private byte _pad1CtrlReg;
-        private byte _pad2DataReg;
-        private byte _pad2CtrlReg;
-
         private PadHandshake _pad1Handshake;
         private PadHandshake _pad2Handshake;
         private PadType _pad1Type = PadType.ThreeButton;
@@ -28,8 +22,6 @@ namespace EutherDrive.Core.MdTracerCore
         private long _ioReadLastTicks;
         private static readonly bool TraceIo =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_IO"), "1", StringComparison.Ordinal);
-        private static readonly bool TracePad =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PAD"), "1", StringComparison.Ordinal);
         private const byte VersionBits = 0x20;
 
         // Global pekare (som md_bus.Current)
@@ -51,8 +43,6 @@ namespace EutherDrive.Core.MdTracerCore
         {
             uint addr = in_address & 0xFFFFFF;
             byte result;
-            if (TracePad && (addr == 0xA10003 || addr == 0xA10005))
-                File.AppendAllText("pad_debug.log", $"[PAD-DEBUG] TracePad={TracePad} addr=0x{addr:X6}\n");
             switch (addr)
             {
                 case 0xA10000:
@@ -63,27 +53,19 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
                 case 0xA10002:
                 case 0xA10003:
-                    result = ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type, _pad1DataReg, _pad1CtrlReg);
-                    if (TracePad)
-                        File.AppendAllText("pad_debug.log", $"[PAD-READ] addr=0x{addr:X6} TH={_pad1Th} result=0x{result:X2} padType={_pad1Type} stage={_pad1Handshake.Stage}\n");
+                    result = ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type);
                     break;
                 case 0xA10004:
                 case 0xA10005:
-                    result = ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type, _pad2DataReg, _pad2CtrlReg);
-                    if (TracePad)
-                        File.AppendAllText("pad_debug.log", $"[PAD-READ] addr=0x{addr:X6} TH={_pad2Th} result=0x{result:X2} padType={_pad2Type} stage={_pad2Handshake.Stage}\n");
+                    result = ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type);
                     break;
                 case 0xA10008:
                 case 0xA10009:
-                    result = _pad1CtrlReg;
-                    if (TracePad)
-                        File.AppendAllText("pad_debug.log", $"[PAD-CTRL-READ] addr=0x{addr:X6} TH={_pad1Th} result=0x{result:X2}\n");
+                    result = (byte)(_pad1Th ? 0x40 : 0x00);
                     break;
                 case 0xA1000A:
                 case 0xA1000B:
-                    result = _pad2CtrlReg;
-                    if (TracePad)
-                        File.AppendAllText("pad_debug.log", $"[PAD-CTRL-READ] addr=0x{addr:X6} TH={_pad2Th} result=0x{result:X2}\n");
+                    result = (byte)(_pad2Th ? 0x40 : 0x00);
                     break;
                 default:
                     result = 0x00;
@@ -104,19 +86,19 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 case 0xA10002:
                 case 0xA10003:
-                    result = (ushort)(0xFF00 | ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type, _pad1DataReg, _pad1CtrlReg));
+                    result = (ushort)(0xFF00 | ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type));
                     break;
                 case 0xA10004:
                 case 0xA10005:
-                    result = (ushort)(0xFF00 | ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type, _pad2DataReg, _pad2CtrlReg));
+                    result = (ushort)(0xFF00 | ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type));
                     break;
                 case 0xA10008:
                 case 0xA10009:
-                    result = (ushort)(0xFF00 | _pad1CtrlReg);
+                    result = (ushort)(0xFF00 | (_pad1Th ? 0x40 : 0x00));
                     break;
                 case 0xA1000A:
                 case 0xA1000B:
-                    result = (ushort)(0xFF00 | _pad2CtrlReg);
+                    result = (ushort)(0xFF00 | (_pad2Th ? 0x40 : 0x00));
                     break;
                 default:
                 {
@@ -150,22 +132,14 @@ namespace EutherDrive.Core.MdTracerCore
             switch (addr)
             {
                 case 0xA10003:
-                    _pad1DataReg = in_val;
-                    UpdatePadTh(ref _pad1Th, _pad1DataReg, _pad1CtrlReg, addr, in_val, _pad1Type);
-                    break;
-                case 0xA10005:
-                    _pad2DataReg = in_val;
-                    UpdatePadTh(ref _pad2Th, _pad2DataReg, _pad2CtrlReg, addr, in_val, _pad2Type);
-                    break;
                 case 0xA10008:
                 case 0xA10009:
-                    _pad1CtrlReg = in_val;
-                    UpdatePadTh(ref _pad1Th, _pad1DataReg, _pad1CtrlReg, addr, in_val, _pad1Type);
+                    _pad1Th = (in_val & 0x40) != 0;
                     break;
+                case 0xA10005:
                 case 0xA1000A:
                 case 0xA1000B:
-                    _pad2CtrlReg = in_val;
-                    UpdatePadTh(ref _pad2Th, _pad2DataReg, _pad2CtrlReg, addr, in_val, _pad2Type);
+                    _pad2Th = (in_val & 0x40) != 0;
                     break;
                 default:
                     break;
@@ -291,7 +265,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
-        private static byte ReadPadData(MdPadState pad, bool thHigh, ref PadHandshake handshake, PadType padType, byte dataReg, byte ctrlReg)
+        private static byte ReadPadData(MdPadState pad, bool thHigh, ref PadHandshake handshake, PadType padType)
         {
             byte v = 0xFF; // active-low
             bool sixButton = padType == PadType.SixButton;
@@ -304,11 +278,7 @@ namespace EutherDrive.Core.MdTracerCore
             else
             {
                 if (handshake.LastThHigh != thHigh && handshake.Stage < 6)
-                {
                     handshake.Stage++;
-                    if (TracePad)
-                        File.AppendAllText("pad_debug.log", $"[PAD-HANDSHAKE] TH={handshake.LastThHigh}->{thHigh} stage={handshake.Stage}\n");
-                }
                 handshake.LastThHigh = thHigh;
             }
 
@@ -334,9 +304,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
 
                 v |= 0x40; // TH = 1
-                if (TracePad && sixButton && handshake.Stage >= 6)
-                    File.AppendAllText("pad_debug.log", $"[PAD-6BTN-HIGH] stage={handshake.Stage} result=0x{v:X2}\n");
-                return ApplyPadOutputs(v, dataReg, ctrlReg);
+                return v;
             }
 
             int stage = sixButton ? handshake.Stage : 0;
@@ -357,24 +325,7 @@ namespace EutherDrive.Core.MdTracerCore
                 v &= 0xF3; // bits 3-2 = 0
 
             v &= 0xBF; // TH = 0
-            if (TracePad && sixButton)
-                File.AppendAllText("pad_debug.log", $"[PAD-6BTN-LOW] stage={stage} specialLow={specialLow} result=0x{v:X2}\n");
-            return ApplyPadOutputs(v, dataReg, ctrlReg);
-        }
-
-        private static byte ApplyPadOutputs(byte value, byte dataReg, byte ctrlReg)
-        {
-            byte outputMask = (byte)(ctrlReg & 0x7F);
-            return (byte)((value & ~outputMask) | (dataReg & outputMask));
-        }
-
-        private static void UpdatePadTh(ref bool thState, byte dataReg, byte ctrlReg, uint addr, byte val, PadType padType)
-        {
-            bool oldTh = thState;
-            bool thOut = (ctrlReg & 0x40) != 0;
-            thState = thOut ? (dataReg & 0x40) != 0 : true;
-            if (TracePad && oldTh != thState)
-                File.AppendAllText("pad_debug.log", $"[PAD-WRITE] addr=0x{addr:X6} val=0x{val:X2} TH={oldTh}->{thState} padType={padType}\n");
+            return v;
         }
 
         private struct PadHandshake

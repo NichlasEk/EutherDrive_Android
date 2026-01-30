@@ -70,3 +70,18 @@ headless_frame0.ppm
 headless_frame10.ppm
 headless_frame5.ppm
 headless_output.ppm
+
+# Nyare debug-filer som inte ska vara med
+predator2_cb_opcode_fix.md
+madou_graphics_status.md
+current_sound_model.md
+headless_audio_debug.md
+TO_DEEPSEEK.md
+headless_savestates.md
+TO_CODEX.md
+headless_audio_throttle.md
+YM2612_TIMING_FIX.md
+nextcontext.md
+madou_debug.md
+GEMS_fix.md
+controllers.md

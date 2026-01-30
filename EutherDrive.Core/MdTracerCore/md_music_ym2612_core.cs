@@ -589,7 +589,7 @@ namespace EutherDrive.Core.MdTracerCore
             StepTimers(ticks);
         }
 
-        private void AdvanceTimersForSamples(int frames)
+         private void AdvanceTimersForSamples(int frames)
         {
             if (frames <= 0)
                 return;
