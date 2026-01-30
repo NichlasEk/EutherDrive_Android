@@ -186,13 +186,24 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         Console.WriteLine($"[ADDR_WRITE_DEBUG] PC=0x{g_reg_PC:X6} D{in_reg} old=0x{old_dreg:X8} new=0x{g_reg_data[in_reg].l:X8} size={in_size} val=0x{in_val:X8}");
                     }
+                    // Debug logging for A1 register writes (DMA table pointer)
+                    if (in_reg == 1 && in_size == 2 && g_reg_PC >= 0x000600 && g_reg_PC <= 0x000800)
+                    {
+                        Console.WriteLine($"[A1-WRITE-DEBUG] PC=0x{g_reg_PC:X6} A{in_reg} old=0x{old_dreg:X8} new=0x{g_reg_addr[in_reg].l:X8} size={in_size} val=0x{in_val:X8}");
+                    }
                     break;
                 case 1:
+                    uint old_areg = g_reg_addr[in_reg].l;
                     switch (in_size)
                     {
                         case 0: g_reg_addr[in_reg].l = (g_reg_addr[in_reg].l & 0xFFFFFF00) | (in_val & 0x000000FF); break;
                         case 1: g_reg_addr[in_reg].l = (g_reg_addr[in_reg].l & 0xFFFF0000) | (in_val & 0x0000FFFF); break;
                         default: g_reg_addr[in_reg].l = in_val; break;
+                    }
+                    // Debug logging for A1 register writes (DMA table pointer)
+                    if (in_reg == 1 && g_reg_PC >= 0x000600 && g_reg_PC <= 0x000800)
+                    {
+                        Console.WriteLine($"[A1-WRITE-DEBUG] PC=0x{g_reg_PC:X6} A{in_reg} old=0x{old_areg:X8} new=0x{g_reg_addr[in_reg].l:X8} size={in_size} val=0x{in_val:X8}");
                     }
                     break;
                 case 11:

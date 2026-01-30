@@ -43,6 +43,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static long _pcSampleLastMs;
         private static bool _pcWatchEnabled =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC"), "1", StringComparison.Ordinal);
+        private static bool _madouTraceEnabled = true;
         private static readonly uint PcWatchStart = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_START") ?? 0x000320;
         private static readonly uint PcWatchEnd = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_END") ?? 0x000340;
         
@@ -196,6 +197,12 @@ namespace EutherDrive.Core.MdTracerCore
                     g_op4 = (byte)(g_opcode & 0x07);
 
                     MaybeLogPcSample(g_reg_PC, g_opcode);
+
+                    // Special tracing for Madou DMA setup code
+                    if (_madouTraceEnabled && g_reg_PC >= 0x000780 && g_reg_PC <= 0x000790)
+                    {
+                        Console.WriteLine($"[MADOU-TRACE] PC=0x{g_reg_PC:X6} opcode=0x{g_opcode:X4} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} D2=0x{g_reg_data[2].l:X8} A0=0x{g_reg_addr[0].l:X8} A1=0x{g_reg_addr[1].l:X8}");
+                    }
 
                     if (g_68k_stop) { g_clock_now = g_clock_total; break; }
 

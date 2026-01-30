@@ -1346,6 +1346,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 Console.WriteLine($"[BUS-READ8-DEBUG] addr=0x{in_address:X8} PC=0x{g_reg_PC:X6}");
             }
+            // Special logging for PC around 0x000788 (DMA setup code) - will log after read
 
             if (IsZ80BusReq(in_address))
             {
@@ -1402,6 +1403,13 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 byte val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read8(in_address) : (byte)0xFF;
                 LogBusWatch(in_address, 1, write: false, value: val);
+                
+                // Special logging for PC around 0x000788 (DMA setup code)
+                if (g_reg_PC >= 0x000780 && g_reg_PC <= 0x000790)
+                {
+                    Console.WriteLine($"[PC-788-DEBUG-READ8] PC=0x{g_reg_PC:X6} addr=0x{in_address:X8} val=0x{val:X2} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} A0=0x{g_reg_addr[0].l:X8}");
+                }
+                
                 return val;
             }
 
@@ -1535,6 +1543,13 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 ushort val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read16(in_address) : (ushort)0xFFFF;
                 LogBusWatch(in_address, 2, write: false, value: val);
+                
+                // Special logging for PC around 0x000788 (DMA setup code)
+                if (g_reg_PC >= 0x000780 && g_reg_PC <= 0x000790)
+                {
+                    Console.WriteLine($"[PC-788-DEBUG-READ16] PC=0x{g_reg_PC:X6} addr=0x{in_address:X8} val=0x{val:X4} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} A0=0x{g_reg_addr[0].l:X8}");
+                }
+                
                 return val;
             }
 
@@ -1735,10 +1750,20 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 Console.WriteLine($"[BUS-WRITE8-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6}");
             }
+            // Log writes of value 0xCA to RAM (DMA table)
+            if (in_data == 0xCA && in_address >= 0xFF0000 && in_address <= 0xFFFFFF)
+            {
+                Console.WriteLine($"[0xCA-WRITE-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8}");
+            }
             // Also log writes to VDP data port (C00000) and control port (C00004)
             if (in_address == 0xC00000 || in_address == 0xC00004)
             {
                 Console.WriteLine($"[VDP-PORT-WRITE] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6}");
+            }
+            // Special logging for PC around 0x000788 (DMA setup code)
+            if (g_reg_PC >= 0x000780 && g_reg_PC <= 0x000790)
+            {
+                Console.WriteLine($"[PC-788-DEBUG-WRITE] PC=0x{g_reg_PC:X6} addr=0x{in_address:X8} val=0x{in_data:X2} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} A0=0x{g_reg_addr[0].l:X8}");
             }
 
             if (IsZ80BusReq(in_address))

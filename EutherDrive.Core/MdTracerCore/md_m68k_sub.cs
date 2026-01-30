@@ -255,6 +255,16 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 Console.WriteLine($"[WRITE_G_REG_DEBUG] PC=0x{g_reg_PC:X6} D{in_num} old=0x{old_val:X8} new=0x{g_reg_data[in_num].l:X8} size={in_size} val=0x{in_val:X8}");
             }
+            // Log all D0 writes around problematic code
+            if (in_num == 0 && (g_reg_PC >= 0x011E00 && g_reg_PC <= 0x011F00 || g_reg_PC >= 0x013A00 && g_reg_PC <= 0x013B00))
+            {
+                Console.WriteLine($"[D0-WRITE-TRACE] PC=0x{g_reg_PC:X6} D0 old=0x{old_val:X8} new=0x{g_reg_data[in_num].l:X8} size={in_size} val=0x{in_val:X8}");
+                // Also log stack trace for D0 writes at key points
+                if (g_reg_PC == 0x013A50 || g_reg_PC == 0x013A58 || g_reg_PC == 0x013A5A)
+                {
+                    Console.WriteLine($"[D0-CRITICAL-WRITE] PC=0x{g_reg_PC:X6} D0=0x{g_reg_data[0].l:X8} size={in_size} A7=0x{g_reg_addr[7].l:X8}");
+                }
+            }
 
             if (in_num == 1)
             {
