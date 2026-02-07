@@ -816,21 +816,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // Previous test: 0.0 frames
         // New test: -0.5 frames (-367.5 samples) - start "behind" to catch up?
         // GEMS games need negative audio accumulator for correct timing
-        // Check if this is a GEMS game (Aladdin, Quackshot, etc.)
         // Use EUTHERDRIVE_GEMS_TIMING=1 to force GEMS timing without pitch change
         string? gemsTimingEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_GEMS_TIMING");
         bool isGemsTiming = gemsTimingEnv != null && gemsTimingEnv.Equals("1", StringComparison.OrdinalIgnoreCase);
-        
-        // Also check YmStepScale for backward compatibility
-        if (!isGemsTiming)
-        {
-            string? ymStepScaleEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_STEP_SCALE");
-            if (!string.IsNullOrEmpty(ymStepScaleEnv))
-            {
-                if (double.TryParse(ymStepScaleEnv, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double scale))
-                    isGemsTiming = scale > 1.1 && scale < 1.3; // GEMS range: 1.2079
-            }
-        }
         
         double accumulatorFrames = isGemsTiming ? -5.0 : 0.5;
         _psgFrameAccumulator = (double)PsgSampleRate / GetTargetFps() * accumulatorFrames;

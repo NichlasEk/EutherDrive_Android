@@ -41,7 +41,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int[] SLOT_MAP = { 0, 2, 1, 3 };
         private int[] CH3CSM_MAP = { 2, 1, 3, 0 };
         private uint[] KEYCODE_TABLE = { 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 3, 3, 3, 3, 3, 3 };
-        private int[] KEYON_MAP = { 0, 1, 2, 3, 4, 5, -1, -1 };
+        private int[] KEYON_MAP = { 0, 1, 2, -1, 3, 4, 5, -1 };
         private double[] MULTIPLE_TABLE = { 0.5f, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
 
         private int[,] DT_TABLE = new int[8, 32]

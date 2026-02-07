@@ -97,6 +97,9 @@ public partial class MainWindow : Window
     private static readonly int AudioEngineBufferFrames = GetAudioEngineBufferFrames();
     private static readonly int AudioEngineBatchFrames = GetAudioEngineBatchFrames();
     private static readonly int AudioPullMaxFrames = GetAudioPullMaxFrames();
+    private static readonly bool TraceUiFrame = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_FRAME");
+    private static readonly bool TraceUiRender = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_RENDER");
+    private static readonly bool TraceUiPresent = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_PRESENT");
     private TextWriter? _originalConsoleOut;
     private StreamWriter? _romLogWriter;
     private bool _toneTestRunning;
@@ -1760,7 +1763,8 @@ public partial class MainWindow : Window
         // Only recreate bitmap when size actually changes
         if (_wb == null || _wb.PixelSize.Width != w || _wb.PixelSize.Height != h)
         {
-            Console.WriteLine($"[MainWindow] Recreating bitmap: {_lastPresentedWidth}x{_lastPresentedHeight} -> {w}x{h}");
+            if (TraceUiRender)
+                Console.WriteLine($"[MainWindow] Recreating bitmap: {_lastPresentedWidth}x{_lastPresentedHeight} -> {w}x{h}");
             _wb = new WriteableBitmap(
                 new PixelSize(w, h),
                 new Vector(96, 96),
@@ -1796,7 +1800,8 @@ public partial class MainWindow : Window
         var src = core.GetFrameBuffer(out var w, out var h, out var srcStride);
         if (src.IsEmpty || srcStride <= 0 || w <= 0 || h <= 0)
         {
-            Console.WriteLine($"[MainWindow] Present tick={_presentTickCounter}: EMPTY");
+            if (TraceUiPresent)
+                Console.WriteLine($"[MainWindow] Present tick={_presentTickCounter}: EMPTY");
             _presentTickCounter++;
             return;
         }
@@ -1809,7 +1814,8 @@ public partial class MainWindow : Window
         // Only log when frame changes (for debugging flicker)
         if (isNewFrame)
         {
-            Console.WriteLine($"[Present] tick={_presentTickCounter} NEW_FRAME frameId={currentFrameId}");
+            if (TraceUiPresent)
+                Console.WriteLine($"[Present] tick={_presentTickCounter} NEW_FRAME frameId={currentFrameId}");
         }
         _presentTickCounter++;
 
@@ -1819,7 +1825,8 @@ public partial class MainWindow : Window
             {
                 _earlyMagentaReported = true;
                 _earlyMagentaTimer.Stop();
-                Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
+                if (TraceUiPresent)
+                    Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
             }
             return;
         }
@@ -1885,13 +1892,15 @@ public partial class MainWindow : Window
         ScreenImage.InvalidateVisual();
 
         // Log presentation info
-        Console.WriteLine($"[MainWindow] Present WxH={w}x{h} stride={srcStride} forceOpaque={forceOpaque}");
+        if (TraceUiPresent)
+            Console.WriteLine($"[MainWindow] Present WxH={w}x{h} stride={srcStride} forceOpaque={forceOpaque}");
 
         if (!_earlyMagentaReported && _earlyMagentaTimer.IsRunning)
         {
             _earlyMagentaReported = true;
             _earlyMagentaTimer.Stop();
-            Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
+            if (TraceUiPresent)
+                Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
         }
     }
 
@@ -2003,7 +2012,8 @@ public partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[EmuLoop] RunFrame exception: " + ex);
+                if (TraceUiRender)
+                    Console.WriteLine("[EmuLoop] RunFrame exception: " + ex);
             }
 
             ProducePsgForFrame();
