@@ -118,6 +118,9 @@ public partial class MainWindow : Window
     private long _emuFpsLastTicks;
     private int _emuFpsFrames;
     private double _emuActualFps;
+    private long _speedLockLastTicks;
+    private static readonly bool TraceSpeedLock =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPEEDLOCK"), "1", StringComparison.Ordinal);
     private long _audioDebugLastTicks;
     private double _audioDebugLastRatio;
     private long _audioDebugLastDeltaCycles;
@@ -2303,6 +2306,12 @@ public partial class MainWindow : Window
                 Volatile.Write(ref _emuActualFps, fps);
                 _emuFpsFrames = 0;
                 _emuFpsLastTicks = fpsNow;
+                if (TraceSpeedLock)
+                {
+                    double liveTarget = GetLiveTargetFps();
+                    Console.WriteLine(
+                        $"[SPEEDLOCK] target={liveTarget:0.###} emu={fps:0.###} ticksPerFrame={ticksPerFrame} lock={(_speedLockEnabled ? 1 : 0)} speed={_speedScale * 100:0.#}");
+                }
             }
 
             if (!_speedLockEnabled && (_emuFpsFrames % 60) == 0)

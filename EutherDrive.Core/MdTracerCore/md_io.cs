@@ -22,6 +22,8 @@ namespace EutherDrive.Core.MdTracerCore
         private long _ioReadLastTicks;
         private static readonly bool TraceIo =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_IO"), "1", StringComparison.Ordinal);
+        private static readonly bool TracePadIo =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PAD_IO"), "1", StringComparison.Ordinal);
         private const byte VersionBits = 0x20;
 
         // Global pekare (som md_bus.Current)
@@ -73,6 +75,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             MaybeLogIoRead(addr, result, 8);
+            if (TracePadIo)
+                MaybeLogPadIoRead(addr, result, 8);
             return result;
         }
 
@@ -112,6 +116,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (direct)
                 MaybeLogIoRead(addr, result, 16);
+            if (TracePadIo)
+                MaybeLogPadIoRead(addr, result, 16);
 
             return result;
         }
@@ -144,6 +150,8 @@ namespace EutherDrive.Core.MdTracerCore
                 default:
                     break;
             }
+            if (TracePadIo)
+                MaybeLogPadIoWrite(addr, in_val);
         }
 
         public void write16(uint in_address, ushort in_val)
@@ -239,6 +247,57 @@ namespace EutherDrive.Core.MdTracerCore
             string val = widthBits == 8 ? value.ToString("X2") : value.ToString("X4");
             string region = addr == 0xA10001 ? $" region={GetEffectiveRegion()}" : string.Empty;
             Console.WriteLine($"[IOREAD] pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{val} w={widthBits}{region}");
+        }
+
+        private void MaybeLogPadIoRead(uint addr, uint value, int widthBits)
+        {
+            if (addr != 0xA10003 && addr != 0xA10005 && addr != 0xA10009 && addr != 0xA1000B &&
+                addr != 0xA10002 && addr != 0xA10004 && addr != 0xA10008 && addr != 0xA1000A &&
+                addr != 0xA10001 && addr != 0xA10000)
+                return;
+
+            uint pc = md_m68k.g_reg_PC;
+            string pad1 = FormatPadState(_pad1);
+            string pad2 = FormatPadState(_pad2);
+            string val = widthBits == 8 ? value.ToString("X2") : value.ToString("X4");
+            Console.WriteLine(
+                $"[PAD-IO-READ] pc=0x{pc:X6} addr=0x{addr:X6} val=0x{val} " +
+                $"p1TH={(_pad1Th ? 1 : 0)} p1Stage={_pad1Handshake.Stage} p1Type={_pad1Type} p1={pad1} " +
+                $"p2TH={(_pad2Th ? 1 : 0)} p2Stage={_pad2Handshake.Stage} p2Type={_pad2Type} p2={pad2}");
+        }
+
+        private void MaybeLogPadIoWrite(uint addr, byte value)
+        {
+            if (addr != 0xA10003 && addr != 0xA10005 && addr != 0xA10009 && addr != 0xA1000B &&
+                addr != 0xA10002 && addr != 0xA10004 && addr != 0xA10008 && addr != 0xA1000A)
+                return;
+
+            uint pc = md_m68k.g_reg_PC;
+            string pad1 = FormatPadState(_pad1);
+            string pad2 = FormatPadState(_pad2);
+            Console.WriteLine(
+                $"[PAD-IO-WRITE] pc=0x{pc:X6} addr=0x{addr:X6} val=0x{value:X2} " +
+                $"p1TH={(_pad1Th ? 1 : 0)} p1Stage={_pad1Handshake.Stage} p1Type={_pad1Type} p1={pad1} " +
+                $"p2TH={(_pad2Th ? 1 : 0)} p2Stage={_pad2Handshake.Stage} p2Type={_pad2Type} p2={pad2}");
+        }
+
+        private static string FormatPadState(in MdPadState pad)
+        {
+            Span<char> s = stackalloc char[12];
+            int i = 0;
+            s[i++] = pad.Up ? 'U' : '-';
+            s[i++] = pad.Down ? 'D' : '-';
+            s[i++] = pad.Left ? 'L' : '-';
+            s[i++] = pad.Right ? 'R' : '-';
+            s[i++] = pad.A ? 'A' : '-';
+            s[i++] = pad.B ? 'B' : '-';
+            s[i++] = pad.C ? 'C' : '-';
+            s[i++] = pad.Start ? 'S' : '-';
+            s[i++] = pad.X ? 'X' : '-';
+            s[i++] = pad.Y ? 'Y' : '-';
+            s[i++] = pad.Z ? 'Z' : '-';
+            s[i++] = pad.Mode ? 'M' : '-';
+            return new string(s);
         }
 
         private static ConsoleRegion? ParseRegionOverrideEnv()

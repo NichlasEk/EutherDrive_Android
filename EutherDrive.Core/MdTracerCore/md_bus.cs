@@ -12,6 +12,10 @@ namespace EutherDrive.Core.MdTracerCore
     //----------------------------------------------------------------
     internal class md_bus
     {
+        private static readonly bool TraceBusReadDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS_READ_DEBUG"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceBusWriteDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS_WRITE_DEBUG"), "1", StringComparison.Ordinal);
         private enum SramAccessMode
         {
             ByteOdd,
@@ -1365,7 +1369,7 @@ namespace EutherDrive.Core.MdTracerCore
             in_address &= 0x00FF_FFFF;
             
             // Debug logging for Madou palette reads (DMA)
-            if ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0))
+            if (TraceBusReadDebug && ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0)))
             {
                 Console.WriteLine($"[BUS-READ8-DEBUG] addr=0x{in_address:X8} PC=0x{g_reg_PC:X6}");
             }
@@ -1769,7 +1773,7 @@ namespace EutherDrive.Core.MdTracerCore
             LogBusWatch(in_address, 1, write: true, value: in_data);
             
             // Debug logging for Madou palette writes and VDP register writes
-            if ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0))
+            if (TraceBusWriteDebug && ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0)))
             {
                 Console.WriteLine($"[BUS-WRITE8-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6}");
             }

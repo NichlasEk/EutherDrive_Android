@@ -1,18 +1,18 @@
 {
-  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Altered Beast (UE) (REV02) [!].gen",
+  "LastRomPath": "/home/nichlas/roms/castlevania.md",
   "RecentRomPaths": [
-    "/run/media/nichlas/Atlas/roms/Genesis/Altered Beast (UE) (REV02) [!].gen",
+    "/home/nichlas/roms/castlevania.md",
     "/run/media/nichlas/Atlas/roms/Genesis/Joe \u0026 Mac Caveman Ninja (U) [!].gen",
-    "/run/media/nichlas/Atlas/roms/Genesis/Aladdin (Europe).md",
-    "/home/nichlas/roms/sonic1.md",
-    "/home/nichlas/roms/sonic2.md"
+    "/run/media/nichlas/Atlas/roms/Genesis/Altered Beast (UE) (REV02) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Teenage Mutant Ninja Turtles - The Hyperstone Heist (U) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Sonic The Hedgehog 3 (E) [!].gen"
   ],
   "MasterVolumePercent": 12,
   "AudioEnabled": true,
-  "YmResampleLinear": true,
-  "Z80CyclesMult": 2,
+  "YmResampleLinear": false,
+  "Z80CyclesMult": 1,
   "SpeedLockEnabled": true,
-  "RenderSkipEnabled": false,
+  "RenderSkipEnabled": true,
   "SpeedScale": 1,
   "DefaultRegionOverride": 1,
   "RomRegionOverrides": {

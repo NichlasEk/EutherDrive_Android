@@ -538,9 +538,40 @@ class Program
             adapter.FrameBufferHasContent();
             adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_frame0.ppm"));
 
+            int hangFrames = ParseOptionalIntEnv("EUTHERDRIVE_HANG_FRAMES") ?? 120;
+            uint lastM68kPc = 0;
+            ushort lastZ80Pc = 0;
+            long lastCycles = 0;
+            int stableFrames = 0;
+            bool hangTriggered = false;
+
             for (int frame = 0; frame < framesToRun; frame++)
             {
                 adapter.StepFrame();
+                uint m68kPc = adapter.GetM68kPc();
+                ushort z80Pc = adapter.GetZ80Pc();
+                long cycles = adapter.GetSystemCycles();
+                if (m68kPc == lastM68kPc && z80Pc == lastZ80Pc && cycles == lastCycles)
+                {
+                    stableFrames++;
+                }
+                else
+                {
+                    stableFrames = 0;
+                    lastM68kPc = m68kPc;
+                    lastZ80Pc = z80Pc;
+                    lastCycles = cycles;
+                }
+                if (hangFrames > 0 && stableFrames >= hangFrames)
+                {
+                    Console.Error.WriteLine(
+                        $"[HEADLESS-HANG] frame={frame} stableFrames={stableFrames} m68k=0x{m68kPc:X6} z80=0x{z80Pc:X4} cycles={cycles}");
+                    string ppmPath = Path.Combine(dumpDir, $"headless_hang_frame{frame}.ppm");
+                    adapter.DumpFrameBufferToPpm(ppmPath);
+                    Console.Error.WriteLine($"[HEADLESS-HANG] Dumped frame to {ppmPath}");
+                    hangTriggered = true;
+                    break;
+                }
                 if (audioEngine != null)
                 {
                     long currentCycles = adapter.GetSystemCycles();
@@ -607,7 +638,7 @@ class Program
             adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_output.ppm"));
 
             Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
-            return 0;
+            return hangTriggered ? 2 : 0;
         }
         catch (Exception ex)
         {
