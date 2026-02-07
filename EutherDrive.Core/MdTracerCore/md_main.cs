@@ -48,7 +48,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
         private static readonly double SmsCycleMultiplier = ParseSmsCycleMultiplier();
-        private static readonly double Z80CycleMultiplier = ParseZ80CycleMultiplier();
+        private static double Z80CycleMultiplier = ParseZ80CycleMultiplier();
         
         // Fraktions-ackumulator för Z80→M68K cykelkonvertering
         // Ratio: M68K 7.67MHz / Z80 3.58MHz ≈ 767/358
@@ -122,6 +122,13 @@ namespace EutherDrive.Core.MdTracerCore
         private static int SmsCyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * SmsCycleMultiplier));
         private static int Z80CyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * Z80CycleMultiplier));
         public static int GetZ80CyclesPerLine() => Z80CyclesPerLine;
+
+        internal static void SetZ80CycleMultiplier(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value <= 0.0)
+                return;
+            Z80CycleMultiplier = value;
+        }
         private static readonly Stopwatch _smsCycleLogTimer = Stopwatch.StartNew();
         private static long _smsCycleLogLastMs;
         private static long _smsCycleLogAccumBudget;

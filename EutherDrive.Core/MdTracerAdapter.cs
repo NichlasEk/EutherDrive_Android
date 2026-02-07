@@ -74,9 +74,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly int TraceYmSilenceDump = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_ON_SILENCE_DUMP", 128);
     private static readonly bool TraceAll =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ALL"), "1", StringComparison.Ordinal);
+    private static readonly bool YmResampleLinear =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_LINEAR"), "1", StringComparison.OrdinalIgnoreCase);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
-    private static readonly double Z80CycleMultiplier = ParseZ80CycleMultiplier();
+    private double _z80CycleMultiplier = ParseZ80CycleMultiplier();
     private static readonly int BootRecoverStallFrames = ParseBootRecoverStallFrames();
     private static readonly int BootRecoverWindowFrames = ParseBootRecoverWindowFrames();
     private static readonly int BootRecoverEdgeToggleThreshold = ParseBootRecoverEdgeToggleThreshold();
@@ -145,6 +148,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private short[] _ymInternalBuffer = Array.Empty<short>();
     private short _ymResampleCarryL;
     private short _ymResampleCarryR;
+    private bool _ymResampleLinear;
     private bool _audioSystemReady = false;
     private int _audioWarmupFrames = 0;
 
@@ -246,6 +250,14 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         return (int)Math.Round(v);
     }
 
+    private static int LinearInterpolate(int s0, int s1, double t)
+    {
+        double v = s0 + (s1 - s0) * t;
+        if (v > short.MaxValue) v = short.MaxValue;
+        else if (v < short.MinValue) v = short.MinValue;
+        return (int)Math.Round(v);
+    }
+
     private static double GetYmResampleScale()
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_SCALE");
@@ -279,6 +291,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     {
         FbAnalyzer = new FramebufferAnalyzer(this);
         _mixLowPass = CreateLowPassIfEnabled(PsgSampleRate);
+        _ymResampleLinear = YmResampleLinear;
 
         // Auto-enable if env var is set
         if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_ANALYZER"), "1", StringComparison.Ordinal))
@@ -296,6 +309,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     {
         _ymEnabled = enabled;
         md_bus.SetYmEnabled(enabled);
+    }
+
+    public void SetYmResampleLinear(bool linear)
+    {
+        _ymResampleLinear = linear;
+    }
+
+    public void SetZ80CycleMultiplier(double multiplier)
+    {
+        if (double.IsNaN(multiplier) || double.IsInfinity(multiplier) || multiplier <= 0.0)
+            return;
+        _z80CycleMultiplier = multiplier;
+        md_main.SetZ80CycleMultiplier(multiplier);
     }
 
     public void SetRegionOverride(ConsoleRegion region)
@@ -1109,7 +1135,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             {
                 long cpuTicks = 0;
                 long vdpTicks = 0;
-                int z80Budget = Math.Max(1, (int)(md_main.VDL_LINE_RENDER_Z80_CLOCK * Z80CycleMultiplier));
+                int z80Budget = md_main.GetZ80CyclesPerLine();
                 int cpuBudget = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
 
                 for (int v = 0; v < vlines; v++)
@@ -2038,18 +2064,28 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 int f2 = baseIndex + 1;
                 int f3 = baseIndex + 2;
 
-                int ymL = CubicInterpolate(
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
-                    frac);
-                int ymR = CubicInterpolate(
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
-                    frac);
+                int ymL = _ymResampleLinear
+                    ? LinearInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                        frac)
+                    : CubicInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
+                        frac);
+                int ymR = _ymResampleLinear
+                    ? LinearInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                        frac)
+                    : CubicInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
+                        frac);
 
                 int dst = i * PsgChannels;
                 _ymFrameBuffer[dst] = (short)ymL;
@@ -2332,18 +2368,28 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 int f2 = baseIndex + 1;
                 int f3 = baseIndex + 2;
 
-                int ymL = CubicInterpolate(
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
-                    frac);
-                int ymR = CubicInterpolate(
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                    ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
-                    frac);
+                int ymL = _ymResampleLinear
+                    ? LinearInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                        frac)
+                    : CubicInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
+                        frac);
+                int ymR = _ymResampleLinear
+                    ? LinearInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                        frac)
+                    : CubicInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
+                        frac);
 
                 int dst = i * PsgChannels;
                 _ymFrameBuffer[dst] = (short)ymL;
