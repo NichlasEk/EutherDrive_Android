@@ -72,6 +72,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_ON_SILENCE"), "1", StringComparison.Ordinal);
     private static readonly int TraceYmSilenceFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_ON_SILENCE_FRAMES", 60);
     private static readonly int TraceYmSilenceDump = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_ON_SILENCE_DUMP", 128);
+    private static readonly bool TraceAll =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ALL"), "1", StringComparison.Ordinal);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
     private static readonly double Z80CycleMultiplier = ParseZ80CycleMultiplier();
@@ -1415,6 +1417,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     {
         try
         {
+            if (!AsciiStreamDebug && !TraceAll)
+                return;
+
             string logPath = "/tmp/eutherdrive_ascii_adapter.log";
             lock (_asciiStreamLock)
             {

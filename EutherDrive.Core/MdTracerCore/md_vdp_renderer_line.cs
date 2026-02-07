@@ -26,8 +26,10 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool ForceScrollZero =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_SCROLL_ZERO"), "1", StringComparison.Ordinal);
-        private static readonly bool TraceTileFetch =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_TILE_FETCH"), "1", StringComparison.Ordinal);
+         private static readonly bool TraceTileFetch =
+             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_TILE_FETCH"), "1", StringComparison.Ordinal);
+         private static readonly bool DebugTileRendering =
+             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_TILE_RENDERING"), "1", StringComparison.Ordinal);
         private static readonly int TraceTileFetchScanline =
             ParseTraceInt("EUTHERDRIVE_TRACE_TILE_FETCH_SCANLINE", 112);
         private static readonly int TraceTileFetchLimit =
@@ -102,6 +104,13 @@ namespace EutherDrive.Core.MdTracerCore
             int baseAddr = ((tileIndex & 0x07FF) << 5) + GetTileRebaseOffsetBytes(rebaseKind);
             int byteAddr = baseAddr + (y << 2) + ((x >> 2) << 1);
             ushort word = vram_read_render(byteAddr);
+            
+            // DEBUG: Log first few tile reads
+            if (DebugTileRendering && _frameCounter >= 115 && _frameCounter < 125 && tileIndex < 100)
+            {
+                Console.WriteLine($"[TILE-DEBUG] frame={_frameCounter} tile={tileIndex} x={xInTile} y={yInTile} base=0x{baseAddr:X4} byteAddr=0x{byteAddr:X4} word=0x{word:X4} reverse={reverse} pixel={((word >> ((3 - (x & 3)) << 2)) & 0x0f):X1}");
+            }
+            
             return (uint)((word >> ((3 - (x & 3)) << 2)) & 0x0f);
         }
 
@@ -243,11 +252,17 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         w_view_x %= g_scroll_xsize;
                         w_view_dx = w_view_x & 7;
-                        uint w_val = ReadNameTableWord(w_view_addr + (w_view_x >> 3));
-                        w_priority = ((w_val >> 15) & 0x0001);
-                        w_palette  = (((w_val >> 13) & 0x0003) << 4);
-                        w_reverse  = ((w_val >> 11) & 0x0003);
-                        w_char     =  (w_val & 0x07ff);
+                          uint w_val = ReadNameTableWord(w_view_addr + (w_view_x >> 3));
+                         w_priority = ((w_val >> 15) & 0x0001);
+                         w_palette  = (((w_val >> 13) & 0x0003) << 4);
+                          w_reverse  = ((w_val >> 11) & 0x0003);
+                         w_char     =  (w_val & 0x07ff);
+                         
+                         // DEBUG: Log first few name table reads
+                         if (DebugTileRendering && _frameCounter < 30 && wx < 64 && (wx % 8) == 0)
+                         {
+                             Console.WriteLine($"[NAMETABLE-DEBUG] frame={_frameCounter} scanline={g_scanline} wx={wx} addr=0x{w_view_addr + (w_view_x >> 3):X4} val=0x{w_val:X4} tile={w_char} pal={w_palette>>4} pri={w_priority} rev={w_reverse}");
+                         }
 
                         bool useDirectPixel = ForceDirectVramReadPlanes || w_reverse != 0;
                         w_pic_addr = useDirectPixel ? -1 : GetTileWordAddress((int)w_char, w_view_dy, w_reverse, TileRebaseKind.PlaneB);
@@ -338,10 +353,11 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         w_view_x %= g_scroll_xsize;
                         w_view_dx = w_view_x & 7;
-                        uint w_val = ReadNameTableWord(w_view_addr + (w_view_x >> 3));
+                          uint w_val = ReadNameTableWord(w_view_addr + (w_view_x >> 3));
                             w_priority = ((w_val >> 15) & 0x0001);
                             w_palette  = (((w_val >> 13) & 0x0003) << 4);
-                            w_reverse  = ((w_val >> 11) & 0x0003);
+                        w_reverse  = ((w_val >> 11) & 0x0003);
+
                             w_char     =  (w_val & 0x07ff);
 
                         bool useDirectPixel = ForceDirectVramReadPlanes || w_reverse != 0;
@@ -567,7 +583,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 {
                                     int  w_pic_addr = GetTileWordAddress((int)w_char, w_view_dy, w_reverse_bits, TileRebaseKind.Window) + (w_dx >> 2);
                                     uint w_pic_w    = g_renderer_vram[w_pic_addr];
-                                    uint picValue   = (uint)((w_pic_w >> ((3 - (w_dx & 3)) << 2)) & 0x0f);
+                                     uint picValue   = (uint)((w_pic_w >> ((3 - (w_dx & 3)) << 2)) & 0x0f);
                                     if (picValue != 0)
                                     {
                                         g_game_cmap[w_posx]   = w_palette + picValue;

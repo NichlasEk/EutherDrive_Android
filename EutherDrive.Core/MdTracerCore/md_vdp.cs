@@ -81,6 +81,9 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_INTERLACE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpState =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRomStartLog =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ROM_START"), "1", StringComparison.Ordinal)
+            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ALL"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSpriteOverflowFrame =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPRITE_OVERFLOW_FRAME"), "1", StringComparison.Ordinal);
         private static readonly bool TraceNameTableRowDump =
@@ -1793,13 +1796,16 @@ namespace EutherDrive.Core.MdTracerCore
         private static void LogDmaStatusLine(string line)
         {
             Console.WriteLine(line);
-            try
+            if (TraceRomStartLog)
             {
-                System.IO.File.AppendAllText("rom_start.log", line + Environment.NewLine);
-            }
-            catch
-            {
-                // Ignore logging failures.
+                try
+                {
+                    System.IO.File.AppendAllText("rom_start.log", line + Environment.NewLine);
+                }
+                catch
+                {
+                    // Ignore logging failures.
+                }
             }
         }
 

@@ -37,13 +37,6 @@ namespace EutherDrive.Core.MdTracerCore
             adressing_func_address(g_op3, g_op4, g_op2);
             g_work_val1.l = adressing_func_read(g_op3, g_op4, g_op2);
             g_work_data.l = g_work_val1.l & g_work_val2.l;
-            
-            // Debug logging for Madou
-            if (g_reg_PC >= 0x013A00 && g_reg_PC <= 0x013B00)
-            {
-                Console.WriteLine($"[ANDI-DEBUG] PC=0x{g_reg_PC:X6} op2={g_op2} val1=0x{g_work_val1.l:X8} val2=0x{g_work_val2.l:X8} result=0x{g_work_data.l:X8} dest=({g_op3},{g_op4})");
-            }
-            
             adressing_func_write(g_op3, g_op4, g_op2, g_work_data.l);
 
             // Flaggar: N/Z set enligt resultat; V/C clear; X opåverkad

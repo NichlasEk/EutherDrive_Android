@@ -1,0 +1,216 @@
+Running Madou Monogatari with full VDP logging...
+==================================================
+Environment variables set:
+  EUTHERDRIVE_TRACE_VDP=1
+  EUTHERDRIVE_TRACE_VRAM=1
+  EUTHERDRIVE_TRACE_CRAM=1
+  EUTHERDRIVE_TRACE_DMA_SRC=1
+  EUTHERDRIVE_TRACE_DMA_SRC_LIMIT=100
+  EUTHERDRIVE_TRACE_ANDI=1
+  EUTHERDRIVE_TRACE_ROL=1
+
+Running headless emulator for 60 frames...
+------------------------------------------
+[VDP-INTERLACE] Parsed InterlaceOutputPolicy: DoubleField (raw='')
+[VDP] HMODE=H32 width=256
+[VDP-FRAME-SIZE] Changed: 320x224 -> 256x224 interlace=0 display_ysize=224
+[VDP] HMODE=H32 width=256
+[VDP-FRAME-SIZE] Changed: 320x224 -> 256x224 interlace=0 display_ysize=224
+[VDP] HMODE=H32 width=256
+[VDP-FRAME-SIZE] Changed: 320x224 -> 256x224 interlace=0 display_ysize=224
+[MegaDriveBus] VDP writes summary total=0 routedVDP=0 routedElsewhere=0
+[VRAM-CLEAR] frame=0 reason=ResetState()
+[VDP] HMODE=H32 width=256
+analyse_ANDI() [instance]
+analyse_ANDITOCCR_b() [instance]
+analyse_ANDITOSR_w() [instance]
+analyse_ROL_reg() [instance]
+[SHOULDRUN] frame=0 masterSystemMode=False Z80WaitBusReqFrames=0 _z80WaitReleased=True busReq=False reset=False
+[Z80SAFE-TICK-DEBUG] frame=0 enabled=False active=False
+[Z80SAFE-TICK] frame=0 enabled=False active=False
+[VDP] frame=0 display=0
+[SRAM-READ] addr=0x201011 idx=0x1010 val=0x43
+[SRAM-READ] addr=0x201013 idx=0x1012 val=0x4F
+[Z80-0000] frame=0 pc=0x0000 op=0x00 SP=0x0000 - Executing from address 0x0000
+[Z80-TRACE-1] frame=0 pc=0x0000->0x0001 op=0x00 active=True SP=0x0000
+[Z80-TRACE-2] frame=0 pc=0x0001->0x0002 op=0x00 active=True SP=0x0000
+[Z80-TRACE-3] frame=0 pc=0x0002->0x0003 op=0x00 active=True SP=0x0000
+[Z80-TRACE-4] frame=0 pc=0x0003->0x0004 op=0x00 active=True SP=0x0000
+[Z80-TRACE-5] frame=0 pc=0x0004->0x0005 op=0x00 active=True SP=0x0000
+[Z80-TRACE-6] frame=0 pc=0x0005->0x0006 op=0x00 active=True SP=0x0000
+[Z80-TRACE-7] frame=0 pc=0x0006->0x0007 op=0x00 active=True SP=0x0000
+[Z80-TRACE-8] frame=0 pc=0x0007->0x0008 op=0x00 active=True SP=0x0000
+[Z80-TRACE-9] frame=0 pc=0x0008->0x0009 op=0x00 active=True SP=0x0000
+[Z80-TRACE-10] frame=0 pc=0x0009->0x000A op=0x00 active=True SP=0x0000
+[Z80-TRACE-11] frame=0 pc=0x000A->0x000B op=0x00 active=True SP=0x0000
+[Z80-TRACE-12] frame=0 pc=0x000B->0x000C op=0x00 active=True SP=0x0000
+[Z80-TRACE-13] frame=0 pc=0x000C->0x000D op=0x00 active=True SP=0x0000
+[Z80-TRACE-14] frame=0 pc=0x000D->0x000E op=0x00 active=True SP=0x0000
+[Z80-TRACE-15] frame=0 pc=0x000E->0x000F op=0x00 active=True SP=0x0000
+[Z80-TRACE-16] frame=0 pc=0x000F->0x0010 op=0x00 active=True SP=0x0000
+[Z80-TRACE-17] frame=0 pc=0x0010->0x0011 op=0x00 active=True SP=0x0000
+[Z80-TRACE-18] frame=0 pc=0x0011->0x0012 op=0x00 active=True SP=0x0000
+[Z80-TRACE-19] frame=0 pc=0x0012->0x0013 op=0x00 active=True SP=0x0000
+[Z80-TRACE-20] frame=0 pc=0x0013->0x0014 op=0x00 active=True SP=0x0000
+[Z80-TRACE-21] frame=0 pc=0x0014->0x0015 op=0x00 active=True SP=0x0000
+[Z80-TRACE-22] frame=0 pc=0x0015->0x0016 op=0x00 active=True SP=0x0000
+[Z80-TRACE-23] frame=0 pc=0x0016->0x0017 op=0x00 active=True SP=0x0000
+[Z80-TRACE-24] frame=0 pc=0x0017->0x0018 op=0x00 active=True SP=0x0000
+[Z80-TRACE-25] frame=0 pc=0x0018->0x0019 op=0x00 active=True SP=0x0000
+[Z80-TRACE-26] frame=0 pc=0x0019->0x001A op=0x00 active=True SP=0x0000
+[Z80-TRACE-27] frame=0 pc=0x001A->0x001B op=0x00 active=True SP=0x0000
+[Z80-TRACE-28] frame=0 pc=0x001B->0x001C op=0x00 active=True SP=0x0000
+[Z80-TRACE-29] frame=0 pc=0x001C->0x001D op=0x00 active=True SP=0x0000
+[Z80-TRACE-30] frame=0 pc=0x001D->0x001E op=0x00 active=True SP=0x0000
+[Z80-TRACE-31] frame=0 pc=0x001E->0x001F op=0x00 active=True SP=0x0000
+[Z80-TRACE-32] frame=0 pc=0x001F->0x0020 op=0x00 active=True SP=0x0000
+[Z80-TRACE-33] frame=0 pc=0x0020->0x0021 op=0x00 active=True SP=0x0000
+[Z80-TRACE-34] frame=0 pc=0x0021->0x0022 op=0x00 active=True SP=0x0000
+[Z80-TRACE-35] frame=0 pc=0x0022->0x0023 op=0x00 active=True SP=0x0000
+[Z80-TRACE-36] frame=0 pc=0x0023->0x0024 op=0x00 active=True SP=0x0000
+[Z80-TRACE-37] frame=0 pc=0x0024->0x0025 op=0x00 active=True SP=0x0000
+[Z80-TRACE-38] frame=0 pc=0x0025->0x0026 op=0x00 active=True SP=0x0000
+[Z80-TRACE-39] frame=0 pc=0x0026->0x0027 op=0x00 active=True SP=0x0000
+[Z80-TRACE-40] frame=0 pc=0x0027->0x0028 op=0x00 active=True SP=0x0000
+[Z80-TRACE-41] frame=0 pc=0x0028->0x0029 op=0x00 active=True SP=0x0000
+[Z80-TRACE-42] frame=0 pc=0x0029->0x002A op=0x00 active=True SP=0x0000
+[Z80-TRACE-43] frame=0 pc=0x002A->0x002B op=0x00 active=True SP=0x0000
+[Z80-TRACE-44] frame=0 pc=0x002B->0x002C op=0x00 active=True SP=0x0000
+[Z80-TRACE-45] frame=0 pc=0x002C->0x002D op=0x00 active=True SP=0x0000
+[Z80-TRACE-46] frame=0 pc=0x002D->0x002E op=0x00 active=True SP=0x0000
+[Z80-TRACE-47] frame=0 pc=0x002E->0x002F op=0x00 active=True SP=0x0000
+[Z80-TRACE-48] frame=0 pc=0x002F->0x0030 op=0x00 active=True SP=0x0000
+[Z80-TRACE-49] frame=0 pc=0x0030->0x0031 op=0x00 active=True SP=0x0000
+[Z80-TRACE-50] frame=0 pc=0x0031->0x0032 op=0x00 active=True SP=0x0000
+[Z80-TRACE-51] frame=0 pc=0x0032->0x0033 op=0x00 active=True SP=0x0000
+[Z80-TRACE-52] frame=0 pc=0x0033->0x0034 op=0x00 active=True SP=0x0000
+[Z80-TRACE-53] frame=0 pc=0x0034->0x0035 op=0x00 active=True SP=0x0000
+[Z80-TRACE-54] frame=0 pc=0x0035->0x0036 op=0x00 active=True SP=0x0000
+[Z80-TRACE-55] frame=0 pc=0x0036->0x0037 op=0x00 active=True SP=0x0000
+[Z80-TRACE-56] frame=0 pc=0x0037->0x0038 op=0x00 active=True SP=0x0000
+[Z80-TRACE-57] frame=0 pc=0x0038->0x0039 op=0x00 active=True SP=0x0000
+[SRAM-READ] addr=0x201015 idx=0x1014 val=0x4D
+[SRAM-READ] addr=0x201017 idx=0x1016 val=0x50
+[SRAM-READ] addr=0x201019 idx=0x1018 val=0x49
+[SRAM-READ] addr=0x20101B idx=0x101A val=0x4C
+[SRAM-READ] addr=0x20101D idx=0x101C val=0x45
+[SRAM-READ] addr=0x20101F idx=0x101E val=0x20
+[SRAM-READ] addr=0x201021 idx=0x1020 val=0x31
+[SRAM-READ] addr=0x201023 idx=0x1022 val=0x39
+[SRAM-READ] addr=0x201025 idx=0x1024 val=0x39
+[Z80-TRACE-58] frame=0 pc=0x0039->0x003A op=0x00 active=True SP=0x0000
+[Z80-TRACE-59] frame=0 pc=0x003A->0x003B op=0x00 active=True SP=0x0000
+[Z80-TRACE-60] frame=0 pc=0x003B->0x003C op=0x00 active=True SP=0x0000
+[Z80-TRACE-61] frame=0 pc=0x003C->0x003D op=0x00 active=True SP=0x0000
+[Z80-TRACE-62] frame=0 pc=0x003D->0x003E op=0x00 active=True SP=0x0000
+[Z80-TRACE-63] frame=0 pc=0x003E->0x003F op=0x00 active=True SP=0x0000
+[Z80-TRACE-64] frame=0 pc=0x003F->0x0040 op=0x00 active=True SP=0x0000
+[Z80-BOOT-CODE] frame=0 pc=0x0040 SP=0x0000 - Entering boot code (DI, LD SP, JP)
+[Z80-TRACE-65] frame=0 pc=0x0040->0x0041 op=0x00 active=True SP=0x0000
+[Z80-TRACE-66] frame=0 pc=0x0041->0x0042 op=0x00 active=True SP=0x0000
+[Z80-TRACE-67] frame=0 pc=0x0042->0x0043 op=0x00 active=True SP=0x0000
+[Z80-TRACE-68] frame=0 pc=0x0043->0x0044 op=0x00 active=True SP=0x0000
+[Z80-TRACE-69] frame=0 pc=0x0044->0x0045 op=0x00 active=True SP=0x0000
+[Z80-TRACE-70] frame=0 pc=0x0045->0x0046 op=0x00 active=True SP=0x0000
+[Z80-TRACE-71] frame=0 pc=0x0046->0x0047 op=0x00 active=True SP=0x0000
+[Z80-TRACE-72] frame=0 pc=0x0047->0x0048 op=0x00 active=True SP=0x0000
+[Z80-TRACE-73] frame=0 pc=0x0048->0x0049 op=0x00 active=True SP=0x0000
+[Z80-TRACE-74] frame=0 pc=0x0049->0x004A op=0x00 active=True SP=0x0000
+[Z80-TRACE-75] frame=0 pc=0x004A->0x004B op=0x00 active=True SP=0x0000
+[Z80-TRACE-76] frame=0 pc=0x004B->0x004C op=0x00 active=True SP=0x0000
+[Z80-TRACE-77] frame=0 pc=0x004C->0x004D op=0x00 active=True SP=0x0000
+[Z80-TRACE-78] frame=0 pc=0x004D->0x004E op=0x00 active=True SP=0x0000
+[Z80-TRACE-79] frame=0 pc=0x004E->0x004F op=0x00 active=True SP=0x0000
+[Z80-TRACE-80] frame=0 pc=0x004F->0x0050 op=0x00 active=True SP=0x0000
+[Z80-TRACE-81] frame=0 pc=0x0050->0x0051 op=0x00 active=True SP=0x0000
+[Z80-TRACE-82] frame=0 pc=0x0051->0x0052 op=0x00 active=True SP=0x0000
+[Z80-TRACE-83] frame=0 pc=0x0052->0x0053 op=0x00 active=True SP=0x0000
+[Z80-TRACE-84] frame=0 pc=0x0053->0x0054 op=0x00 active=True SP=0x0000
+[Z80-TRACE-85] frame=0 pc=0x0054->0x0055 op=0x00 active=True SP=0x0000
+[Z80-TRACE-86] frame=0 pc=0x0055->0x0056 op=0x00 active=True SP=0x0000
+[Z80-TRACE-87] frame=0 pc=0x0056->0x0057 op=0x00 active=True SP=0x0000
+[Z80-TRACE-88] frame=0 pc=0x0057->0x0058 op=0x00 active=True SP=0x0000
+[Z80-TRACE-89] frame=0 pc=0x0058->0x0059 op=0x00 active=True SP=0x0000
+[Z80-TRACE-90] frame=0 pc=0x0059->0x005A op=0x00 active=True SP=0x0000
+[Z80-TRACE-91] frame=0 pc=0x005A->0x005B op=0x00 active=True SP=0x0000
+[Z80-TRACE-92] frame=0 pc=0x005B->0x005C op=0x00 active=True SP=0x0000
+[Z80-TRACE-93] frame=0 pc=0x005C->0x005D op=0x00 active=True SP=0x0000
+[Z80-TRACE-94] frame=0 pc=0x005D->0x005E op=0x00 active=True SP=0x0000
+[Z80-TRACE-95] frame=0 pc=0x005E->0x005F op=0x00 active=True SP=0x0000
+[Z80-TRACE-96] frame=0 pc=0x005F->0x0060 op=0x00 active=True SP=0x0000
+[Z80-TRACE-97] frame=0 pc=0x0060->0x0061 op=0x00 active=True SP=0x0000
+[Z80-TRACE-98] frame=0 pc=0x0061->0x0062 op=0x00 active=True SP=0x0000
+[Z80-TRACE-99] frame=0 pc=0x0062->0x0063 op=0x00 active=True SP=0x0000
+[Z80-TRACE-100] frame=0 pc=0x0063->0x0064 op=0x00 active=True SP=0x0000
+[SRAM-READ] addr=0x201027 idx=0x1026 val=0x35
+[SONIC2-Z80-0167] frame=0 pc=0x0167 op=0x00 nextPC=0x0167 active=True bytes= 0163:00 0164:00 0165:00 0166:00 0167:00 0168:00 0169:00 016A:00 016B:00
+[Z80-DRIVER-ENTRY] frame=0 pc=0x0167 SP=0x0000 - Jumping to Z80 driver!
+[VDP-FRAME-SIZE] Changed: 320x224 -> 256x224 interlace=0 display_ysize=224
+[VDP-FRAME] frame=1 scanline=224 reg12=0x00 width=256 reg1.display=0 reg2.base=0xFFFF reg4.base=0xFFFF reg16=0x00
+[Z80INT-DEBUG] IncrementZ80Irq called, frame=1
+[VINT] TriggerVBlank frame=1 scanline=224 interlace=0 field=0
+[Z80SAFE-TICK-DEBUG] frame=0 enabled=False active=False
+[Z80SAFE-TICK] frame=0 enabled=False active=False
+[ALADDIN-DEBUG] frame=0: Z80=59736 (expected=59736) slices=262
+[ALADDIN-DEBUG] frame=0: IRQs=1 TimerA=0 TimerB=0 BusySets=0 BusyClears=0
+[VDP-DEBUG] GetFrameBuffer called at frame 1, g_game_screen[0]=0xFF000000, length=153600
+[SHOULDRUN] frame=1 masterSystemMode=False Z80WaitBusReqFrames=0 _z80WaitReleased=True busReq=False reset=False
+[Z80SAFE-TICK-DEBUG] frame=1 enabled=False active=False
+[VDP] frame=1 display=0
+[Z80-BOOT-CODE] frame=1 pc=0x0040 SP=0xFFFE - Entering boot code (DI, LD SP, JP)
+[SONIC2-Z80-0167] frame=1 pc=0x0167 op=0x00 nextPC=0x0167 active=True bytes= 0163:00 0164:00 0165:00 0166:00 0167:00 0168:00 0169:00 016A:00 016B:00
+[Z80-DRIVER-ENTRY] frame=1 pc=0x0167 SP=0xFFFE - Jumping to Z80 driver!
+[VDP-FRAME] frame=2 scanline=224 reg12=0x00 width=256 reg1.display=0 reg2.base=0xFFFF reg4.base=0xFFFF reg16=0x00
+[Z80INT-DEBUG] IncrementZ80Irq called, frame=2
+[VINT] TriggerVBlank frame=2 scanline=224 interlace=0 field=0
+[Z80SAFE-TICK-DEBUG] frame=1 enabled=False active=False
+[ALADDIN-DEBUG] frame=1: Z80=59736 (expected=59736) slices=262
+[ALADDIN-DEBUG] frame=1: IRQs=1 TimerA=0 TimerB=0 BusySets=0 BusyClears=0
+[VDP-DEBUG] GetFrameBuffer called at frame 2, g_game_screen[0]=0xFF000000, length=153600
+[SHOULDRUN] frame=2 masterSystemMode=False Z80WaitBusReqFrames=0 _z80WaitReleased=True busReq=False reset=False
+[Z80SAFE-TICK-DEBUG] frame=2 enabled=False active=False
+[VDP] frame=2 display=0
+[Z80-BOOT-CODE] frame=2 pc=0x0040 SP=0xFFFC - Entering boot code (DI, LD SP, JP)
+[SONIC2-Z80-0167] frame=2 pc=0x0167 op=0x00 nextPC=0x0167 active=True bytes= 0163:00 0164:00 0165:00 0166:00 0167:00 0168:00 0169:00 016A:00 016B:00
+[Z80-DRIVER-ENTRY] frame=2 pc=0x0167 SP=0xFFFC - Jumping to Z80 driver!
+[BUS-WRITE8-DEBUG] addr=0x00FF962B val=0x00 PC=0x012024
+[BUS-WRITE16-DEBUG] addr=0x00FF962C val=0x0000 PC=0x01202A
+[BUS-WRITE16-DEBUG] addr=0x00FF962E val=0x0000 PC=0x012030
+[BUS-WRITE8-DEBUG] addr=0x00FF9616 val=0x00 PC=0x012036
+[BUS-WRITE8-DEBUG] addr=0x00FF9617 val=0x00 PC=0x01203C
+[BUS-WRITE16-DEBUG] addr=0x00FF9618 val=0x0000 PC=0x012042
+[BUS-WRITE8-DEBUG] addr=0x00FF962A val=0x00 PC=0x012048
+[BUS-VDP-WRITE16] addr=0x00C00004 raw=0x8004
+[BUS-VDP-REG] reg=0x00 data=0x04
+[VDP] MD control port write addr=0xC00004
+[VDP-CTRL] frame=2 addr=0xC00004 raw=0x8004
+[BUS-VDP-WRITE16] addr=0x00C00004 raw=0x8124
+[BUS-VDP-REG] reg=0x01 data=0x24
+[VDP-CTRL-WRITE] frame=2 reg1=0x24
+[VDP-CTRL] frame=2 addr=0xC00004 raw=0x8124
+[BUS-VDP-WRITE16] addr=0x00C00004 raw=0x8230
+[BUS-VDP-REG] reg=0x02 data=0x30
+[VDP-CTRL-WRITE] frame=2 reg2=0x30
+[VDP-CTRL] frame=2 addr=0xC00004 raw=0x8230
+[BUS-VDP-WRITE16] addr=0x00C00004 raw=0x833C
+[BUS-VDP-REG] reg=0x03 data=0x3C
+[VDP-CTRL-WRITE] frame=2 reg3=0x3C
+[VDP-CTRL] frame=2 addr=0xC00004 raw=0x833C
+[BUS-VDP-WRITE16] addr=0x00C00004 raw=0x8407
+[BUS-VDP-REG] reg=0x04 data=0x07
+[VDP-CTRL-WRITE] frame=2 reg4=0x07
+[VDP-CTRL] frame=2 addr=0xC00004 raw=0x8407
+[BUS-VDP-WRITE16] addr=0x00C00004 raw=0x855E
+[BUS-VDP-REG] reg=0x05 data=0x5E
+[VDP-CTRL-WRITE] frame=2 reg5=0x5E
+[VDP-CTRL] frame=2 addr=0xC00004 raw=0x855E
+[BUS-VDP-WRITE16] addr=0x00C00004 raw=0x8600
+[BUS-VDP-REG] reg=0x06 data=0x00
+[VDP-CTRL] frame=2 addr=0xC00004 raw=0x8600
+[BUS-VDP-WRITE16] addr=0x00C00004 raw=0x8700
+[BUS-VDP-REG] reg=0x07 data=0x00
+[VDP-CTRL] frame=2 addr=0xC00004 raw=0x8700
+[BUS-VDP-WRITE16] addr=0x00C00004 raw=0x8800
+
+Log output saved to madou_vdp_log.txt
+Check for VRAM-ODD-ADDR-WARNING messages

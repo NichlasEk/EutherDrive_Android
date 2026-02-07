@@ -235,35 +235,11 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static void write_g_reg_data(int in_num, int in_size, uint in_val)
         {
-            uint old_val = g_reg_data[in_num].l;
-            
             switch (in_size)
             {
-                case 0: 
-                    g_reg_data[in_num].l = (g_reg_data[in_num].l & 0xFFFFFF00) | (in_val & 0x000000FF);
-                    break;
-                case 1: 
-                    g_reg_data[in_num].l = (g_reg_data[in_num].l & 0xFFFF0000) | (in_val & 0x0000FFFF);
-                    break;
-                default: 
-                    g_reg_data[in_num].l = in_val;         
-                    break;
-            }
-            
-            // Debug logging for Madou ANDI.W bug
-            if (in_num == 0 && in_size == 1 && (old_val == 0x07000000 || g_reg_PC == 0x013A54))
-            {
-                Console.WriteLine($"[WRITE_G_REG_DEBUG] PC=0x{g_reg_PC:X6} D{in_num} old=0x{old_val:X8} new=0x{g_reg_data[in_num].l:X8} size={in_size} val=0x{in_val:X8}");
-            }
-            // Log all D0 writes around problematic code
-            if (in_num == 0 && (g_reg_PC >= 0x011E00 && g_reg_PC <= 0x011F00 || g_reg_PC >= 0x013A00 && g_reg_PC <= 0x013B00))
-            {
-                Console.WriteLine($"[D0-WRITE-TRACE] PC=0x{g_reg_PC:X6} D0 old=0x{old_val:X8} new=0x{g_reg_data[in_num].l:X8} size={in_size} val=0x{in_val:X8}");
-                // Also log stack trace for D0 writes at key points
-                if (g_reg_PC == 0x013A50 || g_reg_PC == 0x013A58 || g_reg_PC == 0x013A5A)
-                {
-                    Console.WriteLine($"[D0-CRITICAL-WRITE] PC=0x{g_reg_PC:X6} D0=0x{g_reg_data[0].l:X8} size={in_size} A7=0x{g_reg_addr[7].l:X8}");
-                }
+                case 0: g_reg_data[in_num].b0 = (byte)in_val;   break;
+                case 1: g_reg_data[in_num].w  = (ushort)in_val; break;
+                default: g_reg_data[in_num].l = in_val;         break;
             }
 
             if (in_num == 1)

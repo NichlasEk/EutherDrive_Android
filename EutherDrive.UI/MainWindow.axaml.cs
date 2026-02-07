@@ -2292,6 +2292,9 @@ public partial class MainWindow : Window
 
     private void StartRomLog()
     {
+        if (!IsEnvEnabled("EUTHERDRIVE_TRACE_ROM_START") && !IsEnvEnabled("EUTHERDRIVE_TRACE_ALL"))
+            return;
+
         string path = Path.Combine(Environment.CurrentDirectory, "rom_start.log");
         _romLogWriter?.Dispose();
         _romLogWriter = new StreamWriter(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
@@ -2339,5 +2342,18 @@ public partial class MainWindow : Window
             _a.Flush();
             _b.Flush();
         }
+    }
+
+    private static bool IsEnvEnabled(string key)
+    {
+        var value = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        value = value.Trim();
+        return value == "1"
+            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("on", StringComparison.OrdinalIgnoreCase);
     }
 }

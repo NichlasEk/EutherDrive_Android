@@ -4,6 +4,7 @@
 // Default: runs 120 frames
 
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -68,6 +69,8 @@ class Program
 
     static int Main(string[] args)
     {
+        ConfigureConsoleLogging();
+
         // Check for special test modes
         if (args.Length >= 1 && args[0] == "--test-interlace2")
         {
@@ -708,6 +711,57 @@ class Program
 
         error = "No valid savestate payload found.";
         return null;
+    }
+
+    private static void ConfigureConsoleLogging()
+    {
+        if (ShouldSilenceConsole())
+        {
+            Console.SetOut(TextWriter.Null);
+            Console.SetError(TextWriter.Null);
+            Trace.Listeners.Clear();
+            Trace.AutoFlush = false;
+        }
+    }
+
+    private static bool ShouldSilenceConsole()
+    {
+        // If any trace flag is set, enable all console output
+        if (IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE"))
+        {
+            return false;
+        }
+
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            if (entry.Key is not string key)
+            {
+                continue;
+            }
+
+            if (key.StartsWith("EUTHERDRIVE_TRACE_", StringComparison.OrdinalIgnoreCase)
+                && IsEnvEnabled(key))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsEnvEnabled(string key)
+    {
+        var value = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        value = value.Trim();
+        return value == "1"
+            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("on", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int? ParseOptionalIntEnv(string name)

@@ -44,6 +44,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static bool _pcWatchEnabled =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC"), "1", StringComparison.Ordinal);
         private static bool _madouTraceEnabled = true;
+        private static bool _madouFullTrace = true; // Always trace Madou-related code
         private static readonly uint PcWatchStart = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_START") ?? 0x000320;
         private static readonly uint PcWatchEnd = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_END") ?? 0x000340;
         
@@ -205,6 +206,38 @@ namespace EutherDrive.Core.MdTracerCore
                     }
 
                     if (g_68k_stop) { g_clock_now = g_clock_total; break; }
+                    
+                      // DEBUG: Monitor Madou palette calculation
+                      // Opcode at 0x013A50 is 0xE198 which decodes as ROR.W #8, D0 (not ROL.L #8, D0!)
+                      if (g_reg_PC == 0x013A50 || g_reg_PC == 0x013A58 || g_reg_PC == 0x013A5A)
+                      {
+                          uint oldD0 = g_reg_data[0].l;
+                          ushort opcode = g_opcode;
+                          Console.WriteLine($"[MADOU-TRACE] PC=0x{g_reg_PC:X6} opcode=0x{opcode:X4} D0=0x{oldD0:X8}");
+                          
+                          if (g_reg_PC == 0x013A50)
+                          {
+                              Console.WriteLine($"[MADOU-CRITICAL] Opcode 0x{opcode:X4} = ROR.W #8, D0 (not ROL.L #8, D0!)");
+                              Console.WriteLine($"[MADOU-CRITICAL] D0 low word=0x{(oldD0 & 0xFFFF):X4}, ROR.W #8 -> 0x{((oldD0 & 0xFFFF) >> 8) | ((oldD0 & 0xFF) << 8):X4}");
+                          }
+                      }
+                      
+                      // Also trace when we're near the palette routine
+                      if (_madouFullTrace && (g_reg_PC >= 0x013A40 && g_reg_PC <= 0x013A70))
+                      {
+                          Console.WriteLine($"[MADOU-AREA] PC=0x{g_reg_PC:X6} opcode=0x{g_opcode:X4} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} D2=0x{g_reg_data[2].l:X8}");
+                      }
+                      
+                      // Trace JSR to palette routine (check if next instruction is at 0x013A46)
+                      if (_madouFullTrace && g_opcode == 0x4EB9)
+                      {
+                          // Read the target address from the next 4 bytes
+                          uint targetAddr = md_main.g_md_bus.read32(g_reg_PC + 2);
+                          if (targetAddr == 0x013A46)
+                          {
+                              Console.WriteLine($"[MADOU-JSR] PC=0x{g_reg_PC:X6} JSR to palette routine at 0x{targetAddr:X6} D0=0x{g_reg_data[0].l:X8}");
+                          }
+                      }
 
                     if (g_opcode == 0x33FC)
                     {

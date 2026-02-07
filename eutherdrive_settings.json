@@ -1,11 +1,11 @@
 {
-  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Madou Monogatari I (J) [!].gen",
+  "LastRomPath": "/home/nichlas/roms/sonic2.md",
   "RecentRomPaths": [
+    "/home/nichlas/roms/sonic2.md",
     "/run/media/nichlas/Atlas/roms/Genesis/Madou Monogatari I (J) [!].gen",
-    "/run/media/nichlas/Atlas/roms/Genesis/Rings of Power (UE) [!].gen",
-    "/run/media/nichlas/Atlas/roms/Genesis/Hellfire (E).gen",
-    "/run/media/nichlas/Atlas/roms/Genesis/Pirates of Dark Water, The (U) [!].gen",
-    "/run/media/nichlas/Atlas/roms/Genesis/Valis III (J) [!].gen"
+    "/run/media/nichlas/Atlas/roms/Genesis/Sonic The Hedgehog 2 (W) (REV00) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Valis III (J) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Pirates of Dark Water, The (U) [!].gen"
   ],
   "MasterVolumePercent": 12,
   "AudioEnabled": true,
@@ -93,7 +93,8 @@
     "serial:GM G-5519  -00": 2,
     "serial:GM MK-1352 -00": 3,
     "serial:GM T-113036-00": 2,
-    "serial:GM T-139036-50": 2
+    "serial:GM T-139036-50": 2,
+    "serial:GM T-66023 -00": 3
   },
   "FrameRateMode": 1
 }

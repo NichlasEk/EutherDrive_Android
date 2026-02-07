@@ -649,9 +649,6 @@ namespace EutherDrive.Core.MdTracerCore
             // Mask out high bits to handle byte-write duplication
             ushort cramData = (ushort)(data & 0x0FFF);
             g_cram[idx] = cramData;
-            
-            if (TraceCramWrites)
-                Console.WriteLine($"[CRAM] frame={_frameCounter} index=0x{(idx & 0x3f):X2} raw=0x{data:X4} masked=0x{cramData:X4}");
 
             // CRAM format according to Genesis documentation:
             // Bits 0-3: Red (4 bits, but only bits 1-3 used = 3-bit intensity)
@@ -661,6 +658,9 @@ namespace EutherDrive.Core.MdTracerCore
             int rNib = (cramData & 0x000F);       // Bits 0-3: Red nibble
             int gNib = (cramData & 0x00F0) >> 4;  // Bits 4-7: Green nibble
             int bNib = (cramData & 0x0F00) >> 8;  // Bits 8-11: Blue nibble
+            
+            if (TraceCramWrites || _frameCounter < 10) // Always log first 10 frames
+                Console.WriteLine($"[CRAM] frame={_frameCounter} index=0x{(idx & 0x3f):X2} raw=0x{data:X4} masked=0x{cramData:X4} B=0x{bNib:X1} G=0x{gNib:X1} R=0x{rNib:X1}");
             
             // MD uses 3-bit intensity stored in bits 1..3 of each nibble (values 0,2,4..E)
             int r = rNib >> 1;   // 0..7

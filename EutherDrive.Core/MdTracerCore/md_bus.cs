@@ -22,11 +22,18 @@ namespace EutherDrive.Core.MdTracerCore
         // File-based SRAM logger for UI mode
         private static StreamWriter? _sramLog;
         private static readonly object _sramLogLock = new();
+        private static readonly bool TraceSramLog =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SRAM"), "1", StringComparison.Ordinal)
+            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ALL"), "1", StringComparison.Ordinal)
+            || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EUTHERDRIVE_SRAM_LOG"));
 
         private static void SramLog(string msg)
         {
             try
             {
+                if (!TraceSramLog)
+                    return;
+
                 lock (_sramLogLock)
                 {
                     if (_sramLog == null)
