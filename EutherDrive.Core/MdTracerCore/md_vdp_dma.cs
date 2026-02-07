@@ -208,7 +208,7 @@ namespace EutherDrive.Core.MdTracerCore
                         this.LogVramWrite("DMA", writeAddr, w_val, g_vdp_reg_15_autoinc, g_vdp_reg_code);
                         
                         // Debug logging
-                        if (debugWriteCount < 8 && _frameCounter < 100)
+                        if (TraceDmaRegs && debugWriteCount < 8 && _frameCounter < 100)
                         {
                             Console.WriteLine($"[DMA-WRITE-{debugWriteCount}] addr=0x{writeAddr:X4} val=0x{w_val:X4} reg15=0x{g_vdp_reg_15_autoinc:X2} nextAddr=0x{(writeAddr + g_vdp_reg_15_autoinc):X4} src=0x{g_dma_src_addr:X6}");
                             debugWriteCount++;
@@ -217,7 +217,7 @@ namespace EutherDrive.Core.MdTracerCore
                     case 3: // CRAM
                         cram_set((writeAddr >> 1) & 0x3f, w_val);
                         // Debug logging for CRAM
-                        if (debugWriteCount < 8 && _frameCounter < 100)
+                        if (TraceDmaRegs && debugWriteCount < 8 && _frameCounter < 100)
                         {
                             Console.WriteLine($"[DMA-CRAM-WRITE-{debugWriteCount}] color={(writeAddr >> 1) & 0x3f} val=0x{w_val:X4} masked=0x{(w_val & 0x0FFF):X4} reg15=0x{g_vdp_reg_15_autoinc:X2}");
                             debugWriteCount++;

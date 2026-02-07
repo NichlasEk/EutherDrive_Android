@@ -87,6 +87,14 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_RENDER"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVint =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VINT"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceInterlaceDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_INTERLACE_DEBUG"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceNameTable =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NAME_TABLE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVramPageStats =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_PAGE_STATS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVramStats =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_STATS"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVramWriteCpu =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_WRITE_CPU"), "1", StringComparison.Ordinal);
         private static readonly int TraceVramWriteCpuLimit =
@@ -1287,11 +1295,13 @@ namespace EutherDrive.Core.MdTracerCore
                   }
               }
 
-              // Log name table non-zero counts at VBlank (once per second approx)
-             LogNameTableStats();
+            // Log name table non-zero counts at VBlank (once per second approx)
+            if (TraceNameTable)
+                LogNameTableStats();
 
             // Log VRAM page stats (brute force - top 3 pages with most non-zero tiles)
-            LogVramPageStats();
+            if (TraceVramPageStats)
+                LogVramPageStats();
 
             // Log register snapshot in interlace mode 2
             LogInterlaceRegisterSnapshot();
@@ -1303,7 +1313,7 @@ namespace EutherDrive.Core.MdTracerCore
             LogDmaStatusWindow();
 
             // Log VRAM write summary at VBlank (once per second approx)
-            if (_frameCounter % 60 == 0 && (_mdVramWritesThisFrame > 0 || _mdVramWritesToNameTablesThisFrame > 0))
+            if (TraceVramStats && _frameCounter % 60 == 0 && (_mdVramWritesThisFrame > 0 || _mdVramWritesToNameTablesThisFrame > 0))
             {
                 Console.WriteLine($"[VRAM-STATS] frame={_frameCounter} interlace={g_vdp_interlace_mode} vblank=1 display={g_vdp_reg_1_6_display} " +
                     $"vramWrites={_mdVramWritesThisFrame} nameTableWrites={_mdVramWritesToNameTablesThisFrame} dropped={_mdVramWritesDroppedThisFrame} " +
@@ -1995,13 +2005,16 @@ namespace EutherDrive.Core.MdTracerCore
             uint sampleCram16 = g_color != null && g_color.Length > 16 ? g_color[16] : 0;
             uint sampleCram32 = g_color != null && g_color.Length > 32 ? g_color[32] : 0;
 
-            Console.WriteLine(
-                $"[INTERLACE-DEBUG] frame={_frameCounter} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field} " +
-                $"hvV={hvV} hvH={hvH} vblank={vblankBit} display={displayEnabled} " +
-                $"z80Active={(z80Active ? 1 : 0)} ymKeyOn={ymKeyOn} ymParam={ymParam} psgWrites={psgWrites} " +
-                $"fbPixels={nonBlackCount}/{totalPixels} uniqueColors={uniqueColors.Count} " +
-                $"backdrop={backdropIdx} backdropColor=0x{backdropColor:X8} " +
-                $"cramNonBlack={cramNonBlack} cram0=0x{sampleCram1:X8} cram16=0x{sampleCram16:X8}");
+            if (TraceInterlaceDebug)
+            {
+                Console.WriteLine(
+                    $"[INTERLACE-DEBUG] frame={_frameCounter} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field} " +
+                    $"hvV={hvV} hvH={hvH} vblank={vblankBit} display={displayEnabled} " +
+                    $"z80Active={(z80Active ? 1 : 0)} ymKeyOn={ymKeyOn} ymParam={ymParam} psgWrites={psgWrites} " +
+                    $"fbPixels={nonBlackCount}/{totalPixels} uniqueColors={uniqueColors.Count} " +
+                    $"backdrop={backdropIdx} backdropColor=0x{backdropColor:X8} " +
+                    $"cramNonBlack={cramNonBlack} cram0=0x{sampleCram1:X8} cram16=0x{sampleCram16:X8}");
+            }
          }
 
           // [NT-CHK] Name Table Check - gated by EUTHERDRIVE_DEBUG_NTCHK=1
