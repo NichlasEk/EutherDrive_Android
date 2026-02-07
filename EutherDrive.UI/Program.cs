@@ -16,6 +16,8 @@ class Program
     public static void Main(string[] args)
     {
         ConfigureConsoleLogging();
+        if (IsEnvEnabled("EUTHERDRIVE_TRACE_APP_START"))
+            Console.Error.WriteLine("[EutherDrive.UI] Program.Main reached");
         var builder = BuildAvaloniaApp();
         // Store args in a static field that App can access
         App.CommandLineArgs = args;

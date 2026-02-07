@@ -54,7 +54,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 return value;
             }
-            return 1.0;
+            return 25.0;
         }
 
         public (int out1, int out2) YM2612_Update()
@@ -71,8 +71,7 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[YM-TIMING] YM2612_Update called at SystemCycles={md_main.SystemCycles}");
             }
             
-            // Advance timers based on audio time (single-sample step)
-            AdvanceTimersForSamples(1);
+            // Timers advance via EnsureAdvanceEachFrame (SystemCycles), not audio samples.
             
             int w_out_l = 0;
             int w_out_r = 0;
@@ -158,9 +157,7 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[YM-TIMING] YM2612_UpdateBatch called at SystemCycles={md_main.SystemCycles} frames={frames}");
             }
 
-            // Advance timers based on audio time (batch step)
-            if (frames > 0)
-                AdvanceTimersForSamples(frames);
+            // Timers advance via EnsureAdvanceEachFrame (SystemCycles), not audio samples.
 
             double cyclesPerSample = Z80_CLOCK / YM2612_SAMPLING;
             long endCycle = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugTotalCycles : -1;
@@ -821,7 +818,7 @@ namespace EutherDrive.Core.MdTracerCore
         
         public void EnsureAdvanceEachFrame()
         {
-            // No-op: YM2612 time advances only when rendering audio.
+            AdvanceTimersFromSystemCycles();
         }
     }
 }

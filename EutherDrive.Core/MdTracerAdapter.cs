@@ -32,6 +32,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private long _lastAudioLogTicks;
     private long _lastAudioLevelTicks;
     private long _lastAudioCoreLogTicks;
+    private long _lastYmInternalLogTicks;
+    private bool _ymInternalLoggedOnce;
+    private bool _ymInternalEnterLoggedOnce;
+    private long _audioPathForceTicks;
+    private int _audioPathForceCount;
+    private bool _ymInternalForcedLoggedOnce;
+    private bool _ymInternalForcedSummaryOnce;
+    private bool _ymInternalDacStateLoggedOnce;
+    private bool _ymResampleDebugOnce;
+    private bool _ymResampleDebugFramesOnce;
+    private bool _ymResampleOutLoggedOnce;
+    private bool _ymResampleOutForcedOnce;
+    private bool _ymResampleOutForcedDacOnce;
 
     private int _tick;
     private int _bootRecoverStallCount;
@@ -66,6 +79,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO"), "1", StringComparison.Ordinal);
     private static readonly bool TraceAudioLevel =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDLVL"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceAudioDebug =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_DEBUG"), "1", StringComparison.Ordinal)
+        || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ALL"), "1", StringComparison.Ordinal);
+    private static bool TraceYmInternal =>
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_INTERNAL"), "1", StringComparison.Ordinal);
     private static readonly bool TracePerf =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PERF"), "1", StringComparison.Ordinal);
     private static readonly bool TraceAladdinDebug =
@@ -79,6 +97,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly bool YmResampleLinear =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase)
         || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_LINEAR"), "1", StringComparison.OrdinalIgnoreCase);
+    private static readonly bool YmResampleSimple =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_SIMPLE"), "1", StringComparison.OrdinalIgnoreCase);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
     private double _z80CycleMultiplier = ParseZ80CycleMultiplier();
@@ -866,19 +886,26 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _ymResampleHasCarry = false;
         // Note: _audioSystemReady is managed separately
         
-        Console.WriteLine($"[AUDIO-TIMING] ResetAudioFrameState: _psgFrameAccumulator={_psgFrameAccumulator:F2} (isGemsTiming={isGemsTiming}, accumulatorFrames={accumulatorFrames:F1}, override={(accumulatorOverride.HasValue ? 1 : 0)})");
+        if (TraceAudioDebug)
+        {
+            Console.WriteLine($"[AUDIO-TIMING] ResetAudioFrameState: _psgFrameAccumulator={_psgFrameAccumulator:F2} (isGemsTiming={isGemsTiming}, accumulatorFrames={accumulatorFrames:F1}, override={(accumulatorOverride.HasValue ? 1 : 0)})");
+        }
     }
 
     public void PowerCycleAndLoadRom(string path) => LoadRom(path);
     
     private void GenerateInitialAudioSamples()
     {
-        Console.WriteLine($"[AUDIO-TIMING] Generating initial audio samples to pre-fill buffer...");
+        if (TraceAudioDebug)
+        {
+            Console.WriteLine($"[AUDIO-TIMING] Generating initial audio samples to pre-fill buffer...");
+        }
         
         var music = md_main.g_md_music;
         if (music == null)
         {
-            Console.WriteLine($"[AUDIO-TIMING] music is null, cannot generate initial samples");
+            if (TraceAudioDebug)
+                Console.WriteLine($"[AUDIO-TIMING] music is null, cannot generate initial samples");
             return;
         }
         
@@ -887,7 +914,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int framesToGenerate = 3;
         int samplesToGenerate = framesToGenerate * (int)(PsgSampleRate / GetTargetFps());
         
-        Console.WriteLine($"[AUDIO-TIMING] Generating {framesToGenerate} frames ({samplesToGenerate} samples)");
+        if (TraceAudioDebug)
+            Console.WriteLine($"[AUDIO-TIMING] Generating {framesToGenerate} frames ({samplesToGenerate} samples)");
         
         bool wantPsg = !_psgDisabled;
         bool wantYm = _ymEnabled;
@@ -896,7 +924,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (wantPsg)
         {
             var psg = music.g_md_sn76489;
-            Console.WriteLine($"[AUDIO-TIMING] Generating {samplesToGenerate} PSG samples");
+            if (TraceAudioDebug)
+                Console.WriteLine($"[AUDIO-TIMING] Generating {samplesToGenerate} PSG samples");
             for (int i = 0; i < samplesToGenerate; i++)
             {
                 psg.SN76489_Update(); // Generate samples into PSG's internal buffer
@@ -909,7 +938,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             var ym = music.g_md_ym2612;
             // YM generates at internal rate (~53.267 kHz)
             int ymSamplesToGenerate = framesToGenerate * (int)(YmInternalSampleRate / GetTargetFps());
-            Console.WriteLine($"[AUDIO-TIMING] Generating {ymSamplesToGenerate} YM samples");
+            if (TraceAudioDebug)
+                Console.WriteLine($"[AUDIO-TIMING] Generating {ymSamplesToGenerate} YM samples");
             for (int i = 0; i < ymSamplesToGenerate; i++)
             {
                 ym.YM2612_Update(); // Generate samples into YM's internal buffer
@@ -922,7 +952,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // Mark audio system as ready immediately
         _audioSystemReady = true;
         _audioWarmupFrames = 0;
-        Console.WriteLine($"[AUDIO-TIMING] Initial audio samples generated. Audio system is ready.");
+
+        // Pre-fill mixed audio buffer to avoid startup underflow
+        int prefillFrames = samplesToGenerate;
+        if (prefillFrames > 0)
+        {
+            GetAudioBufferForFrames(prefillFrames, out _, out _);
+        }
+
+        if (TraceAudioDebug)
+            Console.WriteLine($"[AUDIO-TIMING] Initial audio samples generated. Audio system is ready.");
     }
 
     private void EnsureFramebufferInitialized(string reason)
@@ -1838,6 +1877,21 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         return true;
     }
 
+    private bool ShouldForceLogAudioPath()
+    {
+        if (_audioPathForceCount >= 2)
+            return false;
+        long now = Stopwatch.GetTimestamp();
+        if (_audioPathForceTicks == 0)
+            _audioPathForceTicks = now;
+        if (now - _audioPathForceTicks <= Stopwatch.Frequency * 2)
+        {
+            _audioPathForceCount++;
+            return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// Check if framebuffer has non-black content
     /// </summary>
@@ -1927,6 +1981,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         bool wantPsg = !_psgDisabled;
         bool wantYm = _ymEnabled;
+        if (TraceAudioDebug && ShouldForceLogAudioPath())
+        {
+            Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBuffer enter wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
+        }
         if (!wantPsg && !wantYm)
             return ReadOnlySpan<short>.Empty;
 
@@ -1943,6 +2001,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // Lock to prevent concurrent audio generation
         lock (_stateLock)
         {
+            if (TraceAudioDebug && ShouldForceLogAudioPath())
+            {
+                Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBuffer lock frame={frame} _audioSystemReady={(_audioSystemReady ? 1 : 0)}");
+            }
             if (frame == _psgLastFrame)
             {
                 // If audio was already generated this frame by GetAudioBufferForFrames,
@@ -2023,16 +2085,22 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int ymNonZero = 0;
         if (wantYm)
         {
+            long frameNow = md_main.g_md_vdp?.FrameCounter ?? -1;
+            bool dacEnabledNow = music.g_md_ym2612.DebugDacEnabled != 0;
+            if (TraceAudioDebug && !_ymResampleDebugOnce)
+            {
+                Console.Error.WriteLine($"[YM-RESAMPLE-DBG-ENTER] frame={frameNow} frames={frames} samples={samples} dacEnabled={(dacEnabledNow ? 1 : 0)}");
+            }
             if (_ymFrameBuffer.Length < samples)
                 _ymFrameBuffer = new short[samples];
 
+            // Resample YM from internal rate (~53.2kHz) to output rate (44.1kHz).
             // Audio buffer timing logging for debugging elastic music
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_BUFFER") == "1")
             {
                 Console.WriteLine($"[AUDIO-BUFFER] GetAudioBufferForFrames: Resampling YM: frames={frames} samples={samples} SystemCycles={md_main.SystemCycles}");
             }
 
-            // Resample YM from internal rate (~53.2kHz) to output rate (44.1kHz).
             double ratio = (YmInternalSampleRate * YmResampleScale) / PsgSampleRate;
             double phase = _ymResamplePhase;
             int neededInternal = (int)Math.Floor(phase + ((frames - 1) * ratio)) + 2;
@@ -2041,6 +2109,21 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             int internalSamples = neededInternal * PsgChannels;
             if (_ymInternalBuffer.Length < internalSamples)
                 _ymInternalBuffer = new short[internalSamples];
+            if (TraceYmInternal && !_ymInternalEnterLoggedOnce)
+            {
+                Console.WriteLine($"[YM-INT-ENTER] frames={frames} neededInternal={neededInternal} internalSamples={internalSamples} ratio={ratio:0.0000}");
+                _ymInternalEnterLoggedOnce = true;
+            }
+            if (TraceAudioDebug && !_ymInternalEnterLoggedOnce)
+            {
+                Console.Error.WriteLine($"[YM-INT-FORCE] enter frames={frames} neededInternal={neededInternal} internalSamples={internalSamples} ratio={ratio:0.0000}");
+                _ymInternalEnterLoggedOnce = true;
+            }
+            if (TraceYmInternal && !_ymInternalEnterLoggedOnce)
+            {
+                Console.WriteLine($"[YM-INT-ENTER] frames={frames} neededInternal={neededInternal} internalSamples={internalSamples} ratio={ratio:0.0000}");
+                _ymInternalEnterLoggedOnce = true;
+            }
 
             int writeOffsetFrames = 0;
             if (_ymResampleHasCarry)
@@ -2056,38 +2139,215 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 var dst = _ymInternalBuffer.AsSpan(writeOffsetFrames * PsgChannels, genFrames * PsgChannels);
                 music.g_md_ym2612.YM2612_UpdateBatch(dst, genFrames);
             }
+            if (TraceAudioDebug && !_ymInternalForcedLoggedOnce)
+            {
+                int min = 0;
+                int max = 0;
+                bool init = false;
+                int firstNz = -1;
+                int firstNzVal = 0;
+                int lastNz = -1;
+                int count = neededInternal * PsgChannels;
+                for (int i = 0; i < count; i++)
+                {
+                    int v = _ymInternalBuffer[i];
+                    if (!init)
+                    {
+                        init = true;
+                        min = v;
+                        max = v;
+                    }
+                    else
+                    {
+                        if (v < min) min = v;
+                        if (v > max) max = v;
+                    }
+                    if (v != 0)
+                    {
+                        if (firstNz < 0)
+                        {
+                            firstNz = i;
+                            firstNzVal = v;
+                        }
+                        lastNz = i;
+                    }
+                }
+                int s0 = _ymInternalBuffer.Length > 0 ? _ymInternalBuffer[0] : 0;
+                int s1 = _ymInternalBuffer.Length > 1 ? _ymInternalBuffer[1] : 0;
+                int s2 = _ymInternalBuffer.Length > 2 ? _ymInternalBuffer[2] : 0;
+                int s3 = _ymInternalBuffer.Length > 3 ? _ymInternalBuffer[3] : 0;
+                Console.Error.WriteLine(
+                    $"[YM-INT-FORCE] samples={count} min={min} max={max} genFrames={genFrames} writeOffset={writeOffsetFrames} " +
+                    $"s0={s0} s1={s1} s2={s2} s3={s3} firstNz={firstNz} firstNzVal={firstNzVal} lastNz={lastNz}");
+                _ymInternalForcedLoggedOnce = true;
+            }
+            if (TraceYmInternal && (_ymInternalLoggedOnce == false || ShouldLogPerSecond(ref _lastYmInternalLogTicks)))
+            {
+                int min = 0;
+                int max = 0;
+                bool init = false;
+                int count = neededInternal * PsgChannels;
+                int s0 = _ymInternalBuffer.Length > 0 ? _ymInternalBuffer[0] : 0;
+                int s1 = _ymInternalBuffer.Length > 1 ? _ymInternalBuffer[1] : 0;
+                int s2 = _ymInternalBuffer.Length > 2 ? _ymInternalBuffer[2] : 0;
+                int s3 = _ymInternalBuffer.Length > 3 ? _ymInternalBuffer[3] : 0;
+                for (int i = 0; i < count; i++)
+                {
+                    int v = _ymInternalBuffer[i];
+                    if (!init)
+                    {
+                        init = true;
+                        min = v;
+                        max = v;
+                    }
+                    else
+                    {
+                        if (v < min) min = v;
+                        if (v > max) max = v;
+                    }
+                }
+                Console.Error.WriteLine($"[YM-INT] samples={count} min={min} max={max} genFrames={genFrames} writeOffset={writeOffsetFrames} s0={s0} s1={s1} s2={s2} s3={s3}");
+                _ymInternalLoggedOnce = true;
+            }
+            if (TraceAudioDebug && !_ymInternalLoggedOnce)
+            {
+                int min = 0;
+                int max = 0;
+                bool init = false;
+                int count = neededInternal * PsgChannels;
+                for (int i = 0; i < count; i++)
+                {
+                    int v = _ymInternalBuffer[i];
+                    if (!init)
+                    {
+                        init = true;
+                        min = v;
+                        max = v;
+                    }
+                    else
+                    {
+                        if (v < min) min = v;
+                        if (v > max) max = v;
+                    }
+                }
+                Console.Error.WriteLine($"[YM-INT-FORCE] samples={count} min={min} max={max} genFrames={genFrames} writeOffset={writeOffsetFrames}");
+                _ymInternalLoggedOnce = true;
+            }
+            if (TraceYmInternal && (_ymInternalLoggedOnce == false || ShouldLogPerSecond(ref _lastYmInternalLogTicks)))
+            {
+                int min = 0;
+                int max = 0;
+                bool init = false;
+                int count = neededInternal * PsgChannels;
+                int s0 = _ymInternalBuffer.Length > 0 ? _ymInternalBuffer[0] : 0;
+                int s1 = _ymInternalBuffer.Length > 1 ? _ymInternalBuffer[1] : 0;
+                int s2 = _ymInternalBuffer.Length > 2 ? _ymInternalBuffer[2] : 0;
+                int s3 = _ymInternalBuffer.Length > 3 ? _ymInternalBuffer[3] : 0;
+                for (int i = 0; i < count; i++)
+                {
+                    int v = _ymInternalBuffer[i];
+                    if (!init)
+                    {
+                        init = true;
+                        min = v;
+                        max = v;
+                    }
+                    else
+                    {
+                        if (v < min) min = v;
+                        if (v > max) max = v;
+                    }
+                }
+                Console.WriteLine($"[YM-INT] samples={count} min={min} max={max} genFrames={genFrames} writeOffset={writeOffsetFrames} s0={s0} s1={s1} s2={s2} s3={s3}");
+                _ymInternalLoggedOnce = true;
+            }
+
+            if (TraceAudioDebug && !_ymResampleDebugOnce)
+            {
+                int baseIndex0 = (int)phase;
+                if (baseIndex0 < 0)
+                    baseIndex0 = 0;
+                int maxBase0 = neededInternal - 2;
+                if (maxBase0 < 0)
+                    maxBase0 = 0;
+                if (baseIndex0 > maxBase0)
+                    baseIndex0 = maxBase0;
+                double frac0 = phase - baseIndex0;
+                if (frac0 < 0)
+                    frac0 = 0;
+                else if (frac0 > 1.0)
+                    frac0 = 1.0;
+                int f1 = baseIndex0;
+                int f2 = baseIndex0 + 1;
+                if (f2 >= neededInternal) f2 = neededInternal - 1;
+                int sF1L = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0);
+                int sF2L = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0);
+                int sF1R = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1);
+                int sF2R = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1);
+                Console.Error.WriteLine(
+                    $"[YM-RESAMPLE-DBG] frame={frameNow} phase={phase:0.000} base={baseIndex0} frac={frac0:0.000} f1={f1} f2={f2} " +
+                    $"sF1L={sF1L} sF2L={sF2L} sF1R={sF1R} sF2R={sF2R} neededInternal={neededInternal}");
+                _ymResampleDebugOnce = true;
+            }
 
             for (int i = 0; i < frames; i++)
             {
                 int baseIndex = (int)phase;
+                if (baseIndex < 0)
+                    baseIndex = 0;
+                int maxBase = neededInternal - 2;
+                if (maxBase < 0)
+                    maxBase = 0;
+                if (baseIndex > maxBase)
+                    baseIndex = maxBase;
                 double frac = phase - baseIndex;
-                int f0 = baseIndex - 1;
-                int f1 = baseIndex;
-                int f2 = baseIndex + 1;
-                int f3 = baseIndex + 2;
+                if (frac < 0)
+                    frac = 0;
+                else if (frac > 1.0)
+                    frac = 1.0;
 
-                int ymL = _ymResampleLinear
-                    ? LinearInterpolate(
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                        frac)
-                    : CubicInterpolate(
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
-                        frac);
-                int ymR = _ymResampleLinear
-                    ? LinearInterpolate(
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                        frac)
-                    : CubicInterpolate(
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
-                        frac);
+                int ymL;
+                int ymR;
+                if (YmResampleSimple)
+                {
+                    int f = baseIndex;
+                    if (f >= neededInternal) f = neededInternal - 1;
+                    ymL = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f, 0);
+                    ymR = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f, 1);
+                }
+                else
+                {
+                    int f0 = baseIndex - 1;
+                    int f1 = baseIndex;
+                    int f2 = baseIndex + 1;
+                    int f3 = baseIndex + 2;
+                    if (f0 < 0) f0 = 0;
+                    if (f2 >= neededInternal) f2 = neededInternal - 1;
+                    if (f3 >= neededInternal) f3 = neededInternal - 1;
+
+                    ymL = _ymResampleLinear
+                        ? LinearInterpolate(
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                            frac)
+                        : CubicInterpolate(
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
+                            frac);
+                    ymR = _ymResampleLinear
+                        ? LinearInterpolate(
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                            frac)
+                        : CubicInterpolate(
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
+                            frac);
+                }
 
                 int dst = i * PsgChannels;
                 _ymFrameBuffer[dst] = (short)ymL;
@@ -2103,6 +2363,77 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             _ymResamplePhase = phase - (neededInternal - 1);
             if (_ymResamplePhase < 0)
                 _ymResamplePhase = 0;
+            else if (_ymResamplePhase > neededInternal)
+                _ymResamplePhase = 0;
+
+            bool forceResampleOut = !_ymResampleOutForcedOnce || (dacEnabledNow && !_ymResampleOutForcedDacOnce);
+            if (TraceAudioDebug && forceResampleOut)
+            {
+                int outMin = 0;
+                int outMax = 0;
+                bool outInit = false;
+                int outCount = Math.Min(samples, _ymFrameBuffer.Length);
+                for (int i = 0; i < outCount; i++)
+                {
+                    int v = _ymFrameBuffer[i];
+                    if (!outInit)
+                    {
+                        outInit = true;
+                        outMin = v;
+                        outMax = v;
+                    }
+                    else
+                    {
+                        if (v < outMin) outMin = v;
+                        if (v > outMax) outMax = v;
+                    }
+                }
+                int o0 = _ymFrameBuffer.Length > 0 ? _ymFrameBuffer[0] : 0;
+                int o1 = _ymFrameBuffer.Length > 1 ? _ymFrameBuffer[1] : 0;
+                int o2 = _ymFrameBuffer.Length > 2 ? _ymFrameBuffer[2] : 0;
+                int o3 = _ymFrameBuffer.Length > 3 ? _ymFrameBuffer[3] : 0;
+                int o4 = _ymFrameBuffer.Length > 4 ? _ymFrameBuffer[4] : 0;
+                int o5 = _ymFrameBuffer.Length > 5 ? _ymFrameBuffer[5] : 0;
+                Console.Error.WriteLine(
+                    $"[YM-RESAMPLE-OUT-FORCE] frame={frameNow} dacEnabled={(dacEnabledNow ? 1 : 0)} min={outMin} max={outMax} samples={outCount} phase={phase:0.000} ratio={ratio:0.000} " +
+                    $"o0={o0} o1={o1} o2={o2} o3={o3} o4={o4} o5={o5}");
+                if (!_ymResampleOutForcedOnce)
+                    _ymResampleOutForcedOnce = true;
+                if (dacEnabledNow)
+                    _ymResampleOutForcedDacOnce = true;
+            }
+
+            if (TraceAudioDebug && !_ymResampleOutLoggedOnce)
+            {
+                int outMin = 0;
+                int outMax = 0;
+                bool outInit = false;
+                int outCount = Math.Min(samples, _ymFrameBuffer.Length);
+                for (int i = 0; i < outCount; i++)
+                {
+                    int v = _ymFrameBuffer[i];
+                    if (!outInit)
+                    {
+                        outInit = true;
+                        outMin = v;
+                        outMax = v;
+                    }
+                    else
+                    {
+                        if (v < outMin) outMin = v;
+                        if (v > outMax) outMax = v;
+                    }
+                }
+                int o0 = _ymFrameBuffer.Length > 0 ? _ymFrameBuffer[0] : 0;
+                int o1 = _ymFrameBuffer.Length > 1 ? _ymFrameBuffer[1] : 0;
+                int o2 = _ymFrameBuffer.Length > 2 ? _ymFrameBuffer[2] : 0;
+                int o3 = _ymFrameBuffer.Length > 3 ? _ymFrameBuffer[3] : 0;
+                int o4 = _ymFrameBuffer.Length > 4 ? _ymFrameBuffer[4] : 0;
+                int o5 = _ymFrameBuffer.Length > 5 ? _ymFrameBuffer[5] : 0;
+                Console.Error.WriteLine($"[YM-RESAMPLE-OUT] frame={frameNow} dacEnabled={(dacEnabledNow ? 1 : 0)} min={outMin} max={outMax} samples={outCount} phase={phase:0.000} ratio={ratio:0.000}");
+                Console.Error.WriteLine($"[YM-RESAMPLE-OUT] first o0={o0} o1={o1} o2={o2} o3={o3} o4={o4} o5={o5}");
+                _ymResampleOutLoggedOnce = true;
+            }
 
             int mixMin = 0;
             int mixMax = 0;
@@ -2157,10 +2488,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 if (trackAudioLevel)
                     mixSumSq += (long)mixed * mixed;
             }
+            if (TraceAudioDebug && !_ymResampleOutLoggedOnce && dacEnabledNow)
+            {
+                Console.Error.WriteLine($"[YM-MIX-OUT] frame={frameNow} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax}");
+            }
 
             if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
             {
-                Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax} samples={samples}");
+                Console.WriteLine(
+                    $"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax} samples={samples} " +
+                    $"wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
             }
 
             if (trackAudioLevel && ShouldLogPerSecond(ref _lastAudioLevelTicks))
@@ -2192,12 +2529,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 }
                 Console.WriteLine(
                     $"[AUDIOCORE] frames={frames} psgPeak={psgPeak} ymPeak={ymPeak} mixPeak={mixPeak} " +
-                    $"psgNZ={psgNonZero} ymNZ={ymNonZero} mixNZ={mixNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
+                    $"psgNZ={psgNonZero} ymNZ={ymNonZero} mixNZ={mixNonZero} outVolMin={outVolMin} outVolMax={outVolMax} " +
+                    $"wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
             }
         }
         else if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
         {
-            Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin=NA ymMax=NA mixMin=NA mixMax=NA samples={samples}");
+            Console.WriteLine(
+                $"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin=NA ymMax=NA mixMin=NA mixMax=NA samples={samples} " +
+                $"wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
         }
 
         if (trackAudioLevel && !wantYm && ShouldLogPerSecond(ref _lastAudioLevelTicks))
@@ -2225,7 +2565,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
             Console.WriteLine(
                 $"[AUDIOCORE] frames={frames} psgPeak={psgPeak} ymPeak=0 mixPeak={psgPeak} " +
-                $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
+                $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax} " +
+                $"wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
         }
 
         MaybeDumpYmSilence(music, wantYm, ymPeak, ymNonZero);
@@ -2252,6 +2593,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         bool wantPsg = !_psgDisabled;
         bool wantYm = _ymEnabled;
+        if (TraceAudioDebug && ShouldForceLogAudioPath())
+        {
+            Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBufferForFrames enter frames={frames} wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
+        }
         if (!wantPsg && !wantYm)
             return ReadOnlySpan<short>.Empty;
 
@@ -2266,6 +2611,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // Lock to prevent concurrent audio generation
         lock (_stateLock)
         {
+            if (TraceAudioDebug && ShouldForceLogAudioPath())
+            {
+                Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBufferForFrames lock frame={md_main.g_md_vdp?.FrameCounter ?? -1} _audioSystemReady={(_audioSystemReady ? 1 : 0)}");
+            }
             // Mark that audio is being generated this frame
             long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
             if (frame != _psgLastFrame)
@@ -2333,6 +2682,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int mixNonZero = 0;
         if (wantYm)
         {
+            long frameNow = md_main.g_md_vdp?.FrameCounter ?? -1;
+            bool dacEnabledNow = music.g_md_ym2612.DebugDacEnabled != 0;
+            if (TraceAudioDebug && !_ymInternalForcedLoggedOnce)
+            {
+                Console.Error.WriteLine($"[YM-INT-FORCE] enter wantYm=1 frames={frames} samples={samples}");
+            }
             if (_ymFrameBuffer.Length < samples)
                 _ymFrameBuffer = new short[samples];
 
@@ -2360,38 +2715,142 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 var dst = _ymInternalBuffer.AsSpan(writeOffsetFrames * PsgChannels, genFrames * PsgChannels);
                 music.g_md_ym2612.YM2612_UpdateBatch(dst, genFrames);
             }
+            if (TraceAudioDebug && !_ymInternalForcedLoggedOnce)
+            {
+                Console.Error.WriteLine($"[YM-INT-FORCE] after UpdateBatch genFrames={genFrames} writeOffset={writeOffsetFrames}");
+                _ymInternalForcedLoggedOnce = true;
+            }
+            if (TraceAudioDebug && !_ymInternalForcedSummaryOnce && (frameNow >= 200 || dacEnabledNow))
+            {
+                int min = 0;
+                int max = 0;
+                bool init = false;
+                int firstNz = -1;
+                int firstNzVal = 0;
+                int lastNz = -1;
+                int count = neededInternal * PsgChannels;
+                for (int i = 0; i < count; i++)
+                {
+                    int v = _ymInternalBuffer[i];
+                    if (!init)
+                    {
+                        init = true;
+                        min = v;
+                        max = v;
+                    }
+                    else
+                    {
+                        if (v < min) min = v;
+                        if (v > max) max = v;
+                    }
+                    if (v != 0)
+                    {
+                        if (firstNz < 0)
+                        {
+                            firstNz = i;
+                            firstNzVal = v;
+                        }
+                        lastNz = i;
+                    }
+                }
+                int s0 = _ymInternalBuffer.Length > 0 ? _ymInternalBuffer[0] : 0;
+                int s1 = _ymInternalBuffer.Length > 1 ? _ymInternalBuffer[1] : 0;
+                int s2 = _ymInternalBuffer.Length > 2 ? _ymInternalBuffer[2] : 0;
+                int s3 = _ymInternalBuffer.Length > 3 ? _ymInternalBuffer[3] : 0;
+                Console.Error.WriteLine(
+                    $"[YM-INT-FORCE] frame={frameNow} dacEnabled={(dacEnabledNow ? 1 : 0)} samples={count} min={min} max={max} genFrames={genFrames} writeOffset={writeOffsetFrames} " +
+                    $"s0={s0} s1={s1} s2={s2} s3={s3} firstNz={firstNz} firstNzVal={firstNzVal} lastNz={lastNz}");
+                _ymInternalForcedSummaryOnce = true;
+            }
+            if (TraceAudioDebug && !_ymInternalDacStateLoggedOnce && (frameNow >= 200 || dacEnabledNow))
+            {
+                int dacEnabled = dacEnabledNow ? 1 : 0;
+                int dacData = music.g_md_ym2612.DebugDacData;
+                byte lastAddr = music.g_md_ym2612.DebugLastYmAddr;
+                byte lastVal = music.g_md_ym2612.DebugLastYmVal;
+                string lastSrc = music.g_md_ym2612.DebugLastYmSource;
+                Console.Error.WriteLine(
+                    $"[YM-DAC-STATE] frame={frameNow} enabled={dacEnabled} dacData=0x{dacData:X3} lastAddr=0x{lastAddr:X2} lastVal=0x{lastVal:X2} src={lastSrc}");
+                _ymInternalDacStateLoggedOnce = true;
+            }
+
+            if (TraceAudioDebug && !_ymResampleDebugFramesOnce && (frameNow >= 200 || dacEnabledNow))
+            {
+                int baseIndex0 = (int)phase;
+                if (baseIndex0 < 0)
+                    baseIndex0 = 0;
+                int maxBase0 = neededInternal - 2;
+                if (maxBase0 < 0)
+                    maxBase0 = 0;
+                if (baseIndex0 > maxBase0)
+                    baseIndex0 = maxBase0;
+                double frac0 = phase - baseIndex0;
+                if (frac0 < 0)
+                    frac0 = 0;
+                else if (frac0 > 1.0)
+                    frac0 = 1.0;
+                int f1 = baseIndex0;
+                int f2 = baseIndex0 + 1;
+                if (f2 >= neededInternal) f2 = neededInternal - 1;
+                int sF1L = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0);
+                int sF2L = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0);
+                int sF1R = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1);
+                int sF2R = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1);
+                Console.Error.WriteLine(
+                    $"[YM-RESAMPLE-DBG-FRAMES] frame={frameNow} phase={phase:0.000} base={baseIndex0} frac={frac0:0.000} f1={f1} f2={f2} " +
+                    $"sF1L={sF1L} sF2L={sF2L} sF1R={sF1R} sF2R={sF2R} neededInternal={neededInternal}");
+                _ymResampleDebugFramesOnce = true;
+            }
 
             for (int i = 0; i < frames; i++)
             {
                 int baseIndex = (int)phase;
+                if (baseIndex < 0)
+                    baseIndex = 0;
+                int maxBase = neededInternal - 2;
+                if (maxBase < 0)
+                    maxBase = 0;
+                if (baseIndex > maxBase)
+                    baseIndex = maxBase;
                 double frac = phase - baseIndex;
+                if (frac < 0)
+                    frac = 0;
+                else if (frac > 1.0)
+                    frac = 1.0;
                 int f0 = baseIndex - 1;
                 int f1 = baseIndex;
                 int f2 = baseIndex + 1;
                 int f3 = baseIndex + 2;
+                if (f0 < 0) f0 = 0;
+                if (f2 >= neededInternal) f2 = neededInternal - 1;
+                if (f3 >= neededInternal) f3 = neededInternal - 1;
 
-                int ymL = _ymResampleLinear
-                    ? LinearInterpolate(
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                        frac)
-                    : CubicInterpolate(
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
-                        frac);
-                int ymR = _ymResampleLinear
-                    ? LinearInterpolate(
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                        frac)
-                    : CubicInterpolate(
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
-                        frac);
+                int ymL = YmResampleSimple
+                    ? ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0)
+                    : (_ymResampleLinear
+                        ? LinearInterpolate(
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                            frac)
+                        : CubicInterpolate(
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
+                            frac));
+                int ymR = YmResampleSimple
+                    ? ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1)
+                    : (_ymResampleLinear
+                        ? LinearInterpolate(
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                            frac)
+                        : CubicInterpolate(
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
+                            frac));
 
                 int dst = i * PsgChannels;
                 _ymFrameBuffer[dst] = (short)ymL;
@@ -2400,12 +2859,51 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 phase += ratio;
             }
 
+            bool forceResampleOut = !_ymResampleOutForcedOnce || (dacEnabledNow && !_ymResampleOutForcedDacOnce);
+            if (TraceAudioDebug && forceResampleOut)
+            {
+                int outMin = 0;
+                int outMax = 0;
+                bool outInit = false;
+                int outCount = Math.Min(samples, _ymFrameBuffer.Length);
+                for (int i = 0; i < outCount; i++)
+                {
+                    int v = _ymFrameBuffer[i];
+                    if (!outInit)
+                    {
+                        outInit = true;
+                        outMin = v;
+                        outMax = v;
+                    }
+                    else
+                    {
+                        if (v < outMin) outMin = v;
+                        if (v > outMax) outMax = v;
+                    }
+                }
+                int o0 = _ymFrameBuffer.Length > 0 ? _ymFrameBuffer[0] : 0;
+                int o1 = _ymFrameBuffer.Length > 1 ? _ymFrameBuffer[1] : 0;
+                int o2 = _ymFrameBuffer.Length > 2 ? _ymFrameBuffer[2] : 0;
+                int o3 = _ymFrameBuffer.Length > 3 ? _ymFrameBuffer[3] : 0;
+                int o4 = _ymFrameBuffer.Length > 4 ? _ymFrameBuffer[4] : 0;
+                int o5 = _ymFrameBuffer.Length > 5 ? _ymFrameBuffer[5] : 0;
+                Console.Error.WriteLine(
+                    $"[YM-RESAMPLE-OUT-FORCE] frame={frameNow} dacEnabled={(dacEnabledNow ? 1 : 0)} min={outMin} max={outMax} samples={outCount} phase={phase:0.000} ratio={ratio:0.000} " +
+                    $"o0={o0} o1={o1} o2={o2} o3={o3} o4={o4} o5={o5}");
+                if (!_ymResampleOutForcedOnce)
+                    _ymResampleOutForcedOnce = true;
+                if (dacEnabledNow)
+                    _ymResampleOutForcedDacOnce = true;
+            }
+
             int lastIndex = (neededInternal - 1) * PsgChannels;
             _ymResampleCarryL = _ymInternalBuffer[lastIndex];
             _ymResampleCarryR = _ymInternalBuffer[lastIndex + 1];
             _ymResampleHasCarry = true;
             _ymResamplePhase = phase - (neededInternal - 1);
             if (_ymResamplePhase < 0)
+                _ymResamplePhase = 0;
+            else if (_ymResamplePhase > neededInternal)
                 _ymResamplePhase = 0;
 
             for (int i = 0; i < samples; i++)
@@ -2459,7 +2957,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
             if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
             {
-                Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax} samples={samples}");
+                Console.WriteLine(
+                    $"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax} samples={samples} " +
+                    $"wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
             }
 
             if (trackAudioLevel && ShouldLogPerSecond(ref _lastAudioLevelTicks))
@@ -2491,12 +2991,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 }
                 Console.WriteLine(
                     $"[AUDIOCORE] frames={frames} psgPeak={psgPeak} ymPeak={ymPeak} mixPeak={mixPeak} " +
-                    $"psgNZ={psgNonZero} ymNZ={ymNonZero} mixNZ={mixNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
+                    $"psgNZ={psgNonZero} ymNZ={ymNonZero} mixNZ={mixNonZero} outVolMin={outVolMin} outVolMax={outVolMax} " +
+                    $"wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
             }
         }
         else if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
         {
-            Console.WriteLine($"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin=NA ymMax=NA mixMin=NA mixMax=NA samples={samples}");
+            Console.WriteLine(
+                $"[Audio] psgMin={psgMin} psgMax={psgMax} ymMin=NA ymMax=NA mixMin=NA mixMax=NA samples={samples} " +
+                $"wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
         }
 
         if (trackAudioLevel && !wantYm && ShouldLogPerSecond(ref _lastAudioLevelTicks))
@@ -2524,7 +3027,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
             Console.WriteLine(
                 $"[AUDIOCORE] frames={frames} psgPeak={psgPeak} ymPeak=0 mixPeak={psgPeak} " +
-                $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax}");
+                $"psgNZ={psgNonZero} ymNZ=0 mixNZ={psgNonZero} outVolMin={outVolMin} outVolMax={outVolMax} " +
+                $"wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
         }
 
         MaybeDumpYmSilence(music, wantYm, ymPeak, ymNonZero);
