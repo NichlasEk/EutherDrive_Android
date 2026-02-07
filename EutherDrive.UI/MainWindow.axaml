@@ -125,6 +125,11 @@
         <TextBlock Name="EmuFpsText" Text="Emu FPS: -"/>
         <CheckBox Content="Speed lock (real-time)" IsChecked="True" Name="SpeedLockCheck" Checked="OnSpeedLockToggle" Unchecked="OnSpeedLockToggle"/>
         <CheckBox Content="Render skip when fast" IsChecked="False" Name="RenderSkipCheck" Checked="OnRenderSkipToggle" Unchecked="OnRenderSkipToggle"/>
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <TextBlock Text="Speed" VerticalAlignment="Center"/>
+          <Slider Name="SpeedSlider" Minimum="0.5" Maximum="2.0" Value="1.0" Width="140" TickFrequency="0.1" IsSnapToTickEnabled="True" ValueChanged="OnSpeedSliderChanged"/>
+          <TextBlock Name="SpeedValueText" Text="100%" VerticalAlignment="Center"/>
+        </StackPanel>
         <StackPanel Orientation="Horizontal" Spacing="4">
           <TextBlock VerticalAlignment="Center" Text="Rate:"/>
           <ComboBox Name="FrameRateCombo" SelectedIndex="0" SelectionChanged="OnFrameRateChanged">

@@ -114,6 +114,7 @@ public partial class MainWindow : Window
     private bool _speedLockEnabled = true;
     private bool _renderSkipEnabled;
     private int _renderSkipCounter;
+    private double _speedScale = 1.0;
     private long _emuFpsLastTicks;
     private int _emuFpsFrames;
     private double _emuActualFps;
@@ -238,6 +239,7 @@ public partial class MainWindow : Window
         UpdateRomRegionHintText();
         UpdateSpeedLockUi();
         UpdateRenderSkipUi();
+        UpdateSpeedUi();
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
@@ -360,6 +362,22 @@ public partial class MainWindow : Window
     {
         _renderSkipEnabled = RenderSkipCheck?.IsChecked == true;
         _renderSkipCounter = 0;
+        SaveSettings();
+    }
+
+    private void UpdateSpeedUi()
+    {
+        if (SpeedSlider != null)
+            SpeedSlider.Value = _speedScale;
+        if (SpeedValueText != null)
+            SpeedValueText.Text = $"{_speedScale * 100:0}%";
+    }
+
+    private void OnSpeedSliderChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        _speedScale = e.NewValue;
+        if (SpeedValueText != null)
+            SpeedValueText.Text = $"{_speedScale * 100:0}%";
         SaveSettings();
     }
 
@@ -1143,6 +1161,7 @@ public partial class MainWindow : Window
         public double Z80CyclesMult { get; set; } = 1.0;
         public bool SpeedLockEnabled { get; set; } = true;
         public bool RenderSkipEnabled { get; set; } = false;
+        public double SpeedScale { get; set; } = 1.0;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
         public FrameRateMode FrameRateMode { get; set; } = FrameRateMode.Auto;
@@ -1204,6 +1223,7 @@ public partial class MainWindow : Window
         _z80CyclesMult = settings.Z80CyclesMult > 0 ? settings.Z80CyclesMult : 1.0;
         _speedLockEnabled = settings.SpeedLockEnabled;
         _renderSkipEnabled = settings.RenderSkipEnabled;
+        _speedScale = settings.SpeedScale > 0 ? settings.SpeedScale : 1.0;
 
         _defaultRegionOverride = settings.DefaultRegionOverride;
         _romRegionOverrides.Clear();
@@ -1220,6 +1240,7 @@ public partial class MainWindow : Window
         UpdateZ80CyclesMultUi();
         UpdateSpeedLockUi();
         UpdateRenderSkipUi();
+        UpdateSpeedUi();
     }
 
     private static int ClampPercent(int value)
@@ -1259,6 +1280,7 @@ public partial class MainWindow : Window
             Z80CyclesMult = _z80CyclesMult,
             SpeedLockEnabled = _speedLockEnabled,
             RenderSkipEnabled = _renderSkipEnabled,
+            SpeedScale = _speedScale,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
             FrameRateMode = _frameRateMode
@@ -2609,8 +2631,8 @@ public partial class MainWindow : Window
     private double GetLiveTargetFps()
     {
         if (_core is MdTracerAdapter adapter)
-            return adapter.GetTargetFps();
-        return Volatile.Read(ref _emuTargetFps);
+            return adapter.GetTargetFps() * _speedScale;
+        return Volatile.Read(ref _emuTargetFps) * _speedScale;
     }
 
     private unsafe void StartHeartbeat()
