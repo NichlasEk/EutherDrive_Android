@@ -172,6 +172,14 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_RESET_ASSERT_ON_BOOT"), "1", StringComparison.Ordinal);
         private static readonly bool Z80ResetAssertLog =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_RESET_ASSERT_LOG"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80Reset =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_RESET"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceCaWrite =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CA_WRITE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80ResetRelease =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_RESET_RELEASE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceBusWrite16 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS_WRITE16"), "1", StringComparison.Ordinal);
         private static readonly bool ForceZ80PcOnUpload =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD"), "1", StringComparison.Ordinal);
         private static readonly ushort ForceZ80PcOnUploadStart =
@@ -1768,7 +1776,8 @@ namespace EutherDrive.Core.MdTracerCore
             // Log writes of value 0xCA to RAM (DMA table)
             if (in_data == 0xCA && in_address >= 0xFF0000 && in_address <= 0xFFFFFF)
             {
-                Console.WriteLine($"[0xCA-WRITE-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8}");
+                if (TraceCaWrite)
+                    Console.WriteLine($"[0xCA-WRITE-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8}");
             }
             // Also log writes to VDP data port (C00000) and control port (C00004)
             if (in_address == 0xC00000 || in_address == 0xC00004)
@@ -2001,7 +2010,8 @@ namespace EutherDrive.Core.MdTracerCore
             // Debug logging for Madou palette writes
             if ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0))
             {
-                Console.WriteLine($"[BUS-WRITE16-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X4} PC=0x{g_reg_PC:X6}");
+                if (TraceBusWrite16)
+                    Console.WriteLine($"[BUS-WRITE16-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X4} PC=0x{g_reg_PC:X6}");
             }
 
             if (IsZ80BusReq(in_address))
@@ -2848,7 +2858,8 @@ namespace EutherDrive.Core.MdTracerCore
                     ApplyZ80BusReqLatch();
                     bool newActive = !_z80BusGranted && !_z80Reset;
                     long currentFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                    Console.WriteLine($"[Z80-RESET-RELEASE] frame={currentFrame} reset released, setting g_active={newActive} (busreq={_z80BusGranted}, reset={_z80Reset})");
+                    if (TraceZ80ResetRelease)
+                        Console.WriteLine($"[Z80-RESET-RELEASE] frame={currentFrame} reset released, setting g_active={newActive} (busreq={_z80BusGranted}, reset={_z80Reset})");
                     md_main.g_md_z80.g_active = newActive;
                 }
 
@@ -2862,7 +2873,8 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
                 uint pc68k = md_main.g_md_m68k != null ? md_m68k.g_reg_PC : 0u;
-                Console.WriteLine($"[Z80RESET] frame={frame} write addr=0x{addr:X6} val=0x{logValue:X} resetOn={(next ? 1 : 0)} pc68k=0x{pc68k:X6}");
+                if (TraceZ80Reset)
+                    Console.WriteLine($"[Z80RESET] frame={frame} write addr=0x{addr:X6} val=0x{logValue:X} resetOn={(next ? 1 : 0)} pc68k=0x{pc68k:X6}");
             }
             if (prev != next && TraceZ80Sig)
                 Console.WriteLine($"[Z80SIG] RESET={(next ? 1 : 0)} ({(next ? "assert" : "deassert")})");

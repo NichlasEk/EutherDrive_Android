@@ -70,7 +70,7 @@ public sealed class AudioEngine : IDisposable
     private static readonly bool OutputPllEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL"), "1", StringComparison.Ordinal);
     private static readonly bool TimedDrainEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN"), "1", StringComparison.Ordinal);
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN"), "0", StringComparison.Ordinal);
 
     public AudioEngine(IAudioSink sink, int sampleRate, int channels, int framesPerBatch = 1024, int bufferFrames = 8192)
     {
@@ -100,6 +100,11 @@ public sealed class AudioEngine : IDisposable
     public bool IsRunning => _running;
     public bool IsPullMode => _producer != null;
     public int BufferedFrames => Volatile.Read(ref _currentBufferedFrames);
+    public long ProducedFramesTotal => Interlocked.Read(ref _producedFramesTotal);
+    public long ConsumedFramesTotal => Interlocked.Read(ref _consumedFramesTotal);
+    public long DroppedFramesTotal => Interlocked.Read(ref _droppedFramesTotal);
+    public long UnderrunEventsTotal => Interlocked.Read(ref _underrunEventsTotal);
+    public long UnderrunFramesTotal => Interlocked.Read(ref _underrunFramesTotal);
 
     public void Start()
     {

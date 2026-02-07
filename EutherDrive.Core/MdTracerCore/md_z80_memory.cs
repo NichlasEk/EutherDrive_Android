@@ -14,6 +14,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int Z80BankWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_BANK_WAIT", 16);
         private static readonly bool TraceZ80AudioRate =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80PsgWrite =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_PSG_WRITE"), "1", StringComparison.Ordinal);
         private static readonly int TraceZ80AudioRateEvery = ParseWaitCycles("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_EVERY", 60);
         private static readonly int TraceZ80AudioRateStartFrame = ParseWaitCycles("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_START_FRAME", 0);
         private const double Z80_CLOCK = 3579545.0;
@@ -1403,7 +1405,8 @@ namespace EutherDrive.Core.MdTracerCore
             else if (a == 0x7F11)
             {
                 // SN76489 PSG
-                Console.WriteLine($"[Z80-PSG-WRITE] addr=0x{a:X4} val=0x{in_data:X2} PC=0x{DebugPc:X4}");
+                if (TraceZ80PsgWrite)
+                    Console.WriteLine($"[Z80-PSG-WRITE] addr=0x{a:X4} val=0x{in_data:X2} PC=0x{DebugPc:X4}");
                 if (Z80PsgWaitCycles > 0)
                     AddWaitCycles(Z80PsgWaitCycles);
                 md_psg_trace.TraceWrite("Z80", a, in_data, DebugPc);

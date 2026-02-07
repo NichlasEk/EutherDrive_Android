@@ -41,6 +41,8 @@ public sealed class MegaDriveBus
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN"), "1", StringComparison.Ordinal);
     private static readonly bool TraceZ80RegDecode =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80REG_DECODE"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceZ80Reset =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_RESET"), "1", StringComparison.Ordinal);
     private static bool TraceZ80Sig => MdTracerCore.MdLog.TraceZ80Sig;
     private static bool MapZ80OddReadToNext => ReadEnvDefaultOn("EUTHERDRIVE_Z80_ODD_READ_TO_NEXT");
 
@@ -413,7 +415,7 @@ public sealed class MegaDriveBus
             LogZ80RegWrite(addr, value);
             LogBusAccess("reset write8", addr, value);
             LogZ80RegDecode("RESET", addr, raw, uds, lds, regByte, next);
-            if (TraceZ80Win)
+            if (TraceZ80Reset)
                 Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X2}");
             if (prev != next && TraceZ80Sig)
                 Console.WriteLine($"[Z80SIG] RESET={(next ? 1 : 0)} ({(next ? "assert" : "deassert")})");
@@ -520,7 +522,7 @@ public sealed class MegaDriveBus
             LogZ80RegWrite(addr, value);
             LogBusAccess("reset write16", addr, value);
             LogZ80RegDecode("RESET", addr, raw, uds, lds, regByte, next);
-            if (TraceZ80Win)
+            if (TraceZ80Reset)
                 Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X4}");
             if (prev != next && TraceZ80Sig)
                 Console.WriteLine($"[Z80SIG] RESET={(next ? 1 : 0)} ({(next ? "assert" : "deassert")})");
@@ -615,7 +617,7 @@ public sealed class MegaDriveBus
             LogZ80RegWrite(addr, value);
             LogBusAccess("reset write32", addr, value);
             LogZ80RegDecode("RESET", addr, raw, uds, lds, regByte, next);
-            if (TraceZ80Win)
+            if (TraceZ80Reset)
                 Console.WriteLine($"[Z80RESET]  write addr=0x{addr:X6} value=0x{value:X8}");
             if (prev != next && TraceZ80Sig)
                 Console.WriteLine($"[Z80SIG] RESET={(next ? 1 : 0)} ({(next ? "assert" : "deassert")})");

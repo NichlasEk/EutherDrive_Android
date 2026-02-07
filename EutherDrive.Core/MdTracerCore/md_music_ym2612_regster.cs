@@ -6,6 +6,10 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_ym2612
     {
+        private static readonly bool TraceDacDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC_DEBUG"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceDacEnable =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC_ENABLE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceDac =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC"), "1", StringComparison.Ordinal);
         private static readonly bool TraceYmReg =
@@ -680,7 +684,8 @@ namespace EutherDrive.Core.MdTracerCore
                                  int dac9bit = ((shiftedVal << 1) & 0x1FE) | (g_reg_2a_dac_data & 1);
                                  int finalSigned = dac9bit - 0x100;
                                  
-                                 Console.WriteLine($"[DAC-DEBUG {_dacDebugWriteCount}] val=0x{in_val:X2} ({signedVal}) -> shifted=0x{shiftedVal:X2} -> dac9bit=0x{dac9bit:X3} -> final={finalSigned} enabled={_dacEnabled} g_reg_2b_dac=0x{g_reg_2b_dac:X2}");
+                                 if (TraceDacDebug)
+                                     Console.WriteLine($"[DAC-DEBUG {_dacDebugWriteCount}] val=0x{in_val:X2} ({signedVal}) -> shifted=0x{shiftedVal:X2} -> dac9bit=0x{dac9bit:X3} -> final={finalSigned} enabled={_dacEnabled} g_reg_2b_dac=0x{g_reg_2b_dac:X2}");
                              }
                              
                              if (TraceDac)
@@ -778,7 +783,8 @@ namespace EutherDrive.Core.MdTracerCore
                          {
                              bool enabled = (in_val & 0x80) != 0;
                              // DEBUG: Log DAC enable/disable
-                             Console.WriteLine($"[DAC-ENABLE] val=0x{in_val:X2} enabled={enabled} (bit7={((in_val & 0x80) != 0)})");
+                             if (TraceDacEnable)
+                                 Console.WriteLine($"[DAC-ENABLE] val=0x{in_val:X2} enabled={enabled} (bit7={((in_val & 0x80) != 0)})");
                              
                              if (TraceDac)
                              {

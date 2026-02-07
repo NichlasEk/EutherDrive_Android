@@ -42,6 +42,10 @@ UI
 - EUTHERDRIVE_TRACE_Z80_FORCE_ACTIVE=1: log when Z80 is forced active (gated).
 - EUTHERDRIVE_TRACE_Z80_INT_DEBUG=1: log Z80 interrupt debug lines (gated).
 - EUTHERDRIVE_TRACE_Z80_BOOT=1: log Z80 boot/driver entry dumps (very noisy; gated).
+- EUTHERDRIVE_TRACE_Z80_RESET=1: log Z80 reset writes (very noisy; gated).
+- EUTHERDRIVE_TRACE_Z80_RESET_RELEASE=1: log Z80 reset release toggles (very noisy; gated).
+- EUTHERDRIVE_TRACE_Z80_RUN=1: log Z80 run slices (very noisy; gated).
+- EUTHERDRIVE_TRACE_Z80_PSG_WRITE=1: log Z80 PSG writes (very noisy; gated).
 - EUTHERDRIVE_TRACE_INTERLACE_DEBUG=1: log interlace debug stats (very noisy; gated).
 - EUTHERDRIVE_TRACE_NAME_TABLE=1: log name table summary at VBlank (gated).
 - EUTHERDRIVE_TRACE_VRAM_PAGE_STATS=1: log VRAM page stats at VBlank (gated).
@@ -49,9 +53,13 @@ UI
 - EUTHERDRIVE_AUDIO=1: enable audio output (pw-cat).
 - EUTHERDRIVE_AUDIO_TIMED=1: time-based audio fill (wall-clock) to keep audio steady when FPS is low (default on; set 0 to disable).
 - EUTHERDRIVE_AUDIO_TIMED_MAX_FRAMES=<int>: cap frames generated per tick in timed mode (default 1024).
-- EUTHERDRIVE_AUDIO_TIMED_DRAIN=1: pace audio drain on wall-clock (default off).
+- EUTHERDRIVE_AUDIO_TIMED_DRAIN=0: disable wall-clock paced audio drain (default on).
 - EUTHERDRIVE_AUDIO_OUT_PLL=1: enable output-side PLL resampling to keep buffer near target (default off).
 - EUTHERDRIVE_AUDIO_OUT_PLL_MAX=<float>: max output PLL ratio adjustment (default 0.005).
+- EUTHERDRIVE_TRACE_PSG_WRITE=1: log PSG register writes (very noisy; gated).
+- EUTHERDRIVE_TRACE_DAC_DEBUG=1: log YM2612 DAC debug writes (very noisy; gated).
+- EUTHERDRIVE_TRACE_DAC_ENABLE=1: log YM2612 DAC enable toggles (very noisy; gated).
+- EUTHERDRIVE_TRACE_YM_SYNC_INIT=1: log YM2612 sync init (gated).
 
 VDP
 - EUTHERDRIVE_TRACE_VDP=1: VDP log (general).
@@ -59,6 +67,9 @@ VDP
 - EUTHERDRIVE_TRACE_VDP_TIMING=1: VDP timing log.
 - EUTHERDRIVE_TRACE_VDP_FB=1: VDP framebuffer sampling.
 - EUTHERDRIVE_TRACE_VDP_STATUS_READ=1: log VDP status reads (C00004) with vblank/overflow/collision bits.
+- EUTHERDRIVE_TRACE_DISPLAY_ON=1: log when VDP reg1 turns display on (very noisy; gated).
+- EUTHERDRIVE_TRACE_REG12=1: log VDP reg12 writes/applies (very noisy; gated).
+- EUTHERDRIVE_TRACE_VDP_FRAME_SIZE=1: log VDP output size changes (gated).
 - EUTHERDRIVE_TRACE_SPRITE_OVERFLOW_FRAME=1: log per-frame max sprites/cells per line + overflow flag.
 - EUTHERDRIVE_TRACE_VRAM=1: VRAM vs renderer VRAM sampling.
 - EUTHERDRIVE_TRACE_VRAM_RANGE=<start-end>: log VRAM writes in range (hex; e.g. 0xC000-0xC7FF).
@@ -66,6 +77,11 @@ VDP
 - EUTHERDRIVE_TRACE_VRAM_RANGE_SKIP_FILL=1: skip [VRAM-RANGE] logs for DMA-FILL writes.
 - EUTHERDRIVE_TRACE_DMA_SRC=1: log DMA source reads (address/value) for VDP DMA.
 - EUTHERDRIVE_TRACE_DMA_SRC_LIMIT=<int>: limit [DMA-SRC-READ] logs (0 = unlimited; default 128).
+- EUTHERDRIVE_TRACE_DMA_DETAIL=1: log DMA detail lines (very noisy; gated).
+- EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES=1: log pattern (tile) writes in VRAM for early frames (very noisy; gated).
+- EUTHERDRIVE_TRACE_VRAM_NAME=1: log first name table writes (gated).
+- EUTHERDRIVE_TRACE_RENDER_PLANE=1: log renderer plane debug tiles (very noisy; gated).
+- EUTHERDRIVE_TRACE_RENDER_READ=1: log renderer VRAM read debug (very noisy; gated).
 - EUTHERDRIVE_TRACE_TILE_FETCH=1: log tile fetches in renderer (per scanline).
 - EUTHERDRIVE_TRACE_TILE_FETCH_SCANLINE=<int>: scanline to log (default 112).
 - EUTHERDRIVE_TRACE_TILE_FETCH_LIMIT=<int>: max [TILEFETCH] logs per frame (0 = unlimited; default 128).
@@ -100,6 +116,8 @@ CPU / 68k
 - EUTHERDRIVE_TRACE_ROMCOPY=1: ROM copy trace.
 - EUTHERDRIVE_TRACE_RESETVECT=1: reset vector trace.
 - EUTHERDRIVE_TRACE_MEM_WATCH_LIST=<addr,addr,...>: log reads/writes to any listed address (hex or dec).
+- EUTHERDRIVE_TRACE_CA_WRITE=1: log 0xCA write debug lines (very noisy; gated).
+- EUTHERDRIVE_TRACE_BUS_WRITE16=1: log 68k bus write16 debug lines (very noisy; gated).
 - EUTHERDRIVE_FORCE_B154_READ=<byte>: force 68k reads at 0xFFB154 to this value (hex or dec).
 - EUTHERDRIVE_FORCE_B154_READ_LIMIT=<int>: limit [B154-OVERRIDE] logs (0 = unlimited).
 

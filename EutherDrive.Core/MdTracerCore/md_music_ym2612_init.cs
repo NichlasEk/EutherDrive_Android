@@ -4,6 +4,8 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_ym2612
     {
+        private static readonly bool TraceYmSyncInit =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_SYNC_INIT"), "1", StringComparison.Ordinal);
         //const
         private const int NUM_CHANNELS = 6;
         private const int NUM_SLOT = 4;
@@ -189,7 +191,8 @@ namespace EutherDrive.Core.MdTracerCore
             // Set _syncFm.CurrentCycle to current master cycle
             long masterCycle = md_main.GetMasterCycle();
             md_main.GetSyncFm().CurrentCycle = masterCycle;
-            Console.WriteLine($"[YM-SYNC-INIT] YM2612_Start: Setting sync.CurrentCycle={md_main.GetSyncFm().CurrentCycle} masterCycle={masterCycle} SystemCycles={md_main.SystemCycles}");
+            if (TraceYmSyncInit)
+                Console.WriteLine($"[YM-SYNC-INIT] YM2612_Start: Setting sync.CurrentCycle={md_main.GetSyncFm().CurrentCycle} masterCycle={masterCycle} SystemCycles={md_main.SystemCycles}");
             
             //regster
             g_reg_30_multi = new double[NUM_CHANNELS, NUM_SLOT];

@@ -4,6 +4,8 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private static readonly bool TraceAudStat =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDSTAT"), "1", StringComparison.Ordinal);
+        private static readonly bool TracePsgWrite =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PSG_WRITE"), "1", StringComparison.Ordinal);
         private int _audStatWrites;
 
         public void write8(byte in_val)
@@ -12,8 +14,11 @@ namespace EutherDrive.Core.MdTracerCore
                 _audStatWrites++;
 
             // DEBUG: Log all PSG writes
-            string type = (in_val & 0x80) != 0 ? "latch" : "data";
-            Console.WriteLine($"[PSG-WRITE] val=0x{in_val:X2} ({type})");
+            if (TracePsgWrite)
+            {
+                string type = (in_val & 0x80) != 0 ? "latch" : "data";
+                Console.WriteLine($"[PSG-WRITE] val=0x{in_val:X2} ({type})");
+            }
             
             if ((in_val & 0x80) != 0)
             {

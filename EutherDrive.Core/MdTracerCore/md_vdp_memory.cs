@@ -13,6 +13,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL"), "1", StringComparison.Ordinal);
         private static readonly int TraceVdpCtrlLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_CTRL_LIMIT", 200);
+        private static readonly bool TracePatternWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES"), "1", StringComparison.Ordinal);
         private static readonly bool GateCpuWritesDuringDma =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE"), "1", StringComparison.Ordinal);
         private static readonly bool DisableDmaWriteGate =
@@ -778,7 +780,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_renderer_vram[w_address >> 1] = w_val;
 
             // Debug: log ALL writes to pattern region (0x0000-0x7FFF) for first 100 frames
-            if (w_address < 0x8000 && _frameCounter < 100 && w_val != 0)
+            if (TracePatternWrites && w_address < 0x8000 && _frameCounter < 100 && w_val != 0)
             {
                 int tileIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 6) & 0x1FF : (w_address >> 5) & 0x3FF;
                 int rowIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 2) & 0x0F : (w_address >> 2) & 0x07;

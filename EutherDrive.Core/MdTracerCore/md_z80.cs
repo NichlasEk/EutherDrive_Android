@@ -19,6 +19,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_BOOT"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80SigTransitions =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80SIG_TRANS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80Run =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_RUN"), "1", StringComparison.Ordinal);
         public bool g_active;
         internal ushort DebugPc => g_reg_PC;
         internal ushort CpuPc => g_reg_PC;
@@ -382,7 +384,7 @@ namespace EutherDrive.Core.MdTracerCore
         public void run(int in_clock)
         {
             // Simple debug to see if run is called
-            if (_runCount < 5)
+            if (TraceZ80Run && _runCount < 5)
             {
                 _runCount++;
                 Console.WriteLine($"[Z80-RUN-{_runCount}] clock={in_clock} g_active={g_active} PC=0x{g_reg_PC:X4} busGranted={md_main.g_md_bus?.Z80BusGranted ?? false} reset={md_main.g_md_bus?.Z80Reset ?? false}");
@@ -393,7 +395,7 @@ namespace EutherDrive.Core.MdTracerCore
             bool z80reset = md_main.g_md_bus?.Z80Reset ?? false;
             
             // DEBUG: Log Z80 execution state
-            if (md_main.g_md_vdp?.FrameCounter >= 10 && md_main.g_md_vdp.FrameCounter <= 20)
+            if (TraceZ80Run && md_main.g_md_vdp?.FrameCounter >= 10 && md_main.g_md_vdp.FrameCounter <= 20)
             {
                 bool canRunDebug = g_active && !busRequested && !z80reset;
                 Console.WriteLine($"[Z80-RUN] frame={md_main.g_md_vdp.FrameCounter} clock={in_clock} active={g_active} canRun={canRunDebug} busreq={busRequested} reset={z80reset} pc=0x{g_reg_PC:X4}");
@@ -798,32 +800,32 @@ namespace EutherDrive.Core.MdTracerCore
             }
             
             // Debug: Always log first 100 instructions
-            if (_bootInstrCount <= 100)
+            if (TraceZ80Boot && _bootInstrCount <= 100)
             {
                 long traceFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
                 Console.WriteLine($"[Z80-TRACE-{_bootInstrCount}] frame={traceFrame} pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} op=0x{opcode:X2} active={g_active} SP=0x{g_reg_SP:X4}");
             }
             
             // Debug: Log if we reach sound driver
-            if (pcBefore == 0x0003 && opcode == 0xC3) // JP instruction at address 0x0003
+            if (TraceZ80Boot && pcBefore == 0x0003 && opcode == 0xC3) // JP instruction at address 0x0003
             {
                 Console.WriteLine($"[Z80-JP-0167] Jumping from 0x{pcBefore:X4} to 0x{g_reg_PC:X4}");
             }
             
             // Debug: Log first few instructions after reset
-            if (_bootInstrCount <= 20)
+            if (TraceZ80Boot && _bootInstrCount <= 20)
             {
                 Console.WriteLine($"[Z80BOOT] instr={_bootInstrCount} pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} opcode=0x{opcode:X2} cycles={g_clock}");
             }
             
             // Debug: Log when Z80 actually executes
-            if (_bootInstrCount == 1)
+            if (TraceZ80Boot && _bootInstrCount == 1)
             {
                 Console.WriteLine($"[Z80-FIRST-INSTR] pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} opcode=0x{opcode:X2} g_active={g_active}");
             }
             
             // Debug: Log all instructions for first 50
-            if (_bootInstrCount <= 50)
+            if (TraceZ80Boot && _bootInstrCount <= 50)
             {
                 Console.WriteLine($"[Z80-EXEC-{_bootInstrCount}] pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} opcode=0x{opcode:X2} SP=0x{g_reg_SP:X4}");
             }

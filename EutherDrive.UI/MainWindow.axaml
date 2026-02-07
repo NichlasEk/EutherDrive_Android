@@ -70,7 +70,6 @@
         </StackPanel>
       </Border>
       <TextBlock Name="StatusText" VerticalAlignment="Center"/>
-      <TextBlock Name="AudioDebugText" VerticalAlignment="Center" FontSize="11" Opacity="0.85"/>
     </StackPanel>
 
     <!-- Left: info (scrollable) -->
@@ -87,6 +86,21 @@
             <ComboBoxItem Tag="linear">Linear (fast)</ComboBoxItem>
           </ComboBox>
         </StackPanel>
+        <Separator/>
+        <TextBlock Text="Audio Debug" FontWeight="Bold"/>
+        <Border Padding="6,4" CornerRadius="4" Background="#1A2B1E" BorderBrush="#2E5A3A" BorderThickness="1">
+          <TextBox Name="AudioDebugText"
+                   IsReadOnly="True"
+                   Background="Transparent"
+                   BorderThickness="0"
+                   FontSize="12"
+                   Foreground="#BFE9C8"
+                   FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
+                   TextWrapping="NoWrap"
+                   ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                   ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                   AcceptsReturn="False"/>
+        </Border>
         <Separator/>
         <TextBlock Text="Region" FontWeight="Bold"/>
         <StackPanel Orientation="Horizontal" Spacing="6">
@@ -108,6 +122,9 @@
         <Separator/>
         <TextBlock Text="Perf" FontWeight="Bold"/>
         <TextBlock Name="FpsText" Text="FPS: -"/>
+        <TextBlock Name="EmuFpsText" Text="Emu FPS: -"/>
+        <CheckBox Content="Speed lock (real-time)" IsChecked="True" Name="SpeedLockCheck" Checked="OnSpeedLockToggle" Unchecked="OnSpeedLockToggle"/>
+        <CheckBox Content="Render skip when fast" IsChecked="False" Name="RenderSkipCheck" Checked="OnRenderSkipToggle" Unchecked="OnRenderSkipToggle"/>
         <StackPanel Orientation="Horizontal" Spacing="4">
           <TextBlock VerticalAlignment="Center" Text="Rate:"/>
           <ComboBox Name="FrameRateCombo" SelectedIndex="0" SelectionChanged="OnFrameRateChanged">

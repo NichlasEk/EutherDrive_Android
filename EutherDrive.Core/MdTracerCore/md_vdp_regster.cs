@@ -15,6 +15,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_REGS"), "1", StringComparison.Ordinal);
         private static readonly bool DmaModeAltDecode =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_MODE_ALT"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceDisplayOn =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DISPLAY_ON"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceReg12 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_REG12"), "1", StringComparison.Ordinal);
 
         // Helper to find where scroll data is actually stored in VRAM
         // Scans through candidate bases and returns the first one with non-zero data
@@ -350,7 +354,7 @@ namespace EutherDrive.Core.MdTracerCore
                       //     Console.WriteLine($"[VDP-REG1-DEBUG] frame={_frameCounter} prev={prevDisplay} new={g_vdp_reg_1_6_display} data=0x{in_data:X2} raw=0x{in_data:X2}");
                       // }
                      // Also log ANY reg1 write that turns display ON (bit 6 = 1)
-                     if (g_vdp_reg_1_6_display == 1)
+                     if (TraceDisplayOn && g_vdp_reg_1_6_display == 1)
                      {
                          Console.WriteLine($"[DISPLAY-ON] frame={_frameCounter} reg1=0x{in_data:X2} (display enabled)");
                      }
@@ -447,7 +451,8 @@ namespace EutherDrive.Core.MdTracerCore
                        byte shadow = (byte)((in_data >> 3) & 0x01);
                        byte interlace = (byte)((in_data >> 1) & 0x03);
                        bool newH40 = rs1 != 0 || rs0 != 0;
-                       Console.WriteLine($"[REG12-W] frame={_frameCounter} data=0x{in_data:X2} rs1={rs1} rs0={rs0} shadow={shadow} interlace={interlace} H40={newH40} PENDING");
+                       if (TraceReg12)
+                           Console.WriteLine($"[REG12-W] frame={_frameCounter} data=0x{in_data:X2} rs1={rs1} rs0={rs0} shadow={shadow} interlace={interlace} H40={newH40} PENDING");
                        
                        break;
 

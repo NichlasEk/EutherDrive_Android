@@ -5,6 +5,10 @@ namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
+        private static readonly bool TraceRenderPlaneDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RENDER_PLANE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRenderRead =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RENDER_READ"), "1", StringComparison.Ordinal);
         // TEMPORARY: Force direct VRAM reads to eliminate cache mismatch
         // Set to true to read patterns directly from vram[] instead of g_renderer_vram
         private static readonly bool AllowRenderDebug =
@@ -228,14 +232,16 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     int debug_scrollB_byte_addr = g_vdp_reg_4_scrollb & (IsH40Mode() ? 0xFE00 : 0xFC00);
                     int debug_scrollB_word_addr = debug_scrollB_byte_addr >> 1;
-                    Console.WriteLine($"[DEBUG-PLANE-B] frame={_frameCounter} scanline={g_scanline} reg4=0x{g_vdp_reg_4_scrollb:X4} byte_addr=0x{debug_scrollB_byte_addr:X4} word_addr=0x{debug_scrollB_word_addr:X4}");
+                    if (TraceRenderPlaneDebug)
+                        Console.WriteLine($"[DEBUG-PLANE-B] frame={_frameCounter} scanline={g_scanline} reg4=0x{g_vdp_reg_4_scrollb:X4} byte_addr=0x{debug_scrollB_byte_addr:X4} word_addr=0x{debug_scrollB_word_addr:X4}");
                     // Check VRAM directly too
                     for (int i = 0; i < 10; i++)
                     {
                         uint cacheVal = g_renderer_vram[debug_scrollB_word_addr + i];
                         uint vramAddr = (uint)(debug_scrollB_byte_addr + (i << 1));
                         ushort vramVal = vram_read_render((int)vramAddr);
-                        Console.WriteLine($"[DEBUG-PLANE-B] tile[{i}] cache@0x{debug_scrollB_word_addr + i:X4}=0x{cacheVal:X4} vram@0x{vramAddr:X4}=0x{vramVal:X4} pri={(vramVal>>15)&1} char={vramVal&0x7FF}");
+                        if (TraceRenderPlaneDebug)
+                            Console.WriteLine($"[DEBUG-PLANE-B] tile[{i}] cache@0x{debug_scrollB_word_addr + i:X4}=0x{cacheVal:X4} vram@0x{vramAddr:X4} val=0x{vramVal:X4} pri={(vramVal>>15)&1} char={vramVal&0x7FF}");
                     }
                 }
 
@@ -283,7 +289,8 @@ namespace EutherDrive.Core.MdTracerCore
                         // Debug: log first pattern read
                         if (g_scanline == 100 && wx == 0 && _frameCounter == 100 && w_pic_addr >= 0)
                         {
-                            Console.WriteLine($"[RENDER-READ] frame={_frameCounter} scanline={g_scanline} tile={w_char} row={w_view_dy} pic_addr={w_pic_addr} rvram[{w_pic_addr}]=0x{g_renderer_vram[w_pic_addr]:X4}");
+                            if (TraceRenderRead)
+                                Console.WriteLine($"[RENDER-READ] frame={_frameCounter} scanline={g_scanline} tile={w_char} row={w_view_dy} pic_addr={w_pic_addr} rvram[{w_pic_addr}]=0x{g_renderer_vram[w_pic_addr]:X4}");
                         }
                     }
                     uint picValue;
@@ -329,13 +336,15 @@ namespace EutherDrive.Core.MdTracerCore
                  {
                      int debug_scrollA_byte_addr = g_vdp_reg_2_scrolla & (IsH40Mode() ? 0xFE00 : 0xFC00);
                      int debug_scrollA_word_addr = debug_scrollA_byte_addr >> 1;
-                     Console.WriteLine($"[DEBUG-PLANE-A] frame={_frameCounter} scanline={g_scanline} reg2=0x{g_vdp_reg_2_scrolla:X4} byte_addr=0x{debug_scrollA_byte_addr:X4} word_addr=0x{debug_scrollA_word_addr:X4}");
+                     if (TraceRenderPlaneDebug)
+                         Console.WriteLine($"[DEBUG-PLANE-A] frame={_frameCounter} scanline={g_scanline} reg2=0x{g_vdp_reg_2_scrolla:X4} byte_addr=0x{debug_scrollA_byte_addr:X4} word_addr=0x{debug_scrollA_word_addr:X4}");
                      for (int i = 0; i < 10; i++)
                      {
                          uint cacheVal = g_renderer_vram[debug_scrollA_word_addr + i];
                          uint vramAddr = (uint)(debug_scrollA_byte_addr + (i << 1));
                          ushort vramVal = vram_read_render((int)vramAddr);
-                         Console.WriteLine($"[DEBUG-PLANE-A] tile[{i}] cache@0x{debug_scrollA_word_addr + i:X4}=0x{cacheVal:X4} vram@0x{vramAddr:X4}=0x{vramVal:X4} pri={(vramVal>>15)&1} char={vramVal&0x7FF}");
+                         if (TraceRenderPlaneDebug)
+                             Console.WriteLine($"[DEBUG-PLANE-A] tile[{i}] cache@0x{debug_scrollA_word_addr + i:X4}=0x{cacheVal:X4} vram@0x{vramAddr:X4} val=0x{vramVal:X4} pri={(vramVal>>15)&1} char={vramVal&0x7FF}");
                      }
                  }
                     int w_pic_addr = 0;

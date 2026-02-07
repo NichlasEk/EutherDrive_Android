@@ -62,7 +62,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_VECTORS"), "1", StringComparison.Ordinal);
     private static readonly bool FrameBufferTraceEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_TRACE"), "1", StringComparison.Ordinal);
-    private static readonly bool TraceAudioEnabled =
+    private static bool TraceAudioEnabled =>
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO"), "1", StringComparison.Ordinal);
     private static readonly bool TraceAudioLevel =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDLVL"), "1", StringComparison.Ordinal);
@@ -2468,7 +2468,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 Console.WriteLine($"[AUDLVL] min={mixMin} max={mixMax} rms={rms:F1} samples={samples}");
             }
 
-            if (ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
+            if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
             {
                 if (trackAudioLevel)
                 {
@@ -2505,7 +2505,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             Console.WriteLine($"[AUDLVL] min={psgMin} max={psgMax} rms={rms:F1} samples={samples}");
         }
 
-        if (!wantYm && ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
+        if (TraceAudioEnabled && !wantYm && ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
         {
             if (trackAudioLevel && wantPsg)
                 Console.WriteLine($"[PSGLVL] peak={psgPeak} samples={samples}");

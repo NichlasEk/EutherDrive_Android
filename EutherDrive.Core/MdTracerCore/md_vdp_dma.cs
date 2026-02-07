@@ -286,7 +286,7 @@ namespace EutherDrive.Core.MdTracerCore
                         this.LogVramWrite("DMA-FILL", currentAddr, g_dma_fill_data, g_vdp_reg_15_autoinc, g_vdp_reg_code);
                         
                         // Debug logging for first 8 writes
-                        if (debugWriteCount < 8 && _frameCounter < 100)
+                        if (TraceDmaDetail && debugWriteCount < 8 && _frameCounter < 100)
                         {
                             Console.WriteLine($"[DMA-FILL-WRITE-{debugWriteCount}] addr=0x{currentAddr:X4} val=0x{g_dma_fill_data:X4} reg15=0x{g_vdp_reg_15_autoinc:X2} nextAddr=0x{(currentAddr + g_vdp_reg_15_autoinc):X4}");
                             debugWriteCount++;

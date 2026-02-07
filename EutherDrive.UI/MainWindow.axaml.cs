@@ -14,7 +14,6 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using EutherDrive.Core.MdTracerCore;
-using EutherDrive.Audio;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -40,6 +39,7 @@ public partial class MainWindow : Window
     private WriteableBitmap? _wb;
 
     private readonly DispatcherTimer _timer;
+    private DispatcherTimer? _audioDebugTimer;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
     private readonly Stopwatch _earlyMagentaTimer = new();
     private bool _earlyMagentaReported;
@@ -111,9 +111,23 @@ public partial class MainWindow : Window
     private bool _audioTimedEnabled;
     private bool _ymResampleLinear;
     private double _z80CyclesMult = 1.0;
+    private bool _speedLockEnabled = true;
+    private bool _renderSkipEnabled;
+    private int _renderSkipCounter;
+    private long _emuFpsLastTicks;
+    private int _emuFpsFrames;
+    private double _emuActualFps;
     private long _audioDebugLastTicks;
     private double _audioDebugLastRatio;
     private long _audioDebugLastDeltaCycles;
+    private string _audioDebugLastText = string.Empty;
+    private long _audioDebugCycleLastTicks;
+    private long _audioDebugStatsLastTicks;
+    private long _audioDebugLastProduced;
+    private long _audioDebugLastConsumed;
+    private long _audioDebugLastDropped;
+    private long _audioDebugLastUnderrunEvents;
+    private long _audioDebugLastUnderrunFrames;
     private const int AutoFireRateMin = 5;
     private const int AutoFireRateMax = 30;
     private const int AutoFireRateDefault = 12;
@@ -222,9 +236,16 @@ public partial class MainWindow : Window
         UpdateRegionOverrideCombo();
         UpdateFrameRateCombo();
         UpdateRomRegionHintText();
+        UpdateSpeedLockUi();
+        UpdateRenderSkipUi();
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
+        if (TraceUiAudio)
+        {
+            _audioDebugTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => UpdateAudioDebugText());
+            _audioDebugTimer.Start();
+        }
 
         // Load ROM from command line if provided
         if (!string.IsNullOrEmpty(romPath) && File.Exists(romPath))
@@ -315,6 +336,31 @@ public partial class MainWindow : Window
         if (_core is MdTracerAdapter adapter)
             target = adapter.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
+    }
+
+    private void UpdateSpeedLockUi()
+    {
+        if (SpeedLockCheck != null)
+            SpeedLockCheck.IsChecked = _speedLockEnabled;
+    }
+
+    private void OnSpeedLockToggle(object? sender, RoutedEventArgs e)
+    {
+        _speedLockEnabled = SpeedLockCheck?.IsChecked == true;
+        SaveSettings();
+    }
+
+    private void UpdateRenderSkipUi()
+    {
+        if (RenderSkipCheck != null)
+            RenderSkipCheck.IsChecked = _renderSkipEnabled;
+    }
+
+    private void OnRenderSkipToggle(object? sender, RoutedEventArgs e)
+    {
+        _renderSkipEnabled = RenderSkipCheck?.IsChecked == true;
+        _renderSkipCounter = 0;
+        SaveSettings();
     }
 
     private void OnApplyCpuCycles(object? sender, RoutedEventArgs e)
@@ -1095,6 +1141,8 @@ public partial class MainWindow : Window
         public bool AudioEnabled { get; set; } = true;
         public bool YmResampleLinear { get; set; } = false;
         public double Z80CyclesMult { get; set; } = 1.0;
+        public bool SpeedLockEnabled { get; set; } = true;
+        public bool RenderSkipEnabled { get; set; } = false;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
         public FrameRateMode FrameRateMode { get; set; } = FrameRateMode.Auto;
@@ -1154,6 +1202,8 @@ public partial class MainWindow : Window
         _audioEnabled = settings.AudioEnabled;
         _ymResampleLinear = settings.YmResampleLinear;
         _z80CyclesMult = settings.Z80CyclesMult > 0 ? settings.Z80CyclesMult : 1.0;
+        _speedLockEnabled = settings.SpeedLockEnabled;
+        _renderSkipEnabled = settings.RenderSkipEnabled;
 
         _defaultRegionOverride = settings.DefaultRegionOverride;
         _romRegionOverrides.Clear();
@@ -1168,6 +1218,8 @@ public partial class MainWindow : Window
         UpdateFrameRateCombo();
         UpdateYmResampleUi();
         UpdateZ80CyclesMultUi();
+        UpdateSpeedLockUi();
+        UpdateRenderSkipUi();
     }
 
     private static int ClampPercent(int value)
@@ -1205,6 +1257,8 @@ public partial class MainWindow : Window
             AudioEnabled = _audioEnabled,
             YmResampleLinear = _ymResampleLinear,
             Z80CyclesMult = _z80CyclesMult,
+            SpeedLockEnabled = _speedLockEnabled,
+            RenderSkipEnabled = _renderSkipEnabled,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
             FrameRateMode = _frameRateMode
@@ -1667,8 +1721,6 @@ public partial class MainWindow : Window
         if (_core == null)
             return;
         MaybeUpdateStatusText();
-        UpdateAudioDebugText();
-
         long tickStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
 
         if (_tickTraceEnabled && (++_tickTraceCount % 60) == 0)
@@ -1676,6 +1728,21 @@ public partial class MainWindow : Window
 
         // rendera frame
         var core = _core;
+        if (_renderSkipEnabled)
+        {
+            double emuFps = Volatile.Read(ref _emuActualFps);
+            double targetFps = GetLiveTargetFps();
+            if (emuFps > (targetFps * 1.02))
+            {
+                _renderSkipCounter++;
+                if ((_renderSkipCounter & 1) == 1)
+                    return;
+            }
+            else
+            {
+                _renderSkipCounter = 0;
+            }
+        }
         if (Dispatcher.UIThread.CheckAccess())
         {
             RenderFrame(core);
@@ -1694,6 +1761,8 @@ public partial class MainWindow : Window
         if (_fpsSw.ElapsedMilliseconds >= 1000)
         {
             FpsText.Text = $"FPS: {_frames}";
+            double emuFps = Volatile.Read(ref _emuActualFps);
+            EmuFpsText.Text = $"Emu FPS: {emuFps:0.0}";
             _frames = 0;
             _fpsSw.Restart();
         }
@@ -1729,20 +1798,20 @@ public partial class MainWindow : Window
         if (!TraceUiAudio || AudioDebugText == null)
             return;
 
-        long now = _fpsSw.ElapsedMilliseconds;
-        if (now - _audioDebugLastTicks < 250)
+        long now = Stopwatch.GetTimestamp();
+        if (now - _audioDebugLastTicks < Stopwatch.Frequency)
             return;
         _audioDebugLastTicks = now;
 
         if (_core is not MdTracerAdapter)
         {
-            AudioDebugText.Text = "Audio dbg: no tracing core";
+            SetAudioDebugText("Audio dbg: no tracing core");
             return;
         }
 
         if (!_audioEnabled || _audioEngine == null)
         {
-            AudioDebugText.Text = "Audio dbg: disabled";
+            SetAudioDebugText("Audio dbg: disabled");
             return;
         }
 
@@ -1752,11 +1821,56 @@ public partial class MainWindow : Window
         double acc = _audioFrameAccumulator;
         string ratioText = _audioDebugLastRatio > 0 ? _audioDebugLastRatio.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "NA";
         string deltaText = _audioDebugLastDeltaCycles > 0 ? _audioDebugLastDeltaCycles.ToString(System.Globalization.CultureInfo.InvariantCulture) : "NA";
+        string rateText = "rate=NA";
+        string underrunText = "und=NA/NA";
 
-        AudioDebugText.Text =
+        long statsNow = Stopwatch.GetTimestamp();
+        long produced = _audioEngine.ProducedFramesTotal;
+        long consumed = _audioEngine.ConsumedFramesTotal;
+        long dropped = _audioEngine.DroppedFramesTotal;
+        long underrunEvents = _audioEngine.UnderrunEventsTotal;
+        long underrunFrames = _audioEngine.UnderrunFramesTotal;
+        if (_audioDebugStatsLastTicks != 0)
+        {
+            double elapsedSec = (statsNow - _audioDebugStatsLastTicks) / (double)Stopwatch.Frequency;
+            if (elapsedSec > 0)
+            {
+                long prodDelta = produced - _audioDebugLastProduced;
+                long consDelta = consumed - _audioDebugLastConsumed;
+                long dropDelta = dropped - _audioDebugLastDropped;
+                long undEventsDelta = underrunEvents - _audioDebugLastUnderrunEvents;
+                long undFramesDelta = underrunFrames - _audioDebugLastUnderrunFrames;
+                double prodFps = prodDelta / elapsedSec;
+                double consFps = consDelta / elapsedSec;
+                double dropFps = dropDelta / elapsedSec;
+                double undEventsPerSec = undEventsDelta / elapsedSec;
+                double undFramesPerSec = undFramesDelta / elapsedSec;
+                rateText = $"rate={prodFps:0}/{consFps:0} drop={dropFps:0}";
+                underrunText = $"und={undEventsPerSec:0}/{undFramesPerSec:0}";
+            }
+        }
+        _audioDebugStatsLastTicks = statsNow;
+        _audioDebugLastProduced = produced;
+        _audioDebugLastConsumed = consumed;
+        _audioDebugLastDropped = dropped;
+        _audioDebugLastUnderrunEvents = underrunEvents;
+        _audioDebugLastUnderrunFrames = underrunFrames;
+
+        string text =
             $"Audio dbg: buf={buffered}/{target} acc={acc:0.##} " +
             $"timed={(_audioTimedEnabled ? 1 : 0)} pll={(AudioPllEnabled ? 1 : 0)} outpll={(AudioOutPllEnabledEnv ? 1 : 0)} drain={(AudioTimedDrainEnabledEnv ? 1 : 0)} " +
-            $"fps={fps:0.##} cycRatio={ratioText} dCyc={deltaText}";
+            $"fps={fps:0.##} cycRatio={ratioText} dCyc={deltaText} {rateText} {underrunText}";
+        SetAudioDebugText(text);
+    }
+
+    private void SetAudioDebugText(string text)
+    {
+        if (AudioDebugText == null)
+            return;
+        if (string.Equals(_audioDebugLastText, text, StringComparison.Ordinal))
+            return;
+        _audioDebugLastText = text;
+        AudioDebugText.Text = text;
     }
 
     private void SubmitAudio()
@@ -2068,7 +2182,7 @@ public partial class MainWindow : Window
             }
 
             long now = Stopwatch.GetTimestamp();
-            if (now < nextTick)
+            if (_speedLockEnabled && now < nextTick)
             {
                 int sleepMs = (int)((nextTick - now) * 1000 / Stopwatch.Frequency);
                 if (sleepMs > 2)
@@ -2091,9 +2205,12 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            if (now - nextTick > ticksPerFrame * 4)
-                nextTick = now;
-            nextTick += ticksPerFrame;
+            if (_speedLockEnabled)
+            {
+                if (now - nextTick > ticksPerFrame * 4)
+                    nextTick = now;
+                nextTick += ticksPerFrame;
+            }
 
             var core = _core;
             if (core == null)
@@ -2126,6 +2243,24 @@ public partial class MainWindow : Window
 
             ProducePsgForFrame();
             SubmitAudio();
+
+            // Track actual emu FPS
+            _emuFpsFrames++;
+            long fpsNow = Stopwatch.GetTimestamp();
+            if (_emuFpsLastTicks == 0)
+                _emuFpsLastTicks = fpsNow;
+            long fpsDelta = fpsNow - _emuFpsLastTicks;
+            if (fpsDelta >= Stopwatch.Frequency)
+            {
+                double elapsed = fpsDelta / (double)Stopwatch.Frequency;
+                double fps = _emuFpsFrames / elapsed;
+                Volatile.Write(ref _emuActualFps, fps);
+                _emuFpsFrames = 0;
+                _emuFpsLastTicks = fpsNow;
+            }
+
+            if (!_speedLockEnabled && (_emuFpsFrames % 60) == 0)
+                Thread.Sleep(0);
         }
     }
 
@@ -2243,9 +2378,14 @@ public partial class MainWindow : Window
         _audioFrameAccumulator += (deltaCycles * SystemCyclesScale) * AudioCyclesScale * rateScale * (AudioSampleRate / cyclesPerSecond);
         if (TraceUiAudio)
         {
-            double expectedPerFrame = cyclesPerSecond / adapter.GetTargetFps();
-            _audioDebugLastDeltaCycles = deltaCycles;
-            _audioDebugLastRatio = expectedPerFrame > 0 ? (deltaCycles / expectedPerFrame) : 0;
+            long now = Stopwatch.GetTimestamp();
+            if (now - _audioDebugCycleLastTicks >= Stopwatch.Frequency)
+            {
+                _audioDebugCycleLastTicks = now;
+                double expectedPerFrame = cyclesPerSecond / adapter.GetTargetFps();
+                _audioDebugLastDeltaCycles = deltaCycles;
+                _audioDebugLastRatio = expectedPerFrame > 0 ? (deltaCycles / expectedPerFrame) : 0;
+            }
         }
 
         if (TraceAudioCycles && Stopwatch.GetTimestamp() - _audioCycleLogLastTicks > Stopwatch.Frequency)

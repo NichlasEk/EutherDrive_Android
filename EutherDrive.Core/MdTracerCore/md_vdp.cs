@@ -9,6 +9,8 @@ namespace EutherDrive.Core.MdTracerCore
     //----------------------------------------------------------------
     public partial class md_vdp
     {
+        private static readonly bool TraceDmaDetail =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_DETAIL"), "1", StringComparison.Ordinal);
         internal const ushort VDP_STATUS_VBLANK_MASK = 0x0080;
          private static readonly bool TraceMdVdp =
              string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MD_VDP"), "1", StringComparison.Ordinal);
@@ -127,6 +129,10 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_RANGE_LIMIT", 200);
         private static readonly bool TraceVramRangeSkipFill =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_RANGE_SKIP_FILL"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVramName =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_NAME"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdpFrameSize =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_FRAME_SIZE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVramWriteDetail =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_WRITE_DETAIL"), "1", StringComparison.Ordinal);
         private static int _traceVramRangeStart;
@@ -212,7 +218,8 @@ namespace EutherDrive.Core.MdTracerCore
             FrameHeight = g_output_ysize;
             if (oldWidth != FrameWidth || oldHeight != FrameHeight)
             {
-                Console.WriteLine($"[VDP-FRAME-SIZE] Changed: {oldWidth}x{oldHeight} -> {FrameWidth}x{FrameHeight} interlace={g_vdp_interlace_mode} display_ysize={g_display_ysize}");
+                if (TraceVdpFrameSize)
+                    Console.WriteLine($"[VDP-FRAME-SIZE] Changed: {oldWidth}x{oldHeight} -> {FrameWidth}x{FrameHeight} interlace={g_vdp_interlace_mode} display_ysize={g_display_ysize}");
             }
             EnsureFrameBuffer();
         }
@@ -262,7 +269,8 @@ namespace EutherDrive.Core.MdTracerCore
               // [REG12-APPLY] when applying latched reg12 at VBlank: frame, applied data, computed width(256/320)
               byte appliedData = (byte)((_reg12_latched_7_cellmode1 << 7) | (_reg12_latched_3_shadow << 3) | (_reg12_latched_2_interlacemode << 1) | _reg12_latched_0_cellmode2);
               int width = newH40 ? 320 : 256;
-              Console.WriteLine($"[REG12-APPLY] frame={_frameCounter} applied=0x{appliedData:X2} width={width}");
+              if (TraceReg12)
+                  Console.WriteLine($"[REG12-APPLY] frame={_frameCounter} applied=0x{appliedData:X2} width={width}");
              
                    if (prevInterlace != g_vdp_interlace_mode)
                    {
@@ -1116,7 +1124,7 @@ namespace EutherDrive.Core.MdTracerCore
                 _mdVramWritesToNameTablesThisFrame++;
 
                 // Log first few name table writes
-                if (!_mdVramNameTableWriteLogged && _mdVramWritesToNameTablesTotal <= 32)
+                if (TraceVramName && !_mdVramNameTableWriteLogged && _mdVramWritesToNameTablesTotal <= 32)
                 {
                     Console.WriteLine($"[VRAM-NAME] frame={_frameCounter} addr=0x{address:X4} val=0x{value:X4} " +
                         $"scrollA=0x{scrollA_base:X4} scrollB=0x{scrollB_base:X4} interlace={g_vdp_interlace_mode}");
@@ -1830,7 +1838,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static void LogDmaStatusLine(string line)
         {
-            Console.WriteLine(line);
+            if (TraceDmaDetail)
+                Console.WriteLine(line);
             if (TraceRomStartLog)
             {
                 try
