@@ -144,6 +144,10 @@ namespace EutherDrive.Core.MdTracerCore
             _smsFirstLineRendered = false;
             _smsFrameHashCounter = 0;
             _smsLastFrameHash = 0;
+            if (_smsCram != null && _smsCram.Length > 0)
+                Array.Clear(_smsCram, 0, _smsCram.Length);
+            if (_smsPalette != null && _smsPalette.Length > 0)
+                Array.Fill(_smsPalette, 0xFF000000u);
 
             g_dma_mode = 0;
             g_dma_src_addr = 0;

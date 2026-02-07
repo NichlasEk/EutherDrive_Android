@@ -47,6 +47,8 @@ namespace EutherDrive.Core.MdTracerCore
         private int _smsBeWritesLastFrame;
         private int _smsBfWritesThisFrame;
         private int _smsBfWritesLastFrame;
+        private byte[] _smsCram = new byte[0x20];
+        private uint[] _smsPalette = new uint[0x20];
         private long _frameCounter;
         private int _mdCtrlWritesThisFrame;
         private int _mdDataWritesThisFrame;

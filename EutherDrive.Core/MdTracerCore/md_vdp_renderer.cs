@@ -92,6 +92,12 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_vdp_interlace_field = (byte)(field & 0x01);
 
+            if (md_main.g_masterSystemMode)
+            {
+                RenderSmsLine(outputLineOverride, targetBuffer);
+                return;
+            }
+
             // Debug log display status every 60 frames
             if (DebugShadowHighlight && g_scanline == 0 && _frameCounter % 60 == 0)
             {
@@ -152,6 +158,84 @@ namespace EutherDrive.Core.MdTracerCore
                      }
                  }
              }
+        }
+
+        private void RenderSmsLine(int outputLineOverride = -1, uint[]? targetBuffer = null)
+        {
+            int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
+            if ((uint)outputLine >= (uint)g_output_ysize)
+                return;
+
+            uint[] dest = targetBuffer ?? g_game_screen;
+            int width = g_output_xsize;
+            int pos = outputLine * width;
+            for (int x = 0; x < width; x++)
+                dest[pos + x] = 0xFF000000u;
+
+            bool displayEnabled = (_smsRegs[1] & 0x40) != 0;
+            if (!displayEnabled)
+                return;
+
+            const int visibleHeight = 192;
+            if (g_scanline < 0 || g_scanline >= visibleHeight)
+                return;
+
+            int displayWidth = Math.Min(g_display_xsize, width);
+            int hscroll = _smsRegs[8];
+            int vscroll = _smsRegs[9];
+            int y = (g_scanline + vscroll) & 0xFF;
+            int tileRow = (y >> 3) & 0x1F;
+            int rowInTile = y & 0x07;
+            int nameBase = (_smsRegs[2] & 0x0E) << 10;
+            int patternBase = (_smsRegs[4] & 0x07) << 11;
+            int backdropIndex = _smsRegs[7] & 0x0F;
+            uint backdrop = _smsPalette[backdropIndex];
+
+            for (int x = 0; x < displayWidth; x++)
+            {
+                int sx = (x + hscroll) & 0xFF;
+                int tileCol = (sx >> 3) & 0x1F;
+                int colInTile = sx & 0x07;
+
+                int entryAddr = nameBase + ((tileRow * 32 + tileCol) * 2);
+                if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
+                    continue;
+
+                ushort entry = (ushort)(_smsVram[entryAddr] | (_smsVram[entryAddr + 1] << 8));
+                int tileIndex = entry & 0x1FF;
+                bool paletteBit = (entry & 0x200) != 0;
+                bool flipX = (entry & 0x400) != 0;
+                bool flipY = (entry & 0x800) != 0;
+
+                int row = flipY ? (7 - rowInTile) : rowInTile;
+                int patternAddr = patternBase + (tileIndex * 32) + (row * 4);
+                if ((uint)(patternAddr + 3) >= (uint)_smsVram.Length)
+                    continue;
+
+                byte b0 = _smsVram[patternAddr + 0];
+                byte b1 = _smsVram[patternAddr + 1];
+                byte b2 = _smsVram[patternAddr + 2];
+                byte b3 = _smsVram[patternAddr + 3];
+
+                int bit = flipX ? colInTile : (7 - colInTile);
+                int mask = 1 << bit;
+                int color = ((b0 & mask) != 0 ? 1 : 0)
+                            | ((b1 & mask) != 0 ? 2 : 0)
+                            | ((b2 & mask) != 0 ? 4 : 0)
+                            | ((b3 & mask) != 0 ? 8 : 0);
+
+                if (color == 0)
+                {
+                    dest[pos + x] = backdrop;
+                    continue;
+                }
+
+                int paletteIndex = (paletteBit ? 16 : 0) + color;
+                if ((uint)paletteIndex >= (uint)_smsPalette.Length)
+                    dest[pos + x] = backdrop;
+                else
+                    dest[pos + x] = _smsPalette[paletteIndex];
+            }
         }
 
         // Avsluta en frame (ingen separat render-tråd eller DX)

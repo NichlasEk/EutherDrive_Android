@@ -89,6 +89,7 @@ namespace EutherDrive.Core.MdTracerCore
 
                 if (port == 0x04)
                 {
+                    _smsCommandPending = false;
                     ushort status = get_vdp_status();
                     md_m68k.RecordVdpStatusRead(status);
                     ushort postStatus = (ushort)(status & ~VDP_STATUS_VBLANK_MASK);
@@ -539,11 +540,10 @@ namespace EutherDrive.Core.MdTracerCore
 
                 case 3:
                     _smsCramWritesTotal++;
-                    if (!_smsCramWriteLogged)
-                    {
-                        _smsCramWriteLogged = true;
-                        SmsLog("[SMS VDP] CRAM writes currently stubbed");
-                    }
+                    int cramAddr = _smsVdpAddr & 0x1F;
+                    _smsCram[cramAddr] = value;
+                    _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
+                    SmsUpdatePalette(cramAddr, value);
                     return;
 
                 default:
@@ -570,6 +570,8 @@ namespace EutherDrive.Core.MdTracerCore
                     _smsDisplayOnLogged = true;
                     MdTracerCore.MdLog.WriteLine("[SMS VDP] display enabled (reg1 bit6)");
                 }
+                if (reg == 1)
+                    g_vdp_reg_1_6_display = (byte)((data & 0x40) != 0 ? 1 : 0);
                 SmsLog($"[SMS VDP] REG r{reg:X}={data:X2}", reg == 1);
                 return;
             }
@@ -597,6 +599,20 @@ namespace EutherDrive.Core.MdTracerCore
             MdTracerCore.MdLog.WriteLine(message);
             if (!bypassLimit)
                 _smsCommandLogCount++;
+        }
+
+        private void SmsUpdatePalette(int index, byte value)
+        {
+            if ((uint)index >= (uint)_smsPalette.Length)
+                return;
+
+            int r = value & 0x03;
+            int g = (value >> 2) & 0x03;
+            int b = (value >> 4) & 0x03;
+            uint rr = (uint)(r * 0x55);
+            uint gg = (uint)(g * 0x55);
+            uint bb = (uint)(b * 0x55);
+            _smsPalette[index] = 0xFF000000u | (rr << 16) | (gg << 8) | bb;
         }
 
         // ----------------------------------------------------------------
