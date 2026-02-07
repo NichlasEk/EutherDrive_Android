@@ -16,7 +16,7 @@ UI
 - EUTHERDRIVE_TRACE_UI_RENDER=1: UI render/emu-loop debug logs (bitmap recreate, emu-loop exceptions).
 - EUTHERDRIVE_TRACE_UI_PRESENT=1: per-present logs (frame id, empty frame, present metrics).
 - EUTHERDRIVE_AUDIO=1: enable audio output (pw-cat).
-- EUTHERDRIVE_AUDIO_TIMED=1: time-based audio fill (helps when FPS is low).
+- EUTHERDRIVE_AUDIO_TIMED=1: time-based audio fill (wall-clock) to keep audio steady when FPS is low (default on; set 0 to disable).
 
 VDP
 - EUTHERDRIVE_TRACE_VDP=1: VDP log (general).
@@ -149,6 +149,7 @@ Audio / PSG / YM
 - EUTHERDRIVE_TRACE_PSG=1: PSG write log.
 - EUTHERDRIVE_DISABLE_PSG=1: disable PSG mix.
 - EUTHERDRIVE_GEMS_TIMING=1: enable GEMS timing mode (negative audio accumulator for GEMS games).
+- EUTHERDRIVE_AUDIO_ACCUM_FRAMES=<float>: override initial audio accumulator in frames (universal; overrides GEMS timing).
 - EUTHERDRIVE_YM=1: enable YM2612 access/mix.
 - EUTHERDRIVE_TRACE_YM=1: YM write log (first N writes).
 

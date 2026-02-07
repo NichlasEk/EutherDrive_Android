@@ -819,8 +819,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // Use EUTHERDRIVE_GEMS_TIMING=1 to force GEMS timing without pitch change
         string? gemsTimingEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_GEMS_TIMING");
         bool isGemsTiming = gemsTimingEnv != null && gemsTimingEnv.Equals("1", StringComparison.OrdinalIgnoreCase);
-        
-        double accumulatorFrames = isGemsTiming ? -5.0 : 0.5;
+
+        // Universal override: EUTHERDRIVE_AUDIO_ACCUM_FRAMES=<float>
+        // When set, it overrides any GEMS/non-GEMS default.
+        double? accumulatorOverride = null;
+        string? accumulatorEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_ACCUM_FRAMES");
+        if (!string.IsNullOrWhiteSpace(accumulatorEnv)
+            && double.TryParse(accumulatorEnv, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double overrideFrames))
+        {
+            accumulatorOverride = overrideFrames;
+        }
+
+        double accumulatorFrames = accumulatorOverride ?? (isGemsTiming ? -5.0 : 0.5);
         _psgFrameAccumulator = (double)PsgSampleRate / GetTargetFps() * accumulatorFrames;
         _psgFrameSamples = 0;
         _psgLastFrame = -1;
@@ -828,7 +838,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _ymResampleHasCarry = false;
         // Note: _audioSystemReady is managed separately
         
-        Console.WriteLine($"[AUDIO-TIMING] ResetAudioFrameState: _psgFrameAccumulator={_psgFrameAccumulator:F2} (isGemsTiming={isGemsTiming}, accumulatorFrames={accumulatorFrames:F1})");
+        Console.WriteLine($"[AUDIO-TIMING] ResetAudioFrameState: _psgFrameAccumulator={_psgFrameAccumulator:F2} (isGemsTiming={isGemsTiming}, accumulatorFrames={accumulatorFrames:F1}, override={(accumulatorOverride.HasValue ? 1 : 0)})");
     }
 
     public void PowerCycleAndLoadRom(string path) => LoadRom(path);

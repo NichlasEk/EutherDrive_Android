@@ -2095,6 +2095,12 @@ public partial class MainWindow : Window
         if (_audioEngine == null || core is not MdTracerAdapter adapter)
             return;
 
+        if (_audioTimedEnabled)
+        {
+            GenerateAudioFromWallClock(adapter);
+            return;
+        }
+
         long currentCycles = adapter.GetSystemCycles();
         if (_audioLastSystemCycles == 0)
         {
@@ -2159,6 +2165,58 @@ public partial class MainWindow : Window
             Console.WriteLine(
                 $"[AUDIO-QUEUE] buffered={_audioEngine.BufferedFrames} target={AudioTargetBufferedFrames} " +
                 $"rateScale={rateScale:F4} acc={_audioFrameAccumulator:F2}");
+        }
+    }
+
+    private void GenerateAudioFromWallClock(MdTracerAdapter adapter)
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (_audioLastTicks == 0)
+        {
+            _audioLastTicks = now;
+            return;
+        }
+
+        double elapsed = (now - _audioLastTicks) / (double)Stopwatch.Frequency;
+        _audioLastTicks = now;
+        if (elapsed <= 0)
+            return;
+
+        // Clamp long gaps to avoid massive burst generation.
+        const double maxElapsed = 0.25;
+        if (elapsed > maxElapsed)
+            elapsed = maxElapsed;
+
+        _audioFrameAccumulator += elapsed * AudioSampleRate;
+        int frames = (int)_audioFrameAccumulator;
+        if (frames <= 0)
+            return;
+
+        _audioFrameAccumulator -= frames;
+        if (frames > AudioMaxFramesPerTick)
+            frames = AudioMaxFramesPerTick;
+
+        while (frames > 0)
+        {
+            int chunk = frames < AudioBufferChunkFrames ? frames : AudioBufferChunkFrames;
+            var audio = adapter.GetAudioBufferForFrames(chunk, out int rate, out int channels);
+            if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
+            {
+                _audioEngine!.Submit(audio);
+                frames -= chunk;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (TraceAudioQueue && _audioEngine != null && Stopwatch.GetTimestamp() - _audioQueueLogLastTicks > Stopwatch.Frequency)
+        {
+            _audioQueueLogLastTicks = Stopwatch.GetTimestamp();
+            Console.WriteLine(
+                $"[AUDIO-QUEUE] buffered={_audioEngine.BufferedFrames} target={AudioTargetBufferedFrames} " +
+                $"timed=1 acc={_audioFrameAccumulator:F2}");
         }
     }
 
