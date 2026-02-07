@@ -97,14 +97,23 @@ public partial class MainWindow : Window
     private static readonly int AudioEngineBufferFrames = GetAudioEngineBufferFrames();
     private static readonly int AudioEngineBatchFrames = GetAudioEngineBatchFrames();
     private static readonly int AudioPullMaxFrames = GetAudioPullMaxFrames();
+    private static readonly int AudioTimedMaxFrames = GetAudioTimedMaxFrames();
     private static readonly bool TraceUiFrame = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_FRAME");
     private static readonly bool TraceUiRender = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_RENDER");
     private static readonly bool TraceUiPresent = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_PRESENT");
+    private static readonly bool TraceUiAudio = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_AUDIO");
+    private static readonly bool AudioOutPllEnabledEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL") == "1";
+    private static readonly bool AudioTimedDrainEnabledEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN") == "1";
     private TextWriter? _originalConsoleOut;
     private StreamWriter? _romLogWriter;
     private bool _toneTestRunning;
     private bool _psgBlipRunning;
     private bool _audioTimedEnabled;
+    private bool _ymResampleLinear;
+    private double _z80CyclesMult = 1.0;
+    private long _audioDebugLastTicks;
+    private double _audioDebugLastRatio;
+    private long _audioDebugLastDeltaCycles;
     private const int AutoFireRateMin = 5;
     private const int AutoFireRateMax = 30;
     private const int AutoFireRateDefault = 12;
@@ -183,6 +192,8 @@ public partial class MainWindow : Window
         if (SavestatePanel != null)
             SavestatePanel.DataContext = _savestateViewModel;
 
+        _ymResampleLinear = IsEnvEnabled("EUTHERDRIVE_YM_RESAMPLE_LINEAR")
+            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
         UpdateRecentRomCombo();
         if (MasterVolumeSlider != null)
@@ -190,6 +201,8 @@ public partial class MainWindow : Window
         UpdateMasterVolumeText();
         if (AudioEnabledCheck != null)
             AudioEnabledCheck.IsChecked = _audioEnabled || AudioEnvEnabled;
+        UpdateYmResampleUi();
+        UpdateZ80CyclesMultUi();
 
         Focusable = true;
         AttachedToVisualTree += (_, __) => Focus();
@@ -1049,12 +1062,39 @@ public partial class MainWindow : Window
         }
     }
 
+    private void UpdateYmResampleUi()
+    {
+        if (YmResampleCombo == null)
+            return;
+        foreach (var item in YmResampleCombo.Items)
+        {
+            if (item is ComboBoxItem combo && combo.Tag is string tag)
+            {
+                bool isLinear = string.Equals(tag, "linear", StringComparison.OrdinalIgnoreCase);
+                if (isLinear == _ymResampleLinear)
+                {
+                    YmResampleCombo.SelectedItem = item;
+                    return;
+                }
+            }
+        }
+    }
+
+    private void UpdateZ80CyclesMultUi()
+    {
+        if (Z80CyclesMultTextBox == null)
+            return;
+        Z80CyclesMultTextBox.Text = _z80CyclesMult.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     private sealed class UiSettings
     {
         public string? LastRomPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public bool AudioEnabled { get; set; } = true;
+        public bool YmResampleLinear { get; set; } = false;
+        public double Z80CyclesMult { get; set; } = 1.0;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
         public FrameRateMode FrameRateMode { get; set; } = FrameRateMode.Auto;
@@ -1112,6 +1152,8 @@ public partial class MainWindow : Window
 
         _masterVolumePercent = ClampPercent(settings.MasterVolumePercent);
         _audioEnabled = settings.AudioEnabled;
+        _ymResampleLinear = settings.YmResampleLinear;
+        _z80CyclesMult = settings.Z80CyclesMult > 0 ? settings.Z80CyclesMult : 1.0;
 
         _defaultRegionOverride = settings.DefaultRegionOverride;
         _romRegionOverrides.Clear();
@@ -1124,6 +1166,8 @@ public partial class MainWindow : Window
         RegionOverride = _defaultRegionOverride;
         _frameRateMode = settings.FrameRateMode;
         UpdateFrameRateCombo();
+        UpdateYmResampleUi();
+        UpdateZ80CyclesMultUi();
     }
 
     private static int ClampPercent(int value)
@@ -1159,6 +1203,8 @@ public partial class MainWindow : Window
             RecentRomPaths = _recentRomPaths.ToList(),
             MasterVolumePercent = _masterVolumePercent,
             AudioEnabled = _audioEnabled,
+            YmResampleLinear = _ymResampleLinear,
+            Z80CyclesMult = _z80CyclesMult,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
             FrameRateMode = _frameRateMode
@@ -1478,6 +1524,32 @@ public partial class MainWindow : Window
 
         bool wantYm = YmEnvEnabled || (AudioEnabledCheck?.IsChecked == true);
         adapter.SetYmEnabled(wantYm);
+        adapter.SetYmResampleLinear(_ymResampleLinear);
+        adapter.SetZ80CycleMultiplier(_z80CyclesMult);
+    }
+
+    private void OnYmResampleChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (YmResampleCombo?.SelectedItem is ComboBoxItem item && item.Tag is string tag)
+        {
+            _ymResampleLinear = string.Equals(tag, "linear", StringComparison.OrdinalIgnoreCase);
+            ApplyAudioOptionsToCore();
+            SaveSettings();
+        }
+    }
+
+    private void OnApplyZ80CyclesMult(object? sender, RoutedEventArgs e)
+    {
+        if (Z80CyclesMultTextBox == null)
+            return;
+        string raw = Z80CyclesMultTextBox.Text?.Trim() ?? string.Empty;
+        if (!double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value))
+            return;
+        if (value <= 0.0)
+            return;
+        _z80CyclesMult = value;
+        ApplyAudioOptionsToCore();
+        SaveSettings();
     }
 
     private void OnAudioToggle(object? sender, RoutedEventArgs e)
@@ -1595,6 +1667,7 @@ public partial class MainWindow : Window
         if (_core == null)
             return;
         MaybeUpdateStatusText();
+        UpdateAudioDebugText();
 
         long tickStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
 
@@ -1649,6 +1722,41 @@ public partial class MainWindow : Window
         _lastStatusUpdateMs = now;
         _lastStatusKeys = keys;
         StatusText.Text = $"Core: {_core.GetType().Name}  Keys: {keys}";
+    }
+
+    private void UpdateAudioDebugText()
+    {
+        if (!TraceUiAudio || AudioDebugText == null)
+            return;
+
+        long now = _fpsSw.ElapsedMilliseconds;
+        if (now - _audioDebugLastTicks < 250)
+            return;
+        _audioDebugLastTicks = now;
+
+        if (_core is not MdTracerAdapter)
+        {
+            AudioDebugText.Text = "Audio dbg: no tracing core";
+            return;
+        }
+
+        if (!_audioEnabled || _audioEngine == null)
+        {
+            AudioDebugText.Text = "Audio dbg: disabled";
+            return;
+        }
+
+        int buffered = _audioEngine.BufferedFrames;
+        int target = AudioTargetBufferedFrames;
+        double fps = GetLiveTargetFps();
+        double acc = _audioFrameAccumulator;
+        string ratioText = _audioDebugLastRatio > 0 ? _audioDebugLastRatio.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "NA";
+        string deltaText = _audioDebugLastDeltaCycles > 0 ? _audioDebugLastDeltaCycles.ToString(System.Globalization.CultureInfo.InvariantCulture) : "NA";
+
+        AudioDebugText.Text =
+            $"Audio dbg: buf={buffered}/{target} acc={acc:0.##} " +
+            $"timed={(_audioTimedEnabled ? 1 : 0)} pll={(AudioPllEnabled ? 1 : 0)} outpll={(AudioOutPllEnabledEnv ? 1 : 0)} drain={(AudioTimedDrainEnabledEnv ? 1 : 0)} " +
+            $"fps={fps:0.##} cycRatio={ratioText} dCyc={deltaText}";
     }
 
     private void SubmitAudio()
@@ -2097,6 +2205,11 @@ public partial class MainWindow : Window
 
         if (_audioTimedEnabled)
         {
+            if (TraceUiAudio)
+            {
+                _audioDebugLastRatio = 0;
+                _audioDebugLastDeltaCycles = 0;
+            }
             GenerateAudioFromWallClock(adapter);
             return;
         }
@@ -2128,6 +2241,12 @@ public partial class MainWindow : Window
             rateScale = 1.0 + (error * AudioPllMax);
         }
         _audioFrameAccumulator += (deltaCycles * SystemCyclesScale) * AudioCyclesScale * rateScale * (AudioSampleRate / cyclesPerSecond);
+        if (TraceUiAudio)
+        {
+            double expectedPerFrame = cyclesPerSecond / adapter.GetTargetFps();
+            _audioDebugLastDeltaCycles = deltaCycles;
+            _audioDebugLastRatio = expectedPerFrame > 0 ? (deltaCycles / expectedPerFrame) : 0;
+        }
 
         if (TraceAudioCycles && Stopwatch.GetTimestamp() - _audioCycleLogLastTicks > Stopwatch.Frequency)
         {
@@ -2170,6 +2289,9 @@ public partial class MainWindow : Window
 
     private void GenerateAudioFromWallClock(MdTracerAdapter adapter)
     {
+        if (_audioEngine == null)
+            return;
+
         long now = Stopwatch.GetTimestamp();
         if (_audioLastTicks == 0)
         {
@@ -2187,14 +2309,26 @@ public partial class MainWindow : Window
         if (elapsed > maxElapsed)
             elapsed = maxElapsed;
 
+        int buffered = _audioEngine.BufferedFrames;
+        if (buffered >= AudioTargetBufferedFrames)
+            return;
+
         _audioFrameAccumulator += elapsed * AudioSampleRate;
         int frames = (int)_audioFrameAccumulator;
         if (frames <= 0)
             return;
 
+        int needFrames = AudioTargetBufferedFrames - buffered;
+        if (needFrames <= 0)
+            return;
+        if (frames > needFrames)
+            frames = needFrames;
+
         _audioFrameAccumulator -= frames;
         if (frames > AudioMaxFramesPerTick)
             frames = AudioMaxFramesPerTick;
+        if (frames > AudioTimedMaxFrames)
+            frames = AudioTimedMaxFrames;
 
         while (frames > 0)
         {
@@ -2202,7 +2336,7 @@ public partial class MainWindow : Window
             var audio = adapter.GetAudioBufferForFrames(chunk, out int rate, out int channels);
             if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
             {
-                _audioEngine!.Submit(audio);
+                _audioEngine.Submit(audio);
                 frames -= chunk;
             }
             else
@@ -2318,6 +2452,18 @@ public partial class MainWindow : Window
             return value;
         }
         return 2048;
+    }
+
+    private static int GetAudioTimedMaxFrames()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_MAX_FRAMES");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value)
+            && value > 0)
+        {
+            return value;
+        }
+        return 1024;
     }
 
     private double GetLiveTargetFps()
