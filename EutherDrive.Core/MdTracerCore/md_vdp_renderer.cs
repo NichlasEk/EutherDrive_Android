@@ -236,6 +236,73 @@ namespace EutherDrive.Core.MdTracerCore
                 else
                     dest[pos + x] = _smsPalette[paletteIndex];
             }
+
+            RenderSmsSprites(displayWidth, outputLine, dest);
+        }
+
+        private void RenderSmsSprites(int displayWidth, int outputLine, uint[] dest)
+        {
+            int satBase = (_smsRegs[5] & 0x7E) << 7;
+            int spritePatternBase = ((_smsRegs[6] & 0x04) != 0) ? 0x2000 : 0x0000;
+            bool sprites8x16 = (_smsRegs[1] & 0x02) != 0;
+            int spriteHeight = sprites8x16 ? 16 : 8;
+            int maxSprites = 64;
+            int yTableBase = satBase & 0x3FFF;
+            int xTableBase = (satBase + 0x80) & 0x3FFF;
+
+            for (int i = 0; i < maxSprites; i++)
+            {
+                int yAddr = (yTableBase + i) & 0x3FFF;
+                byte yRaw = _smsVram[yAddr];
+                if (yRaw == 0xD0)
+                    break;
+
+                int spriteY = (yRaw + 1) & 0xFF;
+                int line = g_scanline - spriteY;
+                if (line < 0 || line >= spriteHeight)
+                    continue;
+
+                int xAddr = (xTableBase + i * 2) & 0x3FFF;
+                int xRaw = _smsVram[xAddr];
+                int tile = _smsVram[(xAddr + 1) & 0x3FFF];
+
+                if (sprites8x16)
+                    tile &= 0xFE;
+
+                int tileRow = line & 7;
+                int tileIndex = tile + ((sprites8x16 && line >= 8) ? 1 : 0);
+                int patternAddr = (spritePatternBase + tileIndex * 32 + tileRow * 4) & 0x3FFF;
+
+                if ((uint)(patternAddr + 3) >= (uint)_smsVram.Length)
+                    continue;
+
+                byte b0 = _smsVram[patternAddr + 0];
+                byte b1 = _smsVram[patternAddr + 1];
+                byte b2 = _smsVram[patternAddr + 2];
+                byte b3 = _smsVram[patternAddr + 3];
+
+                for (int col = 0; col < 8; col++)
+                {
+                    int bit = 7 - col;
+                    int mask = 1 << bit;
+                    int color = ((b0 & mask) != 0 ? 1 : 0)
+                                | ((b1 & mask) != 0 ? 2 : 0)
+                                | ((b2 & mask) != 0 ? 4 : 0)
+                                | ((b3 & mask) != 0 ? 8 : 0);
+                    if (color == 0)
+                        continue;
+
+                    int x = xRaw + col;
+                    if ((uint)x >= (uint)displayWidth)
+                        continue;
+
+                    int paletteIndex = 16 + color;
+                    if ((uint)paletteIndex >= (uint)_smsPalette.Length)
+                        continue;
+
+                    dest[outputLine * g_output_xsize + x] = _smsPalette[paletteIndex];
+                }
+            }
         }
 
         // Avsluta en frame (ingen separat render-tråd eller DX)
