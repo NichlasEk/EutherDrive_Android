@@ -113,8 +113,8 @@ namespace EutherDrive.Core.MdTracerCore
                          MdTracerCore.MdLog.WriteLine("[SMS VDP] first scanline rendered");
                  }
                  
-                 // DEBUG: Log when rendering starts
-                 if ((_frameCounter - 7059) < 5 && g_scanline < 10)
+                 // DEBUG: Log when rendering starts (gated)
+                 if (TraceVdpRender && (_frameCounter - 7059) < 5 && g_scanline < 10)
                  {
                      Console.WriteLine($"[VDP-RENDER] frame={_frameCounter} scanline={g_scanline} display=ON");
                  }

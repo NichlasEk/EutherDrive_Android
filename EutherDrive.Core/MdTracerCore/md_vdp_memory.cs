@@ -9,6 +9,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM"), "1", StringComparison.Ordinal);
         private static readonly bool TraceCramWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CRAM"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdpCtrlAll =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVdpCtrlLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_CTRL_LIMIT", 200);
         private static readonly bool GateCpuWritesDuringDma =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE"), "1", StringComparison.Ordinal);
         private static readonly bool DisableDmaWriteGate =
@@ -33,6 +37,7 @@ namespace EutherDrive.Core.MdTracerCore
         private readonly int[] COLOR_NORMAL    = { 0, 52, 87, 116, 144, 172, 206, 255 };
         private readonly int[] COLOR_SHADOW    = { 0, 29, 52, 70, 87, 101, 116, 130 };
         private readonly int[] COLOR_HIGHLIGHT = { 130, 144, 158, 172, 187, 206, 228, 255 };
+        private int _vdpCtrlLogRemaining = TraceVdpCtrlLimit;
 
         // Centraliserad felhantering (strict by default; disable with EUTHERDRIVE_VDP_STRICT=0).
         private static void Error(string where)
@@ -384,9 +389,13 @@ namespace EutherDrive.Core.MdTracerCore
                 // Trace control port writes in interlace mode 2
                 TraceVdpControlWrite(in_address, in_data, g_command_select, g_command_word);
                 
-                // Log ALL control port writes for Predator 2 debugging
-                // Always log for now to capture the issue
-                Console.WriteLine($"[VDP-CTRL] frame={_frameCounter} addr=0x{in_address:X6} raw=0x{in_data:X4}");
+                // Log ALL control port writes (gated)
+                if (TraceVdpCtrlAll && _vdpCtrlLogRemaining > 0)
+                {
+                    Console.WriteLine($"[VDP-CTRL] frame={_frameCounter} addr=0x{in_address:X6} raw=0x{in_data:X4}");
+                    if (_vdpCtrlLogRemaining != int.MaxValue)
+                        _vdpCtrlLogRemaining--;
+                }
 
                 if (!g_command_select)
                 {
@@ -396,12 +405,14 @@ namespace EutherDrive.Core.MdTracerCore
                         byte rs   = (byte)((in_data >> 8) & 0x1f);
                         byte data = (byte)(in_data & 0xff);
                         
-                        // Log DMA register writes for Predator 2 debugging
-                        if (rs >= 0x13 && rs <= 0x17) // Registers 19-23
+                        // Log DMA register writes (gated)
+                        if (TraceVdpCtrlAll && _vdpCtrlLogRemaining > 0 && rs >= 0x13 && rs <= 0x17) // Registers 19-23
                         {
                             Console.WriteLine($"[VDP-MEM-REG] frame={_frameCounter} raw=0x{in_data:X4} reg=0x{rs:X2} data=0x{data:X2}");
                             // Also log as VDP-CTRL for consistency
                             Console.WriteLine($"[VDP-CTRL-REG] frame={_frameCounter} addr=0x{in_address:X6} raw=0x{in_data:X4} reg=0x{rs:X2} data=0x{data:X2}");
+                            if (_vdpCtrlLogRemaining != int.MaxValue)
+                                _vdpCtrlLogRemaining--;
                         }
                         
                         set_vdp_register(rs, data);
@@ -423,8 +434,8 @@ namespace EutherDrive.Core.MdTracerCore
                     g_vdp_reg_dest_address = (ushort)((g_vdp_reg_dest_address & 0x3fff) | ((in_data & 0x0007) << 14));
                     g_vdp_reg_code = (g_vdp_reg_code & ~codeMask) | ((in_data >> 2) & codeMask);
 
-                     // Always log VDP command decoding for debugging
-                    if (_frameCounter < 100) // Only log early frames
+                    // Log VDP command decoding (gated)
+                    if (TraceVdpCtrlAll && _vdpCtrlLogRemaining > 0 && _frameCounter < 100) // Only log early frames
                     {
                         int codeLow = g_vdp_reg_code & 0x0f;
                         string target = codeLow switch
@@ -439,6 +450,8 @@ namespace EutherDrive.Core.MdTracerCore
                             $"[VDP-CTRL-DECODE] frame={_frameCounter} target={target} addr=0x{g_vdp_reg_dest_address:X4} " +
                             $"code=0x{g_vdp_reg_code:X2} autoinc=0x{g_vdp_reg_15_autoinc:X2} dmaReq={(dmaRequested ? 1 : 0)} " +
                             $"dmaEn={g_vdp_reg_1_4_dma} dmaMode={g_vdp_reg_23_dma_mode} word1=0x{g_command_word:X4} word2=0x{in_data:X4}");
+                        if (_vdpCtrlLogRemaining != int.MaxValue)
+                            _vdpCtrlLogRemaining--;
                     }
 
                     if ((g_vdp_reg_code & 0x20) != 0 && g_vdp_reg_1_4_dma == 1)

@@ -104,6 +104,9 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool TraceZ80Io =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_IO"), "1", StringComparison.Ordinal);
         private static readonly int TraceZ80IoLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_IO_LIMIT");
+        private static readonly bool TraceZ80YmAll =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_YM_ALL"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80YmAllLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_YM_ALL_LIMIT", 256);
         private static readonly bool TraceZ80BootIo =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_BOOT_IO"), "1", StringComparison.Ordinal);
         private static readonly int TraceZ80BootIoInstrLimit = ParseZ80BootIoLimit();
@@ -203,6 +206,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _forceZ80B154Remaining = ForceZ80B154Limit;
         private int _z80IoLogRemaining = TraceZ80IoLimit;
         private int _z80YmLogRemaining = TraceZ80YmLimit;
+        private int _z80YmAllLogRemaining = TraceZ80YmAllLimit;
         private static readonly ushort? TraceZ80RamWriteAddr = ParseZ80Addr("EUTHERDRIVE_TRACE_Z80_RAM_WRITE_ADDR");
         private static readonly int TraceZ80RamWriteLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_RAM_WRITE_LIMIT");
         private int _z80RamWriteLogRemaining = TraceZ80RamWriteLimit;
@@ -1345,8 +1349,13 @@ namespace EutherDrive.Core.MdTracerCore
              else if (a >= 0x4000 && a <= 0x5FFF)
             {
                 // YM2612
-                // DEBUG: Log ALL Z80 YM writes
-                Console.WriteLine($"[Z80-YM-ALL] addr=0x{a:X4} val=0x{in_data:X2} PC=0x{DebugPc:X4}");
+                // DEBUG: Log ALL Z80 YM writes (gated)
+                if (TraceZ80YmAll && _z80YmAllLogRemaining > 0)
+                {
+                    Console.WriteLine($"[Z80-YM-ALL] addr=0x{a:X4} val=0x{in_data:X2} PC=0x{DebugPc:X4}");
+                    if (_z80YmAllLogRemaining != int.MaxValue)
+                        _z80YmAllLogRemaining--;
+                }
                 if (a <= 0x4003 && Z80YmWaitCycles > 0)
                     AddWaitCycles(Z80YmWaitCycles);
                 md_main.g_md_music.g_md_ym2612.write8(a, in_data, "Z80");

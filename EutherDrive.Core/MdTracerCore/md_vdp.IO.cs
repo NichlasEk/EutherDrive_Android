@@ -2,6 +2,11 @@ namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
+        private static readonly bool TraceVdpIo =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_IO"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVdpIoLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_IO_LIMIT", 200);
+        private int _vdpIoLogRemaining = TraceVdpIoLimit;
         // Bus-åtkomst (tills riktiga registerlogiken är portad)
         public byte read8(uint addr)
         {
@@ -39,15 +44,25 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void write16(uint addr, ushort val)
         {
-            // Always log ALL VDP writes for debugging
-            Console.WriteLine($"[VDP-WRITE16-ALL] addr=0x{addr:X8} val=0x{val:X4}");
+            // Log ALL VDP writes (gated)
+            if (TraceVdpIo && _vdpIoLogRemaining > 0)
+            {
+                Console.WriteLine($"[VDP-WRITE16-ALL] addr=0x{addr:X8} val=0x{val:X4}");
+                if (_vdpIoLogRemaining != int.MaxValue)
+                    _vdpIoLogRemaining--;
+            }
             
             uint a = addr & 0x00FF_FFFF;
             uint port = a & 0x00000E;
 
             if (port == 0x04)
             {
-                Console.WriteLine($"[VDP-CONTROL-PORT] addr=0x{addr:X8} val=0x{val:X4}");
+                if (TraceVdpIo && _vdpIoLogRemaining > 0)
+                {
+                    Console.WriteLine($"[VDP-CONTROL-PORT] addr=0x{addr:X8} val=0x{val:X4}");
+                    if (_vdpIoLogRemaining != int.MaxValue)
+                        _vdpIoLogRemaining--;
+                }
                 
                 // Register write: 1vvvvvvv dddddddd
                 if ((val & 0x8000) != 0)
@@ -58,7 +73,12 @@ namespace EutherDrive.Core.MdTracerCore
                     // Log ALL register writes to DMA source/length registers for Predator 2 debugging
                     if (reg >= 0x13 && reg <= 0x17) // Registers 19-23
                     {
-                        Console.WriteLine($"[VDP-CTRL-RAW] raw=0x{val:X4} reg={reg} data=0x{data:X2}");
+                        if (TraceVdpIo && _vdpIoLogRemaining > 0)
+                        {
+                            Console.WriteLine($"[VDP-CTRL-RAW] raw=0x{val:X4} reg={reg} data=0x{data:X2}");
+                            if (_vdpIoLogRemaining != int.MaxValue)
+                                _vdpIoLogRemaining--;
+                        }
                     }
                     
                     set_vdp_register(reg, data);
@@ -73,8 +93,12 @@ namespace EutherDrive.Core.MdTracerCore
             ushort hi = (ushort)(val >> 16);
             ushort lo = (ushort)(val & 0xFFFF);
             
-            // Log for Predator 2 debugging
-            Console.WriteLine($"[VDP-WRITE32] addr=0x{addr:X8} val=0x{val:X8} hi=0x{hi:X4} lo=0x{lo:X4}");
+            if (TraceVdpIo && _vdpIoLogRemaining > 0)
+            {
+                Console.WriteLine($"[VDP-WRITE32] addr=0x{addr:X8} val=0x{val:X8} hi=0x{hi:X4} lo=0x{lo:X4}");
+                if (_vdpIoLogRemaining != int.MaxValue)
+                    _vdpIoLogRemaining--;
+            }
             
             write16(addr, hi);  // Upper word
             write16(addr, lo);  // Lower word to SAME address

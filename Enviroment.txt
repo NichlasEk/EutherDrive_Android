@@ -16,6 +16,14 @@ UI
 - EUTHERDRIVE_TRACE_UI_RENDER=1: UI render/emu-loop debug logs (bitmap recreate, emu-loop exceptions).
 - EUTHERDRIVE_TRACE_UI_PRESENT=1: per-present logs (frame id, empty frame, present metrics).
 - EUTHERDRIVE_TRACE_UI_AUDIO=1: show audio debug line in UI (buffer, accumulator, timing ratio).
+- EUTHERDRIVE_TRACE_Z80_YM_ALL=1: log all Z80 YM2612 writes (very noisy; gated).
+- EUTHERDRIVE_TRACE_Z80_YM_ALL_LIMIT=<int>: max Z80 YM write logs (default 256; 0=unlimited).
+- EUTHERDRIVE_TRACE_VDP_CTRL=1: log VDP control-port writes/decodes (very noisy; gated).
+- EUTHERDRIVE_TRACE_VDP_CTRL_LIMIT=<int>: max VDP ctrl logs (default 200; 0=unlimited).
+- EUTHERDRIVE_TRACE_VDP_RENDER=1: log VDP render debug markers (very noisy; gated).
+- EUTHERDRIVE_TRACE_VRAM_WRITE_DETAIL=1: log detailed VRAM writes (very noisy; gated).
+- EUTHERDRIVE_TRACE_VDP_IO=1: log raw VDP IO writes (very noisy; gated).
+- EUTHERDRIVE_TRACE_VDP_IO_LIMIT=<int>: max VDP IO logs (default 200; 0=unlimited).
 - EUTHERDRIVE_AUDIO=1: enable audio output (pw-cat).
 - EUTHERDRIVE_AUDIO_TIMED=1: time-based audio fill (wall-clock) to keep audio steady when FPS is low (default on; set 0 to disable).
 - EUTHERDRIVE_AUDIO_TIMED_MAX_FRAMES=<int>: cap frames generated per tick in timed mode (default 1024).

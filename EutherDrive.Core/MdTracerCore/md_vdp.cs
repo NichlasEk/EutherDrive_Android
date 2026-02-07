@@ -81,6 +81,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_INTERLACE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpState =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdpRender =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_RENDER"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRomStartLog =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ROM_START"), "1", StringComparison.Ordinal)
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ALL"), "1", StringComparison.Ordinal);
@@ -101,6 +103,8 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_RANGE_LIMIT", 200);
         private static readonly bool TraceVramRangeSkipFill =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_RANGE_SKIP_FILL"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVramWriteDetail =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_WRITE_DETAIL"), "1", StringComparison.Ordinal);
         private static int _traceVramRangeStart;
         private static int _traceVramRangeEnd;
 
@@ -1131,7 +1135,7 @@ namespace EutherDrive.Core.MdTracerCore
             bool inScrollB = address >= 0xE000 && address < 0x10000;
             bool inAltScrollB = address >= 0xA000 && address < 0xC000;
 
-            if (inScrollA || inScrollB || inAltScrollB)
+            if (TraceVramWriteDetail && (inScrollA || inScrollB || inAltScrollB))
             {
                 if (_vramWriteLogCount < 100)
                 {
