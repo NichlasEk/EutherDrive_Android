@@ -143,10 +143,17 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _suppressZ80WinAssert;
         private bool _suppressMbxByteLog;
         private int _ymWriteLogRemaining = 64;
+        private int _busVdpLogRemaining = TraceBusVdpLimit;
         private static readonly bool TraceZ80Win =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80RegDecode =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80REG_DECODE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80SafeBoot =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80SAFE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceBusVdp =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS_VDP"), "1", StringComparison.Ordinal);
+        private static readonly int TraceBusVdpLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_BUS_VDP_LIMIT", 200);
         private static readonly bool ResetZ80OnBusReqRelease =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_RESET_ON_BUSREQ_RELEASE"), "1", StringComparison.Ordinal);
         private static readonly int ResetZ80OnBusReqReleaseLimit =
@@ -997,10 +1004,11 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal void TickZ80SafeBoot(long frame)
         {
-            Console.WriteLine($"[Z80SAFE-TICK-DEBUG] frame={frame} enabled={Z80SafeBootEnabled} active={_z80SafeBootActive}");
+            if (TraceZ80SafeBoot)
+                Console.WriteLine($"[Z80SAFE-TICK-DEBUG] frame={frame} enabled={Z80SafeBootEnabled} active={_z80SafeBootActive}");
             if (!Z80SafeBootEnabled || !_z80SafeBootActive)
             {
-                if (frame % 60 == 0)
+                if (TraceZ80SafeBoot && frame % 60 == 0)
                     Console.WriteLine($"[Z80SAFE-TICK] frame={frame} enabled={Z80SafeBootEnabled} active={_z80SafeBootActive}");
                 return;
             }
@@ -2033,8 +2041,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address >= 0xC00000 && in_address <= 0xDFFFFF)
             {
-                // Log ALL VDP control port writes for Predator 2 debugging
-                if (in_address == 0xC00004)
+                // Log ALL VDP control port writes (gated)
+                if (TraceBusVdp && _busVdpLogRemaining > 0 && in_address == 0xC00004)
                 {
                     Console.WriteLine($"[BUS-VDP-WRITE16] addr=0x{in_address:X8} raw=0x{in_data:X4}");
                     
@@ -2045,6 +2053,8 @@ namespace EutherDrive.Core.MdTracerCore
                         byte data = (byte)(in_data & 0xFF);
                         Console.WriteLine($"[BUS-VDP-REG] reg=0x{reg:X2} data=0x{data:X2}");
                     }
+                    if (_busVdpLogRemaining != int.MaxValue)
+                        _busVdpLogRemaining--;
                 }
                 
                 md_main.g_md_vdp?.write16(in_address, in_data);

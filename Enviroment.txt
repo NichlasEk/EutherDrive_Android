@@ -24,6 +24,18 @@ UI
 - EUTHERDRIVE_TRACE_VRAM_WRITE_DETAIL=1: log detailed VRAM writes (very noisy; gated).
 - EUTHERDRIVE_TRACE_VDP_IO=1: log raw VDP IO writes (very noisy; gated).
 - EUTHERDRIVE_TRACE_VDP_IO_LIMIT=<int>: max VDP IO logs (default 200; 0=unlimited).
+- EUTHERDRIVE_TRACE_VRAM_WRITE_CPU=1: log CPU VRAM writes (very noisy; gated).
+- EUTHERDRIVE_TRACE_VRAM_WRITE_CPU_LIMIT=<int>: max CPU VRAM write logs (default 256; 0=unlimited).
+- EUTHERDRIVE_TRACE_VDP_CTRL_WRITE=1: log key VDP control register writes (gated).
+- EUTHERDRIVE_TRACE_VDP_CTRL_WRITE_LIMIT=<int>: max VDP ctrl write logs (default 128; 0=unlimited).
+- EUTHERDRIVE_TRACE_VDP_ADDR_SET=1: log VDP address set commands (gated).
+- EUTHERDRIVE_TRACE_VDP_ADDR_SET_LIMIT=<int>: max VDP addr logs (default 128; 0=unlimited).
+- EUTHERDRIVE_TRACE_BUS_VDP=1: log VDP writes at bus layer (gated).
+- EUTHERDRIVE_TRACE_BUS_VDP_LIMIT=<int>: max VDP bus logs (default 200; 0=unlimited).
+- EUTHERDRIVE_TRACE_Z80SAFE=1: log Z80 safe-boot tick/debug (gated).
+- EUTHERDRIVE_TRACE_MADOU=1: log Madou trace points (gated).
+- EUTHERDRIVE_TRACE_MADOU_FULL=1: log extended Madou trace points (very noisy; gated).
+- EUTHERDRIVE_TRACE_ALADDIN_DEBUG=1: log per-frame Z80/audio debug counters (gated).
 - EUTHERDRIVE_AUDIO=1: enable audio output (pw-cat).
 - EUTHERDRIVE_AUDIO_TIMED=1: time-based audio fill (wall-clock) to keep audio steady when FPS is low (default on; set 0 to disable).
 - EUTHERDRIVE_AUDIO_TIMED_MAX_FRAMES=<int>: cap frames generated per tick in timed mode (default 1024).

@@ -68,6 +68,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDLVL"), "1", StringComparison.Ordinal);
     private static readonly bool TracePerf =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PERF"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceAladdinDebug =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ALADDIN_DEBUG"), "1", StringComparison.Ordinal);
     private static readonly bool TraceYmSilence =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_ON_SILENCE"), "1", StringComparison.Ordinal);
     private static readonly int TraceYmSilenceFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_ON_SILENCE_FRAMES", 60);
@@ -1263,8 +1265,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                  }
              }
 
-            // ALADDIN-DEBUG logging for Z80 cycle analysis
-            if (frame % 1 == 0)
+            // ALADDIN-DEBUG logging for Z80 cycle analysis (gated)
+            if (TraceAladdinDebug && frame % 1 == 0)
             {
                 int lines = md_main.g_md_vdp?.g_vertical_line_max ?? 262;
                 int expectedZ80PerFrame = md_main.GetZ80CyclesPerLine() * lines;

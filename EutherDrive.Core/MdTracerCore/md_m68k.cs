@@ -43,8 +43,10 @@ namespace EutherDrive.Core.MdTracerCore
         private static long _pcSampleLastMs;
         private static bool _pcWatchEnabled =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC"), "1", StringComparison.Ordinal);
-        private static bool _madouTraceEnabled = true;
-        private static bool _madouFullTrace = true; // Always trace Madou-related code
+        private static readonly bool _madouTraceEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MADOU"), "1", StringComparison.Ordinal);
+        private static readonly bool _madouFullTrace =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MADOU_FULL"), "1", StringComparison.Ordinal);
         private static readonly uint PcWatchStart = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_START") ?? 0x000320;
         private static readonly uint PcWatchEnd = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_END") ?? 0x000340;
         

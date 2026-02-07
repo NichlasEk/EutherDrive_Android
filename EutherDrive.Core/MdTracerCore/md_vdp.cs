@@ -83,6 +83,18 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpRender =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_RENDER"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVramWriteCpu =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_WRITE_CPU"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVramWriteCpuLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_WRITE_CPU_LIMIT", 256);
+        private static readonly bool TraceVdpCtrlWrite =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL_WRITE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVdpCtrlWriteLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_CTRL_WRITE_LIMIT", 128);
+        private static readonly bool TraceVdpAddrSet =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_ADDR_SET"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVdpAddrSetLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_ADDR_SET_LIMIT", 128);
         private static readonly bool TraceRomStartLog =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ROM_START"), "1", StringComparison.Ordinal)
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ALL"), "1", StringComparison.Ordinal);
@@ -1457,7 +1469,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            // Log ALL writes to VRAM 0xA000-0xFFFF (always log for debugging)
+            // Log ALL writes to VRAM 0xA000-0xFFFF (gated)
             if ((code & 0x0F) == 1)
             {
                 int maskedAddr = destAddr & 0xFFFF;
@@ -1465,11 +1477,12 @@ namespace EutherDrive.Core.MdTracerCore
                 // Log writes around interlace mode 2 activation
                 bool nearInterlace2 = (_frameCounter >= _firstInterlace2Frame - 120) && (_frameCounter <= _firstInterlace2Frame + 300);
 
-                if ((maskedAddr >= 0xA000 || nearInterlace2) && _vramWriteLogCount < 512)
+                if (TraceVramWriteCpu && _vramWriteCpuLogRemaining > 0 && (maskedAddr >= 0xA000 || nearInterlace2))
                 {
                     string target = "VRAM";
                     Console.WriteLine($"[VRAM-WRITE-CPU] frame={_frameCounter} addr=0x{maskedAddr:X4} target={target} value=0x{in_data:X4} autoInc={autoInc}");
-                    _vramWriteLogCount++;
+                    if (_vramWriteCpuLogRemaining != int.MaxValue)
+                        _vramWriteCpuLogRemaining--;
                 }
 
                 // Watchpoint: first non-zero in scroll regions
@@ -1498,6 +1511,9 @@ namespace EutherDrive.Core.MdTracerCore
         private ushort _firstNonZeroScrollA = 0;
         private ushort _firstNonZeroScrollB = 0;
         private int[] _vramWritePageCounts = new int[16];
+        private int _vramWriteCpuLogRemaining = TraceVramWriteCpuLimit;
+        private int _vdpCtrlWriteLogRemaining = TraceVdpCtrlWriteLimit;
+        private int _vdpAddrSetLogRemaining = TraceVdpAddrSetLimit;
 
         // Trace VDP control port writes (CPU -> VDP control)
         private void TraceVdpControlWrite(uint in_address, ushort in_data, bool commandSelect, ushort commandWord)
@@ -1511,13 +1527,12 @@ namespace EutherDrive.Core.MdTracerCore
                 byte data = (byte)(in_data & 0xFF);
 
                 // Key registers for scroll/name tables
-                if (rs == 1 || rs == 2 || rs == 3 || rs == 4 || rs == 5 || rs == 0x0C || rs == 0x0F || rs == 0x10)
+                if (TraceVdpCtrlWrite && _vdpCtrlWriteLogRemaining > 0 &&
+                    (rs == 1 || rs == 2 || rs == 3 || rs == 4 || rs == 5 || rs == 0x0C || rs == 0x0F || rs == 0x10))
                 {
-                    if (_vramWriteLogCount < 64)  // Limit control writes
-                    {
-                        Console.WriteLine($"[VDP-CTRL-WRITE] frame={_frameCounter} reg{rs}=0x{data:X2}");
-                        _vramWriteLogCount++;
-                    }
+                    Console.WriteLine($"[VDP-CTRL-WRITE] frame={_frameCounter} reg{rs}=0x{data:X2}");
+                    if (_vdpCtrlWriteLogRemaining != int.MaxValue)
+                        _vdpCtrlWriteLogRemaining--;
                 }
             }
             else if (!commandSelect)
@@ -1531,10 +1546,11 @@ namespace EutherDrive.Core.MdTracerCore
                     3 => "CRAM",
                     _ => $"UNK({code})"
                 };
-                if (_vramWriteLogCount < 32)
+                if (TraceVdpAddrSet && _vdpAddrSetLogRemaining > 0)
                 {
                     Console.WriteLine($"[VDP-ADDR-SET] frame={_frameCounter} target={target} addr=0x{addr:X4}");
-                    _vramWriteLogCount++;
+                    if (_vdpAddrSetLogRemaining != int.MaxValue)
+                        _vdpAddrSetLogRemaining--;
                 }
             }
         }
