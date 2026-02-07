@@ -10,6 +10,13 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC_DEBUG"), "1", StringComparison.Ordinal);
         private static readonly bool TraceDacEnable =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC_ENABLE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceDacStream =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC_STREAM"), "1", StringComparison.Ordinal);
+        private long _dacStreamLastTicks;
+        private int _dacStreamWrites;
+        private int _dacStreamMin = int.MaxValue;
+        private int _dacStreamMax;
+        private long _dacStreamSum;
         private static readonly bool TraceDac =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC"), "1", StringComparison.Ordinal);
         private static readonly bool TraceYmReg =
@@ -97,6 +104,17 @@ namespace EutherDrive.Core.MdTracerCore
         private long _dacCenterCount;
         private long _dacNonCenterCount;
         private readonly int[] _dacHistogram = new int[16];
+        private const int DacWriteRingSize = 16384;
+        private readonly long[] _dacWriteCycles = new long[DacWriteRingSize];
+        private readonly int[] _dacWriteData = new int[DacWriteRingSize];
+        private int _dacWriteHead;
+        private int _dacWriteTail;
+        private int _dacWriteQueueCount;
+        private int _dacWriteDropCount;
+        private long _dacWriteLastCycle = -1;
+        private readonly object _dacWriteLock = new object();
+        private double _dacStreamCycleCursor = -1;
+        private int _dacStreamValue = 0x100;
         private int _ymRegLogRemaining = 256;
         private int _key28LogRemaining = Key28LogLimit;
         private int _ymDacBankLogRemaining = TraceYmDacBankLimit;
@@ -126,6 +144,11 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _ymLastAddr;
         private byte _ymLastVal;
         private string _ymLastSource = "none";
+        internal int DebugDacEnabled => g_reg_2b_dac & 0x80;
+        internal int DebugDacData => g_reg_2a_dac_data;
+        internal byte DebugLastYmAddr => _ymLastAddr;
+        internal byte DebugLastYmVal => _ymLastVal;
+        internal string DebugLastYmSource => _ymLastSource;
         private long _lastKeyOnCycle = -1;
         private long _ymMuteLastCycle = -1;
         private long _ymBusyUntilCycle;
@@ -684,8 +707,32 @@ namespace EutherDrive.Core.MdTracerCore
                                  int dac9bit = ((shiftedVal << 1) & 0x1FE) | (g_reg_2a_dac_data & 1);
                                  int finalSigned = dac9bit - 0x100;
                                  
-                                 if (TraceDacDebug)
-                                     Console.WriteLine($"[DAC-DEBUG {_dacDebugWriteCount}] val=0x{in_val:X2} ({signedVal}) -> shifted=0x{shiftedVal:X2} -> dac9bit=0x{dac9bit:X3} -> final={finalSigned} enabled={_dacEnabled} g_reg_2b_dac=0x{g_reg_2b_dac:X2}");
+                             if (TraceDacDebug)
+                                 Console.WriteLine($"[DAC-DEBUG {_dacDebugWriteCount}] val=0x{in_val:X2} ({signedVal}) -> shifted=0x{shiftedVal:X2} -> dac9bit=0x{dac9bit:X3} -> final={finalSigned} enabled={_dacEnabled} g_reg_2b_dac=0x{g_reg_2b_dac:X2}");
+                             }
+                             
+                             if (TraceDacStream)
+                             {
+                                 int signedVal = (sbyte)in_val;
+                                 _dacStreamWrites++;
+                                 if (signedVal < _dacStreamMin) _dacStreamMin = signedVal;
+                                 if (signedVal > _dacStreamMax) _dacStreamMax = signedVal;
+                                 _dacStreamSum += signedVal;
+                                 long nowTicks = Stopwatch.GetTimestamp();
+                                 if (_dacStreamLastTicks == 0)
+                                     _dacStreamLastTicks = nowTicks;
+                                 long elapsed = nowTicks - _dacStreamLastTicks;
+                                 if (elapsed >= Stopwatch.Frequency)
+                                 {
+                                     double secs = elapsed / (double)Stopwatch.Frequency;
+                                     double avg = _dacStreamWrites > 0 ? _dacStreamSum / (double)_dacStreamWrites : 0;
+                                     Console.WriteLine($"[DAC-STREAM] writes={_dacStreamWrites} min={_dacStreamMin} max={_dacStreamMax} avg={avg:0.0} enabled={(_dacEnabled ? 1 : 0)}");
+                                     _dacStreamWrites = 0;
+                                     _dacStreamMin = int.MaxValue;
+                                     _dacStreamMax = 0;
+                                     _dacStreamSum = 0;
+                                     _dacStreamLastTicks = nowTicks;
+                                 }
                              }
                              
                              if (TraceDac)
@@ -771,6 +818,7 @@ namespace EutherDrive.Core.MdTracerCore
                             }
                             // Shift left by 1 to get 9-bit value, preserve old bit 0 for compatibility
                             g_reg_2a_dac_data = ((shiftedData << 1) & 0x1FE) | (g_reg_2a_dac_data & 1);
+                            RecordDacWrite(g_reg_2a_dac_data, source);
                             if (TraceDacSample)
                             {
                                 int signedDac = g_reg_2a_dac_data - 0x100;
@@ -786,13 +834,13 @@ namespace EutherDrive.Core.MdTracerCore
                              if (TraceDacEnable)
                                  Console.WriteLine($"[DAC-ENABLE] val=0x{in_val:X2} enabled={enabled} (bit7={((in_val & 0x80) != 0)})");
                              
+                             _dacEnabled = enabled;
                              if (TraceDac)
                              {
                                  if (enabled)
                                      _dacEnableCount++;
                                  else
                                      _dacDisableCount++;
-                                 _dacEnabled = enabled;
                                  MaybeLogDac();
                              }
                              g_reg_2b_dac = in_val & 0x80;
@@ -1390,6 +1438,7 @@ namespace EutherDrive.Core.MdTracerCore
             _dacRateWriteCount = 0;
             _dacRateDeltaCount = 0;
             _dacRateDeltaTotal = 0;
+            ResetDacWriteQueue();
             
             // Reset YM2612 busy state completely
             // Use long.MinValue + 1 to avoid potential underflow issues
@@ -1408,7 +1457,23 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[YM-BUSY] Full reset completed - all state cleared, busyUntil={_ymBusyUntilCycle}");
         }
 
-         private void SetYmBusy(long nowCycle, int port, byte addr, byte val, string source = "Z80")
+        private void ResetDacWriteQueue()
+        {
+            lock (_dacWriteLock)
+            {
+                _dacWriteHead = 0;
+                _dacWriteTail = 0;
+                _dacWriteQueueCount = 0;
+                _dacWriteDropCount = 0;
+                _dacWriteLastCycle = -1;
+                _dacStreamCycleCursor = -1;
+                _dacStreamValue = 0x100;
+                Array.Clear(_dacWriteCycles, 0, _dacWriteCycles.Length);
+                Array.Clear(_dacWriteData, 0, _dacWriteData.Length);
+            }
+        }
+
+        private void SetYmBusy(long nowCycle, int port, byte addr, byte val, string source = "Z80")
         {
             // CRITICAL: Don't set busy timer if YM busy emulation is disabled
             // This includes during Z80 safe boot and warmup period
@@ -1447,6 +1512,71 @@ namespace EutherDrive.Core.MdTracerCore
             
             if (TraceYmBusy)
                 LogYmBusyWrite("set", nowCycle, port, addr, val, -1);
+        }
+
+        private void RecordDacWrite(int dacData, string source)
+        {
+            long cycle = -1;
+            if (source == "Z80" && md_main.g_md_z80 != null)
+                cycle = md_main.g_md_z80.DebugTotalCycles;
+            if (cycle < 0)
+                cycle = md_main.SystemCycles;
+            if (cycle <= _dacWriteLastCycle)
+                cycle = _dacWriteLastCycle + 1;
+
+            lock (_dacWriteLock)
+            {
+                _dacWriteCycles[_dacWriteHead] = cycle;
+                _dacWriteData[_dacWriteHead] = dacData;
+                _dacWriteHead = (_dacWriteHead + 1) % DacWriteRingSize;
+                if (_dacWriteQueueCount == DacWriteRingSize)
+                {
+                    _dacWriteTail = (_dacWriteTail + 1) % DacWriteRingSize;
+                    _dacWriteDropCount++;
+                }
+                else
+                {
+                    _dacWriteQueueCount++;
+                }
+            }
+            _dacWriteLastCycle = cycle;
+        }
+
+        private bool TryPeekDacWrite(out long cycle, out int dacData)
+        {
+            lock (_dacWriteLock)
+            {
+                if (_dacWriteQueueCount <= 0)
+                {
+                    cycle = 0;
+                    dacData = 0;
+                    return false;
+                }
+                cycle = _dacWriteCycles[_dacWriteTail];
+                dacData = _dacWriteData[_dacWriteTail];
+                return true;
+            }
+        }
+
+        private void PopDacWrite()
+        {
+            lock (_dacWriteLock)
+            {
+                if (_dacWriteQueueCount <= 0)
+                    return;
+                _dacWriteTail = (_dacWriteTail + 1) % DacWriteRingSize;
+                _dacWriteQueueCount--;
+            }
+        }
+
+        private int UpdateDacStreamForCycle(long cycle)
+        {
+            while (TryPeekDacWrite(out long writeCycle, out int dacData) && writeCycle <= cycle)
+            {
+                _dacStreamValue = dacData;
+                PopDacWrite();
+            }
+            return _dacStreamValue;
         }
 
         private void LogYmBusyWrite(string kind, long nowCycle, int port, byte addr, byte val, long dropCount)

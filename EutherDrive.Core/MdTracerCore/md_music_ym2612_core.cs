@@ -13,6 +13,25 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_MUTE_DAC"), "1", StringComparison.Ordinal);
         private static readonly bool AudioMuteFmPsg =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_MUTE_FMPSG"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceDacOutput =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DAC_OUTPUT"), "1", StringComparison.Ordinal);
+        private static readonly double DacMixGain = GetDacMixGain();
+        private static readonly bool TraceYmOutput =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_OUTPUT"), "1", StringComparison.Ordinal);
+        private long _dacOutLastTicks;
+        private int _dacOutMin = int.MaxValue;
+        private int _dacOutMax = int.MinValue;
+        private long _dacOutSum;
+        private long _dacOutCount;
+        private int _dacOutScaledMin = int.MaxValue;
+        private int _dacOutScaledMax = int.MinValue;
+        private long _dacOutScaledSum;
+        private long _dacOutScaledCount;
+        private long _ymOutLastTicks;
+        private int _ymOutMin = int.MaxValue;
+        private int _ymOutMax = int.MinValue;
+        private long _ymOutSum;
+        private long _ymOutCount;
         private static int GetFmVolumeDivisor()
         {
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_FM_VOLUME_DIVISOR");
@@ -24,6 +43,18 @@ namespace EutherDrive.Core.MdTracerCore
             }
             // Default to 64 to reduce overly hot FM output.
             return 64;
+        }
+
+        private static double GetDacMixGain()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_DAC_MIX_GAIN");
+            if (!string.IsNullOrWhiteSpace(raw)
+                && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+                && value > 0)
+            {
+                return value;
+            }
+            return 1.0;
         }
 
         public (int out1, int out2) YM2612_Update()
@@ -82,6 +113,14 @@ namespace EutherDrive.Core.MdTracerCore
                         // FM samples get: (sample * 128) / FM_VOLUME_DIVISOR
                         // So DAC should be: w_dac * 128 / FM_VOLUME_DIVISOR
                         int dac_output = (w_dac << 7) / FM_VOLUME_DIVISOR;
+                        if (DacMixGain != 1.0)
+                        {
+                            double scaled = dac_output * DacMixGain;
+                            if (scaled > short.MaxValue) dac_output = short.MaxValue;
+                            else if (scaled < short.MinValue) dac_output = short.MinValue;
+                            else dac_output = (int)Math.Round(scaled);
+                        }
+                        TraceDacOutputSample(w_dac, dac_output);
                         // DEBUG: Log DAC output
                         // Console.WriteLine($"[DAC-OUTPUT] w_dac={w_dac} output={dac_output} vol={md_main.g_md_music.g_out_vol[5]}");
                         if (g_reg_b4_l[5] == true) w_out_l += (int)(dac_output * md_main.g_md_music.g_out_vol[5]);
@@ -97,6 +136,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (w_out_r > short.MaxValue) w_out_r = short.MaxValue;
             else if (w_out_r < short.MinValue) w_out_r = short.MinValue;
 
+            TraceYmOutputSample(w_out_l, w_out_r);
             return (w_out_l, w_out_r);
         }
 
@@ -121,7 +161,22 @@ namespace EutherDrive.Core.MdTracerCore
             // Advance timers based on audio time (batch step)
             if (frames > 0)
                 AdvanceTimersForSamples(frames);
-            
+
+            double cyclesPerSample = Z80_CLOCK / YM2612_SAMPLING;
+            long endCycle = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugTotalCycles : -1;
+            double startCycle = _dacStreamCycleCursor;
+            if (endCycle >= 0)
+            {
+                startCycle = endCycle - ((frames - 1) * cyclesPerSample);
+                if (_dacStreamCycleCursor < 0 || Math.Abs(startCycle - _dacStreamCycleCursor) > cyclesPerSample * frames * 4)
+                    _dacStreamCycleCursor = startCycle;
+            }
+            else if (_dacStreamCycleCursor < 0)
+            {
+                _dacStreamCycleCursor = 0;
+            }
+            double cyclePos = _dacStreamCycleCursor;
+
             for (int i = 0; i < maxFrames; i++)
             {
                 int w_out_l = 0;
@@ -151,10 +206,24 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     else
                     {
-                        int w_dac = dac_control();
+                        int dacData = g_reg_2a_dac_data;
+                        if (endCycle >= 0)
+                        {
+                            dacData = UpdateDacStreamForCycle((long)cyclePos);
+                            cyclePos += cyclesPerSample;
+                        }
+                        int w_dac = dacData - 0x100;
                         if (!AudioMuteDac)
                         {
                             int dac_output = (w_dac << 7) / FM_VOLUME_DIVISOR;
+                            if (DacMixGain != 1.0)
+                            {
+                                double scaled = dac_output * DacMixGain;
+                                if (scaled > short.MaxValue) dac_output = short.MaxValue;
+                                else if (scaled < short.MinValue) dac_output = short.MinValue;
+                                else dac_output = (int)Math.Round(scaled);
+                            }
+                            TraceDacOutputSample(w_dac, dac_output);
                             if (g_reg_b4_l[5] == true) w_out_l += (int)(dac_output * md_main.g_md_music.g_out_vol[5]);
                             if (g_reg_b4_r[5] == true) w_out_r += (int)(dac_output * md_main.g_md_music.g_out_vol[5]);
                         }
@@ -170,6 +239,15 @@ namespace EutherDrive.Core.MdTracerCore
                 int idx = i * 2;
                 dst[idx] = (short)w_out_l;
                 dst[idx + 1] = (short)w_out_r;
+
+                TraceYmOutputSample(w_out_l, w_out_r);
+            }
+
+            if (endCycle >= 0)
+            {
+                if ((g_reg_2b_dac & 0x80) == 0)
+                    UpdateDacStreamForCycle(endCycle);
+                _dacStreamCycleCursor = cyclePos;
             }
 
             int written = maxFrames * 2;
@@ -189,6 +267,82 @@ namespace EutherDrive.Core.MdTracerCore
                 g_com_lfo_freq_cnt = LFO_FREQ_TABLE[w_cnt];
                 g_com_lfo_env_cnt = LFO_ENV_TABLE[w_cnt];
             }
+        }
+
+        private void TraceDacOutputSample(int w_dac, int dac_output)
+        {
+            if (!TraceDacOutput)
+                return;
+
+            if (w_dac < _dacOutMin) _dacOutMin = w_dac;
+            if (w_dac > _dacOutMax) _dacOutMax = w_dac;
+            _dacOutSum += w_dac;
+            _dacOutCount++;
+
+            if (dac_output < _dacOutScaledMin) _dacOutScaledMin = dac_output;
+            if (dac_output > _dacOutScaledMax) _dacOutScaledMax = dac_output;
+            _dacOutScaledSum += dac_output;
+            _dacOutScaledCount++;
+
+            long nowTicks = Stopwatch.GetTimestamp();
+            if (_dacOutLastTicks == 0)
+                _dacOutLastTicks = nowTicks;
+            if (nowTicks - _dacOutLastTicks < Stopwatch.Frequency)
+                return;
+
+            double avg = _dacOutCount > 0 ? _dacOutSum / (double)_dacOutCount : 0.0;
+            double avgScaled = _dacOutScaledCount > 0 ? _dacOutScaledSum / (double)_dacOutScaledCount : 0.0;
+            int vol = md_main.g_md_music.g_out_vol[5];
+            int panL = g_reg_b4_l[5] ? 1 : 0;
+            int panR = g_reg_b4_r[5] ? 1 : 0;
+            int enabled = (g_reg_2b_dac & 0x80) != 0 ? 1 : 0;
+
+            Console.WriteLine(
+                "[DAC-OUT] writes={0} w_dac=min{1} max{2} avg{3:0.0} out=min{4} max{5} avg{6:0.0} enabled={7} panL={8} panR={9} vol={10} mute={11}",
+                _dacOutCount, _dacOutMin, _dacOutMax, avg, _dacOutScaledMin, _dacOutScaledMax, avgScaled,
+                enabled, panL, panR, vol, AudioMuteDac ? 1 : 0);
+
+            _dacOutCount = 0;
+            _dacOutSum = 0;
+            _dacOutMin = int.MaxValue;
+            _dacOutMax = int.MinValue;
+            _dacOutScaledCount = 0;
+            _dacOutScaledSum = 0;
+            _dacOutScaledMin = int.MaxValue;
+            _dacOutScaledMax = int.MinValue;
+            _dacOutLastTicks = nowTicks;
+        }
+
+        private void TraceYmOutputSample(int w_out_l, int w_out_r)
+        {
+            if (!TraceYmOutput)
+                return;
+
+            int min = w_out_l < w_out_r ? w_out_l : w_out_r;
+            int max = w_out_l > w_out_r ? w_out_l : w_out_r;
+            if (min < _ymOutMin) _ymOutMin = min;
+            if (max > _ymOutMax) _ymOutMax = max;
+            _ymOutSum += w_out_l;
+            _ymOutSum += w_out_r;
+            _ymOutCount += 2;
+
+            long nowTicks = Stopwatch.GetTimestamp();
+            if (_ymOutLastTicks == 0)
+                _ymOutLastTicks = nowTicks;
+            if (nowTicks - _ymOutLastTicks < Stopwatch.Frequency)
+                return;
+
+            double avg = _ymOutCount > 0 ? _ymOutSum / (double)_ymOutCount : 0.0;
+            int dacEnabled = (g_reg_2b_dac & 0x80) != 0 ? 1 : 0;
+            Console.WriteLine(
+                "[YM-OUT] min={0} max={1} avg={2:0.0} dacEnabled={3}",
+                _ymOutMin, _ymOutMax, avg, dacEnabled);
+
+            _ymOutMin = int.MaxValue;
+            _ymOutMax = int.MinValue;
+            _ymOutSum = 0;
+            _ymOutCount = 0;
+            _ymOutLastTicks = nowTicks;
         }
         private void register_change(int in_ch)
         {
