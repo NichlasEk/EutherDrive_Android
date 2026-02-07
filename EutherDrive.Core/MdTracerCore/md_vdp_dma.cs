@@ -115,9 +115,12 @@ namespace EutherDrive.Core.MdTracerCore
                     $"region={region} len=0x{g_dma_leng:X4} dest=0x{g_vdp_reg_dest_address:X4} code=0x{g_vdp_reg_code:X2}");
             }
             
-            Console.WriteLine($"[DMA-START] reason=CMD addr=0x{g_vdp_reg_dest_address:X4} cd=0x{g_vdp_reg_code:X2} " +
-                             $"len=0x{g_dma_leng:X4} srcRegs=(15=0x{g_vdp_reg_21_dma_source_low:X2} 16=0x{g_vdp_reg_22_dma_source_mid:X2} 17=0x{g_vdp_reg_23_5_dma_high:X2}) " +
-                             $"srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} inc=0x{g_vdp_reg_15_autoinc:X2} mode={g_vdp_reg_23_dma_mode} target={startTarget}");
+            if (TraceDmaRegs)
+            {
+                Console.WriteLine($"[DMA-START] reason=CMD addr=0x{g_vdp_reg_dest_address:X4} cd=0x{g_vdp_reg_code:X2} " +
+                                 $"len=0x{g_dma_leng:X4} srcRegs=(15=0x{g_vdp_reg_21_dma_source_low:X2} 16=0x{g_vdp_reg_22_dma_source_mid:X2} 17=0x{g_vdp_reg_23_5_dma_high:X2}) " +
+                                 $"srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} inc=0x{g_vdp_reg_15_autoinc:X2} mode={g_vdp_reg_23_dma_mode} target={startTarget}");
+            }
 
             // Log DMA copy operation with detailed info
             string target = "UNKNOWN";
@@ -133,21 +136,24 @@ namespace EutherDrive.Core.MdTracerCore
             ushort reg22 = g_vdp_reg_22_dma_source_mid;
             ushort reg23_5 = g_vdp_reg_23_5_dma_high;
             
-            LogDmaStatusLine($"[DMA-COPY-DETAIL] frame={_frameCounter} len={g_dma_leng} srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} dest=0x{g_vdp_reg_dest_address:X4} target={target} reg15=0x{g_vdp_reg_15_autoinc:X2} regCode=0x{g_vdp_reg_code:X2} regs=0x{reg23_5:X2}{reg22:X2}{reg21:X2}");
+            if (TraceDmaRegs)
+                LogDmaStatusLine($"[DMA-COPY-DETAIL] frame={_frameCounter} len={g_dma_leng} srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} dest=0x{g_vdp_reg_dest_address:X4} target={target} reg15=0x{g_vdp_reg_15_autoinc:X2} regCode=0x{g_vdp_reg_code:X2} regs=0x{reg23_5:X2}{reg22:X2}{reg21:X2}");
             
             // Enhanced Predator 2 debugging: log raw register values and computed addresses
-            Console.WriteLine($"[DMA-DEBUG-RAW] frame={_frameCounter} reg21=0x{reg21:X2} reg22=0x{reg22:X2} reg23_5=0x{reg23_5:X2} srcWordAddr=0x{srcWordAddr:X6} srcByteAddr=0x{g_dma_src_addr:X6} (srcWord<<1)");
+            if (TraceDmaRegs)
+                Console.WriteLine($"[DMA-DEBUG-RAW] frame={_frameCounter} reg21=0x{reg21:X2} reg22=0x{reg22:X2} reg23_5=0x{reg23_5:X2} srcWordAddr=0x{srcWordAddr:X6} srcByteAddr=0x{g_dma_src_addr:X6} (srcWord<<1)");
             
             // Special handling for length=0 (means 0x10000 words on real VDP)
             int actualLength = g_dma_leng;
             if (actualLength == 0)
             {
                 actualLength = 0x10000;
-                Console.WriteLine($"[DMA-LENGTH-ZERO] frame={_frameCounter} Using length=0x{actualLength:X4} instead of 0");
+                if (TraceDmaRegs)
+                    Console.WriteLine($"[DMA-LENGTH-ZERO] frame={_frameCounter} Using length=0x{actualLength:X4} instead of 0");
             }
             
             // Debug: dump first 32 bytes from source AND destination before/after
-            if (_frameCounter >= 560 && _frameCounter < 600) // Log frames around title screen transition
+            if (TraceDmaRegs && _frameCounter >= 560 && _frameCounter < 600) // Log frames around title screen transition
             {
                 // Dump source data
                 Console.Write($"[DMA-SRC-DUMP] srcByte=0x{g_dma_src_addr:X6}: ");

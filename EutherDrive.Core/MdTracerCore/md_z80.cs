@@ -11,6 +11,12 @@ namespace EutherDrive.Core.MdTracerCore
     //----------------------------------------------------------------
     internal partial class md_z80
     {
+        private static readonly bool TraceZ80ForceActive =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_FORCE_ACTIVE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80IntDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_INT_DEBUG"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80Boot =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_BOOT"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80SigTransitions =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80SIG_TRANS"), "1", StringComparison.Ordinal);
         public bool g_active;
@@ -414,7 +420,8 @@ namespace EutherDrive.Core.MdTracerCore
                 // DEBUG: Try forcing active
                 if (md_main.g_md_vdp?.FrameCounter >= 10)
                 {
-                    Console.WriteLine($"[Z80-DEBUG] g_active=false at frame={md_main.g_md_vdp.FrameCounter}, forcing true");
+                    if (TraceZ80ForceActive)
+                        Console.WriteLine($"[Z80-DEBUG] g_active=false at frame={md_main.g_md_vdp.FrameCounter}, forcing true");
                     g_active = true;
                 }
                 else
@@ -511,7 +518,8 @@ namespace EutherDrive.Core.MdTracerCore
                                     ushort pcPushed = g_reg_PC;
                                     bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
                                     bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
-                                    Console.WriteLine($"[Z80-INT-IM1] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")} src={_irqSource} status=0x{_irqStatus:X2}");
+                                    if (TraceZ80IntDebug)
+                                        Console.WriteLine($"[Z80-INT-IM1] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")} src={_irqSource} status=0x{_irqStatus:X2}");
                                     stack_push(g_reg_PCH);
                                     stack_push(g_reg_PCL);
                                     g_reg_PC = 0x0038;
@@ -527,7 +535,8 @@ namespace EutherDrive.Core.MdTracerCore
                                     ushort pcPushed = g_reg_PC;
                                     bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
                                     bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
-                                    Console.WriteLine($"[Z80-INT-IM2] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")} src={_irqSource} status=0x{_irqStatus:X2}");
+                                    if (TraceZ80IntDebug)
+                                        Console.WriteLine($"[Z80-INT-IM2] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")} src={_irqSource} status=0x{_irqStatus:X2}");
                                     // IM 2: vektor via I-register
                                     stack_push(g_reg_PCH);
                                     stack_push(g_reg_PCL);
@@ -640,12 +649,13 @@ namespace EutherDrive.Core.MdTracerCore
                         bytes += $" {addr:X4}:{val:X2}";
                     }
                 }
-                Console.WriteLine($"[SONIC2-Z80-0167] frame={frameNow} pc=0x{pcBefore:X4} op=0x{opcode:X2} nextPC=0x{g_reg_PC:X4} active={g_active} bytes={bytes}");
+                if (TraceZ80Boot)
+                    Console.WriteLine($"[SONIC2-Z80-0167] frame={frameNow} pc=0x{pcBefore:X4} op=0x{opcode:X2} nextPC=0x{g_reg_PC:X4} active={g_active} bytes={bytes}");
                 
 
             }
             // [BOOT-DEBUG] Log when Z80 reaches address 0x0000
-            if (pcBefore == 0x0000 && _z80DebugCount < 10)
+            if (TraceZ80Boot && pcBefore == 0x0000 && _z80DebugCount < 10)
             {
                 _z80DebugCount++;
                 Console.WriteLine($"[Z80-0000] frame={frameNow} pc=0x{pcBefore:X4} op=0x{opcode:X2} SP=0x{g_reg_SP:X4} - Executing from address 0x0000");
@@ -657,7 +667,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
             
             // [BOOT-DEBUG] Log when Z80 reaches boot code execution
-            if (pcBefore == 0x0040)
+            if (TraceZ80Boot && pcBefore == 0x0040)
             {
                 Console.WriteLine($"[Z80-BOOT-CODE] frame={frameNow} pc=0x{pcBefore:X4} SP=0x{g_reg_SP:X4} - Entering boot code (DI, LD SP, JP)");
                 // Dump boot code bytes to verify it hasn't been overwritten
@@ -673,12 +683,12 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
             // [BOOT-DEBUG] Log when Z80 reaches driver entry
-            if (pcBefore == 0x0167)
+            if (TraceZ80Boot && pcBefore == 0x0167)
             {
                 Console.WriteLine($"[Z80-DRIVER-ENTRY] frame={frameNow} pc=0x{pcBefore:X4} SP=0x{g_reg_SP:X4} - Jumping to Z80 driver!");
             }
             // [Z80-BANK] Log when Z80 enters banked memory area (0x8000+)
-            if (pcBefore >= 0x8000 && pcBefore <= 0xFFFF && !_z80BankEntryLogged)
+            if (TraceZ80Boot && pcBefore >= 0x8000 && pcBefore <= 0xFFFF && !_z80BankEntryLogged)
             {
                 uint bankBase = GetBankBase();
                 Console.WriteLine($"[Z80-BANK] frame={frameNow} pc=0x{pcBefore:X4} bankReg=0x{g_bank_register:X3} bankBase=0x{bankBase:X6} - Entering banked memory!");
@@ -1262,7 +1272,8 @@ NextPc:;
                     _zintAssertCount++;
                     // ALADDIN DEBUG: Track IRQ count
                     md_main.IncrementZ80Irq();
-                    Console.WriteLine($"[Z80INT-DEBUG] IncrementZ80Irq called, frame={md_main.g_md_vdp?.FrameCounter ?? -1}");
+                    if (TraceZ80IntDebug)
+                        Console.WriteLine($"[Z80INT-DEBUG] IncrementZ80Irq called, frame={md_main.g_md_vdp?.FrameCounter ?? -1}");
                 }
                 else
                     _zintClearCount++;
@@ -1281,7 +1292,8 @@ NextPc:;
                     _zintAssertCount++;
                     // ALADDIN DEBUG: Track IRQ count
                     md_main.IncrementZ80Irq();
-                    Console.WriteLine($"[Z80INT-DEBUG] IncrementZ80Irq called, frame={frame}");
+                    if (TraceZ80IntDebug)
+                        Console.WriteLine($"[Z80INT-DEBUG] IncrementZ80Irq called, frame={frame}");
                 }
                 else
                     _zintClearCount++;

@@ -2169,7 +2169,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 Console.WriteLine($"[AUDLVL] min={mixMin} max={mixMax} rms={rms:F1} samples={samples}");
             }
 
-            if (ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
+            if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
             {
                 if (trackAudioLevel)
                 {
@@ -2206,7 +2206,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             Console.WriteLine($"[AUDLVL] min={psgMin} max={psgMax} rms={rms:F1} samples={samples}");
         }
 
-        if (!wantYm && ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
+        if (TraceAudioEnabled && !wantYm && ShouldLogPerSecond(ref _lastAudioCoreLogTicks))
         {
             if (trackAudioLevel && wantPsg)
                 Console.WriteLine($"[PSGLVL] peak={psgPeak} samples={samples}");

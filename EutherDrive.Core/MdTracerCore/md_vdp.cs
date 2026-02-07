@@ -14,8 +14,10 @@ namespace EutherDrive.Core.MdTracerCore
              string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MD_VDP"), "1", StringComparison.Ordinal);
          private static readonly bool DebugNtChk =
              string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_NTCHK"), "1", StringComparison.Ordinal);
-         private static readonly bool DebugVdpFrame =
-             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_VDPFRAME"), "1", StringComparison.Ordinal);
+        private static readonly bool DebugVdpFrame =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_VDPFRAME"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdpFrameSummary =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_FRAME"), "1", StringComparison.Ordinal);
         private static readonly bool DebugDmaWin =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_DMAWIN"), "1", StringComparison.Ordinal);
         private static readonly int Z80VblankIrqPulseCycles = ParseZ80VblankIrqPulseCycles();
@@ -83,6 +85,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpRender =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_RENDER"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVint =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VINT"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVramWriteCpu =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_WRITE_CPU"), "1", StringComparison.Ordinal);
         private static readonly int TraceVramWriteCpuLimit =
@@ -1203,8 +1207,8 @@ namespace EutherDrive.Core.MdTracerCore
                   ApplyLatchedRegister12();
               }
 
-               // [VDP-FRAME] per-frame summary (debug)
-               // if (_frameCounter >= 4904 && _frameCounter <= 4909)
+               // [VDP-FRAME] per-frame summary (gated)
+               if (TraceVdpFrameSummary)
                {
                    byte reg12Data = (byte)((g_vdp_reg_12_7_cellmode1 << 7) | (g_vdp_reg_12_3_shadow << 3) | (g_vdp_reg_12_2_interlacemode << 1) | g_vdp_reg_12_0_cellmode2);
                    int width = IsH40Mode() ? 320 : 256;
@@ -1326,7 +1330,8 @@ namespace EutherDrive.Core.MdTracerCore
                 if (Z80VblankIrqPulseCycles > 0)
                     md_main.g_md_z80?.ArmIrqAutoClear("VDP", Z80VblankIrqPulseCycles);
                 _z80VblankIntActive = true;
-                Console.WriteLine($"[VINT] TriggerVBlank frame={_frameCounter} scanline={g_scanline} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field}");
+                if (TraceVint)
+                    Console.WriteLine($"[VINT] TriggerVBlank frame={_frameCounter} scanline={g_scanline} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field}");
             }
             LogTriggerVBlank();
             LogVBlankEdge(1);

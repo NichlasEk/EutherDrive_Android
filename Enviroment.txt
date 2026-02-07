@@ -36,6 +36,12 @@ UI
 - EUTHERDRIVE_TRACE_MADOU=1: log Madou trace points (gated).
 - EUTHERDRIVE_TRACE_MADOU_FULL=1: log extended Madou trace points (very noisy; gated).
 - EUTHERDRIVE_TRACE_ALADDIN_DEBUG=1: log per-frame Z80/audio debug counters (gated).
+- EUTHERDRIVE_TRACE_DMA_REGS=1: log VDP DMA register updates and DMA start/copy details (very noisy; gated).
+- EUTHERDRIVE_TRACE_VDP_FRAME=1: log VDP per-frame summary (gated).
+- EUTHERDRIVE_TRACE_VINT=1: log VBlank interrupts (gated).
+- EUTHERDRIVE_TRACE_Z80_FORCE_ACTIVE=1: log when Z80 is forced active (gated).
+- EUTHERDRIVE_TRACE_Z80_INT_DEBUG=1: log Z80 interrupt debug lines (gated).
+- EUTHERDRIVE_TRACE_Z80_BOOT=1: log Z80 boot/driver entry dumps (very noisy; gated).
 - EUTHERDRIVE_AUDIO=1: enable audio output (pw-cat).
 - EUTHERDRIVE_AUDIO_TIMED=1: time-based audio fill (wall-clock) to keep audio steady when FPS is low (default on; set 0 to disable).
 - EUTHERDRIVE_AUDIO_TIMED_MAX_FRAMES=<int>: cap frames generated per tick in timed mode (default 1024).
