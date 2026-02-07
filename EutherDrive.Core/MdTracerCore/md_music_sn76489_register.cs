@@ -6,6 +6,12 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDSTAT"), "1", StringComparison.Ordinal);
         private static readonly bool TracePsgWrite =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PSG_WRITE"), "1", StringComparison.Ordinal);
+        private static readonly bool TracePsgVoice =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PSG_VOICE"), "1", StringComparison.Ordinal);
+        private const int PsgVoiceHistorySize = 128;
+        private static readonly PsgVoiceEvent[] _psgVoiceHistory = new PsgVoiceEvent[PsgVoiceHistorySize];
+        private static int _psgVoiceHistoryIndex;
+        private static long _psgVoiceLastDumpFrame = -9999;
         private int _audStatWrites;
 
         public void write8(byte in_val)
@@ -19,6 +25,8 @@ namespace EutherDrive.Core.MdTracerCore
                 string type = (in_val & 0x80) != 0 ? "latch" : "data";
                 Console.WriteLine($"[PSG-WRITE] val=0x{in_val:X2} ({type})");
             }
+            if (TracePsgVoice)
+                RecordPsgVoiceEvent(in_val);
             
             if ((in_val & 0x80) != 0)
             {
@@ -73,6 +81,52 @@ namespace EutherDrive.Core.MdTracerCore
                     if (g_freq[ch] < FREQ_MIN) g_freq[ch] = FREQ_MIN;
                     g_write_num_bk = -1;
                 }
+            }
+        }
+
+        private static void RecordPsgVoiceEvent(byte value)
+        {
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            _psgVoiceHistory[_psgVoiceHistoryIndex] = new PsgVoiceEvent(frame, value);
+            _psgVoiceHistoryIndex = (_psgVoiceHistoryIndex + 1) % PsgVoiceHistorySize;
+
+            // Heuristic: dump when we see a loud volume latch (volume <= 2).
+            if ((value & 0x80) == 0x80 && (value & 0x10) == 0x10)
+            {
+                int vol = value & 0x0F;
+                if (vol <= 2 && frame - _psgVoiceLastDumpFrame >= 30)
+                {
+                    _psgVoiceLastDumpFrame = frame;
+                    DumpPsgVoiceHistory(frame);
+                }
+            }
+        }
+
+        private static void DumpPsgVoiceHistory(long frame)
+        {
+            Console.WriteLine($"[PSG-VOICE] frame={frame} last={PsgVoiceHistorySize} writes (latest last):");
+            int start = _psgVoiceHistoryIndex;
+            for (int i = 0; i < PsgVoiceHistorySize; i++)
+            {
+                int idx = (start + i) % PsgVoiceHistorySize;
+                var ev = _psgVoiceHistory[idx];
+                if (ev.Frame < 0)
+                    continue;
+                string type = (ev.Value & 0x80) != 0 ? "L" : "D";
+                int chan = (ev.Value >> 5) & 0x03;
+                int vol = ev.Value & 0x0F;
+                Console.WriteLine($"[PSG-VOICE] f={ev.Frame} {type} ch={chan} val=0x{ev.Value:X2} vol={vol}");
+            }
+        }
+
+        private readonly struct PsgVoiceEvent
+        {
+            public readonly long Frame;
+            public readonly byte Value;
+            public PsgVoiceEvent(long frame, byte value)
+            {
+                Frame = frame;
+                Value = value;
             }
         }
 

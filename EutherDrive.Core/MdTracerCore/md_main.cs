@@ -611,6 +611,9 @@ namespace EutherDrive.Core.MdTracerCore
                 g_md_z80.EndSystemCycleSlice();
             }
 
+            // Advance YM2612 timers from SystemCycles once per frame
+            g_md_music?.g_md_ym2612.EnsureAdvanceEachFrame();
+
             MaybeInjectMbx(frame);
             g_md_music?.g_md_ym2612.FlushDacRateFrame(frame);
             g_md_music?.FlushAudioStats(frame);

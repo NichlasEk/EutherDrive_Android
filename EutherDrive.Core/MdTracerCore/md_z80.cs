@@ -17,6 +17,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_INT_DEBUG"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Boot =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_BOOT"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80Speed =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_SPEED"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80SigTransitions =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80SIG_TRANS"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Run =
@@ -139,6 +141,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         private long _instrThrottleCounter;
         private long _totalCycles;
+        private long _z80SpeedCycles;
+        private long _z80SpeedLastTicks;
         private long _budgetCycles;  // Cycles budgeted to Z80 (always advances)
         [NonSerialized] private long _systemCycleDelta;
         private bool _z80Dumped;
@@ -477,6 +481,7 @@ namespace EutherDrive.Core.MdTracerCore
                     int burn = Math.Min(_z80ResetHoldRemaining, Math.Max(1, g_clock_total + 1));
                     _z80ResetHoldRemaining -= burn;
                     _totalCycles += burn;
+                    MaybeLogZ80Speed(burn);
                     cyclesConsumed += burn;
                     if (TraceZ80Stats)
                         _z80StatsCycleCount += burn;
@@ -503,6 +508,7 @@ namespace EutherDrive.Core.MdTracerCore
 
                         const int irqCycles = 13;
                         _totalCycles += irqCycles;
+                        MaybeLogZ80Speed(irqCycles);
                         cyclesConsumed += irqCycles;
                         md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(irqCycles);
                         g_clock_total -= irqCycles;
@@ -779,6 +785,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
             _bootInstrCount++;
             _totalCycles += g_clock;
+            MaybeLogZ80Speed(g_clock);
             cyclesConsumed += g_clock;
             _systemCycleDelta += g_clock;
             if (TraceZ80Stats)
@@ -1505,6 +1512,29 @@ NextPc:;
             _smsLoopRegLogCount++;
         }
 
+        private void MaybeLogZ80Speed(int cycles)
+        {
+            if (!TraceZ80Speed || cycles <= 0)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            if (_z80SpeedLastTicks == 0)
+                _z80SpeedLastTicks = now;
+
+            _z80SpeedCycles += cycles;
+            long elapsed = now - _z80SpeedLastTicks;
+            if (elapsed < Stopwatch.Frequency)
+                return;
+
+            double secs = elapsed / (double)Stopwatch.Frequency;
+            double hz = _z80SpeedCycles / secs;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            Console.WriteLine($"[Z80-SPEED] frame={frame} hz={hz:0.##} cycles={_z80SpeedCycles} secs={secs:0.###}");
+
+            _z80SpeedCycles = 0;
+            _z80SpeedLastTicks = now;
+        }
+
         // ---- Debughjälp (endast i DEBUG) -------------------------------------
 
         #if DEBUG
@@ -1563,6 +1593,7 @@ NextPc:;
                 Debug.WriteLine($"logout2() failed: {ex}");
             }
         }
+
         #endif
     }
 }

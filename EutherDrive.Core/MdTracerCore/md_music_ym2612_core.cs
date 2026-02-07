@@ -18,6 +18,10 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly double DacMixGain = GetDacMixGain();
         private static readonly bool TraceYmOutput =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_OUTPUT"), "1", StringComparison.Ordinal);
+        private static readonly double DacTimeScale = GetDacTimeScale();
+        private static readonly bool DacInterpEnabled = GetDacInterpEnabled();
+        private static readonly bool DacForceHoldEnabled = GetDacForceHoldEnabled();
+        private static readonly DacTimebaseMode DacTimebase = GetDacTimebase();
         private long _dacOutLastTicks;
         private int _dacOutMin = int.MaxValue;
         private int _dacOutMax = int.MinValue;
@@ -32,6 +36,12 @@ namespace EutherDrive.Core.MdTracerCore
         private int _ymOutMax = int.MinValue;
         private long _ymOutSum;
         private long _ymOutCount;
+        private bool _dacInterpHasLast;
+        private long _dacInterpLastCycle;
+        private int _dacInterpLastData;
+        private bool _dacInterpHasNext;
+        private long _dacInterpNextCycle;
+        private int _dacInterpNextData;
         private static int GetFmVolumeDivisor()
         {
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_FM_VOLUME_DIVISOR");
@@ -56,6 +66,68 @@ namespace EutherDrive.Core.MdTracerCore
             }
             return 25.0;
         }
+
+        private static double GetDacTimeScale()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_DAC_TIME_SCALE");
+            if (string.IsNullOrWhiteSpace(raw))
+                raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_DAC_CYCLE_SCALE");
+            if (!string.IsNullOrWhiteSpace(raw)
+                && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+                && value > 0)
+            {
+                return value;
+            }
+            // Default: no time scaling
+            return 1.0;
+        }
+
+        private static bool GetDacInterpEnabled()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_DAC_INTERP");
+            if (string.IsNullOrWhiteSpace(raw))
+                return true;
+            raw = raw.Trim();
+            if (raw == "0" || raw.Equals("false", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return true;
+        }
+
+        private static bool GetDacForceHoldEnabled()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_DAC_FORCE_HOLD");
+            if (string.IsNullOrWhiteSpace(raw))
+                return true;
+            raw = raw.Trim();
+            if (raw == "0" || raw.Equals("false", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return true;
+        }
+
+        private enum DacTimebaseMode
+        {
+            Z80,
+            System,
+            SystemZ80
+        }
+
+        private static DacTimebaseMode GetDacTimebase()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_DAC_TIMEBASE");
+            if (string.IsNullOrWhiteSpace(raw))
+                return DacTimebaseMode.Z80;
+            raw = raw.Trim();
+            if (raw.Equals("z80", StringComparison.OrdinalIgnoreCase))
+                return DacTimebaseMode.Z80;
+            if (raw.Equals("system", StringComparison.OrdinalIgnoreCase))
+                return DacTimebaseMode.System;
+            if (raw.Equals("system_z80", StringComparison.OrdinalIgnoreCase) ||
+                raw.Equals("systemz80", StringComparison.OrdinalIgnoreCase) ||
+                raw.Equals("system-scaled", StringComparison.OrdinalIgnoreCase))
+                return DacTimebaseMode.SystemZ80;
+            return DacTimebaseMode.Z80;
+        }
+
 
         public (int out1, int out2) YM2612_Update()
         {
@@ -159,18 +231,38 @@ namespace EutherDrive.Core.MdTracerCore
 
             // Timers advance via EnsureAdvanceEachFrame (SystemCycles), not audio samples.
 
-            double cyclesPerSample = Z80_CLOCK / YM2612_SAMPLING;
-            long endCycle = md_main.g_md_z80 != null ? md_main.g_md_z80.DebugTotalCycles : -1;
-            double startCycle = _dacStreamCycleCursor;
-            if (endCycle >= 0)
+            double cyclesPerSample = DacTimebase == DacTimebaseMode.System
+                ? ((double)YM2612_CLOCK / YM2612_SAMPLING) / DacTimeScale
+                : (Z80_CLOCK / YM2612_SAMPLING) / DacTimeScale;
+            long endCycle = DacTimebase == DacTimebaseMode.System
+                ? md_main.SystemCycles
+                : (md_main.g_md_z80 != null ? md_main.g_md_z80.DebugTotalCycles : -1);
+            if (_dacStreamCycleCursor < 0)
             {
-                startCycle = endCycle - ((frames - 1) * cyclesPerSample);
-                if (_dacStreamCycleCursor < 0 || Math.Abs(startCycle - _dacStreamCycleCursor) > cyclesPerSample * frames * 4)
-                    _dacStreamCycleCursor = startCycle;
+                _dacStreamCycleCursor = endCycle >= 0
+                    ? endCycle - ((frames - 1) * cyclesPerSample)
+                    : 0;
+                _dacInterpHasLast = false;
+                _dacInterpHasNext = false;
             }
-            else if (_dacStreamCycleCursor < 0)
+            else if (endCycle >= 0 && endCycle < _dacStreamCycleCursor - (cyclesPerSample * frames * 4))
             {
-                _dacStreamCycleCursor = 0;
+                // Only resync when emulator time falls behind playback time.
+                _dacStreamCycleCursor = endCycle - ((frames - 1) * cyclesPerSample);
+                _dacInterpHasLast = false;
+                _dacInterpHasNext = false;
+            }
+            else if (endCycle >= 0)
+            {
+                // If emulation runs faster than audio, keep a bounded lag so we still hear DAC.
+                double maxLagCycles = cyclesPerSample * YM2612_SAMPLING * 0.10; // ~100ms
+                double lag = endCycle - _dacStreamCycleCursor;
+                if (lag > maxLagCycles)
+                {
+                    _dacStreamCycleCursor = endCycle - maxLagCycles;
+                    _dacInterpHasLast = false;
+                    _dacInterpHasNext = false;
+                }
             }
             double cyclePos = _dacStreamCycleCursor;
 
@@ -206,7 +298,16 @@ namespace EutherDrive.Core.MdTracerCore
                         int dacData = g_reg_2a_dac_data;
                         if (endCycle >= 0)
                         {
-                            dacData = UpdateDacStreamForCycle((long)cyclePos);
+                            if (DacForceHoldEnabled)
+                            {
+                                dacData = UpdateDacStreamForCycle((long)cyclePos);
+                            }
+                            else
+                            {
+                                dacData = DacInterpEnabled
+                                    ? GetInterpolatedDacForCycle((long)cyclePos)
+                                    : UpdateDacStreamForCycle((long)cyclePos);
+                            }
                             cyclePos += cyclesPerSample;
                         }
                         int w_dac = dacData - 0x100;
@@ -251,6 +352,49 @@ namespace EutherDrive.Core.MdTracerCore
             if (written < dst.Length)
                 dst.Slice(written).Clear();
         }
+
+        private int GetInterpolatedDacForCycle(long cycle)
+        {
+            if (!_dacInterpHasLast)
+            {
+                _dacInterpHasLast = true;
+                _dacInterpLastCycle = cycle;
+                _dacInterpLastData = _dacStreamValue;
+                _dacInterpHasNext = false;
+            }
+
+            while (TryPeekDacWrite(out long writeCycle, out int dacData) && writeCycle <= cycle)
+            {
+                _dacInterpLastCycle = writeCycle;
+                _dacInterpLastData = dacData;
+                _dacStreamValue = dacData;
+                _dacInterpHasLast = true;
+                _dacInterpHasNext = false;
+                PopDacWrite();
+            }
+
+            if (!_dacInterpHasNext && TryPeekDacWrite(out long nextCycle, out int nextData))
+            {
+                _dacInterpNextCycle = nextCycle;
+                _dacInterpNextData = nextData;
+                _dacInterpHasNext = true;
+            }
+
+            if (_dacInterpHasNext && _dacInterpHasLast && _dacInterpNextCycle > _dacInterpLastCycle)
+            {
+                if (cycle <= _dacInterpLastCycle)
+                    return _dacInterpLastData;
+                if (cycle >= _dacInterpNextCycle)
+                    return _dacInterpLastData;
+
+                double t = (cycle - _dacInterpLastCycle) / (double)(_dacInterpNextCycle - _dacInterpLastCycle);
+                double value = _dacInterpLastData + ((_dacInterpNextData - _dacInterpLastData) * t);
+                return (int)Math.Round(value);
+            }
+
+            return _dacInterpLastData;
+        }
+
         private void lfo_calc()
         {
             if (g_reg_22_lfo_enable == true)

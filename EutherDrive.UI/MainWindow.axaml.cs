@@ -1560,6 +1560,8 @@ public partial class MainWindow : Window
         }
         _audioFormatMismatchLogged = false;
         ResetAudioTiming();
+        if (_core is MdTracerAdapter adapter)
+            PrefillAudioEngineBuffer(adapter);
     }
 
     private void StopAudioEngine()
@@ -1591,6 +1593,28 @@ public partial class MainWindow : Window
         _audioPullReady = false;
         _audioPullLastFrameCounter = -1;
         _audioPullLastFrameCounterTicks = 0;
+    }
+
+    private void PrefillAudioEngineBuffer(MdTracerAdapter adapter)
+    {
+        if (_audioEngine == null)
+            return;
+        int target = AudioTargetBufferedFrames;
+        if (target <= 0)
+            return;
+        int safety = 0;
+        while (_audioEngine.BufferedFrames < target && safety < 128)
+        {
+            int need = target - _audioEngine.BufferedFrames;
+            int chunk = need < AudioBufferChunkFrames ? need : AudioBufferChunkFrames;
+            if (chunk <= 0)
+                break;
+            var audio = adapter.GetAudioBufferForFrames(chunk, out int rate, out int channels);
+            if (audio.IsEmpty || rate != AudioSampleRate || channels != AudioChannels)
+                break;
+            _audioEngine.Submit(audio);
+            safety++;
+        }
     }
 
     private void ApplyAudioOptionsToCore()

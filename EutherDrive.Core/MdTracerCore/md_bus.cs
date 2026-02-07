@@ -2780,7 +2780,7 @@ namespace EutherDrive.Core.MdTracerCore
                     md_main.SyncZ80ToSystemCycles();
                 if (TraceZ80Win)
                 {
-                    Console.WriteLine($"[BUSREQ-CLOWN] prev={prev} next={next} reset={_z80Reset}");
+                    Console.WriteLine($"[BUSREQ-TRACE] prev={prev} next={next} reset={_z80Reset}");
                 }
             }
 

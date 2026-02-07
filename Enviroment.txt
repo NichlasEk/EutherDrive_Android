@@ -57,8 +57,12 @@ UI
 - EUTHERDRIVE_AUDIO_OUT_PLL=1: enable output-side PLL resampling to keep buffer near target (default off).
 - EUTHERDRIVE_AUDIO_OUT_PLL_MAX=<float>: max output PLL ratio adjustment (default 0.005).
 - EUTHERDRIVE_TRACE_PSG_WRITE=1: log PSG register writes (very noisy; gated).
+- EUTHERDRIVE_TRACE_PSG_VOICE=1: log PSG voice write history on loud latch (very noisy; gated).
 - EUTHERDRIVE_TRACE_DAC_DEBUG=1: log YM2612 DAC debug writes (very noisy; gated).
 - EUTHERDRIVE_TRACE_DAC_ENABLE=1: log YM2612 DAC enable toggles (very noisy; gated).
+- EUTHERDRIVE_TRACE_DAC_OUTPUT=1: log YM2612 DAC output min/max/avg once per second (gated).
+- EUTHERDRIVE_DAC_MIX_GAIN=<float>: DAC-only mix gain (default 1.0).
+- EUTHERDRIVE_TRACE_YM_OUTPUT=1: log YM2612 output min/max/avg once per second (gated).
 - EUTHERDRIVE_TRACE_YM_SYNC_INIT=1: log YM2612 sync init (gated).
 
 VDP
@@ -199,12 +203,14 @@ Pads
 Audio / PSG / YM
 - EUTHERDRIVE_TRACE_AUDIO=1: audio min/max log (per second).
 - EUTHERDRIVE_TRACE_AUDLVL=1: audio level/peak logs.
+- EUTHERDRIVE_TRACE_YM_INTERNAL=1: log YM internal buffer min/max once per second.
 - EUTHERDRIVE_TRACE_PSG=1: PSG write log.
 - EUTHERDRIVE_DISABLE_PSG=1: disable PSG mix.
 - EUTHERDRIVE_GEMS_TIMING=1: enable GEMS timing mode (negative audio accumulator for GEMS games).
 - EUTHERDRIVE_AUDIO_ACCUM_FRAMES=<float>: override initial audio accumulator in frames (universal; overrides GEMS timing).
 - EUTHERDRIVE_YM_RESAMPLE=linear|cubic: select YM resampler (default cubic).
 - EUTHERDRIVE_YM_RESAMPLE_LINEAR=1: alias for linear resampler.
+- EUTHERDRIVE_YM_RESAMPLE_SIMPLE=1: simple nearest-neighbor YM resampler (debug).
 - EUTHERDRIVE_YM=1: enable YM2612 access/mix.
 - EUTHERDRIVE_TRACE_YM=1: YM write log (first N writes).
 

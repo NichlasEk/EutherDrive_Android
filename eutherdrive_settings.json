@@ -1,14 +1,19 @@
 {
-  "LastRomPath": "/home/nichlas/roms/sonic2.md",
+  "LastRomPath": "/run/media/nichlas/Atlas/roms/Genesis/Altered Beast (UE) (REV02) [!].gen",
   "RecentRomPaths": [
-    "/home/nichlas/roms/sonic2.md",
-    "/home/nichlas/roms/quackshot.md",
-    "/run/media/nichlas/Atlas/roms/Genesis/Pirates of Dark Water, The (U) [!].gen",
-    "/run/media/nichlas/Atlas/roms/Genesis/Valis III (J) [!].gen",
-    "/run/media/nichlas/Atlas/roms/Genesis/Sonic The Hedgehog 2 (W) (REV00) [!].gen"
+    "/run/media/nichlas/Atlas/roms/Genesis/Altered Beast (UE) (REV02) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Joe \u0026 Mac Caveman Ninja (U) [!].gen",
+    "/run/media/nichlas/Atlas/roms/Genesis/Aladdin (Europe).md",
+    "/home/nichlas/roms/sonic1.md",
+    "/home/nichlas/roms/sonic2.md"
   ],
   "MasterVolumePercent": 12,
   "AudioEnabled": true,
+  "YmResampleLinear": true,
+  "Z80CyclesMult": 2,
+  "SpeedLockEnabled": true,
+  "RenderSkipEnabled": false,
+  "SpeedScale": 1,
   "DefaultRegionOverride": 1,
   "RomRegionOverrides": {
     "serial:GM 00000000-00": 1,
@@ -94,7 +99,10 @@
     "serial:GM MK-1352 -00": 3,
     "serial:GM T-113036-00": 2,
     "serial:GM T-139036-50": 2,
-    "serial:GM T-66023 -00": 3
+    "serial:GM T-66023 -00": 3,
+    "serial:GM MK-1079 -00": 2,
+    "serial:GM T-15186 -00": 1,
+    "serial:GM MK-1058 -00": 2
   },
-  "FrameRateMode": 1
+  "FrameRateMode": 2
 }
