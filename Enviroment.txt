@@ -17,6 +17,10 @@ UI
 - EUTHERDRIVE_TRACE_UI_PRESENT=1: per-present logs (frame id, empty frame, present metrics).
 - EUTHERDRIVE_AUDIO=1: enable audio output (pw-cat).
 - EUTHERDRIVE_AUDIO_TIMED=1: time-based audio fill (wall-clock) to keep audio steady when FPS is low (default on; set 0 to disable).
+- EUTHERDRIVE_AUDIO_TIMED_MAX_FRAMES=<int>: cap frames generated per tick in timed mode (default 1024).
+- EUTHERDRIVE_AUDIO_TIMED_DRAIN=1: pace audio drain on wall-clock (default off).
+- EUTHERDRIVE_AUDIO_OUT_PLL=1: enable output-side PLL resampling to keep buffer near target (default off).
+- EUTHERDRIVE_AUDIO_OUT_PLL_MAX=<float>: max output PLL ratio adjustment (default 0.005).
 
 VDP
 - EUTHERDRIVE_TRACE_VDP=1: VDP log (general).
@@ -150,6 +154,8 @@ Audio / PSG / YM
 - EUTHERDRIVE_DISABLE_PSG=1: disable PSG mix.
 - EUTHERDRIVE_GEMS_TIMING=1: enable GEMS timing mode (negative audio accumulator for GEMS games).
 - EUTHERDRIVE_AUDIO_ACCUM_FRAMES=<float>: override initial audio accumulator in frames (universal; overrides GEMS timing).
+- EUTHERDRIVE_YM_RESAMPLE=linear|cubic: select YM resampler (default cubic).
+- EUTHERDRIVE_YM_RESAMPLE_LINEAR=1: alias for linear resampler.
 - EUTHERDRIVE_YM=1: enable YM2612 access/mix.
 - EUTHERDRIVE_TRACE_YM=1: YM write log (first N writes).
 

@@ -68,13 +68,9 @@ public sealed class AudioEngine : IDisposable
     private double _outputPllRatio = 1.0;
     private short[] _outputPllScratch = Array.Empty<short>();
     private static readonly bool OutputPllEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL"), "0", StringComparison.Ordinal)
-            ? false
-            : true;
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL"), "1", StringComparison.Ordinal);
     private static readonly bool TimedDrainEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN"), "0", StringComparison.Ordinal)
-            ? false
-            : true;
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN"), "1", StringComparison.Ordinal);
 
     public AudioEngine(IAudioSink sink, int sampleRate, int channels, int framesPerBatch = 1024, int bufferFrames = 8192)
     {
