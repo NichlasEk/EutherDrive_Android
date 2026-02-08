@@ -166,7 +166,7 @@ namespace EutherDrive.Core.MdTracerCore
             int smsTopCrop = (!ShowOverscan && g_display_ysize > 192) ? (g_display_ysize - 192) / 2 : 0;
             int smsLine = g_scanline - smsTopCrop;
             outputLine -= smsTopCrop;
-            if ((uint)outputLine >= (uint)g_output_ysize)
+            if (outputLine < 0 || outputLine >= g_output_ysize)
                 return;
 
             uint[] dest = targetBuffer ?? g_game_screen;
