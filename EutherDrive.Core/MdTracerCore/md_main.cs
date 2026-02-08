@@ -94,12 +94,10 @@ namespace EutherDrive.Core.MdTracerCore
         // DEBUG: Log SystemCycles advancement
         private static void DebugLogSystemCycles(string source, int z80Cycles, int m68kCycles)
         {
-            // Always log for debugging YM busy timing issues
-            // Write to stderr to ensure it appears
+            if (!ReadEnvFlag("EUTHERDRIVE_TRACE_SYSTEM_CYCLES"))
+                return;
             if (m68kCycles > 0)
-            {
                 Console.Error.WriteLine($"[SYSTEM-CYCLES-DEBUG] {source}: z80={z80Cycles} m68k={m68kCycles} SystemCycles={SystemCycles}->{SystemCycles + m68kCycles}");
-            }
         }
         private static readonly bool ForceZ80RunPerLine = ReadEnvFlag("EUTHERDRIVE_Z80_RUN_PER_LINE");
         private static readonly int Z80RunPerLineFrames = ParseZ80RunPerLineFrames();
@@ -424,11 +422,9 @@ namespace EutherDrive.Core.MdTracerCore
                     Console.WriteLine($"[PCFRAME] frame={frame} pc=0x{md_m68k.g_reg_PC:X6}");
             }
             
-            // DEBUG: Log frame number
-            if (frame >= 10 && frame <= 20)
-            {
+            // DEBUG: Log frame number (gated)
+            if (ReadEnvFlag("EUTHERDRIVE_TRACE_FRAME_DEBUG") && frame >= 10 && frame <= 20)
                 Console.WriteLine($"[FRAME-DEBUG] RunFrame called with frame={frame}");
-            }
             
             // CRITICAL: Tick Z80 safe boot timer BEFORE Z80 runs
             // This allows Z80 to run immediately when reset is released
@@ -442,8 +438,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
              bool allowZ80 = ShouldRunZ80(frame);
              
-            // DEBUG: Log Z80 scheduling
-            if (frame >= 10 && frame <= 20)
+            // DEBUG: Log Z80 scheduling (gated)
+            if (ReadEnvFlag("EUTHERDRIVE_TRACE_Z80_SCHED_DEBUG") && frame >= 10 && frame <= 20)
             {
                 bool debugBusReq = g_md_bus?.Z80BusGranted ?? false;
                 bool debugReset = g_md_bus?.Z80Reset ?? false;
@@ -625,13 +621,11 @@ namespace EutherDrive.Core.MdTracerCore
              g_md_z80?.FlushZ80WaitLoopHist(frame);
             g_md_z80?.FlushPcHist(frame);
             
-            // Log Z80 telemetry - ALADDIN DEBUG
-            if (frame % 1 == 0) // Log EVERY frame for debugging
+            // Log Z80 telemetry (gated)
+            if (ReadEnvFlag("EUTHERDRIVE_TRACE_TIMING_DEBUG"))
             {
-                int expectedZ80PerFrame = Z80CyclesPerLine * lines;
-                int expectedM68kPerFrame = VDL_LINE_RENDER_MC68_CLOCK * lines;
                 Console.WriteLine($"[TIMING-DEBUG] frame={frame}: Z80={_z80TotalCycles} m68k={_m68kCyclesThisFrame} timerCtrl={TimerControlCalls} z80Active={g_md_z80?.g_active ?? false}");
-                
+
                 // Per-frame diagnostic logging
                 if (ReadEnvFlag("EUTHERDRIVE_DIAG_FRAME"))
                 {
@@ -640,17 +634,16 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         _lastDiagnosticFrame = currentFrame;
                         _z80CyclesLastFrame = (int)_z80TotalCycles;
-                        // Reset for next frame
                         Console.WriteLine($"[DIAG-FRAME] frame={currentFrame} z80Cycles={_z80CyclesLastFrame} m68kCycles={_m68kCyclesThisFrame} ymAdvanceCalls={_ymAdvanceCallsLastFrame}");
                         _ymAdvanceCallsLastFrame = 0;
                     }
                 }
-                _z80SliceCount = 0;
-                _z80TotalCycles = 0;
-                _z80MaxSlice = 0;
-                _m68kCyclesThisFrame = 0;
-                _timerControlCalls = 0;
             }
+            _z80SliceCount = 0;
+            _z80TotalCycles = 0;
+            _z80MaxSlice = 0;
+            _m68kCyclesThisFrame = 0;
+            _timerControlCalls = 0;
             g_md_z80?.FlushZ80IntStats(frame); // [INT-STATS] ZINT per-frame stats
 
             if (g_md_z80 != null)

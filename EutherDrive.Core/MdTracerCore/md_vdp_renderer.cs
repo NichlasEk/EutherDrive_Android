@@ -203,9 +203,10 @@ namespace EutherDrive.Core.MdTracerCore
 
                 ushort entry = (ushort)(_smsVram[entryAddr] | (_smsVram[entryAddr + 1] << 8));
                 int tileIndex = entry & 0x1FF;
-                bool paletteBit = (entry & 0x200) != 0;
-                bool flipX = (entry & 0x400) != 0;
+                bool priority = (entry & 0x200) != 0;
+                bool paletteBit = (entry & 0x400) != 0;
                 bool flipY = (entry & 0x800) != 0;
+                bool flipX = (entry & 0x1000) != 0;
 
                 int row = flipY ? (7 - rowInTile) : rowInTile;
                 int patternAddr = patternBase + (tileIndex * 32) + (row * 4);

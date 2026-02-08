@@ -343,7 +343,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else if (g_scanline == g_display_ysize + 1)
             {
-                ClearZ80VBlankInterrupt();
+                if (!md_main.g_masterSystemMode)
+                    ClearZ80VBlankInterrupt();
             }
             else if (g_scanline == g_vertical_line_max - 1) // också definierad i VDP
             {
@@ -1347,7 +1348,7 @@ namespace EutherDrive.Core.MdTracerCore
                 md_m68k.g_interrupt_V_req = true;
                 // Z80 needs VBlank interrupt for sound drivers in both MD and SMS mode
                 md_main.g_md_z80?.irq_request(true, "VDP", 0);
-                if (Z80VblankIrqPulseCycles > 0)
+                if (!md_main.g_masterSystemMode && Z80VblankIrqPulseCycles > 0)
                     md_main.g_md_z80?.ArmIrqAutoClear("VDP", Z80VblankIrqPulseCycles);
                 _z80VblankIntActive = true;
                 if (TraceVint)
@@ -1717,12 +1718,15 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
 
             _vblankActive = false;
-            g_vdp_status_3_vbrank = 0;
-            g_vdp_status_7_vinterrupt = 0;
-            md_m68k.g_interrupt_V_req = false;
-            // Clear Z80 INT for sound drivers in both MD and SMS mode
-            md_main.g_md_z80?.irq_request(false, "VDP", 0);
-            _z80VblankIntActive = false;
+            if (!md_main.g_masterSystemMode)
+            {
+                g_vdp_status_3_vbrank = 0;
+                g_vdp_status_7_vinterrupt = 0;
+                md_m68k.g_interrupt_V_req = false;
+                // Clear Z80 INT for sound drivers in MD mode
+                md_main.g_md_z80?.irq_request(false, "VDP", 0);
+                _z80VblankIntActive = false;
+            }
             LogVBlankEdge(0);
         }
 

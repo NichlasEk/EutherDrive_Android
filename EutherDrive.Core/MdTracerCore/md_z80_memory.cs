@@ -24,6 +24,9 @@ namespace EutherDrive.Core.MdTracerCore
         private const int SmsLogLimit = 48;
         private int _smsLogCount;
         private byte _smsBankSelect;
+        private byte _smsBank0;
+        private byte _smsBank1 = 1;
+        private byte _smsBank2 = 2;
         private const int SmsPortLogLimit = 16;
         private static int _smsPortBeReadLog;
         private static int _smsPortBfReadLog;
@@ -31,6 +34,11 @@ namespace EutherDrive.Core.MdTracerCore
         private static int _smsPortBfWriteLog;
         private static int _smsPort7EWriteLog;
         private static int _smsPort7FWriteLog;
+        private static int _smsPort3AReadLog;
+        private static readonly bool TraceSmsIoRaw =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IO_RAW"), "1", StringComparison.Ordinal);
+        private const int TraceSmsIoRawLimit = 64;
+        private static int _traceSmsIoRawCount;
         private static bool _smsFirstBeWriteLogged;
         private static bool _smsFirstBfWriteLogged;
         private static long _smsStatusPollFrame = -1;
@@ -1024,13 +1032,26 @@ namespace EutherDrive.Core.MdTracerCore
         public byte read8(uint in_address)
         {
             byte w_out = 0;
+            bool smsIo = md_main.g_masterSystemMode && (in_address & 0x10000u) != 0;
             ushort a = (ushort)(in_address & 0xFFFF);
             bool wasBanked = false;
             uint bankedAddr = 0;
 
             if (md_main.g_masterSystemMode)
             {
-                byte result = ReadSms(a);
+                if (smsIo)
+                {
+                    if (TraceSmsIoRaw && _traceSmsIoRawCount < TraceSmsIoRawLimit)
+                    {
+                        _traceSmsIoRawCount++;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine($"[SMS IO RAW] read port=0x{a:X2} PC=0x{pc:X4}");
+                    }
+                    if (TryReadSmsPort(a, out byte portValue))
+                        return portValue;
+                    return ReadSmsPortFallback(a);
+                }
+                byte result = ReadSmsMemory(a);
                 LogSmsAccess("read", a, result);
                 MaybeLogZ80ReadRange(a, result);
                 return result;
@@ -1271,13 +1292,31 @@ namespace EutherDrive.Core.MdTracerCore
         //----------------------------------------------------------------
         public void write8(uint in_address, byte in_data)
         {
+            bool smsIo = md_main.g_masterSystemMode && (in_address & 0x10000u) != 0;
             ushort a = (ushort)(in_address & 0xFFFF);
 
             if (md_main.g_masterSystemMode)
             {
-                LogSmsAccess("write", a, in_data);
-                if (HandleSmsPortWrite(a, in_data))
+                if (smsIo)
+                {
+                    if (TraceSmsIoRaw && _traceSmsIoRawCount < TraceSmsIoRawLimit)
+                    {
+                        _traceSmsIoRawCount++;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine($"[SMS IO RAW] write port=0x{a:X2} val=0x{in_data:X2} PC=0x{pc:X4}");
+                    }
+                    HandleSmsPortWrite(a, in_data);
                     return;
+                }
+                LogSmsAccess("write", a, in_data);
+                if (a >= 0xC000)
+                {
+                    if (a >= 0xFFFC)
+                        HandleSmsMapperWrite(a, in_data);
+                    ushort ramAddr = (ushort)(a & 0x1FFF);
+                    g_ram[ramAddr] = in_data;
+                    return;
+                }
                 if (a >= 0xC000)
                 {
                     g_ram[(ushort)(a & 0x1FFF)] = in_data;
@@ -1480,28 +1519,22 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
-        private byte ReadSms(ushort a)
+        private byte ReadSmsMemory(ushort a)
         {
-            if (TryReadSmsPort(a, out byte portValue))
-                return portValue;
-
             if (a >= 0xC000)
             {
                 return g_ram[(ushort)(a & 0x1FFF)];
             }
 
-            if (a < 0x4000)
-            {
-                if (md_main.g_masterSystemRomSize > (int)a)
-                    return md_main.g_masterSystemRom[a];
-                return 0xFF;
-            }
-
-            if (a >= 0x4000 && a <= 0xBFFF && md_main.g_masterSystemRomSize > 0)
+            if (md_main.g_masterSystemRomSize > 0)
             {
                 uint romIdx = (uint)(a & 0x3FFF);
                 int bankCount = Math.Max(1, (md_main.g_masterSystemRomSize + 0x3FFF) / 0x4000);
-                uint bank = (uint)(_smsBankSelect % bankCount);
+                uint bank = a < 0x4000
+                    ? (uint)(_smsBank0 % bankCount)
+                    : (a < 0x8000
+                        ? (uint)(_smsBank1 % bankCount)
+                        : (uint)(_smsBank2 % bankCount));
                 uint bankOffset = bank * 0x4000u;
                 uint idx = (bankOffset + romIdx) % (uint)md_main.g_masterSystemRomSize;
                 return md_main.g_masterSystemRom[idx];
@@ -1819,39 +1852,59 @@ namespace EutherDrive.Core.MdTracerCore
                 return false;
 
             ushort port = (ushort)(addr & 0xFF);
-            switch (port)
+            // VDP ports are mirrored on some hardware (e.g., 0xDE/0xDF).
+            if (port == 0xDE)
+                port = 0xBE;
+            else if (port == 0xDF)
+                port = 0xBF;
+            else if (port == 0xFE)
+                port = 0xBE;
+            else if (port == 0xFF)
+                port = 0xBF;
+            if (port >= 0x80 && port <= 0xBF && md_main.g_md_vdp != null)
             {
-                case 0xBE:
-                    if (md_main.g_md_vdp != null)
+                if ((port & 1) == 0)
+                {
+                    value = md_main.g_md_vdp.read8(0xC00000);
+                    SmsPortLog(port, "read", value);
+                    return true;
+                }
+
+                bool irqPending = md_m68k.g_interrupt_V_req;
+                byte raw = md_main.g_md_vdp.read8(0xC00004);
+                value = raw;
+                if (ForceSmsStatus7)
+                {
+                    value = (byte)(raw | 0x80);
+                    if (!_forceStatus7Logged)
                     {
-                        value = md_main.g_md_vdp.read8(0xC00000);
-                        SmsPortLog(port, "read", value);
-                        return true;
+                        _forceStatus7Logged = true;
+                        Console.WriteLine("[SMS VDP] forcing status bit7 in IN 0xBF return");
                     }
-                    break;
-                case 0xBF:
-                    if (md_main.g_md_vdp != null)
-                    {
-                        bool irqPending = md_m68k.g_interrupt_V_req;
-                        byte raw = md_main.g_md_vdp.read8(0xC00004);
-                        value = raw;
-                        if (ForceSmsStatus7)
-                        {
-                            value = (byte)(raw | 0x80);
-                            if (!_forceStatus7Logged)
-                            {
-                                _forceStatus7Logged = true;
-                                Console.WriteLine("[SMS VDP] forcing status bit7 in IN 0xBF return");
-                            }
-                        }
-                        LogSmsStatusPoll(raw, value, irqPending);
-                        SmsPortLog(port, "read", value);
-                        return true;
-                    }
-                    break;
+                }
+                LogSmsStatusPoll(raw, value, irqPending);
+                SmsPortLog(port, "read", value);
+                return true;
             }
 
             return false;
+        }
+
+        private byte ReadSmsPortFallback(ushort addr)
+        {
+            ushort port = (ushort)(addr & 0xFF);
+            if (port == 0x3A)
+            {
+                if (_smsPort3AReadLog < SmsPortLogLimit)
+                {
+                    _smsPort3AReadLog++;
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    MdTracerCore.MdLog.WriteLine($"[SMS IO] IN 0x3A -> 0xFF PC=0x{pc:X4}");
+                }
+                return 0xFF;
+            }
+            // Default to 0xFF for unmapped IO (open bus high).
+            return 0xFF;
         }
 
         private bool HandleSmsPortWrite(ushort addr, byte data)
@@ -1860,9 +1913,19 @@ namespace EutherDrive.Core.MdTracerCore
                 return false;
 
             ushort port = (ushort)(addr & 0xFF);
-            switch (port)
+            // VDP ports are mirrored on some hardware (e.g., 0xDE/0xDF).
+            if (port == 0xDE)
+                port = 0xBE;
+            else if (port == 0xDF)
+                port = 0xBF;
+            else if (port == 0xFE)
+                port = 0xBE;
+            else if (port == 0xFF)
+                port = 0xBF;
+            if (port >= 0x80 && port <= 0xBF)
             {
-                case 0xBE:
+                if ((port & 1) == 0)
+                {
                     if (!_smsFirstBeWriteLogged)
                     {
                         _smsFirstBeWriteLogged = true;
@@ -1873,17 +1936,21 @@ namespace EutherDrive.Core.MdTracerCore
                     md_main.g_md_vdp?.write8(0xC00000, data);
                     SmsPortLog(port, "write", data);
                     return true;
-                case 0xBF:
-                    if (!_smsFirstBfWriteLogged)
-                    {
-                        _smsFirstBfWriteLogged = true;
-                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
-                        Console.WriteLine($"[SMS IO] first BF write val=0x{data:X2} PC=0x{pc:X4}");
-                    }
-                    md_main.g_md_vdp?.RecordSmsBfWrite();
-                    md_main.g_md_vdp?.write8(0xC00004, data);
-                    SmsPortLog(port, "write", data);
-                    return true;
+                }
+
+                if (!_smsFirstBfWriteLogged)
+                {
+                    _smsFirstBfWriteLogged = true;
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    Console.WriteLine($"[SMS IO] first BF write val=0x{data:X2} PC=0x{pc:X4}");
+                }
+                md_main.g_md_vdp?.RecordSmsBfWrite();
+                md_main.g_md_vdp?.write8(0xC00004, data);
+                SmsPortLog(port, "write", data);
+                return true;
+            }
+            switch (port)
+            {
                 case 0x7E:
                     SetSmsBank(data);
                     g_bank_register = _smsBankSelect;
@@ -1909,6 +1976,31 @@ namespace EutherDrive.Core.MdTracerCore
 
             int bankCount = Math.Max(1, (md_main.g_masterSystemRomSize + 0x3FFF) / 0x4000);
             _smsBankSelect = (byte)(value % bankCount);
+        }
+
+        private void HandleSmsMapperWrite(ushort addr, byte value)
+        {
+            if (md_main.g_masterSystemRomSize == 0)
+                return;
+
+            int bankCount = Math.Max(1, (md_main.g_masterSystemRomSize + 0x3FFF) / 0x4000);
+            byte bank = (byte)(value % bankCount);
+
+            switch (addr)
+            {
+                case 0xFFFD:
+                    _smsBank0 = bank;
+                    break;
+                case 0xFFFE:
+                    _smsBank1 = bank;
+                    break;
+                case 0xFFFF:
+                    _smsBank2 = bank;
+                    g_bank_register = bank;
+                    break;
+                default:
+                    break;
+            }
         }
 
         private static void SmsPortLog(ushort port, string action, ushort value)

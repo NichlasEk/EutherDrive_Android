@@ -286,6 +286,11 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private static int _smsControlLogCount;
+        private static readonly bool TraceSmsIrq =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IRQ"), "1", StringComparison.Ordinal);
+        private static int _traceSmsIrqCount;
+        private static int _traceSmsIrqBlockCount;
+        private static int _traceSmsIrqStateCount;
         private const int SmsLoopRegLogLimit = 4;
         private static int _smsLoopRegLogCount;
         private int _smsDelayTrace;
@@ -491,6 +496,11 @@ namespace EutherDrive.Core.MdTracerCore
                 }
 
                 // IRQ (NMI-block ej aktiverad i originalet)
+            if (TraceSmsIrq && md_main.g_masterSystemMode && _traceSmsIrqStateCount < 16)
+            {
+                _traceSmsIrqStateCount++;
+                Console.WriteLine($"[SMS IRQ] state irq={(g_interrupt_irq ? 1 : 0)} IFF1={(g_IFF1 ? 1 : 0)} halt={(g_halt ? 1 : 0)} PC=0x{g_reg_PC:X4}");
+            }
             if (g_interrupt_irq)
             {
                 if (g_IFF1)
@@ -498,6 +508,8 @@ namespace EutherDrive.Core.MdTracerCore
                     if (TraceZ80Stats)
                         _z80StatsIrqCount++;
                     SmsControlLog($"[md_z80 SMS irq] IM{g_interruptMode} pending PC=0x{g_reg_PC:X4}");
+                    if (TraceSmsIrq && md_main.g_masterSystemMode)
+                        Console.WriteLine($"[SMS IRQ] service IM{g_interruptMode} PC=0x{g_reg_PC:X4}");
                     if (g_halt) g_reg_PC += 1;
 
                     g_interrupt_irq = false;
@@ -582,6 +594,11 @@ namespace EutherDrive.Core.MdTracerCore
                     g_reg_PC = 0x057A;
                     continue;
                 }
+                else if (TraceSmsIrq && md_main.g_masterSystemMode && _traceSmsIrqBlockCount < 8)
+                {
+                    _traceSmsIrqBlockCount++;
+                    Console.WriteLine($"[SMS IRQ] blocked IFF1=0 PC=0x{g_reg_PC:X4} IM={g_interruptMode}");
+                }
             }
 
             byte opcode = g_opcode1;
@@ -592,7 +609,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             // [VERIFY-RAM-INTEGRITY] Compare opcode fetch with direct RAM read
             // This verifies that ReadOpcodeByte(PC) == read8(PC) == g_ram[PC & 0x1FFF]
-            if (MdTracerCore.MdLog.Enabled && pcBefore < 0x0040 && pcBefore < 0x2000)
+            if (MdTracerCore.MdLog.Enabled && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_RAM_MISMATCH"), "1", StringComparison.Ordinal) &&
+                pcBefore < 0x0040 && pcBefore < 0x2000)
             {
                 ushort z80Addr = (ushort)(pcBefore & 0x1FFF);
                 byte fromRam = g_ram != null ? g_ram[z80Addr] : (byte)0xFF;
@@ -1206,6 +1224,11 @@ NextPc:;
         {
             _irqSource = source;
             _irqStatus = status;
+            if (TraceSmsIrq && md_main.g_masterSystemMode && _traceSmsIrqCount < 16)
+            {
+                _traceSmsIrqCount++;
+                Console.WriteLine($"[SMS IRQ] request src={source} status=0x{status:X2} PC=0x{g_reg_PC:X4}");
+            }
         }
         if (prev != in_val)
             LogZ80Int(in_val, source, status, "signal");
@@ -1381,6 +1404,9 @@ NextPc:;
             ResetMailboxShadow();
             _z80Dumped = false;
             _smsBankSelect = 0;
+            _smsBank0 = 0;
+            _smsBank1 = 1;
+            _smsBank2 = 2;
             _smsInstructionLog = 0;
             _smsLoopPc = 0;
             _smsLoopCount = 0;

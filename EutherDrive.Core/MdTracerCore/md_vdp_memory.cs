@@ -70,6 +70,10 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 return SmsReadData();
             }
+            if (md_main.g_masterSystemMode && (in_address & 0x00000E) == 0x04)
+            {
+                return SmsReadStatus();
+            }
 
             ushort w = read16(in_address);
             return ((in_address & 1) == 0) ? (byte)(w >> 8) : (byte)w;
@@ -89,22 +93,8 @@ namespace EutherDrive.Core.MdTracerCore
 
                 if (port == 0x04)
                 {
-                    _smsCommandPending = false;
-                    ushort status = get_vdp_status();
-                    md_m68k.RecordVdpStatusRead(status);
-                    ushort postStatus = (ushort)(status & ~VDP_STATUS_VBLANK_MASK);
-                    LogStatusRead(status, postStatus);
-                    if (TraceStatusRead)
-                    {
-                        Console.WriteLine($"[VDP-STATUS-RD] frame={_frameCounter} status=0x{status:X4} vblank={((status & VDP_STATUS_VBLANK_MASK) != 0 ? 1 : 0)} overflow={((status & 0x0040) != 0 ? 1 : 0)} collision={((status & 0x0020) != 0 ? 1 : 0)}");
-                    }
-                    g_vdp_status_7_vinterrupt = 0;
-                    g_vdp_status_6_sprite = 0;
-                    g_vdp_status_5_collision = 0;
-                    md_m68k.g_interrupt_V_req = false;
-                    if (md_main.g_masterSystemMode)
-                        md_main.g_md_z80?.irq_request(false, "VDP", 0);
-                    return status;
+                    byte status = SmsReadStatus();
+                    return (ushort)((status << 8) | status);
                 }
 
                 if (port == 0x08)
@@ -166,6 +156,26 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             return w_out;
+        }
+
+        private byte SmsReadStatus()
+        {
+            _smsCommandPending = false;
+            byte status = 0;
+            if (g_vdp_status_3_vbrank != 0)
+                status |= 0x80;
+            if (g_vdp_status_6_sprite != 0)
+                status |= 0x40;
+            if (g_vdp_status_5_collision != 0)
+                status |= 0x20;
+
+            // Reading status clears VBlank + collision (SMS behavior).
+            g_vdp_status_3_vbrank = 0;
+            g_vdp_status_5_collision = 0;
+            g_vdp_status_7_vinterrupt = 0;
+            md_m68k.g_interrupt_V_req = false;
+            md_main.g_md_z80?.irq_request(false, "VDP", 0);
+            return status;
         }
 
         public uint read32(uint in_address)

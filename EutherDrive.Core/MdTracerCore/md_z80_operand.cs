@@ -1586,6 +1586,10 @@ namespace EutherDrive.Core.MdTracerCore
         //--------------------------------------
         private void op_CALL_nn()
         {
+            if (md_main.g_masterSystemMode && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_CALL"), "1", StringComparison.Ordinal))
+            {
+                Console.WriteLine($"[SMS CALL] PC=0x{g_reg_PC:X4} op2=0x{g_opcode2:X2} op3=0x{g_opcode3:X2} target=0x{g_opcode23:X4}");
+            }
             ushort w_pc = (ushort)(g_reg_PC + 3);
             stack_push((byte)((w_pc >> 8) & 0xff));
             stack_push((byte)(w_pc & 0xff));
@@ -1693,6 +1697,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
             _iff1Delay = 2;
             SmsControlLog($"[md_z80 SMS irq_ctrl] EI at PC=0x{g_reg_PC:X4}");
+            if (md_main.g_masterSystemMode && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IRQ"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[SMS IRQ] EI PC=0x{g_reg_PC:X4}");
             g_reg_PC += 1;
             g_clock = 4;
         }
@@ -1720,6 +1726,7 @@ namespace EutherDrive.Core.MdTracerCore
         private void op_IN_a_N()
         {
             uint port = NormalizeIoPort((ushort)((g_reg_A << 8) | g_opcode2));
+            TraceSmsIo("IN n", port, 0);
             g_reg_A = read8(port);
             g_reg_PC += 2;
             g_clock = 11;
@@ -1727,6 +1734,7 @@ namespace EutherDrive.Core.MdTracerCore
         private void op_IN_r_C()
         {
             uint port = NormalizeIoPort(g_reg_BC);
+            TraceSmsIo("IN c", port, 0);
             byte value = read8(port);
             write_reg(g_opcode2_543, value);
             g_reg_PC += 2;
@@ -1800,6 +1808,7 @@ namespace EutherDrive.Core.MdTracerCore
         private void op_OUT_N_a()
         {
             uint port = NormalizeIoPort((ushort)((g_reg_A << 8) | g_opcode2));
+            TraceSmsIo("OUT n", port, g_reg_A);
             write8(port, g_reg_A);
             g_reg_PC += 2;
             g_clock = 11;
@@ -1808,6 +1817,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             uint port = NormalizeIoPort(g_reg_BC);
             byte value = read_reg(g_opcode2_543);
+            TraceSmsIo("OUT c", port, value);
             write8(port, value);
             g_reg_PC += 2;
             g_clock = 12;
@@ -1881,7 +1891,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             ushort low = (ushort)(port & 0x00FF);
             if (md_main.g_masterSystemMode)
-                return low;
+                return 0x10000u | low;
             // Map YM2612 ports to memory-mapped addresses:
             // Port 0x40 -> 0xA04000 (YM2612 Port 0 Address, A0=0,A1=0)
             // Port 0x41 -> 0xA04001 (YM2612 Port 0 Data, A0=1,A1=0)
@@ -1903,6 +1913,22 @@ namespace EutherDrive.Core.MdTracerCore
                 return result;
             }
             return low;
+        }
+
+        private static readonly bool TraceSmsIoEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IO"), "1", StringComparison.Ordinal);
+        private const int TraceSmsIoLimit = 64;
+        private static int _traceSmsIoCount;
+        private void TraceSmsIo(string op, uint port, byte value)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsIoEnabled)
+                return;
+            if (_traceSmsIoCount >= TraceSmsIoLimit)
+                return;
+            _traceSmsIoCount++;
+            ushort pc = g_reg_PC;
+            ushort p = (ushort)(port & 0xFFFF);
+            Console.WriteLine($"[SMS IO] {op} port=0x{p:X2} val=0x{value:X2} PC=0x{pc:X4}");
         }
 
         private void op_DAA()
