@@ -15,6 +15,8 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_TRACE_CRAM_PC_LIMIT", 256);
         private static readonly int TraceCramWritesPcFrames =
             ParseTraceLimit("EUTHERDRIVE_TRACE_CRAM_PC_FRAMES", 0);
+        private static readonly List<(uint Start, uint End)> TraceCramWritesPcRanges =
+            md_m68k.ParseWatchRangeList("EUTHERDRIVE_TRACE_CRAM_PC_RANGE");
         private static readonly bool TraceVdpCtrlAll =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL"), "1", StringComparison.Ordinal);
         private static readonly int TraceVdpCtrlLimit =
@@ -27,6 +29,8 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES_PC_LIMIT", 128);
         private static readonly int TracePatternWritesPcFrames =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES_PC_FRAMES", 0);
+        private static readonly List<(uint Start, uint End)> TracePatternWritesPcRanges =
+            md_m68k.ParseWatchRangeList("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES_PC_RANGE");
         private static readonly bool GateCpuWritesDuringDma =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE"), "1", StringComparison.Ordinal);
         private static readonly bool DisableDmaWriteGate =
@@ -771,6 +775,21 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 if (TraceCramWritesPcFrames > 0 && _frameCounter > TraceCramWritesPcFrames)
                     return;
+                if (TraceCramWritesPcRanges.Count > 0)
+                {
+                    uint pcFilter = md_m68k.g_reg_PC;
+                    bool inRange = false;
+                    foreach ((uint start, uint end) in TraceCramWritesPcRanges)
+                    {
+                        if (pcFilter >= start && pcFilter <= end)
+                        {
+                            inRange = true;
+                            break;
+                        }
+                    }
+                    if (!inRange)
+                        return;
+                }
                 _cramPcRemaining--;
                 uint pc = md_m68k.g_reg_PC;
                 Console.WriteLine($"[CRAM-PC] frame={_frameCounter} pc=0x{pc:X6} index=0x{(idx & 0x3f):X2} raw=0x{data:X4} masked=0x{cramData:X4}");
@@ -890,6 +909,21 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 if (TracePatternWritesPcFrames > 0 && _frameCounter > TracePatternWritesPcFrames)
                     return;
+                if (TracePatternWritesPcRanges.Count > 0)
+                {
+                    uint pcFilter = md_m68k.g_reg_PC;
+                    bool inRange = false;
+                    foreach ((uint start, uint end) in TracePatternWritesPcRanges)
+                    {
+                        if (pcFilter >= start && pcFilter <= end)
+                        {
+                            inRange = true;
+                            break;
+                        }
+                    }
+                    if (!inRange)
+                        return;
+                }
                 _patternPcRemaining--;
                 uint pc = md_m68k.g_reg_PC;
                 int tileIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 6) & 0x1FF : (w_address >> 5) & 0x3FF;
