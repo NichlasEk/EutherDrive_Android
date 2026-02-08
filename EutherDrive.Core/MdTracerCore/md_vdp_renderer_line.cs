@@ -24,6 +24,12 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool DisableSpriteMask =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPRITE_DISABLE_MASK"), "1", StringComparison.Ordinal);
+        private static readonly bool DisableSpriteLineMask =
+            AllowRenderDebug &&
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPRITE_DISABLE_LINE_MASK"), "1", StringComparison.Ordinal);
+        private static readonly bool IgnoreSpritePriority =
+            AllowRenderDebug &&
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPRITE_IGNORE_PRIO"), "1", StringComparison.Ordinal);
         private static readonly bool DisableWindow =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DISABLE_WINDOW"), "1", StringComparison.Ordinal);
@@ -486,7 +492,9 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             if ((0 <= w_posx) && (w_posx < g_display_xsize))
                             {
-                                if (g_game_primap[w_posx] <= w_priority && !g_sprite_line_mask[w_posx])
+                                bool canDrawSprite = IgnoreSpritePriority || g_game_primap[w_posx] <= w_priority;
+                                bool maskedBySprite = !DisableSpriteLineMask && g_sprite_line_mask[w_posx];
+                                if (canDrawSprite && !maskedBySprite)
                                 {
                                     uint w_pic_w;
                                     int x_in_tile = w_cx;
