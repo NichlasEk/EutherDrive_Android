@@ -49,6 +49,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MADOU_FULL"), "1", StringComparison.Ordinal);
         private static readonly bool _madouRomTrace =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MADOU_ROM_WORDS"), "1", StringComparison.Ordinal);
+        private static readonly bool _madouRotateTrace =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MADOU_ROTATE"), "1", StringComparison.Ordinal);
         internal static readonly bool FixMovemPredec =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FIX_MOVEM_PREDEC"), "1", StringComparison.Ordinal);
         internal static readonly bool TraceMovemPredec =
@@ -221,6 +223,13 @@ namespace EutherDrive.Core.MdTracerCore
                     g_op4 = (byte)(g_opcode & 0x07);
 
                     MaybeLogPcSample(g_reg_PC, g_opcode);
+
+                    if (_madouRotateTrace && g_reg_PC == 0x013A4E)
+                    {
+                        Console.WriteLine(
+                            $"[MADOU-OP] PC=0x{g_reg_PC:X6} opcode=0x{g_opcode:X4} " +
+                            $"op={g_op:X} op1={g_op1} op2={g_op2} op3={g_op3} op4={g_op4} D0=0x{g_reg_data[0].l:X8}");
+                    }
 
                     // Special tracing for Madou DMA setup code
                     if (_madouTraceEnabled && g_reg_PC >= 0x000780 && g_reg_PC <= 0x000790)
