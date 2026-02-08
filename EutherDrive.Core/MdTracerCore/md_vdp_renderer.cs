@@ -220,7 +220,7 @@ namespace EutherDrive.Core.MdTracerCore
                 byte b2 = _smsVram[patternAddr + 2];
                 byte b3 = _smsVram[patternAddr + 3];
 
-                int bit = flipX ? colInTile : (7 - colInTile);
+                int bit = flipX ? (7 - colInTile) : colInTile;
                 int mask = 1 << bit;
                 int color = ((b0 & mask) != 0 ? 1 : 0)
                             | ((b1 & mask) != 0 ? 2 : 0)
@@ -245,8 +245,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void RenderSmsSprites(int displayWidth, int outputLine, uint[] dest)
         {
-            int satBase = (_smsRegs[5] & 0x7F) << 7;
-            int spritePatternBase = (_smsRegs[6] & 0x07) << 11;
+            int satBase = (_smsRegs[5] & 0x7E) << 7;
+            int spritePatternBase = ((_smsRegs[6] & 0x04) != 0) ? 0x2000 : 0x0000;
             bool sprites8x16 = (_smsRegs[1] & 0x02) != 0;
             int spriteHeight = sprites8x16 ? 16 : 8;
             int maxSprites = 64;
