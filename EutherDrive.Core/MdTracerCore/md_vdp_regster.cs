@@ -457,7 +457,7 @@ namespace EutherDrive.Core.MdTracerCore
                        break;
 
                 case 13:
-                    g_vdp_reg_13_hscroll = (ushort)((in_data & 0x7f) << 10);
+                    g_vdp_reg_13_hscroll = (ushort)((in_data & 0x3f) << 10);
                     break;
 
                 case 14:
