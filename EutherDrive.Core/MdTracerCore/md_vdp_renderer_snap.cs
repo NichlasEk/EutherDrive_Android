@@ -15,6 +15,8 @@ namespace EutherDrive.Core.MdTracerCore
                 : -1;
         private static readonly bool TraceSat =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SAT"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSatCount =
+            ParseTraceIntLocal("EUTHERDRIVE_TRACE_SAT_COUNT", 4);
         private static readonly bool TraceScrollLine =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SCROLL_LINE"), "1", StringComparison.Ordinal);
         private static readonly int TraceScrollLineScanline =
@@ -168,7 +170,10 @@ namespace EutherDrive.Core.MdTracerCore
                 int baseAddr = g_sprite_cache_base;
                 System.Text.StringBuilder sb = new System.Text.StringBuilder();
                 sb.AppendFormat("[SAT] frame={0} field={1} base=0x{2:X4}", _frameCounter, g_vdp_interlace_field, baseAddr);
-                for (int i = 0; i < 4; i++)
+                int count = TraceSatCount;
+                if (count < 1) count = 1;
+                if (count > 32) count = 32;
+                for (int i = 0; i < count; i++)
                 {
                     int addr = baseAddr + (i << 3);
                     ushort v1 = SpriteCacheReadWord(addr - g_sprite_cache_base);
@@ -180,7 +185,9 @@ namespace EutherDrive.Core.MdTracerCore
                     int x = v4 & 0x01ff;
                     int sizeX = ((v2 >> 10) & 0x03) + 1;
                     int sizeY = ((v2 >> 8) & 0x03) + 1;
-                    sb.AppendFormat(" | i={0} y={1} x={2} size={3}x{4} link={5} tile=0x{6:X3}", i, y, x, sizeX, sizeY, link, v3 & 0x07ff);
+                    sb.AppendFormat(
+                        " | i={0} y={1} x={2} size={3}x{4} link={5} tile=0x{6:X3} v2=0x{7:X4}",
+                        i, y, x, sizeX, sizeY, link, v3 & 0x07ff, v2);
                 }
                 Console.WriteLine(sb.ToString());
             }
