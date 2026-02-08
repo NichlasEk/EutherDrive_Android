@@ -1288,6 +1288,8 @@ namespace EutherDrive.Core.MdTracerCore
 
              _vblankActive = true;
              g_vdp_status_3_vbrank = 1;
+             if (md_main.g_masterSystemMode)
+                 UpdateSmsIrqLine();
              
               // Apply latched register 12 values (takes effect at V-Int)
               if (_reg12_latch_pending)
