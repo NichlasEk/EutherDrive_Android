@@ -444,12 +444,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             if (isSms)
             {
                 byte[] smsRom = NormalizeSmsRom(rawData);
+                var smsHeader = TryParseSmsHeader(smsRom);
+                SmsMapperType mapper = DetectSmsMapper(smsRom);
                 _rom = smsRom;
                 md_main.g_masterSystemMode = true;
                 md_main.g_masterSystemRom = smsRom;
                 md_main.g_masterSystemRomSize = smsRom.Length;
+                md_main.g_masterSystemMapper = mapper;
                 if (md_main.g_md_io != null)
-                    md_main.g_md_io.SetRomRegionHint(null);
+                    md_main.g_md_io.SetRomRegionHint(smsHeader.RegionHint);
                 if (md_main.g_md_cartridge != null)
                 {
                     md_main.g_md_cartridge.g_file = Array.Empty<byte>();
@@ -461,10 +464,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 _cpuReady = false;
                 _cpu = null;
 
-                RomInfo.Summary = $"SMS ROM bytes: {smsRom.Length}";
-                RomInfo.RegionHint = null;
-                RomInfo.RegionHeaderRaw = string.Empty;
-                RomInfo.SerialNumber = string.Empty;
+                RomInfo.Summary = BuildSmsSummary(smsRom.Length, smsHeader, mapper);
+                RomInfo.RegionHint = smsHeader.RegionHint;
+                RomInfo.RegionHeaderRaw = smsHeader.RegionRaw ?? string.Empty;
+                RomInfo.SerialNumber = smsHeader.ProductCode ?? string.Empty;
             }
             else
             {
@@ -604,6 +607,120 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         return false;
     }
+
+    private static SmsHeaderInfo TryParseSmsHeader(byte[] data)
+    {
+        int[] headerOffsets = { 0x7FF0, 0x3FF0, 0x1FF0, 0x0FF0 };
+        ReadOnlySpan<byte> magic = "TMR SEGA"u8;
+
+        foreach (int start in headerOffsets)
+        {
+            if (data.Length < start + 16)
+                continue;
+
+            bool match = true;
+            for (int i = 0; i < magic.Length; i++)
+            {
+                if (data[start + i] != magic[i])
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (!match)
+                continue;
+
+            ushort checksum = (ushort)((data[start + 8] << 8) | data[start + 9]);
+            string product = $"{data[start + 10]:X2}{data[start + 11]:X2}{data[start + 12]:X2}";
+            byte version = data[start + 13];
+            byte regionSize = data[start + 15];
+            int regionCode = (regionSize >> 4) & 0x0F;
+            int sizeCode = regionSize & 0x0F;
+
+            string regionText = regionCode switch
+            {
+                3 => "Domestic/Japan",
+                5 => "Domestic/Japan",
+                4 => "Export/International",
+                6 => "Export/International",
+                7 => "Export/International",
+                _ => $"Unknown(0x{regionCode:X})"
+            };
+
+            ConsoleRegion? regionHint = regionCode switch
+            {
+                3 => ConsoleRegion.JP,
+                5 => ConsoleRegion.JP,
+                4 => ConsoleRegion.US,
+                6 => ConsoleRegion.US,
+                7 => ConsoleRegion.US,
+                _ => null
+            };
+
+            string sizeText = SmsSizeCodeToString(sizeCode, data.Length);
+            string regionRaw = $"region=0x{regionCode:X} size=0x{sizeCode:X} ver=0x{version:X2} checksum=0x{checksum:X4}";
+            string summary = $"Header@0x{start:X4} prod={product} {regionText} size={sizeText}";
+
+            return new SmsHeaderInfo(true, summary, regionHint, regionRaw, product);
+        }
+
+        return new SmsHeaderInfo(false, "No SMS header found", null, null, null);
+    }
+
+    private static string SmsSizeCodeToString(int sizeCode, int actualBytes)
+    {
+        string sizeFromHeader = sizeCode switch
+        {
+            0x0 => "256KB",
+            0x1 => "512KB",
+            0x2 => "1MB",
+            0x3 => "2MB",
+            0x4 => "4MB",
+            0x5 => "8MB",
+            0x6 => "16MB",
+            _ => $"Unknown(0x{sizeCode:X})"
+        };
+
+        if (actualBytes > 0)
+            return $"{sizeFromHeader} (actual {actualBytes / 1024}KB)";
+
+        return sizeFromHeader;
+    }
+
+    private static SmsMapperType DetectSmsMapper(byte[] rom)
+    {
+        const int codemastersChecksumAddr = 0x7FE6;
+        if (rom.Length < 32 * 1024)
+            return SmsMapperType.Sega;
+
+        if (rom.Length <= codemastersChecksumAddr + 1)
+            return SmsMapperType.Sega;
+
+        ushort expected = (ushort)(rom[codemastersChecksumAddr] | (rom[codemastersChecksumAddr + 1] << 8));
+        ushort checksum = 0;
+        for (int address = 0; address + 1 < rom.Length; address += 2)
+        {
+            if (address >= 0x7FF0 && address <= 0x7FFF)
+                continue;
+            ushort word = (ushort)(rom[address] | (rom[address + 1] << 8));
+            checksum = (ushort)(checksum + word);
+        }
+
+        return checksum == expected ? SmsMapperType.Codemasters : SmsMapperType.Sega;
+    }
+
+    private static string BuildSmsSummary(int length, SmsHeaderInfo header, SmsMapperType mapper)
+    {
+        string headerInfo = header.Found ? header.Summary : "No SMS header";
+        return $"SMS ROM bytes: {length} | {headerInfo} | mapper={mapper}";
+    }
+
+    private readonly record struct SmsHeaderInfo(
+        bool Found,
+        string Summary,
+        ConsoleRegion? RegionHint,
+        string? RegionRaw,
+        string? ProductCode);
 
     private static string TryReadSegaString(MegaDriveBus bus)
     {

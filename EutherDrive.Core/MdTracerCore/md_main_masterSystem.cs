@@ -7,5 +7,12 @@ namespace EutherDrive.Core.MdTracerCore
         public static bool g_masterSystemMode;
         public static byte[] g_masterSystemRom = Array.Empty<byte>();
         public static int g_masterSystemRomSize;
+        public static SmsMapperType g_masterSystemMapper = SmsMapperType.Sega;
+    }
+
+    internal enum SmsMapperType
+    {
+        Sega = 0,
+        Codemasters = 1
     }
 }

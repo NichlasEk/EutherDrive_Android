@@ -27,6 +27,9 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _smsBank0;
         private byte _smsBank1 = 1;
         private byte _smsBank2 = 2;
+        private bool _smsCodemastersRamEnabled;
+        private bool _smsSegaRamEnabled;
+        private byte _smsSegaRamBank;
         private const int SmsPortLogLimit = 16;
         private static int _smsPortBeReadLog;
         private static int _smsPortBfReadLog;
@@ -1317,13 +1320,23 @@ namespace EutherDrive.Core.MdTracerCore
                     g_ram[ramAddr] = in_data;
                     return;
                 }
-                if (a >= 0xC000)
+
+                if (HandleSmsMapperWrite(a, in_data))
+                    return;
+
+                if (md_main.g_masterSystemMapper == SmsMapperType.Sega && _smsSegaRamEnabled && a >= 0x8000)
                 {
                     g_ram[(ushort)(a & 0x1FFF)] = in_data;
                     return;
                 }
-                if (a < 0x4000)
+
+                if (md_main.g_masterSystemMapper == SmsMapperType.Codemasters && _smsCodemastersRamEnabled && a >= 0xA000)
+                {
+                    g_ram[(ushort)(a & 0x1FFF)] = in_data;
                     return;
+                }
+
+                return;
             }
             if (a < 0x4000)
             {
@@ -1530,6 +1543,17 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 uint romIdx = (uint)(a & 0x3FFF);
                 int bankCount = Math.Max(1, (md_main.g_masterSystemRomSize + 0x3FFF) / 0x4000);
+                if (md_main.g_masterSystemMapper == SmsMapperType.Codemasters)
+                {
+                    if (_smsCodemastersRamEnabled && a >= 0xA000)
+                        return g_ram[(ushort)(a & 0x1FFF)];
+                }
+                else if (md_main.g_masterSystemMapper == SmsMapperType.Sega)
+                {
+                    if (_smsSegaRamEnabled && a >= 0x8000)
+                        return g_ram[(ushort)(a & 0x1FFF)];
+                }
+
                 uint bank = a < 0x4000
                     ? (uint)(_smsBank0 % bankCount)
                     : (a < 0x8000
@@ -1984,28 +2008,60 @@ namespace EutherDrive.Core.MdTracerCore
             _smsBankSelect = (byte)(value % bankCount);
         }
 
-        private void HandleSmsMapperWrite(ushort addr, byte value)
+        private bool HandleSmsMapperWrite(ushort addr, byte value)
         {
             if (md_main.g_masterSystemRomSize == 0)
-                return;
+                return false;
 
             int bankCount = Math.Max(1, (md_main.g_masterSystemRomSize + 0x3FFF) / 0x4000);
             byte bank = (byte)(value % bankCount);
 
-            switch (addr)
+            switch (md_main.g_masterSystemMapper)
             {
-                case 0xFFFD:
-                    _smsBank0 = bank;
-                    break;
-                case 0xFFFE:
-                    _smsBank1 = bank;
-                    break;
-                case 0xFFFF:
-                    _smsBank2 = bank;
-                    g_bank_register = bank;
-                    break;
+                case SmsMapperType.Codemasters:
+                    if (addr <= 0x3FFF)
+                    {
+                        _smsBank0 = bank;
+                        return true;
+                    }
+                    if (addr <= 0x7FFF)
+                    {
+                        _smsBank1 = bank;
+                        _smsCodemastersRamEnabled = (value & 0x80) != 0;
+                        return true;
+                    }
+                    if (addr <= 0xBFFF)
+                    {
+                        if (_smsCodemastersRamEnabled && addr >= 0xA000)
+                        {
+                            g_ram[(ushort)(addr & 0x1FFF)] = value;
+                            return true;
+                        }
+                        _smsBank2 = bank;
+                        return true;
+                    }
+                    return false;
+                case SmsMapperType.Sega:
                 default:
-                    break;
+                    switch (addr)
+                    {
+                        case 0xFFFC:
+                            _smsSegaRamBank = (byte)((value >> 2) & 0x01);
+                            _smsSegaRamEnabled = (value & 0x08) != 0;
+                            return true;
+                        case 0xFFFD:
+                            _smsBank0 = bank;
+                            return true;
+                        case 0xFFFE:
+                            _smsBank1 = bank;
+                            return true;
+                        case 0xFFFF:
+                            _smsBank2 = bank;
+                            g_bank_register = bank;
+                            return true;
+                        default:
+                            return false;
+                    }
             }
         }
 
