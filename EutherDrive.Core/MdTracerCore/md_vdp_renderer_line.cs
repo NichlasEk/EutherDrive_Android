@@ -489,15 +489,26 @@ namespace EutherDrive.Core.MdTracerCore
                                     int x_in_tile = w_cx;
                                     int y_in_tile = w_cy;
 
-                                    if (ForceDirectVramReadSprites && g_vdp_interlace_mode == 2)
+                                    if (ForceDirectVramReadSprites)
                                     {
                                         x_in_tile = ((w_reverse & 0x01) != 0) ? (7 - w_cx) : w_cx;
                                         if ((w_reverse & 0x02) != 0)
                                             y_in_tile = (cellHeight - 1) - w_cy;
-                                        int tileIndex = w_char_cur & 0x3FF;
-                                        int baseAddr = tileIndex << 6;
-                                        int byteAddr = baseAddr + (y_in_tile << 2) + ((x_in_tile >> 2) << 1);
-                                        w_pic_w = vram_read_render(byteAddr);
+
+                                        if (g_vdp_interlace_mode == 2)
+                                        {
+                                            int tileIndex = w_char_cur & 0x3FF;
+                                            int baseAddr = tileIndex << 6; // 64 bytes per pattern (8x16)
+                                            int byteAddr = baseAddr + (y_in_tile << 2) + ((x_in_tile >> 2) << 1);
+                                            w_pic_w = vram_read_render(byteAddr);
+                                        }
+                                        else
+                                        {
+                                            int tileIndex = w_char_cur & 0x7FF;
+                                            int baseAddr = tileIndex << 5; // 32 bytes per pattern (8x8)
+                                            int byteAddr = baseAddr + (y_in_tile << 2) + ((x_in_tile >> 2) << 1);
+                                            w_pic_w = vram_read_render(byteAddr);
+                                        }
                                     }
                                     else
                                     {
