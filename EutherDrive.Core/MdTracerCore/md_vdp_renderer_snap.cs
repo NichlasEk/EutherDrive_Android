@@ -11,6 +11,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSCROLL_DIRECT"), "1", StringComparison.Ordinal);
         private static readonly bool VScrollSubtract =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VSCROLL_SUBTRACT"), "1", StringComparison.Ordinal);
+        private static readonly bool ScrollUseOutputLine =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCROLL_USE_OUTPUT_LINE"), "1", StringComparison.Ordinal);
         private static readonly int TraceSpriteLine =
             int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPRITES_LINE"), out int line)
                 ? line
@@ -122,6 +124,13 @@ namespace EutherDrive.Core.MdTracerCore
         private void rendering_line_snap()
         {
             int cellHeight = GetCellHeightPixels();
+            int scrollScanline = g_scanline;
+            if (ScrollUseOutputLine)
+            {
+                int outputLine = GetOutputLineForScanline(g_scanline);
+                if (outputLine >= 0 && outputLine < g_output_ysize)
+                    scrollScanline = outputLine;
+            }
             if (TraceScrollLine && g_scanline == TraceScrollLineScanline && _traceScrollLineFrame != _frameCounter)
             {
                 _traceScrollLineFrame = _frameCounter;
@@ -130,7 +139,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             // HScroll A/B
             {
-                int hscrollLine = GetHScrollLine(g_scanline);
+                int hscrollLine = GetHScrollLine(scrollScanline);
                 int w_addr = g_vdp_reg_13_hscroll;
                 int hscrollMask = g_vdp_reg_11_1_hscroll switch
                 {
@@ -174,7 +183,7 @@ namespace EutherDrive.Core.MdTracerCore
                         $"[SCROLLLINE] frame={_frameCounter} scanline={g_scanline} hmode={g_vdp_reg_11_1_hscroll} " +
                         $"hbase=0x{g_vdp_reg_13_hscroll:X4} hline={hscrollLine} addr=0x{(w_addr << 1):X4} " +
                         $"hsA=0x{w_hscrollA:X3} hsB=0x{w_hscrollB:X3} viewA={w_view_xA} viewB={w_view_xB} " +
-                        $"xsize={g_scroll_xsize}");
+                        $"xsize={g_scroll_xsize} source={(ScrollUseOutputLine ? "out" : "scan")}");
                 }
             }
 
@@ -210,7 +219,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             // VScroll A/B
             {
-                int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
+                int lineY = (g_vdp_interlace_mode == 0) ? scrollScanline : GetInterlaceLine(scrollScanline);
                 if (g_vdp_reg_11_2_vscroll == 0)
                 {
                     ushort w_vscrollA = g_vsram[0];
