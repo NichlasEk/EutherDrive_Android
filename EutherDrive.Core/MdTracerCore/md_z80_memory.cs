@@ -41,6 +41,12 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool TraceSmsIoRaw =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IO_RAW"), "1", StringComparison.Ordinal);
         private const int TraceSmsIoRawLimit = 64;
+        private static readonly bool TraceSmsMapper =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_MAPPER"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSmsMapperLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_MAPPER_LIMIT", 128);
+        private static readonly bool TraceSmsStatus =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_STATUS"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSmsStatusLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_STATUS_LIMIT", 256);
         private static int _traceSmsIoRawCount;
         private static bool _smsFirstBeWriteLogged;
         private static bool _smsFirstBfWriteLogged;
@@ -239,6 +245,8 @@ namespace EutherDrive.Core.MdTracerCore
         private int _z80ReadRangeRemaining = TraceZ80ReadRangeLimit;
         private long _z80Ram1800TraceStartFrame = -1;
         private long _z80Ram1800TraceEndFrame = -1;
+        private int _smsMapperTraceRemaining = TraceSmsMapperLimit;
+        private int _smsStatusTraceRemaining = TraceSmsStatusLimit;
         private int _z80Flag65ReadRemaining = TraceZ80Flag65Limit;
         private int _z80Flag65WriteRemaining = TraceZ80Flag65Limit;
         private int _z80Flag65ReadOverrideRemaining = ForceZ80Flag65ReadLimit;
@@ -1607,6 +1615,10 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 _z80DdcbBitRemaining = TraceZ80DdcbBitLimit;
             }
+            if (TraceSmsMapper)
+                _smsMapperTraceRemaining = TraceSmsMapperLimit;
+            if (TraceSmsStatus)
+                _smsStatusTraceRemaining = TraceSmsStatusLimit;
             _z80AfterFlagRetRemaining = 0;
             _mbx1b8fLastReadValid = false;
             _mbx1b8fLastReadValue = 0x00;
@@ -1907,6 +1919,16 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                 }
                 LogSmsStatusPoll(raw, value, irqPending);
+                if (TraceSmsStatus && _smsStatusTraceRemaining > 0)
+                {
+                    _smsStatusTraceRemaining--;
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    md_vdp? vdp = md_main.g_md_vdp;
+                    long frame = vdp?.FrameCounter ?? -1;
+                    int line = vdp?.g_scanline ?? -1;
+                    Console.WriteLine(
+                        $"[SMS STATUS] pc=0x{pc:X4} raw=0x{raw:X2} final=0x{value:X2} irq={ (irqPending ? 1 : 0) } line={line} frame={frame}");
+                }
                 SmsPortLog(port, "read", value);
                 return true;
             }
@@ -2015,6 +2037,13 @@ namespace EutherDrive.Core.MdTracerCore
             switch (md_main.g_masterSystemMapper)
             {
                 case SmsMapperType.Codemasters:
+                    if (TraceSmsMapper && _smsMapperTraceRemaining > 0)
+                    {
+                        _smsMapperTraceRemaining--;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine(
+                            $"[SMS MAP] type=Codemasters pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} bank={(byte)((value & 0x7F) % bankCount)} ram={(value & 0x80) != 0}");
+                    }
                     bank = (byte)((value & 0x7F) % bankCount);
                     if (addr <= 0x3FFF)
                     {
@@ -2040,6 +2069,13 @@ namespace EutherDrive.Core.MdTracerCore
                     return false;
                 case SmsMapperType.Sega:
                 default:
+                    if (TraceSmsMapper && _smsMapperTraceRemaining > 0)
+                    {
+                        _smsMapperTraceRemaining--;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine(
+                            $"[SMS MAP] type=Sega pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} bank={bank}");
+                    }
                     switch (addr)
                     {
                         case 0xFFFC:
