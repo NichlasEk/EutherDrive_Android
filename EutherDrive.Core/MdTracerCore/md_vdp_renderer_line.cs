@@ -21,6 +21,9 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool ForceDirectVramReadPlanes =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_DIRECT_VRAM_PLANES"), "1", StringComparison.Ordinal);
+        private static readonly bool DisableSpriteMask =
+            AllowRenderDebug &&
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPRITE_DISABLE_MASK"), "1", StringComparison.Ordinal);
         private static readonly bool DisableWindow =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DISABLE_WINDOW"), "1", StringComparison.Ordinal);
@@ -447,7 +450,7 @@ namespace EutherDrive.Core.MdTracerCore
                     int rawX = w_left + 128;
                     if (rawX == 0)
                     {
-                        if (allowSpriteMasking)
+                        if (!DisableSpriteMask && allowSpriteMasking)
                             break;
                     }
                     else

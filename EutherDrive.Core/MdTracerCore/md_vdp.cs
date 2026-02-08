@@ -22,6 +22,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_FRAME"), "1", StringComparison.Ordinal);
         private static readonly bool DebugDmaWin =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_DMAWIN"), "1", StringComparison.Ordinal);
+        private static readonly bool SpriteLinkSequential =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPRITE_LINK_SEQUENTIAL"), "1", StringComparison.Ordinal);
         private static readonly int Z80VblankIrqPulseCycles = ParseZ80VblankIrqPulseCycles();
         public int g_scanline;
         private int g_hinterrupt_counter;
@@ -926,11 +928,19 @@ namespace EutherDrive.Core.MdTracerCore
                     row.Height[slot] = (byte)heightTiles;
                 }
 
-                int link = w_val2 & 0x007f;
-                if (link >= g_max_sprite_num)
-                    break;
-
-                spriteIndex = link;
+                if (SpriteLinkSequential)
+                {
+                    spriteIndex++;
+                    if (spriteIndex >= g_max_sprite_num)
+                        break;
+                }
+                else
+                {
+                    int link = w_val2 & 0x007f;
+                    if (link >= g_max_sprite_num)
+                        break;
+                    spriteIndex = link;
+                }
             }
             while (spriteIndex != 0 && --spritesRemaining != 0);
         }
