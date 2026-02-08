@@ -203,7 +203,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int rowInTile = y & 0x07;
 
                 int sx = (x + fineX) & 0xFF;
-                int tileCol = ((sx >> 3) + (32 - coarseX)) & 0x1F;
+                int tileCol = ((sx >> 3) + coarseX) & 0x1F;
                 int colInTile = sx & 0x07;
 
                 int entryAddr = nameBase + ((tileRow * 32 + tileCol) * 2);
