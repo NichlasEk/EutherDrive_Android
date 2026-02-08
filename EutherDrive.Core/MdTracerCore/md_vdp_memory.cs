@@ -13,6 +13,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CRAM_PC"), "1", StringComparison.Ordinal);
         private static readonly int TraceCramWritesPcLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_CRAM_PC_LIMIT", 256);
+        private static readonly int TraceCramWritesPcFrames =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_CRAM_PC_FRAMES", 0);
         private static readonly bool TraceVdpCtrlAll =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL"), "1", StringComparison.Ordinal);
         private static readonly int TraceVdpCtrlLimit =
@@ -23,6 +25,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES_PC"), "1", StringComparison.Ordinal);
         private static readonly int TracePatternWritesPcLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES_PC_LIMIT", 128);
+        private static readonly int TracePatternWritesPcFrames =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES_PC_FRAMES", 0);
         private static readonly bool GateCpuWritesDuringDma =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE"), "1", StringComparison.Ordinal);
         private static readonly bool DisableDmaWriteGate =
@@ -765,6 +769,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (TraceCramWritesPc && _cramPcRemaining > 0)
             {
+                if (TraceCramWritesPcFrames > 0 && _frameCounter > TraceCramWritesPcFrames)
+                    return;
                 _cramPcRemaining--;
                 uint pc = md_m68k.g_reg_PC;
                 Console.WriteLine($"[CRAM-PC] frame={_frameCounter} pc=0x{pc:X6} index=0x{(idx & 0x3f):X2} raw=0x{data:X4} masked=0x{cramData:X4}");
@@ -882,6 +888,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (TracePatternWritesPc && _patternPcRemaining > 0 && w_address < 0x8000 && w_val != 0)
             {
+                if (TracePatternWritesPcFrames > 0 && _frameCounter > TracePatternWritesPcFrames)
+                    return;
                 _patternPcRemaining--;
                 uint pc = md_m68k.g_reg_PC;
                 int tileIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 6) & 0x1FF : (w_address >> 5) & 0x3FF;
