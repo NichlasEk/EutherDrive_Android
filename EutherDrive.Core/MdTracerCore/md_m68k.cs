@@ -310,8 +310,7 @@ namespace EutherDrive.Core.MdTracerCore
                             _illegalOpLogRemaining--;
                             Console.WriteLine($"[m68k] missing opcode handler op=0x{g_opcode:X4} pc=0x{g_reg_PC:X6}");
                         }
-                        g_reg_PC += 2;
-                        g_clock = 4;
+                        HandleIllegalOpcode(g_opcode);
                     }
                     else
                     {
@@ -410,6 +409,48 @@ namespace EutherDrive.Core.MdTracerCore
                 g_interrupt_EXT_act = true;
                 g_68k_stop = false;
             }
+        }
+
+        private void HandleIllegalOpcode(ushort opcode)
+        {
+            uint vector;
+            string kind;
+            switch ((opcode >> 12) & 0xF)
+            {
+                case 0xA:
+                    vector = 0x0028; // Line-A emulator
+                    kind = "LINE-A";
+                    break;
+                case 0xF:
+                    vector = 0x002C; // Line-F emulator
+                    kind = "LINE-F";
+                    break;
+                default:
+                    vector = 0x0010; // Illegal instruction
+                    kind = "ILLEGAL";
+                    break;
+            }
+
+            RaiseException(kind, vector);
+            if (g_clock == 0)
+                g_clock = 34;
+        }
+
+        private void RaiseException(string kind, uint vectorAddress)
+        {
+            ushort oldSr = g_reg_SR;
+            if (!g_status_S)
+            {
+                SwapStacks();
+                g_status_S = true;
+            }
+
+            uint start = read32(vectorAddress);
+            stack_push32(g_reg_PC);
+            TracePush(kind, vectorAddress, start, g_reg_PC, g_reg_addr[7].l);
+            stack_push16(oldSr);
+            g_reg_PC = start;
+            g_68k_stop = false;
         }
 
         private static void MaybeLogPcSample(uint pc, ushort opcode)
