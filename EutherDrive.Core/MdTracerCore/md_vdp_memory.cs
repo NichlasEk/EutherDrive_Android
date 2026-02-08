@@ -52,6 +52,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static bool TraceStatusRead =>
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATUS_READ"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceStatusLoop =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATUS_LOOP"), "1", StringComparison.Ordinal);
+        private static readonly int TraceStatusLoopThreshold =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_STATUS_LOOP_LIMIT", 2000);
+        [NonSerialized] private int _statusLoopCount;
+        [NonSerialized] private int _statusLoopLastPc;
+        [NonSerialized] private long _statusLoopLastFrame = -1;
 
         private static bool ReadEnvDefaultOn(string name)
         {
@@ -138,6 +145,27 @@ namespace EutherDrive.Core.MdTracerCore
                 if (TraceStatusRead)
                 {
                     Console.WriteLine($"[VDP-STATUS-RD] frame={_frameCounter} status=0x{w_out:X4} vblank={((w_out & VDP_STATUS_VBLANK_MASK) != 0 ? 1 : 0)} overflow={((w_out & 0x0040) != 0 ? 1 : 0)} collision={((w_out & 0x0020) != 0 ? 1 : 0)}");
+                }
+                if (TraceStatusLoop)
+                {
+                    int pc = (int)md_m68k.g_reg_PC;
+                    if (_statusLoopLastFrame != _frameCounter || pc != _statusLoopLastPc)
+                    {
+                        _statusLoopLastFrame = _frameCounter;
+                        _statusLoopLastPc = pc;
+                        _statusLoopCount = 1;
+                    }
+                    else
+                    {
+                        _statusLoopCount++;
+                        if (_statusLoopCount == TraceStatusLoopThreshold)
+                        {
+                            ushort hv = get_vdp_hvcounter();
+                            Console.WriteLine(
+                                $"[VDP-STATUS-LOOP] frame={_frameCounter} pc=0x{pc:X6} count={_statusLoopCount} " +
+                                $"status=0x{w_out:X4} hv=0x{hv:X4}");
+                        }
+                    }
                 }
                 g_vdp_status_7_vinterrupt = 0; // ack on status read
                 g_vdp_status_6_sprite = 0;
