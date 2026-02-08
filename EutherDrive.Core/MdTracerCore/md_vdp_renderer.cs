@@ -186,8 +186,10 @@ namespace EutherDrive.Core.MdTracerCore
             int y = (g_scanline + vscroll) & 0xFF;
             int tileRow = (y >> 3) & 0x1F;
             int rowInTile = y & 0x07;
+            // In SMS mode 4, name table base uses bits 1-3 (bit 0 ignored on most hardware).
             int nameBase = (_smsRegs[2] & 0x0E) << 10;
-            int patternBase = (_smsRegs[4] & 0x07) << 11;
+            // In SMS mode 4, background pattern table base is fixed at 0x0000.
+            int patternBase = 0x0000;
             int backdropIndex = _smsRegs[7] & 0x0F;
             uint backdrop = _smsPalette[backdropIndex];
 
@@ -243,8 +245,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void RenderSmsSprites(int displayWidth, int outputLine, uint[] dest)
         {
-            int satBase = (_smsRegs[5] & 0x7E) << 7;
-            int spritePatternBase = ((_smsRegs[6] & 0x04) != 0) ? 0x2000 : 0x0000;
+            int satBase = (_smsRegs[5] & 0x7F) << 7;
+            int spritePatternBase = (_smsRegs[6] & 0x07) << 11;
             bool sprites8x16 = (_smsRegs[1] & 0x02) != 0;
             int spriteHeight = sprites8x16 ? 16 : 8;
             int maxSprites = 64;
