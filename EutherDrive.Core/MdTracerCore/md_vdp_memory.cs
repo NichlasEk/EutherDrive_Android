@@ -9,12 +9,20 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM"), "1", StringComparison.Ordinal);
         private static readonly bool TraceCramWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CRAM"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceCramWritesPc =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CRAM_PC"), "1", StringComparison.Ordinal);
+        private static readonly int TraceCramWritesPcLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_CRAM_PC_LIMIT", 256);
         private static readonly bool TraceVdpCtrlAll =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL"), "1", StringComparison.Ordinal);
         private static readonly int TraceVdpCtrlLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_CTRL_LIMIT", 200);
         private static readonly bool TracePatternWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES"), "1", StringComparison.Ordinal);
+        private static readonly bool TracePatternWritesPc =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES_PC"), "1", StringComparison.Ordinal);
+        private static readonly int TracePatternWritesPcLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES_PC_LIMIT", 128);
         private static readonly bool GateCpuWritesDuringDma =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE"), "1", StringComparison.Ordinal);
         private static readonly bool DisableDmaWriteGate =
@@ -40,6 +48,8 @@ namespace EutherDrive.Core.MdTracerCore
         private readonly int[] COLOR_SHADOW    = { 0, 29, 52, 70, 87, 101, 116, 130 };
         private readonly int[] COLOR_HIGHLIGHT = { 130, 144, 158, 172, 187, 206, 228, 255 };
         private int _vdpCtrlLogRemaining = TraceVdpCtrlLimit;
+        private int _cramPcRemaining = TraceCramWritesPcLimit;
+        private int _patternPcRemaining = TracePatternWritesPcLimit;
 
         // Centraliserad felhantering (strict by default; disable with EUTHERDRIVE_VDP_STRICT=0).
         private static void Error(string where)
@@ -734,7 +744,7 @@ namespace EutherDrive.Core.MdTracerCore
             InvalidateSpriteRowCache();
         }
 
-         private void cram_set(int idx, ushort data)
+        private void cram_set(int idx, ushort data)
         {
             // CRAM: only low 12 bits matter (bits 0-11) for 0x0BGR format
             // Mask out high bits to handle byte-write duplication
@@ -752,6 +762,13 @@ namespace EutherDrive.Core.MdTracerCore
             
             if (TraceCramWrites || _frameCounter < 10) // Always log first 10 frames
                 Console.WriteLine($"[CRAM] frame={_frameCounter} index=0x{(idx & 0x3f):X2} raw=0x{data:X4} masked=0x{cramData:X4} B=0x{bNib:X1} G=0x{gNib:X1} R=0x{rNib:X1}");
+
+            if (TraceCramWritesPc && _cramPcRemaining > 0)
+            {
+                _cramPcRemaining--;
+                uint pc = md_m68k.g_reg_PC;
+                Console.WriteLine($"[CRAM-PC] frame={_frameCounter} pc=0x{pc:X6} index=0x{(idx & 0x3f):X2} raw=0x{data:X4} masked=0x{cramData:X4}");
+            }
             
             // MD uses 3-bit intensity stored in bits 1..3 of each nibble (values 0,2,4..E)
             int r = rNib >> 1;   // 0..7
@@ -861,6 +878,15 @@ namespace EutherDrive.Core.MdTracerCore
                 int tileIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 6) & 0x1FF : (w_address >> 5) & 0x3FF;
                 int rowIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 2) & 0x0F : (w_address >> 2) & 0x07;
                 Console.WriteLine($"[PATTERN-WRITE] frame={_frameCounter} vram_addr=0x{w_address:X4} val=0x{w_val:X4} renderer_idx={w_address >> 1} tile={tileIdx} row={rowIdx}");
+            }
+
+            if (TracePatternWritesPc && _patternPcRemaining > 0 && w_address < 0x8000 && w_val != 0)
+            {
+                _patternPcRemaining--;
+                uint pc = md_m68k.g_reg_PC;
+                int tileIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 6) & 0x1FF : (w_address >> 5) & 0x3FF;
+                int rowIdx = (g_vdp_interlace_mode == 2) ? (w_address >> 2) & 0x0F : (w_address >> 2) & 0x07;
+                Console.WriteLine($"[PATTERN-PC] frame={_frameCounter} pc=0x{pc:X6} vram_addr=0x{w_address:X4} val=0x{w_val:X4} tile={tileIdx} row={rowIdx}");
             }
 
             // Store pattern data for reverse mode (normal mode)
