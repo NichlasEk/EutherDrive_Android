@@ -464,7 +464,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 _cpuReady = false;
                 _cpu = null;
 
-                RomInfo.Summary = BuildSmsSummary(smsRom.Length, smsHeader, mapper);
+                RomInfo.Summary = BuildSmsSummary(smsRom.Length);
+                RomInfo.ExtraInfo = BuildSmsExtraInfo(smsHeader, mapper);
                 RomInfo.RegionHint = smsHeader.RegionHint;
                 RomInfo.RegionHeaderRaw = smsHeader.RegionRaw ?? string.Empty;
                 RomInfo.SerialNumber = smsHeader.ProductCode ?? string.Empty;
@@ -709,10 +710,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         return checksum == expected ? SmsMapperType.Codemasters : SmsMapperType.Sega;
     }
 
-    private static string BuildSmsSummary(int length, SmsHeaderInfo header, SmsMapperType mapper)
+    private static string BuildSmsSummary(int length)
+    {
+        return $"SMS ROM bytes: {length}";
+    }
+
+    private static string BuildSmsExtraInfo(SmsHeaderInfo header, SmsMapperType mapper)
     {
         string headerInfo = header.Found ? header.Summary : "No SMS header";
-        return $"SMS ROM bytes: {length} | {headerInfo} | mapper={mapper}";
+        return $"{headerInfo} | mapper={mapper}";
     }
 
     private readonly record struct SmsHeaderInfo(

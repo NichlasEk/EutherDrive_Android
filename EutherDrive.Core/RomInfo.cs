@@ -6,6 +6,7 @@ public sealed class RomInfo
     public ConsoleRegion? RegionHint { get; set; }
     public string RegionHeaderRaw { get; set; } = string.Empty;
     public string SerialNumber { get; set; } = string.Empty;
+    public string ExtraInfo { get; set; } = string.Empty;
 
     public override string ToString() => Summary;
 }

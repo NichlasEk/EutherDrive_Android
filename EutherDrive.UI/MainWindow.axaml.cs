@@ -1054,7 +1054,9 @@ public partial class MainWindow : Window
     private void UpdateRomInfo(RomInfo info)
     {
         if (RomInfoText != null)
-            RomInfoText.Text = info.Summary;
+            RomInfoText.Text = string.IsNullOrWhiteSpace(info.ExtraInfo)
+                ? info.Summary
+                : $"{info.Summary}\n{info.ExtraInfo}";
 
         UpdateRomRegionHint(info.RegionHint);
         _romRegionKey = GetRomRegionKey(info);
