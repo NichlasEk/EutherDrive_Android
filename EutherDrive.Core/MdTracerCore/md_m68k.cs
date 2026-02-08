@@ -52,6 +52,20 @@ namespace EutherDrive.Core.MdTracerCore
         internal static readonly bool TraceMovemPredec =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MOVEM_PREDEC"), "1", StringComparison.Ordinal);
         internal static int TraceMovemPredecRemaining = 8;
+        internal static readonly List<(uint Start, uint End)> FixMovemPredecRanges =
+            ParseWatchRangeList("EUTHERDRIVE_FIX_MOVEM_PREDEC_PC_RANGE");
+
+        internal static bool ShouldFixMovemPredec(uint pc)
+        {
+            if (FixMovemPredecRanges.Count == 0)
+                return true;
+            foreach ((uint start, uint end) in FixMovemPredecRanges)
+            {
+                if (pc >= start && pc <= end)
+                    return true;
+            }
+            return false;
+        }
         private static readonly uint PcWatchStart = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_START") ?? 0x000320;
         private static readonly uint PcWatchEnd = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_END") ?? 0x000340;
         

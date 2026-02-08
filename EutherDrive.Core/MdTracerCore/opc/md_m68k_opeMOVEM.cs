@@ -72,7 +72,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
             LogMovemPredec(w_mask, wdata, 2);
-            if (FixMovemPredec)
+            if (FixMovemPredec && ShouldFixMovemPredec(g_reg_PC))
             {
                 int totalRegs = 0;
                 for (int bit = 0; bit < 16; bit++)
@@ -207,7 +207,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
             LogMovemPredec(w_mask, wdata, 4);
-            if (FixMovemPredec)
+            if (FixMovemPredec && ShouldFixMovemPredec(g_reg_PC))
             {
                 int totalRegs = 0;
                 for (int bit = 0; bit < 16; bit++)
