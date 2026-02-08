@@ -8,6 +8,10 @@ namespace EutherDrive.Core.MdTracerCore
         {
             // size: 0=byte, 1=word, 2=long
             int w_size = g_op2 & 0x03;
+            uint pcBefore = (uint)(g_reg_PC);
+            uint a2Before = 0;
+            uint a2After = 0;
+            bool trace544a = false;
 
             // Timing (din befintliga logik)
             if (w_size == 2)
@@ -22,6 +26,12 @@ namespace EutherDrive.Core.MdTracerCore
             if (g_work_val2.l == 0) g_work_val2.l = 8;
 
             // EA
+            if (g_opcode == 0x544A)
+            {
+                pcBefore = (uint)(g_reg_PC - 2);
+                a2Before = g_reg_addr[2].l;
+                trace544a = ShouldTraceOpcode(TraceOpcode544A, pcBefore);
+            }
             adressing_func_address(g_op3, g_op4, w_size);
             g_work_val1.l = adressing_func_read(g_op3, g_op4, w_size);
 
@@ -30,6 +40,12 @@ namespace EutherDrive.Core.MdTracerCore
 
             // Write-back
             adressing_func_write(g_op3, g_op4, w_size, g_work_data.l);
+            if (trace544a)
+            {
+                a2After = g_reg_addr[2].l;
+                Console.WriteLine(
+                    $"[OP544A] pc=0x{pcBefore:X6} A2:0x{a2Before:X8}->0x{a2After:X8} src=0x{g_work_val1.l & MASKBIT[w_size]:X} add=0x{g_work_val2.l:X} res=0x{g_work_data.l & MASKBIT[w_size]:X}");
+            }
 
             // Flags: uppdateras inte för adressregister-direkt (mode 1)
             if (g_op3 != 1)

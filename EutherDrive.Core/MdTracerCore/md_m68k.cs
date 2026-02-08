@@ -60,6 +60,17 @@ namespace EutherDrive.Core.MdTracerCore
         internal static int TraceMovemPredecRemaining = 8;
         internal static readonly List<(uint Start, uint End)> FixMovemPredecRanges =
             ParseWatchRangeList("EUTHERDRIVE_FIX_MOVEM_PREDEC_PC_RANGE");
+        internal static readonly bool TraceOpcode102A =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OPCODE_102A"), "1", StringComparison.Ordinal);
+        internal static readonly bool TraceOpcodeB01B =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OPCODE_B01B"), "1", StringComparison.Ordinal);
+        internal static readonly bool TraceOpcode544A =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OPCODE_544A"), "1", StringComparison.Ordinal);
+        internal static readonly List<(uint Start, uint End)> TraceOpcodePcRanges =
+            ParseWatchRangeList("EUTHERDRIVE_TRACE_OPCODE_PC_RANGE");
+        private static readonly int TraceOpcodeLimit =
+            ParseWatchLimit("EUTHERDRIVE_TRACE_OPCODE_LIMIT");
+        private static int _traceOpcodeRemaining = TraceOpcodeLimit;
 
         internal static bool ShouldFixMovemPredec(uint pc)
         {
@@ -71,6 +82,30 @@ namespace EutherDrive.Core.MdTracerCore
                     return true;
             }
             return false;
+        }
+
+        internal static bool ShouldTraceOpcode(bool enabled, uint pc)
+        {
+            if (!enabled)
+                return false;
+            if (_traceOpcodeRemaining <= 0)
+                return false;
+            if (TraceOpcodePcRanges.Count > 0)
+            {
+                bool inRange = false;
+                foreach ((uint start, uint end) in TraceOpcodePcRanges)
+                {
+                    if (pc >= start && pc <= end)
+                    {
+                        inRange = true;
+                        break;
+                    }
+                }
+                if (!inRange)
+                    return false;
+            }
+            _traceOpcodeRemaining--;
+            return true;
         }
         private static readonly uint PcWatchStart = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_START") ?? 0x000320;
         private static readonly uint PcWatchEnd = ParseWatchAddr("EUTHERDRIVE_TRACE_PCWATCH_END") ?? 0x000340;

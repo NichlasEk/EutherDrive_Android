@@ -10,6 +10,11 @@ namespace EutherDrive.Core.MdTracerCore
             int w_src = (g_op3 < 7) ? g_op3 : 7 + g_op4;
             int w_dest= (g_op2 < 7) ? g_op2 : 7 + g_op1;
             int w_clock = 0;
+            uint pcBefore = (uint)(g_reg_PC);
+            uint a2Before = 0;
+            uint d0Before = 0;
+            uint srcAddr = 0;
+            bool trace102a = false;
             switch(g_op)
             {
                 case 1:
@@ -25,11 +30,29 @@ namespace EutherDrive.Core.MdTracerCore
                     w_clock = MOVE_CLOCK_L[w_src, w_dest];
                     break; 
             } 
-            g_reg_PC += 2; 
-            adressing_func_address(g_op3, g_op4, w_size); 
-            g_work_data.l = (uint)adressing_func_read(g_op3, g_op4, w_size); 
+            g_reg_PC += 2;
+            if (g_opcode == 0x102A)
+            {
+                pcBefore = (uint)(g_reg_PC - 2);
+                a2Before = g_reg_addr[2].l;
+                d0Before = g_reg_data[0].l;
+            }
+            adressing_func_address(g_op3, g_op4, w_size);
+            g_work_data.l = (uint)adressing_func_read(g_op3, g_op4, w_size);
+            if (g_opcode == 0x102A)
+            {
+                srcAddr = g_analyze_address;
+                trace102a = ShouldTraceOpcode(TraceOpcode102A, pcBefore);
+            }
             adressing_func_address(g_op2, g_op1, w_size); 
-            adressing_func_write(g_op2, g_op1, w_size, g_work_data.l); 
+            adressing_func_write(g_op2, g_op1, w_size, g_work_data.l);
+            if (trace102a)
+            {
+                uint d0After = g_reg_data[0].l;
+                byte srcVal = (byte)(g_work_data.l & 0xFF);
+                Console.WriteLine(
+                    $"[OP102A] pc=0x{pcBefore:X6} A2=0x{a2Before:X8} src=0x{srcAddr:X6} val=0x{srcVal:X2} D0:0x{d0Before:X8}->0x{d0After:X8}");
+            }
             g_clock = w_clock;
             uint w_mask = MASKBIT[w_size];
             uint w_most = MOSTBIT[w_size];
