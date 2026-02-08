@@ -30,16 +30,25 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool ForceScrollZero =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_SCROLL_ZERO"), "1", StringComparison.Ordinal);
-         private static readonly bool TraceTileFetch =
-             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_TILE_FETCH"), "1", StringComparison.Ordinal);
-         private static readonly bool DebugTileRendering =
-             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_TILE_RENDERING"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceTileFetch =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_TILE_FETCH"), "1", StringComparison.Ordinal);
+        private static readonly bool DebugTileRendering =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_TILE_RENDERING"), "1", StringComparison.Ordinal);
         private static readonly int TraceTileFetchScanline =
             ParseTraceInt("EUTHERDRIVE_TRACE_TILE_FETCH_SCANLINE", 112);
         private static readonly int TraceTileFetchLimit =
             ParseTraceInt("EUTHERDRIVE_TRACE_TILE_FETCH_LIMIT", 128);
         [NonSerialized] private int _traceTileFetchRemaining = TraceTileFetchLimit;
         [NonSerialized] private long _traceTileFetchFrame = -1;
+        private static readonly bool TracePriMap =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PRI_MAP"), "1", StringComparison.Ordinal);
+        private static readonly int TracePriMapScanline =
+            ParseTraceInt("EUTHERDRIVE_TRACE_PRI_MAP_SCANLINE", 112);
+        private static readonly int TracePriMapX =
+            ParseTraceInt("EUTHERDRIVE_TRACE_PRI_MAP_X", 0);
+        private static readonly int TracePriMapWidth =
+            ParseTraceInt("EUTHERDRIVE_TRACE_PRI_MAP_WIDTH", 32);
+        [NonSerialized] private long _tracePriMapFrame = -1;
 
         private static int ParseTraceInt(string name, int fallback)
         {
@@ -410,6 +419,21 @@ namespace EutherDrive.Core.MdTracerCore
                         w_view_dx += 1;
                     }
                 }
+            }
+
+            if (TracePriMap && g_scanline == TracePriMapScanline && _tracePriMapFrame != _frameCounter)
+            {
+                _tracePriMapFrame = _frameCounter;
+                int startX = Math.Max(0, TracePriMapX);
+                int endX = Math.Min(g_display_xsize, startX + Math.Max(1, TracePriMapWidth));
+                System.Text.StringBuilder pri = new System.Text.StringBuilder(endX - startX);
+                System.Text.StringBuilder cov = new System.Text.StringBuilder(endX - startX);
+                for (int x = startX; x < endX; x++)
+                {
+                    pri.Append(g_game_primap[x] != 0 ? '1' : '0');
+                    cov.Append(g_game_cmap[x] != 0 ? '#' : '.');
+                }
+                Console.WriteLine($"[PRIMAP] frame={_frameCounter} scanline={g_scanline} x={startX}..{endX - 1} pri={pri} cov={cov}");
             }
 
             // --- Sprites ---
