@@ -569,12 +569,20 @@ namespace EutherDrive.Core.MdTracerCore
         private void SmsDecodeCommand(ushort cmd)
         {
             int code = (cmd >> 14) & 0x3;
+            bool traceSmsReg = string.Equals(
+                Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_REG"), "1",
+                StringComparison.Ordinal);
 
             if (code == 2)
             {
                 int reg = (cmd >> 8) & 0x0F;
                 byte data = (byte)(cmd & 0xFF);
                 _smsRegs[reg] = data;
+                if (traceSmsReg)
+                {
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    Console.WriteLine($"[SMS REG] pc=0x{pc:X4} r{reg:X}=0x{data:X2}");
+                }
                 if (reg == 1 && !_smsDisplayOnLogged && (data & 0x40) != 0)
                 {
                     _smsDisplayOnLogged = true;

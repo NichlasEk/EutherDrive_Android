@@ -1285,15 +1285,24 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
-         private void TriggerVBlank()
-         {
-             if (_vblankActive)
-                 return;
+        private void TriggerVBlank()
+        {
+            if (_vblankActive)
+                return;
 
-             _vblankActive = true;
-             g_vdp_status_3_vbrank = 1;
-             if (md_main.g_masterSystemMode)
-                 UpdateSmsIrqLine();
+            _vblankActive = true;
+            g_vdp_status_3_vbrank = 1;
+            if (md_main.g_masterSystemMode)
+                UpdateSmsIrqLine();
+
+            if (md_main.g_masterSystemMode &&
+                string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IRQSTATE"), "1", StringComparison.Ordinal))
+            {
+                bool vblankEnabled = (_smsRegs[1] & 0x20) != 0;
+                bool lineEnabled = (_smsRegs[0] & 0x10) != 0;
+                Console.WriteLine(
+                    $"[SMS IRQSTATE] frame={_frameCounter} line={g_scanline} reg0=0x{_smsRegs[0]:X2} reg1=0x{_smsRegs[1]:X2} vblankEn={(vblankEnabled ? 1 : 0)} lineEn={(lineEnabled ? 1 : 0)}");
+            }
              
               // Apply latched register 12 values (takes effect at V-Int)
               if (_reg12_latch_pending)
