@@ -465,7 +465,7 @@ namespace EutherDrive.Core.MdTracerCore
                     int w_cy    = w_y & (cellHeight - 1);
                     int w_posx  = w_left;
                     int cellHeightTiles = g_vdp_interlace_mode == 2 ? 1 : (cellHeight >> 3);
-                    int cellStride = w_ycell_size * cellHeightTiles;
+                    int rowStride = w_xcell_size * cellHeightTiles;
                     int yCellIndex = w_ycell * cellHeightTiles;
                     int yCellIndexFlipped = (w_ycell_size - w_ycell - 1) * cellHeightTiles;
 
@@ -474,10 +474,10 @@ namespace EutherDrive.Core.MdTracerCore
                         int w_char_cur = 0;
                         switch (w_reverse)
                         {
-                            case 0: w_char_cur = w_char + (cellStride * w_cur_xcell) + yCellIndex; break;
-                            case 1: w_char_cur = w_char + (cellStride * (w_xcell_size - w_cur_xcell - 1)) + yCellIndex; break;
-                            case 2: w_char_cur = w_char + (cellStride * w_cur_xcell) + yCellIndexFlipped; break;
-                            default:w_char_cur = w_char + (cellStride * (w_xcell_size - w_cur_xcell - 1)) + yCellIndexFlipped; break;
+                            case 0: w_char_cur = w_char + (rowStride * yCellIndex) + w_cur_xcell; break;
+                            case 1: w_char_cur = w_char + (rowStride * yCellIndex) + (w_xcell_size - w_cur_xcell - 1); break;
+                            case 2: w_char_cur = w_char + (rowStride * yCellIndexFlipped) + w_cur_xcell; break;
+                            default:w_char_cur = w_char + (rowStride * yCellIndexFlipped) + (w_xcell_size - w_cur_xcell - 1); break;
                         }
                         for (int w_cx = 0; w_cx < 8; w_cx++)
                         {
