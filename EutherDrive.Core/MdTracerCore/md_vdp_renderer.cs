@@ -202,9 +202,8 @@ namespace EutherDrive.Core.MdTracerCore
                 int tileRow = (y >> 3) & 0x1F;
                 int rowInTile = y & 0x07;
 
-                int sx = (x + fineX) & 0xFF;
-                int tileCol = ((sx >> 3) + coarseX) & 0x1F;
-                int colInTile = sx & 0x07;
+                int tileCol = ((x >> 3) + (32 - coarseX)) & 0x1F;
+                int colInTile = (x + fineX) & 0x07;
 
                 int entryAddr = nameBase + ((tileRow * 32 + tileCol) * 2);
                 if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
