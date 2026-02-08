@@ -1887,6 +1887,12 @@ namespace EutherDrive.Core.MdTracerCore
                 return true;
             }
 
+            if (md_sms_io.TryReadPort(port, out value))
+            {
+                SmsPortLog(port, "read", value);
+                return true;
+            }
+
             return false;
         }
 

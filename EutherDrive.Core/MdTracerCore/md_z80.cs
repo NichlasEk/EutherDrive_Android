@@ -495,6 +495,25 @@ namespace EutherDrive.Core.MdTracerCore
                     continue;
                 }
 
+                if (g_interrupt_nmi)
+                {
+                    g_interrupt_nmi = false;
+                    if (g_halt) g_reg_PC += 1;
+                    stack_push(g_reg_PCH);
+                    stack_push(g_reg_PCL);
+                    g_reg_PC = 0x0066;
+                    g_halt = false;
+                    g_IFF1 = false;
+
+                    const int nmiCycles = 11;
+                    _totalCycles += nmiCycles;
+                    MaybeLogZ80Speed(nmiCycles);
+                    cyclesConsumed += nmiCycles;
+                    md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(nmiCycles);
+                    g_clock_total -= nmiCycles;
+                    continue;
+                }
+
                 // IRQ (NMI-block ej aktiverad i originalet)
             if (TraceSmsIrq && md_main.g_masterSystemMode && _traceSmsIrqStateCount < 16)
             {
@@ -1292,6 +1311,11 @@ NextPc:;
             if (_z80ResetHoldLogRemaining != int.MaxValue)
                 _z80ResetHoldLogRemaining--;
         }
+    }
+
+    internal void RequestNmi()
+    {
+        g_interrupt_nmi = true;
     }
 
         private void LogZ80Int(bool asserted, string source, byte status, string reason)

@@ -3125,6 +3125,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         };
 
         io.SetPad1Input(state, padType);
+        md_sms_io.SetPad1Input(state);
     }
 
     #region Framebuffer Analyzer
