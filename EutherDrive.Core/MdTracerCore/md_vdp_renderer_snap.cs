@@ -9,6 +9,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSCROLL_UNSIGNED"), "1", StringComparison.Ordinal);
         private static readonly bool HScrollDirect =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSCROLL_DIRECT"), "1", StringComparison.Ordinal);
+        private static readonly bool VScrollSubtract =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VSCROLL_SUBTRACT"), "1", StringComparison.Ordinal);
         private static readonly int TraceSpriteLine =
             int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPRITES_LINE"), out int line)
                 ? line
@@ -232,8 +234,14 @@ namespace EutherDrive.Core.MdTracerCore
 
                     for (int i = 0; i < VSRAM_DATASIZE; i++)
                     {
-                        g_line_snap[g_scanline].vscrollA[i] = (w_vscrollA + lineY) % g_scroll_ysize;
-                        g_line_snap[g_scanline].vscrollB[i] = (w_vscrollB + lineY) % g_scroll_ysize;
+                        int viewA = VScrollSubtract ? (lineY - w_vscrollA) : (w_vscrollA + lineY);
+                        int viewB = VScrollSubtract ? (lineY - w_vscrollB) : (w_vscrollB + lineY);
+                        viewA %= g_scroll_ysize;
+                        viewB %= g_scroll_ysize;
+                        if (viewA < 0) viewA += g_scroll_ysize;
+                        if (viewB < 0) viewB += g_scroll_ysize;
+                        g_line_snap[g_scanline].vscrollA[i] = viewA;
+                        g_line_snap[g_scanline].vscrollB[i] = viewB;
                     }
                     if (TraceScrollLine && g_scanline == TraceScrollLineScanline && _traceScrollLineRemaining > 0)
                     {
@@ -273,8 +281,14 @@ namespace EutherDrive.Core.MdTracerCore
                             w_vscrollB &= 0x7fe;
                         }
 
-                        g_line_snap[g_scanline].vscrollA[i] = (w_vscrollA + lineY) % g_scroll_ysize;
-                        g_line_snap[g_scanline].vscrollB[i] = (w_vscrollB + lineY) % g_scroll_ysize;
+                        int viewA = VScrollSubtract ? (lineY - w_vscrollA) : (w_vscrollA + lineY);
+                        int viewB = VScrollSubtract ? (lineY - w_vscrollB) : (w_vscrollB + lineY);
+                        viewA %= g_scroll_ysize;
+                        viewB %= g_scroll_ysize;
+                        if (viewA < 0) viewA += g_scroll_ysize;
+                        if (viewB < 0) viewB += g_scroll_ysize;
+                        g_line_snap[g_scanline].vscrollA[i] = viewA;
+                        g_line_snap[g_scanline].vscrollB[i] = viewB;
                         if (TraceScrollLine && g_scanline == TraceScrollLineScanline && sampleCount < 4)
                         {
                             sampleVsA[sampleCount] = w_vscrollA;
