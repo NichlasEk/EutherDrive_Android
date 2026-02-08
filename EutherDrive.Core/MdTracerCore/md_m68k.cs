@@ -47,6 +47,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MADOU"), "1", StringComparison.Ordinal);
         private static readonly bool _madouFullTrace =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MADOU_FULL"), "1", StringComparison.Ordinal);
+        private static readonly bool _madouRomTrace =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MADOU_ROM_WORDS"), "1", StringComparison.Ordinal);
         internal static readonly bool FixMovemPredec =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FIX_MOVEM_PREDEC"), "1", StringComparison.Ordinal);
         internal static readonly bool TraceMovemPredec =
@@ -241,6 +243,14 @@ namespace EutherDrive.Core.MdTracerCore
                               Console.WriteLine($"[MADOU-CRITICAL] Opcode 0x{opcode:X4} = ROR.W #8, D0 (not ROL.L #8, D0!)");
                               Console.WriteLine($"[MADOU-CRITICAL] D0 low word=0x{(oldD0 & 0xFFFF):X4}, ROR.W #8 -> 0x{((oldD0 & 0xFFFF) >> 8) | ((oldD0 & 0xFF) << 8):X4}");
                           }
+                      }
+                      
+                      if (_madouRomTrace && g_reg_PC >= 0x013A48 && g_reg_PC <= 0x013A5C)
+                      {
+                          ushort op0 = md_main.g_md_bus.read16(g_reg_PC);
+                          ushort op1 = md_main.g_md_bus.read16(g_reg_PC + 2);
+                          ushort op2 = md_main.g_md_bus.read16(g_reg_PC + 4);
+                          Console.WriteLine($"[MADOU-ROM] PC=0x{g_reg_PC:X6} op0=0x{op0:X4} op1=0x{op1:X4} op2=0x{op2:X4}");
                       }
                       
                       // Also trace when we're near the palette routine
