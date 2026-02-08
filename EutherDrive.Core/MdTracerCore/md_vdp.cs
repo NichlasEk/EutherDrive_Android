@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 
 namespace EutherDrive.Core.MdTracerCore
@@ -20,6 +21,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_VDPFRAME"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpFrameSummary =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_FRAME"), "1", StringComparison.Ordinal);
+        private static readonly int SmsVramDumpFrame =
+            ParseTraceLimit("EUTHERDRIVE_SMS_VRAM_DUMP_FRAME", -1);
+        private static readonly string SmsVramDumpPath =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_VRAM_DUMP_PATH") ?? "/tmp/sms_vram_dump.txt";
         private static readonly bool DebugDmaWin =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_DMAWIN"), "1", StringComparison.Ordinal);
         private static readonly bool SpriteLinkSequential =
@@ -45,6 +50,7 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _smsFirstLineRendered;
         private int _smsFrameHashCounter;
         private uint _smsLastFrameHash;
+        private bool _smsVramDumped;
         private long _smsVramWritesTotal;
         private long _smsCramWritesTotal;
         private long _smsVramWritesAtLastSummary;
@@ -1162,7 +1168,36 @@ namespace EutherDrive.Core.MdTracerCore
                 MdTracerCore.MdLog.WriteLine($"[SMS VDP] framebuffer hash=0x{hash:X8}");
             }
 
+            if (!_smsVramDumped && SmsVramDumpFrame >= 0 && _frameCounter >= SmsVramDumpFrame)
+            {
+                _smsVramDumped = true;
+                DumpSmsVram(SmsVramDumpPath);
+            }
+
             SmsLogFrameSummary(hash);
+        }
+
+        private void DumpSmsVram(string path)
+        {
+            try
+            {
+                using var writer = new StreamWriter(path, false);
+                writer.WriteLine($"SMS VRAM dump frame={_frameCounter}");
+                writer.WriteLine($"reg2=0x{_smsRegs[2]:X2} reg4=0x{_smsRegs[4]:X2} reg1=0x{_smsRegs[1]:X2}");
+                for (int addr = 0; addr < _smsVram.Length; addr += 16)
+                {
+                    writer.Write($"{addr:X4}:");
+                    for (int i = 0; i < 16 && addr + i < _smsVram.Length; i++)
+                        writer.Write($" {_smsVram[addr + i]:X2}");
+                    writer.WriteLine();
+                }
+                writer.Flush();
+                MdTracerCore.MdLog.WriteLine($"[SMS VRAM-DUMP] wrote {path}");
+            }
+            catch (Exception ex)
+            {
+                MdTracerCore.MdLog.WriteLine($"[SMS VRAM-DUMP] failed: {ex.Message}");
+            }
         }
 
         private void SmsLogFrameSummary(uint hash)
