@@ -114,6 +114,7 @@ public partial class MainWindow : Window
     private bool _speedLockEnabled = true;
     private bool _renderSkipEnabled;
     private int _renderSkipCounter;
+    private bool _smsOverscanEnabled;
     private double _speedScale = 1.0;
     private long _emuFpsLastTicks;
     private int _emuFpsFrames;
@@ -243,6 +244,7 @@ public partial class MainWindow : Window
         UpdateSpeedLockUi();
         UpdateRenderSkipUi();
         UpdateSpeedUi();
+        UpdateSmsOverscanUi();
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
@@ -261,6 +263,8 @@ public partial class MainWindow : Window
             _core = new MdTracerAdapter();
             ApplyMasterVolumeToCore();
             ApplyDefaultCpuCyclesPerLine();
+            if (_core is MdTracerAdapter smsAdapter)
+                smsAdapter.SetShowSmsOverscan(_smsOverscanEnabled);
             SaveSettings();
             if (_core is MdTracerAdapter m)
             {
@@ -374,6 +378,20 @@ public partial class MainWindow : Window
             SpeedSlider.Value = _speedScale;
         if (SpeedValueText != null)
             SpeedValueText.Text = $"{_speedScale * 100:0}%";
+    }
+
+    private void UpdateSmsOverscanUi()
+    {
+        if (SmsOverscanCheck != null)
+            SmsOverscanCheck.IsChecked = _smsOverscanEnabled;
+    }
+
+    private void OnSmsOverscanToggle(object? sender, RoutedEventArgs e)
+    {
+        _smsOverscanEnabled = SmsOverscanCheck?.IsChecked == true;
+        if (_core is MdTracerAdapter adapter)
+            adapter.SetShowSmsOverscan(_smsOverscanEnabled);
+        SaveSettings();
     }
 
     private void OnSpeedSliderChanged(object? sender, RangeBaseValueChangedEventArgs e)
@@ -732,6 +750,8 @@ public partial class MainWindow : Window
                 Console.WriteLine("[UI] Core created (MdTracerAdapter).");
                 ApplyMasterVolumeToCore();
                 ApplyDefaultCpuCyclesPerLine();
+                if (_core is MdTracerAdapter smsAdapter)
+                    smsAdapter.SetShowSmsOverscan(_smsOverscanEnabled);
 
                 if (!string.IsNullOrWhiteSpace(_romPath))
                 {
@@ -1167,6 +1187,7 @@ public partial class MainWindow : Window
         public bool SpeedLockEnabled { get; set; } = true;
         public bool RenderSkipEnabled { get; set; } = false;
         public double SpeedScale { get; set; } = 1.0;
+        public bool SmsOverscanEnabled { get; set; } = false;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
         public FrameRateMode FrameRateMode { get; set; } = FrameRateMode.Auto;
@@ -1229,6 +1250,7 @@ public partial class MainWindow : Window
         _speedLockEnabled = settings.SpeedLockEnabled;
         _renderSkipEnabled = settings.RenderSkipEnabled;
         _speedScale = settings.SpeedScale > 0 ? settings.SpeedScale : 1.0;
+        _smsOverscanEnabled = settings.SmsOverscanEnabled;
 
         _defaultRegionOverride = settings.DefaultRegionOverride;
         _romRegionOverrides.Clear();
@@ -1286,6 +1308,7 @@ public partial class MainWindow : Window
             SpeedLockEnabled = _speedLockEnabled,
             RenderSkipEnabled = _renderSkipEnabled,
             SpeedScale = _speedScale,
+            SmsOverscanEnabled = _smsOverscanEnabled,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
             FrameRateMode = _frameRateMode

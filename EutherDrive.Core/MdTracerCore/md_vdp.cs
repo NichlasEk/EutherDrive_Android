@@ -150,7 +150,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return parsed;
             return fallback;
         }
-        private static readonly bool ShowOverscan =
+        private static bool ShowOverscan =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SHOW_OVERSCAN"), "1", StringComparison.Ordinal);
         private static readonly System.Diagnostics.Stopwatch _timingStopwatch = System.Diagnostics.Stopwatch.StartNew();
         private long _lastTimingLogFrame = -1;
@@ -228,9 +228,20 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void UpdateOutputWidth()
         {
-            g_output_xsize = ShowOverscan ? MaxFrameWidth : g_display_xsize;
+            if (md_main.g_masterSystemMode)
+                g_output_xsize = ShowOverscan ? MaxFrameWidth : g_display_xsize;
+            else
+                g_output_xsize = g_display_xsize;
             g_output_ysize = GetOutputHeight();
         }
+
+        public void SetShowOverscan(bool enabled)
+        {
+            ShowOverscan = enabled;
+            SyncFrameSizeFromVdp();
+        }
+
+        public bool GetShowOverscan() => ShowOverscan;
 
         private void ApplyInterlaceOverrides()
         {

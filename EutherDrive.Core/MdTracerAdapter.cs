@@ -3327,6 +3327,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         md_sms_io.SetPad1Input(state);
     }
 
+    public void SetShowSmsOverscan(bool enabled)
+    {
+        _vdp?.SetShowOverscan(enabled);
+    }
+
+    public bool GetShowSmsOverscan()
+    {
+        return _vdp?.GetShowOverscan() ?? false;
+    }
+
     #region Framebuffer Analyzer
 
     /// <summary>

@@ -119,6 +119,7 @@
         <TextBlock Text="ROM" FontWeight="Bold"/>
         <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
         <TextBlock x:Name="RomInfoText" Opacity="0.85" FontSize="12" TextWrapping="Wrap"/>
+        <CheckBox Content="SMS overscan (debug)" IsChecked="False" Name="SmsOverscanCheck" Checked="OnSmsOverscanToggle" Unchecked="OnSmsOverscanToggle"/>
         <Separator/>
         <TextBlock Text="Perf" FontWeight="Bold"/>
         <TextBlock Name="FpsText" Text="FPS: -"/>
