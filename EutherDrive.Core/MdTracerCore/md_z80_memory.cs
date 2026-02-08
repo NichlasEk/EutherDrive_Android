@@ -1982,10 +1982,6 @@ namespace EutherDrive.Core.MdTracerCore
             switch (port)
             {
                 case 0x7E:
-                    SetSmsBank(data);
-                    g_bank_register = _smsBankSelect;
-                    SmsPortLog(port, "write", data);
-                    return true;
                 case 0x7F:
                     md_psg_trace.TraceWrite("Z80-SMS", port, data, md_main.g_md_z80?.DebugPc ?? 0);
                     md_main.g_md_music?.g_md_sn76489.write8(data);
