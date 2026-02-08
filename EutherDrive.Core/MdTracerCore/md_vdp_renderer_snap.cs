@@ -5,6 +5,10 @@ namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
+        private static readonly bool HScrollUnsigned =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSCROLL_UNSIGNED"), "1", StringComparison.Ordinal);
+        private static readonly bool HScrollDirect =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSCROLL_DIRECT"), "1", StringComparison.Ordinal);
         private static readonly int TraceSpriteLine =
             int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPRITES_LINE"), out int line)
                 ? line
@@ -138,15 +142,25 @@ namespace EutherDrive.Core.MdTracerCore
 
                 int raw_hscrollA = (int)(vram_read_render(w_addr << 1) & 0x3ff);
                 int raw_hscrollB = (int)(vram_read_render((w_addr + 1) << 1) & 0x3ff);
-                int w_hscrollA = (raw_hscrollA & 0x200) != 0 ? (raw_hscrollA | ~0x3ff) : raw_hscrollA;
-                int w_hscrollB = (raw_hscrollB & 0x200) != 0 ? (raw_hscrollB | ~0x3ff) : raw_hscrollB;
+                int w_hscrollA;
+                int w_hscrollB;
+                if (HScrollUnsigned)
+                {
+                    w_hscrollA = raw_hscrollA;
+                    w_hscrollB = raw_hscrollB;
+                }
+                else
+                {
+                    w_hscrollA = (raw_hscrollA & 0x200) != 0 ? (raw_hscrollA | ~0x3ff) : raw_hscrollA;
+                    w_hscrollB = (raw_hscrollB & 0x200) != 0 ? (raw_hscrollB | ~0x3ff) : raw_hscrollB;
+                }
 
                 int modA = w_hscrollA % g_scroll_xsize;
                 if (modA < 0) modA += g_scroll_xsize;
                 int modB = w_hscrollB % g_scroll_xsize;
                 if (modB < 0) modB += g_scroll_xsize;
-                int w_view_xA = (g_scroll_xsize - modA) % g_scroll_xsize;
-                int w_view_xB = (g_scroll_xsize - modB) % g_scroll_xsize;
+                int w_view_xA = HScrollDirect ? modA : (g_scroll_xsize - modA) % g_scroll_xsize;
+                int w_view_xB = HScrollDirect ? modB : (g_scroll_xsize - modB) % g_scroll_xsize;
 
                 g_line_snap[g_scanline].hscrollA = w_view_xA;
                 g_line_snap[g_scanline].hscrollB = w_view_xB;
