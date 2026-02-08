@@ -325,10 +325,6 @@ namespace EutherDrive.Core.MdTracerCore
 
             // --- Scroll A ---
             {
-                if (!((g_screenA_bottom_y == 0)
-                    || (renderLine < g_screenA_top_y)
-                    || (g_screenA_bottom_y < renderLine)))
-                {
                 int w_view_x = ForceScrollZero ? 0 : g_line_snap[g_scanline].hscrollA;
                     uint w_priority = 0;
                     uint w_palette = 0;
@@ -394,9 +390,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 $"tileBase=0x{tileBase:X4} picAddr={(w_pic_addr >= 0 ? $"0x{w_pic_addr:X4}" : "direct")}");
                         }
                     }
-                        if (((g_screenA_right_x != 0)
-                            && (g_screenA_left_x <= wx) && (wx <= g_screenA_right_x)
-                            && (g_game_primap[wx] <= w_priority)))
+                        if (g_game_primap[wx] <= w_priority)
                         {
                             uint picValue;
                             if (w_pic_addr < 0)
@@ -418,7 +412,6 @@ namespace EutherDrive.Core.MdTracerCore
                         w_view_x += 1;
                         w_view_dx += 1;
                     }
-                }
             }
 
             if (TracePriMap && g_scanline == TracePriMapScanline && _tracePriMapFrame != _frameCounter)
