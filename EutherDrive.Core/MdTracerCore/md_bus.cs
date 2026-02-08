@@ -148,6 +148,7 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _suppressMbxByteLog;
         private int _ymWriteLogRemaining = 64;
         private int _busVdpLogRemaining = TraceBusVdpLimit;
+        private int _romReadPcRemaining = TraceRomReadPcLimit;
         private static readonly bool TraceZ80Win =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80RegDecode =
@@ -158,6 +159,12 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS_VDP"), "1", StringComparison.Ordinal);
         private static readonly int TraceBusVdpLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_BUS_VDP_LIMIT", 200);
+        private static readonly bool TraceRomReadPc =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ROM_READ_PC"), "1", StringComparison.Ordinal);
+        private static readonly int TraceRomReadPcLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_ROM_READ_PC_LIMIT", 128);
+        private static readonly List<(uint Start, uint End)> TraceRomReadPcRanges =
+            md_m68k.ParseWatchRangeList("EUTHERDRIVE_TRACE_ROM_READ_PC_RANGE");
         private static readonly bool ResetZ80OnBusReqRelease =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_RESET_ON_BUSREQ_RELEASE"), "1", StringComparison.Ordinal);
         private static readonly int ResetZ80OnBusReqReleaseLimit =
@@ -414,6 +421,18 @@ namespace EutherDrive.Core.MdTracerCore
             if (value <= 0)
                 return int.MaxValue;
             return value;
+        }
+
+        private static bool PcMatchesRanges(uint pc, List<(uint Start, uint End)> ranges)
+        {
+            if (ranges.Count == 0)
+                return true;
+            foreach ((uint start, uint end) in ranges)
+            {
+                if (pc >= start && pc <= end)
+                    return true;
+            }
+            return false;
         }
 
         private static int ParseSafeBootDelayFrames(string name, int fallback)
@@ -1412,6 +1431,16 @@ namespace EutherDrive.Core.MdTracerCore
             if (in_address <= 0x3FFFFF)
             {
                 byte val = md_m68k.read8(in_address);
+                if (TraceRomReadPc && _romReadPcRemaining > 0)
+                {
+                    uint pc = md_m68k.g_reg_PC;
+                    if (PcMatchesRanges(pc, TraceRomReadPcRanges))
+                    {
+                        if (_romReadPcRemaining != int.MaxValue)
+                            _romReadPcRemaining--;
+                        Console.WriteLine($"[ROM-READ8] pc=0x{pc:X6} addr=0x{in_address:X6} val=0x{val:X2} A0=0x{md_m68k.g_reg_addr[0].l:X8} D0=0x{md_m68k.g_reg_data[0].l:X8}");
+                    }
+                }
                 LogBusWatch(in_address, 1, write: false, value: val);
                 return val;
             }
@@ -1554,6 +1583,16 @@ namespace EutherDrive.Core.MdTracerCore
             if (in_address <= 0x3FFFFF)
             {
                 ushort val = md_m68k.read16(in_address);
+                if (TraceRomReadPc && _romReadPcRemaining > 0)
+                {
+                    uint pc = md_m68k.g_reg_PC;
+                    if (PcMatchesRanges(pc, TraceRomReadPcRanges))
+                    {
+                        if (_romReadPcRemaining != int.MaxValue)
+                            _romReadPcRemaining--;
+                        Console.WriteLine($"[ROM-READ16] pc=0x{pc:X6} addr=0x{in_address:X6} val=0x{val:X4} A0=0x{md_m68k.g_reg_addr[0].l:X8} D0=0x{md_m68k.g_reg_data[0].l:X8}");
+                    }
+                }
                 LogBusWatch(in_address, 2, write: false, value: val);
                 return val;
             }
