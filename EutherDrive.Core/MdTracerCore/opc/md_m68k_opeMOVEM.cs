@@ -4,6 +4,41 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        private void TraceMovemPredec(uint w_mask, uint startAddr, int sizeBytes)
+        {
+            if (!TraceMovemPredec || TraceMovemPredecRemaining <= 0)
+                return;
+
+            TraceMovemPredecRemaining--;
+
+            Console.WriteLine($"[MOVEM-PREDEC] PC=0x{g_reg_PC:X6} size={sizeBytes} mask=0x{w_mask:X4} A{g_op4}=0x{startAddr:X8}");
+
+            uint legacyAddr = startAddr;
+            int legacyCount = 0;
+            for (int bit = 0; bit < 16; bit++)
+            {
+                if ((w_mask & (1u << bit)) == 0)
+                    continue;
+
+                string regName = bit < 8 ? $"A{7 - bit}" : $"D{15 - bit}";
+                legacyAddr -= (uint)sizeBytes;
+                if (legacyCount++ < 8)
+                    Console.WriteLine($"[MOVEM-PREDEC-LEGACY] addr=0x{legacyAddr:X8} reg={regName}");
+            }
+
+            uint fixedAddr = startAddr;
+            int fixedCount = 0;
+            for (int bit = 15; bit >= 0; bit--)
+            {
+                if ((w_mask & (1u << bit)) == 0)
+                    continue;
+
+                string regName = bit >= 8 ? $"A{bit - 8}" : $"D{bit}";
+                fixedAddr -= (uint)sizeBytes;
+                if (fixedCount++ < 8)
+                    Console.WriteLine($"[MOVEM-PREDEC-FIXED] addr=0x{fixedAddr:X8} reg={regName}");
+            }
+        }
         private void analyse_MOVEM_w_r2m()
         {
             g_reg_PC += 2;
@@ -36,6 +71,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
+            TraceMovemPredec(w_mask, wdata, 2);
             if (FixMovemPredec)
             {
                 for (int bit = 15; bit >= 0; bit--)
@@ -152,6 +188,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
+            TraceMovemPredec(w_mask, wdata, 4);
             if (FixMovemPredec)
             {
                 for (int bit = 15; bit >= 0; bit--)
