@@ -23,6 +23,11 @@ namespace EutherDrive.Core.MdTracerCore
                 g_reg_PC = (uint)(basePc + displacement);
 
             MaybeLogDbra(startPc, before, after, branch, displacement, g_op4);
+            if (g_opcode == 0x51C9 && ShouldTraceOpcode(TraceOpcode51C9, startPc))
+            {
+                Console.WriteLine(
+                    $"[OP51C9] pc=0x{startPc:X6} D{g_op4} pre=0x{before:X4} post=0x{after:X4} branch={(branch ? 1 : 0)} disp=0x{displacement:X4}");
+            }
         }
 
         private void MaybeLogDbra(uint startPc, ushort before, ushort after, bool branch, short displacement, int regIndex)

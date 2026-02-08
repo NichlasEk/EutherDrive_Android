@@ -66,6 +66,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OPCODE_B01B"), "1", StringComparison.Ordinal);
         internal static readonly bool TraceOpcode544A =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OPCODE_544A"), "1", StringComparison.Ordinal);
+        internal static readonly bool TraceOpcode20C0 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OPCODE_20C0"), "1", StringComparison.Ordinal);
+        internal static readonly bool TraceOpcode51C9 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OPCODE_51C9"), "1", StringComparison.Ordinal);
         internal static readonly List<(uint Start, uint End)> TraceOpcodePcRanges =
             ParseWatchRangeList("EUTHERDRIVE_TRACE_OPCODE_PC_RANGE");
         private static readonly int TraceOpcodeLimit =

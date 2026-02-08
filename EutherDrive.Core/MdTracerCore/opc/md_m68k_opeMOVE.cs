@@ -101,6 +101,11 @@ namespace EutherDrive.Core.MdTracerCore
             int w_src = (g_op3 < 7) ? g_op3 : 7 + g_op4;
             int w_dest= (g_op2 < 7) ? g_op2 : 7 + g_op1;
             int w_clock = 0;
+            uint pcBefore = (uint)(g_reg_PC);
+            uint a0Before = 0;
+            uint a0After = 0;
+            uint d0Before = 0;
+            bool trace20c0 = false;
             switch(g_op)
             {
                 case 1:
@@ -117,10 +122,23 @@ namespace EutherDrive.Core.MdTracerCore
                     break; 
             } 
             g_reg_PC += 2; 
+            if (g_opcode == 0x20C0)
+            {
+                pcBefore = (uint)(g_reg_PC - 2);
+                a0Before = g_reg_addr[0].l;
+                d0Before = g_reg_data[0].l;
+                trace20c0 = ShouldTraceOpcode(TraceOpcode20C0, pcBefore);
+            }
             adressing_func_address(g_op3, g_op4, w_size); 
             g_work_data.l = (uint)adressing_func_read(g_op3, g_op4, w_size); 
             adressing_func_address(g_op2, g_op1, w_size); 
             adressing_func_write(g_op2, g_op1, w_size, g_work_data.l); 
+            if (trace20c0)
+            {
+                a0After = g_reg_addr[0].l;
+                Console.WriteLine(
+                    $"[OP20C0] pc=0x{pcBefore:X6} A0:0x{a0Before:X8}->0x{a0After:X8} D0=0x{d0Before:X8} val=0x{g_work_data.l:X8}");
+            }
             g_clock = w_clock;
             uint w_mask = MASKBIT[w_size];
             uint w_most = MOSTBIT[w_size];
