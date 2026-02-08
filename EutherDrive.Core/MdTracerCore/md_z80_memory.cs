@@ -2015,6 +2015,7 @@ namespace EutherDrive.Core.MdTracerCore
             switch (md_main.g_masterSystemMapper)
             {
                 case SmsMapperType.Codemasters:
+                    bank = (byte)((value & 0x7F) % bankCount);
                     if (addr <= 0x3FFF)
                     {
                         _smsBank0 = bank;
