@@ -224,11 +224,12 @@ namespace EutherDrive.Core.MdTracerCore
 
                     MaybeLogPcSample(g_reg_PC, g_opcode);
 
-                    if (_madouRotateTrace && g_reg_PC == 0x013A4E)
+                    if (_madouRotateTrace && (g_reg_PC == 0x013A4E || g_reg_PC == 0x013A58 || g_reg_PC == 0x013A5A))
                     {
                         Console.WriteLine(
                             $"[MADOU-OP] PC=0x{g_reg_PC:X6} opcode=0x{g_opcode:X4} " +
-                            $"op={g_op:X} op1={g_op1} op2={g_op2} op3={g_op3} op4={g_op4} D0=0x{g_reg_data[0].l:X8}");
+                            $"op={g_op:X} op1={g_op1} op2={g_op2} op3={g_op3} op4={g_op4} " +
+                            $"D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} A0=0x{g_reg_addr[0].l:X8} A1=0x{g_reg_addr[1].l:X8}");
                     }
 
                     // Special tracing for Madou DMA setup code
