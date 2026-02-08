@@ -906,6 +906,9 @@ namespace EutherDrive.Core.MdTracerCore
 
         private int GetOutputHeight()
         {
+            if (md_main.g_masterSystemMode && !ShowOverscan)
+                return 192;
+
             int height = g_display_ysize;
             // Only double height for interlace mode 2 (double resolution)
             // Mode 1 (standard interlace) should NOT double the height
