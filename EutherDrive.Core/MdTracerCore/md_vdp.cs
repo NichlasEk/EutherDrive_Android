@@ -25,6 +25,12 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_SMS_VRAM_DUMP_FRAME", -1);
         private static readonly string SmsVramDumpPath =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_VRAM_DUMP_PATH") ?? "/tmp/sms_vram_dump.txt";
+        private static readonly bool TraceSmsFrameDetail =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_FRAME_DETAIL"), "1", StringComparison.Ordinal);
+        private static readonly int SmsVramDumpOnHashChanges =
+            ParseTraceLimit("EUTHERDRIVE_SMS_VRAM_DUMP_ON_HASH_CHANGES", 0);
+        private static readonly string SmsVramDumpOnHashPrefix =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_VRAM_DUMP_ON_HASH_PREFIX") ?? "/tmp/sms_vram_hash";
         private static readonly bool DebugDmaWin =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_DMAWIN"), "1", StringComparison.Ordinal);
         private static readonly bool SpriteLinkSequential =
@@ -51,6 +57,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _smsFrameHashCounter;
         private uint _smsLastFrameHash;
         private bool _smsVramDumped;
+        private int _smsVramDumpOnHashChangesLeft = SmsVramDumpOnHashChanges;
         private long _smsVramWritesTotal;
         private long _smsCramWritesTotal;
         private long _smsVramWritesAtLastSummary;
@@ -284,7 +291,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (!md_main.g_masterSystemMode)
                 return;
 
-            const int smsActiveScanlines = 192;
+            int smsActiveScanlines = g_display_ysize;
             if (g_scanline < smsActiveScanlines || g_scanline == g_vertical_line_max - 1)
             {
                 if (_smsLineCounter == 0)
@@ -1166,6 +1173,14 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 _smsLastFrameHash = hash;
                 MdTracerCore.MdLog.WriteLine($"[SMS VDP] framebuffer hash=0x{hash:X8}");
+                if (TraceSmsFrameDetail)
+                    LogSmsFrameDetail(hash);
+                if (_smsVramDumpOnHashChangesLeft > 0)
+                {
+                    string path = $"{SmsVramDumpOnHashPrefix}_{_frameCounter}.txt";
+                    DumpSmsVram(path);
+                    _smsVramDumpOnHashChangesLeft--;
+                }
             }
 
             if (!_smsVramDumped && SmsVramDumpFrame >= 0 && _frameCounter >= SmsVramDumpFrame)
@@ -1175,6 +1190,52 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             SmsLogFrameSummary(hash);
+        }
+
+        private uint ComputeSmsVramRegionHash(int start, int length)
+        {
+            if (start < 0 || length <= 0)
+                return 0;
+            int end = Math.Min(_smsVram.Length, start + length);
+            if (end <= start)
+                return 0;
+            uint h = 0;
+            for (int i = start; i < end; i++)
+            {
+                h ^= _smsVram[i];
+                h = (h << 5) | (h >> 27);
+            }
+            return h;
+        }
+
+        private void LogSmsFrameDetail(uint hash)
+        {
+            int nameBase = (_smsRegs[2] & 0x0E) << 10;
+            int nameLength = 32 * 28 * 2; // 0x700
+            int satBase = (_smsRegs[5] & 0x7E) << 7;
+            int spritePatternBase = ((_smsRegs[6] & 0x04) != 0) ? 0x2000 : 0x0000;
+            int hscroll = _smsRegs[8];
+            int vscroll = _smsRegs[9];
+            bool hscrollLock = (_smsRegs[0] & 0x40) != 0;
+            bool vscrollLock = (_smsRegs[0] & 0x80) != 0;
+            bool hideLeftColumn = (_smsRegs[0] & 0x20) != 0;
+            bool sprites8x16 = (_smsRegs[1] & 0x02) != 0;
+
+            uint hashPattern = ComputeSmsVramRegionHash(0x0000, 0x2000);
+            uint hashUpper = ComputeSmsVramRegionHash(0x2000, 0x2000);
+            uint hashName = ComputeSmsVramRegionHash(nameBase, nameLength);
+            uint hashSat = ComputeSmsVramRegionHash(satBase & 0x3FFF, 0x100);
+            uint hash3c = ComputeSmsVramRegionHash(0x3C00, 0x200);
+            uint hash3e = ComputeSmsVramRegionHash(0x3E00, 0x100);
+
+            MdTracerCore.MdLog.WriteLine(
+                $"[SMS VDP] detail frame={_frameCounter} fbHash=0x{hash:X8} " +
+                $"r0=0x{_smsRegs[0]:X2} r1=0x{_smsRegs[1]:X2} r2=0x{_smsRegs[2]:X2} r5=0x{_smsRegs[5]:X2} r6=0x{_smsRegs[6]:X2} r7=0x{_smsRegs[7]:X2} " +
+                $"r8=0x{_smsRegs[8]:X2} r9=0x{_smsRegs[9]:X2} " +
+                $"nameBase=0x{nameBase:X4} satBase=0x{satBase:X4} spritePatternBase=0x{spritePatternBase:X4} " +
+                $"hscroll={hscroll} vscroll={vscroll} hLock={(hscrollLock ? 1 : 0)} vLock={(vscrollLock ? 1 : 0)} hideLeft={(hideLeftColumn ? 1 : 0)} spr16={(sprites8x16 ? 1 : 0)} " +
+                $"vramHash[0-1FFF]=0x{hashPattern:X8} vramHash[2000-3FFF]=0x{hashUpper:X8} " +
+                $"nameHash=0x{hashName:X8} satHash=0x{hashSat:X8} hash3C=0x{hash3c:X8} hash3E=0x{hash3e:X8}");
         }
 
         private void DumpSmsVram(string path)

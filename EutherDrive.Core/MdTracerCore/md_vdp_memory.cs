@@ -222,8 +222,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (g_vdp_status_5_collision != 0)
                 status |= 0x20;
 
-            // Reading status clears VBlank + collision (SMS behavior).
+            // Reading status clears VBlank + sprite flags (SMS behavior).
             g_vdp_status_3_vbrank = 0;
+            g_vdp_status_6_sprite = 0;
             g_vdp_status_5_collision = 0;
             g_vdp_status_7_vinterrupt = 0;
             md_m68k.g_interrupt_V_req = false;
@@ -607,6 +608,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             _smsCommandPending = false;
+            // Second control write sets MSB of VRAM address (all commands).
+            _smsVdpAddr = (_smsVdpAddr & 0x00FF) | ((value & 0x3F) << 8);
             ushort cmd = (ushort)(_smsCommandLow | (value << 8));
             SmsLogControl(_smsCommandLow, value, cmd);
             SmsDecodeCommand(cmd);
@@ -648,8 +651,6 @@ namespace EutherDrive.Core.MdTracerCore
         private void SmsDecodeCommand(ushort cmd)
         {
             int code = (cmd >> 14) & 0x3;
-            int cmdAddr = cmd & 0x3FFF;
-            _smsVdpAddr = cmdAddr;
             bool traceSmsReg = string.Equals(
                 Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_REG"), "1",
                 StringComparison.Ordinal);
@@ -690,6 +691,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             _smsVdpCode = code;
+            int cmdAddr = _smsVdpAddr & 0x3FFF;
             if (code == 0)
             {
                 _smsReadBuffer = _smsVram[_smsVdpAddr & 0x3FFF];
