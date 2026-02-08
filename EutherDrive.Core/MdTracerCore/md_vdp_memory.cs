@@ -514,6 +514,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private byte SmsReadData()
         {
+            _smsCommandPending = false;
             byte value = _smsVram[_smsVdpAddr & 0x3FFF];
             if (_smsVdpCode == 1)
             {
@@ -539,6 +540,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void SmsWriteData(byte value)
         {
+            _smsCommandPending = false;
             switch (_smsVdpCode)
             {
                 case 0:
