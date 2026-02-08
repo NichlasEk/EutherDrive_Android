@@ -21,6 +21,12 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL"), "1", StringComparison.Ordinal);
         private static readonly int TraceVdpCtrlLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_CTRL_LIMIT", 200);
+        private static readonly bool TraceVdpCtrlPc =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL_PC"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVdpCtrlPcLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_CTRL_PC_LIMIT", 256);
+        private static readonly List<(uint Start, uint End)> TraceVdpCtrlPcRanges =
+            md_m68k.ParseWatchRangeList("EUTHERDRIVE_TRACE_VDP_CTRL_PC_RANGE");
         private static readonly bool TracePatternWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES"), "1", StringComparison.Ordinal);
         private static readonly bool TracePatternWritesPc =
@@ -56,6 +62,7 @@ namespace EutherDrive.Core.MdTracerCore
         private readonly int[] COLOR_SHADOW    = { 0, 29, 52, 70, 87, 101, 116, 130 };
         private readonly int[] COLOR_HIGHLIGHT = { 130, 144, 158, 172, 187, 206, 228, 255 };
         private int _vdpCtrlLogRemaining = TraceVdpCtrlLimit;
+        private int _vdpCtrlPcRemaining = TraceVdpCtrlPcLimit;
         private int _cramPcRemaining = TraceCramWritesPcLimit;
         private int _patternPcRemaining = TracePatternWritesPcLimit;
 
@@ -454,6 +461,27 @@ namespace EutherDrive.Core.MdTracerCore
                     Console.WriteLine($"[VDP-CTRL] frame={_frameCounter} addr=0x{in_address:X6} raw=0x{in_data:X4}");
                     if (_vdpCtrlLogRemaining != int.MaxValue)
                         _vdpCtrlLogRemaining--;
+                }
+                if (TraceVdpCtrlPc && _vdpCtrlPcRemaining > 0)
+                {
+                    uint pcFilter = md_m68k.g_reg_PC;
+                    if (TraceVdpCtrlPcRanges.Count == 0)
+                    {
+                        _vdpCtrlPcRemaining--;
+                        Console.WriteLine($"[VDP-CTRL-PC] frame={_frameCounter} pc=0x{pcFilter:X6} addr=0x{in_address:X6} raw=0x{in_data:X4}");
+                    }
+                    else
+                    {
+                        foreach ((uint start, uint end) in TraceVdpCtrlPcRanges)
+                        {
+                            if (pcFilter >= start && pcFilter <= end)
+                            {
+                                _vdpCtrlPcRemaining--;
+                                Console.WriteLine($"[VDP-CTRL-PC] frame={_frameCounter} pc=0x{pcFilter:X6} addr=0x{in_address:X6} raw=0x{in_data:X4}");
+                                break;
+                            }
+                        }
+                    }
                 }
 
                 if (!g_command_select)
