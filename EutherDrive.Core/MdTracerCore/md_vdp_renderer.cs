@@ -183,9 +183,11 @@ namespace EutherDrive.Core.MdTracerCore
             int displayWidth = Math.Min(g_display_xsize, width);
             int hscroll = _smsRegs[8];
             int vscroll = _smsRegs[9];
-            int y = (g_scanline + vscroll) & 0xFF;
-            int tileRow = (y >> 3) & 0x1F;
-            int rowInTile = y & 0x07;
+            bool hscrollLock = (_smsRegs[0] & 0x40) != 0;
+            bool vscrollLock = (_smsRegs[0] & 0x80) != 0;
+            int effectiveHscroll = (hscrollLock && g_scanline < 16) ? 0 : hscroll;
+            int coarseX = (effectiveHscroll >> 3) & 0x1F;
+            int fineX = effectiveHscroll & 0x07;
             // In SMS mode 4, name table base uses bits 1-3 (bit 0 ignored on most hardware).
             int nameBase = (_smsRegs[2] & 0x0E) << 10;
             // In SMS mode 4, background pattern table base is fixed at 0x0000.
@@ -195,8 +197,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             for (int x = 0; x < displayWidth; x++)
             {
-                int sx = (x + hscroll) & 0xFF;
-                int tileCol = (sx >> 3) & 0x1F;
+                int effectiveVscroll = (vscrollLock && x >= 192) ? 0 : vscroll;
+                int y = (g_scanline + effectiveVscroll) & 0xFF;
+                int tileRow = (y >> 3) & 0x1F;
+                int rowInTile = y & 0x07;
+
+                int sx = (x + fineX) & 0xFF;
+                int tileCol = ((sx >> 3) + (32 - coarseX)) & 0x1F;
                 int colInTile = sx & 0x07;
 
                 int entryAddr = nameBase + ((tileRow * 32 + tileCol) * 2);
