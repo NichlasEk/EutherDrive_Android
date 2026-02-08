@@ -111,13 +111,13 @@ namespace EutherDrive.Core.MdTracerCore
                 _traceDmaSourceFrame = _frameCounter;
                 string region = ClassifyDmaSourceRegion(g_dma_src_addr);
                 Console.WriteLine(
-                    $"[DMA-SRC-TRACE-START] frame={_frameCounter} srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} " +
+                    $"[DMA-SRC-TRACE-START] frame={_frameCounter} pc=0x{md_m68k.g_reg_PC:X6} srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} " +
                     $"region={region} len=0x{g_dma_leng:X4} dest=0x{g_vdp_reg_dest_address:X4} code=0x{g_vdp_reg_code:X2}");
             }
             
             if (TraceDmaRegs)
             {
-                Console.WriteLine($"[DMA-START] reason=CMD addr=0x{g_vdp_reg_dest_address:X4} cd=0x{g_vdp_reg_code:X2} " +
+                Console.WriteLine($"[DMA-START] reason=CMD pc=0x{md_m68k.g_reg_PC:X6} addr=0x{g_vdp_reg_dest_address:X4} cd=0x{g_vdp_reg_code:X2} " +
                                  $"len=0x{g_dma_leng:X4} srcRegs=(15=0x{g_vdp_reg_21_dma_source_low:X2} 16=0x{g_vdp_reg_22_dma_source_mid:X2} 17=0x{g_vdp_reg_23_5_dma_high:X2}) " +
                                  $"srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} inc=0x{g_vdp_reg_15_autoinc:X2} mode={g_vdp_reg_23_dma_mode} target={startTarget}");
             }
