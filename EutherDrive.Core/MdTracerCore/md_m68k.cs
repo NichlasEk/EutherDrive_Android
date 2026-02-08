@@ -770,7 +770,7 @@ namespace EutherDrive.Core.MdTracerCore
             return result;
         }
 
-        internal static List<(uint Start, uint End)> ParseWatchRangeList(string name)
+        public static List<(uint Start, uint End)> ParseWatchRangeList(string name)
         {
             string? raw = Environment.GetEnvironmentVariable(name);
             var result = new List<(uint, uint)>();
