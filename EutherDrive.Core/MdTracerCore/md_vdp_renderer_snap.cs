@@ -361,8 +361,9 @@ namespace EutherDrive.Core.MdTracerCore
                     if (traceSprites && w_sprite_cnt < 12)
                     {
                         spriteLog!.AppendFormat(
-                            " id={0} topY={1} leftX={2} yRange=[{3},{4}] char=0x{5:X4} size={6}x{7}",
-                            w_now_link, w_top_y, w_top_x, w_top, w_bottom, w_val3 & 0x07ff, w_xcell_size, w_ycell_size);
+                            " id={0} topY={1} leftX={2} yRange=[{3},{4}] char=0x{5:X4} size={6}x{7} pri={8} pal={9}",
+                            w_now_link, w_top_y, w_top_x, w_top, w_bottom, w_val3 & 0x07ff, w_xcell_size, w_ycell_size,
+                            (w_val3 >> 15) & 0x0001, (w_val3 >> 13) & 0x0003);
                     }
                     if (traceSpriteId && w_now_link == TraceSpriteId)
                     {
