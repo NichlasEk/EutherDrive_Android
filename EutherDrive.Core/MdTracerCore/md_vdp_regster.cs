@@ -387,7 +387,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 2:
                 {
                     int oldVal = g_vdp_reg_2_scrolla;
-                    g_vdp_reg_2_scrolla = (ushort)((in_data & 0x78) << 10);
+                    g_vdp_reg_2_scrolla = (ushort)((in_data & 0x38) << 10);
                     if (oldVal != g_vdp_reg_2_scrolla && _frameCounter > 100)
                         Console.WriteLine($"[VDP-REG2] frame={_frameCounter} old=0x{oldVal:X4} new=0x{g_vdp_reg_2_scrolla:X4}");
                     break;
