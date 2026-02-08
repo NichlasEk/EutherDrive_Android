@@ -1932,6 +1932,13 @@ namespace EutherDrive.Core.MdTracerCore
                 SmsPortLog(port, "read", value);
                 return true;
             }
+            if (port == 0x7E || port == 0x7F)
+            {
+                ushort hv = md_main.g_md_vdp?.GetSmsHvCounter() ?? 0;
+                value = (byte)((port == 0x7E) ? (hv >> 8) : (hv & 0xFF));
+                SmsPortLog(port, "read", value);
+                return true;
+            }
 
             if (md_sms_io.TryReadPort(port, out value))
             {

@@ -365,6 +365,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal long FrameCounter => _frameCounter;
         internal byte InterlaceField => g_vdp_interlace_field;
+        internal ushort GetSmsHvCounter() => get_vdp_hvcounter();
 
         /// <summary>Byt upplösning (valfritt att kalla om du vill synka till VDP-registret senare).</summary>
         public void SetFrameSize(int width, int height)
