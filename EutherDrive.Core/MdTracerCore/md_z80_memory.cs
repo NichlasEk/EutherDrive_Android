@@ -2053,7 +2053,6 @@ namespace EutherDrive.Core.MdTracerCore
                     if (addr <= 0x7FFF)
                     {
                         _smsBank1 = bank;
-                        _smsCodemastersRamEnabled = (value & 0x80) != 0;
                         return true;
                     }
                     if (addr <= 0xBFFF)
@@ -2064,6 +2063,7 @@ namespace EutherDrive.Core.MdTracerCore
                             return true;
                         }
                         _smsBank2 = bank;
+                        _smsCodemastersRamEnabled = (value & 0x80) != 0;
                         return true;
                     }
                     return false;
