@@ -36,6 +36,12 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool DisableSprites =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DISABLE_SPRITES"), "1", StringComparison.Ordinal);
+        private static readonly bool DisablePlaneA =
+            AllowRenderDebug &&
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DISABLE_PLANE_A"), "1", StringComparison.Ordinal);
+        private static readonly bool DisablePlaneB =
+            AllowRenderDebug &&
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DISABLE_PLANE_B"), "1", StringComparison.Ordinal);
         private static readonly bool ForceScrollZero =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_SCROLL_ZERO"), "1", StringComparison.Ordinal);
@@ -224,6 +230,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // --- Scroll B ---
+            if (!DisablePlaneB)
             {
                 int w_view_x = ForceScrollZero ? 0 : g_line_snap[g_scanline].hscrollB;
                 uint w_priority = 0;
@@ -333,6 +340,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // --- Scroll A ---
+            if (!DisablePlaneA)
             {
                 int w_view_x = ForceScrollZero ? 0 : g_line_snap[g_scanline].hscrollA;
                     uint w_priority = 0;
