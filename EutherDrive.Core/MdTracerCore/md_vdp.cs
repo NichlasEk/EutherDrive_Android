@@ -31,6 +31,9 @@ namespace EutherDrive.Core.MdTracerCore
         private int _smsVdpAddr;
         private byte[] _smsVram = new byte[0x4000];
         private byte[] _smsRegs = new byte[16];
+        private byte _smsLineCounter = 0xFF;
+        private byte _smsLineCounterReload;
+        private bool _smsLineInterruptPending;
         private int _smsCommandLogCount;
         private const int SmsCommandLogLimit = 200;
         private bool _smsDisplayOnLogged;
@@ -243,6 +246,55 @@ namespace EutherDrive.Core.MdTracerCore
 
         public bool GetShowOverscan() => ShowOverscan;
 
+        internal void SetSmsLineCounterReload(byte value)
+        {
+            _smsLineCounterReload = value;
+            _smsLineCounter = value;
+        }
+
+        internal void OnSmsStatusRead()
+        {
+            _smsLineInterruptPending = false;
+            UpdateSmsIrqLine();
+        }
+
+        internal void UpdateSmsIrqLine()
+        {
+            if (!md_main.g_masterSystemMode)
+                return;
+
+            bool vblankPending = g_vdp_status_3_vbrank != 0;
+            bool vblankEnabled = (_smsRegs[1] & 0x20) != 0;
+            bool lineEnabled = (_smsRegs[0] & 0x10) != 0;
+            bool irq = (vblankPending && vblankEnabled) || (_smsLineInterruptPending && lineEnabled);
+            md_main.g_md_z80?.irq_request(irq, "VDP", 0);
+        }
+
+        private void SmsLineCounterTick()
+        {
+            if (!md_main.g_masterSystemMode)
+                return;
+
+            const int smsActiveScanlines = 192;
+            if (g_scanline < smsActiveScanlines || g_scanline == g_vertical_line_max - 1)
+            {
+                if (_smsLineCounter == 0)
+                {
+                    _smsLineCounter = _smsLineCounterReload;
+                    _smsLineInterruptPending = true;
+                    UpdateSmsIrqLine();
+                }
+                else
+                {
+                    _smsLineCounter--;
+                }
+            }
+            else
+            {
+                _smsLineCounter = _smsLineCounterReload;
+            }
+        }
+
         private void ApplyInterlaceOverrides()
         {
             if (!ForceHBlankEnvSet)
@@ -326,6 +378,9 @@ namespace EutherDrive.Core.MdTracerCore
             g_scanline = in_vline;
             if (ForceHBlank)
                 g_vdp_status_2_hbrank = 1;
+
+            if (md_main.g_masterSystemMode)
+                SmsLineCounterTick();
 
             if (g_scanline == 0)
             {
@@ -1361,9 +1416,16 @@ namespace EutherDrive.Core.MdTracerCore
                 g_vdp_status_7_vinterrupt = 1;
                 md_m68k.g_interrupt_V_req = true;
                 // Z80 needs VBlank interrupt for sound drivers in both MD and SMS mode
-                md_main.g_md_z80?.irq_request(true, "VDP", 0);
-                if (!md_main.g_masterSystemMode && Z80VblankIrqPulseCycles > 0)
-                    md_main.g_md_z80?.ArmIrqAutoClear("VDP", Z80VblankIrqPulseCycles);
+                if (md_main.g_masterSystemMode)
+                {
+                    UpdateSmsIrqLine();
+                }
+                else
+                {
+                    md_main.g_md_z80?.irq_request(true, "VDP", 0);
+                    if (Z80VblankIrqPulseCycles > 0)
+                        md_main.g_md_z80?.ArmIrqAutoClear("VDP", Z80VblankIrqPulseCycles);
+                }
                 _z80VblankIntActive = true;
                 if (TraceVint)
                     Console.WriteLine($"[VINT] TriggerVBlank frame={_frameCounter} scanline={g_scanline} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field}");

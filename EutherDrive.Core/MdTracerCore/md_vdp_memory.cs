@@ -174,7 +174,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_vdp_status_5_collision = 0;
             g_vdp_status_7_vinterrupt = 0;
             md_m68k.g_interrupt_V_req = false;
-            md_main.g_md_z80?.irq_request(false, "VDP", 0);
+            md_main.g_md_vdp?.OnSmsStatusRead();
             return status;
         }
 
@@ -582,6 +582,10 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 if (reg == 1)
                     g_vdp_reg_1_6_display = (byte)((data & 0x40) != 0 ? 1 : 0);
+                if (reg == 0x0A)
+                    md_main.g_md_vdp?.SetSmsLineCounterReload(data);
+                if (reg == 0 || reg == 1)
+                    md_main.g_md_vdp?.UpdateSmsIrqLine();
                 SmsLog($"[SMS VDP] REG r{reg:X}={data:X2}", reg == 1);
                 return;
             }
