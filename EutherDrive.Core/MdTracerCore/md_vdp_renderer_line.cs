@@ -489,7 +489,8 @@ namespace EutherDrive.Core.MdTracerCore
                                     int x_in_tile = w_cx;
                                     int y_in_tile = w_cy;
 
-                                    if (ForceDirectVramReadSprites)
+                                    bool useDirectSprite = ForceDirectVramReadSprites || w_reverse != 0;
+                                    if (useDirectSprite)
                                     {
                                         x_in_tile = ((w_reverse & 0x01) != 0) ? (7 - w_cx) : w_cx;
                                         if ((w_reverse & 0x02) != 0)
