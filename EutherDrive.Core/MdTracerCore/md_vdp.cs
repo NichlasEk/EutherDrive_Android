@@ -293,6 +293,9 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 _smsLineCounter = _smsLineCounterReload;
             }
+
+            // Keep IRQ line level in sync with current VBlank/line status.
+            UpdateSmsIrqLine();
         }
 
         private void ApplyInterlaceOverrides()
