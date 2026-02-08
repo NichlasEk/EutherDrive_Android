@@ -600,6 +600,8 @@ namespace EutherDrive.Core.MdTracerCore
             if (!_smsCommandPending)
             {
                 _smsCommandLow = value;
+                // First control write sets low byte of VRAM address.
+                _smsVdpAddr = (_smsVdpAddr & 0x3F00) | value;
                 _smsCommandPending = true;
                 return;
             }
@@ -646,6 +648,8 @@ namespace EutherDrive.Core.MdTracerCore
         private void SmsDecodeCommand(ushort cmd)
         {
             int code = (cmd >> 14) & 0x3;
+            int cmdAddr = cmd & 0x3FFF;
+            _smsVdpAddr = cmdAddr;
             bool traceSmsReg = string.Equals(
                 Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_REG"), "1",
                 StringComparison.Ordinal);
@@ -655,6 +659,8 @@ namespace EutherDrive.Core.MdTracerCore
                 int reg = (cmd >> 8) & 0x0F;
                 byte data = (byte)(cmd & 0xFF);
                 _smsRegs[reg] = data;
+                // After register write, VDP data port writes should target VRAM by default.
+                _smsVdpCode = 0;
                 if (traceSmsReg)
                 {
                     ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
@@ -684,8 +690,6 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             _smsVdpCode = code;
-            int cmdAddr = cmd & 0x3FFF;
-            _smsVdpAddr = cmdAddr;
             if (code == 0)
             {
                 _smsReadBuffer = _smsVram[_smsVdpAddr & 0x3FFF];
