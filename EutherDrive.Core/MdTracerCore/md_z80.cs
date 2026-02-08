@@ -547,8 +547,21 @@ namespace EutherDrive.Core.MdTracerCore
                         switch (g_interruptMode)
                         {
                             case 0:
-                                // IM 0: devices place an opcode on bus – ej implementerat här
-                                break;
+                                // IM 0: treat as RST 38h for SMS (common VDP behavior)
+                                {
+                                    ushort spBefore = g_reg_SP;
+                                    ushort pcPushed = g_reg_PC;
+                                    bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
+                                    bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
+                                    if (TraceZ80IntDebug)
+                                        Console.WriteLine($"[Z80-INT-IM0] frame={md_main.g_md_vdp?.FrameCounter ?? -1} pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} pushPC=0x{pcPushed:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")} src={_irqSource} status=0x{_irqStatus:X2}");
+                                    stack_push(g_reg_PCH);
+                                    stack_push(g_reg_PCL);
+                                    g_reg_PC = 0x0038;
+                                    g_halt = false;
+                                    CountZ80IntService(); // [INT-STATS]
+                                    break;
+                                }
 
                             case 1:
                                 {
