@@ -4,7 +4,7 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
-        private void TraceMovemPredec(uint w_mask, uint startAddr, int sizeBytes)
+        private void LogMovemPredec(uint w_mask, uint startAddr, int sizeBytes)
         {
             if (!TraceMovemPredec || TraceMovemPredecRemaining <= 0)
                 return;
@@ -71,7 +71,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
-            TraceMovemPredec(w_mask, wdata, 2);
+            LogMovemPredec(w_mask, wdata, 2);
             if (FixMovemPredec)
             {
                 for (int bit = 15; bit >= 0; bit--)
@@ -188,7 +188,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
-            TraceMovemPredec(w_mask, wdata, 4);
+            LogMovemPredec(w_mask, wdata, 4);
             if (FixMovemPredec)
             {
                 for (int bit = 15; bit >= 0; bit--)
