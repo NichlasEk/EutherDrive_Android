@@ -163,6 +163,9 @@ namespace EutherDrive.Core.MdTracerCore
         private void RenderSmsLine(int outputLineOverride = -1, uint[]? targetBuffer = null)
         {
             int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
+            int smsTopCrop = (!ShowOverscan && g_display_ysize > 192) ? (g_display_ysize - 192) / 2 : 0;
+            int smsLine = g_scanline - smsTopCrop;
+            outputLine -= smsTopCrop;
             if ((uint)outputLine >= (uint)g_output_ysize)
                 return;
 
@@ -184,7 +187,7 @@ namespace EutherDrive.Core.MdTracerCore
                 dest[pos + x] = backdrop;
 
             const int visibleHeight = 192;
-            if (g_scanline < 0 || g_scanline >= visibleHeight)
+            if (smsLine < 0 || smsLine >= visibleHeight)
                 return;
 
             int displayWidth = Math.Min(g_display_xsize, width);
@@ -193,7 +196,7 @@ namespace EutherDrive.Core.MdTracerCore
             bool hscrollLock = (_smsRegs[0] & 0x40) != 0;
             bool vscrollLock = (_smsRegs[0] & 0x80) != 0;
             bool hideLeftColumn = (_smsRegs[0] & 0x20) != 0;
-            int effectiveHscroll = (hscrollLock && g_scanline < 16) ? 0 : hscroll;
+            int effectiveHscroll = (hscrollLock && smsLine < 16) ? 0 : hscroll;
             int coarseX = (effectiveHscroll >> 3) & 0x1F;
             int fineX = effectiveHscroll & 0x07;
             // In SMS mode 4, name table base uses bits 1-3 (bit 0 ignored on most hardware).
@@ -208,7 +211,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int effectiveVscroll = (vscrollLock && column >= 24) ? 0 : vscroll;
                 int coarseY = (effectiveVscroll >> 3) & 0x1F;
                 int fineY = effectiveVscroll & 0x07;
-                int y = (g_scanline + fineY) & 0xFF;
+                int y = (smsLine + fineY) & 0xFF;
                 int tileRow = ((y >> 3) + coarseY) % nameTableRows;
                 int rowInTile = y & 0x07;
 
@@ -268,10 +271,10 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            RenderSmsSprites(displayWidth, outputLine, dest, hideLeftColumn);
+            RenderSmsSprites(displayWidth, outputLine, g_scanline, dest, hideLeftColumn);
         }
 
-        private void RenderSmsSprites(int displayWidth, int outputLine, uint[] dest, bool hideLeftColumn)
+        private void RenderSmsSprites(int displayWidth, int outputLine, int scanline, uint[] dest, bool hideLeftColumn)
         {
             int satBase = (_smsRegs[5] & 0x7E) << 7;
             int spritePatternBase = ((_smsRegs[6] & 0x04) != 0) ? 0x2000 : 0x0000;
@@ -288,8 +291,8 @@ namespace EutherDrive.Core.MdTracerCore
                 if (yRaw == 0xD0)
                     break;
 
-                int spriteY = yRaw;
-                int line = g_scanline - spriteY;
+                int spriteY = (yRaw + 1) & 0xFF;
+                int line = scanline - spriteY;
                 if (line < 0 || line >= spriteHeight)
                     continue;
 
