@@ -389,8 +389,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
             if (!File.Exists(path))
             {
-                Console.WriteLine($"[MdTracerAdapter] LoadRom: file '{path}' not found.");
-                return;
+                string? fallback = TryResolveMissingRomPath(path);
+                if (fallback == null)
+                {
+                    Console.WriteLine($"[MdTracerAdapter] LoadRom: file '{path}' not found.");
+                    return;
+                }
+
+                Console.WriteLine($"[MdTracerAdapter] LoadRom: file not found, using '{fallback}'.");
+                path = fallback;
+                ext = Path.GetExtension(path)?.ToLowerInvariant() ?? string.Empty;
+                isSms = RomArchiveExtractor.IsSmsExtension(ext);
+                romDisplayName = Path.GetFileNameWithoutExtension(path);
+                romSourceName = path;
             }
 
             byte[] rawData;
@@ -415,6 +426,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             {
                 Console.WriteLine($"[MdTracerAdapter] LoadRom: file '{path}' is empty.");
                 return;
+            }
+
+            if (!isSms && LooksLikeSmsRom(rawData))
+            {
+                isSms = true;
+                Console.WriteLine("[MdTracerAdapter] LoadRom: SMS header detected in raw data.");
             }
 
             _romIdentity = new RomIdentity(romDisplayName, RomIdentity.ComputeSha256(rawData));
@@ -527,6 +544,65 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         {
             Monitor.Exit(_loadLock);
         }
+    }
+
+    private static string? TryResolveMissingRomPath(string path)
+    {
+        string? dir = Path.GetDirectoryName(path);
+        string file = Path.GetFileNameWithoutExtension(path);
+        if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(file))
+            return null;
+
+        string[] exts = { ".sms", ".bin", ".gg", ".sg" };
+        foreach (string ext in exts)
+        {
+            string candidate = Path.Combine(dir, file + ext);
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private static bool LooksLikeSmsRom(byte[] data)
+    {
+        ReadOnlySpan<byte> magic = stackalloc byte[] { 0x54, 0x4D, 0x52, 0x20, 0x53, 0x45, 0x47, 0x41 }; // "TMR SEGA"
+
+        static bool MatchAt(byte[] src, int offset, ReadOnlySpan<byte> sig)
+        {
+            if ((uint)offset > (uint)(src.Length - sig.Length))
+                return false;
+            for (int i = 0; i < sig.Length; i++)
+            {
+                if (src[offset + i] != sig[i])
+                    return false;
+            }
+            return true;
+        }
+
+        int[] bases32k = { 0x7FF0 };
+        for (int baseOffset = 0; baseOffset + 0x7FF0 + magic.Length <= data.Length; baseOffset += 0x8000)
+        {
+            if (MatchAt(data, baseOffset + 0x7FF0, magic))
+                return true;
+        }
+
+        for (int baseOffset = 0; baseOffset + 0x3FF0 + magic.Length <= data.Length; baseOffset += 0x4000)
+        {
+            if (MatchAt(data, baseOffset + 0x3FF0, magic))
+                return true;
+        }
+
+        for (int baseOffset = 0; baseOffset + 0x1FF0 + magic.Length <= data.Length; baseOffset += 0x2000)
+        {
+            if (MatchAt(data, baseOffset + 0x1FF0, magic))
+                return true;
+        }
+
+        if (data.Length >= 0x1000 && MatchAt(data, 0x0FF0, magic))
+            return true;
+
+        return false;
     }
 
     private static string TryReadSegaString(MegaDriveBus bus)
