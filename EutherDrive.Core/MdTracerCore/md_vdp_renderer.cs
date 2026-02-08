@@ -220,7 +220,7 @@ namespace EutherDrive.Core.MdTracerCore
                 byte b2 = _smsVram[patternAddr + 2];
                 byte b3 = _smsVram[patternAddr + 3];
 
-                int bit = flipX ? (7 - colInTile) : colInTile;
+                int bit = flipX ? colInTile : (7 - colInTile);
                 int mask = 1 << bit;
                 int color = ((b0 & mask) != 0 ? 1 : 0)
                             | ((b1 & mask) != 0 ? 2 : 0)
