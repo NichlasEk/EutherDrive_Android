@@ -6,6 +6,7 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private void analyse_RO_reg()
         {
+            uint pcBefore = g_reg_PC;
             int w_size = g_op2 & 0x03;
             int w_ir = g_op3 & 0x04;
             int w_dr = g_op2 & 0x04;
@@ -19,6 +20,7 @@ namespace EutherDrive.Core.MdTracerCore
             }else{
                 wcnt = g_reg_data[g_op1].l & 0x3f;
             }
+            uint before = g_reg_data[g_op4].l;
             g_work_data.l = read_g_reg_data(g_op4, w_size);
             g_status_V = false;
             g_status_C = false;
@@ -50,6 +52,14 @@ namespace EutherDrive.Core.MdTracerCore
             uint w_most = MOSTBIT[g_op2 & 0x03];
             g_status_N = ((g_work_data.l & w_most) == w_most) ? true: false;
             g_status_Z = ((g_work_data.l & w_mask) == 0) ? true: false;
+
+            if (pcBefore == 0x013A4E)
+            {
+                string dir = (w_dr == 0) ? "ROR" : "ROL";
+                string size = w_size == 0 ? "B" : (w_size == 1 ? "W" : "L");
+                uint after = g_reg_data[g_op4].l;
+                Console.WriteLine($"[MADOU-RO] PC=0x{pcBefore:X6} {dir}.{size} cnt={wcnt} D{g_op4} before=0x{before:X8} after=0x{after:X8}");
+            }
         }
         private void analyse_RO_mem()
         {

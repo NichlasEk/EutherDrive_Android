@@ -231,7 +231,7 @@ namespace EutherDrive.Core.MdTracerCore
                     if (g_68k_stop) { g_clock_now = g_clock_total; break; }
                     
                       // DEBUG: Monitor Madou palette calculation
-                      // Opcode at 0x013A50 is 0xE198 which decodes as ROR.W #8, D0 (not ROL.L #8, D0!)
+                      // Opcode at 0x013A4E is 0xE198 (rotate), and 0x013A50 is 0x48E7 (MOVEM).
                       if (g_reg_PC == 0x013A50 || g_reg_PC == 0x013A58 || g_reg_PC == 0x013A5A)
                       {
                           uint oldD0 = g_reg_data[0].l;
@@ -240,8 +240,7 @@ namespace EutherDrive.Core.MdTracerCore
                           
                           if (g_reg_PC == 0x013A50)
                           {
-                              Console.WriteLine($"[MADOU-CRITICAL] Opcode 0x{opcode:X4} = ROR.W #8, D0 (not ROL.L #8, D0!)");
-                              Console.WriteLine($"[MADOU-CRITICAL] D0 low word=0x{(oldD0 & 0xFFFF):X4}, ROR.W #8 -> 0x{((oldD0 & 0xFFFF) >> 8) | ((oldD0 & 0xFF) << 8):X4}");
+                              Console.WriteLine($"[MADOU-CRITICAL] Opcode 0x{opcode:X4} = MOVEM.L (reglist), -(A7)");
                           }
                       }
                       
