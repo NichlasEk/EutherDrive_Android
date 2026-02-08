@@ -74,12 +74,30 @@ namespace EutherDrive.Core.MdTracerCore
             LogMovemPredec(w_mask, wdata, 2);
             if (FixMovemPredec)
             {
+                int totalRegs = 0;
+                for (int bit = 0; bit < 16; bit++)
+                {
+                    if ((w_mask & (1u << bit)) != 0)
+                        totalRegs++;
+                }
+                uint finalAddr = wdata - (uint)(totalRegs * 2);
+
                 for (int bit = 15; bit >= 0; bit--)
                 {
                     if ((w_mask & (1u << bit)) == 0)
                         continue;
 
-                    ushort value = bit >= 8 ? g_reg_addr[bit - 8].w : g_reg_data[bit].w;
+                    int regIndex = bit >= 8 ? (bit - 8) : bit;
+                    ushort value;
+                    if (bit >= 8)
+                    {
+                        value = (ushort)(regIndex == g_op4 ? finalAddr : g_reg_addr[regIndex].l);
+                    }
+                    else
+                    {
+                        value = (ushort)g_reg_data[regIndex].l;
+                    }
+
                     wdata -= 2;
                     md_main.g_md_bus.write16(wdata, value);
                     g_clock += 5;
@@ -191,12 +209,30 @@ namespace EutherDrive.Core.MdTracerCore
             LogMovemPredec(w_mask, wdata, 4);
             if (FixMovemPredec)
             {
+                int totalRegs = 0;
+                for (int bit = 0; bit < 16; bit++)
+                {
+                    if ((w_mask & (1u << bit)) != 0)
+                        totalRegs++;
+                }
+                uint finalAddr = wdata - (uint)(totalRegs * 4);
+
                 for (int bit = 15; bit >= 0; bit--)
                 {
                     if ((w_mask & (1u << bit)) == 0)
                         continue;
 
-                    uint value = bit >= 8 ? g_reg_addr[bit - 8].l : g_reg_data[bit].l;
+                    int regIndex = bit >= 8 ? (bit - 8) : bit;
+                    uint value;
+                    if (bit >= 8)
+                    {
+                        value = regIndex == g_op4 ? finalAddr : g_reg_addr[regIndex].l;
+                    }
+                    else
+                    {
+                        value = g_reg_data[regIndex].l;
+                    }
+
                     wdata -= 4;
                     md_main.g_md_bus.write32(wdata, value);
                     g_clock += 10;
