@@ -169,12 +169,19 @@ namespace EutherDrive.Core.MdTracerCore
             uint[] dest = targetBuffer ?? g_game_screen;
             int width = g_output_xsize;
             int pos = outputLine * width;
-            for (int x = 0; x < width; x++)
-                dest[pos + x] = 0xFF000000u;
-
             bool displayEnabled = (_smsRegs[1] & 0x40) != 0;
+            int backdropIndex = _smsRegs[7] & 0x0F;
+            uint backdrop = _smsPalette[backdropIndex];
+
             if (!displayEnabled)
+            {
+                for (int x = 0; x < width; x++)
+                    dest[pos + x] = 0xFF000000u;
                 return;
+            }
+
+            for (int x = 0; x < width; x++)
+                dest[pos + x] = backdrop;
 
             const int visibleHeight = 192;
             if (g_scanline < 0 || g_scanline >= visibleHeight)
@@ -193,8 +200,7 @@ namespace EutherDrive.Core.MdTracerCore
             int nameBase = (_smsRegs[2] & 0x0E) << 10;
             // In SMS mode 4, background pattern table base is fixed at 0x0000.
             int patternBase = 0x0000;
-            int backdropIndex = _smsRegs[7] & 0x0F;
-            uint backdrop = _smsPalette[backdropIndex];
+            // backdrop already computed above
 
             int nameTableRows = 28;
             for (int column = 0; column < 32; column++)
@@ -262,10 +268,10 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            RenderSmsSprites(displayWidth, outputLine, dest);
+            RenderSmsSprites(displayWidth, outputLine, dest, hideLeftColumn);
         }
 
-        private void RenderSmsSprites(int displayWidth, int outputLine, uint[] dest)
+        private void RenderSmsSprites(int displayWidth, int outputLine, uint[] dest, bool hideLeftColumn)
         {
             int satBase = (_smsRegs[5] & 0x7E) << 7;
             int spritePatternBase = ((_smsRegs[6] & 0x04) != 0) ? 0x2000 : 0x0000;
@@ -319,6 +325,8 @@ namespace EutherDrive.Core.MdTracerCore
 
                     int x = xRaw + col;
                     if ((uint)x >= (uint)displayWidth)
+                        continue;
+                    if (hideLeftColumn && x < 8)
                         continue;
 
                     int paletteIndex = 16 + color;
