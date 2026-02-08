@@ -288,7 +288,7 @@ namespace EutherDrive.Core.MdTracerCore
                 if (yRaw == 0xD0)
                     break;
 
-                int spriteY = (yRaw + 1) & 0xFF;
+                int spriteY = yRaw;
                 int line = g_scanline - spriteY;
                 if (line < 0 || line >= spriteHeight)
                     continue;
