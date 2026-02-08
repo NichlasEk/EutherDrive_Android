@@ -589,11 +589,9 @@ namespace EutherDrive.Core.MdTracerCore
         private byte SmsReadData()
         {
             _smsCommandPending = false;
-            byte value = _smsVram[_smsVdpAddr & 0x3FFF];
-            if (_smsVdpCode == 1)
-            {
-                _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
-            }
+            byte value = _smsReadBuffer;
+            _smsReadBuffer = _smsVram[_smsVdpAddr & 0x3FFF];
+            _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
             return value;
         }
 
@@ -622,6 +620,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _smsVramWritesTotal++;
                     _smsVram[_smsVdpAddr & 0x3FFF] = value;
                     _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
+                    _smsReadBuffer = value;
                     return;
 
                 case 3:
@@ -630,6 +629,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _smsCram[cramAddr] = value;
                     _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
                     SmsUpdatePalette(cramAddr, value);
+                    _smsReadBuffer = value;
                     return;
 
                 default:
@@ -638,6 +638,7 @@ namespace EutherDrive.Core.MdTracerCore
                         _smsDataIgnoredLogged = true;
                         SmsLog($"[SMS VDP] data write ignored code={_smsVdpCode} val=0x{value:X2}");
                     }
+                    _smsReadBuffer = value;
                     return;
             }
         }
@@ -683,8 +684,14 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             _smsVdpCode = code;
-            _smsVdpAddr = cmd & 0x3FFF;
-            SmsLog($"[SMS VDP] CMD code={code} addr=0x{_smsVdpAddr:X4} raw=0x{cmd:X4}");
+            int cmdAddr = cmd & 0x3FFF;
+            _smsVdpAddr = cmdAddr;
+            if (code == 0)
+            {
+                _smsReadBuffer = _smsVram[_smsVdpAddr & 0x3FFF];
+                _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
+            }
+            SmsLog($"[SMS VDP] CMD code={code} addr=0x{cmdAddr:X4} raw=0x{cmd:X4}");
         }
 
         private void SmsLogControl(byte low, byte high, ushort cmd)

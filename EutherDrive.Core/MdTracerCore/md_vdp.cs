@@ -31,6 +31,7 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _smsCommandLow;
         private int _smsVdpCode;
         private int _smsVdpAddr;
+        private byte _smsReadBuffer;
         private byte[] _smsVram = new byte[0x4000];
         private byte[] _smsRegs = new byte[16];
         private byte _smsLineCounter = 0xFF;

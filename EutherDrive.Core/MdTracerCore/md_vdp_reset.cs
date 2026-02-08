@@ -136,6 +136,7 @@ namespace EutherDrive.Core.MdTracerCore
             _smsCommandLow = 0;
             _smsVdpCode = 0;
             _smsVdpAddr = 0;
+            _smsReadBuffer = 0;
             _smsLineCounter = 0xFF;
             _smsLineCounterReload = 0;
             _smsLineInterruptPending = false;
