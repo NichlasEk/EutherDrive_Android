@@ -36,16 +36,22 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
-            for (int bit = 15; bit >= 0; bit--)
-            {
-                if ((w_mask & (1u << bit)) == 0)
-                    continue;
-
-                ushort value = bit >= 8 ? g_reg_addr[bit - 8].w : g_reg_data[bit].w;
-                wdata -= 2;
-                md_main.g_md_bus.write16(wdata, value);
-                g_clock += 5;
-            }
+            if ((w_mask & 0x0001) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[7].w); g_clock += 5;};
+            if ((w_mask & 0x0002) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[6].w); g_clock += 5;};
+            if ((w_mask & 0x0004) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[5].w); g_clock += 5;};
+            if ((w_mask & 0x0008) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[4].w); g_clock += 5;};
+            if ((w_mask & 0x0010) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[3].w); g_clock += 5;};
+            if ((w_mask & 0x0020) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[2].w); g_clock += 5;};
+            if ((w_mask & 0x0040) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[1].w); g_clock += 5;};
+            if ((w_mask & 0x0080) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[0].w); g_clock += 5;};
+            if ((w_mask & 0x0100) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[7].w); g_clock += 5;};
+            if ((w_mask & 0x0200) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[6].w); g_clock += 5;};
+            if ((w_mask & 0x0400) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[5].w); g_clock += 5;};
+            if ((w_mask & 0x0800) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[4].w); g_clock += 5;};
+            if ((w_mask & 0x1000) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[3].w); g_clock += 5;};
+            if ((w_mask & 0x2000) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[2].w); g_clock += 5;};
+            if ((w_mask & 0x4000) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[1].w); g_clock += 5;};
+            if ((w_mask & 0x8000) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[0].w); g_clock += 5;};
             g_reg_addr[g_op4].l = wdata;
         }
         private void analyse_MOVEM_w_m2r()
@@ -130,16 +136,22 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
-            for (int bit = 15; bit >= 0; bit--)
-            {
-                if ((w_mask & (1u << bit)) == 0)
-                    continue;
-
-                uint value = bit >= 8 ? g_reg_addr[bit - 8].l : g_reg_data[bit].l;
-                wdata -= 4;
-                md_main.g_md_bus.write32(wdata, value);
-                g_clock += 10;
-            }
+            if ((w_mask & 0x0001) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[7].l); g_clock += 10;};
+            if ((w_mask & 0x0002) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[6].l); g_clock += 10;};
+            if ((w_mask & 0x0004) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[5].l); g_clock += 10;};
+            if ((w_mask & 0x0008) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[4].l); g_clock += 10;};
+            if ((w_mask & 0x0010) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[3].l); g_clock += 10;};
+            if ((w_mask & 0x0020) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[2].l); g_clock += 10;};
+            if ((w_mask & 0x0040) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[1].l); g_clock += 10;};
+            if ((w_mask & 0x0080) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[0].l); g_clock += 10;};
+            if ((w_mask & 0x0100) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[7].l); g_clock += 10;};
+            if ((w_mask & 0x0200) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[6].l); g_clock += 10;};
+            if ((w_mask & 0x0400) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[5].l); g_clock += 10;};
+            if ((w_mask & 0x0800) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[4].l); g_clock += 10;};
+            if ((w_mask & 0x1000) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[3].l); g_clock += 10;};
+            if ((w_mask & 0x2000) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[2].l); g_clock += 10;};
+            if ((w_mask & 0x4000) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[1].l); g_clock += 10;};
+            if ((w_mask & 0x8000) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[0].l); g_clock += 10;};
             g_reg_addr[g_op4].l = wdata;
         }
         private void analyse_MOVEM_l_m2r()
