@@ -586,6 +586,14 @@ namespace EutherDrive.Core.MdTracerCore
                     md_main.g_md_vdp?.SetSmsLineCounterReload(data);
                 if (reg == 0 || reg == 1)
                     md_main.g_md_vdp?.UpdateSmsIrqLine();
+                if (reg == 1 && md_main.g_masterSystemMode)
+                {
+                    bool mode224 = (data & 0x08) != 0;
+                    g_display_ysize = mode224 ? 224 : 192;
+                    g_display_ycell = mode224 ? 28 : 24;
+                    g_vertical_line_max = 262;
+                    UpdateOutputWidth();
+                }
                 SmsLog($"[SMS VDP] REG r{reg:X}={data:X2}", reg == 1);
                 return;
             }
