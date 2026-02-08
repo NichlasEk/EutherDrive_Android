@@ -185,6 +185,7 @@ namespace EutherDrive.Core.MdTracerCore
             int vscroll = _smsRegs[9];
             bool hscrollLock = (_smsRegs[0] & 0x40) != 0;
             bool vscrollLock = (_smsRegs[0] & 0x80) != 0;
+            bool hideLeftColumn = (_smsRegs[0] & 0x20) != 0;
             int effectiveHscroll = (hscrollLock && g_scanline < 16) ? 0 : hscroll;
             int coarseX = (effectiveHscroll >> 3) & 0x1F;
             int fineX = effectiveHscroll & 0x07;
@@ -195,16 +196,17 @@ namespace EutherDrive.Core.MdTracerCore
             int backdropIndex = _smsRegs[7] & 0x0F;
             uint backdrop = _smsPalette[backdropIndex];
 
-            for (int x = 0; x < displayWidth; x++)
+            int nameTableRows = 28;
+            for (int column = 0; column < 32; column++)
             {
-                int effectiveVscroll = (vscrollLock && x >= 192) ? 0 : vscroll;
-                int y = (g_scanline + effectiveVscroll) & 0xFF;
-                int tileRow = (y >> 3) & 0x1F;
+                int effectiveVscroll = (vscrollLock && column >= 24) ? 0 : vscroll;
+                int coarseY = (effectiveVscroll >> 3) & 0x1F;
+                int fineY = effectiveVscroll & 0x07;
+                int y = (g_scanline + fineY) & 0xFF;
+                int tileRow = ((y >> 3) + coarseY) % nameTableRows;
                 int rowInTile = y & 0x07;
 
-                int tileCol = ((x >> 3) + (32 - coarseX)) & 0x1F;
-                int colInTile = (x + fineX) & 0x07;
-
+                int tileCol = (column + (32 - coarseX)) & 0x1F;
                 int entryAddr = nameBase + ((tileRow * 32 + tileCol) * 2);
                 if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
                     continue;
@@ -227,24 +229,37 @@ namespace EutherDrive.Core.MdTracerCore
                 byte b2 = _smsVram[patternAddr + 2];
                 byte b3 = _smsVram[patternAddr + 3];
 
-                int bit = flipX ? colInTile : (7 - colInTile);
-                int mask = 1 << bit;
-                int color = ((b0 & mask) != 0 ? 1 : 0)
-                            | ((b1 & mask) != 0 ? 2 : 0)
-                            | ((b2 & mask) != 0 ? 4 : 0)
-                            | ((b3 & mask) != 0 ? 8 : 0);
-
-                if (color == 0)
+                for (int bgTileCol = 0; bgTileCol < 8; bgTileCol++)
                 {
-                    dest[pos + x] = backdrop;
-                    continue;
-                }
+                    int x = (column * 8) + fineX + bgTileCol;
+                    if (x >= displayWidth)
+                        break;
 
-                int paletteIndex = (paletteBit ? 16 : 0) + color;
-                if ((uint)paletteIndex >= (uint)_smsPalette.Length)
-                    dest[pos + x] = backdrop;
-                else
-                    dest[pos + x] = _smsPalette[paletteIndex];
+                    if (hideLeftColumn && x < 8)
+                    {
+                        dest[pos + x] = backdrop;
+                        continue;
+                    }
+
+                    int bit = flipX ? bgTileCol : (7 - bgTileCol);
+                    int mask = 1 << bit;
+                    int color = ((b0 & mask) != 0 ? 1 : 0)
+                                | ((b1 & mask) != 0 ? 2 : 0)
+                                | ((b2 & mask) != 0 ? 4 : 0)
+                                | ((b3 & mask) != 0 ? 8 : 0);
+
+                    if (color == 0)
+                    {
+                        dest[pos + x] = backdrop;
+                        continue;
+                    }
+
+                    int paletteIndex = (paletteBit ? 16 : 0) + color;
+                    if ((uint)paletteIndex >= (uint)_smsPalette.Length)
+                        dest[pos + x] = backdrop;
+                    else
+                        dest[pos + x] = _smsPalette[paletteIndex];
+                }
             }
 
             RenderSmsSprites(displayWidth, outputLine, dest);
