@@ -1314,7 +1314,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 using var writer = new StreamWriter(path, false);
                 writer.WriteLine($"SMS VRAM dump frame={_frameCounter}");
-                writer.WriteLine($"reg2=0x{_smsRegs[2]:X2} reg4=0x{_smsRegs[4]:X2} reg1=0x{_smsRegs[1]:X2}");
+                writer.WriteLine($"reg2=0x{_smsRegs[2]:X2} reg4=0x{_smsRegs[4]:X2} reg1=0x{_smsRegs[1]:X2} regF=0x{_smsRegs[0x0F]:X2}");
                 for (int addr = 0; addr < _smsVram.Length; addr += 16)
                 {
                     writer.Write($"{addr:X4}:");
@@ -1346,7 +1346,7 @@ namespace EutherDrive.Core.MdTracerCore
                 using var writer = new StreamWriter(path, false);
                 writer.WriteLine($"SMS NT dump frame={_frameCounter}");
                 writer.WriteLine($"targetFrame={SmsNameTableDumpFrame}");
-                writer.WriteLine($"reg2=0x{_smsRegs[2]:X2} reg4=0x{_smsRegs[4]:X2} reg1=0x{_smsRegs[1]:X2}");
+                writer.WriteLine($"reg2=0x{_smsRegs[2]:X2} reg4=0x{_smsRegs[4]:X2} reg1=0x{_smsRegs[1]:X2} regF=0x{_smsRegs[0x0F]:X2}");
                 writer.WriteLine($"nameBase=0x{nameBase:X4} length=0x{nameLength:X3}");
                 for (int addr = nameBase; addr + 1 < nameEnd; addr += 2)
                 {
