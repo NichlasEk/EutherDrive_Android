@@ -209,11 +209,11 @@ namespace EutherDrive.Core.MdTracerCore
                 _smsBgPriorityLine = new bool[displayWidth];
             Array.Clear(_smsBgColorLine, 0, displayWidth);
             Array.Clear(_smsBgPriorityLine, 0, displayWidth);
-            int hscroll = _smsLatchedHScroll;
-            int vscroll = _smsLatchedVScroll;
-            bool hscrollLock = (_smsLatchedReg0 & 0x40) != 0;
-            bool vscrollLock = (_smsLatchedReg0 & 0x80) != 0;
-            bool hideLeftColumn = (_smsLatchedReg0 & 0x20) != 0;
+            int hscroll = _smsRegs[8];
+            int vscroll = _smsRegs[9];
+            bool hscrollLock = (_smsRegs[0] & 0x40) != 0;
+            bool vscrollLock = (_smsRegs[0] & 0x80) != 0;
+            bool hideLeftColumn = (_smsRegs[0] & 0x20) != 0;
             int effectiveHscroll = (hscrollLock && smsLine < 16) ? 0 : hscroll;
             int coarseX = (effectiveHscroll >> 3) & 0x1F;
             int fineX = effectiveHscroll & 0x07;
