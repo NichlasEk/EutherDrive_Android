@@ -1405,6 +1405,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
             try
             {
+                bool smsNameTableMaskSms1 =
+                    string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NAMETABLE_MASK_SMS1"), "1", StringComparison.Ordinal);
                 int width = g_display_xsize;
                 int height = g_display_ysize;
                 int nameBase = (_smsRegs[2] & 0x0F) << 10;
@@ -1413,7 +1415,7 @@ namespace EutherDrive.Core.MdTracerCore
                 else
                     nameBase &= 0xF800;
                 int nameTableMask = 0x3FFF;
-                if (md_main.g_masterSystemModel == SmsModel.Sms1 && (_smsRegs[2] & 0x01) == 0)
+                if (smsNameTableMaskSms1 && (_smsRegs[2] & 0x01) == 0)
                     nameTableMask &= ~(1 << 10);
 
                 int nameTableRows = (g_display_ysize > 192) ? 32 : 28;
