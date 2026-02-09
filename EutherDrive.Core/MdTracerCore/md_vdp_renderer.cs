@@ -35,6 +35,13 @@ namespace EutherDrive.Core.MdTracerCore
         // Framebuffer (ARGB32 per pixel)
         public uint[] g_game_screen = Array.Empty<uint>();
 
+        private static readonly bool SmsNameTableMaskSms1 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NAMETABLE_MASK_SMS1"), "1", StringComparison.Ordinal);
+
+        // SMS per-line background metadata for sprite priority blending
+        private byte[] _smsBgColorLine = Array.Empty<byte>();
+        private bool[] _smsBgPriorityLine = Array.Empty<bool>();
+
         // Geometri / storlek
         public  int g_display_xsize;
         private int g_output_xsize;
@@ -108,7 +115,8 @@ namespace EutherDrive.Core.MdTracerCore
                 MdTracerCore.MdLog.WriteLine($"[VDP] frame={_frameCounter} display={g_vdp_reg_1_6_display}");
 
             // Sprite overflow is evaluated per scanline regardless of display enable.
-            EvaluateSpriteOverflowForLine(g_scanline);
+            if (!md_main.g_masterSystemMode)
+                EvaluateSpriteOverflowForLine(g_scanline);
 
              if (g_vdp_reg_1_6_display == 1)
              {
@@ -173,8 +181,9 @@ namespace EutherDrive.Core.MdTracerCore
             int width = g_output_xsize;
             int pos = outputLine * width;
             bool displayEnabled = (_smsRegs[1] & 0x40) != 0;
-            int backdropIndex = _smsRegs[7] & 0x0F;
-            uint backdrop = _smsPalette[backdropIndex];
+            // Backdrop color always uses sprite palette (CRAM base 0x10).
+            int backdropIndex = 0x10 | (_smsRegs[7] & 0x0F);
+            uint backdrop = (uint)backdropIndex < (uint)_smsPalette.Length ? _smsPalette[backdropIndex] : 0xFF000000u;
 
             if (!displayEnabled)
             {
@@ -186,11 +195,17 @@ namespace EutherDrive.Core.MdTracerCore
             for (int x = 0; x < width; x++)
                 dest[pos + x] = backdrop;
 
-            const int visibleHeight = 192;
+            int visibleHeight = g_display_ysize;
             if (smsLine < 0 || smsLine >= visibleHeight)
                 return;
 
             int displayWidth = Math.Min(g_display_xsize, width);
+            if (_smsBgColorLine.Length < displayWidth)
+                _smsBgColorLine = new byte[displayWidth];
+            if (_smsBgPriorityLine.Length < displayWidth)
+                _smsBgPriorityLine = new bool[displayWidth];
+            Array.Clear(_smsBgColorLine, 0, displayWidth);
+            Array.Clear(_smsBgPriorityLine, 0, displayWidth);
             int hscroll = _smsRegs[8];
             int vscroll = _smsRegs[9];
             bool hscrollLock = (_smsRegs[0] & 0x40) != 0;
@@ -199,13 +214,28 @@ namespace EutherDrive.Core.MdTracerCore
             int effectiveHscroll = (hscrollLock && smsLine < 16) ? 0 : hscroll;
             int coarseX = (effectiveHscroll >> 3) & 0x1F;
             int fineX = effectiveHscroll & 0x07;
-            // In SMS mode 4, name table base uses bits 1-3 (bit 0 ignored on most hardware).
+            // In SMS mode 4, name table base usually ignores bit 0 (legacy-only),
+            // but 224-line mode uses a different base/offset scheme.
             int nameBase = (_smsRegs[2] & 0x0E) << 10;
+            if (g_display_ysize > 192)
+            {
+                // 224-line mode: use full 4-bit base then mask out bit 11 and offset by $0700
+                int base224 = (_smsRegs[2] & 0x0F) << 10;
+                nameBase = (base224 & 0xF000) | 0x0700;
+            }
+            else
+            {
+                // 192-line mode: mask out bit 10
+                nameBase &= 0xF800;
+            }
+            int nameTableMask = 0x3FFF;
+            if (SmsNameTableMaskSms1 && (_smsRegs[2] & 0x01) == 0)
+                nameTableMask &= ~(1 << 10);
             // In SMS mode 4, background pattern table base is fixed at 0x0000.
             int patternBase = 0x0000;
             // backdrop already computed above
 
-            int nameTableRows = 28;
+            int nameTableRows = (g_display_ysize > 192) ? 32 : 28;
             for (int column = 0; column < 32; column++)
             {
                 int effectiveVscroll = (vscrollLock && column >= 24) ? 0 : vscroll;
@@ -216,7 +246,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int rowInTile = y & 0x07;
 
                 int tileCol = (column + (32 - coarseX)) & 0x1F;
-                int entryAddr = nameBase + ((tileRow * 32 + tileCol) * 2);
+                int entryAddr = (nameBase + ((tileRow * 32 + tileCol) * 2)) & nameTableMask;
                 if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
                     continue;
 
@@ -247,6 +277,8 @@ namespace EutherDrive.Core.MdTracerCore
                     if (hideLeftColumn && x < 8)
                     {
                         dest[pos + x] = backdrop;
+                        _smsBgColorLine[x] = 0;
+                        _smsBgPriorityLine[x] = false;
                         continue;
                     }
 
@@ -257,44 +289,54 @@ namespace EutherDrive.Core.MdTracerCore
                                 | ((b2 & mask) != 0 ? 4 : 0)
                                 | ((b3 & mask) != 0 ? 8 : 0);
 
-                    if (color == 0)
-                    {
-                        dest[pos + x] = backdrop;
-                        continue;
-                    }
-
                     int paletteIndex = (paletteBit ? 16 : 0) + color;
                     if ((uint)paletteIndex >= (uint)_smsPalette.Length)
                         dest[pos + x] = backdrop;
                     else
                         dest[pos + x] = _smsPalette[paletteIndex];
+
+                    _smsBgColorLine[x] = (byte)color;
+                    _smsBgPriorityLine[x] = priority;
                 }
             }
 
-            RenderSmsSprites(displayWidth, outputLine, g_scanline, dest, hideLeftColumn);
+            RenderSmsSprites(displayWidth, outputLine, g_scanline, dest);
         }
 
-        private void RenderSmsSprites(int displayWidth, int outputLine, int scanline, uint[] dest, bool hideLeftColumn)
+        private void RenderSmsSprites(int displayWidth, int outputLine, int scanline, uint[] dest)
         {
             int satBase = (_smsRegs[5] & 0x7E) << 7;
+            // SAT base is effectively aligned to 0x100 for sprite lookups.
+            int satBaseAligned = satBase & 0xFF00;
+            // Sprite pattern base: only bit 13 is used in mode 4 (legacy bits masked).
             int spritePatternBase = ((_smsRegs[6] & 0x04) != 0) ? 0x2000 : 0x0000;
             bool sprites8x16 = (_smsRegs[1] & 0x02) != 0;
             int spriteHeight = sprites8x16 ? 16 : 8;
+            bool shiftSpritesLeft = (_smsRegs[0] & 0x08) != 0;
             int maxSprites = 64;
-            int yTableBase = satBase & 0x3FFF;
-            int xTableBase = (satBase + 0x80) & 0x3FFF;
+            int spritesOnLine = 0;
+            int yTableBase = satBaseAligned & 0x3FFF;
+            int xTableBase = (satBaseAligned + 0x80) & 0x3FFF;
 
             for (int i = 0; i < maxSprites; i++)
             {
                 int yAddr = (yTableBase + i) & 0x3FFF;
                 byte yRaw = _smsVram[yAddr];
-                if (yRaw == 0xD0)
+                if (yRaw == 0xD0 && g_display_ysize <= 192)
                     break;
 
                 int spriteY = (yRaw + 1) & 0xFF;
                 int line = scanline - spriteY;
                 if (line < 0 || line >= spriteHeight)
                     continue;
+
+                spritesOnLine++;
+                if (spritesOnLine > 8)
+                {
+                    g_vdp_status_6_sprite = 1;
+                    // Enforce 8 sprites per scanline (hardware limit)
+                    break;
+                }
 
                 int xAddr = (xTableBase + i * 2) & 0x3FFF;
                 int xRaw = _smsVram[xAddr];
@@ -326,17 +368,17 @@ namespace EutherDrive.Core.MdTracerCore
                     if (color == 0)
                         continue;
 
-                    int x = xRaw + col;
+                    int x = xRaw + col + (shiftSpritesLeft ? -8 : 0);
                     if ((uint)x >= (uint)displayWidth)
                         continue;
-                    if (hideLeftColumn && x < 8)
-                        continue;
+                    // Hide-left-column affects background only; sprites are still visible.
 
                     int paletteIndex = 16 + color;
                     if ((uint)paletteIndex >= (uint)_smsPalette.Length)
                         continue;
 
-                    dest[outputLine * g_output_xsize + x] = _smsPalette[paletteIndex];
+                    if (_smsBgColorLine[x] == 0 || !_smsBgPriorityLine[x])
+                        dest[outputLine * g_output_xsize + x] = _smsPalette[paletteIndex];
                 }
             }
         }
