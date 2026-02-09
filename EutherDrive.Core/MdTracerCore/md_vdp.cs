@@ -51,6 +51,9 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _smsLatchedReg0;
         private byte _smsLatchedHScroll;
         private byte _smsLatchedVScroll;
+        private byte _smsNextReg0;
+        private byte _smsNextHScroll;
+        private byte _smsNextVScroll;
         private int _smsCommandLogCount;
         private const int SmsCommandLogLimit = 200;
         private bool _smsDisplayOnLogged;
@@ -271,11 +274,18 @@ namespace EutherDrive.Core.MdTracerCore
             _smsLineCounter = value;
         }
 
-        internal void LatchSmsScroll()
+        internal void BeginSmsLine()
         {
-            _smsLatchedReg0 = _smsRegs[0];
-            _smsLatchedHScroll = _smsRegs[8];
-            _smsLatchedVScroll = _smsRegs[9];
+            _smsLatchedReg0 = _smsNextReg0;
+            _smsLatchedHScroll = _smsNextHScroll;
+            _smsLatchedVScroll = _smsNextVScroll;
+        }
+
+        internal void EndSmsLine()
+        {
+            _smsNextReg0 = _smsRegs[0];
+            _smsNextHScroll = _smsRegs[8];
+            _smsNextVScroll = _smsRegs[9];
         }
 
         internal void OnSmsStatusRead()
@@ -414,7 +424,14 @@ namespace EutherDrive.Core.MdTracerCore
                 _smsBeWritesThisFrame = 0;
                 _smsBfWritesThisFrame = 0;
                 ClearVBlank();
+                if (md_main.g_masterSystemMode)
+                {
+                    EndSmsLine();   // seed next regs from current
+                    BeginSmsLine(); // use current regs for line 0
+                }
                 rendering_line();
+                if (md_main.g_masterSystemMode)
+                    EndSmsLine();
                 if (md_main.g_masterSystemMode)
                     SmsLineCounterTick();
                 set_hinterrupt();
@@ -422,7 +439,11 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else if (g_scanline < g_display_ysize)   // g_display_ysize finns i dina VDP-filer
             {
+                if (md_main.g_masterSystemMode)
+                    BeginSmsLine();
                 rendering_line();
+                if (md_main.g_masterSystemMode)
+                    EndSmsLine();
                 if (md_main.g_masterSystemMode)
                     SmsLineCounterTick();
                 interrupt_check();

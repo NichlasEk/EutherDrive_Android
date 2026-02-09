@@ -175,8 +175,6 @@ namespace EutherDrive.Core.MdTracerCore
             if (outputLine < 0 || outputLine >= g_output_ysize)
                 return;
 
-            LatchSmsScroll();
-
             uint[] dest = targetBuffer ?? g_game_screen;
             int width = g_output_xsize;
             int pos = outputLine * width;
