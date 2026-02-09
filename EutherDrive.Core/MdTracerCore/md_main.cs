@@ -461,7 +461,22 @@ namespace EutherDrive.Core.MdTracerCore
             for (int vline = 0; vline < lines; vline++)
             {
                 if (g_masterSystemMode)
+                {
                     g_md_z80?.ResetLineCycles();
+                    if (allowZ80 && z80RunPerLine)
+                    {
+                        g_md_z80.BeginSystemCycleSlice();
+                        g_md_z80.run(z80LineBudget);
+                        int systemCycles = ConvertZ80ToM68kCycles(z80LineBudget);
+                        if (systemCycles < 1) systemCycles = 1;
+                        DebugLogSystemCycles("RunFrame-mastersys", z80LineBudget, systemCycles);
+                        AdvanceSystemCycles(systemCycles);
+                        g_md_z80.EndSystemCycleSlice();
+                    }
+                    g_md_vdp.run(vline);
+                    continue;
+                }
+
                 g_md_vdp.run(vline);
 
                  // Continuous Z80 scheduling proportional to M68K cycles
@@ -581,18 +596,6 @@ namespace EutherDrive.Core.MdTracerCore
                         g_md_z80.run(z80LineBudget);
                         g_md_z80.EndSystemCycleSlice();
                     }
-                }
-                else if (allowZ80 && z80RunPerLine)
-                {
-                    g_md_z80.BeginSystemCycleSlice();
-                    g_md_z80.run(z80LineBudget);
-                     // For Master System mode, we might not need SystemCycles advancement
-                    // but let's do it for consistency
-                    int systemCycles = ConvertZ80ToM68kCycles(z80LineBudget);
-                    if (systemCycles < 1) systemCycles = 1;
-                    DebugLogSystemCycles("RunFrame-mastersys", z80LineBudget, systemCycles);
-                    AdvanceSystemCycles(systemCycles);
-                    g_md_z80.EndSystemCycleSlice();
                 }
             }
             if (allowZ80 && !z80RunPerLine)
