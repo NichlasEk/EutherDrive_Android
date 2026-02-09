@@ -233,8 +233,8 @@ namespace EutherDrive.Core.MdTracerCore
             int nameTableMask = 0x3FFF;
             if (SmsNameTableMaskSms1 && (_smsRegs[2] & 0x01) == 0)
                 nameTableMask &= ~(1 << 10);
-            // In SMS mode 4, background pattern table base is fixed at 0x0000.
-            int patternBase = 0x0000;
+            // SMS mode 4: some software expects reg4 bit2 to select 0x0000/0x2000 base.
+            int patternBase = ((_smsRegs[4] & 0x04) != 0) ? 0x2000 : 0x0000;
             // backdrop already computed above
 
             int nameTableRows = (g_display_ysize > 192) ? 32 : 28;
