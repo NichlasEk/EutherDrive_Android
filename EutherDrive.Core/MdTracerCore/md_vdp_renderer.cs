@@ -210,8 +210,6 @@ namespace EutherDrive.Core.MdTracerCore
             bool vscrollLock = (_smsRegs[0] & 0x80) != 0;
             bool hideLeftColumn = (_smsRegs[0] & 0x20) != 0;
             int effectiveHscroll = (hscrollLock && smsLine < 16) ? 0 : hscroll;
-            int coarseX = (effectiveHscroll >> 3) & 0x1F;
-            int fineX = effectiveHscroll & 0x07;
             // In SMS mode 4, name table base usually ignores bit 0 (legacy-only),
             // but 224-line mode uses a different base/offset scheme.
             int nameBase = (_smsRegs[2] & 0x0E) << 10;
@@ -243,34 +241,11 @@ namespace EutherDrive.Core.MdTracerCore
                 int tileRow = ((y >> 3) + coarseY) % nameTableRows;
                 int rowInTile = y & 0x07;
 
-                int tileCol = (column + (32 - coarseX)) & 0x1F;
-                int entryAddr = (nameBase + ((tileRow * 32 + tileCol) * 2)) & nameTableMask;
-                if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
-                    continue;
-
-                ushort entry = (ushort)(_smsVram[entryAddr] | (_smsVram[entryAddr + 1] << 8));
-                int tileIndex = entry & 0x1FF;
-                // High-byte bits: b4=priority, b3=palette, b2=vflip, b1=hflip, b0=tile index MSB.
-                bool priority = (entry & 0x1000) != 0;
-                bool paletteBit = (entry & 0x0800) != 0;
-                bool flipY = (entry & 0x0400) != 0;
-                bool flipX = (entry & 0x0200) != 0;
-
-                int row = flipY ? (7 - rowInTile) : rowInTile;
-                int patternAddr = patternBase + (tileIndex * 32) + (row * 4);
-                if ((uint)(patternAddr + 3) >= (uint)_smsVram.Length)
-                    continue;
-
-                byte b0 = _smsVram[patternAddr + 0];
-                byte b1 = _smsVram[patternAddr + 1];
-                byte b2 = _smsVram[patternAddr + 2];
-                byte b3 = _smsVram[patternAddr + 3];
-
                 for (int bgTileCol = 0; bgTileCol < 8; bgTileCol++)
                 {
-                    int x = (column * 8) + fineX + bgTileCol;
-                    if (x >= displayWidth)
-                        break;
+                    int x = (column * 8) + bgTileCol;
+                    if ((uint)x >= (uint)displayWidth)
+                        continue;
 
                     if (hideLeftColumn && x < 8)
                     {
@@ -280,7 +255,32 @@ namespace EutherDrive.Core.MdTracerCore
                         continue;
                     }
 
-                    int bit = flipX ? bgTileCol : (7 - bgTileCol);
+                    int srcX = (x + effectiveHscroll) & 0xFF;
+                    int tileCol = (srcX >> 3) & 0x1F;
+                    int srcCol = srcX & 0x07;
+                    int entryAddr = (nameBase + ((tileRow * 32 + tileCol) * 2)) & nameTableMask;
+                    if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
+                        continue;
+
+                    ushort entry = (ushort)(_smsVram[entryAddr] | (_smsVram[entryAddr + 1] << 8));
+                    int tileIndex = entry & 0x1FF;
+                    // High-byte bits: b4=priority, b3=palette, b2=vflip, b1=hflip, b0=tile index MSB.
+                    bool priority = (entry & 0x1000) != 0;
+                    bool paletteBit = (entry & 0x0800) != 0;
+                    bool flipY = (entry & 0x0400) != 0;
+                    bool flipX = (entry & 0x0200) != 0;
+
+                    int row = flipY ? (7 - rowInTile) : rowInTile;
+                    int patternAddr = patternBase + (tileIndex * 32) + (row * 4);
+                    if ((uint)(patternAddr + 3) >= (uint)_smsVram.Length)
+                        continue;
+
+                    byte b0 = _smsVram[patternAddr + 0];
+                    byte b1 = _smsVram[patternAddr + 1];
+                    byte b2 = _smsVram[patternAddr + 2];
+                    byte b3 = _smsVram[patternAddr + 3];
+
+                    int bit = flipX ? srcCol : (7 - srcCol);
                     int mask = 1 << bit;
                     int color = ((b0 & mask) != 0 ? 1 : 0)
                                 | ((b1 & mask) != 0 ? 2 : 0)
