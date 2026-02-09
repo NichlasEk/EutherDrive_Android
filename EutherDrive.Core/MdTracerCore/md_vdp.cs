@@ -1483,7 +1483,6 @@ namespace EutherDrive.Core.MdTracerCore
                 bool swapBytes = sampleCount > 0 && highByteSuspect >= (sampleCount / 4);
 
                 int nameTableRows = (g_display_ysize > 192) ? 32 : 28;
-                int patternBase = ((_smsRegs[4] & 0x04) != 0) ? 0x2000 : 0x0000;
                 int hscroll = _smsRegs[8];
                 int vscroll = _smsRegs[9];
                 int coarseX = (hscroll >> 3) & 0x1F;
@@ -1515,7 +1514,7 @@ namespace EutherDrive.Core.MdTracerCore
                         bool flipX = (entry & 0x0200) != 0;
 
                         int row = flipY ? (7 - rowInTile) : rowInTile;
-                        int patternAddr = patternBase + (tileIndex * 32) + (row * 4);
+                        int patternAddr = (tileIndex * 32) + (row * 4);
                         byte b0 = _smsVram[patternAddr + 0];
                         byte b1 = _smsVram[patternAddr + 1];
                         byte b2 = _smsVram[patternAddr + 2];
