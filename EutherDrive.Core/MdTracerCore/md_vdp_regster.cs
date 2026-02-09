@@ -301,9 +301,13 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 if (md_main.g_masterSystemMode)
                 {
-                    int hCounterSms = (g_display_xsize
-                        * (md_m68k.g_clock_total - md_m68k.g_clock_now)
-                        / md_main.VDL_LINE_RENDER_MC68_CLOCK) & 0xff;
+                    int hCounterSms = 0;
+                    int smsCyclesPerLine = md_main.GetSmsCyclesPerLine();
+                    int lineCycles = md_main.g_md_z80?.LineCycles ?? 0;
+                    if (smsCyclesPerLine > 0)
+                        hCounterSms = (lineCycles * 256) / smsCyclesPerLine;
+                    if (hCounterSms < 0) hCounterSms = 0;
+                    if (hCounterSms > 0xFF) hCounterSms = 0xFF;
 
                     bool mode224 = g_display_ysize > 192;
                     bool pal = g_vertical_line_max >= 312;

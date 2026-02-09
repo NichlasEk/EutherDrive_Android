@@ -120,6 +120,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static int SmsCyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * SmsCycleMultiplier));
         private static int Z80CyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * Z80CycleMultiplier));
         public static int GetZ80CyclesPerLine() => Z80CyclesPerLine;
+        public static int GetSmsCyclesPerLine() => SmsCyclesPerLine;
 
         internal static void SetZ80CycleMultiplier(double value)
         {
@@ -459,6 +460,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             for (int vline = 0; vline < lines; vline++)
             {
+                if (g_masterSystemMode)
+                    g_md_z80?.ResetLineCycles();
                 g_md_vdp.run(vline);
 
                  // Continuous Z80 scheduling proportional to M68K cycles

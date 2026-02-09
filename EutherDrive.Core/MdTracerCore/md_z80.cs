@@ -223,6 +223,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private int g_clock;
         private int g_clock_total;
+        internal int LineCycles { get; private set; }
         private int _smsInstructionLog;
         private ushort _smsLoopPc;
         private int _smsLoopCount;
@@ -488,6 +489,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _totalCycles += burn;
                     MaybeLogZ80Speed(burn);
                     cyclesConsumed += burn;
+                    LineCycles += burn;
                     if (TraceZ80Stats)
                         _z80StatsCycleCount += burn;
                     md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(burn);
@@ -509,6 +511,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _totalCycles += nmiCycles;
                     MaybeLogZ80Speed(nmiCycles);
                     cyclesConsumed += nmiCycles;
+                    LineCycles += nmiCycles;
                     md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(nmiCycles);
                     g_clock_total -= nmiCycles;
                     continue;
@@ -837,6 +840,7 @@ namespace EutherDrive.Core.MdTracerCore
             _totalCycles += g_clock;
             MaybeLogZ80Speed(g_clock);
             cyclesConsumed += g_clock;
+            LineCycles += g_clock;
             _systemCycleDelta += g_clock;
             if (TraceZ80Stats)
                 _z80StatsCycleCount += g_clock;
@@ -1234,6 +1238,11 @@ NextPc:;
         _cyclesActualAccum = 0;
         _cyclesBudgetAccum = 0;
         return (actual, budget);
+    }
+
+    internal void ResetLineCycles()
+    {
+        LineCycles = 0;
     }
 
     internal bool ConsumeBootRangeExitFlag()
