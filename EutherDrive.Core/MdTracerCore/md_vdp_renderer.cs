@@ -233,39 +233,6 @@ namespace EutherDrive.Core.MdTracerCore
             int nameTableMask = 0x3FFF;
             if (SmsNameTableMaskSms1 && (_smsRegs[2] & 0x01) == 0)
                 nameTableMask &= ~(1 << 10);
-            // Heuristic: if the selected base yields many invalid high-byte flags,
-            // try +/- 0x400 to account for base mis-selection.
-            int PickNameBase(int base0)
-            {
-                int bestBase = base0;
-                int bestScore = int.MaxValue;
-                for (int i = 0; i < 3; i++)
-                {
-                    int candidate = i switch
-                    {
-                        1 => (base0 + 0x400) & 0x3FFF,
-                        2 => (base0 - 0x400) & 0x3FFF,
-                        _ => base0
-                    };
-                    int score = 0;
-                    for (int e = 0; e < 128; e++)
-                    {
-                        int entryAddr = (candidate + (e * 2)) & nameTableMask;
-                        if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
-                            break;
-                        byte high = _smsVram[(entryAddr + 1) & 0x3FFF];
-                        if ((high & 0xE0) != 0)
-                            score++;
-                    }
-                    if (score < bestScore)
-                    {
-                        bestScore = score;
-                        bestBase = candidate;
-                    }
-                }
-                return bestBase;
-            }
-            nameBase = PickNameBase(nameBase);
             // In SMS mode 4, background pattern table base is fixed at 0x0000.
             int patternBase = 0x0000;
             // backdrop already computed above
