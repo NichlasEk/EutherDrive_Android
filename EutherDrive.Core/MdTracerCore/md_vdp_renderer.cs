@@ -311,7 +311,9 @@ namespace EutherDrive.Core.MdTracerCore
             // Sprite pattern base: only bit 13 is used in mode 4 (legacy bits masked).
             int spritePatternBase = ((_smsRegs[6] & 0x04) != 0) ? 0x2000 : 0x0000;
             bool sprites8x16 = (_smsRegs[1] & 0x02) != 0;
-            int spriteHeight = sprites8x16 ? 16 : 8;
+            bool spriteZoom = (_smsRegs[1] & 0x01) != 0;
+            int spriteHeight = (sprites8x16 ? 16 : 8) * (spriteZoom ? 2 : 1);
+            int spriteWidth = spriteZoom ? 16 : 8;
             bool shiftSpritesLeft = (_smsRegs[0] & 0x08) != 0;
             int maxSprites = 64;
             int spritesOnLine = 0;
@@ -345,8 +347,9 @@ namespace EutherDrive.Core.MdTracerCore
                 if (sprites8x16)
                     tile &= 0xFE;
 
-                int tileRow = line & 7;
-                int tileIndex = tile + ((sprites8x16 && line >= 8) ? 1 : 0);
+                int srcRow = spriteZoom ? (line >> 1) : line;
+                int tileRow = srcRow & 7;
+                int tileIndex = tile + ((sprites8x16 && srcRow >= 8) ? 1 : 0);
                 int patternAddr = (spritePatternBase + tileIndex * 32 + tileRow * 4) & 0x3FFF;
 
                 if ((uint)(patternAddr + 3) >= (uint)_smsVram.Length)
@@ -357,9 +360,10 @@ namespace EutherDrive.Core.MdTracerCore
                 byte b2 = _smsVram[patternAddr + 2];
                 byte b3 = _smsVram[patternAddr + 3];
 
-                for (int col = 0; col < 8; col++)
+                for (int col = 0; col < spriteWidth; col++)
                 {
-                    int bit = 7 - col;
+                    int srcCol = spriteZoom ? (col >> 1) : col;
+                    int bit = 7 - srcCol;
                     int mask = 1 << bit;
                     int color = ((b0 & mask) != 0 ? 1 : 0)
                                 | ((b1 & mask) != 0 ? 2 : 0)
