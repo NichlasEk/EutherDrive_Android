@@ -1366,19 +1366,6 @@ namespace EutherDrive.Core.MdTracerCore
                     sampleCount++;
                 }
                 bool swapBytes = sampleCount > 0 && highByteSuspect >= (sampleCount / 4);
-                int sampleCount = 0;
-                int highByteSuspect = 0;
-                for (int i = 0; i < 64; i++)
-                {
-                    int entryAddr = (nameBase + (i * 2)) & nameTableMask;
-                    if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
-                        break;
-                    byte high = _smsVram[(entryAddr + 1) & 0x3FFF];
-                    if (high > 0x1F)
-                        highByteSuspect++;
-                    sampleCount++;
-                }
-                bool swapBytes = sampleCount > 0 && highByteSuspect >= (sampleCount / 4);
                 writer.WriteLine($"swapBytes={(swapBytes ? 1 : 0)}");
                 for (int addr = nameBase; addr + 1 < nameEnd; addr += 2)
                 {
