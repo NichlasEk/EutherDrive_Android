@@ -327,10 +327,15 @@ namespace EutherDrive.Core.MdTracerCore
                 if (yRaw == 0xD0 && g_display_ysize <= 192)
                     break;
 
-                int spriteY = (yRaw + 1) & 0xFF;
-                int line = scanline - spriteY;
-                if (line < 0 || line >= spriteHeight)
+                int spriteY = yRaw;
+                int spriteBottom = (spriteY + spriteHeight) & 0xFF;
+                bool overlapsLine = spriteY < spriteBottom
+                    ? (scanline >= spriteY && scanline < spriteBottom)
+                    : (scanline >= spriteY || scanline < spriteBottom);
+                if (!overlapsLine)
                     continue;
+
+                int line = scanline >= spriteY ? (scanline - spriteY) : (scanline + 256 - spriteY);
 
                 spritesOnLine++;
                 if (spritesOnLine > 8)
