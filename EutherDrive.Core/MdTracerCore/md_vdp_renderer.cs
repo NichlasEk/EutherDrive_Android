@@ -184,6 +184,8 @@ namespace EutherDrive.Core.MdTracerCore
             int width = g_output_xsize;
             int pos = outputLine * width;
             bool displayEnabled = (_smsRegs[1] & 0x40) != 0;
+            bool smsMode224 = SmsMode224(_smsRegs[0], _smsRegs[1]);
+            int smsDisplayHeight = smsMode224 ? 224 : 192;
             // Backdrop color always uses sprite palette (CRAM base 0x10).
             int backdropIndex = 0x10 | (_smsRegs[7] & 0x0F);
             uint backdrop = (uint)backdropIndex < (uint)_smsPalette.Length ? _smsPalette[backdropIndex] : 0xFF000000u;
@@ -198,7 +200,7 @@ namespace EutherDrive.Core.MdTracerCore
             for (int x = 0; x < width; x++)
                 dest[pos + x] = backdrop;
 
-            int visibleHeight = g_display_ysize;
+            int visibleHeight = smsDisplayHeight;
             if (smsLine < 0 || smsLine >= visibleHeight)
                 return;
 
@@ -220,7 +222,7 @@ namespace EutherDrive.Core.MdTracerCore
             // In SMS mode 4, base nametable address uses bits 0-3 of register 2,
             // but the effective address depends on 192/224-line mode.
             int nameBase = (_smsRegs[2] & 0x0F) << 10;
-            if (g_display_ysize > 192)
+            if (smsMode224)
             {
                 // 224-line mode: mask out bit 11 and offset by $0700
                 nameBase = (nameBase & 0xF000) | 0x0700;
@@ -237,23 +239,11 @@ namespace EutherDrive.Core.MdTracerCore
             int patternBase = 0x0000;
             // backdrop already computed above
 
-            int nameTableRows = (g_display_ysize > 192) ? 32 : 28;
+            int nameTableRows = smsMode224 ? 32 : 28;
             if (_smsNtSwapFrame != _frameCounter)
             {
                 _smsNtSwapFrame = _frameCounter;
-                int sampleCount = 0;
-                int highByteSuspect = 0;
-                for (int i = 0; i < 64; i++)
-                {
-                    int entryAddr = (nameBase + (i * 2)) & nameTableMask;
-                    if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
-                        break;
-                    byte high = _smsVram[(entryAddr + 1) & 0x3FFF];
-                    if (high > 0x1F)
-                        highByteSuspect++;
-                    sampleCount++;
-                }
-                _smsNtSwapBytes = sampleCount > 0 && highByteSuspect >= (sampleCount / 4);
+                _smsNtSwapBytes = false;
             }
             if (TraceSmsNameTable && _smsNtTraceFrame != _frameCounter)
             {
@@ -284,9 +274,7 @@ namespace EutherDrive.Core.MdTracerCore
                 if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
                     continue;
 
-                ushort entry = _smsNtSwapBytes
-                    ? (ushort)(_smsVram[(entryAddr + 1) & 0x3FFF] | (_smsVram[entryAddr] << 8))
-                    : (ushort)(_smsVram[entryAddr] | (_smsVram[entryAddr + 1] << 8));
+                ushort entry = (ushort)(_smsVram[entryAddr] | (_smsVram[entryAddr + 1] << 8));
                 int tileIndex = entry & 0x1FF;
                 // High-byte bits: b4=priority, b3=palette, b2=vflip, b1=hflip, b0=tile index MSB.
                 bool priority = (entry & 0x1000) != 0;
@@ -336,10 +324,10 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            RenderSmsSprites(displayWidth, outputLine, g_scanline, dest);
+            RenderSmsSprites(displayWidth, outputLine, g_scanline, dest, hideLeftColumn, smsMode224);
         }
 
-        private void RenderSmsSprites(int displayWidth, int outputLine, int scanline, uint[] dest)
+        private void RenderSmsSprites(int displayWidth, int outputLine, int scanline, uint[] dest, bool hideLeftColumn, bool smsMode224)
         {
             int satBase = (_smsRegs[5] & 0x7E) << 7;
             // SAT base is effectively aligned to 0x100 for sprite lookups.
@@ -360,7 +348,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 int yAddr = (yTableBase + i) & 0x3FFF;
                 byte yRaw = _smsVram[yAddr];
-                if (yRaw == 0xD0 && g_display_ysize <= 192)
+                if (yRaw == 0xD0 && !smsMode224)
                     break;
 
                 int spriteY = yRaw;
@@ -416,7 +404,8 @@ namespace EutherDrive.Core.MdTracerCore
                     int x = xRaw + col + (shiftSpritesLeft ? -8 : 0);
                     if ((uint)x >= (uint)displayWidth)
                         continue;
-                    // Hide-left-column affects background only; sprites are still visible.
+                    if (hideLeftColumn && x < 8)
+                        continue;
 
                     int paletteIndex = 16 + color;
                     if ((uint)paletteIndex >= (uint)_smsPalette.Length)
@@ -427,6 +416,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
         }
+
 
         // Avsluta en frame (ingen separat render-tråd eller DX)
         private void rendering_frame()

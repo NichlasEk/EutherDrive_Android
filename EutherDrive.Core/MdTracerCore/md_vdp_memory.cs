@@ -686,9 +686,9 @@ namespace EutherDrive.Core.MdTracerCore
                     md_main.g_md_vdp?.SetSmsLineCounterReload(data);
                 if (reg == 0 || reg == 1)
                     md_main.g_md_vdp?.UpdateSmsIrqLine();
-                if (reg == 1 && md_main.g_masterSystemMode)
+                if ((reg == 0 || reg == 1) && md_main.g_masterSystemMode)
                 {
-                    bool mode224 = (data & 0x08) != 0;
+                    bool mode224 = SmsMode224(_smsRegs[0], _smsRegs[1]);
                     g_display_ysize = mode224 ? 224 : 192;
                     g_display_ycell = mode224 ? 28 : 24;
                     g_vertical_line_max = 262;
@@ -706,6 +706,16 @@ namespace EutherDrive.Core.MdTracerCore
                 _smsVdpAddr = (_smsVdpAddr + GetSmsAutoIncrement()) & 0x3FFF;
             }
             SmsLog($"[SMS VDP] CMD code={code} addr=0x{cmdAddr:X4} raw=0x{cmd:X4}");
+        }
+
+        private static bool SmsMode224(byte reg0, byte reg1)
+        {
+            // Mode bits mapping (from jgenesis): [reg1 bit4, reg0 bit1, reg1 bit3, reg0 bit2]
+            bool m1 = (reg1 & 0x10) != 0;
+            bool m2 = (reg0 & 0x02) != 0;
+            bool m3 = (reg1 & 0x08) != 0;
+            bool m4 = (reg0 & 0x04) != 0;
+            return m1 && m2 && !m3 && m4;
         }
 
         private void SmsLogControl(byte low, byte high, ushort cmd)
