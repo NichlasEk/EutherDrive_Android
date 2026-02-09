@@ -271,7 +271,6 @@ namespace EutherDrive.Core.MdTracerCore
         internal void SetSmsLineCounterReload(byte value)
         {
             _smsLineCounterReload = value;
-            _smsLineCounter = value;
         }
 
         internal void BeginSmsLine()
