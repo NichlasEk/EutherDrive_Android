@@ -95,8 +95,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         private int GetSmsAutoIncrement()
         {
-            // SMS VDP: register #0 bit0 selects auto-increment of 32 bytes (otherwise 1).
-            return (_smsRegs[0] & 0x01) != 0 ? 32 : 1;
+            // SMS VDP auto-increment is always 1.
+            return 1;
         }
 
         // ----------------------------------------------------------------
