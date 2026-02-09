@@ -312,6 +312,9 @@ namespace EutherDrive.Core.MdTracerCore
                     bool mode224 = g_display_ysize > 192;
                     bool pal = g_vertical_line_max >= 312;
                     int line = g_scanline;
+                    // Approximate hardware behavior: V counter advances slightly before line end.
+                    if (hCounterSms >= 230)
+                        line = (line + 1) % g_vertical_line_max;
                     int vCounter;
                     if (!mode224)
                     {
