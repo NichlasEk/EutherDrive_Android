@@ -1451,6 +1451,19 @@ namespace EutherDrive.Core.MdTracerCore
                 int nameTableMask = 0x3FFF;
                 if (smsNameTableMaskSms1 && (_smsRegs[2] & 0x01) == 0)
                     nameTableMask &= ~(1 << 10);
+                int sampleCount = 0;
+                int highByteSuspect = 0;
+                for (int i = 0; i < 64; i++)
+                {
+                    int entryAddr = (nameBase + (i * 2)) & nameTableMask;
+                    if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
+                        break;
+                    byte high = _smsVram[(entryAddr + 1) & 0x3FFF];
+                    if (high > 0x1F)
+                        highByteSuspect++;
+                    sampleCount++;
+                }
+                bool swapBytes = sampleCount > 0 && highByteSuspect >= (sampleCount / 4);
 
                 int nameTableRows = (g_display_ysize > 192) ? 32 : 28;
                 int hscroll = _smsRegs[8];
