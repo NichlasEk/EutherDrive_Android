@@ -54,6 +54,8 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _smsNextReg0;
         private byte _smsNextHScroll;
         private byte _smsNextVScroll;
+        private ushort _smsHvLatch;
+        private bool _smsHvLatchValid;
         private int _smsCommandLogCount;
         private const int SmsCommandLogLimit = 200;
         private bool _smsDisplayOnLogged;
@@ -401,6 +403,23 @@ namespace EutherDrive.Core.MdTracerCore
         internal long FrameCounter => _frameCounter;
         internal byte InterlaceField => g_vdp_interlace_field;
         internal ushort GetSmsHvCounter() => get_vdp_hvcounter();
+
+        internal byte LatchSmsVCounter()
+        {
+            _smsHvLatch = get_vdp_hvcounter();
+            _smsHvLatchValid = true;
+            return (byte)(_smsHvLatch >> 8);
+        }
+
+        internal byte ReadSmsHCounter()
+        {
+            if (_smsHvLatchValid)
+            {
+                _smsHvLatchValid = false;
+                return (byte)(_smsHvLatch & 0xFF);
+            }
+            return (byte)(get_vdp_hvcounter() & 0xFF);
+        }
 
         /// <summary>Byt upplösning (valfritt att kalla om du vill synka till VDP-registret senare).</summary>
         public void SetFrameSize(int width, int height)
