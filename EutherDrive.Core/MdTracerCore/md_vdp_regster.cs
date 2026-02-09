@@ -299,6 +299,49 @@ namespace EutherDrive.Core.MdTracerCore
             ushort w_out = g_vdp_c00008_hvcounter;
             if (!g_vdp_c00008_hvcounter_latched)
             {
+                if (md_main.g_masterSystemMode)
+                {
+                    int hCounterSms = (g_display_xsize
+                        * (md_m68k.g_clock_total - md_m68k.g_clock_now)
+                        / md_main.VDL_LINE_RENDER_MC68_CLOCK) & 0xff;
+
+                    bool mode224 = g_display_ysize > 192;
+                    bool pal = g_vertical_line_max >= 312;
+                    int line = g_scanline;
+                    int vCounter;
+                    if (!mode224)
+                    {
+                        if (!pal)
+                        {
+                            vCounter = (line <= 0xDA) ? line : (line - 6);
+                        }
+                        else
+                        {
+                            vCounter = (line <= 0xF2) ? line : (line - 57);
+                        }
+                    }
+                    else
+                    {
+                        if (!pal)
+                        {
+                            vCounter = (line <= 0xEA) ? line : (line - 6);
+                        }
+                        else
+                        {
+                            if (line <= 0xFF)
+                                vCounter = line;
+                            else if (line <= 0x102)
+                                vCounter = line - 0x100;
+                            else
+                                vCounter = line - 57;
+                        }
+                    }
+
+                    w_out = (ushort)(((vCounter & 0xFF) << 8) | (hCounterSms & 0xFF));
+                    g_vdp_c00008_hvcounter = w_out;
+                    return w_out;
+                }
+
                 int hCounter = (g_display_xsize
                     * (md_m68k.g_clock_total - md_m68k.g_clock_now)
                     / md_main.VDL_LINE_RENDER_MC68_CLOCK) & 0xff;
