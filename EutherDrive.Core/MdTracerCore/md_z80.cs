@@ -1456,6 +1456,11 @@ NextPc:;
             _smsCodemastersRamEnabled = false;
             _smsSegaRamEnabled = false;
             _smsSegaRamBank = 0;
+            _smsCartridgeEnabled = true;
+            _smsBiosEnabled = false;
+            _smsIoControl = 0x00;
+            if (_smsCartRam.Length > 0)
+                Array.Clear(_smsCartRam, 0, _smsCartRam.Length);
             _smsInstructionLog = 0;
             _smsLoopPc = 0;
             _smsLoopCount = 0;

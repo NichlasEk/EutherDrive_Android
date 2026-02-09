@@ -20,6 +20,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TraceZ80AudioRateStartFrame = ParseWaitCycles("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_START_FRAME", 0);
         private const double Z80_CLOCK = 3579545.0;
         private byte[] g_ram = Array.Empty<byte>();
+        private const int SmsCartRamSize = 32 * 1024;
+        private readonly byte[] _smsCartRam = new byte[SmsCartRamSize];
         private uint g_bank_register; // Z80 bankregister (9-bit index)
         private const int SmsLogLimit = 48;
         private int _smsLogCount;
@@ -30,6 +32,9 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _smsCodemastersRamEnabled;
         private bool _smsSegaRamEnabled;
         private byte _smsSegaRamBank;
+        private bool _smsCartridgeEnabled = true;
+        private bool _smsBiosEnabled;
+        private byte _smsIoControl;
         private const int SmsPortLogLimit = 16;
         private static int _smsPortBeReadLog;
         private static int _smsPortBfReadLog;
@@ -1334,13 +1339,15 @@ namespace EutherDrive.Core.MdTracerCore
 
                 if (md_main.g_masterSystemMapper == SmsMapperType.Sega && _smsSegaRamEnabled && a >= 0x8000)
                 {
-                    g_ram[(ushort)(a & 0x1FFF)] = in_data;
+                    int ramBase = (_smsSegaRamBank & 0x01) * 0x4000;
+                    int ramIndex = (ramBase + (a & 0x3FFF)) % SmsCartRamSize;
+                    _smsCartRam[ramIndex] = in_data;
                     return;
                 }
 
                 if (md_main.g_masterSystemMapper == SmsMapperType.Codemasters && _smsCodemastersRamEnabled && a >= 0xA000)
                 {
-                    g_ram[(ushort)(a & 0x1FFF)] = in_data;
+                    _smsCartRam[(a & 0x1FFF) % SmsCartRamSize] = in_data;
                     return;
                 }
 
@@ -1549,17 +1556,30 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (md_main.g_masterSystemRomSize > 0)
             {
+                if (!_smsCartridgeEnabled)
+                    return 0xFF;
+
+                if (md_main.g_masterSystemMapper == SmsMapperType.Sega && a < 0x0400)
+                {
+                    uint fixedIdx = (uint)a % (uint)md_main.g_masterSystemRomSize;
+                    return md_main.g_masterSystemRom[fixedIdx];
+                }
+
                 uint romIdx = (uint)(a & 0x3FFF);
                 int bankCount = Math.Max(1, (md_main.g_masterSystemRomSize + 0x3FFF) / 0x4000);
                 if (md_main.g_masterSystemMapper == SmsMapperType.Codemasters)
                 {
                     if (_smsCodemastersRamEnabled && a >= 0xA000)
-                        return g_ram[(ushort)(a & 0x1FFF)];
+                        return _smsCartRam[(a & 0x1FFF) % SmsCartRamSize];
                 }
                 else if (md_main.g_masterSystemMapper == SmsMapperType.Sega)
                 {
                     if (_smsSegaRamEnabled && a >= 0x8000)
-                        return g_ram[(ushort)(a & 0x1FFF)];
+                    {
+                        int ramBase = (_smsSegaRamBank & 0x01) * 0x4000;
+                        int ramIndex = (ramBase + (a & 0x3FFF)) % SmsCartRamSize;
+                        return _smsCartRam[ramIndex];
+                    }
                 }
 
                 uint bank = a < 0x4000
@@ -1983,9 +2003,13 @@ namespace EutherDrive.Core.MdTracerCore
                 port = 0xBE;
             else if (port == 0xFF)
                 port = 0xBF;
-            if (port >= 0x80 && port <= 0xBF)
+            bool a7 = (port & 0x80) != 0;
+            bool a6 = (port & 0x40) != 0;
+            bool a0 = (port & 0x01) != 0;
+
+            if (a7 && !a6)
             {
-                if ((port & 1) == 0)
+                if (!a0)
                 {
                     if (!_smsFirstBeWriteLogged)
                     {
@@ -2010,14 +2034,28 @@ namespace EutherDrive.Core.MdTracerCore
                 SmsPortLog(port, "write", data);
                 return true;
             }
-            switch (port)
+
+            if (!a7 && a6)
             {
-                case 0x7E:
-                case 0x7F:
-                    md_psg_trace.TraceWrite("Z80-SMS", port, data, md_main.g_md_z80?.DebugPc ?? 0);
-                    md_main.g_md_music?.g_md_sn76489.write8(data);
-                    SmsPortLog(port, "write", data);
+                md_psg_trace.TraceWrite("Z80-SMS", port, data, md_main.g_md_z80?.DebugPc ?? 0);
+                md_main.g_md_music?.g_md_sn76489.write8(data);
+                SmsPortLog(port, "write", data);
+                return true;
+            }
+
+            if (!a7 && !a6)
+            {
+                if (!a0)
+                {
+                    // Memory control (0x00-0x3E even): bit6 disables cartridge, bit3 disables BIOS.
+                    _smsCartridgeEnabled = (data & 0x40) == 0;
+                    _smsBiosEnabled = (data & 0x08) == 0;
                     return true;
+                }
+
+                // I/O control (0x01-0x3F odd)
+                _smsIoControl = data;
+                return true;
             }
 
             return false;
