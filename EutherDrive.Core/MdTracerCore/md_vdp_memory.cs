@@ -609,20 +609,17 @@ namespace EutherDrive.Core.MdTracerCore
             if (!_smsCommandPending)
             {
                 _smsCommandLow = value;
-                // First control write just latches the low byte (or register data).
+                // First control write sets low byte of VRAM address.
+                _smsVdpAddr = (_smsVdpAddr & 0x3F00) | value;
                 _smsCommandPending = true;
                 return;
             }
 
             _smsCommandPending = false;
+            // Second control write sets MSB of VRAM address (all commands).
+            _smsVdpAddr = (_smsVdpAddr & 0x00FF) | ((value & 0x3F) << 8);
             ushort cmd = (ushort)(_smsCommandLow | (value << 8));
             SmsLogControl(_smsCommandLow, value, cmd);
-            int code = (cmd >> 14) & 0x3;
-            if (code != 2)
-            {
-                // For non-register commands, load VRAM address from the two control bytes.
-                _smsVdpAddr = (ushort)(((value & 0x3F) << 8) | _smsCommandLow);
-            }
             SmsDecodeCommand(cmd);
         }
 
