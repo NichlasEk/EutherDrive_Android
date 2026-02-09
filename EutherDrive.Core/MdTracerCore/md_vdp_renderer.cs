@@ -171,9 +171,7 @@ namespace EutherDrive.Core.MdTracerCore
         private void RenderSmsLine(int outputLineOverride = -1, uint[]? targetBuffer = null)
         {
             int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
-            int smsTopCrop = (!ShowOverscan && g_display_ysize > 192) ? (g_display_ysize - 192) / 2 : 0;
-            int smsLine = g_scanline - smsTopCrop;
-            outputLine -= smsTopCrop;
+            int smsLine = g_scanline;
             if (outputLine < 0 || outputLine >= g_output_ysize)
                 return;
 
