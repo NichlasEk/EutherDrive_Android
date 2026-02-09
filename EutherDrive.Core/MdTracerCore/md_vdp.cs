@@ -399,21 +399,22 @@ namespace EutherDrive.Core.MdTracerCore
             if (ForceHBlank)
                 g_vdp_status_2_hbrank = 1;
 
-            if (md_main.g_masterSystemMode)
-                SmsLineCounterTick();
-
             if (g_scanline == 0)
             {
                 _smsBeWritesThisFrame = 0;
                 _smsBfWritesThisFrame = 0;
                 ClearVBlank();
                 rendering_line();
+                if (md_main.g_masterSystemMode)
+                    SmsLineCounterTick();
                 set_hinterrupt();
                 interrupt_check();
             }
             else if (g_scanline < g_display_ysize)   // g_display_ysize finns i dina VDP-filer
             {
                 rendering_line();
+                if (md_main.g_masterSystemMode)
+                    SmsLineCounterTick();
                 interrupt_check();
             }
             else if (g_scanline == g_display_ysize)
