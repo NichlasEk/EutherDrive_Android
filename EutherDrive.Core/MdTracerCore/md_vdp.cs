@@ -1335,12 +1335,12 @@ namespace EutherDrive.Core.MdTracerCore
         {
             try
             {
-            int nameBase = (_smsRegs[2] & 0x0F) << 10;
-            int nameLength = (g_display_ysize > 192) ? (32 * 32 * 2) : (32 * 28 * 2); // 0x800 or 0x700
-            if (g_display_ysize > 192)
-                nameBase = (nameBase & 0xF000) | 0x0700;
-            else
-                nameBase &= 0xF800;
+                int nameBase = (_smsRegs[2] & 0x0F) << 10;
+                int nameLength = (g_display_ysize > 192) ? (32 * 32 * 2) : (32 * 28 * 2); // 0x800 or 0x700
+                if (g_display_ysize > 192)
+                    nameBase = (nameBase & 0xF000) | 0x0700;
+                else
+                    nameBase &= 0xF800;
                 int nameEnd = Math.Min(_smsVram.Length, nameBase + nameLength);
 
                 using var writer = new StreamWriter(path, false);
@@ -1365,6 +1365,33 @@ namespace EutherDrive.Core.MdTracerCore
             catch (Exception ex)
             {
                 MdTracerCore.MdLog.WriteLine($"[SMS NT-DUMP] failed: {ex.Message}");
+            }
+        }
+
+        public void TriggerSmsDump(string? directory = null)
+        {
+            if (!md_main.g_masterSystemMode)
+                return;
+
+            string dir = directory;
+            if (string.IsNullOrWhiteSpace(dir))
+                dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+            if (string.IsNullOrWhiteSpace(dir))
+                dir = "/home/nichlas/EutherDrive/logs";
+
+            try
+            {
+                Directory.CreateDirectory(dir);
+                string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
+                string vramPath = Path.Combine(dir, $"sms_vram_{stamp}.txt");
+                string ntPath = Path.Combine(dir, $"sms_nt_{stamp}.txt");
+                DumpSmsVram(vramPath);
+                DumpSmsNameTable(ntPath);
+                Console.WriteLine($"[SMS DUMP] wrote {vramPath} and {ntPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SMS DUMP] failed: {ex.Message}");
             }
         }
 

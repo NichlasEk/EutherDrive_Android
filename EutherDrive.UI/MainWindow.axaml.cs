@@ -488,6 +488,13 @@ public partial class MainWindow : Window
         if (e.Source is TextBox)
             return;
 
+        if (e.Key == Key.F9 && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            if (_core is MdTracerAdapter adapter)
+                adapter.TriggerSmsDump();
+            e.Handled = true;
+            return;
+        }
         if (e.Key == Key.T && e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             _ = RunToneTestAsync();
@@ -1445,7 +1452,8 @@ public partial class MainWindow : Window
             "F10: Load Slot 3"));
 
         root.Children.Add(BuildControlsSection("UI",
-            "F1: Fullscreen"));
+            "F1: Fullscreen",
+            "Ctrl+F9: SMS VRAM/NT dump"));
 
         var dialog = new Window
         {

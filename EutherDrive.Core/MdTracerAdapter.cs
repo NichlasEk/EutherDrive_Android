@@ -1001,6 +1001,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         Console.WriteLine($"[RESET-DEBUG] GenerateInitialAudioSamples() completed");
     }
 
+    public void TriggerSmsDump()
+    {
+        md_main.g_md_vdp?.TriggerSmsDump();
+    }
+
     public void SetFrameRateMode(FrameRateMode mode)
     {
         _frameRateMode = mode;
