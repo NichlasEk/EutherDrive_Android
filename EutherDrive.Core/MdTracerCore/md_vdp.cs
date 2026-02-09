@@ -1348,10 +1348,44 @@ namespace EutherDrive.Core.MdTracerCore
                 writer.WriteLine($"targetFrame={SmsNameTableDumpFrame}");
                 writer.WriteLine($"reg2=0x{_smsRegs[2]:X2} reg4=0x{_smsRegs[4]:X2} reg1=0x{_smsRegs[1]:X2} regF=0x{_smsRegs[0x0F]:X2}");
                 writer.WriteLine($"nameBase=0x{nameBase:X4} length=0x{nameLength:X3}");
+                bool smsNameTableMaskSms1 =
+                    string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NAMETABLE_MASK_SMS1"), "1", StringComparison.Ordinal);
+                int nameTableMask = 0x3FFF;
+                if (smsNameTableMaskSms1 && (_smsRegs[2] & 0x01) == 0)
+                    nameTableMask &= ~(1 << 10);
+                int sampleCount = 0;
+                int highByteSuspect = 0;
+                for (int i = 0; i < 64; i++)
+                {
+                    int entryAddr = (nameBase + (i * 2)) & nameTableMask;
+                    if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
+                        break;
+                    byte high = _smsVram[(entryAddr + 1) & 0x3FFF];
+                    if (high > 0x1F)
+                        highByteSuspect++;
+                    sampleCount++;
+                }
+                bool swapBytes = sampleCount > 0 && highByteSuspect >= (sampleCount / 4);
+                int sampleCount = 0;
+                int highByteSuspect = 0;
+                for (int i = 0; i < 64; i++)
+                {
+                    int entryAddr = (nameBase + (i * 2)) & nameTableMask;
+                    if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
+                        break;
+                    byte high = _smsVram[(entryAddr + 1) & 0x3FFF];
+                    if (high > 0x1F)
+                        highByteSuspect++;
+                    sampleCount++;
+                }
+                bool swapBytes = sampleCount > 0 && highByteSuspect >= (sampleCount / 4);
+                writer.WriteLine($"swapBytes={(swapBytes ? 1 : 0)}");
                 for (int addr = nameBase; addr + 1 < nameEnd; addr += 2)
                 {
                     int wordIndex = (addr - nameBase) >> 1;
-                    ushort entry = (ushort)(_smsVram[addr] | (_smsVram[addr + 1] << 8));
+                    ushort entry = swapBytes
+                        ? (ushort)(_smsVram[(addr + 1) & 0x3FFF] | (_smsVram[addr] << 8))
+                        : (ushort)(_smsVram[addr] | (_smsVram[addr + 1] << 8));
                     if ((wordIndex & 0x1F) == 0)
                         writer.Write($"{wordIndex:X3}:");
                     writer.Write($" {entry:X4}");
@@ -1441,7 +1475,9 @@ namespace EutherDrive.Core.MdTracerCore
                         int column = xScreen >> 3;
                         int tileCol = (column + (32 - coarseX)) & 0x1F;
                         int entryAddr = (nameBase + ((tileRow * 32 + tileCol) * 2)) & nameTableMask;
-                        ushort entry = (ushort)(_smsVram[entryAddr] | (_smsVram[(entryAddr + 1) & 0x3FFF] << 8));
+                        ushort entry = swapBytes
+                            ? (ushort)(_smsVram[(entryAddr + 1) & 0x3FFF] | (_smsVram[entryAddr] << 8))
+                            : (ushort)(_smsVram[entryAddr] | (_smsVram[(entryAddr + 1) & 0x3FFF] << 8));
                         int tileIndex = entry & 0x1FF;
                         bool paletteBit = (entry & 0x0800) != 0;
                         bool flipY = (entry & 0x0400) != 0;

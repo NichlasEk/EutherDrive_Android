@@ -97,6 +97,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool TraceSmsNameTable =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_NT"), "1", StringComparison.Ordinal);
         private long _smsNtTraceFrame = -1;
+        private long _smsNtSwapFrame = -1;
+        private bool _smsNtSwapBytes;
 
         private void RenderLineWithField(byte field, int outputLineOverride = -1, uint[]? targetBuffer = null)
         {
@@ -236,6 +238,23 @@ namespace EutherDrive.Core.MdTracerCore
             // backdrop already computed above
 
             int nameTableRows = (g_display_ysize > 192) ? 32 : 28;
+            if (_smsNtSwapFrame != _frameCounter)
+            {
+                _smsNtSwapFrame = _frameCounter;
+                int sampleCount = 0;
+                int highByteSuspect = 0;
+                for (int i = 0; i < 64; i++)
+                {
+                    int entryAddr = (nameBase + (i * 2)) & nameTableMask;
+                    if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
+                        break;
+                    byte high = _smsVram[(entryAddr + 1) & 0x3FFF];
+                    if (high > 0x1F)
+                        highByteSuspect++;
+                    sampleCount++;
+                }
+                _smsNtSwapBytes = sampleCount > 0 && highByteSuspect >= (sampleCount / 4);
+            }
             if (TraceSmsNameTable && _smsNtTraceFrame != _frameCounter)
             {
                 _smsNtTraceFrame = _frameCounter;
@@ -248,7 +267,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int entryAddr = (nameBase + ((tileRow * 32 + tileCol) * 2)) & nameTableMask;
                 Console.WriteLine(
                     $"[SMS NT] frame={_frameCounter} line={smsLine} nameBase=0x{nameBase:X4} mask=0x{nameTableMask:X4} " +
-                    $"rows={nameTableRows} hscroll={hscroll} vscroll={vscroll} coarseX={coarseX} fineX={fineX} " +
+                    $"rows={nameTableRows} hscroll={hscroll} vscroll={vscroll} coarseX={coarseX} fineX={fineX} swap={(_smsNtSwapBytes ? 1 : 0)} " +
                     $"tileRow={tileRow} tileCol={tileCol} entryAddr=0x{entryAddr:X4}");
             }
             for (int column = 0; column < 32; column++)
@@ -265,7 +284,9 @@ namespace EutherDrive.Core.MdTracerCore
                 if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
                     continue;
 
-                ushort entry = (ushort)(_smsVram[entryAddr] | (_smsVram[entryAddr + 1] << 8));
+                ushort entry = _smsNtSwapBytes
+                    ? (ushort)(_smsVram[(entryAddr + 1) & 0x3FFF] | (_smsVram[entryAddr] << 8))
+                    : (ushort)(_smsVram[entryAddr] | (_smsVram[entryAddr + 1] << 8));
                 int tileIndex = entry & 0x1FF;
                 // High-byte bits: b4=priority, b3=palette, b2=vflip, b1=hflip, b0=tile index MSB.
                 bool priority = (entry & 0x1000) != 0;
