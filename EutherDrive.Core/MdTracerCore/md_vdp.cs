@@ -1385,13 +1385,154 @@ namespace EutherDrive.Core.MdTracerCore
                 string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
                 string vramPath = Path.Combine(dir, $"sms_vram_{stamp}.txt");
                 string ntPath = Path.Combine(dir, $"sms_nt_{stamp}.txt");
+                string tilesPal0 = Path.Combine(dir, $"sms_vram_tiles_p0_{stamp}.ppm");
+                string tilesPal1 = Path.Combine(dir, $"sms_vram_tiles_p1_{stamp}.ppm");
+                string ntImage = Path.Combine(dir, $"sms_nt_screen_{stamp}.ppm");
                 DumpSmsVram(vramPath);
                 DumpSmsNameTable(ntPath);
-                Console.WriteLine($"[SMS DUMP] wrote {vramPath} and {ntPath}");
+                DumpSmsVramTiles(tilesPal0, 0);
+                DumpSmsVramTiles(tilesPal1, 1);
+                DumpSmsNameTableImage(ntImage);
+                Console.WriteLine($"[SMS DUMP] wrote {vramPath}, {ntPath}, {tilesPal0}, {tilesPal1}, {ntImage}");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[SMS DUMP] failed: {ex.Message}");
+            }
+        }
+
+        private void DumpSmsNameTableImage(string path)
+        {
+            try
+            {
+                int width = g_display_xsize;
+                int height = g_display_ysize;
+                int nameBase = (_smsRegs[2] & 0x0F) << 10;
+                if (g_display_ysize > 192)
+                    nameBase = (nameBase & 0xF000) | 0x0700;
+                else
+                    nameBase &= 0xF800;
+                int nameTableMask = 0x3FFF;
+                if (md_main.g_masterSystemModel == SmsModel.Sms1 && (_smsRegs[2] & 0x01) == 0)
+                    nameTableMask &= ~(1 << 10);
+
+                int nameTableRows = (g_display_ysize > 192) ? 32 : 28;
+                int hscroll = _smsRegs[8];
+                int vscroll = _smsRegs[9];
+                int coarseX = (hscroll >> 3) & 0x1F;
+                int fineX = hscroll & 0x07;
+
+                using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+                using var writer = new BinaryWriter(fs);
+                writer.Write(System.Text.Encoding.ASCII.GetBytes($"P6\n{width} {height}\n255\n"));
+
+                for (int yScreen = 0; yScreen < height; yScreen++)
+                {
+                    int coarseY = (vscroll >> 3) & 0x1F;
+                    int fineY = vscroll & 0x07;
+                    int y = (yScreen + fineY) & 0xFF;
+                    int tileRow = ((y >> 3) + coarseY) % nameTableRows;
+                    int rowInTile = y & 0x07;
+
+                    for (int xScreen = 0; xScreen < width; xScreen++)
+                    {
+                        int column = xScreen >> 3;
+                        int tileCol = (column + (32 - coarseX)) & 0x1F;
+                        int entryAddr = (nameBase + ((tileRow * 32 + tileCol) * 2)) & nameTableMask;
+                        ushort entry = (ushort)(_smsVram[entryAddr] | (_smsVram[(entryAddr + 1) & 0x3FFF] << 8));
+                        int tileIndex = entry & 0x1FF;
+                        bool paletteBit = (entry & 0x0800) != 0;
+                        bool flipY = (entry & 0x0400) != 0;
+                        bool flipX = (entry & 0x0200) != 0;
+
+                        int row = flipY ? (7 - rowInTile) : rowInTile;
+                        int patternAddr = (tileIndex * 32) + (row * 4);
+                        byte b0 = _smsVram[patternAddr + 0];
+                        byte b1 = _smsVram[patternAddr + 1];
+                        byte b2 = _smsVram[patternAddr + 2];
+                        byte b3 = _smsVram[patternAddr + 3];
+
+                        int bit = 7 - (xScreen & 7);
+                        if (flipX)
+                            bit = xScreen & 7;
+                        int color =
+                            ((b0 >> bit) & 1) |
+                            (((b1 >> bit) & 1) << 1) |
+                            (((b2 >> bit) & 1) << 2) |
+                            (((b3 >> bit) & 1) << 3);
+                        int paletteBase = paletteBit ? 16 : 0;
+                        uint argb = _smsPalette[paletteBase + color];
+                        byte r = (byte)((argb >> 16) & 0xFF);
+                        byte g = (byte)((argb >> 8) & 0xFF);
+                        byte b = (byte)(argb & 0xFF);
+                        writer.Write(r);
+                        writer.Write(g);
+                        writer.Write(b);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SMS DUMP] NT image failed: {ex.Message}");
+            }
+        }
+
+        private void DumpSmsVramTiles(string path, int paletteIndex)
+        {
+            try
+            {
+                const int tilesPerRow = 16;
+                const int tileSize = 8;
+                const int tileCount = 512; // 16KB / 32 bytes per tile
+                int rows = (tileCount + tilesPerRow - 1) / tilesPerRow;
+                int width = tilesPerRow * tileSize;
+                int height = rows * tileSize;
+                int paletteBase = paletteIndex == 0 ? 0 : 16;
+
+                using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+                using var writer = new BinaryWriter(fs);
+                writer.Write(System.Text.Encoding.ASCII.GetBytes($"P6\n{width} {height}\n255\n"));
+
+                for (int ty = 0; ty < rows; ty++)
+                {
+                    for (int py = 0; py < tileSize; py++)
+                    {
+                        for (int tx = 0; tx < tilesPerRow; tx++)
+                        {
+                            int tileIndex = ty * tilesPerRow + tx;
+                            int tileAddr = tileIndex * 32 + py * 4;
+                            byte b0 = 0, b1 = 0, b2 = 0, b3 = 0;
+                            if (tileIndex < tileCount && (uint)(tileAddr + 3) < (uint)_smsVram.Length)
+                            {
+                                b0 = _smsVram[tileAddr + 0];
+                                b1 = _smsVram[tileAddr + 1];
+                                b2 = _smsVram[tileAddr + 2];
+                                b3 = _smsVram[tileAddr + 3];
+                            }
+
+                            for (int px = 0; px < tileSize; px++)
+                            {
+                                int bit = 7 - px;
+                                int color =
+                                    ((b0 >> bit) & 1) |
+                                    (((b1 >> bit) & 1) << 1) |
+                                    (((b2 >> bit) & 1) << 2) |
+                                    (((b3 >> bit) & 1) << 3);
+                                uint argb = _smsPalette[paletteBase + color];
+                                byte r = (byte)((argb >> 16) & 0xFF);
+                                byte g = (byte)((argb >> 8) & 0xFF);
+                                byte b = (byte)(argb & 0xFF);
+                                writer.Write(r);
+                                writer.Write(g);
+                                writer.Write(b);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SMS DUMP] tiles failed: {ex.Message}");
             }
         }
 

@@ -94,6 +94,9 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static readonly bool DebugShadowHighlight =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_SH"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSmsNameTable =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_NT"), "1", StringComparison.Ordinal);
+        private long _smsNtTraceFrame = -1;
 
         private void RenderLineWithField(byte field, int outputLineOverride = -1, uint[]? targetBuffer = null)
         {
@@ -233,6 +236,21 @@ namespace EutherDrive.Core.MdTracerCore
             // backdrop already computed above
 
             int nameTableRows = (g_display_ysize > 192) ? 32 : 28;
+            if (TraceSmsNameTable && _smsNtTraceFrame != _frameCounter)
+            {
+                _smsNtTraceFrame = _frameCounter;
+                int effectiveVscroll = (vscrollLock && 0 >= 24) ? 0 : vscroll;
+                int coarseY = (effectiveVscroll >> 3) & 0x1F;
+                int fineY = effectiveVscroll & 0x07;
+                int y = (smsLine + fineY) & 0xFF;
+                int tileRow = ((y >> 3) + coarseY) % nameTableRows;
+                int tileCol = (0 + (32 - coarseX)) & 0x1F;
+                int entryAddr = (nameBase + ((tileRow * 32 + tileCol) * 2)) & nameTableMask;
+                Console.WriteLine(
+                    $"[SMS NT] frame={_frameCounter} line={smsLine} nameBase=0x{nameBase:X4} mask=0x{nameTableMask:X4} " +
+                    $"rows={nameTableRows} hscroll={hscroll} vscroll={vscroll} coarseX={coarseX} fineX={fineX} " +
+                    $"tileRow={tileRow} tileCol={tileCol} entryAddr=0x{entryAddr:X4}");
+            }
             for (int column = 0; column < 32; column++)
             {
                 int effectiveVscroll = (vscrollLock && column >= 24) ? 0 : vscroll;
