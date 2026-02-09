@@ -93,6 +93,12 @@ namespace EutherDrive.Core.MdTracerCore
             return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
         }
 
+        private int GetSmsAutoIncrement()
+        {
+            // SMS VDP: register #0 bit0 selects auto-increment of 32 bytes (otherwise 1).
+            return (_smsRegs[0] & 0x01) != 0 ? 32 : 1;
+        }
+
         // ----------------------------------------------------------------
         // read
         // ----------------------------------------------------------------
@@ -590,9 +596,10 @@ namespace EutherDrive.Core.MdTracerCore
         private byte SmsReadData()
         {
             _smsCommandPending = false;
+            int inc = GetSmsAutoIncrement();
             byte value = _smsReadBuffer;
             _smsReadBuffer = _smsVram[_smsVdpAddr & 0x3FFF];
-            _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
+            _smsVdpAddr = (_smsVdpAddr + inc) & 0x3FFF;
             return value;
         }
 
@@ -624,7 +631,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 1:
                     _smsVramWritesTotal++;
                     _smsVram[_smsVdpAddr & 0x3FFF] = value;
-                    _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
+                    _smsVdpAddr = (_smsVdpAddr + GetSmsAutoIncrement()) & 0x3FFF;
                     _smsReadBuffer = value;
                     return;
 
@@ -632,7 +639,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _smsCramWritesTotal++;
                     int cramAddr = _smsVdpAddr & 0x1F;
                     _smsCram[cramAddr] = value;
-                    _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
+                    _smsVdpAddr = (_smsVdpAddr + GetSmsAutoIncrement()) & 0x3FFF;
                     SmsUpdatePalette(cramAddr, value);
                     _smsReadBuffer = value;
                     return;
@@ -695,7 +702,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (code == 0)
             {
                 _smsReadBuffer = _smsVram[_smsVdpAddr & 0x3FFF];
-                _smsVdpAddr = (_smsVdpAddr + 1) & 0x3FFF;
+                _smsVdpAddr = (_smsVdpAddr + GetSmsAutoIncrement()) & 0x3FFF;
             }
             SmsLog($"[SMS VDP] CMD code={code} addr=0x{cmdAddr:X4} raw=0x{cmd:X4}");
         }
