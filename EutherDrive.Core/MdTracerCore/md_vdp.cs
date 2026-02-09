@@ -444,6 +444,7 @@ namespace EutherDrive.Core.MdTracerCore
                 ClearVBlank();
                 if (md_main.g_masterSystemMode)
                 {
+                    _smsLineCounter = _smsLineCounterReload;
                     EndSmsLine();   // seed next regs from current
                     BeginSmsLine(); // use current regs for line 0
                 }
