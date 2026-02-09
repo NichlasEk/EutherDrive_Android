@@ -48,6 +48,9 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _smsLineCounter = 0xFF;
         private byte _smsLineCounterReload;
         private bool _smsLineInterruptPending;
+        private byte _smsLatchedReg0;
+        private byte _smsLatchedHScroll;
+        private byte _smsLatchedVScroll;
         private int _smsCommandLogCount;
         private const int SmsCommandLogLimit = 200;
         private bool _smsDisplayOnLogged;
@@ -266,6 +269,13 @@ namespace EutherDrive.Core.MdTracerCore
         {
             _smsLineCounterReload = value;
             _smsLineCounter = value;
+        }
+
+        internal void LatchSmsScroll()
+        {
+            _smsLatchedReg0 = _smsRegs[0];
+            _smsLatchedHScroll = _smsRegs[8];
+            _smsLatchedVScroll = _smsRegs[9];
         }
 
         internal void OnSmsStatusRead()
