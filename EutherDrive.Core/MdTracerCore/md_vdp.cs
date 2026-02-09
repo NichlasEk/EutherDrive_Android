@@ -1341,18 +1341,48 @@ namespace EutherDrive.Core.MdTracerCore
                     nameBase = (nameBase & 0xF000) | 0x0700;
                 else
                     nameBase &= 0xF800;
-                int nameEnd = Math.Min(_smsVram.Length, nameBase + nameLength);
-
                 using var writer = new StreamWriter(path, false);
                 writer.WriteLine($"SMS NT dump frame={_frameCounter}");
                 writer.WriteLine($"targetFrame={SmsNameTableDumpFrame}");
                 writer.WriteLine($"reg2=0x{_smsRegs[2]:X2} reg4=0x{_smsRegs[4]:X2} reg1=0x{_smsRegs[1]:X2} regF=0x{_smsRegs[0x0F]:X2}");
-                writer.WriteLine($"nameBase=0x{nameBase:X4} length=0x{nameLength:X3}");
                 bool smsNameTableMaskSms1 =
                     string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NAMETABLE_MASK_SMS1"), "1", StringComparison.Ordinal);
                 int nameTableMask = 0x3FFF;
                 if (smsNameTableMaskSms1 && (_smsRegs[2] & 0x01) == 0)
                     nameTableMask &= ~(1 << 10);
+                int PickNameBase(int base0)
+                {
+                    int bestBase = base0;
+                    int bestScore = int.MaxValue;
+                    for (int i = 0; i < 3; i++)
+                    {
+                        int candidate = i switch
+                        {
+                            1 => (base0 + 0x400) & 0x3FFF,
+                            2 => (base0 - 0x400) & 0x3FFF,
+                            _ => base0
+                        };
+                        int score = 0;
+                        for (int e = 0; e < 128; e++)
+                        {
+                            int entryAddr = (candidate + (e * 2)) & nameTableMask;
+                            if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
+                                break;
+                            byte high = _smsVram[(entryAddr + 1) & 0x3FFF];
+                            if ((high & 0xE0) != 0)
+                                score++;
+                        }
+                        if (score < bestScore)
+                        {
+                            bestScore = score;
+                            bestBase = candidate;
+                        }
+                    }
+                    return bestBase;
+                }
+                nameBase = PickNameBase(nameBase);
+                int nameEnd = Math.Min(_smsVram.Length, nameBase + nameLength);
+                writer.WriteLine($"nameBase=0x{nameBase:X4} length=0x{nameLength:X3}");
                 int sampleCount = 0;
                 int highByteSuspect = 0;
                 for (int i = 0; i < 64; i++)
@@ -1438,6 +1468,37 @@ namespace EutherDrive.Core.MdTracerCore
                 int nameTableMask = 0x3FFF;
                 if (smsNameTableMaskSms1 && (_smsRegs[2] & 0x01) == 0)
                     nameTableMask &= ~(1 << 10);
+                int PickNameBase(int base0)
+                {
+                    int bestBase = base0;
+                    int bestScore = int.MaxValue;
+                    for (int i = 0; i < 3; i++)
+                    {
+                        int candidate = i switch
+                        {
+                            1 => (base0 + 0x400) & 0x3FFF,
+                            2 => (base0 - 0x400) & 0x3FFF,
+                            _ => base0
+                        };
+                        int score = 0;
+                        for (int e = 0; e < 128; e++)
+                        {
+                            int entryAddr = (candidate + (e * 2)) & nameTableMask;
+                            if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
+                                break;
+                            byte high = _smsVram[(entryAddr + 1) & 0x3FFF];
+                            if ((high & 0xE0) != 0)
+                                score++;
+                        }
+                        if (score < bestScore)
+                        {
+                            bestScore = score;
+                            bestBase = candidate;
+                        }
+                    }
+                    return bestBase;
+                }
+                nameBase = PickNameBase(nameBase);
                 int sampleCount = 0;
                 int highByteSuspect = 0;
                 for (int i = 0; i < 64; i++)
