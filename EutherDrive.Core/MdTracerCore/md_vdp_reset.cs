@@ -148,6 +148,8 @@ namespace EutherDrive.Core.MdTracerCore
             _smsFirstLineRendered = false;
             _smsFrameHashCounter = 0;
             _smsLastFrameHash = 0;
+            _smsVramDumped = false;
+            _smsNameTableDumped = false;
             if (_smsCram != null && _smsCram.Length > 0)
                 Array.Clear(_smsCram, 0, _smsCram.Length);
             if (_smsPalette != null && _smsPalette.Length > 0)

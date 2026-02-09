@@ -25,6 +25,10 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_SMS_VRAM_DUMP_FRAME", -1);
         private static readonly string SmsVramDumpPath =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_VRAM_DUMP_PATH") ?? "/tmp/sms_vram_dump.txt";
+        private static readonly int SmsNameTableDumpFrame =
+            ParseTraceLimit("EUTHERDRIVE_SMS_NT_DUMP_FRAME", -1);
+        private static readonly string SmsNameTableDumpPath =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NT_DUMP_PATH") ?? "/tmp/sms_nt_dump.txt";
         private static readonly bool TraceSmsFrameDetail =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_FRAME_DETAIL"), "1", StringComparison.Ordinal);
         private static readonly int SmsVramDumpOnHashChanges =
@@ -65,6 +69,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _smsFrameHashCounter;
         private uint _smsLastFrameHash;
         private bool _smsVramDumped;
+        private bool _smsNameTableDumped;
         private int _smsVramDumpOnHashChangesLeft = SmsVramDumpOnHashChanges;
         private long _smsVramWritesTotal;
         private long _smsCramWritesTotal;
@@ -1202,12 +1207,15 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void SmsLogFrameHash()
         {
-            if (!md_main.g_masterSystemMode || !MdTracerCore.MdLog.Enabled)
+            if (!md_main.g_masterSystemMode)
+                return;
+
+            bool dumpRequested = SmsVramDumpFrame >= 0 || SmsNameTableDumpFrame >= 0 || _smsVramDumpOnHashChangesLeft > 0 || TraceSmsFrameDetail;
+            if (!MdTracerCore.MdLog.Enabled && !dumpRequested)
                 return;
 
             _smsFrameHashCounter++;
-            if ((_smsFrameHashCounter % 60) != 0)
-                return;
+            bool isHashSampleFrame = (_smsFrameHashCounter % 60) == 0;
 
             if (g_game_screen == null || g_game_screen.Length == 0)
                 return;
@@ -1220,7 +1228,7 @@ namespace EutherDrive.Core.MdTracerCore
                 hash = (hash << 3) | (hash >> 29);
             }
 
-            if (hash != _smsLastFrameHash)
+            if (isHashSampleFrame && hash != _smsLastFrameHash)
             {
                 _smsLastFrameHash = hash;
                 MdTracerCore.MdLog.WriteLine($"[SMS VDP] framebuffer hash=0x{hash:X8}");
@@ -1240,7 +1248,14 @@ namespace EutherDrive.Core.MdTracerCore
                 DumpSmsVram(SmsVramDumpPath);
             }
 
-            SmsLogFrameSummary(hash);
+            if (!_smsNameTableDumped && SmsNameTableDumpFrame >= 0 && _frameCounter >= SmsNameTableDumpFrame)
+            {
+                _smsNameTableDumped = true;
+                DumpSmsNameTable(SmsNameTableDumpPath);
+            }
+
+            if (isHashSampleFrame)
+                SmsLogFrameSummary(hash);
         }
 
         private uint ComputeSmsVramRegionHash(int start, int length)
@@ -1261,8 +1276,12 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void LogSmsFrameDetail(uint hash)
         {
-            int nameBase = (_smsRegs[2] & 0x0E) << 10;
-            int nameLength = 32 * 28 * 2; // 0x700
+            int nameBase = (_smsRegs[2] & 0x0F) << 10;
+            int nameLength = (g_display_ysize > 192) ? (32 * 32 * 2) : (32 * 28 * 2); // 0x800 or 0x700
+            if (g_display_ysize > 192)
+                nameBase = (nameBase & 0xF000) | 0x0700;
+            else
+                nameBase &= 0xF800;
             int satBase = (_smsRegs[5] & 0x7E) << 7;
             int spritePatternBase = ((_smsRegs[6] & 0x04) != 0) ? 0x2000 : 0x0000;
             int hscroll = _smsRegs[8];
@@ -1309,6 +1328,43 @@ namespace EutherDrive.Core.MdTracerCore
             catch (Exception ex)
             {
                 MdTracerCore.MdLog.WriteLine($"[SMS VRAM-DUMP] failed: {ex.Message}");
+            }
+        }
+
+        private void DumpSmsNameTable(string path)
+        {
+            try
+            {
+            int nameBase = (_smsRegs[2] & 0x0F) << 10;
+            int nameLength = (g_display_ysize > 192) ? (32 * 32 * 2) : (32 * 28 * 2); // 0x800 or 0x700
+            if (g_display_ysize > 192)
+                nameBase = (nameBase & 0xF000) | 0x0700;
+            else
+                nameBase &= 0xF800;
+                int nameEnd = Math.Min(_smsVram.Length, nameBase + nameLength);
+
+                using var writer = new StreamWriter(path, false);
+                writer.WriteLine($"SMS NT dump frame={_frameCounter}");
+                writer.WriteLine($"targetFrame={SmsNameTableDumpFrame}");
+                writer.WriteLine($"reg2=0x{_smsRegs[2]:X2} reg4=0x{_smsRegs[4]:X2} reg1=0x{_smsRegs[1]:X2}");
+                writer.WriteLine($"nameBase=0x{nameBase:X4} length=0x{nameLength:X3}");
+                for (int addr = nameBase; addr + 1 < nameEnd; addr += 2)
+                {
+                    int wordIndex = (addr - nameBase) >> 1;
+                    ushort entry = (ushort)(_smsVram[addr] | (_smsVram[addr + 1] << 8));
+                    if ((wordIndex & 0x1F) == 0)
+                        writer.Write($"{wordIndex:X3}:");
+                    writer.Write($" {entry:X4}");
+                    if ((wordIndex & 0x1F) == 0x1F)
+                        writer.WriteLine();
+                }
+                writer.WriteLine();
+                writer.Flush();
+                MdTracerCore.MdLog.WriteLine($"[SMS NT-DUMP] wrote {path}");
+            }
+            catch (Exception ex)
+            {
+                MdTracerCore.MdLog.WriteLine($"[SMS NT-DUMP] failed: {ex.Message}");
             }
         }
 

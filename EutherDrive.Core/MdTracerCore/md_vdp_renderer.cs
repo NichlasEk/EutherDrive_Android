@@ -212,14 +212,13 @@ namespace EutherDrive.Core.MdTracerCore
             int effectiveHscroll = (hscrollLock && smsLine < 16) ? 0 : hscroll;
             int coarseX = (effectiveHscroll >> 3) & 0x1F;
             int fineX = effectiveHscroll & 0x07;
-            // In SMS mode 4, name table base usually ignores bit 0 (legacy-only),
-            // but 224-line mode uses a different base/offset scheme.
-            int nameBase = (_smsRegs[2] & 0x0E) << 10;
+            // In SMS mode 4, base nametable address uses bits 0-3 of register 2,
+            // but the effective address depends on 192/224-line mode.
+            int nameBase = (_smsRegs[2] & 0x0F) << 10;
             if (g_display_ysize > 192)
             {
-                // 224-line mode: use full 4-bit base then mask out bit 11 and offset by $0700
-                int base224 = (_smsRegs[2] & 0x0F) << 10;
-                nameBase = (base224 & 0xF000) | 0x0700;
+                // 224-line mode: mask out bit 11 and offset by $0700
+                nameBase = (nameBase & 0xF000) | 0x0700;
             }
             else
             {
