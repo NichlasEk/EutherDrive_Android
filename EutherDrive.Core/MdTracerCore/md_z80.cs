@@ -1463,6 +1463,8 @@ NextPc:;
                 Array.Clear(_smsCartRam, 0, _smsCartRam.Length);
             _smsInstructionLog = 0;
             _smsLoopPc = 0;
+            if (md_main.g_masterSystemMode && g_ram.Length > 0)
+                g_ram[0] = 0xAB;
             _smsLoopCount = 0;
             _instrThrottleCounter = 0;
             _bootInstrCount = 0;

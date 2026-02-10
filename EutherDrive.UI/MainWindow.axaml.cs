@@ -1848,6 +1848,12 @@ public partial class MainWindow : Window
             _frames = 0;
             _fpsSw.Restart();
         }
+
+        if (_core is EutherDrive.Core.Savestates.ISavestateCapable savestateCore)
+        {
+            long frame = savestateCore.FrameCounter ?? -1;
+            FrameText.Text = $"Frame: {frame}";
+        }
     }
 
     private void MaybeUpdateStatusText()

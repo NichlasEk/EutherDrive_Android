@@ -37,7 +37,9 @@ namespace EutherDrive.Core.MdTracerCore
             Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_VRAM_DUMP_ON_HASH_PREFIX") ?? "/tmp/sms_vram_hash";
         private static readonly bool DebugDmaWin =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_DMAWIN"), "1", StringComparison.Ordinal);
-        private static readonly bool SpriteLinkSequential =
+                private static readonly bool SmsNoMode4NameBaseMask =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NO_MODE4_NAMEBASE_MASK"), "1", StringComparison.Ordinal);
+private static readonly bool SpriteLinkSequential =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPRITE_LINK_SEQUENTIAL"), "1", StringComparison.Ordinal);
         private static readonly int Z80VblankIrqPulseCycles = ParseZ80VblankIrqPulseCycles();
         public int g_scanline;
@@ -80,6 +82,21 @@ namespace EutherDrive.Core.MdTracerCore
         private int _smsBeWritesLastFrame;
         private int _smsBfWritesThisFrame;
         private int _smsBfWritesLastFrame;
+        private int _smsRegWriteLogStartFrame = -1;
+        private int _smsRegWriteLogEndFrame = -1;
+        private int _smsRegWriteLogMaxLines = -1;
+        private int _smsRegWriteLogLines = 0;
+        private string? _smsRegWriteLogPath;
+        private int _smsLineCntLogStartFrame = -1;
+        private int _smsLineCntLogEndFrame = -1;
+        private int _smsLineCntLogMaxLines = -1;
+        private int _smsLineCntLogLines = 0;
+        private string? _smsLineCntLogPath;
+        private int _smsLineIrqLogStartFrame = -1;
+        private int _smsLineIrqLogEndFrame = -1;
+        private int _smsLineIrqLogMaxLines = -1;
+        private int _smsLineIrqLogLines = 0;
+        private string? _smsLineIrqLogPath;
         private int _smsNtWriteLogFrame = -1;
         private int _smsNtFetchLogFrame = -1;
         private int _smsNtWriteLogStartFrame = -1;
@@ -87,6 +104,13 @@ namespace EutherDrive.Core.MdTracerCore
         private int _smsNtWriteLogMaxLines = -1;
         private int _smsNtWriteLogLines = 0;
         private string? _smsNtWriteLogPath;
+        private int _smsNtWriteLogStartAddr = -1;
+        private int _smsNtWriteLogEndAddr = -1;
+        private int _smsVramWriteLogStartFrame = -1;
+        private int _smsVramWriteLogEndFrame = -1;
+        private int _smsVramWriteLogMaxLines = -1;
+        private int _smsVramWriteLogLines = 0;
+        private string? _smsVramWriteLogPath;
         private byte[] _smsCram = new byte[0x20];
         private uint[] _smsPalette = new uint[0x20];
         private long _frameCounter;
@@ -325,14 +349,18 @@ namespace EutherDrive.Core.MdTracerCore
             if (!md_main.g_masterSystemMode)
                 return;
 
+            byte before = _smsLineCounter;
+            bool reloaded = false;
             int smsActiveScanlines = g_display_ysize;
             if (g_scanline < smsActiveScanlines || g_scanline == g_vertical_line_max - 1)
             {
                 if (_smsLineCounter == 0)
                 {
                     _smsLineCounter = _smsLineCounterReload;
+                    reloaded = true;
                     _smsLineInterruptPending = true;
                     UpdateSmsIrqLine();
+                    LogSmsLineIrqIfNeeded(before);
                 }
                 else
                 {
@@ -342,10 +370,12 @@ namespace EutherDrive.Core.MdTracerCore
             else
             {
                 _smsLineCounter = _smsLineCounterReload;
+                reloaded = true;
             }
 
             // Keep IRQ line level in sync with current VBlank/line status.
             UpdateSmsIrqLine();
+            LogSmsLineCounterIfNeeded(before, _smsLineCounter, reloaded, _smsLineInterruptPending);
         }
 
         private void ApplyInterlaceOverrides()
@@ -486,6 +516,8 @@ namespace EutherDrive.Core.MdTracerCore
                 _smsBfWritesLastFrame = _smsBfWritesThisFrame;
 
                 rendering_frame();
+                if (md_main.g_masterSystemMode)
+                    SmsLineCounterTick();
                 interrupt_check();
 
                 // Trigger VBlank once per frame at scanline g_display_ysize for all modes.
@@ -495,14 +527,23 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 if (!md_main.g_masterSystemMode)
                     ClearZ80VBlankInterrupt();
+                else
+                    SmsLineCounterTick();
             }
             else if (g_scanline == g_vertical_line_max - 1) // också definierad i VDP
             {
-            // Keep VBlank flag until the next frame even when clearing per-line stats.
-            if (g_vdp_interlace_mode == 0)
-                g_vdp_status_4_frame = (byte)((g_vdp_status_4_frame == 0) ? 1 : 0);
-            else
-                g_vdp_status_4_frame = g_vdp_interlace_field;
+                if (md_main.g_masterSystemMode)
+                    SmsLineCounterTick();
+                // Keep VBlank flag until the next frame even when clearing per-line stats.
+                if (g_vdp_interlace_mode == 0)
+                    g_vdp_status_4_frame = (byte)((g_vdp_status_4_frame == 0) ? 1 : 0);
+                else
+                    g_vdp_status_4_frame = g_vdp_interlace_field;
+            }
+            else if (g_scanline > g_display_ysize + 1 && g_scanline < g_vertical_line_max - 1)
+            {
+                if (md_main.g_masterSystemMode)
+                    SmsLineCounterTick();
             }
 
             // Nollställ guard för fält-växling först EFTER att alla nested run() anrop är klara.
@@ -1170,6 +1211,134 @@ namespace EutherDrive.Core.MdTracerCore
             return value;
         }
 
+        private void LogSmsRegWriteIfNeeded(int reg, byte value)
+        {
+            int startFrame = _smsRegWriteLogStartFrame;
+            if (startFrame < 0)
+            {
+                startFrame = ParseTraceLimit("EUTHERDRIVE_SMS_REG_WRITE_LOG_START_FRAME", -1);
+                int count = ParseTraceLimit("EUTHERDRIVE_SMS_REG_WRITE_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseTraceLimit("EUTHERDRIVE_SMS_REG_WRITE_LOG_MAX_LINES", 20000);
+                _smsRegWriteLogStartFrame = startFrame;
+                _smsRegWriteLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
+                _smsRegWriteLogMaxLines = maxLines;
+            }
+
+            if (_smsRegWriteLogStartFrame < 0 || _smsRegWriteLogEndFrame < _smsRegWriteLogStartFrame)
+                return;
+
+            long frame = _frameCounter;
+            if (frame < _smsRegWriteLogStartFrame || frame > _smsRegWriteLogEndFrame)
+                return;
+
+            if (_smsRegWriteLogLines >= _smsRegWriteLogMaxLines)
+                return;
+
+            if (_smsRegWriteLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsRegWriteLogPath = Path.Combine(dir, $"sms_reg_writes_{_smsRegWriteLogStartFrame}_{_smsRegWriteLogEndFrame}.log");
+                File.WriteAllText(_smsRegWriteLogPath,
+                    $"SMS reg write log frames={_smsRegWriteLogStartFrame}-{_smsRegWriteLogEndFrame}\n");
+            }
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            byte bank2 = md_main.g_md_z80?.SmsBank2 ?? 0;
+            string line = $"frame={frame} line={g_scanline} pc=0x{pc:X4} r{reg:X}=0x{value:X2} " +
+                          $"reg0=0x{_smsRegs[0]:X2} reg1=0x{_smsRegs[1]:X2} reg8=0x{_smsRegs[8]:X2} reg9=0x{_smsRegs[9]:X2} " +
+                          $"bank2=0x{bank2:X2} lineCnt=0x{_smsLineCounter:X2}\n";
+            File.AppendAllText(_smsRegWriteLogPath, line);
+            _smsRegWriteLogLines++;
+        }
+
+        private void LogSmsLineCounterIfNeeded(byte before, byte after, bool reloaded, bool irqPending)
+        {
+            int startFrame = _smsLineCntLogStartFrame;
+            if (startFrame < 0)
+            {
+                startFrame = ParseTraceLimit("EUTHERDRIVE_SMS_LINECNT_LOG_START_FRAME", -1);
+                int count = ParseTraceLimit("EUTHERDRIVE_SMS_LINECNT_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseTraceLimit("EUTHERDRIVE_SMS_LINECNT_LOG_MAX_LINES", 20000);
+                _smsLineCntLogStartFrame = startFrame;
+                _smsLineCntLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
+                _smsLineCntLogMaxLines = maxLines;
+            }
+
+            if (_smsLineCntLogStartFrame < 0 || _smsLineCntLogEndFrame < _smsLineCntLogStartFrame)
+                return;
+
+            long frame = _frameCounter;
+            if (frame < _smsLineCntLogStartFrame || frame > _smsLineCntLogEndFrame)
+                return;
+
+            if (_smsLineCntLogLines >= _smsLineCntLogMaxLines)
+                return;
+
+            if (_smsLineCntLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsLineCntLogPath = Path.Combine(dir, $"sms_linecnt_{_smsLineCntLogStartFrame}_{_smsLineCntLogEndFrame}.log");
+                File.WriteAllText(_smsLineCntLogPath,
+                    $"SMS line counter log frames={_smsLineCntLogStartFrame}-{_smsLineCntLogEndFrame}\n");
+            }
+
+            byte bank2 = md_main.g_md_z80?.SmsBank2 ?? 0;
+            string line = $"frame={frame} line={g_scanline} before=0x{before:X2} after=0x{after:X2} reload=0x{_smsLineCounterReload:X2} " +
+                          $"reloaded={(reloaded ? 1 : 0)} irqPending={(irqPending ? 1 : 0)} bank2=0x{bank2:X2}\n";
+            File.AppendAllText(_smsLineCntLogPath, line);
+            _smsLineCntLogLines++;
+        }
+
+        private void LogSmsLineIrqIfNeeded(byte before)
+        {
+            int startFrame = _smsLineIrqLogStartFrame;
+            if (startFrame < 0)
+            {
+                startFrame = ParseTraceLimit("EUTHERDRIVE_SMS_LINEIRQ_LOG_START_FRAME", -1);
+                int count = ParseTraceLimit("EUTHERDRIVE_SMS_LINEIRQ_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseTraceLimit("EUTHERDRIVE_SMS_LINEIRQ_LOG_MAX_LINES", 10000);
+                _smsLineIrqLogStartFrame = startFrame;
+                _smsLineIrqLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
+                _smsLineIrqLogMaxLines = maxLines;
+            }
+
+            if (_smsLineIrqLogStartFrame < 0 || _smsLineIrqLogEndFrame < _smsLineIrqLogStartFrame)
+                return;
+
+            long frame = _frameCounter;
+            if (frame < _smsLineIrqLogStartFrame || frame > _smsLineIrqLogEndFrame)
+                return;
+
+            if (_smsLineIrqLogLines >= _smsLineIrqLogMaxLines)
+                return;
+
+            if (_smsLineIrqLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsLineIrqLogPath = Path.Combine(dir, $"sms_lineirq_{_smsLineIrqLogStartFrame}_{_smsLineIrqLogEndFrame}.log");
+                File.WriteAllText(_smsLineIrqLogPath,
+                    $"SMS line IRQ log frames={_smsLineIrqLogStartFrame}-{_smsLineIrqLogEndFrame}\n");
+            }
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            byte bank2 = md_main.g_md_z80?.SmsBank2 ?? 0;
+            bool vblankPending = g_vdp_status_3_vbrank != 0;
+            string line = $"frame={frame} line={g_scanline} before=0x{before:X2} reload=0x{_smsLineCounterReload:X2} " +
+                          $"irqPending={( _smsLineInterruptPending ? 1 : 0)} vblank={(vblankPending ? 1 : 0)} " +
+                          $"reg0=0x{_smsRegs[0]:X2} reg1=0x{_smsRegs[1]:X2} pc=0x{pc:X4} bank2=0x{bank2:X2}\n";
+            File.AppendAllText(_smsLineIrqLogPath, line);
+            _smsLineIrqLogLines++;
+        }
+
         private static bool TryParseHexU16(string token, out int value)
         {
             value = 0;
@@ -1358,7 +1527,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int nameLength = mode224 ? (32 * 32 * 2) : (32 * 28 * 2); // 0x800 or 0x700
                 if (mode224)
                     nameBase = (nameBase & 0xF000) | 0x0700;
-                else
+                else if (!SmsNoMode4NameBaseMask)
                     nameBase &= 0xF800;
                 using var writer = new StreamWriter(path, false);
                 writer.WriteLine($"SMS NT dump frame={_frameCounter}");
@@ -1473,7 +1642,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int nameBase = (_smsRegs[2] & 0x0F) << 10;
                 if (g_display_ysize > 192)
                     nameBase = (nameBase & 0xF000) | 0x0700;
-                else
+                else if (!SmsNoMode4NameBaseMask)
                     nameBase &= 0xF800;
                 bool smsNameTableMaskSms1 =
                     string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NAMETABLE_MASK_SMS1"), "1", StringComparison.Ordinal);

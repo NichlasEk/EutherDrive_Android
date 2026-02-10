@@ -53,6 +53,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private ushort _bootRecoverLastPc;
     private const int VLINES_NTSC = 262;
     private const int VLINES_PAL = 312;
+    private const int SMS_VLINES_NTSC = 262;
+    private const int SMS_VLINES_PAL = 313;
     private const double FPS_NTSC = 60.0;
     private const double FPS_PAL = 50.0;
     private uint _lastPc;
@@ -1051,12 +1053,17 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     private int ApplyFrameRateMode(FrameRateMode mode)
     {
-        int lines = mode == FrameRateMode.Hz50 ? VLINES_PAL : VLINES_NTSC;
+        int lines;
+        bool isPal = mode == FrameRateMode.Hz50;
+        if (md_main.g_masterSystemMode)
+            lines = isPal ? SMS_VLINES_PAL : SMS_VLINES_NTSC;
+        else
+            lines = isPal ? VLINES_PAL : VLINES_NTSC;
         if (_vdp.g_vertical_line_max != lines)
         {
             _vdp.g_vertical_line_max = lines;
-            _vdp.g_vdp_reg_1_3_cellmode = (byte)(lines == VLINES_PAL ? 1 : 0);
-            _vdp.g_vdp_status_0_tvmode = (byte)(lines == VLINES_PAL ? 1 : 0);
+            _vdp.g_vdp_reg_1_3_cellmode = (byte)(isPal ? 1 : 0);
+            _vdp.g_vdp_status_0_tvmode = (byte)(isPal ? 1 : 0);
         }
         return lines;
     }

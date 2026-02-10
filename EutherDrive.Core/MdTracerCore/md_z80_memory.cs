@@ -237,7 +237,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly ushort? TraceZ80RamWriteRangeStart = ParseZ80Addr("EUTHERDRIVE_TRACE_Z80_RAM_WRITE_RANGE_START");
         private static readonly ushort? TraceZ80RamWriteRangeEnd = ParseZ80Addr("EUTHERDRIVE_TRACE_Z80_RAM_WRITE_RANGE_END");
         private static readonly int TraceZ80RamWriteRangeLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_RAM_WRITE_RANGE_LIMIT");
-        private static readonly int TraceZ80RamFillLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_RAM_FILL_LIMIT");
+        private static readonly int TraceZ80RamFillLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_RAM_FILL_LIMIT", 0);
         private int _z80RamWriteRangeRemaining = TraceZ80RamWriteRangeLimit;
         private int _z80RamFillLogRemaining = TraceZ80RamFillLimit;
         private static readonly ushort? TraceZ80RamReadRangeStart = ParseZ80Addr("EUTHERDRIVE_TRACE_Z80_RAM_READ_RANGE_START");
@@ -270,16 +270,45 @@ namespace EutherDrive.Core.MdTracerCore
         private ushort _z80FillLastAddr;
         private uint _z80FillStartRomAddr;
         private uint _z80FillLastRomAddr;
+        private long _z80FillFrame = -1;
         private int _smsRamWriteLogStartFrame = -1;
         private int _smsRamWriteLogEndFrame = -1;
         private int _smsRamWriteLogMaxLines = -1;
         private int _smsRamWriteLogLines = 0;
         private string? _smsRamWriteLogPath;
+        private bool _smsRamWriteLogInitialized;
+        private int _smsRamReadLogStartFrame = -1;
+        private int _smsRamReadLogEndFrame = -1;
+        private int _smsRamReadLogMaxLines = -1;
+        private int _smsRamReadLogLines = 0;
+        private string? _smsRamReadLogPath;
+        private ushort _smsRamReadLogStartPc;
+        private ushort _smsRamReadLogEndPc;
+        private ushort _smsRamReadLogStartAddr;
+        private ushort _smsRamReadLogEndAddr;
+        private bool _smsRamReadLogInitialized;
+        private int _smsRomReadLogStartFrame = -1;
+        private int _smsRomReadLogEndFrame = -1;
+        private int _smsRomReadLogMaxLines = -1;
+        private int _smsRomReadLogLines = 0;
+        private string? _smsRomReadLogPath;
+        private ushort _smsRomReadLogStartPc;
+        private ushort _smsRomReadLogEndPc;
+        private ushort _smsRomReadLogStartAddr;
+        private ushort _smsRomReadLogEndAddr;
+        private bool _smsRomReadLogInitialized;
         private int _smsMapperLogStartFrame = -1;
         private int _smsMapperLogEndFrame = -1;
         private int _smsMapperLogMaxLines = -1;
         private int _smsMapperLogLines = 0;
         private string? _smsMapperLogPath;
+        private bool _smsMapperLogInitialized;
+        private int _z80FillLogStartFrame = -1;
+        private int _z80FillLogEndFrame = -1;
+        private int _z80FillLogMaxLines = -1;
+        private int _z80FillLogLines = 0;
+        private string? _z80FillLogPath;
+        private bool _z80FillLogInitialized;
 
         internal byte SmsBank0 => _smsBank0;
         internal byte SmsBank1 => _smsBank1;
@@ -897,6 +926,7 @@ namespace EutherDrive.Core.MdTracerCore
             _z80FillLastAddr = ramAddr;
             _z80FillStartRomAddr = romAddr;
             _z80FillLastRomAddr = romAddr;
+            _z80FillFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
         }
 
         private void ExtendZ80Fill(ushort ramAddr, uint romAddr)
@@ -916,10 +946,10 @@ namespace EutherDrive.Core.MdTracerCore
         private int SumRom(uint start, int length, out uint sum)
         {
             sum = 0;
-            byte[]? mem = g_memory;
+            byte[]? mem = md_main.g_masterSystemMode ? md_main.g_masterSystemRom : g_memory;
             if (mem == null)
                 return 0;
-            uint addr = start & 0x00FF_FFFF;
+            uint addr = md_main.g_masterSystemMode ? start : (start & 0x00FF_FFFF);
             if (addr >= (uint)mem.Length)
                 return 0;
             int available = length;
@@ -992,10 +1022,10 @@ namespace EutherDrive.Core.MdTracerCore
 
         private string DumpRom(uint start, int length)
         {
-            byte[]? mem = g_memory;
+            byte[]? mem = md_main.g_masterSystemMode ? md_main.g_masterSystemRom : g_memory;
             if (mem == null)
                 return "n/a";
-            uint addr = start & 0x00FF_FFFF;
+            uint addr = md_main.g_masterSystemMode ? start : (start & 0x00FF_FFFF);
             if (addr >= (uint)mem.Length)
                 return "n/a";
             int count = Math.Min(16, length);
@@ -1028,11 +1058,55 @@ namespace EutherDrive.Core.MdTracerCore
             string ramDump = DumpZ80RamBytes(_z80FillStartAddr, length);
             string romDump = DumpRom(_z80FillStartRomAddr, length);
             string romAvailInfo = romAvailable == length ? string.Empty : $" romAvail=0x{romAvailable:X4}";
-            Console.WriteLine(
+            string msg =
                 $"[Z80FILL] ram=0x{_z80FillStartAddr:X4} len=0x{length:X4} rom=0x{_z80FillStartRomAddr:X6} " +
-                $"sumRam=0x{sumRam:X8} sumRom=0x{sumRom:X8} ram16={ramDump} rom16={romDump}{romAvailInfo} reason={reason}");
+                $"sumRam=0x{sumRam:X8} sumRom=0x{sumRom:X8} ram16={ramDump} rom16={romDump}{romAvailInfo} reason={reason}";
+            Console.WriteLine(msg);
+            LogZ80FillToFile(sumRam, sumRom, ramDump, romDump, romAvailInfo, reason);
             if (_z80RamFillLogRemaining != int.MaxValue)
                 _z80RamFillLogRemaining--;
+        }
+
+        private void LogZ80FillToFile(uint sumRam, uint sumRom, string ramDump, string romDump, string romAvailInfo, string reason)
+        {
+            if (!_z80FillLogInitialized)
+            {
+                int startFrame = ParseWatchLimit("EUTHERDRIVE_Z80FILL_LOG_START_FRAME", -1);
+                int count = ParseWatchLimit("EUTHERDRIVE_Z80FILL_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseWatchLimit("EUTHERDRIVE_Z80FILL_LOG_MAX_LINES", 20000);
+                _z80FillLogStartFrame = startFrame;
+                _z80FillLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
+                _z80FillLogMaxLines = maxLines;
+                _z80FillLogInitialized = true;
+            }
+
+            if (_z80FillLogStartFrame < 0 || _z80FillLogEndFrame < _z80FillLogStartFrame)
+                return;
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (frame < _z80FillLogStartFrame || frame > _z80FillLogEndFrame)
+                return;
+
+            if (_z80FillLogLines >= _z80FillLogMaxLines)
+                return;
+
+            if (_z80FillLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _z80FillLogPath = Path.Combine(dir, $"z80_fill_{_z80FillLogStartFrame}_{_z80FillLogEndFrame}.log");
+                File.WriteAllText(_z80FillLogPath,
+                    $"Z80 fill log frames={_z80FillLogStartFrame}-{_z80FillLogEndFrame}\n");
+            }
+
+            ushort pc = DebugPc;
+            string line = $"frame={frame} pc=0x{pc:X4} ram=0x{_z80FillStartAddr:X4} len=0x{(_z80FillLastAddr - _z80FillStartAddr + 1):X4} " +
+                          $"rom=0x{_z80FillStartRomAddr:X6} sumRam=0x{sumRam:X8} sumRom=0x{sumRom:X8} " +
+                          $"ram16={ramDump} rom16={romDump}{romAvailInfo} reason={reason}\n";
+            File.AppendAllText(_z80FillLogPath, line);
+            _z80FillLogLines++;
         }
 
         private void UpdateZ80FillTrace(ushort ramAddr, bool inWriteRange, ushort rangeEnd)
@@ -1049,6 +1123,9 @@ namespace EutherDrive.Core.MdTracerCore
                     FinalizeZ80Fill("nobank");
                 return;
             }
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (_z80FillActive && _z80FillFrame != frame)
+                FinalizeZ80Fill("frame");
             uint romAddr = _lastReadM68kAddr;
             if (!_z80FillActive)
             {
@@ -1362,6 +1439,10 @@ namespace EutherDrive.Core.MdTracerCore
                     LogSmsRamWriteIfNeeded(a, in_data);
                     ushort ramAddr = (ushort)(a & 0x1FFF);
                     g_ram[ramAddr] = in_data;
+                    bool hasWriteRange = TryGetTraceRamWriteRange(out ushort rangeStart, out ushort rangeEnd);
+                    bool inWriteRange = hasWriteRange && a >= rangeStart && a <= rangeEnd;
+                    if (hasWriteRange)
+                        UpdateZ80FillTrace(a, inWriteRange, rangeEnd);
                     return;
                 }
 
@@ -1584,6 +1665,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 byte val = g_ram[(ushort)(a & 0x1FFF)];
                 TrackLastRead(a, val, false, 0);
+                LogSmsRamReadIfNeeded(a, val);
                 return val;
             }
 
@@ -1600,6 +1682,7 @@ namespace EutherDrive.Core.MdTracerCore
                     uint fixedIdx = (uint)a % (uint)md_main.g_masterSystemRomSize;
                     byte val = md_main.g_masterSystemRom[fixedIdx];
                     TrackLastRead(a, val, false, fixedIdx);
+                    LogSmsRomReadIfNeeded(a, val, fixedIdx, false, "fixed");
                     return val;
                 }
 
@@ -1635,6 +1718,7 @@ namespace EutherDrive.Core.MdTracerCore
                 uint idx = (bankOffset + romIdx) % (uint)md_main.g_masterSystemRomSize;
                 byte value = md_main.g_masterSystemRom[idx];
                 TrackLastRead(a, value, true, idx);
+                LogSmsRomReadIfNeeded(a, value, idx, true, null);
                 return value;
             }
 
@@ -1694,15 +1778,15 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void LogSmsRamWriteIfNeeded(ushort addr, byte value)
         {
-            int startFrame = _smsRamWriteLogStartFrame;
-            if (startFrame < 0)
+            if (!_smsRamWriteLogInitialized)
             {
-                startFrame = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_WRITE_LOG_START_FRAME", -1);
+                int startFrame = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_WRITE_LOG_START_FRAME", -1);
                 int count = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_WRITE_LOG_FRAME_COUNT", 1);
                 int maxLines = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_WRITE_LOG_MAX_LINES", 20000);
                 _smsRamWriteLogStartFrame = startFrame;
                 _smsRamWriteLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
                 _smsRamWriteLogMaxLines = maxLines;
+                _smsRamWriteLogInitialized = true;
             }
 
             if (_smsRamWriteLogStartFrame < 0 || _smsRamWriteLogEndFrame < _smsRamWriteLogStartFrame)
@@ -1740,17 +1824,122 @@ namespace EutherDrive.Core.MdTracerCore
             _smsRamWriteLogLines++;
         }
 
+        private void LogSmsRamReadIfNeeded(ushort addr, byte value)
+        {
+            if (!_smsRamReadLogInitialized)
+            {
+                int startFrame = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_READ_LOG_START_FRAME", -1);
+                int count = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_READ_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_READ_LOG_MAX_LINES", 20000);
+                _smsRamReadLogStartFrame = startFrame;
+                _smsRamReadLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
+                _smsRamReadLogMaxLines = maxLines;
+                _smsRamReadLogStartPc = ParseZ80Addr("EUTHERDRIVE_SMS_RAM_READ_LOG_START_PC") ?? 0x0000;
+                _smsRamReadLogEndPc = ParseZ80Addr("EUTHERDRIVE_SMS_RAM_READ_LOG_END_PC") ?? 0xFFFF;
+                _smsRamReadLogStartAddr = ParseZ80Addr("EUTHERDRIVE_SMS_RAM_READ_LOG_START_ADDR") ?? 0x0000;
+                _smsRamReadLogEndAddr = ParseZ80Addr("EUTHERDRIVE_SMS_RAM_READ_LOG_END_ADDR") ?? 0xFFFF;
+                _smsRamReadLogInitialized = true;
+            }
+
+            if (_smsRamReadLogStartFrame < 0 || _smsRamReadLogEndFrame < _smsRamReadLogStartFrame)
+                return;
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (frame < _smsRamReadLogStartFrame || frame > _smsRamReadLogEndFrame)
+                return;
+
+            if (_smsRamReadLogLines >= _smsRamReadLogMaxLines)
+                return;
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            if (pc < _smsRamReadLogStartPc || pc > _smsRamReadLogEndPc)
+                return;
+
+            if (addr < _smsRamReadLogStartAddr || addr > _smsRamReadLogEndAddr)
+                return;
+
+            if (_smsRamReadLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsRamReadLogPath = Path.Combine(dir, $"sms_ram_reads_{_smsRamReadLogStartFrame}_{_smsRamReadLogEndFrame}.log");
+                File.WriteAllText(_smsRamReadLogPath,
+                    $"SMS RAM read log frames={_smsRamReadLogStartFrame}-{_smsRamReadLogEndFrame}\n");
+            }
+
+            string line =
+                $"frame={frame} pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} " +
+                $"bank0=0x{_smsBank0:X2} bank1=0x{_smsBank1:X2} bank2=0x{_smsBank2:X2}\n";
+            File.AppendAllText(_smsRamReadLogPath, line);
+            _smsRamReadLogLines++;
+        }
+
+        private void LogSmsRomReadIfNeeded(ushort addr, byte value, uint romIdx, bool banked, string? tag)
+        {
+            if (!_smsRomReadLogInitialized)
+            {
+                int startFrame = ParseWatchLimit("EUTHERDRIVE_SMS_ROM_READ_LOG_START_FRAME", -1);
+                int count = ParseWatchLimit("EUTHERDRIVE_SMS_ROM_READ_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseWatchLimit("EUTHERDRIVE_SMS_ROM_READ_LOG_MAX_LINES", 20000);
+                _smsRomReadLogStartFrame = startFrame;
+                _smsRomReadLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
+                _smsRomReadLogMaxLines = maxLines;
+                _smsRomReadLogStartPc = ParseZ80Addr("EUTHERDRIVE_SMS_ROM_READ_LOG_START_PC") ?? 0x0000;
+                _smsRomReadLogEndPc = ParseZ80Addr("EUTHERDRIVE_SMS_ROM_READ_LOG_END_PC") ?? 0xFFFF;
+                _smsRomReadLogStartAddr = ParseZ80Addr("EUTHERDRIVE_SMS_ROM_READ_LOG_START_ADDR") ?? 0x0000;
+                _smsRomReadLogEndAddr = ParseZ80Addr("EUTHERDRIVE_SMS_ROM_READ_LOG_END_ADDR") ?? 0xFFFF;
+                _smsRomReadLogInitialized = true;
+            }
+
+            if (_smsRomReadLogStartFrame < 0 || _smsRomReadLogEndFrame < _smsRomReadLogStartFrame)
+                return;
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (frame < _smsRomReadLogStartFrame || frame > _smsRomReadLogEndFrame)
+                return;
+
+            if (_smsRomReadLogLines >= _smsRomReadLogMaxLines)
+                return;
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            if (pc < _smsRomReadLogStartPc || pc > _smsRomReadLogEndPc)
+                return;
+
+            if (addr < _smsRomReadLogStartAddr || addr > _smsRomReadLogEndAddr)
+                return;
+
+            if (_smsRomReadLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsRomReadLogPath = Path.Combine(dir, $"sms_rom_reads_{_smsRomReadLogStartFrame}_{_smsRomReadLogEndFrame}.log");
+                File.WriteAllText(_smsRomReadLogPath,
+                    $"SMS ROM read log frames={_smsRomReadLogStartFrame}-{_smsRomReadLogEndFrame}\n");
+            }
+
+            string tagText = string.IsNullOrWhiteSpace(tag) ? string.Empty : $" tag={tag}";
+            string line =
+                $"frame={frame} pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} rom=0x{romIdx:X6} " +
+                $"banked={(banked ? 1 : 0)} bank0=0x{_smsBank0:X2} bank1=0x{_smsBank1:X2} bank2=0x{_smsBank2:X2}{tagText}\n";
+            File.AppendAllText(_smsRomReadLogPath, line);
+            _smsRomReadLogLines++;
+        }
+
         private void LogSmsMapperWriteIfNeeded(ushort addr, byte value)
         {
-            int startFrame = _smsMapperLogStartFrame;
-            if (startFrame < 0)
+            if (!_smsMapperLogInitialized)
             {
-                startFrame = ParseIntEnv("EUTHERDRIVE_SMS_MAPPER_LOG_START_FRAME", -1);
+                int startFrame = ParseIntEnv("EUTHERDRIVE_SMS_MAPPER_LOG_START_FRAME", -1);
                 int count = ParseIntEnv("EUTHERDRIVE_SMS_MAPPER_LOG_FRAME_COUNT", 1);
                 int maxLines = ParseIntEnv("EUTHERDRIVE_SMS_MAPPER_LOG_MAX_LINES", 20000);
                 _smsMapperLogStartFrame = startFrame;
                 _smsMapperLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
                 _smsMapperLogMaxLines = maxLines;
+                _smsMapperLogInitialized = true;
             }
 
             if (_smsMapperLogStartFrame < 0 || _smsMapperLogEndFrame < _smsMapperLogStartFrame)
@@ -1776,7 +1965,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             ushort pc = DebugPc;
             string mapperName = md_main.g_masterSystemMapper.ToString();
-            string line = $"frame={frame} pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} " +
+            int scanline = md_main.g_md_vdp?.g_scanline ?? -1;
+            string line = $"frame={frame} line={scanline} pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} " +
                           $"mapper={mapperName} bank0=0x{_smsBank0:X2} bank1=0x{_smsBank1:X2} bank2=0x{_smsBank2:X2} " +
                           $"segaRamEn={(_smsSegaRamEnabled ? 1 : 0)} segaRamBank=0x{_smsSegaRamBank:X2} codemastersRamEn={(_smsCodemastersRamEnabled ? 1 : 0)}\n";
             File.AppendAllText(_smsMapperLogPath, line);
@@ -2004,6 +2194,8 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             int length = Math.Min(0x2000, g_ram.Length);
             Array.Clear(g_ram, 0, length);
+            if (md_main.g_masterSystemMode)
+                g_ram[0] = 0xAB;
         }
 
         internal void LatchMailboxWideCmd(byte value)

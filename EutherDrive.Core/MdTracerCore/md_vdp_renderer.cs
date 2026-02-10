@@ -42,6 +42,8 @@ namespace EutherDrive.Core.MdTracerCore
         // SMS per-line background metadata for sprite priority blending
         private byte[] _smsBgColorLine = Array.Empty<byte>();
         private bool[] _smsBgPriorityLine = Array.Empty<bool>();
+        private static readonly bool SmsLiveScrollRegs =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_LIVE_SCROLL_REGS"), "1", StringComparison.Ordinal);
 
         // Geometri / storlek
         public  int g_display_xsize;
@@ -100,6 +102,15 @@ namespace EutherDrive.Core.MdTracerCore
         private long _smsNtTraceFrame = -1;
         private long _smsNtSwapFrame = -1;
         private bool _smsNtSwapBytes;
+        private int _smsPixelProbeFrame = int.MinValue;
+        private int _smsPixelProbeLine = int.MinValue;
+        private int _smsPixelProbeX = int.MinValue;
+        private bool _smsPixelProbeInit;
+        private string? _smsPixelProbePath;
+        private int _smsTileProbeFrame = int.MinValue;
+        private int _smsTileProbeIndex = int.MinValue;
+        private bool _smsTileProbeInit;
+        private string? _smsTileProbePath;
 
         private void RenderLineWithField(byte field, int outputLineOverride = -1, uint[]? targetBuffer = null)
         {
@@ -185,10 +196,12 @@ namespace EutherDrive.Core.MdTracerCore
             int width = g_output_xsize;
             int pos = outputLine * width;
             bool displayEnabled = (_smsRegs[1] & 0x40) != 0;
-            byte smsReg0 = _smsLatchedReg0;
-            byte smsHscroll = _smsLatchedHScroll;
-            byte smsVscroll = _smsLatchedVScroll;
+            byte smsReg0 = SmsLiveScrollRegs ? _smsRegs[0] : _smsLatchedReg0;
+            byte smsReg2 = _smsRegs[2];
+            byte smsHscroll = SmsLiveScrollRegs ? _smsRegs[8] : _smsLatchedHScroll;
+            byte smsVscroll = SmsLiveScrollRegs ? _smsRegs[9] : _smsLatchedVScroll;
             bool smsMode224 = SmsMode224(smsReg0, _smsRegs[1]);
+            LogSmsTileProbeIfNeeded(smsReg0, _smsRegs[1], smsMode224);
             int smsDisplayHeight = smsMode224 ? 224 : 192;
             // Backdrop color always uses sprite palette (CRAM base 0x10).
             int backdropIndex = 0x10 | (_smsRegs[7] & 0x0F);
@@ -226,13 +239,13 @@ namespace EutherDrive.Core.MdTracerCore
             int fineX = effectiveHscroll & 0x07;
             // In SMS mode 4, base nametable address uses bits 0-3 of register 2,
             // but the effective address depends on 192/224-line mode.
-            int nameBase = (_smsRegs[2] & 0x0F) << 10;
+            int nameBase = (smsReg2 & 0x0F) << 10;
             if (smsMode224)
             {
                 // 224-line mode: mask out bit 11 and offset by $0700
                 nameBase = (nameBase & 0xF000) | 0x0700;
             }
-            else
+            else if (!SmsNoMode4NameBaseMask)
             {
                 // 192-line mode: mask out bit 10
                 nameBase &= 0xF800;
@@ -250,7 +263,20 @@ namespace EutherDrive.Core.MdTracerCore
                 _smsNtSwapFrame = _frameCounter;
                 _smsNtSwapBytes = false;
             }
-            LogSmsNtFetchIfNeeded(smsLine, nameBase, nameTableMask, nameTableRows, hscroll, vscroll, coarseX, fineX, vscrollLock);
+            LogSmsNtFetchIfNeeded(
+                smsLine,
+                nameBase,
+                nameTableMask,
+                nameTableRows,
+                hscroll,
+                vscroll,
+                coarseX,
+                fineX,
+                vscrollLock,
+                smsReg0,
+                _smsRegs[1],
+                smsReg2,
+                smsMode224);
             if (TraceSmsNameTable && _smsNtTraceFrame != _frameCounter)
             {
                 _smsNtTraceFrame = _frameCounter;
@@ -320,6 +346,40 @@ namespace EutherDrive.Core.MdTracerCore
                                 | ((b3 & mask) != 0 ? 8 : 0);
 
                     int paletteIndex = (paletteBit ? 16 : 0) + color;
+                    LogSmsPixelProbeIfNeeded(
+                        smsLine,
+                        x,
+                        nameBase,
+                        nameTableMask,
+                        nameTableRows,
+                        hscroll,
+                        vscroll,
+                        coarseX,
+                        fineX,
+                        coarseY,
+                        fineY,
+                        rowInTile,
+                        tileRow,
+                        tileCol,
+                        entryAddr,
+                        entry,
+                        tileIndex,
+                        paletteBit,
+                        priority,
+                        flipX,
+                        flipY,
+                        patternAddr,
+                        b0,
+                        b1,
+                        b2,
+                        b3,
+                        bit,
+                        mask,
+                        color,
+                        paletteIndex,
+                        smsReg0,
+                        _smsRegs[1],
+                        smsMode224);
                     if ((uint)paletteIndex >= (uint)_smsPalette.Length)
                         dest[pos + x] = backdrop;
                     else
@@ -342,7 +402,11 @@ namespace EutherDrive.Core.MdTracerCore
             int vscroll,
             int coarseX,
             int fineX,
-            bool vscrollLock)
+            bool vscrollLock,
+            byte smsReg0,
+            byte smsReg1,
+            byte smsReg2,
+            bool smsMode224)
         {
             int targetFrame = ParseTraceLimit("EUTHERDRIVE_SMS_NT_FETCH_LOG_FRAME", -1);
             if (targetFrame < 0 || _frameCounter < targetFrame)
@@ -392,11 +456,138 @@ namespace EutherDrive.Core.MdTracerCore
                     $"frame={_frameCounter} line={smsLine} x={(column * 8)} col={column} " +
                     $"nameBase=0x{nameBase:X4} mask=0x{nameTableMask:X4} rows={nameTableRows} " +
                     $"hscroll=0x{hscroll:X2} vscroll=0x{vscroll:X2} coarseX={coarseX} fineX={fineX} " +
+                    $"reg0=0x{smsReg0:X2} reg1=0x{smsReg1:X2} reg2=0x{smsReg2:X2} mode224={(smsMode224 ? 1 : 0)} " +
                     $"coarseY={coarseY} fineY={fineY} rowInTile={rowInTile} tileRow={tileRow} tileCol={tileCol} " +
                     $"entryAddr=0x{entryAddr:X4} entry=0x{entry:X4} tile=0x{tileIndex:X3} " +
                     $"pal={(paletteBit ? 1 : 0)} prio={(priority ? 1 : 0)} fx={(flipX ? 1 : 0)} fy={(flipY ? 1 : 0)}\n";
                 File.AppendAllText(outPath, line);
             }
+        }
+
+        private void LogSmsPixelProbeIfNeeded(
+            int smsLine,
+            int x,
+            int nameBase,
+            int nameTableMask,
+            int nameTableRows,
+            int hscroll,
+            int vscroll,
+            int coarseX,
+            int fineX,
+            int coarseY,
+            int fineY,
+            int rowInTile,
+            int tileRow,
+            int tileCol,
+            int entryAddr,
+            ushort entry,
+            int tileIndex,
+            bool paletteBit,
+            bool priority,
+            bool flipX,
+            bool flipY,
+            int patternAddr,
+            byte b0,
+            byte b1,
+            byte b2,
+            byte b3,
+            int bit,
+            int mask,
+            int color,
+            int paletteIndex,
+            byte smsReg0,
+            byte smsReg1,
+            bool smsMode224)
+        {
+            if (!_smsPixelProbeInit)
+            {
+                _smsPixelProbeInit = true;
+                _smsPixelProbeFrame = ParseTraceLimit("EUTHERDRIVE_SMS_PIXEL_PROBE_FRAME", int.MinValue);
+                _smsPixelProbeLine = ParseTraceLimit("EUTHERDRIVE_SMS_PIXEL_PROBE_LINE", int.MinValue);
+                _smsPixelProbeX = ParseTraceLimit("EUTHERDRIVE_SMS_PIXEL_PROBE_X", int.MinValue);
+            }
+
+            if (_smsPixelProbeFrame == int.MinValue || _smsPixelProbeLine == int.MinValue || _smsPixelProbeX == int.MinValue)
+                return;
+            if (_frameCounter != _smsPixelProbeFrame || smsLine != _smsPixelProbeLine || x != _smsPixelProbeX)
+                return;
+
+            if (_smsPixelProbePath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsPixelProbePath = Path.Combine(dir, $"sms_pixel_probe_{_smsPixelProbeFrame}_{_smsPixelProbeLine}_{_smsPixelProbeX}.log");
+                File.WriteAllText(_smsPixelProbePath, $"SMS pixel probe frame={_smsPixelProbeFrame} line={_smsPixelProbeLine} x={_smsPixelProbeX}\n");
+            }
+
+            string line =
+                $"frame={_frameCounter} line={smsLine} x={x} nameBase=0x{nameBase:X4} mask=0x{nameTableMask:X4} rows={nameTableRows} " +
+                $"hscroll=0x{hscroll:X2} vscroll=0x{vscroll:X2} coarseX={coarseX} fineX={fineX} " +
+                $"reg0=0x{smsReg0:X2} reg1=0x{smsReg1:X2} mode224={(smsMode224 ? 1 : 0)} " +
+                $"coarseY={coarseY} fineY={fineY} rowInTile={rowInTile} tileRow={tileRow} tileCol={tileCol} " +
+                $"entryAddr=0x{entryAddr:X4} entry=0x{entry:X4} tile=0x{tileIndex:X3} " +
+                $"pal={(paletteBit ? 1 : 0)} prio={(priority ? 1 : 0)} fx={(flipX ? 1 : 0)} fy={(flipY ? 1 : 0)} " +
+                $"patternAddr=0x{patternAddr:X4} b0=0x{b0:X2} b1=0x{b1:X2} b2=0x{b2:X2} b3=0x{b3:X2} " +
+                $"bit={bit} mask=0x{mask:X2} color={color} paletteIndex=0x{paletteIndex:X2}\n";
+            File.AppendAllText(_smsPixelProbePath, line);
+        }
+
+        private static int ParseIntEnv(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), out int value))
+                return fallback;
+            return value;
+        }
+
+        private void LogSmsTileProbeIfNeeded(byte smsReg0, byte smsReg1, bool smsMode224)
+        {
+            if (!_smsTileProbeInit)
+            {
+                _smsTileProbeInit = true;
+                _smsTileProbeFrame = ParseIntEnv("EUTHERDRIVE_SMS_TILE_PROBE_FRAME", int.MinValue);
+                _smsTileProbeIndex = ParseIntEnv("EUTHERDRIVE_SMS_TILE_PROBE_TILE", int.MinValue);
+            }
+
+            if (_smsTileProbeFrame == int.MinValue || _smsTileProbeIndex == int.MinValue)
+                return;
+            if (_frameCounter != _smsTileProbeFrame)
+                return;
+            if (g_scanline != 0)
+                return;
+
+            int tileIndex = _smsTileProbeIndex & 0x1FF;
+            int patternAddr = tileIndex * 32;
+            if ((uint)(patternAddr + 31) >= (uint)_smsVram.Length)
+                return;
+
+            if (_smsTileProbePath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsTileProbePath = Path.Combine(dir, $"sms_tile_probe_{_smsTileProbeFrame}_{tileIndex:X3}.log");
+                File.WriteAllText(_smsTileProbePath, $"SMS tile probe frame={_smsTileProbeFrame} tile=0x{tileIndex:X3}\n");
+            }
+
+            using var writer = new StreamWriter(_smsTileProbePath, append: true);
+            writer.WriteLine(
+                $"frame={_frameCounter} reg0=0x{smsReg0:X2} reg1=0x{smsReg1:X2} mode224={(smsMode224 ? 1 : 0)} patternAddr=0x{patternAddr:X4}");
+            for (int row = 0; row < 8; row++)
+            {
+                int rowAddr = patternAddr + row * 4;
+                byte b0 = _smsVram[rowAddr + 0];
+                byte b1 = _smsVram[rowAddr + 1];
+                byte b2 = _smsVram[rowAddr + 2];
+                byte b3 = _smsVram[rowAddr + 3];
+                writer.WriteLine($"row{row} addr=0x{rowAddr:X4} b0=0x{b0:X2} b1=0x{b1:X2} b2=0x{b2:X2} b3=0x{b3:X2}");
+            }
+            writer.Flush();
         }
 
         private void RenderSmsSprites(int displayWidth, int outputLine, int scanline, uint[] dest, bool hideLeftColumn, bool shiftSpritesLeft, bool smsMode224)
