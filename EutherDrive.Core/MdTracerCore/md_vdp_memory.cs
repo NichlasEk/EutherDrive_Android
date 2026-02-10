@@ -609,6 +609,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (!_smsCommandPending)
             {
                 _smsCommandLow = value;
+                _smsVdpAddrBeforeCtrl = _smsVdpAddr;
                 // First control write sets low byte of VRAM address.
                 _smsVdpAddr = (_smsVdpAddr & 0x3F00) | value;
                 _smsCommandPending = true;
@@ -616,9 +617,18 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             _smsCommandPending = false;
-            // Second control write sets MSB of VRAM address (all commands).
-            _smsVdpAddr = (_smsVdpAddr & 0x00FF) | ((value & 0x3F) << 8);
             ushort cmd = (ushort)(_smsCommandLow | (value << 8));
+            int code = (cmd >> 14) & 0x3;
+            if (code != 2)
+            {
+                // Second control write sets MSB of VRAM address (non-register commands).
+                _smsVdpAddr = (_smsVdpAddr & 0x00FF) | ((value & 0x3F) << 8);
+            }
+            else
+            {
+                // Register writes must not disturb the VRAM address latch.
+                _smsVdpAddr = _smsVdpAddrBeforeCtrl;
+            }
             SmsLogControl(_smsCommandLow, value, cmd);
             SmsDecodeCommand(cmd);
         }
@@ -631,7 +641,9 @@ namespace EutherDrive.Core.MdTracerCore
                 case 0:
                 case 1:
                     _smsVramWritesTotal++;
-                    _smsVram[_smsVdpAddr & 0x3FFF] = value;
+                    int vramAddr = _smsVdpAddr & 0x3FFF;
+                    _smsVram[vramAddr] = value;
+                    LogSmsNtWriteIfNeeded(vramAddr, value);
                     _smsVdpAddr = (_smsVdpAddr + GetSmsAutoIncrement()) & 0x3FFF;
                     _smsReadBuffer = value;
                     return;
@@ -706,6 +718,85 @@ namespace EutherDrive.Core.MdTracerCore
                 _smsVdpAddr = (_smsVdpAddr + GetSmsAutoIncrement()) & 0x3FFF;
             }
             SmsLog($"[SMS VDP] CMD code={code} addr=0x{cmdAddr:X4} raw=0x{cmd:X4}");
+        }
+
+        private void LogSmsNtWriteIfNeeded(int addr, byte value)
+        {
+            if (!md_main.g_masterSystemMode)
+                return;
+
+            if (_smsNtWriteLogStartFrame < 0)
+            {
+                int start = ParseTraceLimit("EUTHERDRIVE_SMS_NT_WRITE_LOG_START_FRAME", -1);
+                int count = ParseTraceLimit("EUTHERDRIVE_SMS_NT_WRITE_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseTraceLimit("EUTHERDRIVE_SMS_NT_WRITE_LOG_MAX_LINES", 20000);
+                _smsNtWriteLogStartFrame = start;
+                _smsNtWriteLogEndFrame = (start >= 0 && count > 0) ? (start + count - 1) : -1;
+                _smsNtWriteLogMaxLines = maxLines;
+            }
+
+            int targetFrame = ParseTraceLimit("EUTHERDRIVE_SMS_NT_WRITE_LOG_FRAME", -1);
+            bool inSingleFrame = targetFrame >= 0 && _frameCounter >= targetFrame;
+            bool inRange = _smsNtWriteLogStartFrame >= 0
+                && _smsNtWriteLogEndFrame >= _smsNtWriteLogStartFrame
+                && _frameCounter >= _smsNtWriteLogStartFrame
+                && _frameCounter <= _smsNtWriteLogEndFrame;
+            if (!inSingleFrame && !inRange)
+                return;
+
+            if (_smsNtWriteLogLines >= _smsNtWriteLogMaxLines)
+                return;
+
+            if (_smsNtWriteLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                if (inRange)
+                {
+                    _smsNtWriteLogPath = Path.Combine(
+                        dir,
+                        $"sms_nt_writes_{_smsNtWriteLogStartFrame}_{_smsNtWriteLogEndFrame}.log");
+                    File.WriteAllText(_smsNtWriteLogPath,
+                        $"SMS NT write log frames={_smsNtWriteLogStartFrame}-{_smsNtWriteLogEndFrame}\n");
+                }
+                else
+                {
+                    _smsNtWriteLogPath = Path.Combine(dir, $"sms_nt_writes_{_frameCounter}.log");
+                    File.WriteAllText(_smsNtWriteLogPath, $"SMS NT write log frame={_frameCounter}\n");
+                }
+            }
+
+            if (_smsNtWriteLogFrame != (int)_frameCounter && !inRange)
+                _smsNtWriteLogFrame = (int)_frameCounter;
+
+            if ((addr & 0x3FFF) < 0x3800 || (addr & 0x3FFF) > 0x3EFF)
+                return;
+
+            string outPath = _smsNtWriteLogPath ?? "/home/nichlas/EutherDrive/logs/sms_nt_writes_unknown.log";
+            int inc = GetSmsAutoIncrement();
+            int code = _smsVdpCode;
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            md_z80? z80 = md_main.g_md_z80;
+            string bankInfo = string.Empty;
+            if (z80 != null)
+            {
+                byte bank0 = z80.SmsBank0;
+                byte bank1 = z80.SmsBank1;
+                byte bank2 = z80.SmsBank2;
+                bool lastWasBanked = z80.LastReadWasBanked;
+                ushort lastReadAddr = z80.LastReadAddr;
+                byte lastReadVal = z80.LastReadValue;
+                ushort lastReadPc = z80.LastReadPc;
+                uint lastReadM68k = z80.LastReadM68kAddr;
+                bankInfo = $" bank0=0x{bank0:X2} bank1=0x{bank1:X2} bank2=0x{bank2:X2}" +
+                           $" lastAddr=0x{lastReadAddr:X4} lastVal=0x{lastReadVal:X2} lastPc=0x{lastReadPc:X4}" +
+                           (lastWasBanked ? $" lastM68k=0x{lastReadM68k:X6}" : "");
+            }
+            string line = $"frame={_frameCounter} addr=0x{addr:X4} val=0x{value:X2} code={code} inc=0x{inc:X2} reg2=0x{_smsRegs[2]:X2} regF=0x{_smsRegs[0x0F]:X2} pc=0x{pc:X4}{bankInfo}\n";
+            File.AppendAllText(outPath, line);
+            _smsNtWriteLogLines++;
         }
 
         private static bool SmsMode224(byte reg0, byte reg1)

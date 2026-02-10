@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -184,7 +185,10 @@ namespace EutherDrive.Core.MdTracerCore
             int width = g_output_xsize;
             int pos = outputLine * width;
             bool displayEnabled = (_smsRegs[1] & 0x40) != 0;
-            bool smsMode224 = SmsMode224(_smsRegs[0], _smsRegs[1]);
+            byte smsReg0 = _smsLatchedReg0;
+            byte smsHscroll = _smsLatchedHScroll;
+            byte smsVscroll = _smsLatchedVScroll;
+            bool smsMode224 = SmsMode224(smsReg0, _smsRegs[1]);
             int smsDisplayHeight = smsMode224 ? 224 : 192;
             // Backdrop color always uses sprite palette (CRAM base 0x10).
             int backdropIndex = 0x10 | (_smsRegs[7] & 0x0F);
@@ -211,11 +215,12 @@ namespace EutherDrive.Core.MdTracerCore
                 _smsBgPriorityLine = new bool[displayWidth];
             Array.Clear(_smsBgColorLine, 0, displayWidth);
             Array.Clear(_smsBgPriorityLine, 0, displayWidth);
-            int hscroll = _smsRegs[8];
-            int vscroll = _smsRegs[9];
-            bool hscrollLock = (_smsRegs[0] & 0x40) != 0;
-            bool vscrollLock = (_smsRegs[0] & 0x80) != 0;
-            bool hideLeftColumn = (_smsRegs[0] & 0x20) != 0;
+            int hscroll = smsHscroll;
+            int vscroll = smsVscroll;
+            bool hscrollLock = (smsReg0 & 0x40) != 0;
+            bool vscrollLock = (smsReg0 & 0x80) != 0;
+            bool hideLeftColumn = (smsReg0 & 0x20) != 0;
+            bool shiftSpritesLeft = (smsReg0 & 0x08) != 0;
             int effectiveHscroll = (hscrollLock && smsLine < 16) ? 0 : hscroll;
             int coarseX = (effectiveHscroll >> 3) & 0x1F;
             int fineX = effectiveHscroll & 0x07;
@@ -245,6 +250,7 @@ namespace EutherDrive.Core.MdTracerCore
                 _smsNtSwapFrame = _frameCounter;
                 _smsNtSwapBytes = false;
             }
+            LogSmsNtFetchIfNeeded(smsLine, nameBase, nameTableMask, nameTableRows, hscroll, vscroll, coarseX, fineX, vscrollLock);
             if (TraceSmsNameTable && _smsNtTraceFrame != _frameCounter)
             {
                 _smsNtTraceFrame = _frameCounter;
@@ -324,10 +330,76 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            RenderSmsSprites(displayWidth, outputLine, g_scanline, dest, hideLeftColumn, smsMode224);
+            RenderSmsSprites(displayWidth, outputLine, g_scanline, dest, hideLeftColumn, shiftSpritesLeft, smsMode224);
         }
 
-        private void RenderSmsSprites(int displayWidth, int outputLine, int scanline, uint[] dest, bool hideLeftColumn, bool smsMode224)
+        private void LogSmsNtFetchIfNeeded(
+            int smsLine,
+            int nameBase,
+            int nameTableMask,
+            int nameTableRows,
+            int hscroll,
+            int vscroll,
+            int coarseX,
+            int fineX,
+            bool vscrollLock)
+        {
+            int targetFrame = ParseTraceLimit("EUTHERDRIVE_SMS_NT_FETCH_LOG_FRAME", -1);
+            if (targetFrame < 0 || _frameCounter < targetFrame)
+                return;
+
+            if (_smsNtFetchLogFrame != (int)_frameCounter)
+            {
+                _smsNtFetchLogFrame = (int)_frameCounter;
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, $"sms_nt_fetch_{_frameCounter}.log");
+                File.WriteAllText(path, $"SMS NT fetch log frame={_frameCounter}\n");
+            }
+
+            string outDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+            if (string.IsNullOrWhiteSpace(outDir))
+                outDir = "/home/nichlas/EutherDrive/logs";
+            string outPath = Path.Combine(outDir, $"sms_nt_fetch_{_frameCounter}.log");
+
+            int targetLine = ParseTraceLimit("EUTHERDRIVE_SMS_NT_FETCH_LOG_LINE", -1);
+            if (targetLine >= 0 && smsLine != targetLine)
+                return;
+
+            for (int column = 0; column < 32; column++)
+            {
+                int effectiveVscroll = (vscrollLock && column >= 24) ? 0 : vscroll;
+                int coarseY = (effectiveVscroll >> 3) & 0x1F;
+                int fineY = effectiveVscroll & 0x07;
+                int y = (smsLine + fineY) & 0xFF;
+                int tileRow = ((y >> 3) + coarseY) % nameTableRows;
+                int rowInTile = y & 0x07;
+                int tileCol = (column + (32 - coarseX)) & 0x1F;
+                int entryAddr = (nameBase + ((tileRow * 32 + tileCol) * 2)) & nameTableMask;
+                if ((uint)(entryAddr + 1) >= (uint)_smsVram.Length)
+                    continue;
+
+                ushort entry = (ushort)(_smsVram[entryAddr] | (_smsVram[entryAddr + 1] << 8));
+                int tileIndex = entry & 0x1FF;
+                bool priority = (entry & 0x1000) != 0;
+                bool paletteBit = (entry & 0x0800) != 0;
+                bool flipY = (entry & 0x0400) != 0;
+                bool flipX = (entry & 0x0200) != 0;
+
+                string line =
+                    $"frame={_frameCounter} line={smsLine} x={(column * 8)} col={column} " +
+                    $"nameBase=0x{nameBase:X4} mask=0x{nameTableMask:X4} rows={nameTableRows} " +
+                    $"hscroll=0x{hscroll:X2} vscroll=0x{vscroll:X2} coarseX={coarseX} fineX={fineX} " +
+                    $"coarseY={coarseY} fineY={fineY} rowInTile={rowInTile} tileRow={tileRow} tileCol={tileCol} " +
+                    $"entryAddr=0x{entryAddr:X4} entry=0x{entry:X4} tile=0x{tileIndex:X3} " +
+                    $"pal={(paletteBit ? 1 : 0)} prio={(priority ? 1 : 0)} fx={(flipX ? 1 : 0)} fy={(flipY ? 1 : 0)}\n";
+                File.AppendAllText(outPath, line);
+            }
+        }
+
+        private void RenderSmsSprites(int displayWidth, int outputLine, int scanline, uint[] dest, bool hideLeftColumn, bool shiftSpritesLeft, bool smsMode224)
         {
             int satBase = (_smsRegs[5] & 0x7E) << 7;
             // SAT base is effectively aligned to 0x100 for sprite lookups.
@@ -338,7 +410,6 @@ namespace EutherDrive.Core.MdTracerCore
             bool spriteZoom = (_smsRegs[1] & 0x01) != 0;
             int spriteHeight = (sprites8x16 ? 16 : 8) * (spriteZoom ? 2 : 1);
             int spriteWidth = spriteZoom ? 16 : 8;
-            bool shiftSpritesLeft = (_smsRegs[0] & 0x08) != 0;
             int maxSprites = 64;
             int spritesOnLine = 0;
             int yTableBase = satBaseAligned & 0x3FFF;

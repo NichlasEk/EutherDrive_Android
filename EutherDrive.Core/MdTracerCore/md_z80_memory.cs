@@ -270,6 +270,25 @@ namespace EutherDrive.Core.MdTracerCore
         private ushort _z80FillLastAddr;
         private uint _z80FillStartRomAddr;
         private uint _z80FillLastRomAddr;
+        private int _smsRamWriteLogStartFrame = -1;
+        private int _smsRamWriteLogEndFrame = -1;
+        private int _smsRamWriteLogMaxLines = -1;
+        private int _smsRamWriteLogLines = 0;
+        private string? _smsRamWriteLogPath;
+        private int _smsMapperLogStartFrame = -1;
+        private int _smsMapperLogEndFrame = -1;
+        private int _smsMapperLogMaxLines = -1;
+        private int _smsMapperLogLines = 0;
+        private string? _smsMapperLogPath;
+
+        internal byte SmsBank0 => _smsBank0;
+        internal byte SmsBank1 => _smsBank1;
+        internal byte SmsBank2 => _smsBank2;
+        internal ushort LastReadAddr => _lastReadAddr;
+        internal byte LastReadValue => _lastReadValue;
+        internal ushort LastReadPc => _lastReadPc;
+        internal bool LastReadWasBanked => _lastReadWasBanked;
+        internal uint LastReadM68kAddr => _lastReadM68kAddr;
 
         private void MaybePatchZ80BootJump()
         {
@@ -398,6 +417,17 @@ namespace EutherDrive.Core.MdTracerCore
                 return fallback;
             if (value <= 0)
                 return int.MaxValue;
+            return value;
+        }
+
+        private static int ParseIntEnv(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
             return value;
         }
 
@@ -1329,6 +1359,7 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     if (a >= 0xFFFC)
                         HandleSmsMapperWrite(a, in_data);
+                    LogSmsRamWriteIfNeeded(a, in_data);
                     ushort ramAddr = (ushort)(a & 0x1FFF);
                     g_ram[ramAddr] = in_data;
                     return;
@@ -1551,18 +1582,25 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (a >= 0xC000)
             {
-                return g_ram[(ushort)(a & 0x1FFF)];
+                byte val = g_ram[(ushort)(a & 0x1FFF)];
+                TrackLastRead(a, val, false, 0);
+                return val;
             }
 
             if (md_main.g_masterSystemRomSize > 0)
             {
                 if (!_smsCartridgeEnabled)
+                {
+                    TrackLastRead(a, 0xFF, false, 0);
                     return 0xFF;
+                }
 
                 if (md_main.g_masterSystemMapper == SmsMapperType.Sega && a < 0x0400)
                 {
                     uint fixedIdx = (uint)a % (uint)md_main.g_masterSystemRomSize;
-                    return md_main.g_masterSystemRom[fixedIdx];
+                    byte val = md_main.g_masterSystemRom[fixedIdx];
+                    TrackLastRead(a, val, false, fixedIdx);
+                    return val;
                 }
 
                 uint romIdx = (uint)(a & 0x3FFF);
@@ -1570,7 +1608,11 @@ namespace EutherDrive.Core.MdTracerCore
                 if (md_main.g_masterSystemMapper == SmsMapperType.Codemasters)
                 {
                     if (_smsCodemastersRamEnabled && a >= 0xA000)
-                        return _smsCartRam[(a & 0x1FFF) % SmsCartRamSize];
+                    {
+                        byte val = _smsCartRam[(a & 0x1FFF) % SmsCartRamSize];
+                        TrackLastRead(a, val, false, 0);
+                        return val;
+                    }
                 }
                 else if (md_main.g_masterSystemMapper == SmsMapperType.Sega)
                 {
@@ -1578,7 +1620,9 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         int ramBase = (_smsSegaRamBank & 0x01) * 0x4000;
                         int ramIndex = (ramBase + (a & 0x3FFF)) % SmsCartRamSize;
-                        return _smsCartRam[ramIndex];
+                        byte val = _smsCartRam[ramIndex];
+                        TrackLastRead(a, val, false, 0);
+                        return val;
                     }
                 }
 
@@ -1589,9 +1633,12 @@ namespace EutherDrive.Core.MdTracerCore
                         : (uint)(_smsBank2 % bankCount));
                 uint bankOffset = bank * 0x4000u;
                 uint idx = (bankOffset + romIdx) % (uint)md_main.g_masterSystemRomSize;
-                return md_main.g_masterSystemRom[idx];
+                byte value = md_main.g_masterSystemRom[idx];
+                TrackLastRead(a, value, true, idx);
+                return value;
             }
 
+            TrackLastRead(a, 0xFF, false, 0);
             return 0xFF;
         }
 
@@ -1643,6 +1690,97 @@ namespace EutherDrive.Core.MdTracerCore
             _mbx1b8fLastReadValid = false;
             _mbx1b8fLastReadValue = 0x00;
             ResetMailboxShadow();
+        }
+
+        private void LogSmsRamWriteIfNeeded(ushort addr, byte value)
+        {
+            int startFrame = _smsRamWriteLogStartFrame;
+            if (startFrame < 0)
+            {
+                startFrame = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_WRITE_LOG_START_FRAME", -1);
+                int count = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_WRITE_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseWatchLimit("EUTHERDRIVE_SMS_RAM_WRITE_LOG_MAX_LINES", 20000);
+                _smsRamWriteLogStartFrame = startFrame;
+                _smsRamWriteLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
+                _smsRamWriteLogMaxLines = maxLines;
+            }
+
+            if (_smsRamWriteLogStartFrame < 0 || _smsRamWriteLogEndFrame < _smsRamWriteLogStartFrame)
+                return;
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (frame < _smsRamWriteLogStartFrame || frame > _smsRamWriteLogEndFrame)
+                return;
+
+            if (_smsRamWriteLogLines >= _smsRamWriteLogMaxLines)
+                return;
+
+            ushort startAddr = ParseZ80Addr("EUTHERDRIVE_SMS_RAM_WRITE_LOG_START_ADDR") ?? 0x0000;
+            ushort endAddr = ParseZ80Addr("EUTHERDRIVE_SMS_RAM_WRITE_LOG_END_ADDR") ?? 0xFFFF;
+            if (addr < startAddr || addr > endAddr)
+                return;
+
+            if (_smsRamWriteLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsRamWriteLogPath = Path.Combine(dir, $"sms_ram_writes_{_smsRamWriteLogStartFrame}_{_smsRamWriteLogEndFrame}.log");
+                File.WriteAllText(_smsRamWriteLogPath,
+                    $"SMS RAM write log frames={_smsRamWriteLogStartFrame}-{_smsRamWriteLogEndFrame}\n");
+            }
+
+            ushort pc = DebugPc;
+            string lastInfo = $" lastAddr=0x{_lastReadAddr:X4} lastVal=0x{_lastReadValue:X2} lastPc=0x{_lastReadPc:X4}";
+            if (_lastReadWasBanked)
+                lastInfo += $" lastM68k=0x{_lastReadM68kAddr:X6}";
+            string line = $"frame={frame} addr=0x{addr:X4} val=0x{value:X2} pc=0x{pc:X4} bank0=0x{_smsBank0:X2} bank1=0x{_smsBank1:X2} bank2=0x{_smsBank2:X2}{lastInfo}\n";
+            File.AppendAllText(_smsRamWriteLogPath, line);
+            _smsRamWriteLogLines++;
+        }
+
+        private void LogSmsMapperWriteIfNeeded(ushort addr, byte value)
+        {
+            int startFrame = _smsMapperLogStartFrame;
+            if (startFrame < 0)
+            {
+                startFrame = ParseIntEnv("EUTHERDRIVE_SMS_MAPPER_LOG_START_FRAME", -1);
+                int count = ParseIntEnv("EUTHERDRIVE_SMS_MAPPER_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseIntEnv("EUTHERDRIVE_SMS_MAPPER_LOG_MAX_LINES", 20000);
+                _smsMapperLogStartFrame = startFrame;
+                _smsMapperLogEndFrame = (startFrame >= 0 && count > 0) ? (startFrame + count - 1) : -1;
+                _smsMapperLogMaxLines = maxLines;
+            }
+
+            if (_smsMapperLogStartFrame < 0 || _smsMapperLogEndFrame < _smsMapperLogStartFrame)
+                return;
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (frame < _smsMapperLogStartFrame || frame > _smsMapperLogEndFrame)
+                return;
+
+            if (_smsMapperLogLines >= _smsMapperLogMaxLines)
+                return;
+
+            if (_smsMapperLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsMapperLogPath = Path.Combine(dir, $"sms_mapper_writes_{_smsMapperLogStartFrame}_{_smsMapperLogEndFrame}.log");
+                File.WriteAllText(_smsMapperLogPath,
+                    $"SMS mapper write log frames={_smsMapperLogStartFrame}-{_smsMapperLogEndFrame}\n");
+            }
+
+            ushort pc = DebugPc;
+            string mapperName = md_main.g_masterSystemMapper.ToString();
+            string line = $"frame={frame} pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} " +
+                          $"mapper={mapperName} bank0=0x{_smsBank0:X2} bank1=0x{_smsBank1:X2} bank2=0x{_smsBank2:X2} " +
+                          $"segaRamEn={(_smsSegaRamEnabled ? 1 : 0)} segaRamBank=0x{_smsSegaRamBank:X2} codemastersRamEn={(_smsCodemastersRamEnabled ? 1 : 0)}\n";
+            File.AppendAllText(_smsMapperLogPath, line);
+            _smsMapperLogLines++;
         }
 
         private void TrackMailboxRead(ushort addr, byte value)
@@ -2095,11 +2233,13 @@ namespace EutherDrive.Core.MdTracerCore
                     if (addr <= 0x3FFF)
                     {
                         _smsBank0 = bank;
+                        LogSmsMapperWriteIfNeeded(addr, value);
                         return true;
                     }
                     if (addr <= 0x7FFF)
                     {
                         _smsBank1 = bank;
+                        LogSmsMapperWriteIfNeeded(addr, value);
                         return true;
                     }
                     if (addr <= 0xBFFF)
@@ -2107,10 +2247,12 @@ namespace EutherDrive.Core.MdTracerCore
                         if (_smsCodemastersRamEnabled && addr >= 0xA000)
                         {
                             g_ram[(ushort)(addr & 0x1FFF)] = value;
+                            LogSmsMapperWriteIfNeeded(addr, value);
                             return true;
                         }
                         _smsBank2 = bank;
                         _smsCodemastersRamEnabled = (value & 0x80) != 0;
+                        LogSmsMapperWriteIfNeeded(addr, value);
                         return true;
                     }
                     return false;
@@ -2128,16 +2270,20 @@ namespace EutherDrive.Core.MdTracerCore
                         case 0xFFFC:
                             _smsSegaRamBank = (byte)((value >> 2) & 0x01);
                             _smsSegaRamEnabled = (value & 0x08) != 0;
+                            LogSmsMapperWriteIfNeeded(addr, value);
                             return true;
                         case 0xFFFD:
                             _smsBank0 = bank;
+                            LogSmsMapperWriteIfNeeded(addr, value);
                             return true;
                         case 0xFFFE:
                             _smsBank1 = bank;
+                            LogSmsMapperWriteIfNeeded(addr, value);
                             return true;
                         case 0xFFFF:
                             _smsBank2 = bank;
                             g_bank_register = bank;
+                            LogSmsMapperWriteIfNeeded(addr, value);
                             return true;
                         default:
                             return false;

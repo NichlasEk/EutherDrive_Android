@@ -44,6 +44,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int g_hinterrupt_counter;
         private bool _smsCommandPending;
         private byte _smsCommandLow;
+        private int _smsVdpAddrBeforeCtrl;
         private int _smsVdpCode;
         private int _smsVdpAddr;
         private byte _smsReadBuffer;
@@ -79,6 +80,13 @@ namespace EutherDrive.Core.MdTracerCore
         private int _smsBeWritesLastFrame;
         private int _smsBfWritesThisFrame;
         private int _smsBfWritesLastFrame;
+        private int _smsNtWriteLogFrame = -1;
+        private int _smsNtFetchLogFrame = -1;
+        private int _smsNtWriteLogStartFrame = -1;
+        private int _smsNtWriteLogEndFrame = -1;
+        private int _smsNtWriteLogMaxLines = -1;
+        private int _smsNtWriteLogLines = 0;
+        private string? _smsNtWriteLogPath;
         private byte[] _smsCram = new byte[0x20];
         private uint[] _smsPalette = new uint[0x20];
         private long _frameCounter;
@@ -1316,9 +1324,14 @@ namespace EutherDrive.Core.MdTracerCore
                     && ((_smsRegs[1] & 0x08) == 0) && ((_smsRegs[0] & 0x04) != 0);
                 using var writer = new StreamWriter(path, false);
                 writer.WriteLine($"SMS VRAM dump frame={_frameCounter}");
+                bool m1 = (_smsRegs[1] & 0x10) != 0;
+                bool m2 = (_smsRegs[0] & 0x02) != 0;
+                bool m3 = (_smsRegs[1] & 0x08) != 0;
+                bool m4 = (_smsRegs[0] & 0x04) != 0;
                 writer.WriteLine(
                     $"reg0=0x{_smsRegs[0]:X2} reg1=0x{_smsRegs[1]:X2} reg2=0x{_smsRegs[2]:X2} " +
-                    $"reg4=0x{_smsRegs[4]:X2} regF=0x{_smsRegs[0x0F]:X2} mode224={(mode224 ? 1 : 0)}");
+                    $"reg4=0x{_smsRegs[4]:X2} reg8=0x{_smsRegs[8]:X2} reg9=0x{_smsRegs[9]:X2} " +
+                    $"regF=0x{_smsRegs[0x0F]:X2} mode224={(mode224 ? 1 : 0)} modeBits={(m1?1:0)}{(m2?1:0)}{(m3?1:0)}{(m4?1:0)}");
                 for (int addr = 0; addr < _smsVram.Length; addr += 16)
                 {
                     writer.Write($"{addr:X4}:");
@@ -1350,9 +1363,14 @@ namespace EutherDrive.Core.MdTracerCore
                 using var writer = new StreamWriter(path, false);
                 writer.WriteLine($"SMS NT dump frame={_frameCounter}");
                 writer.WriteLine($"targetFrame={SmsNameTableDumpFrame}");
+                bool m1 = (_smsRegs[1] & 0x10) != 0;
+                bool m2 = (_smsRegs[0] & 0x02) != 0;
+                bool m3 = (_smsRegs[1] & 0x08) != 0;
+                bool m4 = (_smsRegs[0] & 0x04) != 0;
                 writer.WriteLine(
                     $"reg0=0x{_smsRegs[0]:X2} reg1=0x{_smsRegs[1]:X2} reg2=0x{_smsRegs[2]:X2} " +
-                    $"reg4=0x{_smsRegs[4]:X2} regF=0x{_smsRegs[0x0F]:X2} mode224={(mode224 ? 1 : 0)}");
+                    $"reg4=0x{_smsRegs[4]:X2} reg8=0x{_smsRegs[8]:X2} reg9=0x{_smsRegs[9]:X2} " +
+                    $"regF=0x{_smsRegs[0x0F]:X2} mode224={(mode224 ? 1 : 0)} modeBits={(m1?1:0)}{(m2?1:0)}{(m3?1:0)}{(m4?1:0)}");
                 bool smsNameTableMaskSms1 =
                     string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NAMETABLE_MASK_SMS1"), "1", StringComparison.Ordinal);
                 int nameTableMask = 0x3FFF;
@@ -1399,15 +1417,17 @@ namespace EutherDrive.Core.MdTracerCore
                 string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
                 string vramPath = Path.Combine(dir, $"sms_vram_{stamp}.txt");
                 string ntPath = Path.Combine(dir, $"sms_nt_{stamp}.txt");
+                string cramPath = Path.Combine(dir, $"sms_cram_{stamp}.txt");
                 string tilesPal0 = Path.Combine(dir, $"sms_vram_tiles_p0_{stamp}.ppm");
                 string tilesPal1 = Path.Combine(dir, $"sms_vram_tiles_p1_{stamp}.ppm");
                 string ntImage = Path.Combine(dir, $"sms_nt_screen_{stamp}.ppm");
                 DumpSmsVram(vramPath);
                 DumpSmsNameTable(ntPath);
+                DumpSmsCram(cramPath);
                 DumpSmsVramTiles(tilesPal0, 0);
                 DumpSmsVramTiles(tilesPal1, 1);
                 DumpSmsNameTableImage(ntImage);
-                Console.WriteLine($"[SMS DUMP] wrote {vramPath}, {ntPath}, {tilesPal0}, {tilesPal1}, {ntImage}");
+                Console.WriteLine($"[SMS DUMP] wrote {vramPath}, {ntPath}, {cramPath}, {tilesPal0}, {tilesPal1}, {ntImage}");
             }
             catch (Exception ex)
             {
@@ -1415,12 +1435,39 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
+        private void DumpSmsCram(string path)
+        {
+            try
+            {
+                using var writer = new StreamWriter(path, false);
+                writer.WriteLine($"SMS CRAM dump frame={_frameCounter}");
+                bool m1 = (_smsRegs[1] & 0x10) != 0;
+                bool m2 = (_smsRegs[0] & 0x02) != 0;
+                bool m3 = (_smsRegs[1] & 0x08) != 0;
+                bool m4 = (_smsRegs[0] & 0x04) != 0;
+                writer.WriteLine(
+                    $"reg0=0x{_smsRegs[0]:X2} reg1=0x{_smsRegs[1]:X2} reg2=0x{_smsRegs[2]:X2} " +
+                    $"reg4=0x{_smsRegs[4]:X2} reg8=0x{_smsRegs[8]:X2} reg9=0x{_smsRegs[9]:X2} " +
+                    $"regF=0x{_smsRegs[0x0F]:X2} modeBits={(m1?1:0)}{(m2?1:0)}{(m3?1:0)}{(m4?1:0)}");
+                for (int i = 0; i < _smsCram.Length; i++)
+                {
+                    byte raw = _smsCram[i];
+                    uint argb = (uint)i < (uint)_smsPalette.Length ? _smsPalette[i] : 0xFF000000u;
+                    writer.WriteLine($"[{i:X2}] raw=0x{raw:X2} argb=0x{argb:X8}");
+                }
+                writer.Flush();
+                MdTracerCore.MdLog.WriteLine($"[SMS CRAM-DUMP] wrote {path}");
+            }
+            catch (Exception ex)
+            {
+                MdTracerCore.MdLog.WriteLine($"[SMS CRAM-DUMP] failed: {ex.Message}");
+            }
+        }
+
         private void DumpSmsNameTableImage(string path)
         {
             try
             {
-                bool smsNameTableMaskSms1 =
-                    string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NAMETABLE_MASK_SMS1"), "1", StringComparison.Ordinal);
                 int width = g_display_xsize;
                 int height = g_display_ysize;
                 int nameBase = (_smsRegs[2] & 0x0F) << 10;
@@ -1428,6 +1475,8 @@ namespace EutherDrive.Core.MdTracerCore
                     nameBase = (nameBase & 0xF000) | 0x0700;
                 else
                     nameBase &= 0xF800;
+                bool smsNameTableMaskSms1 =
+                    string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NAMETABLE_MASK_SMS1"), "1", StringComparison.Ordinal);
                 int nameTableMask = 0x3FFF;
                 if (smsNameTableMaskSms1 && (_smsRegs[2] & 0x01) == 0)
                     nameTableMask &= ~(1 << 10);
