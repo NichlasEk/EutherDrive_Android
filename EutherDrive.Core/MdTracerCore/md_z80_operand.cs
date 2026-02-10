@@ -270,7 +270,9 @@ namespace EutherDrive.Core.MdTracerCore
             write_rp((byte)RP_TYPE.HL, w_hl);
             g_flag_H = 0;
             g_flag_N = 0;
-            set_flag_pv(false);
+            // LDI/LDD: PV reflects whether BC became zero after the transfer.
+            // Programs (e.g., Daffy) use RET PO after LDI to detect completion.
+            set_flag_pv(w_bc != 0);
             g_clock += 16;
             g_reg_PC += 2;
         }
