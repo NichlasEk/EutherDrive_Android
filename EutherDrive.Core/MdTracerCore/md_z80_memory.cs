@@ -36,19 +36,81 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _smsBiosEnabled;
         private byte _smsIoControl;
         private const int SmsPortLogLimit = 16;
+        private const int SmsPortFileLogLimit = 200000;
         private static int _smsPortBeReadLog;
         private static int _smsPortBfReadLog;
         private static int _smsPortBeWriteLog;
         private static int _smsPortBfWriteLog;
         private static int _smsPort7EWriteLog;
         private static int _smsPort7FWriteLog;
+        private static int _smsPortFileLogCount;
+        private static string? _smsPortFileLogPath;
         private static int _smsPort3AReadLog;
         private static readonly bool TraceSmsIoRaw =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IO_RAW"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSmsIoFile =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IO_FILE"), "1", StringComparison.Ordinal);
         private const int TraceSmsIoRawLimit = 64;
         private static readonly bool TraceSmsMapper =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_MAPPER"), "1", StringComparison.Ordinal);
         private static readonly int TraceSmsMapperLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_MAPPER_LIMIT", 128);
+        private static readonly bool TraceSmsMapperFile =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_MAPPER_FILE"), "1", StringComparison.Ordinal);
+        private const int SmsMapperFileLogLimit = 5000;
+        private static int _smsMapperFileLogCount;
+        private static string? _smsMapperFileLogPath;
+        private static readonly bool TraceSmsC400Debug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_C400"), "1", StringComparison.Ordinal);
+        private const int SmsC400DebugLogLimit = 2000;
+        private static int _smsC400DebugLogCount;
+        private static string? _smsC400DebugLogPath;
+        private static readonly bool ForceSmsC400Bit7 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_FORCE_C400"), "1", StringComparison.Ordinal);
+        private static bool _forceC400Logged;
+        private static string? _forceC400LogPath;
+        private static readonly bool TraceSmsC40dDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_C40D"), "1", StringComparison.Ordinal);
+        private const int SmsC40dDebugLogLimit = 2000;
+        private static int _smsC40dDebugLogCount;
+        private static string? _smsC40dDebugLogPath;
+        private static readonly bool ForceSmsC414 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_FORCE_C414"), "1", StringComparison.Ordinal);
+        private static bool _forceC414Logged;
+        private static readonly bool TraceSmsUploadDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_UPLOAD"), "1", StringComparison.Ordinal);
+        private const int SmsUploadDebugLogLimit = 2000;
+        private static int _smsUploadDebugLogCount;
+        private static string? _smsUploadDebugLogPath;
+        private static readonly bool TraceSmsC480Debug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_C480"), "1", StringComparison.Ordinal);
+        private const int SmsC480DebugLogLimit = 20000;
+        private static int _smsC480DebugLogCount;
+        private static string? _smsC480DebugLogPath;
+        private static readonly bool TraceSms77f1Debug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_77F1"), "1", StringComparison.Ordinal);
+        private const int Sms77f1DebugLogLimit = 2000;
+        private static int _sms77f1DebugLogCount;
+        private static string? _sms77f1DebugLogPath;
+        private static readonly bool TraceSmsDccDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_DCC"), "1", StringComparison.Ordinal);
+        private const int SmsDccDebugLogLimit = 20000;
+        private static int _smsDccDebugLogCount;
+        private static string? _smsDccDebugLogPath;
+        private static readonly bool ForceSmsDccFlags =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_FORCE_DCC_FLAGS"), "1", StringComparison.Ordinal);
+        private static bool _forceDccLogged;
+        private static readonly bool TraceSmsWorkerReads =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_WORKER_READS"), "1", StringComparison.Ordinal);
+        private const int SmsWorkerReadsLogLimit = 20000;
+        private static int _smsWorkerReadsLogCount;
+        private static string? _smsWorkerReadsLogPath;
+        private static readonly bool TraceSmsWorkerReadsAll =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_WORKER_READS_ALL"), "1", StringComparison.Ordinal);
+        private const int SmsWorkerReadsAllLogLimit = 20000;
+        private static int _smsWorkerReadsAllLogCount;
+        private static string? _smsWorkerReadsAllLogPath;
+        private static bool _smsWorkerHitLogged;
+        private static bool _smsDebugFlagsLogged;
         private static readonly bool TraceSmsStatus =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_STATUS"), "1", StringComparison.Ordinal);
         private static readonly int TraceSmsStatusLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_STATUS_LIMIT", 256);
@@ -1162,6 +1224,39 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (md_main.g_masterSystemMode)
             {
+                if (!_smsDebugFlagsLogged)
+                {
+                    _smsDebugFlagsLogged = true;
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    string path = Path.Combine(dir, "sms_debug_flags.log");
+                    File.WriteAllText(path,
+                        $"SMS debug flags:\n" +
+                        $"EUTHERDRIVE_SMS_DEBUG_WORKER_READS_ALL={TraceSmsWorkerReadsAll}\n" +
+                        $"EUTHERDRIVE_SMS_DEBUG_WORKER_READS={TraceSmsWorkerReads}\n" +
+                        $"EUTHERDRIVE_SMS_DEBUG_DCC={TraceSmsDccDebug}\n" +
+                        $"EUTHERDRIVE_SMS_DEBUG_C480={TraceSmsC480Debug}\n" +
+                        $"EUTHERDRIVE_SMS_DEBUG_77F1={TraceSms77f1Debug}\n" +
+                        $"EUTHERDRIVE_SMS_DEBUG_UPLOAD={TraceSmsUploadDebug}\n" +
+                        $"EUTHERDRIVE_SMS_DEBUG_C40D={TraceSmsC40dDebug}\n" +
+                        $"EUTHERDRIVE_SMS_DEBUG_C400={TraceSmsC400Debug}\n" +
+                        $"EUTHERDRIVE_SMS_FORCE_C400={ForceSmsC400Bit7}\n" +
+                        $"EUTHERDRIVE_SMS_FORCE_C414={ForceSmsC414}\n" +
+                        $"EUTHERDRIVE_SMS_FORCE_DCC_FLAGS={ForceSmsDccFlags}\n" +
+                        $"EUTHERDRIVE_SMS_TRACE_BRANCH={string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_BRANCH"), "1", StringComparison.Ordinal)}\n" +
+                        $"EUTHERDRIVE_SMS_FORCE_CALL_77AB={string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_FORCE_CALL_77AB"), "1", StringComparison.Ordinal)}\n");
+                }
+                if (TraceSmsWorkerReadsAll && _smsWorkerReadsAllLogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _smsWorkerReadsAllLogPath = Path.Combine(dir, "sms_worker_reads_all.log");
+                    File.WriteAllText(_smsWorkerReadsAllLogPath, "SMS worker read-all log\n");
+                }
                 if (smsIo)
                 {
                     if (TraceSmsIoRaw && _traceSmsIoRawCount < TraceSmsIoRawLimit)
@@ -1175,6 +1270,28 @@ namespace EutherDrive.Core.MdTracerCore
                     return ReadSmsPortFallback(a);
                 }
                 byte result = ReadSmsMemory(a);
+                if (TraceSmsWorkerReadsAll)
+                {
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    if (pc >= 0xAF4F && pc <= 0xB100)
+                    {
+                        if (!_smsWorkerHitLogged)
+                        {
+                            _smsWorkerHitLogged = true;
+                            string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                            if (string.IsNullOrWhiteSpace(dir))
+                                dir = "/home/nichlas/EutherDrive/logs";
+                            Directory.CreateDirectory(dir);
+                            string hitPath = Path.Combine(dir, "sms_worker_hit.log");
+                            File.WriteAllText(hitPath, $"SMS worker hit at pc=0x{pc:X4}\n");
+                        }
+                        LogSmsWorkerReadAll(pc, a, result);
+                    }
+                    else if (_smsWorkerReadsAllLogCount < 20)
+                    {
+                        LogSmsWorkerReadAll(pc, a, result);
+                    }
+                }
                 LogSmsAccess("read", a, result);
                 MaybeLogZ80ReadRange(a, result);
                 return result;
@@ -1437,6 +1554,22 @@ namespace EutherDrive.Core.MdTracerCore
                     if (a >= 0xFFFC)
                         HandleSmsMapperWrite(a, in_data);
                     LogSmsRamWriteIfNeeded(a, in_data);
+                    if (TraceSmsC480Debug && a >= 0xC480 && a <= 0xC4FF)
+                        LogSmsC480Debug(a, in_data);
+                    if (TraceSmsDccDebug && a >= 0xDCC0 && a <= 0xDCFF)
+                        LogSmsDccDebug("write", a, in_data);
+                    if (TraceSmsC400Debug)
+                    {
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        if (pc == 0x5430 && a >= 0xC400 && a <= 0xC403)
+                            LogSmsC400Debug(a, in_data);
+                    }
+                    if (TraceSms77f1Debug)
+                    {
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        if (pc == 0x77F1)
+                            LogSms77f1Debug();
+                    }
                     ushort ramAddr = (ushort)(a & 0x1FFF);
                     g_ram[ramAddr] = in_data;
                     bool hasWriteRange = TryGetTraceRamWriteRange(out ushort rangeStart, out ushort rangeEnd);
@@ -1664,6 +1797,93 @@ namespace EutherDrive.Core.MdTracerCore
             if (a >= 0xC000)
             {
                 byte val = g_ram[(ushort)(a & 0x1FFF)];
+                if (ForceSmsDccFlags && (a == 0xDCD2 || a == 0xDCCC || a == 0xDCD5))
+                {
+                    if (val == 0)
+                        val = 0x01;
+                    if (!_forceDccLogged)
+                    {
+                        _forceDccLogged = true;
+                        Console.WriteLine("[SMS RAM] forcing non-zero DCC flags on reads (DCD2/DCCC/DCD5)");
+                    }
+                }
+                if (ForceSmsC400Bit7 && a == 0xC400)
+                {
+                    val = (byte)(val | 0x80);
+                    if (!_forceC400Logged)
+                    {
+                        _forceC400Logged = true;
+                        Console.WriteLine("[SMS RAM] forcing bit7 on reads from 0xC400");
+                        string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                        if (string.IsNullOrWhiteSpace(dir))
+                            dir = "/home/nichlas/EutherDrive/logs";
+                        Directory.CreateDirectory(dir);
+                        _forceC400LogPath = Path.Combine(dir, "sms_c400_force.log");
+                        File.WriteAllText(_forceC400LogPath, "SMS C400 force active (bit7 OR on read)\n");
+                    }
+                    if (_forceC400LogPath != null)
+                    {
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                        File.AppendAllText(_forceC400LogPath,
+                            $"frame={frame} pc=0x{pc:X4} read=0x{val:X2}\n");
+                    }
+                }
+                if (ForceSmsC400Bit7 && a == 0xC40D)
+                {
+                    if (_forceC400LogPath == null)
+                    {
+                        string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                        if (string.IsNullOrWhiteSpace(dir))
+                            dir = "/home/nichlas/EutherDrive/logs";
+                        Directory.CreateDirectory(dir);
+                        _forceC400LogPath = Path.Combine(dir, "sms_c400_force.log");
+                        File.WriteAllText(_forceC400LogPath, "SMS C400 force active (bit7 OR on read)\n");
+                    }
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                    File.AppendAllText(_forceC400LogPath,
+                        $"frame={frame} pc=0x{pc:X4} C40D=0x{val:X2}\n");
+                }
+                if (ForceSmsC414 && a == 0xC414)
+                {
+                    if (val == 0)
+                        val = 0x01;
+                    if (!_forceC414Logged)
+                    {
+                        _forceC414Logged = true;
+                        Console.WriteLine("[SMS RAM] forcing non-zero on reads from 0xC414");
+                    }
+                }
+                if (TraceSmsC40dDebug && a == 0xC40D)
+                    LogSmsC40dDebug(a, val);
+                if (TraceSmsDccDebug && a >= 0xDCC0 && a <= 0xDCFF)
+                    LogSmsDccDebug("read", a, val);
+                if (TraceSmsWorkerReads)
+                {
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    if (pc >= 0xAF4F && pc <= 0xB100)
+                    {
+                        if ((a >= 0xC480 && a <= 0xC4FF) || (a >= 0xDCC0 && a <= 0xDCFF))
+                            LogSmsWorkerRead(pc, a, val);
+                    }
+                }
+                if (TraceSmsWorkerReadsAll)
+                {
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    if (pc >= 0xAF4F && pc <= 0xB100)
+                        LogSmsWorkerReadAll(pc, a, val);
+                }
+                if (TraceSmsUploadDebug)
+                {
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    bool inUploadEntry = pc >= 0x77AB && pc <= 0x77C0;
+                    bool inUploadPrep = pc >= 0x77EE && pc <= 0x7805;
+                    bool inUploadWorker = pc >= 0x8000 && pc <= 0x8010;
+                    bool inUploadVramWrite = pc >= 0x43B0 && pc <= 0x43C8;
+                    if (inUploadEntry || inUploadPrep || inUploadWorker || inUploadVramWrite)
+                        LogSmsUploadDebug(pc);
+                }
                 TrackLastRead(a, val, false, 0);
                 LogSmsRamReadIfNeeded(a, val);
                 return val;
@@ -2253,6 +2473,7 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     value = md_main.g_md_vdp.read8(0xC00000);
                     SmsPortLog(port, "read", value);
+                    SmsPortLogFile(port, "read", value);
                     return true;
                 }
 
@@ -2280,6 +2501,7 @@ namespace EutherDrive.Core.MdTracerCore
                         $"[SMS STATUS] pc=0x{pc:X4} raw=0x{raw:X2} final=0x{value:X2} irq={ (irqPending ? 1 : 0) } line={line} frame={frame}");
                 }
                 SmsPortLog(port, "read", value);
+                SmsPortLogFile(port, "read", value);
                 return true;
             }
             if (port == 0x7E || port == 0x7F)
@@ -2289,12 +2511,14 @@ namespace EutherDrive.Core.MdTracerCore
                 else
                     value = md_main.g_md_vdp?.ReadSmsHCounter() ?? 0;
                 SmsPortLog(port, "read", value);
+                SmsPortLogFile(port, "read", value);
                 return true;
             }
 
             if (md_sms_io.TryReadPort(port, out value))
             {
                 SmsPortLog(port, "read", value);
+                SmsPortLogFile(port, "read", value);
                 return true;
             }
 
@@ -2350,6 +2574,7 @@ namespace EutherDrive.Core.MdTracerCore
                     md_main.g_md_vdp?.RecordSmsBeWrite();
                     md_main.g_md_vdp?.write8(0xC00000, data);
                     SmsPortLog(port, "write", data);
+                    SmsPortLogFile(port, "write", data);
                     return true;
                 }
 
@@ -2362,6 +2587,7 @@ namespace EutherDrive.Core.MdTracerCore
                 md_main.g_md_vdp?.RecordSmsBfWrite();
                 md_main.g_md_vdp?.write8(0xC00004, data);
                 SmsPortLog(port, "write", data);
+                SmsPortLogFile(port, "write", data);
                 return true;
             }
 
@@ -2370,6 +2596,7 @@ namespace EutherDrive.Core.MdTracerCore
                 md_psg_trace.TraceWrite("Z80-SMS", port, data, md_main.g_md_z80?.DebugPc ?? 0);
                 md_main.g_md_music?.g_md_sn76489.write8(data);
                 SmsPortLog(port, "write", data);
+                SmsPortLogFile(port, "write", data);
                 return true;
             }
 
@@ -2426,12 +2653,14 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         _smsBank0 = bank;
                         LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "Codemasters");
                         return true;
                     }
                     if (addr <= 0x7FFF)
                     {
                         _smsBank1 = bank;
                         LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "Codemasters");
                         return true;
                     }
                     if (addr <= 0xBFFF)
@@ -2440,11 +2669,13 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             g_ram[(ushort)(addr & 0x1FFF)] = value;
                             LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Codemasters");
                             return true;
                         }
                         _smsBank2 = bank;
                         _smsCodemastersRamEnabled = (value & 0x80) != 0;
                         LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "Codemasters");
                         return true;
                     }
                     return false;
@@ -2463,24 +2694,295 @@ namespace EutherDrive.Core.MdTracerCore
                             _smsSegaRamBank = (byte)((value >> 2) & 0x01);
                             _smsSegaRamEnabled = (value & 0x08) != 0;
                             LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Sega");
                             return true;
                         case 0xFFFD:
                             _smsBank0 = bank;
                             LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Sega");
                             return true;
                         case 0xFFFE:
                             _smsBank1 = bank;
                             LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Sega");
                             return true;
                         case 0xFFFF:
                             _smsBank2 = bank;
                             g_bank_register = bank;
                             LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Sega");
                             return true;
                         default:
                             return false;
                     }
             }
+        }
+
+        private static void LogSmsMapperWriteFile(ushort addr, byte value, string mapper)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsMapperFile)
+                return;
+
+            if (_smsMapperFileLogCount >= SmsMapperFileLogLimit)
+                return;
+
+            if (_smsMapperFileLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsMapperFileLogPath = Path.Combine(dir, "sms_mapper.log");
+                File.WriteAllText(_smsMapperFileLogPath, "SMS mapper log\n");
+            }
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            byte b0 = md_main.g_md_z80?.SmsBank0 ?? 0;
+            byte b1 = md_main.g_md_z80?.SmsBank1 ?? 0;
+            byte b2 = md_main.g_md_z80?.SmsBank2 ?? 0;
+            string line = $"frame={frame} pc=0x{pc:X4} mapper={mapper} addr=0x{addr:X4} val=0x{value:X2} " +
+                          $"bank0=0x{b0:X2} bank1=0x{b1:X2} bank2=0x{b2:X2}\n";
+            File.AppendAllText(_smsMapperFileLogPath, line);
+            _smsMapperFileLogCount++;
+        }
+
+        private static void LogSmsC400Debug(ushort addr, byte value)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsC400Debug)
+                return;
+
+            if (_smsC400DebugLogCount >= SmsC400DebugLogLimit)
+                return;
+
+            if (_smsC400DebugLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsC400DebugLogPath = Path.Combine(dir, "sms_c400_debug.log");
+                File.WriteAllText(_smsC400DebugLogPath, "SMS C400 debug log\n");
+            }
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            ushort bc = md_main.g_md_z80?.DebugBc ?? 0;
+            ushort de = md_main.g_md_z80?.DebugDe ?? 0;
+            ushort hl = md_main.g_md_z80?.DebugHl ?? 0;
+            ushort sp = md_main.g_md_z80?.DebugSp ?? 0;
+            byte a = md_main.g_md_z80?.DebugA ?? 0;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string line = $"frame={frame} pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} " +
+                          $"A=0x{a:X2} BC=0x{bc:X4} DE=0x{de:X4} HL=0x{hl:X4} SP=0x{sp:X4}\n";
+            File.AppendAllText(_smsC400DebugLogPath, line);
+            _smsC400DebugLogCount++;
+        }
+
+        private void LogSmsC40dDebug(ushort addr, byte value)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsC40dDebug)
+                return;
+
+            if (_smsC40dDebugLogCount >= SmsC40dDebugLogLimit)
+                return;
+
+            if (_smsC40dDebugLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsC40dDebugLogPath = Path.Combine(dir, "sms_c40d_debug.log");
+                File.WriteAllText(_smsC40dDebugLogPath, "SMS C40D debug log\n");
+            }
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            ushort hl = md_main.g_md_z80?.DebugHl ?? 0;
+            ushort bc = md_main.g_md_z80?.DebugBc ?? 0;
+            ushort de = md_main.g_md_z80?.DebugDe ?? 0;
+            ushort sp = md_main.g_md_z80?.DebugSp ?? 0;
+            byte a = md_main.g_md_z80?.DebugA ?? 0;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string flags = $"S={g_flag_S} Z={g_flag_Z} H={g_flag_H} P/V={g_flag_PV} N={g_flag_N} C={g_flag_C}";
+            string line = $"frame={frame} pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} " +
+                          $"A=0x{a:X2} BC=0x{bc:X4} DE=0x{de:X4} HL=0x{hl:X4} SP=0x{sp:X4} {flags}\n";
+            File.AppendAllText(_smsC40dDebugLogPath, line);
+            _smsC40dDebugLogCount++;
+        }
+
+        private void LogSmsUploadDebug(ushort pc)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsUploadDebug)
+                return;
+
+            if (_smsUploadDebugLogCount >= SmsUploadDebugLogLimit)
+                return;
+
+            if (_smsUploadDebugLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsUploadDebugLogPath = Path.Combine(dir, "sms_upload_debug.log");
+                File.WriteAllText(_smsUploadDebugLogPath, "SMS upload debug log\n");
+            }
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            ushort bc = md_main.g_md_z80?.DebugBc ?? 0;
+            ushort de = md_main.g_md_z80?.DebugDe ?? 0;
+            ushort hl = md_main.g_md_z80?.DebugHl ?? 0;
+            ushort sp = md_main.g_md_z80?.DebugSp ?? 0;
+            byte a = md_main.g_md_z80?.DebugA ?? 0;
+            ushort ix = md_main.g_md_z80?.DebugIx ?? 0;
+            ushort iy = md_main.g_md_z80?.DebugIy ?? 0;
+            byte c40d = g_ram[0x040D];
+            byte c414 = g_ram[0x0414];
+            byte c41e = g_ram[0x041E];
+            byte c44f = g_ram[0x044F];
+            byte c45f = g_ram[0x045F];
+            string line = $"frame={frame} pc=0x{pc:X4} A=0x{a:X2} BC=0x{bc:X4} DE=0x{de:X4} HL=0x{hl:X4} " +
+                          $"IX=0x{ix:X4} IY=0x{iy:X4} SP=0x{sp:X4} C40D=0x{c40d:X2} C414=0x{c414:X2} C41E=0x{c41e:X2} " +
+                          $"C44F=0x{c44f:X2} C45F=0x{c45f:X2}\n";
+            File.AppendAllText(_smsUploadDebugLogPath, line);
+            _smsUploadDebugLogCount++;
+        }
+
+        private void LogSmsC480Debug(ushort addr, byte value)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsC480Debug)
+                return;
+
+            if (_smsC480DebugLogCount >= SmsC480DebugLogLimit)
+                return;
+
+            if (_smsC480DebugLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsC480DebugLogPath = Path.Combine(dir, "sms_c480_debug.log");
+                File.WriteAllText(_smsC480DebugLogPath, "SMS C480 debug log\n");
+            }
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string line = $"frame={frame} pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2}\n";
+            File.AppendAllText(_smsC480DebugLogPath, line);
+            _smsC480DebugLogCount++;
+        }
+
+        private void LogSms77f1Debug()
+        {
+            if (!md_main.g_masterSystemMode || !TraceSms77f1Debug)
+                return;
+
+            if (_sms77f1DebugLogCount >= Sms77f1DebugLogLimit)
+                return;
+
+            if (_sms77f1DebugLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _sms77f1DebugLogPath = Path.Combine(dir, "sms_77f1_debug.log");
+                File.WriteAllText(_sms77f1DebugLogPath, "SMS 77F1 debug log\n");
+            }
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            ushort bc = md_main.g_md_z80?.DebugBc ?? 0;
+            ushort de = md_main.g_md_z80?.DebugDe ?? 0;
+            ushort hl = md_main.g_md_z80?.DebugHl ?? 0;
+            ushort sp = md_main.g_md_z80?.DebugSp ?? 0;
+            ushort ix = md_main.g_md_z80?.DebugIx ?? 0;
+            ushort iy = md_main.g_md_z80?.DebugIy ?? 0;
+            byte a = md_main.g_md_z80?.DebugA ?? 0;
+            byte c40d = g_ram[0x040D];
+            byte c414 = g_ram[0x0414];
+            byte c41e = g_ram[0x041E];
+            byte c44f = g_ram[0x044F];
+            byte c45f = g_ram[0x045F];
+            string line = $"frame={frame} pc=0x{pc:X4} A=0x{a:X2} BC=0x{bc:X4} DE=0x{de:X4} HL=0x{hl:X4} " +
+                          $"IX=0x{ix:X4} IY=0x{iy:X4} SP=0x{sp:X4} C40D=0x{c40d:X2} C414=0x{c414:X2} C41E=0x{c41e:X2} " +
+                          $"C44F=0x{c44f:X2} C45F=0x{c45f:X2}\n";
+            File.AppendAllText(_sms77f1DebugLogPath, line);
+            _sms77f1DebugLogCount++;
+        }
+
+        private void LogSmsDccDebug(string kind, ushort addr, byte value)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsDccDebug)
+                return;
+
+            if (_smsDccDebugLogCount >= SmsDccDebugLogLimit)
+                return;
+
+            if (_smsDccDebugLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsDccDebugLogPath = Path.Combine(dir, "sms_dcc_debug.log");
+                File.WriteAllText(_smsDccDebugLogPath, "SMS DCC debug log\n");
+            }
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            string line = $"frame={frame} pc=0x{pc:X4} {kind} addr=0x{addr:X4} val=0x{value:X2}\n";
+            File.AppendAllText(_smsDccDebugLogPath, line);
+            _smsDccDebugLogCount++;
+        }
+
+        private void LogSmsWorkerRead(ushort pc, ushort addr, byte value)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsWorkerReads)
+                return;
+
+            if (_smsWorkerReadsLogCount >= SmsWorkerReadsLogLimit)
+                return;
+
+            if (_smsWorkerReadsLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsWorkerReadsLogPath = Path.Combine(dir, "sms_worker_reads.log");
+                File.WriteAllText(_smsWorkerReadsLogPath, "SMS worker read log\n");
+            }
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string line = $"frame={frame} pc=0x{pc:X4} read addr=0x{addr:X4} val=0x{value:X2}\n";
+            File.AppendAllText(_smsWorkerReadsLogPath, line);
+            _smsWorkerReadsLogCount++;
+        }
+
+        private void LogSmsWorkerReadAll(ushort pc, ushort addr, byte value)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsWorkerReadsAll)
+                return;
+
+            if (_smsWorkerReadsAllLogCount >= SmsWorkerReadsAllLogLimit)
+                return;
+
+            if (_smsWorkerReadsAllLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsWorkerReadsAllLogPath = Path.Combine(dir, "sms_worker_reads_all.log");
+                File.WriteAllText(_smsWorkerReadsAllLogPath, "SMS worker read-all log\n");
+            }
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string line = $"frame={frame} pc=0x{pc:X4} read addr=0x{addr:X4} val=0x{value:X2}\n";
+            File.AppendAllText(_smsWorkerReadsAllLogPath, line);
+            _smsWorkerReadsAllLogCount++;
         }
 
         private static void SmsPortLog(ushort port, string action, ushort value)
@@ -2519,6 +3021,31 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             MdTracerCore.MdLog.WriteLine($"[md_z80 SMS port {action}] port=0x{port:X2} value=0x{value:X4}");
+        }
+
+        private static void SmsPortLogFile(ushort port, string action, ushort value)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsIoFile)
+                return;
+
+            if (_smsPortFileLogCount >= SmsPortFileLogLimit)
+                return;
+
+            if (_smsPortFileLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsPortFileLogPath = Path.Combine(dir, "sms_port_io.log");
+                File.WriteAllText(_smsPortFileLogPath, "SMS port IO log\n");
+            }
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string line = $"frame={frame} pc=0x{pc:X4} {action} port=0x{port:X2} val=0x{value:X2}\n";
+            File.AppendAllText(_smsPortFileLogPath, line);
+            _smsPortFileLogCount++;
         }
 
         private static void LogSmsStatusPoll(byte rawStatus, byte finalStatus, bool irqPending)

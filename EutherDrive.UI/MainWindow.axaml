@@ -20,6 +20,7 @@
       <Button Content="Start" Click="OnStart"/>
       <Button Content="Stop" Click="OnStop"/>
       <Button Content="About" Click="OnAbout"/>
+      <Button Content="Input Settings" Click="OnInputSettings"/>
       <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
         <TextBlock Text="Master vol" VerticalAlignment="Center"/>
         <Slider Name="MasterVolumeSlider"

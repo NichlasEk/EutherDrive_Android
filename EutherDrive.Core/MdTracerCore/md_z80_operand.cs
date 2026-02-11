@@ -1,9 +1,33 @@
 ﻿using System;
+using System.IO;
 
 namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_z80
     {
+        private static readonly bool TraceSmsBranch =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_BRANCH"), "1", StringComparison.Ordinal);
+        private const int SmsBranchLogLimit = 20000;
+        private static int _smsBranchLogCount;
+        private static string? _smsBranchLogPath;
+        private static readonly bool TraceSmsCall77 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_CALL77"), "1", StringComparison.Ordinal);
+        private const int SmsCall77LogLimit = 20000;
+        private static int _smsCall77LogCount;
+        private static string? _smsCall77LogPath;
+        private static readonly bool TraceSmsCall96 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_CALL96"), "1", StringComparison.Ordinal);
+        private const int SmsCall96LogLimit = 20000;
+        private static int _smsCall96LogCount;
+        private static string? _smsCall96LogPath;
+        private static readonly bool ForceSmsCall77ab =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_FORCE_CALL_77AB"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSmsStack77 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_STACK77"), "1", StringComparison.Ordinal);
+        private const int SmsStack77LogLimit = 2000;
+        private static int _smsStack77LogCount;
+        private static string? _smsStack77LogPath;
+
         private void op_LD_r1_r2()
         {
             byte w_val = read_reg(g_opcode1_210);
@@ -1320,6 +1344,9 @@ namespace EutherDrive.Core.MdTracerCore
         {
             byte mask = (byte)(1 << in_bit);
             g_flag_Z = ((in_val1 & mask) == 0) ? 1 : 0;
+            // Z80 BIT: PV mirrors Z; S set only when testing bit 7 and it is set.
+            g_flag_PV = g_flag_Z;
+            g_flag_S = (in_bit == 7 && (in_val1 & 0x80) != 0) ? 1 : 0;
             g_flag_H = 1;
             g_flag_N = 0;
         }
@@ -1497,7 +1524,9 @@ namespace EutherDrive.Core.MdTracerCore
         private void op_JP_cc_nn()
         {
             ushort w_addr = g_opcode23;
-            if (chk_condion(g_opcode1_543))
+            bool taken = chk_condion(g_opcode1_543);
+            LogSmsBranch("JPcc", g_reg_PC, w_addr, taken);
+            if (taken)
             {
                 g_reg_PC = w_addr;
             }
@@ -1522,7 +1551,13 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_JR_c_e()
         {
-            if (g_flag_C == 1)
+            ushort pcBefore = g_reg_PC;
+            ushort pcAfterDisp = (ushort)(pcBefore + 2);
+            sbyte disp = (sbyte)g_opcode2;
+            ushort target = unchecked((ushort)(pcAfterDisp + disp));
+            bool taken = g_flag_C == 1;
+            LogSmsBranch("JRc", pcBefore, target, taken);
+            if (taken)
             {
                 g_reg_PC = (ushort)((int)g_reg_PC + (sbyte)g_opcode2);
             }
@@ -1531,7 +1566,13 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_JR_nc_e()
         {
-            if (g_flag_C == 0)
+            ushort pcBefore = g_reg_PC;
+            ushort pcAfterDisp = (ushort)(pcBefore + 2);
+            sbyte disp = (sbyte)g_opcode2;
+            ushort target = unchecked((ushort)(pcAfterDisp + disp));
+            bool taken = g_flag_C == 0;
+            LogSmsBranch("JRnc", pcBefore, target, taken);
+            if (taken)
             {
                 g_reg_PC = (ushort)((int)g_reg_PC + (sbyte)g_opcode2);
             }
@@ -1540,7 +1581,13 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_JR_z_e()
         {
-            if (g_flag_Z == 1)
+            ushort pcBefore = g_reg_PC;
+            ushort pcAfterDisp = (ushort)(pcBefore + 2);
+            sbyte disp = (sbyte)g_opcode2;
+            ushort target = unchecked((ushort)(pcAfterDisp + disp));
+            bool taken = g_flag_Z == 1;
+            LogSmsBranch("JRz", pcBefore, target, taken);
+            if (taken)
             {
                 g_reg_PC = (ushort)((int)g_reg_PC + (sbyte)g_opcode2);
             }
@@ -1549,7 +1596,13 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_JR_nz_e()
         {
-            if (g_flag_Z == 0)
+            ushort pcBefore = g_reg_PC;
+            ushort pcAfterDisp = (ushort)(pcBefore + 2);
+            sbyte disp = (sbyte)g_opcode2;
+            ushort target = unchecked((ushort)(pcAfterDisp + disp));
+            bool taken = g_flag_Z == 0;
+            LogSmsBranch("JRnz", pcBefore, target, taken);
+            if (taken)
             {
                 g_reg_PC = (ushort)((int)g_reg_PC + (sbyte)g_opcode2);
             }
@@ -1592,15 +1645,42 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 Console.WriteLine($"[SMS CALL] PC=0x{g_reg_PC:X4} op2=0x{g_opcode2:X2} op3=0x{g_opcode3:X2} target=0x{g_opcode23:X4}");
             }
+            ushort target = g_opcode23;
+            if (md_main.g_masterSystemMode && ForceSmsCall77ab && g_reg_PC == 0x9695 && target == 0x7728)
+                target = 0x77AB;
+            if (md_main.g_masterSystemMode && TraceSmsStack77 && _smsStack77LogCount < SmsStack77LogLimit && target == 0x77EE)
+            {
+                if (_smsStack77LogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _smsStack77LogPath = Path.Combine(dir, "sms_stack77.log");
+                    File.WriteAllText(_smsStack77LogPath, "SMS stack77 log\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                ushort spBefore = g_reg_SP;
+                ushort retAddr = (ushort)(g_reg_PC + 3);
+                File.AppendAllText(_smsStack77LogPath,
+                    $"frame={frame} CALL pc=0x{g_reg_PC:X4} target=0x{target:X4} SP=0x{spBefore:X4} ret=0x{retAddr:X4}\n");
+                _smsStack77LogCount++;
+            }
+            LogSmsCall77(g_reg_PC, target, true);
+            LogSmsCall96(g_reg_PC, target, true);
             ushort w_pc = (ushort)(g_reg_PC + 3);
             stack_push((byte)((w_pc >> 8) & 0xff));
             stack_push((byte)(w_pc & 0xff));
-            g_reg_PC = g_opcode23;
+            g_reg_PC = target;
             g_clock = 17;
         }
         private void op_CALL_cc_nn()
         {
-            if (chk_condion(g_opcode1_543))
+            bool taken = chk_condion(g_opcode1_543);
+            LogSmsCall77(g_reg_PC, g_opcode23, taken);
+            LogSmsBranch("CALLcc", g_reg_PC, g_opcode23, taken);
+            LogSmsCall96(g_reg_PC, g_opcode23, taken);
+            if (taken)
             {
                 ushort w_pc = (ushort)(g_reg_PC + 3);
                 stack_push((byte)((w_pc >> 8) & 0xff));
@@ -1616,13 +1696,35 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RET()
         {
+            if (md_main.g_masterSystemMode && TraceSmsStack77 && _smsStack77LogCount < SmsStack77LogLimit && g_reg_PC == 0x77FA)
+            {
+                if (_smsStack77LogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _smsStack77LogPath = Path.Combine(dir, "sms_stack77.log");
+                    File.WriteAllText(_smsStack77LogPath, "SMS stack77 log\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                ushort spBefore = g_reg_SP;
+                byte lo = read_byte(spBefore);
+                byte hi = read_byte((ushort)(spBefore + 1));
+                ushort retAddr = (ushort)((hi << 8) | lo);
+                File.AppendAllText(_smsStack77LogPath,
+                    $"frame={frame} RET pc=0x{g_reg_PC:X4} SP=0x{spBefore:X4} ret=0x{retAddr:X4}\n");
+                _smsStack77LogCount++;
+            }
             g_write_PCL(stack_pop());
             g_write_PCH(stack_pop());
             g_clock = 10;
         }
         private void op_RET_cc()
         {
-            if (chk_condion(g_opcode1_543))
+            bool taken = chk_condion(g_opcode1_543);
+            LogSmsBranch("RETcc", g_reg_PC, g_reg_PC, taken);
+            if (taken)
             {
                 g_write_PCL(stack_pop());
                 g_write_PCH(stack_pop());
@@ -1810,6 +1912,31 @@ namespace EutherDrive.Core.MdTracerCore
         private void op_OUT_N_a()
         {
             uint port = NormalizeIoPort((ushort)((g_reg_A << 8) | g_opcode2));
+            if (md_main.g_masterSystemMode && TraceSmsOut && ((port & 0xFF) == 0xBE || (port & 0xFF) == 0xBF))
+            {
+                ushort pc = g_reg_PC;
+                if ((port & 0xFF) == 0xBE)
+                {
+                    ushort hl = g_reg_HL;
+                    byte hlVal = PeekZ80ByteNoSideEffect(hl);
+                    string src = hl < 0x4000 ? "RAM" : (hl >= 0x8000 ? "ROM" : "OPEN");
+                    if (TraceSmsOutDetail)
+                    {
+                        string bytes = DumpZ80PcBytes(pc, 0, 7);
+                        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                        Console.WriteLine($"[SMS OUT] frame={frame} pc=0x{pc:X4} op=OUT n,A port=0x{(port & 0xFF):X2} A=0x{g_reg_A:X2} F=0x{g_status_flag:X2} BC=0x{g_reg_BC:X4} DE=0x{g_reg_DE:X4} HL=0x{hl:X4} src={src} mem=0x{hlVal:X2} bytes={bytes}");
+                    }
+                    else
+                    {
+                        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                        Console.WriteLine($"[SMS OUT] frame={frame} pc=0x{pc:X4} op=OUT n,A port=0x{(port & 0xFF):X2} A=0x{g_reg_A:X2} HL=0x{hl:X4} src={src} mem=0x{hlVal:X2}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"[SMS OUT] pc=0x{pc:X4} op=OUT n,A port=0x{(port & 0xFF):X2} A=0x{g_reg_A:X2}");
+                }
+            }
             TraceSmsIo("OUT n", port, g_reg_A);
             write8(port, g_reg_A);
             g_reg_PC += 2;
@@ -1819,6 +1946,31 @@ namespace EutherDrive.Core.MdTracerCore
         {
             uint port = NormalizeIoPort(g_reg_BC);
             byte value = read_reg(g_opcode2_543);
+            if (md_main.g_masterSystemMode && TraceSmsOut && ((port & 0xFF) == 0xBE || (port & 0xFF) == 0xBF))
+            {
+                ushort pc = g_reg_PC;
+                if ((port & 0xFF) == 0xBE)
+                {
+                    ushort hl = g_reg_HL;
+                    byte hlVal = PeekZ80ByteNoSideEffect(hl);
+                    string src = hl < 0x4000 ? "RAM" : (hl >= 0x8000 ? "ROM" : "OPEN");
+                    if (TraceSmsOutDetail)
+                    {
+                        string bytes = DumpZ80PcBytes(pc, 0, 7);
+                        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                        Console.WriteLine($"[SMS OUT] frame={frame} pc=0x{pc:X4} op=OUT (C),r port=0x{(port & 0xFF):X2} val=0x{value:X2} A=0x{g_reg_A:X2} F=0x{g_status_flag:X2} BC=0x{g_reg_BC:X4} DE=0x{g_reg_DE:X4} HL=0x{hl:X4} src={src} mem=0x{hlVal:X2} bytes={bytes}");
+                    }
+                    else
+                    {
+                        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                        Console.WriteLine($"[SMS OUT] frame={frame} pc=0x{pc:X4} op=OUT (C),r port=0x{(port & 0xFF):X2} val=0x{value:X2} A=0x{g_reg_A:X2} B=0x{g_reg_B:X2} C=0x{g_reg_C:X2} HL=0x{hl:X4} src={src} mem=0x{hlVal:X2}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"[SMS OUT] pc=0x{pc:X4} op=OUT (C),r port=0x{(port & 0xFF):X2} val=0x{value:X2} A=0x{g_reg_A:X2} B=0x{g_reg_B:X2} C=0x{g_reg_C:X2}");
+                }
+            }
             TraceSmsIo("OUT c", port, value);
             write8(port, value);
             g_reg_PC += 2;
@@ -1828,6 +1980,15 @@ namespace EutherDrive.Core.MdTracerCore
         {
             uint port = NormalizeIoPort(g_reg_BC);
             byte value = read_byte(g_reg_HL);
+            if (md_main.g_masterSystemMode && TraceSmsOuti)
+            {
+                ushort pc = g_reg_PC;
+                ushort hl = g_reg_HL;
+                byte b = g_reg_B;
+                byte c = g_reg_C;
+                string src = hl >= 0xC000 ? "RAM" : "ROM";
+                Console.WriteLine($"[SMS OUTI] pc=0x{pc:X4} port=0x{(port & 0xFF):X2} HL=0x{hl:X4} src={src} val=0x{value:X2} B=0x{b:X2} C=0x{c:X2}");
+            }
             write8(port, value);
             ushort newHL = (ushort)(g_reg_HL + 1);
             g_reg_H = (byte)((newHL >> 8) & 0xFF);
@@ -1844,6 +2005,15 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 uint port = NormalizeIoPort(g_reg_BC);
                 byte value = read_byte(g_reg_HL);
+                if (md_main.g_masterSystemMode && TraceSmsOuti)
+                {
+                    ushort pc = g_reg_PC;
+                    ushort hl = g_reg_HL;
+                    byte b = g_reg_B;
+                    byte c = g_reg_C;
+                    string src = hl >= 0xC000 ? "RAM" : "ROM";
+                    Console.WriteLine($"[SMS OUTIR] pc=0x{pc:X4} port=0x{(port & 0xFF):X2} HL=0x{hl:X4} src={src} val=0x{value:X2} B=0x{b:X2} C=0x{c:X2}");
+                }
                 write8(port, value);
                 ushort newHL = (ushort)(g_reg_HL + 1);
                 g_reg_H = (byte)((newHL >> 8) & 0xFF);
@@ -1860,6 +2030,15 @@ namespace EutherDrive.Core.MdTracerCore
         {
             uint port = NormalizeIoPort(g_reg_BC);
             byte value = read_byte(g_reg_HL);
+            if (md_main.g_masterSystemMode && TraceSmsOuti)
+            {
+                ushort pc = g_reg_PC;
+                ushort hl = g_reg_HL;
+                byte b = g_reg_B;
+                byte c = g_reg_C;
+                string src = hl >= 0xC000 ? "RAM" : "ROM";
+                Console.WriteLine($"[SMS OUTD] pc=0x{pc:X4} port=0x{(port & 0xFF):X2} HL=0x{hl:X4} src={src} val=0x{value:X2} B=0x{b:X2} C=0x{c:X2}");
+            }
             write8(port, value);
             ushort newHL = (ushort)(g_reg_HL - 1);
             g_reg_H = (byte)((newHL >> 8) & 0xFF);
@@ -1876,6 +2055,15 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 uint port = NormalizeIoPort(g_reg_BC);
                 byte value = read_byte(g_reg_HL);
+                if (md_main.g_masterSystemMode && TraceSmsOuti)
+                {
+                    ushort pc = g_reg_PC;
+                    ushort hl = g_reg_HL;
+                    byte b = g_reg_B;
+                    byte c = g_reg_C;
+                    string src = hl >= 0xC000 ? "RAM" : "ROM";
+                    Console.WriteLine($"[SMS OUTDR] pc=0x{pc:X4} port=0x{(port & 0xFF):X2} HL=0x{hl:X4} src={src} val=0x{value:X2} B=0x{b:X2} C=0x{c:X2}");
+                }
                 write8(port, value);
                 ushort newHL = (ushort)(g_reg_HL - 1);
                 g_reg_H = (byte)((newHL >> 8) & 0xFF);
@@ -1889,6 +2077,89 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock += 16;
         }
         //--------------------------------------
+        private void LogSmsBranch(string kind, ushort pc, ushort target, bool taken)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsBranch)
+                return;
+
+            if (_smsBranchLogCount >= SmsBranchLogLimit)
+                return;
+
+            // Only care about the upload control window.
+            if (pc < 0x77AB || pc > 0x7805)
+                return;
+
+            if (_smsBranchLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsBranchLogPath = Path.Combine(dir, "sms_branch_77.log");
+                File.WriteAllText(_smsBranchLogPath, "SMS branch log (0x77AB-0x7805)\n");
+            }
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string flags = $"S={g_flag_S} Z={g_flag_Z} H={g_flag_H} P/V={g_flag_PV} N={g_flag_N} C={g_flag_C}";
+            string line = $"frame={frame} pc=0x{pc:X4} {kind} target=0x{target:X4} taken={(taken ? 1 : 0)} {flags}\n";
+            File.AppendAllText(_smsBranchLogPath, line);
+            _smsBranchLogCount++;
+        }
+
+        private void LogSmsCall77(ushort pc, ushort target, bool taken)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsCall77)
+                return;
+
+            if (_smsCall77LogCount >= SmsCall77LogLimit)
+                return;
+
+            if (target != 0x77AB && target != 0x7728 && target != 0x77EE)
+                return;
+
+            if (_smsCall77LogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsCall77LogPath = Path.Combine(dir, "sms_call77.log");
+                File.WriteAllText(_smsCall77LogPath, "SMS call77 log\n");
+            }
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string line = $"frame={frame} pc=0x{pc:X4} target=0x{target:X4} taken={(taken ? 1 : 0)}\n";
+            File.AppendAllText(_smsCall77LogPath, line);
+            _smsCall77LogCount++;
+        }
+
+        private void LogSmsCall96(ushort pc, ushort target, bool taken)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsCall96)
+                return;
+
+            if (_smsCall96LogCount >= SmsCall96LogLimit)
+                return;
+
+            if (target < 0x9680 || target > 0x96B0)
+                return;
+
+            if (_smsCall96LogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsCall96LogPath = Path.Combine(dir, "sms_call96.log");
+                File.WriteAllText(_smsCall96LogPath, "SMS call96 log\n");
+            }
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            string line = $"frame={frame} pc=0x{pc:X4} target=0x{target:X4} taken={(taken ? 1 : 0)}\n";
+            File.AppendAllText(_smsCall96LogPath, line);
+            _smsCall96LogCount++;
+        }
+
         private uint NormalizeIoPort(ushort port)
         {
             ushort low = (ushort)(port & 0x00FF);
@@ -1916,6 +2187,13 @@ namespace EutherDrive.Core.MdTracerCore
             }
             return low;
         }
+
+        private static readonly bool TraceSmsOuti =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_OUTI"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSmsOut =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_OUT"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSmsOutDetail =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_OUT_DETAIL"), "1", StringComparison.Ordinal);
 
         private static readonly bool TraceSmsIoEnabled =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IO"), "1", StringComparison.Ordinal);

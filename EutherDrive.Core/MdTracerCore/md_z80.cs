@@ -17,6 +17,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_INT_DEBUG"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80Boot =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_BOOT"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceZ80BootFile =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_BOOT_FILE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80BootFileLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80_BOOT_FILE_LIMIT", 2000);
         private static readonly bool TraceZ80Speed =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_SPEED"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80SigTransitions =
@@ -27,6 +31,12 @@ namespace EutherDrive.Core.MdTracerCore
         internal ushort DebugPc => g_reg_PC;
         internal ushort CpuPc => g_reg_PC;
         internal ushort DebugBc => g_reg_BC;
+        internal ushort DebugDe => (ushort)((g_reg_D << 8) + g_reg_E);
+        internal ushort DebugHl => (ushort)((g_reg_H << 8) + g_reg_L);
+        internal ushort DebugSp => g_reg_SP;
+        internal byte DebugA => g_reg_A;
+        internal ushort DebugIx => g_reg_IX;
+        internal ushort DebugIy => g_reg_IY;
         internal uint DebugBankRegister => g_bank_register & 0x1FFu;
         internal uint DebugBankBase => (g_bank_register & 0x1FFu) * 0x8000u;
         internal ushort DebugLastReadAddr => _lastReadAddr;
@@ -37,6 +47,45 @@ namespace EutherDrive.Core.MdTracerCore
         internal long DebugTotalCycles => _totalCycles;
         internal long BudgetCycles => _budgetCycles;  // Always advances when run() is called
         internal long DebugSystemCycleDelta => _systemCycleDelta;
+        private static readonly bool TraceSmsPc77 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_PC77"), "1", StringComparison.Ordinal);
+        private const int SmsPc77LogLimit = 50000;
+        private static int _smsPc77LogCount;
+        private static string? _smsPc77LogPath;
+        private static readonly bool TraceSms77ee =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_77EE"), "1", StringComparison.Ordinal);
+        private static int _sms77eeLogCount;
+        private static string? _sms77eeLogPath;
+        private static ushort _prevPc;
+        private static readonly bool TraceSmsPc77Pre =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_PC77_PRE"), "1", StringComparison.Ordinal);
+        private const int SmsPc77PreLogLimit = 50000;
+        private static int _smsPc77PreLogCount;
+        private static string? _smsPc77PreLogPath;
+        private static readonly bool TraceSms7728 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DEBUG_7728"), "1", StringComparison.Ordinal);
+        private static int _sms7728LogCount;
+        private static string? _sms7728LogPath;
+        private static readonly bool TraceSmsPc96 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_PC96"), "1", StringComparison.Ordinal);
+        private const int SmsPc96LogLimit = 50000;
+        private static int _smsPc96LogCount;
+        private static string? _smsPc96LogPath;
+        private static readonly bool TraceSmsPc07 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_PC07"), "1", StringComparison.Ordinal);
+        private const int SmsPc07LogLimit = 50000;
+        private static int _smsPc07LogCount;
+        private static string? _smsPc07LogPath;
+        private static readonly bool TraceSmsPc41 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_PC41"), "1", StringComparison.Ordinal);
+        private const int SmsPc41LogLimit = 50000;
+        private static int _smsPc41LogCount;
+        private static string? _smsPc41LogPath;
+        private static readonly bool TraceSmsPc54 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_TRACE_PC54"), "1", StringComparison.Ordinal);
+        private const int SmsPc54LogLimit = 50000;
+        private static int _smsPc54LogCount;
+        private static string? _smsPc54LogPath;
 
         internal void BeginSystemCycleSlice()
         {
@@ -107,6 +156,12 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_TRACE_Z80PCHIST_LIMIT", 4);
         private static readonly int TraceZ80PcHistMin =
             ParseTraceLimit("EUTHERDRIVE_TRACE_Z80PCHIST_MIN", 1);
+        private static readonly bool TraceZ80PcFile =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_PC_FILE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceZ80PcFileLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_Z80_PC_FILE_LIMIT", 20000);
+        private static int _traceZ80PcFileCount;
+        private static string? _traceZ80PcFilePath;
         private static readonly bool TraceZ80DdcbBit =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_DDCB_BIT"), "1", StringComparison.Ordinal);
         private static readonly int TraceZ80DdcbBitLimit =
@@ -155,6 +210,8 @@ namespace EutherDrive.Core.MdTracerCore
         private long _z80StatsIrqCount;
         private long _z80StatsBlockedCount;
         private int _bootInstrCount;
+        private int _bootFileLogged;
+        private string? _bootFilePath;
         private int _runCount;
         private readonly int[] _pcHist = new int[0x10000];
         private int _pcHistTotal;
@@ -621,6 +678,161 @@ namespace EutherDrive.Core.MdTracerCore
             }
             ushort pcBefore = g_reg_PC;
             RecordPcHist(pcBefore);
+            if (md_main.g_masterSystemMode && TraceSms77ee && _sms77eeLogCount < 2000 && pcBefore == 0x77EE)
+            {
+                if (_sms77eeLogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _sms77eeLogPath = Path.Combine(dir, "sms_77ee_debug.log");
+                    File.WriteAllText(_sms77eeLogPath, "SMS 77EE debug log\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                ushort sp = g_reg_SP;
+                byte lo = read8(sp);
+                byte hi = read8((ushort)(sp + 1));
+                ushort ret = (ushort)((hi << 8) | lo);
+                File.AppendAllText(_sms77eeLogPath,
+                    $"frame={frame} pc=0x{pcBefore:X4} prev=0x{_prevPc:X4} SP=0x{sp:X4} ret=0x{ret:X4}\n");
+                _sms77eeLogCount++;
+            }
+            if (md_main.g_masterSystemMode && TraceSms7728 && _sms7728LogCount < 2000 && pcBefore == 0x7728)
+            {
+                if (_sms7728LogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _sms7728LogPath = Path.Combine(dir, "sms_7728_debug.log");
+                    File.WriteAllText(_sms7728LogPath, "SMS 7728 debug log\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                ushort sp = g_reg_SP;
+                byte lo = read8(sp);
+                byte hi = read8((ushort)(sp + 1));
+                ushort ret = (ushort)((hi << 8) | lo);
+                File.AppendAllText(_sms7728LogPath,
+                    $"frame={frame} pc=0x{pcBefore:X4} prev=0x{_prevPc:X4} SP=0x{sp:X4} ret=0x{ret:X4}\n");
+                _sms7728LogCount++;
+            }
+            if (md_main.g_masterSystemMode && TraceSmsPc96 && _smsPc96LogCount < SmsPc96LogLimit &&
+                pcBefore >= 0x9680 && pcBefore <= 0x96B0)
+            {
+                if (_smsPc96LogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _smsPc96LogPath = Path.Combine(dir, "sms_pc_96.log");
+                    File.WriteAllText(_smsPc96LogPath, "SMS PC log (0x9680-0x96B0)\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                string bytes = DumpZ80PcBytes(pcBefore, 0, 7);
+                string flags = $"S={g_flag_S} Z={g_flag_Z} H={g_flag_H} P/V={g_flag_PV} N={g_flag_N} C={g_flag_C}";
+                File.AppendAllText(_smsPc96LogPath,
+                    $"frame={frame} pc=0x{pcBefore:X4} prev=0x{_prevPc:X4} op=0x{g_opcode1:X2} op2=0x{g_opcode2:X2} op3=0x{g_opcode3:X2} op4=0x{g_opcode4:X2} {flags} bytes={bytes}\n");
+                _smsPc96LogCount++;
+            }
+            if (md_main.g_masterSystemMode && TraceSmsPc07 && _smsPc07LogCount < SmsPc07LogLimit &&
+                pcBefore >= 0x0700 && pcBefore <= 0x0730)
+            {
+                if (_smsPc07LogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _smsPc07LogPath = Path.Combine(dir, "sms_pc_07.log");
+                    File.WriteAllText(_smsPc07LogPath, "SMS PC log (0x0700-0x0730)\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                string bytes = DumpZ80PcBytes(pcBefore, 0, 7);
+                string flags = $"S={g_flag_S} Z={g_flag_Z} H={g_flag_H} P/V={g_flag_PV} N={g_flag_N} C={g_flag_C}";
+                File.AppendAllText(_smsPc07LogPath,
+                    $"frame={frame} pc=0x{pcBefore:X4} prev=0x{_prevPc:X4} op=0x{g_opcode1:X2} op2=0x{g_opcode2:X2} op3=0x{g_opcode3:X2} op4=0x{g_opcode4:X2} {flags} bytes={bytes}\n");
+                _smsPc07LogCount++;
+            }
+            if (md_main.g_masterSystemMode && TraceSmsPc41 && _smsPc41LogCount < SmsPc41LogLimit &&
+                pcBefore >= 0x4130 && pcBefore <= 0x4180)
+            {
+                if (_smsPc41LogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _smsPc41LogPath = Path.Combine(dir, "sms_pc_41.log");
+                    File.WriteAllText(_smsPc41LogPath, "SMS PC log (0x4130-0x4180)\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                string bytes = DumpZ80PcBytes(pcBefore, 0, 7);
+                string flags = $"S={g_flag_S} Z={g_flag_Z} H={g_flag_H} P/V={g_flag_PV} N={g_flag_N} C={g_flag_C}";
+                File.AppendAllText(_smsPc41LogPath,
+                    $"frame={frame} pc=0x{pcBefore:X4} prev=0x{_prevPc:X4} op=0x{g_opcode1:X2} op2=0x{g_opcode2:X2} op3=0x{g_opcode3:X2} op4=0x{g_opcode4:X2} {flags} bytes={bytes}\n");
+                _smsPc41LogCount++;
+            }
+            if (md_main.g_masterSystemMode && TraceSmsPc77Pre && _smsPc77PreLogCount < SmsPc77PreLogLimit &&
+                pcBefore >= 0x7700 && pcBefore <= 0x7750)
+            {
+                if (_smsPc77PreLogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _smsPc77PreLogPath = Path.Combine(dir, "sms_pc_77_pre.log");
+                    File.WriteAllText(_smsPc77PreLogPath, "SMS PC log (0x7700-0x7750)\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                string bytes = DumpZ80PcBytes(pcBefore, 0, 7);
+                string flags = $"S={g_flag_S} Z={g_flag_Z} H={g_flag_H} P/V={g_flag_PV} N={g_flag_N} C={g_flag_C}";
+                File.AppendAllText(_smsPc77PreLogPath,
+                    $"frame={frame} pc=0x{pcBefore:X4} op=0x{g_opcode1:X2} op2=0x{g_opcode2:X2} op3=0x{g_opcode3:X2} op4=0x{g_opcode4:X2} {flags} bytes={bytes}\n");
+                _smsPc77PreLogCount++;
+            }
+            if (md_main.g_masterSystemMode && TraceSmsPc54 && _smsPc54LogCount < SmsPc54LogLimit &&
+                pcBefore >= 0x54E0 && pcBefore <= 0x5510)
+            {
+                if (_smsPc54LogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _smsPc54LogPath = Path.Combine(dir, "sms_pc_54.log");
+                    File.WriteAllText(_smsPc54LogPath, "SMS PC log (0x54E0-0x5510)\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                string bytes = DumpZ80PcBytes(pcBefore, 0, 7);
+                string flags = $"S={g_flag_S} Z={g_flag_Z} H={g_flag_H} P/V={g_flag_PV} N={g_flag_N} C={g_flag_C}";
+                File.AppendAllText(_smsPc54LogPath,
+                    $"frame={frame} pc=0x{pcBefore:X4} op=0x{g_opcode1:X2} op2=0x{g_opcode2:X2} op3=0x{g_opcode3:X2} op4=0x{g_opcode4:X2} {flags} bytes={bytes}\n");
+                _smsPc54LogCount++;
+            }
+            if (md_main.g_masterSystemMode && TraceSmsPc77 && _smsPc77LogCount < SmsPc77LogLimit &&
+                pcBefore >= 0x77AB && pcBefore <= 0x7805)
+            {
+                if (_smsPc77LogPath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _smsPc77LogPath = Path.Combine(dir, "sms_pc_77.log");
+                    File.WriteAllText(_smsPc77LogPath, "SMS PC log (0x77AB-0x7805)\n");
+                }
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                string bytes = DumpZ80PcBytes(pcBefore, 0, 7);
+                string flags = $"S={g_flag_S} Z={g_flag_Z} H={g_flag_H} P/V={g_flag_PV} N={g_flag_N} C={g_flag_C}";
+                File.AppendAllText(_smsPc77LogPath,
+                    $"frame={frame} pc=0x{pcBefore:X4} op=0x{g_opcode1:X2} op2=0x{g_opcode2:X2} op3=0x{g_opcode3:X2} op4=0x{g_opcode4:X2} {flags} bytes={bytes}\n");
+                _smsPc77LogCount++;
+            }
+            _prevPc = pcBefore;
             if (TraceSmsDelay && pcBefore == 0x056B)
             {
                 LogSmsDelayEntry(pcBefore);
@@ -830,6 +1042,7 @@ namespace EutherDrive.Core.MdTracerCore
                     $"op3=0x{opcode3:X2} op4=0x{opcode4:X2} " +
                     $"A=0x{g_reg_A:X2} BC=0x{g_reg_BC:X4} DE=0x{g_reg_DE:X4} HL=0x{g_reg_HL:X4} SP=0x{g_reg_SP:X4}");
             }
+            LogZ80PcFile(pcBefore, opcode, opcode2, opcode3, opcode4);
             g_operand[opcode]();   // exekvera en instruktion
             if (_waitCycles > 0)
             {
@@ -889,6 +1102,25 @@ namespace EutherDrive.Core.MdTracerCore
             if (TraceZ80Boot && _bootInstrCount <= 50)
             {
                 Console.WriteLine($"[Z80-EXEC-{_bootInstrCount}] pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} opcode=0x{opcode:X2} SP=0x{g_reg_SP:X4}");
+            }
+            if (TraceZ80BootFile && _bootFileLogged < TraceZ80BootFileLimit)
+            {
+                if (_bootFilePath == null)
+                {
+                    string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                    if (string.IsNullOrWhiteSpace(dir))
+                        dir = "/home/nichlas/EutherDrive/logs";
+                    Directory.CreateDirectory(dir);
+                    _bootFilePath = Path.Combine(dir, "z80_boot_trace.log");
+                    File.WriteAllText(_bootFilePath, "Z80 boot trace\n");
+                }
+
+                long traceFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                string line =
+                    $"frame={traceFrame} pc=0x{pcBefore:X4}->0x{g_reg_PC:X4} op=0x{opcode:X2} " +
+                    $"SP=0x{g_reg_SP:X4} A=0x{g_reg_A:X2} BC=0x{g_reg_BC:X4} DE=0x{g_reg_DE:X4} HL=0x{g_reg_HL:X4}\n";
+                File.AppendAllText(_bootFilePath, line);
+                _bootFileLogged++;
             }
 
             if (djnzTracePending)
@@ -1001,6 +1233,27 @@ namespace EutherDrive.Core.MdTracerCore
             return;
         _pcHist[pc]++;
         _pcHistTotal++;
+    }
+
+    private static void LogZ80PcFile(ushort pc, byte op1, byte op2, byte op3, byte op4)
+    {
+        if (!TraceZ80PcFile)
+            return;
+        if (_traceZ80PcFileCount >= TraceZ80PcFileLimit)
+            return;
+        if (_traceZ80PcFilePath == null)
+        {
+            string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+            if (string.IsNullOrWhiteSpace(dir))
+                dir = "/home/nichlas/EutherDrive/logs";
+            Directory.CreateDirectory(dir);
+            _traceZ80PcFilePath = Path.Combine(dir, "z80_pc_trace.log");
+            File.WriteAllText(_traceZ80PcFilePath, "Z80 PC trace\n");
+        }
+        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+        string line = $"frame={frame} pc=0x{pc:X4} op=0x{op1:X2} op2=0x{op2:X2} op3=0x{op3:X2} op4=0x{op4:X2}\n";
+        File.AppendAllText(_traceZ80PcFilePath, line);
+        _traceZ80PcFileCount++;
     }
 
     internal void FlushPcHist(long frame)
@@ -1556,6 +1809,13 @@ NextPc:;
 
         private void op_ed()
         {
+            if (md_main.g_masterSystemMode &&
+                string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_ED"), "1", StringComparison.Ordinal))
+            {
+                ushort pc = g_reg_PC;
+                byte op2 = g_opcode2;
+                Console.WriteLine($"[SMS ED] pc=0x{pc:X4} op2=0x{op2:X2}");
+            }
             if (g_operand_ed[g_opcode2] == op_NOP)
             {
                 Debug.WriteLine("md_z80.op_ed: odefinierad opcode");

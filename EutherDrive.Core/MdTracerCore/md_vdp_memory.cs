@@ -82,6 +82,11 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_STATUS_LOOP"), "1", StringComparison.Ordinal);
         private static readonly int TraceStatusLoopThreshold =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_STATUS_LOOP_LIMIT", 2000);
+        private static readonly bool TraceSmsStatusFile =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_STATUS_FILE"), "1", StringComparison.Ordinal);
+        private const int SmsStatusFileLogLimit = 5000;
+        [NonSerialized] private int _smsStatusFileLogCount;
+        [NonSerialized] private string? _smsStatusFileLogPath;
         [NonSerialized] private int _statusLoopCount;
         [NonSerialized] private int _statusLoopLastPc;
         [NonSerialized] private long _statusLoopLastFrame = -1;
@@ -222,6 +227,12 @@ namespace EutherDrive.Core.MdTracerCore
         private byte SmsReadStatus()
         {
             _smsCommandPending = false;
+            // If the scanline has reached vblank but the flag was missed, set it here so polling works.
+            if (md_main.g_masterSystemMode && g_vdp_status_3_vbrank == 0 && g_scanline >= g_display_ysize)
+            {
+                g_vdp_status_3_vbrank = 1;
+                md_main.g_md_vdp?.UpdateSmsIrqLine();
+            }
             byte status = 0;
             if (g_vdp_status_3_vbrank != 0)
                 status |= 0x80;
@@ -229,6 +240,8 @@ namespace EutherDrive.Core.MdTracerCore
                 status |= 0x40;
             if (g_vdp_status_5_collision != 0)
                 status |= 0x20;
+
+            LogSmsStatusFile(status);
 
             // Reading status clears VBlank + sprite flags (SMS behavior).
             g_vdp_status_3_vbrank = 0;
@@ -238,6 +251,29 @@ namespace EutherDrive.Core.MdTracerCore
             md_m68k.g_interrupt_V_req = false;
             md_main.g_md_vdp?.OnSmsStatusRead();
             return status;
+        }
+
+        private void LogSmsStatusFile(byte status)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsStatusFile)
+                return;
+            if (_smsStatusFileLogCount >= SmsStatusFileLogLimit)
+                return;
+            if (_smsStatusFileLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsStatusFileLogPath = Path.Combine(dir, "sms_status.log");
+                File.WriteAllText(_smsStatusFileLogPath, "SMS status log\n");
+            }
+            long frame = _frameCounter;
+            int line = g_scanline;
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            string lineText = $"frame={frame} line={line} pc=0x{pc:X4} status=0x{status:X2}\n";
+            File.AppendAllText(_smsStatusFileLogPath, lineText);
+            _smsStatusFileLogCount++;
         }
 
         public uint read32(uint in_address)
@@ -622,6 +658,7 @@ namespace EutherDrive.Core.MdTracerCore
             int code = (cmd >> 14) & 0x3;
             // Second control write sets MSB of VRAM address (applies to all commands, including register writes).
             _smsVdpAddr = (_smsVdpAddr & 0x00FF) | ((value & 0x3F) << 8);
+            LogSmsControlFileIfNeeded(_smsCommandLow, value, cmd, code);
             SmsLogControl(_smsCommandLow, value, cmd);
             SmsDecodeCommand(cmd);
         }
@@ -673,6 +710,13 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 int reg = (cmd >> 8) & 0x0F;
                 byte data = (byte)(cmd & 0xFF);
+                if (reg == 0 && string.Equals(
+                        Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DISABLE_LINEIRQ"), "1",
+                        StringComparison.Ordinal))
+                {
+                    // Force line IRQ disable (bit4) for debugging.
+                    data = (byte)(data & ~0x10);
+                }
                 _smsRegs[reg] = data;
                 if (reg == 0 || reg == 1 || reg == 2 || reg == 8 || reg == 9 || reg == 0x0A)
                     LogSmsRegWriteIfNeeded(reg, data);
@@ -909,6 +953,46 @@ namespace EutherDrive.Core.MdTracerCore
             MdTracerCore.MdLog.WriteLine(message);
             if (!bypassLimit)
                 _smsCommandLogCount++;
+        }
+
+        private void LogSmsControlFileIfNeeded(byte low, byte high, ushort cmd, int code)
+        {
+            if (!md_main.g_masterSystemMode || !TraceSmsCtlFile)
+                return;
+
+            if (_smsCtlFileLogCount >= SmsCtlFileLogLimit)
+                return;
+
+            if (_smsCtlFileLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsCtlFileLogPath = Path.Combine(dir, "sms_vdp_ctl.log");
+                File.WriteAllText(_smsCtlFileLogPath, "SMS VDP control log\n");
+            }
+
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            long frame = _frameCounter;
+            int addr = cmd & 0x3FFF;
+            if (code == 2)
+            {
+                int reg = (cmd >> 8) & 0x0F;
+                byte data = (byte)(cmd & 0xFF);
+                string line =
+                    $"frame={frame} pc=0x{pc:X4} CTL lo=0x{low:X2} hi=0x{high:X2} " +
+                    $"cmd=0x{cmd:X4} REG r{reg:X}=0x{data:X2}\n";
+                File.AppendAllText(_smsCtlFileLogPath, line);
+            }
+            else
+            {
+                string line =
+                    $"frame={frame} pc=0x{pc:X4} CTL lo=0x{low:X2} hi=0x{high:X2} " +
+                    $"cmd=0x{cmd:X4} code={code} addr=0x{addr:X4}\n";
+                File.AppendAllText(_smsCtlFileLogPath, line);
+            }
+            _smsCtlFileLogCount++;
         }
 
         private void SmsUpdatePalette(int index, byte value)

@@ -65,6 +65,11 @@ private static readonly bool SpriteLinkSequential =
         private bool _smsHvLatchValid;
         private int _smsCommandLogCount;
         private const int SmsCommandLogLimit = 200;
+        private const int SmsCtlFileLogLimit = 10000;
+        private static readonly bool TraceSmsCtlFile =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_CTL_FILE"), "1", StringComparison.Ordinal);
+        private int _smsCtlFileLogCount;
+        private string? _smsCtlFileLogPath;
         private bool _smsDisplayOnLogged;
         private bool _smsDataIgnoredLogged;
         private bool _smsCramWriteLogged;
@@ -329,6 +334,8 @@ private static readonly bool SpriteLinkSequential =
         internal void OnSmsStatusRead()
         {
             _smsLineInterruptPending = false;
+            // Allow next VBlank to re-trigger after status read clears the flag.
+            _vblankActive = false;
             UpdateSmsIrqLine();
         }
 
@@ -1951,6 +1958,9 @@ private static readonly bool SpriteLinkSequential =
                 Console.WriteLine(
                     $"[SMS IRQSTATE] frame={_frameCounter} line={g_scanline} reg0=0x{_smsRegs[0]:X2} reg1=0x{_smsRegs[1]:X2} vblankEn={(vblankEnabled ? 1 : 0)} lineEn={(lineEnabled ? 1 : 0)}");
             }
+
+            if (md_main.g_masterSystemMode)
+                SmsLogFrameHash();
              
               // Apply latched register 12 values (takes effect at V-Int)
               if (_reg12_latch_pending)
