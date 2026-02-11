@@ -9,11 +9,11 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
+using Key = Avalonia.Input.Key;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
-using EutherDrive.Core.MdTracerCore;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -21,10 +21,14 @@ using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using EutherDrive.Core;
+using EutherDrive.Core.MdTracerCore;
 using EutherDrive.UI.Audio;
 using EutherDrive.Audio;
 using EutherDrive.Core.Savestates;
 using EutherDrive.UI.Savestates;
+using SdlApi = Silk.NET.SDL.Sdl;
+using GameControllerAxis = Silk.NET.SDL.GameControllerAxis;
+using GameControllerButton = Silk.NET.SDL.GameControllerButton;
 
 namespace EutherDrive.UI;
 
@@ -37,6 +41,53 @@ public partial class MainWindow : Window
 
     // EN bitmap som vi alltid blitar till
     private WriteableBitmap? _wb;
+
+    private SdlApi? _sdl;
+    private IntPtr _activeGamepad = IntPtr.Zero;
+    private bool _sdlInputInitialized;
+    private long _lastGamepadScanTicks;
+    private readonly HashSet<GamepadButton> _gamepadButtonsDown = new();
+    private readonly HashSet<GamepadButton> _gamepadButtonsDownPrev = new();
+    private int _lastGamepadButtonPressed = (int)GamepadButton.None;
+    private readonly object _gamepadStateLock = new();
+
+    private static readonly GamepadButton[] s_gamepadButtonsToPoll =
+    {
+        GamepadButton.A,
+        GamepadButton.B,
+        GamepadButton.X,
+        GamepadButton.Y,
+        GamepadButton.LeftShoulder,
+        GamepadButton.RightShoulder,
+        GamepadButton.LeftTrigger,
+        GamepadButton.RightTrigger,
+        GamepadButton.Back,
+        GamepadButton.Start,
+        GamepadButton.LeftThumb,
+        GamepadButton.RightThumb,
+        GamepadButton.DPadUp,
+        GamepadButton.DPadDown,
+        GamepadButton.DPadLeft,
+        GamepadButton.DPadRight
+    };
+
+    private static readonly Dictionary<GamepadButton, GameControllerButton> sdlButtonMap = new()
+    {
+        [GamepadButton.A] = GameControllerButton.A,
+        [GamepadButton.B] = GameControllerButton.B,
+        [GamepadButton.X] = GameControllerButton.X,
+        [GamepadButton.Y] = GameControllerButton.Y,
+        [GamepadButton.LeftShoulder] = GameControllerButton.Leftshoulder,
+        [GamepadButton.RightShoulder] = GameControllerButton.Rightshoulder,
+        [GamepadButton.Back] = GameControllerButton.Back,
+        [GamepadButton.Start] = GameControllerButton.Start,
+        [GamepadButton.LeftThumb] = GameControllerButton.Leftstick,
+        [GamepadButton.RightThumb] = GameControllerButton.Rightstick,
+        [GamepadButton.DPadUp] = GameControllerButton.DpadUp,
+        [GamepadButton.DPadDown] = GameControllerButton.DpadDown,
+        [GamepadButton.DPadLeft] = GameControllerButton.DpadLeft,
+        [GamepadButton.DPadRight] = GameControllerButton.DpadRight
+    };
 
     private readonly DispatcherTimer _timer;
     private DispatcherTimer? _audioDebugTimer;
@@ -60,6 +111,7 @@ public partial class MainWindow : Window
 
     // Input “håll nere”
     private readonly HashSet<Key> _keysDown = new();
+    private InputMappingSettings _inputMappings = new InputMappingSettings();
     private IAudioSink? _audioOutput;
     private AudioEngine? _audioEngine;
     private bool _audioEnabled = true;
@@ -472,6 +524,32 @@ public partial class MainWindow : Window
                 ResetCursorHideTimer();
             }
         };
+
+        InitGamepadInput();
+    }
+
+    private void InitGamepadInput()
+    {
+        try
+        {
+            _sdl = SdlApi.GetApi();
+            int rc = _sdl.Init(SdlApi.InitGamecontroller | SdlApi.InitJoystick | SdlApi.InitEvents);
+            if (rc != 0)
+            {
+                Console.WriteLine("[Gamepad] SDL init failed: " + _sdl.GetErrorS());
+                _sdlInputInitialized = false;
+                return;
+            }
+
+            _sdlInputInitialized = true;
+            TryOpenFirstGamepad();
+            Console.WriteLine("[Gamepad] SDL gamepad input initialized");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("[Gamepad] SDL init exception: " + ex.Message);
+            _sdlInputInitialized = false;
+        }
     }
 
     private void HookMouseMovement()
@@ -1183,6 +1261,297 @@ public partial class MainWindow : Window
         Z80CyclesMultTextBox.Text = _z80CyclesMult.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    public enum GamepadButton
+    {
+        None = 0,
+        A = 1,
+        B = 2,
+        X = 3,
+        Y = 4,
+        LeftShoulder = 5,
+        RightShoulder = 6,
+        LeftTrigger = 7,
+        RightTrigger = 8,
+        Back = 9,
+        Start = 10,
+        LeftThumb = 11,
+        RightThumb = 12,
+        DPadUp = 13,
+        DPadDown = 14,
+        DPadLeft = 15,
+        DPadRight = 16,
+    }
+
+    public sealed class InputMappingSettings
+    {
+        public Dictionary<string, Key> KeyboardMappings { get; set; } = new();
+        public Dictionary<string, GamepadButton> GamepadMappings { get; set; } = new();
+
+        public InputMappingSettings()
+        {
+            // Set default keyboard mappings (matching current hardcoded mapping)
+            KeyboardMappings["Up"] = Key.Up;
+            KeyboardMappings["Down"] = Key.Down;
+            KeyboardMappings["Left"] = Key.Left;
+            KeyboardMappings["Right"] = Key.Right;
+            KeyboardMappings["A"] = Key.Z;
+            KeyboardMappings["B"] = Key.X;
+            KeyboardMappings["C"] = Key.C;
+            KeyboardMappings["Start"] = Key.Enter;
+            KeyboardMappings["X"] = Key.A;
+            KeyboardMappings["Y"] = Key.S;
+            KeyboardMappings["Z"] = Key.D;
+            KeyboardMappings["Mode"] = Key.LeftShift;
+
+            // Default gamepad mappings (optional, can be None)
+            GamepadMappings["Up"] = GamepadButton.DPadUp;
+            GamepadMappings["Down"] = GamepadButton.DPadDown;
+            GamepadMappings["Left"] = GamepadButton.DPadLeft;
+            GamepadMappings["Right"] = GamepadButton.DPadRight;
+            GamepadMappings["A"] = GamepadButton.A;
+            GamepadMappings["B"] = GamepadButton.B;
+            GamepadMappings["C"] = GamepadButton.X;
+            GamepadMappings["Start"] = GamepadButton.Start;
+            GamepadMappings["X"] = GamepadButton.Y;
+            GamepadMappings["Y"] = GamepadButton.LeftShoulder;
+            GamepadMappings["Z"] = GamepadButton.RightShoulder;
+            GamepadMappings["Mode"] = GamepadButton.Back;
+        }
+    }
+
+    private sealed class MappingItem
+    {
+        public string Action { get; set; } = "";
+        public Key KeyboardKey { get; set; }
+        public GamepadButton GamepadButton { get; set; }
+        public Button? KeyboardButton { get; set; }
+        public Button? GamepadButtonControl { get; set; }
+    }
+
+    private sealed class InputMappingDialog : Window
+    {
+        public InputMappingSettings Mappings { get; }
+        private readonly List<MappingItem> _items = new();
+        private MappingItem? _currentlyRecording;
+        private TextBlock? _recordingHint;
+        private readonly Func<GamepadButton?>? _gamepadButtonProvider;
+        private DispatcherTimer? _gamepadPollTimer;
+        private bool _recordingIsKeyboard = true;
+
+        public InputMappingDialog(InputMappingSettings currentMappings, Func<GamepadButton?>? gamepadButtonProvider = null)
+        {
+            Mappings = currentMappings;
+            _gamepadButtonProvider = gamepadButtonProvider;
+            Title = "Input Settings";
+            Width = 700;
+            Height = 600;
+            Background = new SolidColorBrush(Color.Parse("#0F1216"));
+            WindowStartupLocation = WindowStartupLocation.CenterOwner;
+
+            // Convert mappings to list items
+            var actions = new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "Start", "X", "Y", "Z", "Mode" };
+            foreach (var action in actions)
+            {
+                Mappings.KeyboardMappings.TryGetValue(action, out Key key);
+                Mappings.GamepadMappings.TryGetValue(action, out GamepadButton gp);
+                _items.Add(new MappingItem { Action = action, KeyboardKey = key, GamepadButton = gp });
+            }
+
+            BuildUi();
+        }
+
+        private void BuildUi()
+        {
+            var stack = new StackPanel { Spacing = 10, Margin = new Thickness(16) };
+            stack.Children.Add(new TextBlock
+            {
+                Text = "Input Mappings",
+                FontSize = 18,
+                FontWeight = Avalonia.Media.FontWeight.Bold
+            });
+
+            stack.Children.Add(new TextBlock
+            {
+                Text = "Click on a key binding to change it. Press any key or gamepad button while recording.",
+                TextWrapping = TextWrapping.Wrap
+            });
+
+            _recordingHint = new TextBlock
+            {
+                Text = "",
+                Foreground = new SolidColorBrush(Colors.Yellow),
+                IsVisible = false
+            };
+            stack.Children.Add(_recordingHint);
+
+            // Create a grid for the mappings
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            // Headers
+            AddTextBlock(grid, 0, 0, "Action", true);
+            AddTextBlock(grid, 0, 1, "Keyboard Key", true);
+            AddTextBlock(grid, 0, 2, "Gamepad Button", true);
+
+            // Rows
+            for (int i = 0; i < _items.Count; i++)
+            {
+                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                var item = _items[i];
+                int row = i + 1;
+
+                AddTextBlock(grid, row, 0, item.Action, false);
+
+                // Keyboard key button
+                var keyButton = new Button
+                {
+                    Content = item.KeyboardKey.ToString(),
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+                    Background = new SolidColorBrush(Color.Parse("#2A313B")),
+                    Foreground = new SolidColorBrush(Colors.White)
+                };
+                keyButton.Click += (s, e) => StartRecording(item, true);
+                Grid.SetRow(keyButton, row);
+                Grid.SetColumn(keyButton, 1);
+                grid.Children.Add(keyButton);
+                item.KeyboardButton = keyButton;
+
+                bool gamepadEnabled = _gamepadButtonProvider != null;
+                var gpButton = new Button
+                {
+                    Content = item.GamepadButton.ToString(),
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+                    Background = new SolidColorBrush(Color.Parse(gamepadEnabled ? "#2A313B" : "#1A1F26")),
+                    Foreground = new SolidColorBrush(gamepadEnabled ? Colors.White : Colors.Gray),
+                    IsEnabled = gamepadEnabled
+                };
+                if (gamepadEnabled)
+                    gpButton.Click += (s, e) => StartRecording(item, false);
+                Grid.SetRow(gpButton, row);
+                Grid.SetColumn(gpButton, 2);
+                grid.Children.Add(gpButton);
+                item.GamepadButtonControl = gpButton;
+            }
+
+            stack.Children.Add(grid);
+
+            var buttonPanel = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 10 };
+            var okButton = new Button { Content = "OK", Width = 80 };
+            okButton.Click += (s, e) => OnOk();
+            var cancelButton = new Button { Content = "Cancel", Width = 80 };
+            cancelButton.Click += (s, e) => Close(false);
+            buttonPanel.Children.Add(okButton);
+            buttonPanel.Children.Add(cancelButton);
+            stack.Children.Add(buttonPanel);
+
+            Content = new ScrollViewer { Content = stack };
+
+            // Hook global key events
+            KeyDown += OnDialogKeyDown;
+
+            if (_gamepadButtonProvider != null)
+            {
+                _gamepadPollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+                _gamepadPollTimer.Tick += (_, _) => PollGamepadRecording();
+                _gamepadPollTimer.Start();
+            }
+
+            Closed += (_, _) => _gamepadPollTimer?.Stop();
+        }
+
+        private static void AddTextBlock(Grid grid, int row, int col, string text, bool bold)
+        {
+            var tb = new TextBlock
+            {
+                Text = text,
+                Margin = new Thickness(4),
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                FontWeight = bold ? Avalonia.Media.FontWeight.Bold : Avalonia.Media.FontWeight.Normal
+            };
+            Grid.SetRow(tb, row);
+            Grid.SetColumn(tb, col);
+            grid.Children.Add(tb);
+        }
+
+        private void StartRecording(MappingItem item, bool isKeyboard)
+        {
+            _currentlyRecording = item;
+            _recordingIsKeyboard = isKeyboard;
+            if (_recordingHint != null)
+            {
+                string device = isKeyboard ? "Keyboard" : "Gamepad";
+                _recordingHint.Text = $"Recording for {item.Action} ({device}). Press a {(isKeyboard ? "key" : "button")} or Escape to cancel...";
+                _recordingHint.IsVisible = true;
+            }
+            // Focus the window to capture keys
+            Focus();
+        }
+
+        private void OnDialogKeyDown(object? sender, KeyEventArgs e)
+        {
+            if (_currentlyRecording == null)
+                return;
+
+            // Escape cancels recording
+            if (e.Key == Key.Escape)
+            {
+                _currentlyRecording = null;
+                if (_recordingHint != null)
+                    _recordingHint.IsVisible = false;
+                e.Handled = true;
+                return;
+            }
+
+            if (!_recordingIsKeyboard)
+                return;
+
+            // Update keyboard mapping
+            _currentlyRecording.KeyboardKey = e.Key;
+            if (_currentlyRecording.KeyboardButton != null)
+                _currentlyRecording.KeyboardButton.Content = e.Key.ToString();
+
+            // Stop recording
+            _currentlyRecording = null;
+            if (_recordingHint != null)
+                _recordingHint.IsVisible = false;
+            e.Handled = true;
+        }
+
+        private void PollGamepadRecording()
+        {
+            if (_currentlyRecording == null || _recordingIsKeyboard || _gamepadButtonProvider == null)
+                return;
+
+            var button = _gamepadButtonProvider();
+            if (!button.HasValue)
+                return;
+
+            _currentlyRecording.GamepadButton = button.Value;
+            if (_currentlyRecording.GamepadButtonControl != null)
+                _currentlyRecording.GamepadButtonControl.Content = button.Value.ToString();
+
+            _currentlyRecording = null;
+            if (_recordingHint != null)
+                _recordingHint.IsVisible = false;
+        }
+
+
+
+        private void OnOk()
+        {
+            // Update mappings from items
+            foreach (var item in _items)
+            {
+                Mappings.KeyboardMappings[item.Action] = item.KeyboardKey;
+                Mappings.GamepadMappings[item.Action] = item.GamepadButton;
+            }
+            Close(true);
+        }
+    }
+
     private sealed class UiSettings
     {
         public string? LastRomPath { get; set; }
@@ -1198,6 +1567,7 @@ public partial class MainWindow : Window
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
         public FrameRateMode FrameRateMode { get; set; } = FrameRateMode.Auto;
+        public InputMappingSettings InputMappings { get; set; } = new();
     }
 
     private void LoadSettings()
@@ -1270,6 +1640,12 @@ public partial class MainWindow : Window
         RegionOverride = _defaultRegionOverride;
         _frameRateMode = settings.FrameRateMode;
         UpdateFrameRateCombo();
+
+        // Input mappings
+        if (settings.InputMappings != null)
+        {
+            _inputMappings = settings.InputMappings;
+        }
         UpdateYmResampleUi();
         UpdateZ80CyclesMultUi();
         UpdateSpeedLockUi();
@@ -1318,7 +1694,8 @@ public partial class MainWindow : Window
             SmsOverscanEnabled = _smsOverscanEnabled,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
-            FrameRateMode = _frameRateMode
+            FrameRateMode = _frameRateMode,
+            InputMappings = _inputMappings
         };
         string json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(GetSettingsPath(), json);
@@ -1469,6 +1846,25 @@ public partial class MainWindow : Window
         };
 
         await dialog.ShowDialog(this);
+    }
+
+    private async void OnInputSettings(object? sender, RoutedEventArgs e)
+    {
+        // Create and show input mapping configuration dialog
+        Func<GamepadButton?>? gamepadProvider = _sdlInputInitialized
+            ? () =>
+            {
+                UpdateGamepadState();
+                return TryConsumeLastGamepadButtonPressed();
+            }
+            : null;
+        var dialog = new InputMappingDialog(_inputMappings, gamepadProvider);
+        if (await dialog.ShowDialog<bool>(this))
+        {
+            // Save updated mappings
+            _inputMappings = dialog.Mappings;
+            SaveSettings();
+        }
     }
 
     private static Control BuildControlsSection(string title, params string[] lines)
@@ -1995,6 +2391,8 @@ public partial class MainWindow : Window
 
     private void ApplyInputToCore(IEmulatorCore core)
     {
+        UpdateGamepadState();
+
         bool up;
         bool down;
         bool left;
@@ -2012,23 +2410,47 @@ public partial class MainWindow : Window
         int autoRate;
         lock (_keysDown)
         {
-            up    = _keysDown.Contains(Key.Up);
-            down  = _keysDown.Contains(Key.Down);
-            left  = _keysDown.Contains(Key.Left);
-            right = _keysDown.Contains(Key.Right);
-
-            // Knappar: flera alternativ för att slippa layout-strul
-            a = _keysDown.Contains(Key.Z);
-            b = _keysDown.Contains(Key.X);
-            c = _keysDown.Contains(Key.C);
-            start = _keysDown.Contains(Key.Enter)
-                || _keysDown.Contains(Key.Return);
-            x = _keysDown.Contains(Key.A);
-            y = _keysDown.Contains(Key.S);
-            z = _keysDown.Contains(Key.D);
-            mode = _keysDown.Contains(Key.LeftShift) || _keysDown.Contains(Key.RightShift);
+            // Use configured keyboard mappings
+            up    = _inputMappings.KeyboardMappings.TryGetValue("Up", out Key upKey) && _keysDown.Contains(upKey);
+            down  = _inputMappings.KeyboardMappings.TryGetValue("Down", out Key downKey) && _keysDown.Contains(downKey);
+            left  = _inputMappings.KeyboardMappings.TryGetValue("Left", out Key leftKey) && _keysDown.Contains(leftKey);
+            right = _inputMappings.KeyboardMappings.TryGetValue("Right", out Key rightKey) && _keysDown.Contains(rightKey);
+            a     = _inputMappings.KeyboardMappings.TryGetValue("A", out Key aKey) && _keysDown.Contains(aKey);
+            b     = _inputMappings.KeyboardMappings.TryGetValue("B", out Key bKey) && _keysDown.Contains(bKey);
+            c     = _inputMappings.KeyboardMappings.TryGetValue("C", out Key cKey) && _keysDown.Contains(cKey);
+            start = _inputMappings.KeyboardMappings.TryGetValue("Start", out Key startKey) && _keysDown.Contains(startKey);
+            x     = _inputMappings.KeyboardMappings.TryGetValue("X", out Key xKey) && _keysDown.Contains(xKey);
+            y     = _inputMappings.KeyboardMappings.TryGetValue("Y", out Key yKey) && _keysDown.Contains(yKey);
+            z     = _inputMappings.KeyboardMappings.TryGetValue("Z", out Key zKey) && _keysDown.Contains(zKey);
+            mode  = _inputMappings.KeyboardMappings.TryGetValue("Mode", out Key modeKey) && _keysDown.Contains(modeKey);
             padType = (PadType)Volatile.Read(ref _padTypeRaw);
         }
+
+        // Combine with gamepad inputs if mapped
+        if (_inputMappings.GamepadMappings.TryGetValue("Up", out GamepadButton gpUp) && gpUp != GamepadButton.None)
+            up |= IsGamepadButtonPressed(gpUp);
+        if (_inputMappings.GamepadMappings.TryGetValue("Down", out GamepadButton gpDown) && gpDown != GamepadButton.None)
+            down |= IsGamepadButtonPressed(gpDown);
+        if (_inputMappings.GamepadMappings.TryGetValue("Left", out GamepadButton gpLeft) && gpLeft != GamepadButton.None)
+            left |= IsGamepadButtonPressed(gpLeft);
+        if (_inputMappings.GamepadMappings.TryGetValue("Right", out GamepadButton gpRight) && gpRight != GamepadButton.None)
+            right |= IsGamepadButtonPressed(gpRight);
+        if (_inputMappings.GamepadMappings.TryGetValue("A", out GamepadButton gpA) && gpA != GamepadButton.None)
+            a |= IsGamepadButtonPressed(gpA);
+        if (_inputMappings.GamepadMappings.TryGetValue("B", out GamepadButton gpB) && gpB != GamepadButton.None)
+            b |= IsGamepadButtonPressed(gpB);
+        if (_inputMappings.GamepadMappings.TryGetValue("C", out GamepadButton gpC) && gpC != GamepadButton.None)
+            c |= IsGamepadButtonPressed(gpC);
+        if (_inputMappings.GamepadMappings.TryGetValue("Start", out GamepadButton gpStart) && gpStart != GamepadButton.None)
+            start |= IsGamepadButtonPressed(gpStart);
+        if (_inputMappings.GamepadMappings.TryGetValue("X", out GamepadButton gpX) && gpX != GamepadButton.None)
+            x |= IsGamepadButtonPressed(gpX);
+        if (_inputMappings.GamepadMappings.TryGetValue("Y", out GamepadButton gpY) && gpY != GamepadButton.None)
+            y |= IsGamepadButtonPressed(gpY);
+        if (_inputMappings.GamepadMappings.TryGetValue("Z", out GamepadButton gpZ) && gpZ != GamepadButton.None)
+            z |= IsGamepadButtonPressed(gpZ);
+        if (_inputMappings.GamepadMappings.TryGetValue("Mode", out GamepadButton gpMode) && gpMode != GamepadButton.None)
+            mode |= IsGamepadButtonPressed(gpMode);
 
         autoMask = Volatile.Read(ref _autoFireMask);
         autoRate = Volatile.Read(ref _autoFireRateHz);
@@ -2043,6 +2465,150 @@ public partial class MainWindow : Window
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
 
         // StatusText uppdateras i Tick()
+    }
+
+    private bool IsGamepadButtonPressed(GamepadButton button)
+    {
+        if (!_sdlInputInitialized || _sdl == null || _activeGamepad == IntPtr.Zero)
+            return false;
+        lock (_gamepadStateLock)
+        {
+            return _gamepadButtonsDown.Contains(button);
+        }
+    }
+
+    private void UpdateGamepadState()
+    {
+        if (!_sdlInputInitialized || _sdl == null)
+            return;
+
+        lock (_gamepadStateLock)
+        {
+        EnsureGamepadConnected();
+        if (_activeGamepad == IntPtr.Zero)
+            return;
+
+        _sdl.PumpEvents();
+
+        _gamepadButtonsDownPrev.Clear();
+        _gamepadButtonsDownPrev.UnionWith(_gamepadButtonsDown);
+        _gamepadButtonsDown.Clear();
+
+        foreach (var button in s_gamepadButtonsToPoll)
+        {
+            if (GetGamepadButtonState(button))
+                _gamepadButtonsDown.Add(button);
+        }
+
+        foreach (var button in _gamepadButtonsDown)
+        {
+            if (!_gamepadButtonsDownPrev.Contains(button))
+                Interlocked.Exchange(ref _lastGamepadButtonPressed, (int)button);
+        }
+        }
+    }
+
+    private void EnsureGamepadConnected()
+    {
+        if (_activeGamepad != IntPtr.Zero)
+        {
+            unsafe
+            {
+                var controller = (Silk.NET.SDL.GameController*)_activeGamepad;
+                if (_sdl!.GameControllerGetAttached(controller) == 0)
+                    CloseActiveGamepad();
+            }
+        }
+
+        if (_activeGamepad == IntPtr.Zero)
+        {
+            long now = Stopwatch.GetTimestamp();
+            if (now - _lastGamepadScanTicks < Stopwatch.Frequency * 2)
+                return;
+
+            _lastGamepadScanTicks = now;
+            TryOpenFirstGamepad();
+        }
+    }
+
+    private bool GetGamepadButtonState(GamepadButton button)
+    {
+        if (_activeGamepad == IntPtr.Zero || _sdl == null)
+            return false;
+
+        if (button == GamepadButton.LeftTrigger)
+            return GetTriggerState(GameControllerAxis.Triggerleft);
+        if (button == GamepadButton.RightTrigger)
+            return GetTriggerState(GameControllerAxis.Triggerright);
+
+        if (!sdlButtonMap.TryGetValue(button, out var sdlButton))
+            return false;
+
+        unsafe
+        {
+            var controller = (Silk.NET.SDL.GameController*)_activeGamepad;
+            return _sdl.GameControllerGetButton(controller, sdlButton) != 0;
+        }
+    }
+
+    private bool GetTriggerState(GameControllerAxis axis)
+    {
+        unsafe
+        {
+            var controller = (Silk.NET.SDL.GameController*)_activeGamepad;
+            short value = _sdl!.GameControllerGetAxis(controller, axis);
+            return value > 16000;
+        }
+    }
+
+    private void TryOpenFirstGamepad()
+    {
+        if (_sdl == null)
+            return;
+
+        int count = _sdl.NumJoysticks();
+        for (int i = 0; i < count; i++)
+        {
+            if (_sdl.IsGameController(i) == 0)
+                continue;
+
+            unsafe
+            {
+                var controller = _sdl.GameControllerOpen(i);
+                if (controller != null)
+                {
+                    _activeGamepad = (IntPtr)controller;
+                    _gamepadButtonsDown.Clear();
+                    _gamepadButtonsDownPrev.Clear();
+                    Console.WriteLine($"[Gamepad] Connected gamepad index {i}");
+                    return;
+                }
+            }
+        }
+    }
+
+    private void CloseActiveGamepad()
+    {
+        if (_activeGamepad == IntPtr.Zero || _sdl == null)
+            return;
+
+        unsafe
+        {
+            var controller = (Silk.NET.SDL.GameController*)_activeGamepad;
+            _sdl.GameControllerClose(controller);
+        }
+        _activeGamepad = IntPtr.Zero;
+        _gamepadButtonsDown.Clear();
+        _gamepadButtonsDownPrev.Clear();
+        Console.WriteLine("[Gamepad] Disconnected gamepad");
+    }
+
+    private GamepadButton? TryConsumeLastGamepadButtonPressed()
+    {
+        int button = Interlocked.Exchange(ref _lastGamepadButtonPressed, (int)GamepadButton.None);
+        if (button == (int)GamepadButton.None)
+            return null;
+        return (GamepadButton)button;
     }
 
     private static bool IsAutoFireActive(long nowTicks, int rateHz)
