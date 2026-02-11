@@ -6,43 +6,48 @@ namespace EutherDrive.Core.MdTracerCore
 {
 internal static class MdLog
 {
+    private static bool EnvFlag(string name)
+        => string.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal);
+
+    internal static readonly bool TraceDisabled =
+        EnvFlag("EUTHERDRIVE_TRACE_DISABLE") || !EnvFlag("EUTHERDRIVE_TRACE_ENABLE");
+
     internal static bool Enabled
     {
-        get => _enabled || TraceVdpLogging;
+        get => !TraceDisabled && (_enabled || TraceVdpLogging);
         set => _enabled = value;
     }
 
     private static bool _enabled;
     private static bool _traceBuildLogged;
 
-    private static bool EnvFlag(string name)
-        => string.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal);
-
     internal static readonly bool TraceZ80InstructionLogging =
-        EnvFlag("EUTHERDRIVE_TRACE_Z80");
+        EnvFlag("EUTHERDRIVE_TRACE_Z80") && !TraceDisabled;
 
     internal static readonly bool TraceZ80Sig =
-        EnvFlag("EUTHERDRIVE_TRACE_Z80SIG");
+        EnvFlag("EUTHERDRIVE_TRACE_Z80SIG") && !TraceDisabled;
 
     internal static readonly bool TraceZ80Step =
-        EnvFlag("EUTHERDRIVE_TRACE_Z80STEP") || TraceZ80InstructionLogging;
+        !TraceDisabled && (EnvFlag("EUTHERDRIVE_TRACE_Z80STEP") || TraceZ80InstructionLogging);
 
     internal static readonly bool TraceZ80Ym =
-        EnvFlag("EUTHERDRIVE_TRACE_Z80YM") || TraceZ80InstructionLogging;
+        !TraceDisabled && (EnvFlag("EUTHERDRIVE_TRACE_Z80YM") || TraceZ80InstructionLogging);
 
     internal static readonly bool TraceZ80Int =
-        EnvFlag("EUTHERDRIVE_TRACE_Z80INT") || TraceZ80InstructionLogging;
+        !TraceDisabled && (EnvFlag("EUTHERDRIVE_TRACE_Z80INT") || TraceZ80InstructionLogging);
 
     internal static readonly bool TraceZ80Win =
-        EnvFlag("EUTHERDRIVE_TRACE_Z80WIN");
+        EnvFlag("EUTHERDRIVE_TRACE_Z80WIN") && !TraceDisabled;
 
-    internal static readonly bool TraceVdpLogging =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP"), "1", StringComparison.Ordinal)
-        || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MD_VDP"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceVdpLoggingRaw =
+        EnvFlag("EUTHERDRIVE_TRACE_VDP")
+        || EnvFlag("EUTHERDRIVE_TRACE_MD_VDP");
+
+    internal static bool TraceVdpLogging => !TraceDisabled && TraceVdpLoggingRaw;
 
     internal static bool AnyTraceEnabled =>
-        TraceZ80InstructionLogging || TraceZ80Sig || TraceZ80Step || TraceZ80Ym || TraceZ80Int || TraceZ80Win ||
-        TraceVdpLogging;
+        !TraceDisabled && (TraceZ80InstructionLogging || TraceZ80Sig || TraceZ80Step || TraceZ80Ym || TraceZ80Int || TraceZ80Win ||
+        TraceVdpLogging);
 
      internal static void WriteLine(string message)
      {

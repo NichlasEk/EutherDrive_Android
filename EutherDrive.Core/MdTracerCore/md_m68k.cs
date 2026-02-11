@@ -8,9 +8,15 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
-        private static bool _bootTraceEnabled = true;
-        private static int _bootTraceRemaining = 200;
-        private static int _bootTraceProbeRemaining = 16;
+        private static readonly bool TraceConsoleEnabled =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CONSOLE"), "0", StringComparison.Ordinal)
+            && !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceM68kBoot =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_M68K_BOOT"), "1", StringComparison.Ordinal)
+            && TraceConsoleEnabled;
+        private static bool _bootTraceEnabled = TraceM68kBoot;
+        private static int _bootTraceRemaining = TraceM68kBoot ? 200 : 0;
+        private static int _bootTraceProbeRemaining = TraceM68kBoot ? 16 : 0;
         private static int _btstLogRemaining = 16;
         private static int _bneLogRemaining = 32;
         private static int _d1LogRemaining = 64;

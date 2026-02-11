@@ -6,6 +6,12 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal static partial class md_main
     {
+        private static readonly bool TraceConsoleEnabled =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CONSOLE"), "0", StringComparison.Ordinal)
+            && !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceShouldRun =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SHOULDRUN"), "1", StringComparison.Ordinal)
+            && TraceConsoleEnabled;
         // ~7.670.453 Hz / 60 fps / 262 linjer ≈ 488
         public const int VDL_LINE_RENDER_MC68_CLOCK = 488;
 
@@ -904,8 +910,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal static bool ShouldRunZ80(long frame)
         {
-            // DEBUG - always log first 10 frames
-            if (frame <= 10)
+            // DEBUG - always log first 10 frames (gated)
+            if (TraceShouldRun && frame <= 10)
             {
                 bool debugBusReq = g_md_bus?.Z80BusGranted ?? false;
                 bool debugReset = g_md_bus?.Z80Reset ?? false;
@@ -919,8 +925,8 @@ namespace EutherDrive.Core.MdTracerCore
             if (_z80WaitReleased)
                 return true;
             
-            // DEBUG: Log Sonic 2 Z80 scheduling
-            if (frame >= 4899 && frame <= 4905)
+            // DEBUG: Log Sonic 2 Z80 scheduling (gated)
+            if (TraceShouldRun && frame >= 4899 && frame <= 4905)
             {
                 bool debugBusReq = g_md_bus?.Z80BusGranted ?? false;
                 bool debugZ80Reset = g_md_bus?.Z80Reset ?? false;

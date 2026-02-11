@@ -6,6 +6,9 @@ namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
+        private static readonly bool TraceConsoleEnabledMemory =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CONSOLE"), "0", StringComparison.Ordinal)
+            && !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVramWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM"), "1", StringComparison.Ordinal);
         private static readonly bool TraceCramWrites =
@@ -1084,10 +1087,10 @@ namespace EutherDrive.Core.MdTracerCore
             int gNib = (cramData & 0x00F0) >> 4;  // Bits 4-7: Green nibble
             int bNib = (cramData & 0x0F00) >> 8;  // Bits 8-11: Blue nibble
             
-            if (TraceCramWrites || _frameCounter < 10) // Always log first 10 frames
+            if (TraceConsoleEnabledMemory && TraceCramWrites)
                 Console.WriteLine($"[CRAM] frame={_frameCounter} index=0x{(idx & 0x3f):X2} raw=0x{data:X4} masked=0x{cramData:X4} B=0x{bNib:X1} G=0x{gNib:X1} R=0x{rNib:X1}");
 
-            if (TraceCramWritesPc && _cramPcRemaining > 0)
+            if (TraceConsoleEnabledMemory && TraceCramWritesPc && _cramPcRemaining > 0)
             {
                 if (TraceCramWritesPcFrames > 0 && _frameCounter > TraceCramWritesPcFrames)
                     return;

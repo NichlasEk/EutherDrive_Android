@@ -155,8 +155,14 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80REG_DECODE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80SafeBoot =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80SAFE"), "1", StringComparison.Ordinal);
+        private static readonly bool RawTimingEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceConsoleEnabled =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CONSOLE"), "0", StringComparison.Ordinal)
+            && !RawTimingEnabled;
         private static readonly bool TraceBusVdp =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS_VDP"), "1", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS_VDP"), "1", StringComparison.Ordinal)
+            && TraceConsoleEnabled;
         private static readonly int TraceBusVdpLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_BUS_VDP_LIMIT", 200);
         private static readonly bool TraceRomReadPc =

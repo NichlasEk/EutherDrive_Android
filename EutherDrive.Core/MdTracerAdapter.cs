@@ -174,7 +174,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private short _ymResampleCarryR;
     private bool _ymResampleLinear;
     private bool _audioSystemReady = false;
-    private int _audioWarmupFrames = 0;
+    private int _audioWarmupFrames = ParseAudioWarmupFrames();
+
+    private static int ParseAudioWarmupFrames()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_WARMUP_FRAMES");
+        if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value > 0)
+            return value;
+        return 6;
+    }
 
     public void SetMasterVolumePercent(int percent)
     {
@@ -1120,9 +1128,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return;
         }
         
-        // Generate enough samples for 3 frames (2205 samples at 44.1kHz / 60fps)
-        // This ensures audio buffer has samples ready when first requested
-        int framesToGenerate = 3;
+        // Generate enough samples for warmup frames (default 6)
+        int framesToGenerate = _audioWarmupFrames > 0 ? _audioWarmupFrames : 6;
         int samplesToGenerate = framesToGenerate * (int)(PsgSampleRate / GetTargetFps());
         
         if (TraceAudioDebug)
@@ -2205,7 +2212,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // If not, something went wrong
         if (!_audioSystemReady)
         {
-            Console.WriteLine($"[AUDIO-TIMING-WARNING] Audio system not ready in GetAudioBuffer()!");
+            if (TraceAudioDebug)
+                Console.WriteLine($"[AUDIO-TIMING-WARNING] Audio system not ready in GetAudioBuffer()!");
             return ReadOnlySpan<short>.Empty;
         }
         
@@ -2815,7 +2823,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // If not, something went wrong
         if (!_audioSystemReady)
         {
-            Console.WriteLine($"[AUDIO-TIMING-WARNING] Audio system not ready in GetAudioBufferForFrames()!");
+            if (TraceAudioDebug)
+                Console.WriteLine($"[AUDIO-TIMING-WARNING] Audio system not ready in GetAudioBufferForFrames()!");
             return ReadOnlySpan<short>.Empty;
         }
 

@@ -2263,7 +2263,7 @@ private static readonly bool SpriteLinkSequential =
                 // Watchpoint: first non-zero in scroll regions
                 if (maskedAddr >= 0xC000 && maskedAddr < 0xC100)
                 {
-                    if (_firstNonZeroScrollA == 0 && in_data != 0)
+                    if (!RawTimingEnabled && _firstNonZeroScrollA == 0 && in_data != 0)
                     {
                         _firstNonZeroScrollA = (ushort)in_data;
                         Console.WriteLine($"[WATCHPOINT-ScrollA] frame={_frameCounter} addr=0x{maskedAddr:X4} value=0x{in_data:X4} FIRST_NON_ZERO");
@@ -2271,7 +2271,7 @@ private static readonly bool SpriteLinkSequential =
                 }
                 if (maskedAddr >= 0xE000 && maskedAddr < 0xE100)
                 {
-                    if (_firstNonZeroScrollB == 0 && in_data != 0)
+                    if (!RawTimingEnabled && _firstNonZeroScrollB == 0 && in_data != 0)
                     {
                         _firstNonZeroScrollB = (ushort)in_data;
                         Console.WriteLine($"[WATCHPOINT-ScrollB] frame={_frameCounter} addr=0x{maskedAddr:X4} value=0x{in_data:X4} FIRST_NON_ZERO");
@@ -2285,6 +2285,8 @@ private static readonly bool SpriteLinkSequential =
         private int _firstInterlace2Frame = 0;
         private ushort _firstNonZeroScrollA = 0;
         private ushort _firstNonZeroScrollB = 0;
+        private static readonly bool RawTimingEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
         private int[] _vramWritePageCounts = new int[16];
         private int _vramWriteCpuLogRemaining = TraceVramWriteCpuLimit;
         private int _vdpCtrlWriteLogRemaining = TraceVdpCtrlWriteLimit;

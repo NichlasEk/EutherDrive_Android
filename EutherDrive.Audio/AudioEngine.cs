@@ -68,7 +68,9 @@ public sealed class AudioEngine : IDisposable
     private double _outputPllRatio = 1.0;
     private short[] _outputPllScratch = Array.Empty<short>();
     private static readonly bool OutputPllEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL"), "1", StringComparison.Ordinal);
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL"), "0", StringComparison.Ordinal);
+    private static readonly bool RawTimingEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
     private static readonly bool TimedDrainEnabled =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN"), "0", StringComparison.Ordinal);
 
@@ -89,7 +91,7 @@ public sealed class AudioEngine : IDisposable
         _framesPerBatch = framesPerBatch;
         _bufferFrames = bufferFrames;
         _drainTicksPerFrame = Stopwatch.Frequency / (double)_sampleRate;
-        _outputPllEnabled = OutputPllEnabled;
+        _outputPllEnabled = OutputPllEnabled && !RawTimingEnabled;
         _outputPllMax = GetOutputPllMax();
 
         _ring = new short[bufferFrames * channels];

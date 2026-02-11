@@ -88,19 +88,23 @@
           </ComboBox>
         </StackPanel>
         <Separator/>
-        <TextBlock Text="Audio Debug" FontWeight="Bold"/>
+        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <TextBlock Text="Audio Debug" FontWeight="Bold" VerticalAlignment="Center"/>
+          <CheckBox Name="AudioDebugCheck" Content="Enabled" VerticalAlignment="Center"/>
+        </StackPanel>
         <Border Padding="6,4" CornerRadius="4" Background="#1A2B1E" BorderBrush="#2E5A3A" BorderThickness="1">
           <TextBox Name="AudioDebugText"
                    IsReadOnly="True"
                    Background="Transparent"
                    BorderThickness="0"
+                   MinHeight="54"
                    FontSize="12"
                    Foreground="#BFE9C8"
                    FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
-                   TextWrapping="NoWrap"
+                   TextWrapping="Wrap"
                    ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                   ScrollViewer.VerticalScrollBarVisibility="Disabled"
-                   AcceptsReturn="False"/>
+                   ScrollViewer.VerticalScrollBarVisibility="Auto"
+                   AcceptsReturn="True"/>
         </Border>
         <Separator/>
         <TextBlock Text="Region" FontWeight="Bold"/>

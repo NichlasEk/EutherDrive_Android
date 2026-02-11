@@ -1,6 +1,9 @@
 EutherDrive environment variables (EUTHERDRIVE_*).
 
 General
+- EUTHERDRIVE_TRACE_ENABLE=1: enable MdLog trace output (required; otherwise traces are silent).
+- EUTHERDRIVE_TRACE_DISABLE=1: disable all MdLog trace output (overrides trace flags).
+- EUTHERDRIVE_AUDIO_WARMUP_FRAMES=<int>: number of frames to pre-generate audio on reset (default 6).
 - EUTHERDRIVE_DUMP_VECTORS=1: dump initial vector bytes on load.
 - EUTHERDRIVE_FB_TRACE=1: framebuffer identity/sample tracing.
 - EUTHERDRIVE_TRACE_PERF=1: perf timers/hotspots logging (CPU/VDP/blit).
@@ -10,12 +13,14 @@ General
 - EUTHERDRIVE_HEADLESS_DUMP_DIR=<path>: override headless frame dump directory (default: ROM directory).
 
 UI
+- EUTHERDRIVE_DISABLE_SKIP_DUP_FRAMES=1: disable UI optimization that skips blit/present when the core frame id hasn't advanced.
 - EUTHERDRIVE_UI_HEARTBEAT=1: UI heartbeat log.
 - EUTHERDRIVE_TRACE_TICK=1: per-tick log.
 - EUTHERDRIVE_TRACE_UI_FRAME=1: frame-level UI logs (heartbeat ticks, basic frame flow).
 - EUTHERDRIVE_TRACE_UI_RENDER=1: UI render/emu-loop debug logs (bitmap recreate, emu-loop exceptions).
 - EUTHERDRIVE_TRACE_UI_PRESENT=1: per-present logs (frame id, empty frame, present metrics).
 - EUTHERDRIVE_TRACE_UI_AUDIO=1: show audio debug line in UI (buffer, accumulator, timing ratio).
+- EUTHERDRIVE_TRACE_SYS_CYCLES=1: log SystemCycles per second vs expected M68K clock.
 - EUTHERDRIVE_TRACE_Z80_YM_ALL=1: log all Z80 YM2612 writes (very noisy; gated).
 - EUTHERDRIVE_TRACE_Z80_YM_ALL_LIMIT=<int>: max Z80 YM write logs (default 256; 0=unlimited).
 - EUTHERDRIVE_TRACE_VDP_CTRL=1: log VDP control-port writes/decodes (very noisy; gated).
@@ -52,10 +57,15 @@ UI
 - EUTHERDRIVE_TRACE_VRAM_STATS=1: log per-frame VRAM stats (gated).
 - EUTHERDRIVE_AUDIO=1: enable audio output (pw-cat).
 - EUTHERDRIVE_AUDIO_TIMED=1: time-based audio fill (wall-clock) to keep audio steady when FPS is low (default on; set 0 to disable).
+- EUTHERDRIVE_AUDIO_CATCHUP=0: disable catch-up audio (default on).
+- EUTHERDRIVE_AUDIO_CATCHUP_FRAMES=<int>: max catch-up frames per tick (default 32).
 - EUTHERDRIVE_AUDIO_TIMED_MAX_FRAMES=<int>: cap frames generated per tick in timed mode (default 1024).
 - EUTHERDRIVE_AUDIO_TIMED_DRAIN=0: disable wall-clock paced audio drain (default on).
 - EUTHERDRIVE_AUDIO_OUT_PLL=1: enable output-side PLL resampling to keep buffer near target (default off).
 - EUTHERDRIVE_AUDIO_OUT_PLL_MAX=<float>: max output PLL ratio adjustment (default 0.005).
+- EUTHERDRIVE_AUDIO_PULL=1: use pull-mode audio producer (audio thread drives buffer fill).
+- EUTHERDRIVE_AUDIO_PULL_MAX_FRAMES=<int>: max frames per pull (default 2048).
+- EUTHERDRIVE_AUDIO_CLOCK=frame|cycles: choose audio clock source (default: frame).
 - EUTHERDRIVE_TRACE_PSG_WRITE=1: log PSG register writes (very noisy; gated).
 - EUTHERDRIVE_TRACE_PSG_VOICE=1: log PSG voice write history on loud latch (very noisy; gated).
 - EUTHERDRIVE_TRACE_DAC_DEBUG=1: log YM2612 DAC debug writes (very noisy; gated).
@@ -203,6 +213,15 @@ Pads
 Audio / PSG / YM
 - EUTHERDRIVE_TRACE_AUDIO=1: audio min/max log (per second).
 - EUTHERDRIVE_TRACE_AUDLVL=1: audio level/peak logs.
+- EUTHERDRIVE_AUDIO_RAW_TIMING=1: disable audio PLL/pull/catch-up for raw timing tests.
+  Also suppresses noisy VDP/bus watchpoint logging to reduce timing distortion.
+- EUTHERDRIVE_TRACE_CONSOLE=0: silence all console logging (use Audio Debug UI instead).
+- EUTHERDRIVE_AUDIO_OUT_PLL=0: disable output PLL (enabled by default).
+
+Core trace toggles
+- EUTHERDRIVE_TRACE_M68K_BOOT=1: log early M68K boot ops (default off).
+- EUTHERDRIVE_TRACE_SHOULDRUN=1: log Z80 ShouldRun decisions (default off).
+- EUTHERDRIVE_TRACE_VDP_DEBUG=1: log first GetFrameBuffer() calls (default off).
 - EUTHERDRIVE_TRACE_YM_INTERNAL=1: log YM internal buffer min/max once per second.
 - EUTHERDRIVE_TRACE_PSG=1: PSG write log.
 - EUTHERDRIVE_DISABLE_PSG=1: disable PSG mix.

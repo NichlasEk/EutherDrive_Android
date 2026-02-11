@@ -91,6 +91,7 @@ public partial class MainWindow : Window
 
     private readonly DispatcherTimer _timer;
     private DispatcherTimer? _audioDebugTimer;
+    private bool _audioDebugEnabled;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
     private readonly Stopwatch _earlyMagentaTimer = new();
     private bool _earlyMagentaReported;
@@ -128,6 +129,10 @@ public partial class MainWindow : Window
     private static readonly bool YmEnvEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") == "1";
     private static readonly bool AudioStatsEnabled =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_STATS") == "1";
+    private static readonly bool AudioRawTiming =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING") == "1";
+    private static readonly bool TraceConsoleEnabled =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CONSOLE") != "0" && !AudioRawTiming;
     private static readonly bool TraceAudioLevel =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDLVL") == "1";
     private static readonly bool TracePerf =
@@ -135,13 +140,15 @@ public partial class MainWindow : Window
     private static readonly bool TraceAudioQueue =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_QUEUE") == "1";
     private static readonly bool AudioCatchupEnabled =
-        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_CATCHUP") == "1";
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_CATCHUP") != "0" && !AudioRawTiming;
     private static readonly bool AudioPullEnabled =
-        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PULL") == "1";
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PULL") == "1" && !AudioRawTiming;
+    private static readonly bool AudioClockFrame =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_CLOCK"), "cycles", StringComparison.OrdinalIgnoreCase);
     private static readonly bool TraceAudioPull =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_PULL") == "1";
     private static readonly bool AudioPllEnabled =
-        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PLL") == "1";
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PLL") == "1" && !AudioRawTiming;
     private const int AudioMaxFramesPerTick = 4096;
     private static readonly int AudioTargetBufferedFrames = GetAudioTargetBufferedFrames();
     private static readonly int AudioMaxCatchupFramesPerTick = GetAudioMaxCatchupFramesPerTick();
@@ -154,6 +161,8 @@ public partial class MainWindow : Window
     private static readonly bool TraceUiRender = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_RENDER");
     private static readonly bool TraceUiPresent = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_PRESENT");
     private static readonly bool TraceUiAudio = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_AUDIO");
+    private static readonly bool SkipDuplicateFrames = !IsEnvEnabled("EUTHERDRIVE_DISABLE_SKIP_DUP_FRAMES");
+    private static readonly bool TraceSysCycles = IsEnvEnabled("EUTHERDRIVE_TRACE_SYS_CYCLES");
     private static readonly bool AudioOutPllEnabledEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL") == "1";
     private static readonly bool AudioTimedDrainEnabledEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN") == "1";
     private TextWriter? _originalConsoleOut;
@@ -171,6 +180,8 @@ public partial class MainWindow : Window
     private long _emuFpsLastTicks;
     private int _emuFpsFrames;
     private double _emuActualFps;
+    private long _sysCycleLastLogTicks;
+    private long _sysCycleLastValue;
     private long _speedLockLastTicks;
     private static readonly bool TraceSpeedLock =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPEEDLOCK"), "1", StringComparison.Ordinal);
@@ -192,6 +203,7 @@ public partial class MainWindow : Window
     private int _autoFireMask;
     private long _audioLastTicks;
     private double _audioFrameAccumulator;
+    private double _audioDrivenAccumulator;
     private long _audioLastSystemCycles;
     private long _audioCycleLogLastTicks;
     private long _audioLastDropLogTicks;
@@ -239,6 +251,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        ApplyConsoleSilence();
         HookInput();
         HookMouseMovement();
 
@@ -300,11 +313,14 @@ public partial class MainWindow : Window
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
-        if (TraceUiAudio)
+        _audioDebugEnabled = TraceUiAudio;
+        if (AudioDebugCheck != null)
         {
-            _audioDebugTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => UpdateAudioDebugText());
-            _audioDebugTimer.Start();
+            AudioDebugCheck.IsChecked = _audioDebugEnabled;
+            AudioDebugCheck.Checked += OnAudioDebugToggle;
+            AudioDebugCheck.Unchecked += OnAudioDebugToggle;
         }
+        UpdateAudioDebugTimer();
 
         // Load ROM from command line if provided
         if (!string.IsNullOrEmpty(romPath) && File.Exists(romPath))
@@ -1967,7 +1983,7 @@ public partial class MainWindow : Window
     {
         StopAudioEngine();
         _audioEnabled = AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled;
-        _audioTimedEnabled = _audioEnabled && AudioTimedEnvEnabled;
+        _audioTimedEnabled = _audioEnabled && AudioTimedEnvEnabled && !AudioRawTiming;
         ApplyAudioOptionsToCore();
         if (!_audioEnabled)
         {
@@ -2019,6 +2035,7 @@ public partial class MainWindow : Window
     {
         _audioLastTicks = 0;
         _audioFrameAccumulator = 0;
+        _audioDrivenAccumulator = 0;
         _audioLastDropLogTicks = 0;
         _audioLastSystemCycles = 0;
         _audioPullBufferedSamples = 0;
@@ -2279,7 +2296,7 @@ public partial class MainWindow : Window
 
     private void UpdateAudioDebugText()
     {
-        if (!TraceUiAudio || AudioDebugText == null)
+        if (!_audioDebugEnabled || AudioDebugText == null)
             return;
 
         long now = Stopwatch.GetTimestamp();
@@ -2301,7 +2318,8 @@ public partial class MainWindow : Window
 
         int buffered = _audioEngine.BufferedFrames;
         int target = AudioTargetBufferedFrames;
-        double fps = GetLiveTargetFps();
+        double fpsTarget = GetLiveTargetFps();
+        double fpsEmu = Volatile.Read(ref _emuActualFps);
         double acc = _audioFrameAccumulator;
         string ratioText = _audioDebugLastRatio > 0 ? _audioDebugLastRatio.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "NA";
         string deltaText = _audioDebugLastDeltaCycles > 0 ? _audioDebugLastDeltaCycles.ToString(System.Globalization.CultureInfo.InvariantCulture) : "NA";
@@ -2340,10 +2358,14 @@ public partial class MainWindow : Window
         _audioDebugLastUnderrunEvents = underrunEvents;
         _audioDebugLastUnderrunFrames = underrunFrames;
 
-        string text =
-            $"Audio dbg: buf={buffered}/{target} acc={acc:0.##} " +
-            $"timed={(_audioTimedEnabled ? 1 : 0)} pll={(AudioPllEnabled ? 1 : 0)} outpll={(AudioOutPllEnabledEnv ? 1 : 0)} drain={(AudioTimedDrainEnabledEnv ? 1 : 0)} " +
-            $"fps={fps:0.##} cycRatio={ratioText} dCyc={deltaText} {rateText} {underrunText}";
+        string mode = AudioClockFrame ? "frame" : (_audioTimedEnabled ? "timed" : "cycles");
+        string line1 =
+            $"Audio dbg: buf={buffered}/{target} acc={acc:0.##} mode={mode} fps={fpsTarget:0.##} emu={fpsEmu:0.##}";
+        string line2 =
+            $"Rate: {rateText} {underrunText}";
+        string line3 =
+            $"Cycles: ratio={ratioText} dCyc={deltaText} pll={(AudioPllEnabled ? 1 : 0)} outpll={(AudioOutPllEnabledEnv ? 1 : 0)} drain={(AudioTimedDrainEnabledEnv ? 1 : 0)}";
+        string text = line1 + Environment.NewLine + line2 + Environment.NewLine + line3;
         SetAudioDebugText(text);
     }
 
@@ -2355,6 +2377,37 @@ public partial class MainWindow : Window
             return;
         _audioDebugLastText = text;
         AudioDebugText.Text = text;
+    }
+
+    private void OnAudioDebugToggle(object? sender, RoutedEventArgs e)
+    {
+        _audioDebugEnabled = AudioDebugCheck?.IsChecked == true;
+        UpdateAudioDebugTimer();
+        if (!_audioDebugEnabled && AudioDebugText != null)
+            AudioDebugText.Text = string.Empty;
+    }
+
+    private void UpdateAudioDebugTimer()
+    {
+        if (_audioDebugEnabled)
+        {
+            if (_audioDebugTimer == null)
+                _audioDebugTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => UpdateAudioDebugText());
+            _audioDebugTimer.Start();
+        }
+        else
+        {
+            _audioDebugTimer?.Stop();
+        }
+    }
+
+    private void ApplyConsoleSilence()
+    {
+        if (TraceConsoleEnabled)
+            return;
+        _originalConsoleOut ??= Console.Out;
+        Console.SetOut(TextWriter.Null);
+        Console.SetError(TextWriter.Null);
     }
 
     private void SubmitAudio()
@@ -2633,6 +2686,11 @@ public partial class MainWindow : Window
         if (_core == null) return;
 
         _ = _core.GetFrameBuffer(out var w, out var h, out _);
+        EnsureBitmapFromCore(w, h);
+    }
+
+    private void EnsureBitmapFromCore(int w, int h)
+    {
         if (w <= 0 || h <= 0)
             throw new InvalidOperationException($"Core returned invalid size {w}x{h}.");
 
@@ -2663,16 +2721,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private int _lastCoreFrameId;
+    private long _lastCoreFrameId = -1;
     private int _presentTickCounter;
     private int _presentLogInterval = 60;
 
     private unsafe void RenderFrame(IEmulatorCore core)
     {
-        EnsureBitmapFromCore();
-        if (_wb == null)
-            return;
-
         var src = core.GetFrameBuffer(out var w, out var h, out var srcStride);
         if (src.IsEmpty || srcStride <= 0 || w <= 0 || h <= 0)
         {
@@ -2682,8 +2736,17 @@ public partial class MainWindow : Window
             return;
         }
 
+        EnsureBitmapFromCore(w, h);
+        if (_wb == null)
+            return;
+
         // Check if this is actually a new frame
-        int currentFrameId = core is InterlaceTestCore itc ? itc.GetFrameId() : _presentTickCounter;
+        long currentFrameId = _presentTickCounter;
+        if (core is EutherDrive.Core.Savestates.ISavestateCapable sc && sc.FrameCounter.HasValue)
+            currentFrameId = sc.FrameCounter.Value;
+        else if (core is InterlaceTestCore itc)
+            currentFrameId = itc.GetFrameId();
+
         bool isNewFrame = currentFrameId != _lastCoreFrameId;
         _lastCoreFrameId = currentFrameId;
 
@@ -2694,6 +2757,9 @@ public partial class MainWindow : Window
                 Console.WriteLine($"[Present] tick={_presentTickCounter} NEW_FRAME frameId={currentFrameId}");
         }
         _presentTickCounter++;
+
+        if (!isNewFrame && SkipDuplicateFrames)
+            return;
 
         if (SkipUiBlitEnabled)
         {
@@ -2824,18 +2890,21 @@ public partial class MainWindow : Window
     private void EmuLoop()
     {
         double targetFps = GetLiveTargetFps();
-        long ticksPerFrame = (long)(Stopwatch.Frequency / targetFps);
-        long nextTick = Stopwatch.GetTimestamp();
+        double ticksPerFrame = Stopwatch.Frequency / targetFps;
+        double nextTick = Stopwatch.GetTimestamp();
         while (_emuRunning)
         {
             double currentTarget = GetLiveTargetFps();
             if (Math.Abs(currentTarget - targetFps) > 0.001)
             {
                 targetFps = currentTarget;
-                ticksPerFrame = (long)(Stopwatch.Frequency / targetFps);
+                ticksPerFrame = Stopwatch.Frequency / targetFps;
             }
 
-            long now = Stopwatch.GetTimestamp();
+            double now = Stopwatch.GetTimestamp();
+            var core = _core;
+            if (core == null)
+                continue;
             if (_speedLockEnabled && now < nextTick)
             {
                 int sleepMs = (int)((nextTick - now) * 1000 / Stopwatch.Frequency);
@@ -2865,10 +2934,6 @@ public partial class MainWindow : Window
                     nextTick = now;
                 nextTick += ticksPerFrame;
             }
-
-            var core = _core;
-            if (core == null)
-                continue;
 
             try
             {
@@ -2900,22 +2965,44 @@ public partial class MainWindow : Window
 
             // Track actual emu FPS
             _emuFpsFrames++;
-            long fpsNow = Stopwatch.GetTimestamp();
+            long emuFpsNow = Stopwatch.GetTimestamp();
             if (_emuFpsLastTicks == 0)
-                _emuFpsLastTicks = fpsNow;
-            long fpsDelta = fpsNow - _emuFpsLastTicks;
-            if (fpsDelta >= Stopwatch.Frequency)
+                _emuFpsLastTicks = emuFpsNow;
+            long emuFpsDelta = emuFpsNow - _emuFpsLastTicks;
+            if (emuFpsDelta >= Stopwatch.Frequency)
             {
-                double elapsed = fpsDelta / (double)Stopwatch.Frequency;
+                double elapsed = emuFpsDelta / (double)Stopwatch.Frequency;
                 double fps = _emuFpsFrames / elapsed;
                 Volatile.Write(ref _emuActualFps, fps);
                 _emuFpsFrames = 0;
-                _emuFpsLastTicks = fpsNow;
+                _emuFpsLastTicks = emuFpsNow;
                 if (TraceSpeedLock)
                 {
                     double liveTarget = GetLiveTargetFps();
                     Console.WriteLine(
-                        $"[SPEEDLOCK] target={liveTarget:0.###} emu={fps:0.###} ticksPerFrame={ticksPerFrame} lock={(_speedLockEnabled ? 1 : 0)} speed={_speedScale * 100:0.#}");
+                        $"[SPEEDLOCK] target={liveTarget:0.###} emu={fps:0.###} ticksPerFrame={ticksPerFrame:0.###} lock={(_speedLockEnabled ? 1 : 0)} speed={_speedScale * 100:0.#}");
+                }
+            }
+
+            if (TraceSysCycles && core is MdTracerAdapter adapterCycles)
+            {
+                long nowTicks = Stopwatch.GetTimestamp();
+                if (_sysCycleLastLogTicks == 0)
+                {
+                    _sysCycleLastLogTicks = nowTicks;
+                    _sysCycleLastValue = adapterCycles.GetSystemCycles();
+                }
+                else if (nowTicks - _sysCycleLastLogTicks >= Stopwatch.Frequency)
+                {
+                    long current = adapterCycles.GetSystemCycles();
+                    long delta = current - _sysCycleLastValue;
+                    double seconds = (nowTicks - _sysCycleLastLogTicks) / (double)Stopwatch.Frequency;
+                    double cyclesPerSecond = seconds > 0 ? (delta / seconds) : 0;
+                    double expected = adapterCycles.GetM68kClockHz();
+                    double ratio = expected > 0 ? cyclesPerSecond / expected : 0;
+                    Console.WriteLine($"[SYS-CYCLES] cps={cyclesPerSecond:0} expected={expected:0} ratio={ratio:0.000}");
+                    _sysCycleLastLogTicks = nowTicks;
+                    _sysCycleLastValue = current;
                 }
             }
 
@@ -2927,6 +3014,8 @@ public partial class MainWindow : Window
     private void CatchUpAudio(IEmulatorCore core)
     {
         if (_audioEngine == null || core is not MdTracerAdapter adapter)
+            return;
+        if (AudioClockFrame)
             return;
 
         int buffered = _audioEngine.BufferedFrames;
@@ -2968,8 +3057,9 @@ public partial class MainWindow : Window
 
     private ReadOnlySpan<short> AudioPullProducer(int frames)
     {
-        // Audio generation is driven by the emu loop; pull producer stays empty.
-        return ReadOnlySpan<short>.Empty;
+        if (_core is not MdTracerAdapter adapter)
+            return ReadOnlySpan<short>.Empty;
+        return adapter.GetAudioBufferForFrames(frames, out _, out _);
     }
 
     private void AppendPullAudio(ReadOnlySpan<short> audio)
@@ -2997,6 +3087,13 @@ public partial class MainWindow : Window
     {
         if (_audioEngine == null || core is not MdTracerAdapter adapter)
             return;
+        if (AudioClockFrame)
+        {
+            GenerateAudioForEmuFrame(adapter, GetLiveTargetFps());
+            return;
+        }
+        if (_audioPullMode)
+            return;
 
         if (_audioTimedEnabled)
         {
@@ -3021,9 +3118,7 @@ public partial class MainWindow : Window
             return;
 
         _audioLastSystemCycles = currentCycles;
-        double cyclesPerSecond = adapter.GetM68kCyclesPerSecond();
-        if (cyclesPerSecond <= 0)
-            cyclesPerSecond = adapter.GetM68kClockHz();
+        double cyclesPerSecond = adapter.GetM68kClockHz();
         if (cyclesPerSecond <= 0)
             return;
         double rateScale = 1.0;
@@ -3091,6 +3186,8 @@ public partial class MainWindow : Window
     {
         if (_audioEngine == null)
             return;
+        if (_audioPullMode)
+            return;
 
         long now = Stopwatch.GetTimestamp();
         if (_audioLastTicks == 0)
@@ -3154,6 +3251,49 @@ public partial class MainWindow : Window
         }
     }
 
+    private void GenerateAudioForEmuFrame(MdTracerAdapter adapter, double targetFps)
+    {
+        if (_audioEngine == null || targetFps <= 0)
+            return;
+
+        double rateScale = 1.0;
+        if (AudioPllEnabled && _audioEngine != null && AudioTargetBufferedFrames > 0)
+        {
+            int buffered = _audioEngine.BufferedFrames;
+            double error = (AudioTargetBufferedFrames - buffered) / (double)AudioTargetBufferedFrames;
+            if (error > 1.0) error = 1.0;
+            else if (error < -1.0) error = -1.0;
+            const double deadZone = 0.05;
+            if (Math.Abs(error) >= deadZone)
+                rateScale = 1.0 + (error * AudioPllMax);
+        }
+
+        double framesPerEmuFrame = (AudioSampleRate / targetFps) * rateScale;
+        _audioDrivenAccumulator += framesPerEmuFrame;
+        int frames = (int)_audioDrivenAccumulator;
+        if (frames <= 0)
+            return;
+
+        _audioDrivenAccumulator -= frames;
+        if (frames > AudioMaxFramesPerTick)
+            frames = AudioMaxFramesPerTick;
+
+        while (frames > 0)
+        {
+            int chunk = frames < AudioBufferChunkFrames ? frames : AudioBufferChunkFrames;
+            var audio = adapter.GetAudioBufferForFrames(chunk, out int rate, out int channels);
+            if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
+            {
+                _audioEngine.Submit(audio);
+                frames -= chunk;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
     private static double GetAudioCyclesScale()
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_CYCLES_SCALE");
@@ -3202,7 +3342,7 @@ public partial class MainWindow : Window
             return value;
         }
         // Default cap to avoid runaway catch-up.
-        return 8;
+        return 32;
     }
 
     private static double GetAudioPllMax()
@@ -3265,6 +3405,8 @@ public partial class MainWindow : Window
         }
         return 1024;
     }
+
+    // reserved
 
     private double GetLiveTargetFps()
     {

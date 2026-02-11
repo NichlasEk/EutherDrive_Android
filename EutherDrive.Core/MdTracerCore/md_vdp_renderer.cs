@@ -6,6 +6,12 @@ namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
+        private static readonly bool TraceConsoleEnabledRenderer =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CONSOLE"), "0", StringComparison.Ordinal)
+            && !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdpDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_DEBUG"), "1", StringComparison.Ordinal)
+            && TraceConsoleEnabledRenderer;
         private const int PATTERN_MAX      = 2048;
         private const int DISPLAY_XSIZE    = 320;
         private const int DISPLAY_YSIZE    = 480;
@@ -736,7 +742,7 @@ namespace EutherDrive.Core.MdTracerCore
         public uint[] GetFrameBuffer()
         {
             // DEBUG: Log first pixel value
-            if (_frameCounter < 5 && g_game_screen.Length > 0)
+            if (TraceVdpDebug && _frameCounter < 5 && g_game_screen.Length > 0)
             {
                 Console.WriteLine($"[VDP-DEBUG] GetFrameBuffer called at frame {_frameCounter}, g_game_screen[0]=0x{g_game_screen[0]:X8}, length={g_game_screen.Length}");
             }
