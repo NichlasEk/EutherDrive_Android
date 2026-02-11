@@ -209,6 +209,11 @@ Pads
 - EUTHERDRIVE_TRACE_PAD=1: pad read/write trace.
 - EUTHERDRIVE_PAD_SELFTEST=1: pad self-test logs.
 - EUTHERDRIVE_PAD_TYPE=ThreeButton|SixButton: pad type override.
+- EUTHERDRIVE_TRACE_PAD_UI=1: update Input Debug UI with latest pad IO read/write.
+- EUTHERDRIVE_PAD2_MIRROR=1: mirror pad1 state to pad2 reads (diagnostic).
+
+Z80
+- EUTHERDRIVE_TRACE_Z80_RETI=1: log RETI/RETN stack pops (default off).
 
 Audio / PSG / YM
 - EUTHERDRIVE_TRACE_AUDIO=1: audio min/max log (per second).

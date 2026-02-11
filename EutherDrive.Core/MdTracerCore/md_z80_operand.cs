@@ -1736,6 +1736,10 @@ namespace EutherDrive.Core.MdTracerCore
                 g_clock += 5;
             }
         }
+        private static readonly bool TraceZ80Reti =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_RETI"), "1", StringComparison.Ordinal)
+            && !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CONSOLE"), "0", StringComparison.Ordinal)
+            && !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
         private void op_RETI()
         {
             // [INT-INSTRUMENTATION] Log pop before RETI
@@ -1743,10 +1747,13 @@ namespace EutherDrive.Core.MdTracerCore
             byte pcl = stack_pop();
             byte pch = stack_pop();
             ushort pcPopped = (ushort)((pch << 8) | pcl);
-            bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
-            bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
-            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-            Console.WriteLine($"[Z80-RETI] frame={frame} SP=0x{spBefore:X4} popPC=0x{pcPopped:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+            if (TraceZ80Reti)
+            {
+                bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
+                bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine($"[Z80-RETI] frame={frame} SP=0x{spBefore:X4} popPC=0x{pcPopped:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+            }
             g_write_PCL(pcl);
             g_write_PCH(pch);
             g_IFF1 = g_IFF2;
@@ -1759,10 +1766,13 @@ namespace EutherDrive.Core.MdTracerCore
             byte pcl = stack_pop();
             byte pch = stack_pop();
             ushort pcPopped = (ushort)((pch << 8) | pcl);
-            bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
-            bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
-            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-            Console.WriteLine($"[Z80-RETN] frame={frame} SP=0x{spBefore:X4} popPC=0x{pcPopped:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+            if (TraceZ80Reti)
+            {
+                bool spInRam = spBefore >= 0x0000 && spBefore <= 0x1FFF;
+                bool spInRom = spBefore >= 0x2000 && spBefore <= 0x3FFF;
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine($"[Z80-RETN] frame={frame} SP=0x{spBefore:X4} popPC=0x{pcPopped:X4} spRegion={(spInRam ? "RAM" : spInRom ? "ROM" : "INVALID")}");
+            }
             g_write_PCL(pcl);
             g_write_PCH(pch);
             g_IFF1 = g_IFF2;

@@ -24,6 +24,13 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_IO"), "1", StringComparison.Ordinal);
         private static readonly bool TracePadIo =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PAD_IO"), "1", StringComparison.Ordinal);
+        private static readonly bool TracePadUi =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PAD_UI"), "1", StringComparison.Ordinal);
+        private static bool _padUiTraceEnabled = TracePadUi;
+        private static string? _padUiIoText;
+        private static string? _padUiStateText;
+        private static bool _pad2MirrorEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PAD2_MIRROR"), "1", StringComparison.Ordinal);
         private const byte VersionBits = 0x20;
 
         // Global pekare (som md_bus.Current)
@@ -33,6 +40,29 @@ namespace EutherDrive.Core.MdTracerCore
         // md_io.Pad1 / md_io.Pad2
         public static MdPadState Pad1 => Current?._pad1 ?? default;
         public static MdPadState Pad2 => Current?._pad2 ?? default;
+        public static bool Pad2MirrorEnabled
+        {
+            get => _pad2MirrorEnabled;
+            set => _pad2MirrorEnabled = value;
+        }
+        public static bool PadUiTraceEnabled
+        {
+            get => _padUiTraceEnabled;
+            set => _padUiTraceEnabled = value;
+        }
+        public static string? PadUiText
+        {
+            get
+            {
+                if (_padUiStateText == null && _padUiIoText == null)
+                    return null;
+                if (_padUiStateText == null)
+                    return _padUiIoText;
+                if (_padUiIoText == null)
+                    return _padUiStateText;
+                return _padUiStateText + "\n" + _padUiIoText;
+            }
+        }
 
         // Interna states (fylls typiskt i md_io_pad.cs)
         internal MdPadState _pad1;
@@ -59,7 +89,7 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
                 case 0xA10004:
                 case 0xA10005:
-                    result = ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type);
+                    result = ReadPadData(_pad2MirrorEnabled ? _pad1 : _pad2, _pad2Th, ref _pad2Handshake, _pad2Type);
                     break;
                 case 0xA10008:
                 case 0xA10009:
@@ -77,6 +107,8 @@ namespace EutherDrive.Core.MdTracerCore
             MaybeLogIoRead(addr, result, 8);
             if (TracePadIo)
                 MaybeLogPadIoRead(addr, result, 8);
+            if (_padUiTraceEnabled)
+                UpdatePadUiRead(addr, result, 8);
             return result;
         }
 
@@ -94,7 +126,7 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
                 case 0xA10004:
                 case 0xA10005:
-                    result = (ushort)(0xFF00 | ReadPadData(_pad2, _pad2Th, ref _pad2Handshake, _pad2Type));
+                    result = (ushort)(0xFF00 | ReadPadData(_pad2MirrorEnabled ? _pad1 : _pad2, _pad2Th, ref _pad2Handshake, _pad2Type));
                     break;
                 case 0xA10008:
                 case 0xA10009:
@@ -118,6 +150,8 @@ namespace EutherDrive.Core.MdTracerCore
                 MaybeLogIoRead(addr, result, 16);
             if (TracePadIo)
                 MaybeLogPadIoRead(addr, result, 16);
+            if (_padUiTraceEnabled)
+                UpdatePadUiRead(addr, result, 16);
 
             return result;
         }
@@ -152,6 +186,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
             if (TracePadIo)
                 MaybeLogPadIoWrite(addr, in_val);
+            if (_padUiTraceEnabled)
+                UpdatePadUiWrite(addr, in_val);
         }
 
         public void write16(uint in_address, ushort in_val)
@@ -177,6 +213,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             _pad1Handshake.Stage = 0;
             _pad1Handshake.LastThHigh = _pad1Th;
+            if (_padUiTraceEnabled)
+                UpdatePadUiState();
         }
 
         internal void SetPad2Input(in MdPadState state, PadType padType)
@@ -189,6 +227,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             _pad2Handshake.Stage = 0;
             _pad2Handshake.LastThHigh = _pad2Th;
+            if (_padUiTraceEnabled)
+                UpdatePadUiState();
         }
 
         internal void SetRomRegionHint(ConsoleRegion? hint)
@@ -279,6 +319,43 @@ namespace EutherDrive.Core.MdTracerCore
                 $"[PAD-IO-WRITE] pc=0x{pc:X6} addr=0x{addr:X6} val=0x{value:X2} " +
                 $"p1TH={(_pad1Th ? 1 : 0)} p1Stage={_pad1Handshake.Stage} p1Type={_pad1Type} p1={pad1} " +
                 $"p2TH={(_pad2Th ? 1 : 0)} p2Stage={_pad2Handshake.Stage} p2Type={_pad2Type} p2={pad2}");
+        }
+
+        private void UpdatePadUiRead(uint addr, uint value, int widthBits)
+        {
+            if (addr != 0xA10003 && addr != 0xA10005 && addr != 0xA10009 && addr != 0xA1000B &&
+                addr != 0xA10002 && addr != 0xA10004 && addr != 0xA10008 && addr != 0xA1000A)
+                return;
+
+            string pad1 = FormatPadState(_pad1);
+            string pad2 = FormatPadState(_pad2);
+            string val = widthBits == 8 ? value.ToString("X2") : value.ToString("X4");
+            _padUiIoText =
+                $"IO READ 0x{addr:X6} v=0x{val} w={widthBits}\n" +
+                $"p1TH={(_pad1Th ? 1 : 0)} st={_pad1Handshake.Stage} type={_pad1Type} p1={pad1}\n" +
+                $"p2TH={(_pad2Th ? 1 : 0)} st={_pad2Handshake.Stage} type={_pad2Type} p2={pad2}";
+        }
+
+        private void UpdatePadUiWrite(uint addr, byte value)
+        {
+            if (addr != 0xA10003 && addr != 0xA10005 && addr != 0xA10009 && addr != 0xA1000B &&
+                addr != 0xA10002 && addr != 0xA10004 && addr != 0xA10008 && addr != 0xA1000A)
+                return;
+
+            string pad1 = FormatPadState(_pad1);
+            string pad2 = FormatPadState(_pad2);
+            _padUiIoText =
+                $"IO WRITE 0x{addr:X6} v=0x{value:X2}\n" +
+                $"p1TH={(_pad1Th ? 1 : 0)} st={_pad1Handshake.Stage} type={_pad1Type} p1={pad1}\n" +
+                $"p2TH={(_pad2Th ? 1 : 0)} st={_pad2Handshake.Stage} type={_pad2Type} p2={pad2}";
+        }
+
+        private void UpdatePadUiState()
+        {
+            string pad1 = FormatPadState(_pad1);
+            string pad2 = FormatPadState(_pad2);
+            _padUiStateText =
+                $"PAD STATE p1={pad1} type={_pad1Type}  p2={pad2} type={_pad2Type}";
         }
 
         private static string FormatPadState(in MdPadState pad)

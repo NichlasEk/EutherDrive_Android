@@ -1016,6 +1016,21 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         md_main.g_md_vdp?.TriggerSmsDump();
     }
 
+    public static string? GetPadUiText()
+    {
+        return MdTracerCore.md_io.PadUiText;
+    }
+
+    public static void SetPad2Mirror(bool enabled)
+    {
+        MdTracerCore.md_io.Pad2MirrorEnabled = enabled;
+    }
+
+    public static void SetPadUiTrace(bool enabled)
+    {
+        MdTracerCore.md_io.PadUiTraceEnabled = enabled;
+    }
+
     public void SetFrameRateMode(FrameRateMode mode)
     {
         _frameRateMode = mode;

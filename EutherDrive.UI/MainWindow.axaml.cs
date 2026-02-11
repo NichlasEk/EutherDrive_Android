@@ -92,6 +92,8 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _timer;
     private DispatcherTimer? _audioDebugTimer;
     private bool _audioDebugEnabled;
+    private bool _pad2MirrorEnabled;
+    private bool _inputTraceEnabled;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
     private readonly Stopwatch _earlyMagentaTimer = new();
     private bool _earlyMagentaReported;
@@ -163,6 +165,10 @@ public partial class MainWindow : Window
     private static readonly bool TraceUiAudio = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_AUDIO");
     private static readonly bool SkipDuplicateFrames = !IsEnvEnabled("EUTHERDRIVE_DISABLE_SKIP_DUP_FRAMES");
     private static readonly bool TraceSysCycles = IsEnvEnabled("EUTHERDRIVE_TRACE_SYS_CYCLES");
+    private static readonly bool Pad2MirrorDefault =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_PAD2_MIRROR") == "1";
+    private static readonly bool TracePadUiDefault =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PAD_UI") == "1";
     private static readonly bool AudioOutPllEnabledEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL") == "1";
     private static readonly bool AudioTimedDrainEnabledEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN") == "1";
     private TextWriter? _originalConsoleOut;
@@ -319,6 +325,20 @@ public partial class MainWindow : Window
             AudioDebugCheck.IsChecked = _audioDebugEnabled;
             AudioDebugCheck.Checked += OnAudioDebugToggle;
             AudioDebugCheck.Unchecked += OnAudioDebugToggle;
+        }
+        _pad2MirrorEnabled = Pad2MirrorDefault;
+        if (Pad2MirrorCheck != null)
+        {
+            Pad2MirrorCheck.IsChecked = _pad2MirrorEnabled;
+            Pad2MirrorCheck.Checked += OnPad2MirrorToggle;
+            Pad2MirrorCheck.Unchecked += OnPad2MirrorToggle;
+        }
+        _inputTraceEnabled = TracePadUiDefault;
+        if (InputTraceCheck != null)
+        {
+            InputTraceCheck.IsChecked = _inputTraceEnabled;
+            InputTraceCheck.Checked += OnInputTraceToggle;
+            InputTraceCheck.Unchecked += OnInputTraceToggle;
         }
         UpdateAudioDebugTimer();
 
@@ -2367,6 +2387,28 @@ public partial class MainWindow : Window
             $"Cycles: ratio={ratioText} dCyc={deltaText} pll={(AudioPllEnabled ? 1 : 0)} outpll={(AudioOutPllEnabledEnv ? 1 : 0)} drain={(AudioTimedDrainEnabledEnv ? 1 : 0)}";
         string text = line1 + Environment.NewLine + line2 + Environment.NewLine + line3;
         SetAudioDebugText(text);
+        UpdateInputDebugText();
+    }
+
+    private void UpdateInputDebugText()
+    {
+        if (InputDebugText == null)
+            return;
+        MdTracerAdapter.SetPadUiTrace(_inputTraceEnabled);
+        InputDebugText.Text = MdTracerAdapter.GetPadUiText() ?? string.Empty;
+    }
+
+    private void OnPad2MirrorToggle(object? sender, RoutedEventArgs e)
+    {
+        _pad2MirrorEnabled = Pad2MirrorCheck?.IsChecked == true;
+    }
+
+    private void OnInputTraceToggle(object? sender, RoutedEventArgs e)
+    {
+        _inputTraceEnabled = InputTraceCheck?.IsChecked == true;
+        MdTracerAdapter.SetPadUiTrace(_inputTraceEnabled);
+        if (!_inputTraceEnabled && InputDebugText != null)
+            InputDebugText.Text = string.Empty;
     }
 
     private void SetAudioDebugText(string text)
@@ -2515,6 +2557,7 @@ public partial class MainWindow : Window
         if ((autoMask & 4) != 0 && c)
             c = IsAutoFireActive(nowTicks, autoRate);
 
+        MdTracerAdapter.SetPad2Mirror(_pad2MirrorEnabled);
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
 
         // StatusText uppdateras i Tick()
