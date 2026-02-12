@@ -310,7 +310,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void op_SLL_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_SLL(w_val);
             write_byte(w_addr, w_val);
@@ -319,7 +319,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SLL_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_SLL(w_val);
             write_byte(w_addr, w_val);

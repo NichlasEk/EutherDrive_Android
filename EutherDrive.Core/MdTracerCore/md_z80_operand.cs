@@ -51,14 +51,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_LD_r_IXD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IX + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IX + (sbyte)g_opcode3));
             write_reg(g_opcode2_543, w_val);
             g_reg_PC += 3;
             g_clock = 19;
         }
         private void op_LD_r_IYD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IY + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IY + (sbyte)g_opcode3));
             write_reg(g_opcode2_543, w_val);
             g_reg_PC += 3;
             g_clock = 19;
@@ -73,7 +73,7 @@ namespace EutherDrive.Core.MdTracerCore
         private void op_LD_IXD_r()
         {
             byte w_val = read_reg(g_opcode2_210);
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             write_byte(w_addr, w_val);
             g_reg_PC += 3;
             g_clock = 19;
@@ -81,7 +81,7 @@ namespace EutherDrive.Core.MdTracerCore
         private void op_LD_IYD_r()
         {
             byte w_val = read_reg(g_opcode2_210);
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             write_byte(w_addr, w_val);
             g_reg_PC += 3;
             g_clock = 19;
@@ -94,14 +94,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_LD_IXD_n()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             write_byte(w_addr, g_opcode4);
             g_reg_PC += 4;
             g_clock = 19;
         }
         private void op_LD_IYD_n()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             write_byte(w_addr, g_opcode4);
             g_reg_PC += 4;
             g_clock = 19;
@@ -535,7 +535,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RRC_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_RRC(w_val, true);
             write_byte(w_addr, w_val);
@@ -544,7 +544,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RRC_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_RRC(w_val, true);
             write_byte(w_addr, w_val);
@@ -576,7 +576,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RLC_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_RLC(w_val, true);
             write_byte(w_addr, w_val);
@@ -585,7 +585,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RLC_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_RLC(w_val, true);
             write_byte(w_addr, w_val);
@@ -617,7 +617,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RL_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_RL(w_val, true);
             write_byte(w_addr, w_val);
@@ -626,7 +626,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RL_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_RL(w_val, true);
             write_byte(w_addr, w_val);
@@ -658,7 +658,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RR_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_RR(w_val, true);
             write_byte(w_addr, w_val);
@@ -667,7 +667,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RR_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_RR(w_val, true);
             write_byte(w_addr, w_val);
@@ -693,7 +693,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SLA_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_SLA(w_val);
             write_byte(w_addr, w_val);
@@ -702,7 +702,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SLA_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_SLA(w_val);
             write_byte(w_addr, w_val);
@@ -728,7 +728,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SRA_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_SRA(w_val);
             write_byte(w_addr, w_val);
@@ -737,7 +737,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SRA_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_SRA(w_val);
             write_byte(w_addr, w_val);
@@ -763,7 +763,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SRL_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_SRL(w_val);
             write_byte(w_addr, w_val);
@@ -772,7 +772,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SRL_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             w_val = M_SRL(w_val);
             write_byte(w_addr, w_val);
@@ -851,14 +851,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_ADD_a_IXD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IX + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IX + (sbyte)g_opcode3));
             g_reg_A = M_ADD(g_reg_A, w_val, 0);
             g_reg_PC += 3;
             g_clock = 19;
         }
         private void op_ADD_a_IYD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IY + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IY + (sbyte)g_opcode3));
             g_reg_A = M_ADD(g_reg_A, w_val, 0);
             g_reg_PC += 3;
             g_clock = 19;
@@ -882,7 +882,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_INC_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             byte w_result = M_INC(w_val);
             write_byte(w_addr, w_result);
@@ -891,7 +891,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_INC_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             byte w_result = M_INC(w_val);
             write_byte(w_addr, w_result);
@@ -923,14 +923,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_ADC_a_IXD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IX + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IX + (sbyte)g_opcode3));
             g_reg_A = M_ADD(g_reg_A, w_val, (byte)g_flag_C);
             g_reg_PC += 3;
             g_clock = 19;
         }
         private void op_ADC_a_IYD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IY + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IY + (sbyte)g_opcode3));
             g_reg_A = M_ADD(g_reg_A, w_val, (byte)g_flag_C);
             g_reg_PC += 3;
             g_clock = 19;
@@ -959,14 +959,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SUB_a_IXD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IX + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IX + (sbyte)g_opcode3));
             g_reg_A = M_SUB(g_reg_A, w_val, 0);
             g_reg_PC += 3;
             g_clock = 19;
         }
         private void op_SUB_a_IYD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IY + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IY + (sbyte)g_opcode3));
             g_reg_A = M_SUB(g_reg_A, w_val, 0);
             g_reg_PC += 3;
             g_clock = 19;
@@ -989,7 +989,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_DEC_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             byte w_result = M_DEC(w_val);
             write_byte(w_addr, w_result);
@@ -998,7 +998,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_DEC_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val = read_byte(w_addr);
             byte w_result = M_DEC(w_val);
             write_byte(w_addr, w_result);
@@ -1029,14 +1029,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SBC_a_IXD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IX + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IX + (sbyte)g_opcode3));
             g_reg_A = M_SUB(g_reg_A, w_val, (byte)g_flag_C);
             g_reg_PC += 3;
             g_clock = 19;
         }
         private void op_SBC_a_IYD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IY + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IY + (sbyte)g_opcode3));
             g_reg_A = M_SUB(g_reg_A, w_val, (byte)g_flag_C);
             g_reg_PC += 3;
             g_clock = 19;
@@ -1217,14 +1217,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_AND_IXD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IX + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IX + (sbyte)g_opcode3));
             M_AND(w_val);
             g_reg_PC += 3;
             g_clock = 19;
         }
         private void op_AND_IYD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IY + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IY + (sbyte)g_opcode3));
             M_AND(w_val);
             g_reg_PC += 3;
             g_clock = 19;
@@ -1253,14 +1253,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_OR_IXD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IX + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IX + (sbyte)g_opcode3));
             M_OR(w_val);
             g_reg_PC += 3;
             g_clock = 19;
         }
         private void op_OR_IYD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IY + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IY + (sbyte)g_opcode3));
             M_OR(w_val);
             g_reg_PC += 3;
             g_clock = 19;
@@ -1289,14 +1289,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_XOR_IXD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IX + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IX + (sbyte)g_opcode3));
             M_XOR(w_val);
             g_reg_PC += 3;
             g_clock = 19;
         }
         private void op_XOR_IYD()
         {
-            byte w_val = read_byte((ushort)(g_reg_IY + g_opcode3));
+            byte w_val = read_byte((ushort)(g_reg_IY + (sbyte)g_opcode3));
             M_XOR(w_val);
             g_reg_PC += 3;
             g_clock = 19;
@@ -1366,14 +1366,14 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_BIT_b_IXD()
         {
-            byte w_val1 = read_byte((ushort)(g_reg_IX + g_opcode3));
+            byte w_val1 = read_byte((ushort)(g_reg_IX + (sbyte)g_opcode3));
             M_BIT(w_val1, g_opcode4_543);
             g_reg_PC += 4;
             g_clock = 20;
         }
         private void op_BIT_b_IYD()
         {
-            byte w_val1 = read_byte((ushort)(g_reg_IY + g_opcode3));
+            byte w_val1 = read_byte((ushort)(g_reg_IY + (sbyte)g_opcode3));
             M_BIT(w_val1, g_opcode4_543);
             g_reg_PC += 4;
             g_clock = 20;
@@ -1397,7 +1397,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SET_b_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val1 = read_byte(w_addr);
             byte w_val2 = (byte)(1 << g_opcode4_543);
             write_byte(w_addr, (byte)(w_val1 | w_val2));
@@ -1406,7 +1406,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_SET_b_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val1 = read_byte(w_addr);
             byte w_val2 = (byte)(1 << g_opcode4_543);
             write_byte(w_addr, (byte)(w_val1 | w_val2));
@@ -1432,7 +1432,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RES_b_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val1 = read_byte(w_addr);
             byte w_val2 = (byte)~(1 << g_opcode4_543);
             write_byte(w_addr, (byte)(w_val1 & w_val2));
@@ -1441,7 +1441,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RES_b_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val1 = read_byte(w_addr);
             byte w_val2 = (byte)~(1 << g_opcode4_543);
             write_byte(w_addr, (byte)(w_val1 & w_val2));
@@ -1501,7 +1501,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_CP_IXD()
         {
-            ushort w_addr = (ushort)(g_reg_IX + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IX + (sbyte)g_opcode3);
             byte w_val1 = read_byte(w_addr);
             M_SUB(g_reg_A, w_val1, 0);
             g_reg_PC += 3;
@@ -1509,7 +1509,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_CP_IYD()
         {
-            ushort w_addr = (ushort)(g_reg_IY + g_opcode3);
+            ushort w_addr = (ushort)(g_reg_IY + (sbyte)g_opcode3);
             byte w_val1 = read_byte(w_addr);
             M_SUB(g_reg_A, w_val1, 0);
             g_reg_PC += 3;
