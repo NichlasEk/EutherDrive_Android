@@ -59,7 +59,8 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             uint wcnt = 1;
             adressing_func_address(g_op3, g_op4, 1);
-            g_work_data.w = (ushort)adressing_func_read(g_op3, g_op4, 1);
+            // Read word into low 16 bits and clear upper bits to avoid stale data during shifts.
+            g_work_data.l = (ushort)adressing_func_read(g_op3, g_op4, 1);
             g_status_V = false;
             g_status_C = false;
             if(w_dr == 0)
