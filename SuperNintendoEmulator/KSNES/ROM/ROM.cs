@@ -13,6 +13,8 @@ public class ROM : IROM
 
     private ISNESSystem? _system;
     private KSNES.Specialchips.CX4.Cx4? _cx4;
+    private static readonly bool TraceCx4Bus =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CX4_BUS"), "1", StringComparison.Ordinal);
 
     private Timer? _sRAMTimer;
 
@@ -49,10 +51,26 @@ public class ROM : IROM
 
     public byte Read(int bank, int adr)
     {
-        if (_cx4 != null && (bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
+        if (_cx4 != null)
         {
-            return _cx4.Read(adr);
+            if ((bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
+            {
+                if (TraceCx4Bus)
+                    Console.WriteLine($"[CX4-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4}");
+                return _cx4.Read(adr);
+            }
+            if (adr < 0x8000 && _hasSram && ((bank >= 0x70 && bank < 0x7e) || bank >= 0xf0))
+            {
+                return _sram[(((bank & 0x0f) << 15) | (adr & 0x7fff)) & (_sramSize - 1)];
+            }
+            bank &= 0x7f;
+            if (adr >= 0x8000 || bank >= 0x40)
+            {
+                return _data[((bank & (_banks - 1)) << 15) | (adr & 0x7fff)];
+            }
+            return (byte)(_system?.OpenBus ?? 0);
         }
+
         if (adr < 0x8000)
         {
             if (bank >= 0x70 && bank < 0x7e && _hasSram)
@@ -65,11 +83,23 @@ public class ROM : IROM
 
     public void Write(int bank, int adr, byte value)
     {
-        if (_cx4 != null && (bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
+        if (_cx4 != null)
         {
-            _cx4.Write(adr, value);
+            if ((bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
+            {
+                if (TraceCx4Bus)
+                    Console.WriteLine($"[CX4-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2}");
+                _cx4.Write(adr, value);
+                return;
+            }
+            if (adr < 0x8000 && _hasSram && ((bank >= 0x70 && bank < 0x7e) || bank >= 0xf0))
+            {
+                _sram[(((bank & 0x0f) << 15) | (adr & 0x7fff)) & (_sramSize - 1)] = value;
+                _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            }
             return;
         }
+
         if (adr < 0x8000 && bank >= 0x70 && bank < 0x7e && _hasSram)
         {
             _sram[(((bank - 0x70) << 15) | (adr & 0x7fff)) & (_sramSize - 1)] = value;

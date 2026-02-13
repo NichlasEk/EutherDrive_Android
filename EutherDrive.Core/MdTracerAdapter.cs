@@ -625,6 +625,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     private static bool LooksLikeSmsRom(byte[] data)
     {
+        ReadOnlySpan<byte> mdMagic1 = "SEGA MEGA DRIVE"u8;
+        ReadOnlySpan<byte> mdMagic2 = "SEGA GENESIS"u8;
+        if (data.Length >= 0x110)
+        {
+            var header = data.AsSpan(0x100, 0x20);
+            if (header.IndexOf(mdMagic1) >= 0 || header.IndexOf(mdMagic2) >= 0)
+                return false;
+        }
+
         ReadOnlySpan<byte> magic = stackalloc byte[] { 0x54, 0x4D, 0x52, 0x20, 0x53, 0x45, 0x47, 0x41 }; // "TMR SEGA"
 
         static bool MatchAt(byte[] src, int offset, ReadOnlySpan<byte> sig)

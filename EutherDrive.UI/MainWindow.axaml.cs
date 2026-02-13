@@ -456,9 +456,13 @@ public partial class MainWindow : Window
         string ext = Path.GetExtension(path).ToLowerInvariant();
         if (ext is ".smc" or ".sfc")
             return true;
+        if (ext is ".md" or ".gen" or ".smd" or ".bin")
+            return false;
         try
         {
             byte[] data = File.ReadAllBytes(path);
+            if (LooksLikeMegaDriveHeader(data))
+                return false;
             if (data.Length >= 0x8000 && LooksLikeSnesHeader(data, 0x7FC0))
                 return true;
             if (data.Length >= 0x10000 && LooksLikeSnesHeader(data, 0xFFC0))
@@ -469,6 +473,16 @@ public partial class MainWindow : Window
             return false;
         }
         return false;
+    }
+
+    private static bool LooksLikeMegaDriveHeader(byte[] data)
+    {
+        if (data.Length < 0x110)
+            return false;
+        ReadOnlySpan<byte> header = data.AsSpan(0x100, 0x20);
+        ReadOnlySpan<byte> mdMagic1 = "SEGA MEGA DRIVE"u8;
+        ReadOnlySpan<byte> mdMagic2 = "SEGA GENESIS"u8;
+        return header.IndexOf(mdMagic1) >= 0 || header.IndexOf(mdMagic2) >= 0;
     }
 
     private static bool LooksLikeSnesHeader(byte[] data, int offset)

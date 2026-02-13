@@ -5,6 +5,10 @@ namespace KSNES.Specialchips.CX4;
 
 public sealed class Cx4
 {
+    private static readonly bool TraceCx4 =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CX4"), "1", StringComparison.Ordinal);
+    private static readonly int TraceCx4Limit = GetTraceLimit();
+    private static int _traceCount;
     private enum Cc : byte
     {
         Z = 1 << 0,
@@ -131,29 +135,36 @@ public sealed class Cx4
         _dmaDest = 0;
         _dmaLength = 0;
         _dmaTimer = 0;
+        Trace("[CX4] reset");
     }
 
     public byte Read(int address)
     {
-        Run();
-        if (address < 0x7000)
+        SyncToSnes();
+        TraceRead(address);
+        if ((address & 0xfff) < 0xc00)
             return _ram[address & 0xfff];
-        if (address < 0x7800)
-            return (byte)GetByte(_reg[address / 3], address % 3);
+        if (address >= 0x7f80 && (address & 0x3f) <= 0x2f)
+        {
+            int reg = address & 0x3f;
+            return (byte)GetByte(_reg[reg / 3], reg % 3);
+        }
         return ReadStatus(address);
     }
 
     public void Write(int address, byte data)
     {
-        Run();
-        if (address < 0x7000)
+        SyncToSnes();
+        TraceWrite(address, data);
+        if ((address & 0xfff) < 0xc00)
         {
             _ram[address & 0xfff] = data;
             return;
         }
-        if (address < 0x7800)
+        if (address >= 0x7f80 && (address & 0x3f) <= 0x2f)
         {
-            SetByte(ref _reg[address / 3], data, address % 3);
+            int reg = address & 0x3f;
+            SetByte(ref _reg[reg / 3], data, reg % 3);
             return;
         }
         WriteStatus(address, data);
@@ -354,22 +365,32 @@ public sealed class Cx4
             case 0x7f50: return _waitstate;
             case 0x7f51: return _irqcfg;
             case 0x7f52: return _unkcfg;
-            case 0x7f53: return 0;
-            case 0x7f54: return 0;
+            case 0x7f53:
+            case 0x7f54:
             case 0x7f55:
+            case 0x7f56:
+            case 0x7f57:
+            case 0x7f59:
+            case 0x7f5b:
+            case 0x7f5c:
+            case 0x7f5d:
+            case 0x7f5e:
+            case 0x7f5f:
+            {
                 int transfer = (_prgCacheTimer > 0) || (_busTimer > 0) || (_dmaTimer > 0) ? 1 : 0;
                 int running = transfer | (_running != 0 ? 1 : 0);
                 int res = (transfer << 7) | (running << 6) | (GetFlag(Cc.I) ? 2 : 0) | (_suspendTimer != 0 ? 1 : 0);
                 return (byte)res;
-            case 0x7f5d: return 0;
-            case 0x7f5e: return (byte)(GetFlag(Cc.I) ? 1 : 0);
+            }
+            case 0x7f58:
+            case 0x7f5a:
+                return 0;
             default:
-                if (address >= 0x7f60)
+                if (address >= 0x7f60 && address <= 0x7f7f)
                     return _vectors[address & 0x1f];
                 break;
         }
-        int idx = address & 0x0f;
-        return (byte)_reg[idx];
+        return 0;
     }
 
     private void WriteStatus(int address, byte data)
@@ -399,28 +420,33 @@ public sealed class Cx4
                     _pc = _prgStartupPc;
                     _running = 1;
                     _cyclesStart = _cycles;
+                    DoCache();
+                    Trace($"[CX4] start pb=0x{_pb:X4} pc=0x{_pc:X2} base=0x{_prgBaseAddress:X6}");
                 }
                 break;
             case 0x7f50: _waitstate = (byte)(data & 0x77); break;
             case 0x7f51:
                 _irqcfg = (byte)(data & 0x01);
                 if ((_irqcfg & 0x01) != 0)
+                {
                     _snes.CPU.IrqWanted = false;
+                    SetFlag(Cc.I, false);
+                }
                 break;
             case 0x7f52: _unkcfg = (byte)(data & 0x01); break;
             case 0x7f53: _running = 0; break;
-            case 0x7f54:
-                int offset = data & 0x1f;
-                _suspendTimer = (offset == 0) ? -1 : (offset << 5);
-                break;
-            case 0x7f55:
-                _suspendTimer = 0;
-                break;
+            case >= 0x7f55 and <= 0x7f5c:
+                {
+                    int offset = address - 0x7f55;
+                    _suspendTimer = offset == 0 ? -1 : (offset << 5);
+                    break;
+                }
+            case 0x7f5d: _suspendTimer = 0; break;
             case 0x7f5e:
                 SetFlag(Cc.I, false);
                 break;
             default:
-                if (address >= 0x7f60)
+                if (address >= 0x7f60 && address <= 0x7f7f)
                     _vectors[address & 0x1f] = data;
                 break;
         }
@@ -462,6 +488,8 @@ public sealed class Cx4
 
     private void RunInsn()
     {
+        if (FindCache(ResolveCacheAddress()) == -1)
+            DoCache();
         ushort opcode = Fetch();
         int subOp = (opcode & 0x0300) >> 8;
         int immed = opcode & 0x00ff;
@@ -628,6 +656,7 @@ public sealed class Cx4
                 {
                     SetFlag(Cc.I, true);
                     _snes.CPU.IrqWanted = true;
+                    Trace("[CX4] stop -> IRQ");
                 }
                 break;
         }
@@ -643,6 +672,8 @@ public sealed class Cx4
             DoCache();
         }
         CycleAdvance(1);
+        if (TraceCx4)
+            Trace($"[CX4] op=0x{opcode:X4} pb=0x{_pb:X4} pc=0x{_pc:X2} a=0x{_a:X6}");
         return opcode;
     }
 
@@ -789,12 +820,47 @@ public sealed class Cx4
 
     private int ReadSnes(uint address)
     {
-        return _snes.Read((int)address, false);
+        return _snes.Read((int)address, true);
     }
 
     private void WriteSnes(uint address, byte value)
     {
-        _snes.Write((int)address, value, false);
+        _snes.Write((int)address, value, true);
+    }
+
+    private void SyncToSnes()
+    {
+        if (_snes is KSNES.SNESSystem.SNESSystem snesSystem)
+            RunTo(snesSystem.Cycles);
+        else
+            Run();
+    }
+
+    private static int GetTraceLimit()
+    {
+        if (int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CX4_LIMIT"), out int limit) && limit > 0)
+            return limit;
+        return 2000;
+    }
+
+    private static void Trace(string message)
+    {
+        if (!TraceCx4)
+            return;
+        int count = System.Threading.Interlocked.Increment(ref _traceCount);
+        if (count > TraceCx4Limit)
+            return;
+        Console.WriteLine(message);
+    }
+
+    private static void TraceRead(int address)
+    {
+        Trace($"[CX4-RD] addr=0x{address:X4}");
+    }
+
+    private static void TraceWrite(int address, byte data)
+    {
+        Trace($"[CX4-WR] addr=0x{address:X4} val=0x{data:X2}");
     }
 
     private struct StackEntry
