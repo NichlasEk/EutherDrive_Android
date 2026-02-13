@@ -23,6 +23,8 @@ public sealed class SnesAdapter : IEmulatorCore
     private long _lastAudioLogTicks;
     private bool _traceAudio;
     private bool _lowpassEnabled;
+    private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
+    private byte? _romRegionCode;
     private float _dcLastInL;
     private float _dcLastOutL;
     private float _dcLastInR;
@@ -32,6 +34,8 @@ public sealed class SnesAdapter : IEmulatorCore
     private const float DcBlockCoeff = 0.995f;
 
     public string? RomSummary => _romSummary;
+    public ConsoleRegion RomRegionHint => _romRegionHint;
+    public byte? RomRegionCode => _romRegionCode;
 
     public SnesAdapter()
     {
@@ -47,6 +51,7 @@ public sealed class SnesAdapter : IEmulatorCore
     public void LoadRom(string path)
     {
         _system.LoadROMForExternal(path);
+        DetectRegion(path);
         _romSummary = BuildRomSummary();
     }
 
@@ -236,7 +241,83 @@ public sealed class SnesAdapter : IEmulatorCore
         string name = header.Name?.Trim() ?? "Unknown";
         string romSize = $"{header.RomSize / 1024} KB";
         string ramSize = $"{header.RamSize / 1024} KB";
-        return $"SNES: {name} | ROM {romSize} | RAM {ramSize} | Speed 0x{header.Speed:X} | Type 0x{header.Type:X} | Chips 0x{header.Chips:X}";
+        string region = _romRegionHint == ConsoleRegion.Auto ? "?" : _romRegionHint.ToString();
+        return $"SNES: {name} | ROM {romSize} | RAM {ramSize} | Region {region} | Speed 0x{header.Speed:X} | Type 0x{header.Type:X} | Chips 0x{header.Chips:X}";
+    }
+
+    public double GetTargetFps(ConsoleRegion overrideRegion)
+    {
+        ConsoleRegion region = overrideRegion == ConsoleRegion.Auto ? _romRegionHint : overrideRegion;
+        return region == ConsoleRegion.EU ? 50.0 : 60.0;
+    }
+
+    private void DetectRegion(string path)
+    {
+        try
+        {
+            byte[] data = File.ReadAllBytes(path);
+            int headerOffset = GetHeaderOffset(data);
+            if (headerOffset < 0 || headerOffset + 0x1A >= data.Length)
+            {
+                _romRegionHint = ConsoleRegion.Auto;
+                _romRegionCode = null;
+                return;
+            }
+
+            byte region = data[headerOffset + 0x19];
+            _romRegionCode = region;
+            _romRegionHint = MapRegion(region);
+        }
+        catch
+        {
+            _romRegionHint = ConsoleRegion.Auto;
+            _romRegionCode = null;
+        }
+    }
+
+    private static int GetHeaderOffset(byte[] data)
+    {
+        int headerBase = 0;
+        if (data.Length % 0x8000 == 512)
+            headerBase = 512;
+
+        if (LooksLikeSnesHeader(data, headerBase + 0x7FC0))
+            return headerBase + 0x7FC0;
+        if (LooksLikeSnesHeader(data, headerBase + 0xFFC0))
+            return headerBase + 0xFFC0;
+        return -1;
+    }
+
+    private static bool LooksLikeSnesHeader(byte[] data, int offset)
+    {
+        if (offset < 0 || offset + 21 > data.Length)
+            return false;
+        int printable = 0;
+        for (int i = 0; i < 21; i++)
+        {
+            byte b = data[offset + i];
+            if (b >= 0x20 && b <= 0x7E)
+                printable++;
+        }
+        return printable >= 10;
+    }
+
+    private static ConsoleRegion MapRegion(byte code)
+    {
+        return code switch
+        {
+            0x00 => ConsoleRegion.JP,
+            0x01 => ConsoleRegion.US,
+            0x02 => ConsoleRegion.EU,
+            0x03 => ConsoleRegion.EU,
+            0x04 => ConsoleRegion.EU,
+            0x05 => ConsoleRegion.EU,
+            0x06 => ConsoleRegion.EU,
+            0x0A => ConsoleRegion.EU,
+            0x0B => ConsoleRegion.EU,
+            0x0C => ConsoleRegion.EU,
+            _ => ConsoleRegion.US
+        };
     }
 
     private static void ConvertArgbToBgra(int[] source, byte[] dest)

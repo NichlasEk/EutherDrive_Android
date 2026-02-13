@@ -507,6 +507,8 @@ public partial class MainWindow : Window
         double target = 60.0;
         if (_core is MdTracerAdapter adapter)
             target = adapter.GetTargetFps();
+        else if (_core is SnesAdapter snes)
+            target = snes.GetTargetFps(RegionOverride);
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -1159,15 +1161,23 @@ public partial class MainWindow : Window
 
     private void ApplyRegionOverrideToCore(bool resetIfRunning)
     {
-        if (_core is not MdTracerAdapter adapter)
-            return;
-
-        adapter.SetRegionOverride(RegionOverride);
-        UpdateEmuTargetFps();
-        if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
+        if (_core is MdTracerAdapter adapter)
         {
-            adapter.Reset();
-            StatusText.Text = $"Region override set to {RegionOverride}. Reset applied.";
+            adapter.SetRegionOverride(RegionOverride);
+            UpdateEmuTargetFps();
+            if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
+            {
+                adapter.Reset();
+                StatusText.Text = $"Region override set to {RegionOverride}. Reset applied.";
+            }
+            return;
+        }
+
+        if (_core is SnesAdapter)
+        {
+            UpdateEmuTargetFps();
+            if (resetIfRunning)
+                StatusText.Text = $"Region override set to {RegionOverride}.";
         }
     }
 
@@ -1368,7 +1378,7 @@ public partial class MainWindow : Window
     {
         if (RomInfoText != null)
             RomInfoText.Text = adapter.RomSummary ?? "SNES ROM loaded.";
-        UpdateRomRegionHint(null);
+        UpdateRomRegionHint(adapter.RomRegionHint);
         _romRegionKey = null;
     }
 
