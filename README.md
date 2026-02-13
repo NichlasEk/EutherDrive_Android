@@ -5,8 +5,11 @@
 EutherDrive är en Mega Drive / Genesis-emulator skriven i C# med [Avalonia UI](https://avaloniaui.net/) som frontend.  
 Projektet bygger på kärnkod från [MDTracer](https://github.com/sasayaki-japan/MDTracer) (MIT-licens) och utökar den med ett modernt, plattformsoberoende gränssnitt och förbättrad kompatibilitet.
 
+Grundläggande SNES-stöd är inlagt via SuperNintendoEmulator-projektet (se referens nedan).
+
 ## Funktioner
 - Spelar upp Mega Drive ROM:ar direkt från filväljare
+- Grundläggande SNES-stöd (via separat core)
 - Avalonia-baserad frontend (Windows, Linux, macOS, Android)
 - Input-hantering för tangentbord och gamepads
 - Ljudutgång via Pipewire på Linux (planerar android fork)
@@ -32,6 +35,12 @@ git clone https://github.com/[dittkonto]/EutherDrive
 cd EutherDrive
 dotnet build
 dotnet run --project EutherDrive.UI
+```
+
+## Referenser
+```
+https://github.com/Kookpot/SuperNintendoEmulator
+```
 
 ## Att göra
 Fixa Z80 beroende ljud. något är trasigt
