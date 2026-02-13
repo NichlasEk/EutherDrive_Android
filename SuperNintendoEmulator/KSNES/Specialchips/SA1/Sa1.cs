@@ -1,0 +1,472 @@
+using System;
+using KSNES.CPU;
+using KSNES.SNESSystem;
+using KSNES.PictureProcessing;
+using KSNES.AudioProcessing;
+using KSNES.Rendering;
+using KSNES.ROM;
+
+namespace KSNES.Specialchips.SA1;
+
+internal sealed class Sa1
+{
+    private const int IramLen = 2 * 1024;
+
+    private readonly byte[] _rom;
+    private byte[] _iram = new byte[IramLen];
+    private byte[] _bwram;
+    private readonly CPU.CPU _cpu;
+    private readonly Sa1Mmc _mmc = new();
+    private readonly Sa1Registers _registers = new();
+    private readonly Sa1Timer _timer;
+    private ulong _bwramWaitCycles;
+    private ulong _lastSnesCycles;
+    private readonly Sa1System _system;
+    private bool _inReset = true;
+
+    public Sa1(byte[] rom, byte[] bwram, bool isPal)
+    {
+        _rom = rom;
+        if (bwram.Length == 0)
+        {
+            bwram = new byte[64 * 1024];
+        }
+        _bwram = bwram;
+        _cpu = new CPU.CPU();
+        _timer = new Sa1Timer(isPal);
+        _system = new Sa1System(this, _cpu);
+        _cpu.SetSystem(_system);
+    }
+
+    public byte[] Bwram => _bwram;
+
+    public static bool HasBattery(byte[] rom, int bwramLen)
+    {
+        if (bwramLen == 0)
+            return false;
+        if (rom.Length <= 0x7FD6)
+            return false;
+        byte chipset = rom[0x7FD6];
+        return chipset == 0x32 || chipset == 0x35;
+    }
+
+    public void SetBwram(byte[] bwram)
+    {
+        _bwram = bwram.Length == 0 ? new byte[64 * 1024] : bwram;
+    }
+
+    public void Tick(ulong snesCycles)
+    {
+        if (snesCycles <= _lastSnesCycles)
+            return;
+
+        ulong delta = snesCycles - _lastSnesCycles;
+        _lastSnesCycles = snesCycles;
+        ulong sa1Cycles = delta / 2;
+
+        ulong spentWait = Math.Min(sa1Cycles, _bwramWaitCycles);
+        ulong cpuCycles = sa1Cycles - spentWait;
+        _bwramWaitCycles -= spentWait;
+
+        if (_registers.Sa1Reset)
+        {
+            _inReset = true;
+        }
+        else if (_inReset)
+        {
+            _cpu.Reset();
+            _inReset = false;
+        }
+
+        if (!_registers.CpuHalted() && !_registers.Sa1Wait && !_registers.Sa1Reset)
+        {
+            for (ulong i = 0; i < cpuCycles; i++)
+            {
+                _cpu.IrqWanted = (_registers.Sa1IrqFromSnesEnabled && _registers.Sa1IrqFromSnes)
+                                 || (_registers.TimerIrqEnabled && _timer.IrqPending)
+                                 || (_registers.DmaIrqEnabled && _registers.Sa1DmaIrq);
+                _cpu.NmiWanted = _registers.Sa1NmiEnabled && _registers.Sa1Nmi;
+                _cpu.Cycle();
+            }
+            _bwramWaitCycles += _system.BwramWaitCycles;
+            _system.BwramWaitCycles = 0;
+        }
+
+        if (_registers.DmaState != DmaState.Idle)
+        {
+            for (ulong i = 0; i < sa1Cycles; i++)
+            {
+                _registers.TickDma(_mmc, _rom, _iram, _bwram);
+            }
+        }
+
+        for (ulong i = 0; i < sa1Cycles; i++)
+        {
+            _timer.Tick();
+        }
+    }
+
+    public bool SnesIrq()
+    {
+        return (_registers.SnesIrqFromSa1Enabled && _registers.SnesIrqFromSa1)
+               || (_registers.SnesIrqFromDmaEnabled && _registers.CharacterConversionIrq);
+    }
+
+    public void Reset()
+    {
+        _registers.Reset(_timer, _mmc);
+        _bwramWaitCycles = 0;
+        _lastSnesCycles = 0;
+        _inReset = true;
+    }
+
+    public void NotifyDmaStart(uint sourceAddress)
+    {
+        _registers.NotifySnesDmaStart(sourceAddress);
+    }
+
+    public void NotifyDmaEnd()
+    {
+        _registers.NotifySnesDmaEnd();
+    }
+
+    public byte? SnesRead(uint address)
+    {
+        uint bank = (address >> 16) & 0xFF;
+        uint offset = address & 0xFFFF;
+        switch (bank, offset)
+        {
+            case (<= 0x3F, >= 0x8000):
+            case (>= 0x80 and <= 0xBF, >= 0x8000):
+            case (>= 0xC0 and <= 0xFF, _):
+                {
+                    InterruptVectorSource nmiSource = _registers.SnesNmiVectorSource;
+                    InterruptVectorSource irqSource = _registers.SnesIrqVectorSource;
+                    if (bank == 0x00 && offset == 0xFFEA && nmiSource == InterruptVectorSource.IoPorts)
+                        return _registers.SnesNmiVector.Lsb();
+                    if (bank == 0x00 && offset == 0xFFEB && nmiSource == InterruptVectorSource.IoPorts)
+                        return _registers.SnesNmiVector.Msb();
+                    if (bank == 0x00 && offset == 0xFFEE && irqSource == InterruptVectorSource.IoPorts)
+                        return _registers.SnesIrqVector.Lsb();
+                    if (bank == 0x00 && offset == 0xFFEF && irqSource == InterruptVectorSource.IoPorts)
+                        return _registers.SnesIrqVector.Msb();
+
+                    uint? romAddr = _mmc.MapRomAddress(address);
+                    return romAddr.HasValue && romAddr.Value < _rom.Length ? _rom[(int)romAddr.Value] : (byte?)null;
+                }
+            case (<= 0x3F, >= 0x2300 and <= 0x230F):
+            case (>= 0x80 and <= 0xBF, >= 0x2300 and <= 0x230F):
+                return _registers.SnesRead(address);
+            case (<= 0x3F, >= 0x3000 and <= 0x37FF):
+            case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
+                return _iram[(int)(address & 0x7FF)];
+            case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
+            case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
+                {
+                    uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
+                    return _bwram[(int)bwramAddr];
+                }
+            case (>= 0x40 and <= 0x4F, _):
+                if (_registers.CcdmaTransferInProgress)
+                    return _registers.NextCcdmaByte(_iram, _bwram);
+                else
+                {
+                    uint bwramAddr = address & (uint)(_bwram.Length - 1);
+                    return _bwram[(int)bwramAddr];
+                }
+        }
+
+        return null;
+    }
+
+    public void SnesWrite(uint address, byte value)
+    {
+        uint bank = (address >> 16) & 0xFF;
+        uint offset = address & 0xFFFF;
+        switch (bank, offset)
+        {
+            case (<= 0x3F, >= 0x2200 and <= 0x22FF):
+            case (>= 0x80 and <= 0xBF, >= 0x2200 and <= 0x22FF):
+                _registers.SnesWrite(address, value, _mmc);
+                break;
+            case (<= 0x3F, >= 0x3000 and <= 0x37FF):
+            case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
+                {
+                    uint iramAddr = address & 0x7FF;
+                    int writeProtectIdx = (int)(iramAddr >> 8);
+                    if (_registers.SnesIramWritesEnabled[writeProtectIdx])
+                        _iram[(int)iramAddr] = value;
+                    break;
+                }
+            case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
+            case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
+                {
+                    uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
+                    if (_registers.CanWriteBwram(bwramAddr))
+                        _bwram[(int)bwramAddr] = value;
+                    break;
+                }
+            case (>= 0x40 and <= 0x4F, _):
+                {
+                    uint bwramAddr = address & (uint)(_bwram.Length - 1);
+                    if (_registers.CanWriteBwram(bwramAddr))
+                        _bwram[(int)bwramAddr] = value;
+                    break;
+                }
+        }
+    }
+
+    internal byte ReadSa1Cpu(uint address, out bool bwramWait)
+    {
+        bwramWait = false;
+        uint bank = (address >> 16) & 0xFF;
+        uint offset = address & 0xFFFF;
+        switch (bank, offset)
+        {
+            case (<= 0x3F, >= 0x8000):
+            case (>= 0x80 and <= 0xBF, >= 0x8000):
+            case (>= 0xC0 and <= 0xFF, _):
+                if (bank == 0x00 && offset == 0xFFEA) return _registers.Sa1NmiVector.Lsb();
+                if (bank == 0x00 && offset == 0xFFEB) return _registers.Sa1NmiVector.Msb();
+                if (bank == 0x00 && offset == 0xFFEE) return _registers.Sa1IrqVector.Lsb();
+                if (bank == 0x00 && offset == 0xFFEF) return _registers.Sa1IrqVector.Msb();
+                if (bank == 0x00 && offset == 0xFFFC) return _registers.Sa1ResetVector.Lsb();
+                if (bank == 0x00 && offset == 0xFFFD) return _registers.Sa1ResetVector.Msb();
+                {
+                    uint? romAddr = _mmc.MapRomAddress(address);
+                    return romAddr.HasValue && romAddr.Value < _rom.Length ? _rom[(int)romAddr.Value] : (byte)0;
+                }
+            case (<= 0x3F, >= 0x2300 and <= 0x230F):
+            case (>= 0x80 and <= 0xBF, >= 0x2300 and <= 0x230F):
+                return _registers.Sa1Read(address, _timer);
+            case (<= 0x3F, >= 0x0000 and <= 0x07FF):
+            case (>= 0x80 and <= 0xBF, >= 0x0000 and <= 0x07FF):
+            case (<= 0x3F, >= 0x3000 and <= 0x37FF):
+            case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
+                return _iram[(int)(address & 0x7FF)];
+            case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
+            case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
+                bwramWait = true;
+                if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
+                {
+                    uint bwramAddr = ((_mmc.Sa1BwramBaseAddr & 0x3E000) | (address & 0x01FFF)) & (uint)(_bwram.Length - 1);
+                    return _bwram[(int)bwramAddr];
+                }
+                return ReadBwramBitmap(_mmc.Sa1BwramBaseAddr | (address & 0x1FFF));
+            case (>= 0x40 and <= 0x4F, _):
+                bwramWait = true;
+                return _bwram[(int)(address & (uint)(_bwram.Length - 1))];
+            case (>= 0x60 and <= 0x6F, _):
+                bwramWait = true;
+                return ReadBwramBitmap(address);
+        }
+
+        return 0;
+    }
+
+    internal void WriteSa1Cpu(uint address, byte value, out bool bwramWait)
+    {
+        bwramWait = false;
+        uint bank = (address >> 16) & 0xFF;
+        uint offset = address & 0xFFFF;
+        switch (bank, offset)
+        {
+            case (<= 0x3F, >= 0x2200 and <= 0x22FF):
+            case (>= 0x80 and <= 0xBF, >= 0x2200 and <= 0x22FF):
+                _registers.Sa1Write(address, value, _timer, _mmc, _rom, _iram);
+                break;
+            case (<= 0x3F, >= 0x0000 and <= 0x07FF):
+            case (>= 0x80 and <= 0xBF, >= 0x0000 and <= 0x07FF):
+            case (<= 0x3F, >= 0x3000 and <= 0x37FF):
+            case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
+                {
+                    uint iramAddr = address & 0x7FF;
+                    int writeProtectIdx = (int)(iramAddr >> 8);
+                    if (_registers.Sa1IramWritesEnabled[writeProtectIdx])
+                        _iram[(int)iramAddr] = value;
+                    break;
+                }
+            case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
+            case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
+                bwramWait = true;
+                if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
+                {
+                    uint bwramAddr = ((_mmc.Sa1BwramBaseAddr & 0x3E000) | (address & 0x01FFF)) & (uint)(_bwram.Length - 1);
+                    if (_registers.CanWriteBwram(bwramAddr))
+                        _bwram[(int)bwramAddr] = value;
+                }
+                else
+                {
+                    WriteBwramBitmap(_mmc.Sa1BwramBaseAddr | (address & 0x1FFF), value);
+                }
+                break;
+            case (>= 0x40 and <= 0x4F, _):
+                bwramWait = true;
+                {
+                    uint bwramAddr = address & (uint)(_bwram.Length - 1);
+                    if (_registers.CanWriteBwram(bwramAddr))
+                        _bwram[(int)bwramAddr] = value;
+                }
+                break;
+            case (>= 0x60 and <= 0x6F, _):
+                bwramWait = true;
+                WriteBwramBitmap(address, value);
+                break;
+        }
+    }
+
+    private byte ReadBwramBitmap(uint address)
+    {
+        if (_mmc.BwramBitmapFormat == BwramBitmapBits.Two)
+        {
+            uint addr = address & 0xFFFFF;
+            uint bwramAddr = (addr >> 2) & (uint)(_bwram.Length - 1);
+            int shift = (int)(2 * (addr & 0x03));
+            return (byte)((_bwram[(int)bwramAddr] >> shift) & 0x03);
+        }
+
+        uint addr4 = address & 0x7FFFF;
+        uint bwramAddr4 = (addr4 >> 1) & (uint)(_bwram.Length - 1);
+        int shift4 = (int)(4 * (addr4 & 0x01));
+        return (byte)((_bwram[(int)bwramAddr4] >> shift4) & 0x0F);
+    }
+
+    private void WriteBwramBitmap(uint address, byte value)
+    {
+        if (_mmc.BwramBitmapFormat == BwramBitmapBits.Two)
+        {
+            uint addr = address & 0xFFFFF;
+            uint bwramAddr = (addr >> 2) & (uint)(_bwram.Length - 1);
+            int shift = (int)(2 * (addr & 0x03));
+            byte existing = _bwram[(int)bwramAddr];
+            byte newValue = (byte)((existing & ~(0x03 << shift)) | ((value & 0x03) << shift));
+            _bwram[(int)bwramAddr] = newValue;
+        }
+        else
+        {
+            uint addr = address & 0x7FFFF;
+            uint bwramAddr = (addr >> 1) & (uint)(_bwram.Length - 1);
+            int shift = (int)(4 * (addr & 0x01));
+            byte existing = _bwram[(int)bwramAddr];
+            byte newValue = (byte)((existing & ~(0x0F << shift)) | ((value & 0x0F) << shift));
+            _bwram[(int)bwramAddr] = newValue;
+        }
+    }
+
+    private sealed class Sa1System : ISNESSystem
+    {
+        private readonly Sa1 _sa1;
+        private readonly ICPU _cpu;
+        private readonly IPPU _ppu = new NullPpu();
+        private readonly IAPU _apu = new NullApu();
+        private readonly IROM _rom = new NullRom();
+
+        public Sa1System(Sa1 sa1, ICPU cpu)
+        {
+            _sa1 = sa1;
+            _cpu = cpu;
+        }
+
+        public ulong BwramWaitCycles;
+
+        public int Read(int addr, bool dma = false)
+        {
+            uint address = (uint)addr & 0xFFFFFF;
+            byte value = _sa1.ReadSa1Cpu(address, out bool bwramWait);
+            if (bwramWait)
+                BwramWaitCycles++;
+            return value;
+        }
+
+        public void Write(int addr, int value, bool dma = false)
+        {
+            uint address = (uint)addr & 0xFFFFFF;
+            _sa1.WriteSa1Cpu(address, (byte)value, out bool bwramWait);
+            if (bwramWait)
+                BwramWaitCycles++;
+        }
+
+        public ISNESSystem Merge(ISNESSystem system) => this;
+        public string FileName { get; set; } = string.Empty;
+        public string GameName { get; set; } = string.Empty;
+        public ICPU CPU => _cpu;
+        public IPPU PPU => _ppu;
+        public IAPU APU => _apu;
+        public IROM ROM { get => _rom; set { } }
+        public void StopEmulation() { }
+        public void ResumeEmulation() { }
+        public void SetKeyDown(SNESButton button) { }
+        public void SetKeyUp(SNESButton button) { }
+        public void LoadROM(string fileName) { }
+        public void Run() { }
+        public IRenderer Renderer { get; set; } = new NullRenderer();
+        public IAudioHandler AudioHandler { get; set; } = new NullAudioHandler();
+        public bool IsRunning() => true;
+        public event EventHandler? FrameRendered;
+        public bool PPULatch => false;
+        public int OpenBus => 0;
+        public int XPos => 0;
+        public int YPos => 0;
+        public bool IsPal { get; set; }
+
+        private sealed class NullPpu : IPPU
+        {
+            public void CheckOverscan(int line) { }
+            public void RenderLine(int line) { }
+            public int Read(int adr) => 0;
+            public void Write(int adr, int value) { }
+            public int[] GetPixels() => Array.Empty<int>();
+            public bool FrameOverscan => false;
+            public int LatchedHpos { get; set; }
+            public int LatchedVpos { get; set; }
+            public bool CountersLatched { get; set; }
+            public void Reset() { }
+            public void SetSystem(ISNESSystem system) { }
+        }
+
+        private sealed class NullApu : IAPU
+        {
+            public byte[] RAM { get; } = new byte[0];
+            public void Attach() { }
+            public void Cycle() { }
+            public void Write(int adr, byte value) { }
+            public byte Read(int adr) => 0;
+            public byte[] SpcWritePorts { get; } = new byte[4];
+            public byte[] SpcReadPorts { get; set; } = new byte[4];
+            public void Reset() { }
+            public void SetSamples(float[] left, float[] right) { }
+        }
+
+        private sealed class NullRenderer : IRenderer
+        {
+            public void RenderBuffer(int[] buffer) { }
+            public void SetTargetControl(IHasWidthAndHeight box) { }
+        }
+
+        private sealed class NullAudioHandler : IAudioHandler
+        {
+            public float[] SampleBufferL { get; set; } = Array.Empty<float>();
+            public float[] SampleBufferR { get; set; } = Array.Empty<float>();
+            public void NextBuffer() { }
+            public void Pauze() { }
+            public void Resume() { }
+        }
+
+        private sealed class NullRom : IROM
+        {
+            public byte Read(int bank, int adr) => 0;
+            public void Write(int bank, int adr, byte value) { }
+            public Header Header { get; } = new Header { Name = string.Empty };
+            public int RomLength => 0;
+            public void LoadROM(byte[] data, Header header) { }
+            public void LoadSRAM() { }
+            public void ResetCoprocessor() { }
+            public void RunCoprocessor(ulong snesCycles) { }
+            public byte ReadRomByteLoRom(uint address) => 0;
+            public bool IrqWanted => false;
+            public void SetSystem(ISNESSystem system) { }
+            public void NotifyDmaStart(uint sourceAddress) { }
+            public void NotifyDmaEnd() { }
+        }
+    }
+}
