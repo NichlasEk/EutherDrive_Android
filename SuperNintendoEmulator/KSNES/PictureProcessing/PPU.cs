@@ -112,6 +112,8 @@ public class PPU : IPPU
     private int _mosaicStartLine;
     private bool[] _mainScreenEnabled = [];
     private bool[] _subScreenEnabled = [];
+    private byte _tmRaw;
+    private byte _tsRaw;
     private bool _forcedBlank;
     private int _brightness;
 
@@ -138,6 +140,16 @@ public class PPU : IPPU
     private bool _interlace;
 
     public bool FrameOverscan { get; private set; }
+    public bool ForcedBlank => _forcedBlank;
+    public int Brightness => _brightness;
+    public int Mode => _mode;
+    public bool OverscanEnabled => _overscan;
+    public bool Mode7ExBg => _mode7ExBg;
+    public bool PseudoHires => _pseudoHires;
+    public bool Interlace => _interlace;
+    public bool ObjInterlace => _objInterlace;
+    public byte MainScreenMask => _tmRaw;
+    public byte SubScreenMask => _tsRaw;
     private bool _evenFrame;
 
     public int LatchedHpos { get; set; }
@@ -502,6 +514,7 @@ public class PPU : IPPU
                 _bigTiles[1] = (value & 0x20) > 0;
                 _bigTiles[2] = (value & 0x40) > 0;
                 _bigTiles[3] = (value & 0x80) > 0;
+                TracePpuWrite($"[PPU] BGMODE=0x{value:X2} mode={_mode} l3prio={_layer3Prio}");
                 return;
             case 0x06:
                 _mosaicEnabled[0] = (value & 0x1) > 0;
@@ -701,18 +714,22 @@ public class PPU : IPPU
                 _windowMaskLogic[5] = (value & 0xc) >> 2;
                 return;
             case 0x2c:
+                _tmRaw = (byte)value;
                 _mainScreenEnabled[0] = (value & 0x1) > 0;
                 _mainScreenEnabled[1] = (value & 0x2) > 0;
                 _mainScreenEnabled[2] = (value & 0x4) > 0;
                 _mainScreenEnabled[3] = (value & 0x8) > 0;
                 _mainScreenEnabled[4] = (value & 0x10) > 0;
+                TracePpuWrite($"[PPU] TM=0x{value:X2}");
                 return;
             case 0x2d:
+                _tsRaw = (byte)value;
                 _subScreenEnabled[0] = (value & 0x1) > 0;
                 _subScreenEnabled[1] = (value & 0x2) > 0;
                 _subScreenEnabled[2] = (value & 0x4) > 0;
                 _subScreenEnabled[3] = (value & 0x8) > 0;
                 _subScreenEnabled[4] = (value & 0x10) > 0;
+                TracePpuWrite($"[PPU] TS=0x{value:X2}");
                 return;
             case 0x2e:
                 _mainScreenWindow[0] = (value & 0x1) > 0;

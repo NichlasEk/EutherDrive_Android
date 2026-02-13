@@ -32,6 +32,7 @@ public sealed class SnesAdapter : IEmulatorCore
     private float _dcLastOutR;
     private float _lpLastL;
     private float _lpLastR;
+    private float _masterVolumeScale = 1.0f;
     private const float DcBlockCoeff = 0.995f;
 
     public string? RomSummary => _romSummary;
@@ -68,6 +69,13 @@ public sealed class SnesAdapter : IEmulatorCore
         UpdateIsPal();
     }
 
+    public void SetMasterVolumePercent(int percent)
+    {
+        if (percent < 0) percent = 0;
+        else if (percent > 100) percent = 100;
+        _masterVolumeScale = percent / 100f;
+    }
+
     public void RunFrame()
     {
         _system.RunFrameForExternal();
@@ -85,6 +93,46 @@ public sealed class SnesAdapter : IEmulatorCore
         height = DefaultHeight;
         stride = DefaultStride;
         return _frameBuffer;
+    }
+
+    public SnesPpuState GetPpuState()
+    {
+        if (_system.PPU is PPU ppu)
+        {
+            return new SnesPpuState(
+                ppu.ForcedBlank,
+                ppu.Brightness,
+                ppu.Mode,
+                ppu.OverscanEnabled,
+                ppu.FrameOverscan,
+                ppu.PseudoHires,
+                ppu.Interlace,
+                ppu.ObjInterlace,
+                ppu.MainScreenMask,
+                ppu.SubScreenMask,
+                _system.InVblank,
+                _system.InHblank,
+                _system.InNmi,
+                _system.XPos,
+                _system.YPos);
+        }
+
+        return new SnesPpuState(
+            ForcedBlank: false,
+            Brightness: 0,
+            Mode: 0,
+            OverscanEnabled: false,
+            FrameOverscan: false,
+            PseudoHires: false,
+            Interlace: false,
+            ObjInterlace: false,
+            MainScreenMask: 0,
+            SubScreenMask: 0,
+            InVblank: _system.InVblank,
+            InHblank: _system.InHblank,
+            InNmi: _system.InNmi,
+            XPos: _system.XPos,
+            YPos: _system.YPos);
     }
 
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
@@ -194,6 +242,8 @@ public sealed class SnesAdapter : IEmulatorCore
                 l = ApplyLowpass(l, ref _lpLastL);
                 r = ApplyLowpass(r, ref _lpLastR);
             }
+            l *= _masterVolumeScale;
+            r *= _masterVolumeScale;
             dest[di++] = FloatToShort(l);
             dest[di++] = FloatToShort(r);
         }
@@ -381,4 +431,21 @@ public sealed class SnesAdapter : IEmulatorCore
         {
         }
     }
+
+    public readonly record struct SnesPpuState(
+        bool ForcedBlank,
+        int Brightness,
+        int Mode,
+        bool OverscanEnabled,
+        bool FrameOverscan,
+        bool PseudoHires,
+        bool Interlace,
+        bool ObjInterlace,
+        byte MainScreenMask,
+        byte SubScreenMask,
+        bool InVblank,
+        bool InHblank,
+        bool InNmi,
+        int XPos,
+        int YPos);
 }

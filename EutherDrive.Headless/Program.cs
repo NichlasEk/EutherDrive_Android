@@ -132,8 +132,7 @@ class Program
         LogEnv("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_START_FRAME");
 
         string dumpDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_DIR")
-            ?? Path.GetDirectoryName(romPath)
-            ?? ".";
+            ?? Path.Combine(Directory.GetCurrentDirectory(), "logs");
         Directory.CreateDirectory(dumpDir);
 
         try
@@ -157,12 +156,32 @@ class Program
                     snesAudioSink = new HeadlessAudioSink();
                 }
 
+                bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
-                DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_frame0.ppm"));
+                DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_frame0.ppm"), traceSnesFrames);
 
+                bool prevHasContent = false;
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
                     snes.RunFrame();
+
+                    if (traceSnesFrames)
+                    {
+                        var state = snes.GetPpuState();
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: ppu forcedBlank={state.ForcedBlank} bright={state.Brightness} mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} overscan={state.OverscanEnabled} frameOverscan={state.FrameOverscan} pseudoHires={state.PseudoHires} interlace={state.Interlace} objInterlace={state.ObjInterlace} vblank={state.InVblank} hblank={state.InHblank} nmi={state.InNmi} xy=({state.XPos},{state.YPos})");
+                        ReadOnlySpan<byte> fb = snes.GetFrameBuffer(out int width, out int height, out int stride);
+                        var stats = GetFrameStats(fb, width, height, stride);
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: snes_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        if (prevHasContent && !stats.HasContent)
+                        {
+                            Console.WriteLine($"[HEADLESS] Frame {frame}: transition to BLACK (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
+                        }
+                        if (!prevHasContent && stats.HasContent)
+                        {
+                            Console.WriteLine($"[HEADLESS] Frame {frame}: transition to CONTENT (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
+                        }
+                        prevHasContent = stats.HasContent;
+                    }
 
                     if (snesAudioSink != null)
                     {
@@ -175,12 +194,12 @@ class Program
 
                     if (frame == 0 || frame == 5 || frame == 10)
                     {
-                        DumpSnesFrame(snes, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                        DumpSnesFrame(snes, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"), traceSnesFrames);
                     }
                 }
 
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
-                DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"));
+                DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"), traceSnesFrames);
                 snesAudioSink?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
@@ -474,11 +493,19 @@ class Program
         return ext is ".smc" or ".sfc";
     }
 
-    private static void DumpSnesFrame(SnesAdapter snes, string path)
+    private static void DumpSnesFrame(SnesAdapter snes, string path, bool logStats)
     {
         ReadOnlySpan<byte> fb = snes.GetFrameBuffer(out int width, out int height, out int stride);
         bool hasContent = FrameBufferHasContent(fb);
-        Console.WriteLine($"[HEADLESS] SNES fb_has_content={hasContent}");
+        if (logStats)
+        {
+            var stats = GetFrameStats(fb, width, height, stride);
+            Console.WriteLine($"[HEADLESS] SNES fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+        }
+        else
+        {
+            Console.WriteLine($"[HEADLESS] SNES fb_has_content={hasContent}");
+        }
         DumpBgraToPpm(fb, width, height, stride, path);
         Console.WriteLine($"[HEADLESS] Dumped frame to {path}");
     }
@@ -491,6 +518,33 @@ class Program
                 return true;
         }
         return false;
+    }
+
+    private readonly record struct FrameStats(bool HasContent, int NonZeroPixels, int FirstX, int FirstY);
+
+    private static FrameStats GetFrameStats(ReadOnlySpan<byte> fb, int width, int height, int stride)
+    {
+        int nonZero = 0;
+        int firstX = -1;
+        int firstY = -1;
+        for (int y = 0; y < height; y++)
+        {
+            int row = y * stride;
+            for (int x = 0; x < width; x++)
+            {
+                int i = row + x * 4;
+                if (fb[i] != 0 || fb[i + 1] != 0 || fb[i + 2] != 0)
+                {
+                    nonZero++;
+                    if (firstX == -1)
+                    {
+                        firstX = x;
+                        firstY = y;
+                    }
+                }
+            }
+        }
+        return new FrameStats(nonZero > 0, nonZero, firstX, firstY);
     }
 
     private static void DumpBgraToPpm(ReadOnlySpan<byte> fb, int width, int height, int stride, string path)

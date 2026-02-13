@@ -39,6 +39,9 @@ public class SNESSystem : ISNESSystem
 
     public int XPos { get; private set; }
     public int YPos { get; private set; }
+    public bool InVblank => _inVblank;
+    public bool InHblank => _inHblank;
+    public bool InNmi => _inNmi;
 
     private int _cpuCyclesLeft;
     private int _cpuMemOps;
@@ -81,6 +84,15 @@ public class SNESSystem : ISNESSystem
     private bool _dmaBusy;
     private bool[] _dmaActive = [];
     private bool[] _hdmaActive = [];
+
+    private readonly bool _tracePpuBusWrites =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_BUS"), "1", StringComparison.Ordinal);
+    private readonly int _tracePpuBusLimit;
+    private int _tracePpuBusCount;
+    private readonly bool _traceWramWrites =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_WRAM"), "1", StringComparison.Ordinal);
+    private readonly bool _traceDma =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_DMA"), "1", StringComparison.Ordinal);
 
     private int[] _dmaMode = [];
     private bool[] _dmaFixed = [];
@@ -125,6 +137,12 @@ public class SNESSystem : ISNESSystem
         PPU?.SetSystem(this);
         APU = apu;
         CPU?.SetSystem(this);
+
+        if (int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_BUS_LIMIT"), out int limit) &&
+            limit > 0)
+        {
+            _tracePpuBusLimit = limit;
+        }
     }
 
     public ISNESSystem Merge(ISNESSystem system)
@@ -250,16 +268,30 @@ public class SNESSystem : ISNESSystem
         if (bank == 0x7e || bank == 0x7f)
         {
             _ram[((bank & 0x1) << 16) | adr] = (byte) value;
+            if (dma && _traceWramWrites && adr < 0x2000)
+            {
+                int pc = -1;
+                if (CPU is KSNES.CPU.CPU cpu)
+                    pc = cpu.ProgramCounter24;
+                Console.WriteLine($"[WRAM-DMA] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+            }
         }
         if (adr < 0x8000 && (bank < 0x40 || bank >= 0x80 && bank < 0xc0))
         {
             if (adr < 0x2000)
             {
                 _ram[adr & 0x1fff] = (byte) value;
+                if (_traceWramWrites && adr >= 0x1F00 && adr < 0x2100)
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-WR] adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+                }
             }
             if (adr >= 0x2100 && adr < 0x2200)
             {
-                WriteBBus(adr & 0xff, value);
+                WriteBBus(adr & 0xff, value, dma);
             }
             if (adr == 0x4016)
             {
@@ -267,6 +299,14 @@ public class SNESSystem : ISNESSystem
             }
             if (adr >= 0x4200 && adr < 0x4380)
             {
+                if (_traceDma && (adr == 0x420B || adr == 0x420C))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    string reg = adr == 0x420B ? "MDMAEN" : "HDMAEN";
+                    Console.WriteLine($"[DMA-CTL] {reg}=0x{value:X2} pc=0x{pc:X6}");
+                }
                 WriteReg(adr, value);
             }
         }
@@ -357,10 +397,6 @@ public class SNESSystem : ISNESSystem
             return;
         }
         GameName = header.Name;
-        if (header.Type != 0)
-        {
-            return;
-        }
         if (rom.Length < header.RomSize)
         {
             int extraData = rom.Length - header.RomSize / 2;
@@ -563,7 +599,8 @@ public class SNESSystem : ISNESSystem
         }
         else
         {
-            WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff, Read((_dmaAadrBank[i] << 16) | _dmaAadr[i], true));
+            WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
+                Read((_dmaAadrBank[i] << 16) | _dmaAadr[i], true), true);
         }
         _dmaTimer += 6;
         if (!_dmaFixed[i])
@@ -637,7 +674,8 @@ public class SNESSystem : ISNESSystem
                             }
                             else
                             {
-                                WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff, Read((_hdmaIndBank[i] << 16) | _dmaSize[i], true));
+                                WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
+                                    Read((_hdmaIndBank[i] << 16) | _dmaSize[i], true), true);
                             }
                             _dmaSize[i]++;
                         }
@@ -649,7 +687,8 @@ public class SNESSystem : ISNESSystem
                             }
                             else
                             {
-                                WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff, Read((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i], true));
+                                WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
+                                    Read((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i], true), true);
                             }
                             _hdmaTableAdr[i]++;
                         }
@@ -915,10 +954,11 @@ public class SNESSystem : ISNESSystem
         return OpenBus;
     }
 
-    private void WriteBBus(int adr, int value)
+    private void WriteBBus(int adr, int value, bool dma = false)
     {
         if (adr < 0x34)
         {
+            TracePpuBusWrite(adr, value, dma);
             PPU.Write(adr, value);
             return;
         }
@@ -942,6 +982,46 @@ public class SNESSystem : ISNESSystem
                 return;
             case 0x83:
                 _ramAdr = (_ramAdr & 0x0ffff) | ((value & 1) << 16);
+                return;
+        }
+    }
+
+    private void TracePpuBusWrite(int adr, int value, bool dma)
+    {
+        if (!_tracePpuBusWrites)
+        {
+            return;
+        }
+        if (_tracePpuBusLimit > 0 && _tracePpuBusCount >= _tracePpuBusLimit)
+        {
+            return;
+        }
+        switch (adr)
+        {
+            case 0x00: // INIDISP
+            case 0x05: // BGMODE
+            case 0x2C: // TM
+            case 0x2D: // TS
+            case 0x2E: // TMW
+            case 0x2F: // TSW
+            case 0x30: // CGWSEL
+            case 0x31: // CGADSUB
+            case 0x32: // COLDATA
+            case 0x33: // SETINI
+                string src = dma ? "DMA" : "CPU";
+                int pc = -1;
+                string pcBytes = "";
+                if (CPU is KSNES.CPU.CPU cpu)
+                {
+                    pc = cpu.ProgramCounter24;
+                    int b0 = Rread(pc);
+                    int b1 = Rread((pc + 1) & 0xffffff);
+                    int b2 = Rread((pc + 2) & 0xffffff);
+                    pcBytes = $" op=[{b0:X2} {b1:X2} {b2:X2}]";
+                }
+                Console.WriteLine(
+                    $"[PPU-BUS] {src} write $21{adr:X2}=0x{value:X2} pc=0x{pc:X6}{pcBytes} xy=({XPos},{YPos}) vblank={_inVblank} hblank={_inHblank}");
+                _tracePpuBusCount++;
                 return;
         }
     }
@@ -985,6 +1065,11 @@ public class SNESSystem : ISNESSystem
             }
         }
         return ROM.Read(bank, adr);
+    }
+
+    internal int Peek(int adr)
+    {
+        return Rread(adr);
     }
 
     private int GetAccessTime(int adr)

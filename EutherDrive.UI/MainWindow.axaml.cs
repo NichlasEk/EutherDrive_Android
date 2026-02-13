@@ -1254,6 +1254,8 @@ public partial class MainWindow : Window
     {
         if (_core is MdTracerAdapter adapter)
             adapter.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is SnesAdapter snes)
+            snes.SetMasterVolumePercent(_masterVolumePercent);
     }
 
     private void ApplyAudioMixToCore()

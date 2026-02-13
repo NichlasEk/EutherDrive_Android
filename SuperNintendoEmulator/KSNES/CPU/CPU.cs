@@ -43,6 +43,16 @@ public class CPU : ICPU
     private byte[] _r = [];
     private ushort[] _br = [];
 
+    public int ProgramCounter24 => (_r[K] << 16) | _br[PC];
+
+    private readonly bool _tracePc =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_PC"), "1", StringComparison.Ordinal);
+    private readonly int _tracePcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_CPU_PC_LIMIT", 200);
+    private int _tracePcCount;
+    private readonly bool _traceWramPc =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_WRAM_PC"), "1", StringComparison.Ordinal);
+    private bool _traceWramPcLogged;
+
     [JsonIgnore]
     private readonly int[] _modes = [
         IMP, IDX, IMM, SR, DP, DP, DP, IDL, IMP, IMMm, IMP, IMP, ABS, ABS, ABS, ABL,
@@ -144,6 +154,7 @@ public class CPU : ICPU
         _r = new byte[2];
         _br = new ushort[6];
         _br[PC] = (ushort) (_snes.Read(0xfffc) | (_snes.Read(0xfffd) << 8));
+        _br[SP] = 0x1FF;
         _n = false;
         _v = false;
         _m = true;
@@ -171,6 +182,31 @@ public class CPU : ICPU
             }
             else if (!_waiting)
             {
+                int pcAddr = (_r[K] << 16) | _br[PC];
+                if (_traceWramPc && !_traceWramPcLogged && (pcAddr & 0xFFFF) < 0x2000)
+                {
+                    if (_snes is KSNES.SNESSystem.SNESSystem snes)
+                    {
+                        int b0 = snes.Peek(pcAddr);
+                        int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
+                        int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                        int b3 = snes.Peek((pcAddr + 3) & 0xffffff);
+                        Console.WriteLine($"[CPU-WRAM-PC] pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2} {b3:X2}]");
+                        _traceWramPcLogged = true;
+                    }
+                }
+                if (_tracePc && _tracePcCount < _tracePcLimit)
+                {
+                    int b0 = 0, b1 = 0, b2 = 0;
+                    if (_snes is KSNES.SNESSystem.SNESSystem snes)
+                    {
+                        b0 = snes.Peek(pcAddr);
+                        b1 = snes.Peek((pcAddr + 1) & 0xffffff);
+                        b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                    }
+                    Console.WriteLine($"[CPU-PC] pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}]");
+                    _tracePcCount++;
+                }
                 int instr = _snes.Read((_r[K] << 16) | _br[PC]++);
                 CyclesLeft = _cycles[instr];
                 int mode = _modes[instr];
@@ -1735,5 +1771,13 @@ public class CPU : ICPU
             _br[X] &= 0xff;
             _br[Y] &= 0xff;
         }
+    }
+
+    private static int ParseTraceLimit(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value > 0)
+            return value;
+        return fallback;
     }
 }

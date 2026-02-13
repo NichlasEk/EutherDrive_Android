@@ -138,7 +138,18 @@ public class ROM : IROM
     private void SaveSRAM(object? state)
     {
         string fileName = GetSRAMFileName();
-        File.WriteAllBytes(fileName, _sram);
+        try
+        {
+            File.WriteAllBytes(fileName, _sram);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Console.WriteLine($"[SRAM] Save failed: {ex.Message}");
+        }
+        catch (IOException ex)
+        {
+            Console.WriteLine($"[SRAM] Save failed: {ex.Message}");
+        }
         _sRAMTimer?.Dispose();
         _sRAMTimer = null;
     }
