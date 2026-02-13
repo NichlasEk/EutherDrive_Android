@@ -138,6 +138,54 @@ class Program
 
         try
         {
+            string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
+            bool useSnes = string.Equals(coreOverride, "snes", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsSnesRomPath(romPath));
+            if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
+                useSnes = false;
+
+            if (useSnes)
+            {
+                Console.WriteLine("[HEADLESS] Using SNES core");
+                var snes = new SnesAdapter();
+                snes.LoadRom(romPath);
+
+                HeadlessAudioSink? snesAudioSink = null;
+                bool enableSnesAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
+                if (enableSnesAudio)
+                {
+                    snesAudioSink = new HeadlessAudioSink();
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    snes.RunFrame();
+
+                    if (snesAudioSink != null)
+                    {
+                        var audio = snes.GetAudioBuffer(out int rate, out int channels);
+                        if (frame == 0)
+                            snesAudioSink.Start(rate, channels);
+                        if (!audio.IsEmpty)
+                            snesAudioSink.Submit(audio);
+                    }
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                    {
+                        DumpSnesFrame(snes, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                    }
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"));
+                snesAudioSink?.Dispose();
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
             var adapter = new MdTracerAdapter();
             adapter.LoadRom(romPath);
             object coreAudioLock = new();
@@ -417,6 +465,55 @@ class Program
             Console.Error.WriteLine($"[HEADLESS-ERROR] {ex.Message}");
             Console.Error.WriteLine(ex.StackTrace);
             return 1;
+        }
+    }
+
+    private static bool IsSnesRomPath(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".smc" or ".sfc";
+    }
+
+    private static void DumpSnesFrame(SnesAdapter snes, string path)
+    {
+        ReadOnlySpan<byte> fb = snes.GetFrameBuffer(out int width, out int height, out int stride);
+        bool hasContent = FrameBufferHasContent(fb);
+        Console.WriteLine($"[HEADLESS] SNES fb_has_content={hasContent}");
+        DumpBgraToPpm(fb, width, height, stride, path);
+        Console.WriteLine($"[HEADLESS] Dumped frame to {path}");
+    }
+
+    private static bool FrameBufferHasContent(ReadOnlySpan<byte> fb)
+    {
+        for (int i = 0; i + 3 < fb.Length; i += 4)
+        {
+            if (fb[i] != 0 || fb[i + 1] != 0 || fb[i + 2] != 0)
+                return true;
+        }
+        return false;
+    }
+
+    private static void DumpBgraToPpm(ReadOnlySpan<byte> fb, int width, int height, int stride, string path)
+    {
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+        using var bw = new BinaryWriter(fs, Encoding.ASCII, leaveOpen: true);
+        bw.Write(Encoding.ASCII.GetBytes($"P6\n{width} {height}\n255\n"));
+        byte[] line = new byte[width * 3];
+        for (int y = 0; y < height; y++)
+        {
+            int src = y * stride;
+            int dst = 0;
+            for (int x = 0; x < width; x++)
+            {
+                byte b = fb[src++];
+                byte g = fb[src++];
+                byte r = fb[src++];
+                src++; // skip A
+                line[dst++] = r;
+                line[dst++] = g;
+                line[dst++] = b;
+            }
+            bw.Write(line);
         }
     }
 
