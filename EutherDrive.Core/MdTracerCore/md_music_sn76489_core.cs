@@ -17,8 +17,8 @@ namespace EutherDrive.Core.MdTracerCore
         private const int NOISE_CHANNEL = 3;
         private const int FREQ_MIN = 5;     //レート44100の最大周波数は22050Hzなので周波数の最小は5
         private const int WHITENOISE = 0x0009;
-        private const int NOISESHIFT = 15;
-        private const int NOISEINITIAL = 0xffff;
+        private const int NOISESHIFT = 14;     // 15-bit LFSR (bits 0..14)
+        private const int NOISEINITIAL = 0x4000;
 
         //work
         private float[] g_psg_clock = Array.Empty<float>();
@@ -98,14 +98,11 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     if (g_duty[NOISE_CHANNEL] == true)
                     {
-                        // Following otheremumdemu-core PSG_ShiftRegisterClock():
-                        // For white noise: feedback from bit 13 XOR bit 10 (shift >> 13) ^ (shift >> 10)
-                        // For periodic noise: feedback from bit 0 (LSB)
                         int w_bit1;
                         if (g_noise_mode == true)
                         {
-                            // White noise: XOR bits 13 and 10, then extract LSB
-                            w_bit1 = ((g_shift_reg >> 13) ^ (g_shift_reg >> 10)) & 1;
+                            // White noise (Sega variant): XOR bit0 and bit3, insert into bit14
+                            w_bit1 = ((g_shift_reg & 1) ^ ((g_shift_reg >> 3) & 1)) & 1;
                         }
                         else
                         {
