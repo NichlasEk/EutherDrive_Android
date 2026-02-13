@@ -4,6 +4,7 @@ using KSNES.PictureProcessing;
 using KSNES.Rendering;
 using KSNES.ROM;
 using KSNES.SNESSystem;
+using System.Diagnostics;
 
 namespace EutherDrive.Core;
 
@@ -14,10 +15,13 @@ public sealed class SnesAdapter : IEmulatorCore
     private const int DefaultStride = DefaultWidth * 4;
 
     private readonly SNESSystem _system;
-    private readonly SnesNullAudioHandler _audioHandler = new();
+    private readonly SnesAudioHandler _audioHandler = new();
     private readonly SnesFrameRenderer _renderer = new();
     private byte[] _frameBuffer = new byte[DefaultHeight * DefaultStride];
+    private short[] _audioBuffer = Array.Empty<short>();
     private string? _romSummary;
+    private long _lastAudioLogTicks;
+    private bool _traceAudio;
 
     public string? RomSummary => _romSummary;
 
@@ -28,6 +32,7 @@ public sealed class SnesAdapter : IEmulatorCore
         var rom = new ROM();
         var apu = new APU(new SPC700(), new DSP());
         _system = new SNESSystem(cpu, _renderer, rom, ppu, apu, _audioHandler);
+        _traceAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_AUDIO") == "1";
     }
 
     public void LoadRom(string path)
@@ -47,6 +52,9 @@ public sealed class SnesAdapter : IEmulatorCore
         int[] pixels = _system.PPU.GetPixels();
         EnsureFrameBuffer();
         ConvertArgbToBgra(pixels, _frameBuffer);
+        EnsureAudioBuffer();
+        ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
+        TraceAudioIfEnabled();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -59,9 +67,9 @@ public sealed class SnesAdapter : IEmulatorCore
 
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
     {
-        sampleRate = 0;
-        channels = 0;
-        return ReadOnlySpan<short>.Empty;
+        sampleRate = SnesAudioHandler.SampleRate;
+        channels = 2;
+        return _audioBuffer;
     }
 
     public void SetInputState(
@@ -108,6 +116,52 @@ public sealed class SnesAdapter : IEmulatorCore
             _frameBuffer = new byte[needed];
     }
 
+    private void EnsureAudioBuffer()
+    {
+        int needed = SnesAudioHandler.SamplesPerFrame * 2;
+        if (_audioBuffer.Length != needed)
+            _audioBuffer = new short[needed];
+    }
+
+    private static void ConvertFloatToPcm(float[] left, float[] right, short[] dest)
+    {
+        int count = Math.Min(left.Length, right.Length);
+        int di = 0;
+        for (int i = 0; i < count && di + 1 < dest.Length; i++)
+        {
+            dest[di++] = FloatToShort(left[i]);
+            dest[di++] = FloatToShort(right[i]);
+        }
+    }
+
+    private static short FloatToShort(float value)
+    {
+        float clamped = Math.Clamp(value, -1f, 1f);
+        return (short)MathF.Round(clamped * short.MaxValue);
+    }
+
+    private void TraceAudioIfEnabled()
+    {
+        if (!_traceAudio)
+            return;
+        long now = Stopwatch.GetTimestamp();
+        if (_lastAudioLogTicks != 0)
+        {
+            double elapsed = (now - _lastAudioLogTicks) / (double)Stopwatch.Frequency;
+            if (elapsed < 1.0)
+                return;
+        }
+        _lastAudioLogTicks = now;
+        int peak = 0;
+        for (int i = 0; i < _audioBuffer.Length; i++)
+        {
+            int v = _audioBuffer[i];
+            if (v < 0) v = -v;
+            if (v > peak) peak = v;
+        }
+        Console.WriteLine($"[SNES-AUDIO] peak={peak} samples={_audioBuffer.Length}");
+    }
+
     private string BuildRomSummary()
     {
         var header = _system.ROM.Header;
@@ -143,10 +197,13 @@ public sealed class SnesAdapter : IEmulatorCore
         }
     }
 
-    private sealed class SnesNullAudioHandler : IAudioHandler
+    private sealed class SnesAudioHandler : IAudioHandler
     {
-        public float[] SampleBufferL { get; set; } = Array.Empty<float>();
-        public float[] SampleBufferR { get; set; } = Array.Empty<float>();
+        public const int SamplesPerFrame = 735;
+        public const int SampleRate = 44100;
+
+        public float[] SampleBufferL { get; set; } = new float[SamplesPerFrame];
+        public float[] SampleBufferR { get; set; } = new float[SamplesPerFrame];
 
         public void NextBuffer()
         {

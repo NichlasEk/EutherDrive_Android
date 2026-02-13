@@ -2594,7 +2594,7 @@ public partial class MainWindow : Window
         _audioEngine = new AudioEngine(new PwCatAudioSink(), AudioSampleRate, AudioChannels, framesPerBatch: AudioEngineBatchFrames, bufferFrames: AudioEngineBufferFrames);
         _audioEngine.SetTargetBufferedFrames(AudioTargetBufferedFrames);
         _audioEngine.Start();
-        if (AudioPullEnabled)
+        if (AudioPullEnabled && _core is not SnesAdapter)
         {
             _audioPullMode = true;
             _audioPullReady = false;
@@ -3718,6 +3718,12 @@ public partial class MainWindow : Window
                     ApplyInputToCore(core);
                     core.RunFrame();
                     GenerateAudioFromSystemCycles(core);
+                    if (_audioEngine != null && !_audioPullMode && core is SnesAdapter)
+                    {
+                        var audio = core.GetAudioBuffer(out int rate, out int channels);
+                        if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
+                            _audioEngine.Submit(audio);
+                    }
                 }
 
                 if (AudioCatchupEnabled && _audioEngine != null && !_audioPullMode)

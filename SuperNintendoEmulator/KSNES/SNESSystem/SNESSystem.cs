@@ -174,6 +174,8 @@ public class SNESSystem : ISNESSystem
     {
         RunFrame(false);
         Renderer?.RenderBuffer(PPU.GetPixels());
+        APU.SetSamples(AudioHandler.SampleBufferL, AudioHandler.SampleBufferR);
+        AudioHandler.NextBuffer();
         FrameRendered?.Invoke(this, EventArgs.Empty);
     }
 
