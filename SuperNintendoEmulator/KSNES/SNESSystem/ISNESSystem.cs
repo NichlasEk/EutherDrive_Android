@@ -25,4 +25,5 @@ public interface ISNESSystem
     int OpenBus { get; }
     int XPos { get; }
     int YPos { get; }
+    bool IsPal { get; set; }
 }
