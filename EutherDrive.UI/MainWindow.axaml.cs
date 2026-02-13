@@ -43,12 +43,16 @@ public partial class MainWindow : Window
     private WriteableBitmap? _wb;
 
     private SdlApi? _sdl;
-    private IntPtr _activeGamepad = IntPtr.Zero;
+    private IntPtr _activeGamepad1 = IntPtr.Zero;
+    private IntPtr _activeGamepad2 = IntPtr.Zero;
     private bool _sdlInputInitialized;
     private long _lastGamepadScanTicks;
-    private readonly HashSet<GamepadButton> _gamepadButtonsDown = new();
-    private readonly HashSet<GamepadButton> _gamepadButtonsDownPrev = new();
-    private int _lastGamepadButtonPressed = (int)GamepadButton.None;
+    private readonly HashSet<GamepadButton> _gamepad1ButtonsDown = new();
+    private readonly HashSet<GamepadButton> _gamepad1ButtonsDownPrev = new();
+    private readonly HashSet<GamepadButton> _gamepad2ButtonsDown = new();
+    private readonly HashSet<GamepadButton> _gamepad2ButtonsDownPrev = new();
+    private int _lastGamepad1ButtonPressed = (int)GamepadButton.None;
+    private int _lastGamepad2ButtonPressed = (int)GamepadButton.None;
     private readonly object _gamepadStateLock = new();
 
     private static readonly GamepadButton[] s_gamepadButtonsToPoll =
@@ -594,7 +598,7 @@ public partial class MainWindow : Window
             }
 
             _sdlInputInitialized = true;
-            TryOpenFirstGamepad();
+            TryOpenGamepads();
             Console.WriteLine("[Gamepad] SDL gamepad input initialized");
         }
         catch (Exception ex)
@@ -1407,6 +1411,7 @@ public partial class MainWindow : Window
     {
         public Dictionary<string, Key> KeyboardMappings { get; set; } = new();
         public Dictionary<string, GamepadButton> GamepadMappings { get; set; } = new();
+        public Dictionary<string, GamepadButton> Gamepad2Mappings { get; set; } = new();
 
         public InputMappingSettings()
         {
@@ -1437,6 +1442,10 @@ public partial class MainWindow : Window
             GamepadMappings["Y"] = GamepadButton.LeftShoulder;
             GamepadMappings["Z"] = GamepadButton.RightShoulder;
             GamepadMappings["Mode"] = GamepadButton.Back;
+
+            // Default gamepad 2 mappings match gamepad 1
+            foreach (var kv in GamepadMappings)
+                Gamepad2Mappings[kv.Key] = kv.Value;
         }
     }
 
@@ -1444,27 +1453,38 @@ public partial class MainWindow : Window
     {
         public string Action { get; set; } = "";
         public Key KeyboardKey { get; set; }
-        public GamepadButton GamepadButton { get; set; }
+        public GamepadButton GamepadButton1 { get; set; }
+        public GamepadButton GamepadButton2 { get; set; }
         public Button? KeyboardButton { get; set; }
-        public Button? GamepadButtonControl { get; set; }
+        public Button? Gamepad1ButtonControl { get; set; }
+        public Button? Gamepad2ButtonControl { get; set; }
     }
 
     private sealed class InputMappingDialog : Window
     {
+        private enum RecordingDevice
+        {
+            Keyboard,
+            Gamepad1,
+            Gamepad2
+        }
+
         public InputMappingSettings Mappings { get; }
         private readonly List<MappingItem> _items = new();
         private MappingItem? _currentlyRecording;
         private TextBlock? _recordingHint;
-        private readonly Func<GamepadButton?>? _gamepadButtonProvider;
+        private readonly Func<GamepadButton?>? _gamepad1ButtonProvider;
+        private readonly Func<GamepadButton?>? _gamepad2ButtonProvider;
         private DispatcherTimer? _gamepadPollTimer;
-        private bool _recordingIsKeyboard = true;
+        private RecordingDevice _recordingDevice = RecordingDevice.Keyboard;
 
-        public InputMappingDialog(InputMappingSettings currentMappings, Func<GamepadButton?>? gamepadButtonProvider = null)
+        public InputMappingDialog(InputMappingSettings currentMappings, Func<GamepadButton?>? gamepad1ButtonProvider = null, Func<GamepadButton?>? gamepad2ButtonProvider = null)
         {
             Mappings = currentMappings;
-            _gamepadButtonProvider = gamepadButtonProvider;
+            _gamepad1ButtonProvider = gamepad1ButtonProvider;
+            _gamepad2ButtonProvider = gamepad2ButtonProvider;
             Title = "Input Settings";
-            Width = 700;
+            Width = 860;
             Height = 600;
             Background = new SolidColorBrush(Color.Parse("#0F1216"));
             WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -1474,8 +1494,9 @@ public partial class MainWindow : Window
             foreach (var action in actions)
             {
                 Mappings.KeyboardMappings.TryGetValue(action, out Key key);
-                Mappings.GamepadMappings.TryGetValue(action, out GamepadButton gp);
-                _items.Add(new MappingItem { Action = action, KeyboardKey = key, GamepadButton = gp });
+                Mappings.GamepadMappings.TryGetValue(action, out GamepadButton gp1);
+                Mappings.Gamepad2Mappings.TryGetValue(action, out GamepadButton gp2);
+                _items.Add(new MappingItem { Action = action, KeyboardKey = key, GamepadButton1 = gp1, GamepadButton2 = gp2 });
             }
 
             BuildUi();
@@ -1510,12 +1531,14 @@ public partial class MainWindow : Window
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             // Headers
             AddTextBlock(grid, 0, 0, "Action", true);
             AddTextBlock(grid, 0, 1, "Keyboard Key", true);
-            AddTextBlock(grid, 0, 2, "Gamepad Button", true);
+            AddTextBlock(grid, 0, 2, "Gamepad 1", true);
+            AddTextBlock(grid, 0, 3, "Gamepad 2", true);
 
             // Rows
             for (int i = 0; i < _items.Count; i++)
@@ -1534,27 +1557,43 @@ public partial class MainWindow : Window
                     Background = new SolidColorBrush(Color.Parse("#2A313B")),
                     Foreground = new SolidColorBrush(Colors.White)
                 };
-                keyButton.Click += (s, e) => StartRecording(item, true);
+                keyButton.Click += (s, e) => StartRecording(item, RecordingDevice.Keyboard);
                 Grid.SetRow(keyButton, row);
                 Grid.SetColumn(keyButton, 1);
                 grid.Children.Add(keyButton);
                 item.KeyboardButton = keyButton;
 
-                bool gamepadEnabled = _gamepadButtonProvider != null;
-                var gpButton = new Button
+                bool gamepad1Enabled = _gamepad1ButtonProvider != null;
+                var gp1Button = new Button
                 {
-                    Content = item.GamepadButton.ToString(),
+                    Content = item.GamepadButton1.ToString(),
                     HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
-                    Background = new SolidColorBrush(Color.Parse(gamepadEnabled ? "#2A313B" : "#1A1F26")),
-                    Foreground = new SolidColorBrush(gamepadEnabled ? Colors.White : Colors.Gray),
-                    IsEnabled = gamepadEnabled
+                    Background = new SolidColorBrush(Color.Parse(gamepad1Enabled ? "#2A313B" : "#1A1F26")),
+                    Foreground = new SolidColorBrush(gamepad1Enabled ? Colors.White : Colors.Gray),
+                    IsEnabled = gamepad1Enabled
                 };
-                if (gamepadEnabled)
-                    gpButton.Click += (s, e) => StartRecording(item, false);
-                Grid.SetRow(gpButton, row);
-                Grid.SetColumn(gpButton, 2);
-                grid.Children.Add(gpButton);
-                item.GamepadButtonControl = gpButton;
+                if (gamepad1Enabled)
+                    gp1Button.Click += (s, e) => StartRecording(item, RecordingDevice.Gamepad1);
+                Grid.SetRow(gp1Button, row);
+                Grid.SetColumn(gp1Button, 2);
+                grid.Children.Add(gp1Button);
+                item.Gamepad1ButtonControl = gp1Button;
+
+                bool gamepad2Enabled = _gamepad2ButtonProvider != null;
+                var gp2Button = new Button
+                {
+                    Content = item.GamepadButton2.ToString(),
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+                    Background = new SolidColorBrush(Color.Parse(gamepad2Enabled ? "#2A313B" : "#1A1F26")),
+                    Foreground = new SolidColorBrush(gamepad2Enabled ? Colors.White : Colors.Gray),
+                    IsEnabled = gamepad2Enabled
+                };
+                if (gamepad2Enabled)
+                    gp2Button.Click += (s, e) => StartRecording(item, RecordingDevice.Gamepad2);
+                Grid.SetRow(gp2Button, row);
+                Grid.SetColumn(gp2Button, 3);
+                grid.Children.Add(gp2Button);
+                item.Gamepad2ButtonControl = gp2Button;
             }
 
             stack.Children.Add(grid);
@@ -1573,7 +1612,7 @@ public partial class MainWindow : Window
             // Hook global key events
             KeyDown += OnDialogKeyDown;
 
-            if (_gamepadButtonProvider != null)
+            if (_gamepad1ButtonProvider != null || _gamepad2ButtonProvider != null)
             {
                 _gamepadPollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
                 _gamepadPollTimer.Tick += (_, _) => PollGamepadRecording();
@@ -1597,14 +1636,21 @@ public partial class MainWindow : Window
             grid.Children.Add(tb);
         }
 
-        private void StartRecording(MappingItem item, bool isKeyboard)
+        private void StartRecording(MappingItem item, RecordingDevice device)
         {
             _currentlyRecording = item;
-            _recordingIsKeyboard = isKeyboard;
+            _recordingDevice = device;
             if (_recordingHint != null)
             {
-                string device = isKeyboard ? "Keyboard" : "Gamepad";
-                _recordingHint.Text = $"Recording for {item.Action} ({device}). Press a {(isKeyboard ? "key" : "button")} or Escape to cancel...";
+                string deviceText = device switch
+                {
+                    RecordingDevice.Keyboard => "Keyboard",
+                    RecordingDevice.Gamepad1 => "Gamepad 1",
+                    RecordingDevice.Gamepad2 => "Gamepad 2",
+                    _ => "Gamepad"
+                };
+                string keyText = device == RecordingDevice.Keyboard ? "key" : "button";
+                _recordingHint.Text = $"Recording for {item.Action} ({deviceText}). Press a {keyText} or Escape to cancel...";
                 _recordingHint.IsVisible = true;
             }
             // Focus the window to capture keys
@@ -1626,7 +1672,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (!_recordingIsKeyboard)
+            if (_recordingDevice != RecordingDevice.Keyboard)
                 return;
 
             // Update keyboard mapping
@@ -1643,16 +1689,30 @@ public partial class MainWindow : Window
 
         private void PollGamepadRecording()
         {
-            if (_currentlyRecording == null || _recordingIsKeyboard || _gamepadButtonProvider == null)
+            if (_currentlyRecording == null || _recordingDevice == RecordingDevice.Keyboard)
                 return;
 
-            var button = _gamepadButtonProvider();
+            Func<GamepadButton?>? provider = _recordingDevice == RecordingDevice.Gamepad1
+                ? _gamepad1ButtonProvider
+                : _gamepad2ButtonProvider;
+            if (provider == null)
+                return;
+            var button = provider();
             if (!button.HasValue)
                 return;
 
-            _currentlyRecording.GamepadButton = button.Value;
-            if (_currentlyRecording.GamepadButtonControl != null)
-                _currentlyRecording.GamepadButtonControl.Content = button.Value.ToString();
+            if (_recordingDevice == RecordingDevice.Gamepad1)
+            {
+                _currentlyRecording.GamepadButton1 = button.Value;
+                if (_currentlyRecording.Gamepad1ButtonControl != null)
+                    _currentlyRecording.Gamepad1ButtonControl.Content = button.Value.ToString();
+            }
+            else if (_recordingDevice == RecordingDevice.Gamepad2)
+            {
+                _currentlyRecording.GamepadButton2 = button.Value;
+                if (_currentlyRecording.Gamepad2ButtonControl != null)
+                    _currentlyRecording.Gamepad2ButtonControl.Content = button.Value.ToString();
+            }
 
             _currentlyRecording = null;
             if (_recordingHint != null)
@@ -1667,7 +1727,8 @@ public partial class MainWindow : Window
             foreach (var item in _items)
             {
                 Mappings.KeyboardMappings[item.Action] = item.KeyboardKey;
-                Mappings.GamepadMappings[item.Action] = item.GamepadButton;
+                Mappings.GamepadMappings[item.Action] = item.GamepadButton1;
+                Mappings.Gamepad2Mappings[item.Action] = item.GamepadButton2;
             }
             Close(true);
         }
@@ -1772,6 +1833,12 @@ public partial class MainWindow : Window
         if (settings.InputMappings != null)
         {
             _inputMappings = settings.InputMappings;
+            if (_inputMappings.Gamepad2Mappings == null || _inputMappings.Gamepad2Mappings.Count == 0)
+            {
+                _inputMappings.Gamepad2Mappings = new Dictionary<string, GamepadButton>();
+                foreach (var kv in _inputMappings.GamepadMappings)
+                    _inputMappings.Gamepad2Mappings[kv.Key] = kv.Value;
+            }
         }
         UpdateYmResampleUi();
         UpdateZ80CyclesMultUi();
@@ -1981,14 +2048,21 @@ public partial class MainWindow : Window
     private async void OnInputSettings(object? sender, RoutedEventArgs e)
     {
         // Create and show input mapping configuration dialog
-        Func<GamepadButton?>? gamepadProvider = _sdlInputInitialized
+        Func<GamepadButton?>? gamepadProvider1 = _sdlInputInitialized
             ? () =>
             {
                 UpdateGamepadState();
-                return TryConsumeLastGamepadButtonPressed();
+                return TryConsumeLastGamepad1ButtonPressed();
             }
             : null;
-        var dialog = new InputMappingDialog(_inputMappings, gamepadProvider);
+        Func<GamepadButton?>? gamepadProvider2 = _sdlInputInitialized && _activeGamepad2 != IntPtr.Zero
+            ? () =>
+            {
+                UpdateGamepadState();
+                return TryConsumeLastGamepad2ButtonPressed();
+            }
+            : null;
+        var dialog = new InputMappingDialog(_inputMappings, gamepadProvider1, gamepadProvider2);
         if (await dialog.ShowDialog<bool>(this))
         {
             // Save updated mappings
@@ -2594,6 +2668,18 @@ public partial class MainWindow : Window
         bool y;
         bool z;
         bool mode;
+        bool up2 = false;
+        bool down2 = false;
+        bool left2 = false;
+        bool right2 = false;
+        bool a2 = false;
+        bool b2 = false;
+        bool c2 = false;
+        bool start2 = false;
+        bool x2 = false;
+        bool y2 = false;
+        bool z2 = false;
+        bool mode2 = false;
         PadType padType;
         int autoMask;
         int autoRate;
@@ -2641,6 +2727,32 @@ public partial class MainWindow : Window
         if (_inputMappings.GamepadMappings.TryGetValue("Mode", out GamepadButton gpMode) && gpMode != GamepadButton.None)
             mode |= IsGamepadButtonPressed(gpMode);
 
+        // Gamepad 2 mappings (no keyboard for P2)
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("Up", out GamepadButton gp2Up) && gp2Up != GamepadButton.None)
+            up2 |= IsGamepad2ButtonPressed(gp2Up);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("Down", out GamepadButton gp2Down) && gp2Down != GamepadButton.None)
+            down2 |= IsGamepad2ButtonPressed(gp2Down);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("Left", out GamepadButton gp2Left) && gp2Left != GamepadButton.None)
+            left2 |= IsGamepad2ButtonPressed(gp2Left);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("Right", out GamepadButton gp2Right) && gp2Right != GamepadButton.None)
+            right2 |= IsGamepad2ButtonPressed(gp2Right);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("A", out GamepadButton gp2A) && gp2A != GamepadButton.None)
+            a2 |= IsGamepad2ButtonPressed(gp2A);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("B", out GamepadButton gp2B) && gp2B != GamepadButton.None)
+            b2 |= IsGamepad2ButtonPressed(gp2B);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("C", out GamepadButton gp2C) && gp2C != GamepadButton.None)
+            c2 |= IsGamepad2ButtonPressed(gp2C);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("Start", out GamepadButton gp2Start) && gp2Start != GamepadButton.None)
+            start2 |= IsGamepad2ButtonPressed(gp2Start);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("X", out GamepadButton gp2X) && gp2X != GamepadButton.None)
+            x2 |= IsGamepad2ButtonPressed(gp2X);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("Y", out GamepadButton gp2Y) && gp2Y != GamepadButton.None)
+            y2 |= IsGamepad2ButtonPressed(gp2Y);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("Z", out GamepadButton gp2Z) && gp2Z != GamepadButton.None)
+            z2 |= IsGamepad2ButtonPressed(gp2Z);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("Mode", out GamepadButton gp2Mode) && gp2Mode != GamepadButton.None)
+            mode2 |= IsGamepad2ButtonPressed(gp2Mode);
+
         autoMask = Volatile.Read(ref _autoFireMask);
         autoRate = Volatile.Read(ref _autoFireRateHz);
         long nowTicks = Stopwatch.GetTimestamp();
@@ -2653,17 +2765,29 @@ public partial class MainWindow : Window
 
         MdTracerAdapter.SetPad2Mirror(_pad2MirrorEnabled);
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
+        if (core is MdTracerAdapter adapter)
+            adapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
 
         // StatusText uppdateras i Tick()
     }
 
     private bool IsGamepadButtonPressed(GamepadButton button)
     {
-        if (!_sdlInputInitialized || _sdl == null || _activeGamepad == IntPtr.Zero)
+        if (!_sdlInputInitialized || _sdl == null || _activeGamepad1 == IntPtr.Zero)
             return false;
         lock (_gamepadStateLock)
         {
-            return _gamepadButtonsDown.Contains(button);
+            return _gamepad1ButtonsDown.Contains(button);
+        }
+    }
+
+    private bool IsGamepad2ButtonPressed(GamepadButton button)
+    {
+        if (!_sdlInputInitialized || _sdl == null || _activeGamepad2 == IntPtr.Zero)
+            return false;
+        lock (_gamepadStateLock)
+        {
+            return _gamepad2ButtonsDown.Contains(button);
         }
     }
 
@@ -2674,84 +2798,106 @@ public partial class MainWindow : Window
 
         lock (_gamepadStateLock)
         {
-        EnsureGamepadConnected();
-        if (_activeGamepad == IntPtr.Zero)
+        EnsureGamepadsConnected();
+        if (_activeGamepad1 == IntPtr.Zero && _activeGamepad2 == IntPtr.Zero)
             return;
 
         _sdl.PumpEvents();
 
-        _gamepadButtonsDownPrev.Clear();
-        _gamepadButtonsDownPrev.UnionWith(_gamepadButtonsDown);
-        _gamepadButtonsDown.Clear();
-
-        foreach (var button in s_gamepadButtonsToPoll)
-        {
-            if (GetGamepadButtonState(button))
-                _gamepadButtonsDown.Add(button);
-        }
-
-        foreach (var button in _gamepadButtonsDown)
-        {
-            if (!_gamepadButtonsDownPrev.Contains(button))
-                Interlocked.Exchange(ref _lastGamepadButtonPressed, (int)button);
-        }
+        if (_activeGamepad1 != IntPtr.Zero)
+            UpdateGamepadStateFor(_activeGamepad1, _gamepad1ButtonsDown, _gamepad1ButtonsDownPrev, ref _lastGamepad1ButtonPressed);
+        if (_activeGamepad2 != IntPtr.Zero)
+            UpdateGamepadStateFor(_activeGamepad2, _gamepad2ButtonsDown, _gamepad2ButtonsDownPrev, ref _lastGamepad2ButtonPressed);
         }
     }
 
-    private void EnsureGamepadConnected()
+    private void UpdateGamepadStateFor(
+        IntPtr controllerPtr,
+        HashSet<GamepadButton> down,
+        HashSet<GamepadButton> prev,
+        ref int lastPressed)
     {
-        if (_activeGamepad != IntPtr.Zero)
+        prev.Clear();
+        prev.UnionWith(down);
+        down.Clear();
+
+        foreach (var button in s_gamepadButtonsToPoll)
+        {
+            if (GetGamepadButtonState(controllerPtr, button))
+                down.Add(button);
+        }
+
+        foreach (var button in down)
+        {
+            if (!prev.Contains(button))
+                Interlocked.Exchange(ref lastPressed, (int)button);
+        }
+    }
+
+    private void EnsureGamepadsConnected()
+    {
+        if (_activeGamepad1 != IntPtr.Zero)
         {
             unsafe
             {
-                var controller = (Silk.NET.SDL.GameController*)_activeGamepad;
+                var controller = (Silk.NET.SDL.GameController*)_activeGamepad1;
                 if (_sdl!.GameControllerGetAttached(controller) == 0)
-                    CloseActiveGamepad();
+                    CloseGamepad(ref _activeGamepad1, _gamepad1ButtonsDown, _gamepad1ButtonsDownPrev);
             }
         }
 
-        if (_activeGamepad == IntPtr.Zero)
+        if (_activeGamepad2 != IntPtr.Zero)
+        {
+            unsafe
+            {
+                var controller = (Silk.NET.SDL.GameController*)_activeGamepad2;
+                if (_sdl!.GameControllerGetAttached(controller) == 0)
+                    CloseGamepad(ref _activeGamepad2, _gamepad2ButtonsDown, _gamepad2ButtonsDownPrev);
+            }
+        }
+
+        if (_activeGamepad1 == IntPtr.Zero || _activeGamepad2 == IntPtr.Zero)
         {
             long now = Stopwatch.GetTimestamp();
             if (now - _lastGamepadScanTicks < Stopwatch.Frequency * 2)
                 return;
 
             _lastGamepadScanTicks = now;
-            TryOpenFirstGamepad();
+            TryOpenGamepads();
         }
     }
 
-    private bool GetGamepadButtonState(GamepadButton button)
+    private bool GetGamepadButtonState(IntPtr controllerPtr, GamepadButton button)
     {
-        if (_activeGamepad == IntPtr.Zero || _sdl == null)
+        if (controllerPtr == IntPtr.Zero || _sdl == null)
             return false;
 
         if (button == GamepadButton.LeftTrigger)
-            return GetTriggerState(GameControllerAxis.Triggerleft);
+            return GetTriggerState(controllerPtr, GameControllerAxis.Triggerleft);
         if (button == GamepadButton.RightTrigger)
-            return GetTriggerState(GameControllerAxis.Triggerright);
+            return GetTriggerState(controllerPtr, GameControllerAxis.Triggerright);
 
         if (!sdlButtonMap.TryGetValue(button, out var sdlButton))
             return false;
 
         unsafe
         {
-            var controller = (Silk.NET.SDL.GameController*)_activeGamepad;
+            var controller = (Silk.NET.SDL.GameController*)controllerPtr;
             return _sdl.GameControllerGetButton(controller, sdlButton) != 0;
         }
     }
 
-    private bool GetTriggerState(GameControllerAxis axis)
+    private bool GetTriggerState(IntPtr controllerPtr, GameControllerAxis axis)
     {
         unsafe
         {
-            var controller = (Silk.NET.SDL.GameController*)_activeGamepad;
+            var controller = (Silk.NET.SDL.GameController*)controllerPtr;
             short value = _sdl!.GameControllerGetAxis(controller, axis);
             return value > 16000;
         }
     }
 
-    private void TryOpenFirstGamepad()
+    private void TryOpenGamepads()
     {
         if (_sdl == null)
             return;
@@ -2767,35 +2913,57 @@ public partial class MainWindow : Window
                 var controller = _sdl.GameControllerOpen(i);
                 if (controller != null)
                 {
-                    _activeGamepad = (IntPtr)controller;
-                    _gamepadButtonsDown.Clear();
-                    _gamepadButtonsDownPrev.Clear();
-                    Console.WriteLine($"[Gamepad] Connected gamepad index {i}");
-                    return;
+                    if (_activeGamepad1 == IntPtr.Zero)
+                    {
+                        _activeGamepad1 = (IntPtr)controller;
+                        _gamepad1ButtonsDown.Clear();
+                        _gamepad1ButtonsDownPrev.Clear();
+                        Console.WriteLine($"[Gamepad] Connected gamepad 1 index {i}");
+                    }
+                    else if (_activeGamepad2 == IntPtr.Zero)
+                    {
+                        _activeGamepad2 = (IntPtr)controller;
+                        _gamepad2ButtonsDown.Clear();
+                        _gamepad2ButtonsDownPrev.Clear();
+                        Console.WriteLine($"[Gamepad] Connected gamepad 2 index {i}");
+                    }
+                    else
+                    {
+                        _sdl.GameControllerClose(controller);
+                    }
+                    if (_activeGamepad1 != IntPtr.Zero && _activeGamepad2 != IntPtr.Zero)
+                        return;
                 }
             }
         }
     }
 
-    private void CloseActiveGamepad()
+    private void CloseGamepad(ref IntPtr controllerPtr, HashSet<GamepadButton> down, HashSet<GamepadButton> prev)
     {
-        if (_activeGamepad == IntPtr.Zero || _sdl == null)
+        if (controllerPtr == IntPtr.Zero || _sdl == null)
             return;
 
         unsafe
         {
-            var controller = (Silk.NET.SDL.GameController*)_activeGamepad;
+            var controller = (Silk.NET.SDL.GameController*)controllerPtr;
             _sdl.GameControllerClose(controller);
         }
-        _activeGamepad = IntPtr.Zero;
-        _gamepadButtonsDown.Clear();
-        _gamepadButtonsDownPrev.Clear();
-        Console.WriteLine("[Gamepad] Disconnected gamepad");
+        controllerPtr = IntPtr.Zero;
+        down.Clear();
+        prev.Clear();
     }
 
-    private GamepadButton? TryConsumeLastGamepadButtonPressed()
+    private GamepadButton? TryConsumeLastGamepad1ButtonPressed()
     {
-        int button = Interlocked.Exchange(ref _lastGamepadButtonPressed, (int)GamepadButton.None);
+        int button = Interlocked.Exchange(ref _lastGamepad1ButtonPressed, (int)GamepadButton.None);
+        if (button == (int)GamepadButton.None)
+            return null;
+        return (GamepadButton)button;
+    }
+
+    private GamepadButton? TryConsumeLastGamepad2ButtonPressed()
+    {
+        int button = Interlocked.Exchange(ref _lastGamepad2ButtonPressed, (int)GamepadButton.None);
         if (button == (int)GamepadButton.None)
             return null;
         return (GamepadButton)button;

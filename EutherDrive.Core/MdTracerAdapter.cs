@@ -3604,6 +3604,45 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         md_sms_io.SetPad1Input(state);
     }
 
+    public void SetPad2InputState(
+        bool up,
+        bool down,
+        bool left,
+        bool right,
+        bool a,
+        bool b,
+        bool c,
+        bool start,
+        bool x,
+        bool y,
+        bool z,
+        bool mode,
+        PadType padType)
+    {
+        var io = md_main.g_md_io;
+        if (io == null)
+            return;
+
+        var state = new MdPadState
+        {
+            Up = up,
+            Down = down,
+            Left = left,
+            Right = right,
+            A = a,
+            B = b,
+            C = c,
+            Start = start,
+            X = x,
+            Y = y,
+            Z = z,
+            Mode = mode
+        };
+
+        io.SetPad2Input(state, padType);
+        md_sms_io.SetPad2Input(state);
+    }
+
     public void SetShowSmsOverscan(bool enabled)
     {
         _vdp?.SetShowOverscan(enabled);
