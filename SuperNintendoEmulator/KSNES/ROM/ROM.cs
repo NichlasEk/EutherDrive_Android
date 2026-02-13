@@ -127,6 +127,11 @@ public class ROM : IROM
             return (byte)(_system?.OpenBus ?? 0);
         }
 
+        if (TryReadDsp1(bank, adr, out byte dsp1Value))
+        {
+            return dsp1Value;
+        }
+
         if (Header.IsHiRom)
         {
             if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
@@ -139,51 +144,6 @@ public class ROM : IROM
                 return ReadHiRom(bank, adr);
             }
             return (byte)(_system?.OpenBus ?? 0);
-        }
-
-        if (_dsp1 != null)
-        {
-            bool IsDataPort(int address) => _dsp1SwapPorts ? (address & 0x4000) != 0 : (address & 0x4000) == 0;
-
-            if (_dsp1BroadMap)
-            {
-                if ((bank & 0x7f) <= 0x3f && adr >= 0x6000 && adr < 0x8000)
-                {
-                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
-                    {
-                        string port = IsDataPort(adr) ? "DATA" : "STAT";
-                        Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} {port} (broad)");
-                    }
-                    return IsDataPort(adr) ? _dsp1.ReadData() : _dsp1.ReadStatus();
-                }
-            }
-            if (!_dsp1IsHiRom)
-            {
-                if (_dsp1PortMapping.IsDspPort(bank, adr))
-                {
-                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
-                    {
-                        string port = IsDataPort(adr) ? "DATA" : "STAT";
-                        Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} {port}");
-                    }
-                    return IsDataPort(adr) ? _dsp1.ReadData() : _dsp1.ReadStatus();
-                }
-            }
-            else
-            {
-                if (((bank & 0x7f) <= 0x0f) && adr >= 0x6000 && adr < 0x7000)
-                {
-                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
-                        Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} DATA");
-                    return _dsp1.ReadData();
-                }
-                if (((bank & 0x7f) <= 0x0f) && adr >= 0x7000 && adr < 0x8000)
-                {
-                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
-                        Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} STAT");
-                    return _dsp1.ReadStatus();
-                }
-            }
         }
 
         if (adr < 0x8000)
@@ -215,6 +175,11 @@ public class ROM : IROM
             return;
         }
 
+        if (TryWriteDsp1(bank, adr, value))
+        {
+            return;
+        }
+
         if (Header.IsHiRom)
         {
             if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
@@ -225,49 +190,109 @@ public class ROM : IROM
             return;
         }
 
-        if (_dsp1 != null)
-        {
-            bool IsDataPort(int address) => _dsp1SwapPorts ? (address & 0x4000) != 0 : (address & 0x4000) == 0;
-
-            if (_dsp1BroadMap)
-            {
-                if ((bank & 0x7f) <= 0x3f && adr >= 0x6000 && adr < 0x8000)
-                {
-                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
-                        Console.WriteLine($"[DSP1-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} (broad)");
-                    if (IsDataPort(adr))
-                        _dsp1.WriteData(value);
-                    return;
-                }
-            }
-            if (!_dsp1IsHiRom)
-            {
-                if (_dsp1PortMapping.IsDspPort(bank, adr))
-                {
-                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
-                        Console.WriteLine($"[DSP1-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2}");
-                    if (IsDataPort(adr))
-                        _dsp1.WriteData(value);
-                    return;
-                }
-            }
-            else
-            {
-                if (((bank & 0x7f) <= 0x0f) && adr >= 0x6000 && adr < 0x7000)
-                {
-                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
-                        Console.WriteLine($"[DSP1-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2}");
-                    _dsp1.WriteData(value);
-                    return;
-                }
-            }
-        }
-
         if (adr < 0x8000 && bank >= 0x70 && bank < 0x7e && _hasSram)
         {
             _sram[(((bank - 0x70) << 15) | (adr & 0x7fff)) & (_sramSize - 1)] = value;
             _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
         }
+    }
+
+    private bool TryReadDsp1(int bank, int adr, out byte value)
+    {
+        value = 0;
+        if (_dsp1 == null)
+        {
+            return false;
+        }
+        bool IsDataPort(int address) => _dsp1SwapPorts ? (address & 0x4000) != 0 : (address & 0x4000) == 0;
+
+        if (_dsp1BroadMap)
+        {
+            if ((bank & 0x7f) <= 0x3f && adr >= 0x6000 && adr < 0x8000)
+            {
+                value = IsDataPort(adr) ? _dsp1.ReadData() : _dsp1.ReadStatus();
+                if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                {
+                    string port = IsDataPort(adr) ? "DATA" : "STAT";
+                    Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} {port} (broad) -> 0x{value:X2}");
+                }
+                return true;
+            }
+        }
+
+        if (!_dsp1IsHiRom)
+        {
+            if (_dsp1PortMapping.IsDspPort(bank, adr))
+            {
+                value = IsDataPort(adr) ? _dsp1.ReadData() : _dsp1.ReadStatus();
+                if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                {
+                    string port = IsDataPort(adr) ? "DATA" : "STAT";
+                    Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} {port} -> 0x{value:X2}");
+                }
+                return true;
+            }
+            return false;
+        }
+
+        if (((bank & 0x7f) <= 0x0f) && adr >= 0x6000 && adr < 0x7000)
+        {
+            value = _dsp1.ReadData();
+            if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} DATA -> 0x{value:X2}");
+            return true;
+        }
+        if (((bank & 0x7f) <= 0x0f) && adr >= 0x7000 && adr < 0x8000)
+        {
+            value = _dsp1.ReadStatus();
+            if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} STAT -> 0x{value:X2}");
+            return true;
+        }
+        return false;
+    }
+
+    private bool TryWriteDsp1(int bank, int adr, byte value)
+    {
+        if (_dsp1 == null)
+        {
+            return false;
+        }
+        bool IsDataPort(int address) => _dsp1SwapPorts ? (address & 0x4000) != 0 : (address & 0x4000) == 0;
+
+        if (_dsp1BroadMap)
+        {
+            if ((bank & 0x7f) <= 0x3f && adr >= 0x6000 && adr < 0x8000)
+            {
+                if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                    Console.WriteLine($"[DSP1-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} (broad)");
+                if (IsDataPort(adr))
+                    _dsp1.WriteData(value);
+                return true;
+            }
+        }
+
+        if (!_dsp1IsHiRom)
+        {
+            if (_dsp1PortMapping.IsDspPort(bank, adr))
+            {
+                if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                    Console.WriteLine($"[DSP1-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2}");
+                if (IsDataPort(adr))
+                    _dsp1.WriteData(value);
+                return true;
+            }
+            return false;
+        }
+
+        if (((bank & 0x7f) <= 0x0f) && adr >= 0x6000 && adr < 0x7000)
+        {
+            if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                Console.WriteLine($"[DSP1-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2}");
+            _dsp1.WriteData(value);
+            return true;
+        }
+        return false;
     }
 
     public void SetSystem(ISNESSystem system)

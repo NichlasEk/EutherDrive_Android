@@ -16,6 +16,12 @@ internal sealed class Upd77c25
     private readonly ushort _rpMask;
     private readonly ulong _snesMasterClockHz;
     private ulong _masterCyclesProduct;
+    private static readonly bool TraceIo =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_IO"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceIoSnes = GetTraceIoSnes();
+    private static readonly bool TraceIoDsp = GetTraceIoDsp();
+    private static readonly int TraceIoLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_DSP1_IO_LIMIT", 2000);
+    private int _traceIoCount;
 
     public Upd77c25(byte[] rom, bool isPal)
     {
@@ -30,6 +36,11 @@ internal sealed class Upd77c25
         _rpMask = 0x3FF;
         _snesMasterClockHz = isPal ? SnesMasterClockPal : SnesMasterClockNtsc;
         _masterCyclesProduct = 0;
+        _registers.OnUpdWriteData = OnUpdWriteData;
+        _registers.SwapIoBytes = string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_SWAP_IO_BYTES"),
+            "1",
+            StringComparison.Ordinal);
     }
 
     public void Reset()
@@ -44,12 +55,21 @@ internal sealed class Upd77c25
         byte value = _registers.SnesReadData();
         if (!_registers.Status.RequestForMaster)
             _idling = false;
+        TraceIoRead(value);
         return value;
     }
 
     public void WriteData(byte value)
     {
-        _registers.SnesWriteData(value);
+        bool wordComplete = _registers.SnesWriteData(value, out ushort word);
+        if (TraceIo && _traceIoCount < TraceIoLimit)
+        {
+            if (wordComplete)
+                Console.WriteLine($"[DSP1-IO] SNES write word=0x{word:X4}");
+            else
+                Console.WriteLine($"[DSP1-IO] SNES write byte=0x{value:X2}");
+            _traceIoCount++;
+        }
         if (!_registers.Status.RequestForMaster)
             _idling = false;
     }
@@ -87,6 +107,47 @@ internal sealed class Upd77c25
     internal ushort DpMask => _dpMask;
 
     internal void SetIdle() => _idling = true;
+
+    private void TraceIoRead(byte value)
+    {
+        if (!TraceIo || !TraceIoSnes || _traceIoCount >= TraceIoLimit)
+            return;
+        byte status = _registers.Status.ToByte();
+        Console.WriteLine($"[DSP1-IO] SNES read byte=0x{value:X2} status=0x{status:X2}");
+        _traceIoCount++;
+    }
+
+    private void OnUpdWriteData(ushort value)
+    {
+        if (!TraceIo || !TraceIoDsp || _traceIoCount >= TraceIoLimit)
+            return;
+        Console.WriteLine($"[DSP1-IO] DSP write word=0x{value:X4}");
+        _traceIoCount++;
+    }
+
+    private static int ParseTraceLimit(string envName, int defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(envName);
+        if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int limit) && limit > 0)
+            return limit;
+        return defaultValue;
+    }
+
+    private static bool GetTraceIoSnes()
+    {
+        string? mode = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_IO_MODE");
+        if (string.IsNullOrWhiteSpace(mode))
+            return true;
+        return !string.Equals(mode, "dsp", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool GetTraceIoDsp()
+    {
+        string? mode = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_IO_MODE");
+        if (string.IsNullOrWhiteSpace(mode))
+            return true;
+        return !string.Equals(mode, "snes", StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 internal sealed class Registers
@@ -107,6 +168,8 @@ internal sealed class Registers
     public Status Status;
     public ushort Dr;
     public ushort So;
+    public Action<ushort>? OnUpdWriteData;
+    public bool SwapIoBytes;
 
     public void Reset()
     {
@@ -144,38 +207,49 @@ internal sealed class Registers
         {
             Status.DrBusy = false;
             Status.RequestForMaster = false;
-            return (byte)(Dr >> 8);
+            return SwapIoBytes ? (byte)(Dr & 0xFF) : (byte)(Dr >> 8);
         }
 
         Status.DrBusy = true;
-        return (byte)(Dr & 0xFF);
+        return SwapIoBytes ? (byte)(Dr >> 8) : (byte)(Dr & 0xFF);
     }
 
-    public void SnesWriteData(byte value)
+    public bool SnesWriteData(byte value, out ushort word)
     {
+        word = 0;
         if (Status.DrControl == DataRegisterBits.Eight)
         {
             Status.RequestForMaster = false;
             Dr = value;
-            return;
+            word = Dr;
+            return true;
         }
 
         if (Status.DrBusy)
         {
             Status.DrBusy = false;
             Status.RequestForMaster = false;
-            Dr = (ushort)((Dr & 0x00FF) | (value << 8));
-            return;
+            if (SwapIoBytes)
+                Dr = (ushort)((Dr & 0xFF00) | value);
+            else
+                Dr = (ushort)((Dr & 0x00FF) | (value << 8));
+            word = Dr;
+            return true;
         }
 
         Status.DrBusy = true;
-        Dr = (ushort)((Dr & 0xFF00) | value);
+        if (SwapIoBytes)
+            Dr = (ushort)((Dr & 0x00FF) | (value << 8));
+        else
+            Dr = (ushort)((Dr & 0xFF00) | value);
+        return false;
     }
 
     public void UpdWriteData(ushort value)
     {
         Dr = value;
         Status.RequestForMaster = true;
+        OnUpdWriteData?.Invoke(value);
     }
 
     public void PushStack(ushort pc)

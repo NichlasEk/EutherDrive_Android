@@ -508,6 +508,7 @@ public class SNESSystem : ISNESSystem
                 _autoJoyBusy = false;
             }
         }
+        ROM.RunCoprocessor(Cycles);
         XPos += 2;
         if (XPos == 1364)
         {

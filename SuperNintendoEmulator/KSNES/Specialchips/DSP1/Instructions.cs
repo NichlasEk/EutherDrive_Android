@@ -32,7 +32,7 @@ internal static class Instructions
         ushort opcodeU16 = (ushort)opcode;
         ushort jumpAddr = (ushort)((opcodeU16 >> 2) & 0x7FF);
 
-        bool shouldJump = (opcode >> 13) switch
+        bool shouldJump = ((opcode >> 13) & 0x1FF) switch
         {
             0x000 => JumpSo(cpu, ref jumpAddr),
             0x080 => !cpu.Regs.FlagsA.C,
