@@ -466,6 +466,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 md_main.g_masterSystemMode = true;
                 md_main.g_masterSystemRom = smsRom;
                 md_main.g_masterSystemRomSize = smsRom.Length;
+                md_main.g_masterSystemRomPath = path;
                 md_main.g_masterSystemMapper = mapper;
                 if (md_main.g_md_io != null)
                     md_main.g_md_io.SetRomRegionHint(smsHeader.RegionHint);

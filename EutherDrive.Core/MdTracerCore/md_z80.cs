@@ -1731,8 +1731,8 @@ NextPc:;
             _smsCartridgeEnabled = true;
             _smsBiosEnabled = false;
             _smsIoControl = 0x00;
-            if (_smsCartRam.Length > 0)
-                Array.Clear(_smsCartRam, 0, _smsCartRam.Length);
+            if (smsContext)
+                EnsureSmsCartRamInitialized();
             _smsInstructionLog = 0;
             _smsLoopPc = 0;
             if (md_main.g_masterSystemMode && g_ram.Length > 0)

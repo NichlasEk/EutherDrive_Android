@@ -22,6 +22,12 @@ namespace EutherDrive.Core.MdTracerCore
         private byte[] g_ram = Array.Empty<byte>();
         private const int SmsCartRamSize = 32 * 1024;
         private readonly byte[] _smsCartRam = new byte[SmsCartRamSize];
+        private int _smsCartRamEffectiveSize = SmsCartRamSize;
+        private bool _smsCartRamLoaded;
+        private bool _smsCartRamDirty;
+        private bool _smsCartRamNoPathLogged;
+        private string? _smsCartRamPath;
+        private static readonly int SmsCartRamSizeOverride = ParseSmsCartRamSize();
         private uint g_bank_register; // Z80 bankregister (9-bit index)
         private const int SmsLogLimit = 48;
         private int _smsLogCount;
@@ -542,6 +548,30 @@ namespace EutherDrive.Core.MdTracerCore
             return value;
         }
 
+        private static int ParseSmsCartRamSize()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_SRAM_SIZE");
+            if (string.IsNullOrWhiteSpace(raw))
+                return SmsCartRamSize;
+            raw = raw.Trim();
+            int value;
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!int.TryParse(raw.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value))
+                    return SmsCartRamSize;
+            }
+            else if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+            {
+                return SmsCartRamSize;
+            }
+
+            if (value <= 0)
+                return SmsCartRamSize;
+            if (value > SmsCartRamSize)
+                return SmsCartRamSize;
+            return value;
+        }
+
         private static int ParseWaitCycles(string name, int fallback)
         {
             string? raw = Environment.GetEnvironmentVariable(name);
@@ -573,6 +603,109 @@ namespace EutherDrive.Core.MdTracerCore
             if (value <= 0)
                 return int.MaxValue;
             return value;
+        }
+
+        private int SmsCartRamIndex(int index)
+        {
+            int size = _smsCartRamEffectiveSize;
+            if (size <= 0)
+                size = SmsCartRamSize;
+            if (size <= 0)
+                return 0;
+            if ((size & (size - 1)) == 0)
+                return index & (size - 1);
+            int mod = index % size;
+            return mod < 0 ? mod + size : mod;
+        }
+
+        private void SmsCartRamWrite(int index, byte value)
+        {
+            int idx = SmsCartRamIndex(index);
+            if (_smsCartRam[idx] == value)
+                return;
+            _smsCartRam[idx] = value;
+            _smsCartRamDirty = true;
+        }
+
+        private void EnsureSmsCartRamInitialized()
+        {
+            if (!md_main.g_masterSystemMode)
+                return;
+            if (_smsCartRamLoaded)
+                return;
+            string? path = BuildSmsSramPath(md_main.g_masterSystemRomPath);
+            _smsCartRamEffectiveSize = SmsCartRamSizeOverride;
+            if (_smsCartRamEffectiveSize <= 0 || _smsCartRamEffectiveSize > SmsCartRamSize)
+                _smsCartRamEffectiveSize = SmsCartRamSize;
+            Array.Fill(_smsCartRam, (byte)0xFF);
+            _smsCartRamPath = path;
+            _smsCartRamLoaded = true;
+            _smsCartRamDirty = false;
+            _smsCartRamNoPathLogged = false;
+
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            {
+                try
+                {
+                    byte[] data = File.ReadAllBytes(path);
+                    int copy = Math.Min(data.Length, _smsCartRamEffectiveSize);
+                    Buffer.BlockCopy(data, 0, _smsCartRam, 0, copy);
+                    Console.WriteLine($"[SMS-SRAM] loaded '{path}' bytes=0x{copy:X} size=0x{_smsCartRamEffectiveSize:X}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[SMS-SRAM] load failed '{path}': {ex.Message}");
+                }
+            }
+        }
+
+        internal void FlushSmsSram(string reason)
+        {
+            if (!md_main.g_masterSystemMode)
+                return;
+            if (!_smsCartRamDirty)
+                return;
+            if (string.IsNullOrWhiteSpace(_smsCartRamPath))
+            {
+                if (!_smsCartRamNoPathLogged)
+                {
+                    Console.WriteLine($"[SMS-SRAM] save skipped ({reason}): no path");
+                    _smsCartRamNoPathLogged = true;
+                }
+                return;
+            }
+            try
+            {
+                int size = _smsCartRamEffectiveSize;
+                if (size <= 0 || size > _smsCartRam.Length)
+                    size = _smsCartRam.Length;
+                byte[] data = new byte[size];
+                Buffer.BlockCopy(_smsCartRam, 0, data, 0, size);
+                File.WriteAllBytes(_smsCartRamPath, data);
+                _smsCartRamDirty = false;
+                Console.WriteLine($"[SMS-SRAM] saved '{_smsCartRamPath}' reason={reason}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SMS-SRAM] save failed '{_smsCartRamPath}' reason={reason}: {ex.Message}");
+            }
+        }
+
+        private static string? BuildSmsSramPath(string? romPath)
+        {
+            string? envPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_SRAM_PATH");
+            if (!string.IsNullOrWhiteSpace(envPath))
+                return envPath;
+            if (string.IsNullOrWhiteSpace(romPath))
+                return null;
+            try
+            {
+                return Path.ChangeExtension(romPath, ".srm");
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void RecordYmStatusRead()
@@ -1611,7 +1744,7 @@ namespace EutherDrive.Core.MdTracerCore
                      md_main.g_masterSystemMapper == SmsMapperType.Korean6000RamWide) &&
                     a >= 0x6000 && a <= 0x7FFF)
                 {
-                    _smsCartRam[(a - 0x6000) & 0x1FFF] = in_data;
+                    SmsCartRamWrite((a - 0x6000) & 0x1FFF, in_data);
                     return;
                 }
 
@@ -1621,8 +1754,8 @@ namespace EutherDrive.Core.MdTracerCore
                 if (md_main.g_masterSystemMapper == SmsMapperType.Sega && _smsSegaRamEnabled && a >= 0x8000)
                 {
                     int ramBase = (_smsSegaRamBank & 0x01) * 0x4000;
-                    int ramIndex = (ramBase + (a & 0x3FFF)) % SmsCartRamSize;
-                    _smsCartRam[ramIndex] = in_data;
+                    int ramIndex = ramBase + (a & 0x3FFF);
+                    SmsCartRamWrite(ramIndex, in_data);
                     return;
                 }
 
@@ -1632,7 +1765,7 @@ namespace EutherDrive.Core.MdTracerCore
                      md_main.g_masterSystemMapper == SmsMapperType.Korean6000RamWide) &&
                     _smsCodemastersRamEnabled && a >= 0xA000)
                 {
-                    _smsCartRam[(a & 0x1FFF) % SmsCartRamSize] = in_data;
+                    SmsCartRamWrite(a & 0x1FFF, in_data);
                     return;
                 }
 
@@ -1955,7 +2088,7 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     if (_smsCodemastersRamEnabled && a >= 0xA000)
                     {
-                        byte val = _smsCartRam[(a & 0x1FFF) % SmsCartRamSize];
+                        byte val = _smsCartRam[SmsCartRamIndex(a & 0x1FFF)];
                         TrackLastRead(a, val, false, 0);
                         return val;
                     }
@@ -1965,8 +2098,8 @@ namespace EutherDrive.Core.MdTracerCore
                     if (_smsSegaRamEnabled && a >= 0x8000)
                     {
                         int ramBase = (_smsSegaRamBank & 0x01) * 0x4000;
-                        int ramIndex = (ramBase + (a & 0x3FFF)) % SmsCartRamSize;
-                        byte val = _smsCartRam[ramIndex];
+                        int ramIndex = ramBase + (a & 0x3FFF);
+                        byte val = _smsCartRam[SmsCartRamIndex(ramIndex)];
                         TrackLastRead(a, val, false, 0);
                         return val;
                     }
@@ -1975,7 +2108,7 @@ namespace EutherDrive.Core.MdTracerCore
                      md_main.g_masterSystemMapper == SmsMapperType.Korean6000RamWide) &&
                     a >= 0x6000 && a <= 0x7FFF)
                 {
-                    byte val = _smsCartRam[(a - 0x6000) & 0x1FFF];
+                    byte val = _smsCartRam[SmsCartRamIndex((a - 0x6000) & 0x1FFF)];
                     TrackLastRead(a, val, false, 0);
                     return val;
                 }
@@ -2942,8 +3075,11 @@ namespace EutherDrive.Core.MdTracerCore
                     switch (addr)
                     {
                         case 0xFFFC:
+                            bool prevSegaRamEnabled = _smsSegaRamEnabled;
                             _smsSegaRamBank = (byte)((value >> 2) & 0x01);
                             _smsSegaRamEnabled = (value & 0x08) != 0;
+                            if (prevSegaRamEnabled && !_smsSegaRamEnabled)
+                                FlushSmsSram("sms-ram-disable");
                             LogSmsMapperWriteIfNeeded(addr, value);
                             LogSmsMapperWriteFile(addr, value, "Sega");
                             return true;

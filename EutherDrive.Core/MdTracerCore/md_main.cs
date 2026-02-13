@@ -629,6 +629,8 @@ namespace EutherDrive.Core.MdTracerCore
             g_md_bus?.FlushZ80WinStat(frame);
             g_md_bus?.FlushMbx68kStat(frame);
             g_md_bus?.FlushSram(frame.ToString());
+            if (g_masterSystemMode)
+                g_md_z80?.FlushSmsSram(frame.ToString());
             g_md_z80?.FlushZ80MbxPoll(frame);
              g_md_z80?.FlushZ80WaitLoopHist(frame);
             g_md_z80?.FlushPcHist(frame);

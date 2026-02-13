@@ -5,6 +5,7 @@ namespace EutherDrive.Core.MdTracerCore
         internal static void PowerCycleReset()
         {
             g_md_bus?.FlushSram("powercycle");
+            g_md_z80?.FlushSmsSram("powercycle");
             g_md_bus = null;
             g_md_control = null;
             g_md_io = null;
@@ -18,6 +19,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_masterSystemMode = false;
             g_masterSystemRom = null;
             g_masterSystemRomSize = 0;
+            g_masterSystemRomPath = null;
 
             g_screenA_enable = g_screenB_enable = g_screenW_enable = g_screenS_enable = false;
             g_pattern_enable = g_pallete_enable = g_code_enable = false;

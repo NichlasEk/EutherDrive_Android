@@ -7,6 +7,7 @@ namespace EutherDrive.Core.MdTracerCore
         public static bool g_masterSystemMode;
         public static byte[] g_masterSystemRom = Array.Empty<byte>();
         public static int g_masterSystemRomSize;
+        public static string? g_masterSystemRomPath;
         public static SmsMapperType g_masterSystemMapper = SmsMapperType.Sega;
     }
 
