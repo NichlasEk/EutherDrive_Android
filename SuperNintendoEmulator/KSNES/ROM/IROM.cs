@@ -7,4 +7,6 @@ public interface IROM : IHasAccessToSystem
     Header Header { get; }
     void LoadROM(byte[] data, Header header);
     void LoadSRAM();
+    void ResetCoprocessor();
+    void RunCoprocessor(ulong snesCycles);
 }

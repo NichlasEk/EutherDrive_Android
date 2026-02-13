@@ -98,6 +98,7 @@ public class SNESSystem : ISNESSystem
     public event EventHandler FrameRendered;
 
     public bool IsPal { get; set; }
+    public ulong Cycles { get; private set; }
 
     [JsonIgnore]
     public IRenderer Renderer { get; set; }
@@ -179,6 +180,7 @@ public class SNESSystem : ISNESSystem
         Renderer?.RenderBuffer(PPU.GetPixels());
         APU.SetSamples(AudioHandler.SampleBufferL, AudioHandler.SampleBufferR);
         AudioHandler.NextBuffer();
+        ROM.RunCoprocessor(Cycles);
         FrameRendered?.Invoke(this, EventArgs.Empty);
     }
 
@@ -211,6 +213,7 @@ public class SNESSystem : ISNESSystem
                 Renderer.RenderBuffer(PPU.GetPixels());
                 APU.SetSamples(AudioHandler.SampleBufferL, AudioHandler.SampleBufferR);
                 AudioHandler.NextBuffer();
+                ROM.RunCoprocessor(Cycles);
                 FrameRendered?.Invoke(this, EventArgs.Empty);
             }
         }
@@ -287,6 +290,7 @@ public class SNESSystem : ISNESSystem
     {
         XPos = 0;
         YPos = 0;
+        Cycles = 0;
         _cpuCyclesLeft = 5 * 8 + 12;
         _cpuMemOps = 0;
         _apuCatchCycles = 0;
@@ -331,6 +335,7 @@ public class SNESSystem : ISNESSystem
         _hdmaTerminated = new bool[8];
         _dmaOffIndex = 0;
         OpenBus = 0;
+        ROM.ResetCoprocessor();
     }
 
     private void LoadRom(byte[] rom)
@@ -378,6 +383,7 @@ public class SNESSystem : ISNESSystem
 
     private void Cycle(bool noPpu) 
     {
+        Cycles += 2;
         _apuCatchCycles += _apuCyclesPerMaster * 2;
         if (_joypadStrobe)
         {
@@ -1039,14 +1045,18 @@ public class SNESSystem : ISNESSystem
 
     private static Header ParseHeader(byte[] rom)
     {
-        string str = Encoding.ASCII.GetString(rom, 0x7FC0, 21);
-        var header = new Header {
-              Name = str,
-              Type = rom[0x7fd5] & 0xf,
-              Speed = rom[0x7fd5] >> 4,
-              Chips = rom[0x7fd6],
-              RomSize = 0x400 << rom[0x7fd7],
-              RamSize = 0x400 << rom[0x7fd8]
+        int baseOff = SelectHeaderBase(rom);
+        string str = Encoding.ASCII.GetString(rom, baseOff, 21);
+        var header = new Header
+        {
+            Name = str,
+            Type = rom[baseOff + 0x15] & 0xf,
+            Speed = rom[baseOff + 0x15] >> 4,
+            Chips = rom[baseOff + 0x16] & 0xf,
+            RomSize = 0x400 << rom[baseOff + 0x17],
+            RamSize = 0x400 << rom[baseOff + 0x18],
+            Region = rom[baseOff + 0x19],
+            ExCoprocessor = ReadExCoprocessor(rom, baseOff)
         };
         if (header.RomSize < rom.Length)
         {
@@ -1054,5 +1064,38 @@ public class SNESSystem : ISNESSystem
             header.RomSize = (int) bankCount * 0x8000;
         }
         return header;
+    }
+
+    private static int SelectHeaderBase(byte[] data)
+    {
+        if (data.Length < 0x10000)
+            return 0x7FC0;
+        int scoreLo = CountPrintable(data, 0x7FC0);
+        int scoreHi = CountPrintable(data, 0xFFC0);
+        return scoreHi > scoreLo ? 0xFFC0 : 0x7FC0;
+    }
+
+    private static int CountPrintable(byte[] data, int offset)
+    {
+        if (offset < 0 || offset + 21 > data.Length)
+            return -1;
+        int printable = 0;
+        for (int i = 0; i < 21; i++)
+        {
+            byte b = data[offset + i];
+            if (b >= 0x20 && b < 0x7f)
+                printable++;
+        }
+        return printable;
+    }
+
+    private static int ReadExCoprocessor(byte[] data, int baseOff)
+    {
+        if (baseOff <= 0)
+            return 0;
+        byte maker = data[baseOff + 0x1a];
+        if (maker == 0x33 || data[baseOff + 0x14] == 0)
+            return data[baseOff - 1];
+        return 0;
     }
 }

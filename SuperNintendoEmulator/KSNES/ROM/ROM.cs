@@ -12,6 +12,7 @@ public class ROM : IROM
     private int _sramSize;
 
     private ISNESSystem? _system;
+    private KSNES.Specialchips.CX4.Cx4? _cx4;
 
     private Timer? _sRAMTimer;
 
@@ -23,6 +24,18 @@ public class ROM : IROM
         _hasSram = header.Chips > 0;
         _banks = header.RomSize / 0x8000;
         _sramSize = header.RamSize;
+
+        if (header.ExCoprocessor == 0x10)
+        {
+            if (_system == null)
+                throw new InvalidOperationException("ROM system not set.");
+            _cx4 = new KSNES.Specialchips.CX4.Cx4(_system);
+            _cx4.Reset();
+        }
+        else
+        {
+            _cx4 = null;
+        }
     }
 
     public void LoadSRAM()
@@ -36,6 +49,10 @@ public class ROM : IROM
 
     public byte Read(int bank, int adr)
     {
+        if (_cx4 != null && (bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
+        {
+            return _cx4.Read(adr);
+        }
         if (adr < 0x8000)
         {
             if (bank >= 0x70 && bank < 0x7e && _hasSram)
@@ -48,6 +65,11 @@ public class ROM : IROM
 
     public void Write(int bank, int adr, byte value)
     {
+        if (_cx4 != null && (bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
+        {
+            _cx4.Write(adr, value);
+            return;
+        }
         if (adr < 0x8000 && bank >= 0x70 && bank < 0x7e && _hasSram)
         {
             _sram[(((bank - 0x70) << 15) | (adr & 0x7fff)) & (_sramSize - 1)] = value;
@@ -58,6 +80,16 @@ public class ROM : IROM
     public void SetSystem(ISNESSystem system)
     {
         _system = system;
+    }
+
+    public void ResetCoprocessor()
+    {
+        _cx4?.Reset();
+    }
+
+    public void RunCoprocessor(ulong snesCycles)
+    {
+        _cx4?.RunTo(snesCycles);
     }
 
     private void SaveSRAM(object? state)

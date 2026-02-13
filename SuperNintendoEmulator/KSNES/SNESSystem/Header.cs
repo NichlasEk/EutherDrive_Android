@@ -10,4 +10,6 @@ public class Header
     public int Chips;
     public int RomSize;
     public int RamSize;
+    public int Region;
+    public int ExCoprocessor;
 }
