@@ -1780,6 +1780,15 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void op_RST()
         {
+            if (md_main.g_masterSystemMode &&
+                g_opcode1_543 == 0x01 &&
+                string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_RST08_RET"), "1", StringComparison.Ordinal))
+            {
+                // Some SMS ROMs expect a BIOS RST 08 handler. If absent, treat as a no-op call.
+                g_reg_PC += 1;
+                g_clock = 12;
+                return;
+            }
             g_reg_SP -= 2;
             ushort w_pc = (ushort)(g_reg_PC + 1);
             write_word(g_reg_SP, w_pc);

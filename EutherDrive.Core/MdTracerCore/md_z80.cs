@@ -284,6 +284,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _smsInstructionLog;
         private ushort _smsLoopPc;
         private int _smsLoopCount;
+        private bool _smsSpForcedLogged;
         private const int SmsInstructionLogLimit = 256;
         private const int SmsLoopReportThreshold = 64;
         private const int SmsControlLogLimit = 12;
@@ -552,6 +553,16 @@ namespace EutherDrive.Core.MdTracerCore
                     md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(burn);
                     g_clock_total -= burn;
                     continue;
+                }
+
+                if (md_main.g_masterSystemMode && g_reg_SP < 0xC000)
+                {
+                    g_reg_SP = 0xDFF0;
+                    if (!_smsSpForcedLogged)
+                    {
+                        _smsSpForcedLogged = true;
+                        Console.WriteLine($"[SMS SP] forced SP=0x{g_reg_SP:X4} at PC=0x{g_reg_PC:X4}");
+                    }
                 }
 
                 if (g_interrupt_nmi)
@@ -1678,7 +1689,8 @@ NextPc:;
 
             g_reg_Au = g_reg_Bu = g_reg_Cu = g_reg_Du = g_reg_Eu = g_reg_Fu = g_reg_Hu = g_reg_Lu = 0;
 
-            g_reg_SP = 0;
+            bool smsContext = md_main.g_masterSystemMode || (md_main.g_masterSystemRomSize > 0);
+            g_reg_SP = smsContext ? (ushort)0xDFF0 : (ushort)0x0000;
             g_reg_IX = 0xffff;
             g_reg_IY = 0xffff;
 
@@ -1694,6 +1706,13 @@ NextPc:;
             g_halt = false;
             g_IFF1 = false;
             g_IFF2 = false;
+            if (smsContext)
+            {
+                // BIOS typically sets IM1 and enables interrupts before handing off.
+                g_interruptMode = 1;
+                g_IFF1 = true;
+                g_IFF2 = true;
+            }
             _iff1Delay = 0;
             _waitCycles = 0;
             _irqAutoClearCycles = 0;
@@ -1719,6 +1738,7 @@ NextPc:;
             if (md_main.g_masterSystemMode && g_ram.Length > 0)
                 g_ram[0] = 0xAB;
             _smsLoopCount = 0;
+            _smsSpForcedLogged = false;
             _instrThrottleCounter = 0;
             _bootInstrCount = 0;
             _z80IoLogRemaining = TraceZ80IoLimit;
@@ -1745,13 +1765,19 @@ NextPc:;
             ResetZ80Ram1800Trace();
         }
 
-        internal void ArmForcePc(ushort target, string reason)
-        {
-            _forcePcPending = true;
-            _forcePcTarget = target;
-            _forcePcReason = reason;
-            _z80PcRangeRemaining = TraceZ80PcRangeLimit;
-        }
+    internal void ArmForcePc(ushort target, string reason)
+    {
+        _forcePcPending = true;
+        _forcePcTarget = target;
+        _forcePcReason = reason;
+        _z80PcRangeRemaining = TraceZ80PcRangeLimit;
+    }
+
+    internal void ForceSmsStackDefault()
+    {
+        if (md_main.g_masterSystemMode || md_main.g_masterSystemRomSize > 0)
+            g_reg_SP = 0xDFF0;
+    }
 
         internal void SetStackPointer(ushort sp)
         {

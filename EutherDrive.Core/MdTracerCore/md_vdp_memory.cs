@@ -93,6 +93,12 @@ namespace EutherDrive.Core.MdTracerCore
         [NonSerialized] private int _statusLoopCount;
         [NonSerialized] private int _statusLoopLastPc;
         [NonSerialized] private long _statusLoopLastFrame = -1;
+        private static readonly bool TraceSmsDataPort =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_DATA"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSmsControlPort =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_CTRL"), "1", StringComparison.Ordinal);
+        private int _smsDataPortLogCount;
+        private int _smsControlPortLogCount;
 
         private static bool ReadEnvDefaultOn(string name)
         {
@@ -299,11 +305,23 @@ namespace EutherDrive.Core.MdTracerCore
                 uint port = in_address & 0x00000E;
                 if (port == 0x00)
                 {
+                    if (TraceSmsDataPort && _smsDataPortLogCount < 16)
+                    {
+                        _smsDataPortLogCount++;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine($"[SMS VDP] data port write pc=0x{pc:X4} val=0x{in_data:X2} code={_smsVdpCode} addr=0x{_smsVdpAddr:X4}");
+                    }
                     SmsWriteData(in_data);
                     return;
                 }
                 if (port == 0x04)
                 {
+                    if (TraceSmsControlPort && _smsControlPortLogCount < 16)
+                    {
+                        _smsControlPortLogCount++;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine($"[SMS VDP] ctrl port write pc=0x{pc:X4} val=0x{in_data:X2} pending={(_smsCommandPending ? 1 : 0)} addr=0x{_smsVdpAddr:X4}");
+                    }
                     SmsWriteControl(in_data);
                     return;
                 }

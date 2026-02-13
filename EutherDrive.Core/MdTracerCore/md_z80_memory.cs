@@ -54,7 +54,11 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IO_RAW"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSmsIoFile =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_IO_FILE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSmsVdpPort =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_VDP_PORT"), "1", StringComparison.Ordinal);
         private const int TraceSmsIoRawLimit = 64;
+        private const int TraceSmsVdpPortLimit = 64;
+        private int _traceSmsVdpPortCount;
         private static readonly bool TraceSmsMapper =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_MAPPER"), "1", StringComparison.Ordinal);
         private static readonly int TraceSmsMapperLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_MAPPER_LIMIT", 128);
@@ -2661,6 +2665,12 @@ namespace EutherDrive.Core.MdTracerCore
                         ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
                         Console.WriteLine($"[SMS IO] first BE write val=0x{data:X2} PC=0x{pc:X4}");
                     }
+                    if (TraceSmsVdpPort && _traceSmsVdpPortCount < TraceSmsVdpPortLimit)
+                    {
+                        _traceSmsVdpPortCount++;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine($"[SMS VDP PORT] pc=0x{pc:X4} port=0x{port:X2} BE data=0x{data:X2}");
+                    }
                     if (TraceSmsBeDetail && _smsBeDetailRemaining > 0)
                     {
                         _smsBeDetailRemaining--;
@@ -2688,6 +2698,12 @@ namespace EutherDrive.Core.MdTracerCore
                     _smsFirstBfWriteLogged = true;
                     ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
                     Console.WriteLine($"[SMS IO] first BF write val=0x{data:X2} PC=0x{pc:X4}");
+                }
+                if (TraceSmsVdpPort && _traceSmsVdpPortCount < TraceSmsVdpPortLimit)
+                {
+                    _traceSmsVdpPortCount++;
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    Console.WriteLine($"[SMS VDP PORT] pc=0x{pc:X4} port=0x{port:X2} BF ctrl=0x{data:X2}");
                 }
                 md_main.g_md_vdp?.RecordSmsBfWrite();
                 md_main.g_md_vdp?.write8(0xC00004, data);

@@ -732,6 +732,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return SmsMapperType.KoreanA000;
         if (LooksLikeKorean6000RamMapper(rom))
             return SmsMapperType.Korean6000Ram;
+        if (LooksLikeSegaMapper(rom))
+            return SmsMapperType.Sega;
         if (!headerFound && LooksLikeCodemastersMapper(rom))
             return SmsMapperType.Codemasters;
 
@@ -766,6 +768,35 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             writesTo0000 >= 2 && writesTo4000 >= 2 && writesTo8000 >= 2;
         // Some titles poke 0xA000 for RAM enable, but don't use it as the sole signal.
         return hasCodemastersTriplet || (writesToA000 >= 8 && writesTo8000 >= 2);
+    }
+
+    private static bool LooksLikeSegaMapper(byte[] rom)
+    {
+        int writesToFffc = 0;
+        int writesToFffd = 0;
+        int writesToFffe = 0;
+        int writesToFfff = 0;
+        for (int i = 0; i + 2 < rom.Length; i++)
+        {
+            if (rom[i] != 0x32) // LD (nn),A
+                continue;
+            ushort addr = (ushort)(rom[i + 1] | (rom[i + 2] << 8));
+            switch (addr)
+            {
+                case 0xFFFC: writesToFffc++; break;
+                case 0xFFFD: writesToFffd++; break;
+                case 0xFFFE: writesToFffe++; break;
+                case 0xFFFF: writesToFfff++; break;
+            }
+        }
+
+        if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_MAPPER_DETECT"), "1", StringComparison.Ordinal))
+        {
+            Console.WriteLine($"[SMS MAP DETECT] Sega: FFFC={writesToFffc} FFFD={writesToFffd} FFFE={writesToFffe} FFFF={writesToFfff}");
+        }
+
+        int total = writesToFffc + writesToFffd + writesToFffe + writesToFfff;
+        return total >= 2;
     }
 
     private static bool LooksLikeKoreanA000Mapper(byte[] rom)
@@ -1033,10 +1064,43 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         {
             byte[] trimmed = new byte[rawData.Length - 0x200];
             Buffer.BlockCopy(rawData, 0x200, trimmed, 0, trimmed.Length);
-            return trimmed;
+            rawData = trimmed;
+        }
+
+        // Some dumps are shifted by 0x180 bytes (header appears at 0x3E70 instead of 0x3FF0).
+        // Detect and rotate so the "TMR SEGA" header lands on the standard boundary.
+        int headerIndex = IndexOfSmsHeader(rawData);
+        if (headerIndex >= 0 && (headerIndex & 0x3FFF) == 0x3E70)
+        {
+            const int shift = 0x180;
+            byte[] rotated = new byte[rawData.Length];
+            int tailStart = rawData.Length - shift;
+            Buffer.BlockCopy(rawData, tailStart, rotated, 0, shift);
+            Buffer.BlockCopy(rawData, 0, rotated, shift, tailStart);
+            return rotated;
         }
 
         return rawData;
+    }
+
+    private static int IndexOfSmsHeader(byte[] data)
+    {
+        ReadOnlySpan<byte> magic = "TMR SEGA"u8;
+        for (int i = 0; i + magic.Length <= data.Length; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < magic.Length; j++)
+            {
+                if (data[i + j] != magic[j])
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+                return i;
+        }
+        return -1;
     }
 
     private void ArmBootRecover()
@@ -1102,6 +1166,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         {
             Console.WriteLine($"[RESET-DEBUG] Resetting Z80 for timing synchronization");
             ResetZ80Only();
+            md_main.g_md_z80.ForceSmsStackDefault();
         }
         
         // CRITICAL FIX: Generate initial audio samples to avoid underrun

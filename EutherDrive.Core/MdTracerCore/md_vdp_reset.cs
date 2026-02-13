@@ -150,10 +150,15 @@ namespace EutherDrive.Core.MdTracerCore
             _smsLastFrameHash = 0;
             _smsVramDumped = false;
             _smsNameTableDumped = false;
+            if (_smsVram != null && _smsVram.Length > 0)
+                Array.Clear(_smsVram, 0, _smsVram.Length);
             if (_smsCram != null && _smsCram.Length > 0)
                 Array.Clear(_smsCram, 0, _smsCram.Length);
             if (_smsPalette != null && _smsPalette.Length > 0)
                 Array.Fill(_smsPalette, 0xFF000000u);
+
+            if (md_main.g_masterSystemMode || md_main.g_masterSystemRomSize > 0)
+                ApplySmsBootDefaults();
 
             g_dma_mode = 0;
             g_dma_src_addr = 0;
@@ -170,6 +175,48 @@ namespace EutherDrive.Core.MdTracerCore
 
             ApplyHorizontalMode(IsH40Mode());
             ClearVBlank();
+        }
+
+        private void ApplySmsBootDefaults()
+        {
+            Array.Clear(_smsRegs, 0, _smsRegs.Length);
+
+            // BIOS-like defaults for SMS mode (helps ROMs that assume VDP init).
+            _smsRegs[0x00] = 0x06; // M2+M4 (Mode 4)
+            _smsRegs[0x01] = 0x70; // Display ON + VBlank IRQ + M1
+            _smsRegs[0x02] = 0x0E; // Name table at 0x3800
+            _smsRegs[0x05] = 0x7E; // Sprite attribute table at 0x3F00
+            _smsRegs[0x06] = 0x00; // Sprite pattern base 0x0000
+            _smsRegs[0x07] = 0x00; // Backdrop color
+            _smsRegs[0x08] = 0x00; // HScroll
+            _smsRegs[0x09] = 0x00; // VScroll
+            _smsRegs[0x0F] = 0x01; // Auto-increment
+
+            _smsLineCounter = 0xFF;
+            _smsLineCounterReload = 0xFF;
+            _smsLineInterruptPending = false;
+            _smsCommandPending = false;
+            _smsCommandLow = 0;
+            _smsVdpAddrBeforeCtrl = 0;
+            _smsVdpCode = 0;
+            _smsVdpAddr = 0;
+            _smsReadBuffer = 0;
+            _smsLatchedReg0 = _smsRegs[0x00];
+            _smsLatchedHScroll = _smsRegs[0x08];
+            _smsLatchedVScroll = _smsRegs[0x09];
+            _smsNextReg0 = _smsRegs[0x00];
+            _smsNextHScroll = _smsRegs[0x08];
+            _smsNextVScroll = _smsRegs[0x09];
+            _smsDisplayOnLogged = false;
+            _smsDataIgnoredLogged = false;
+            _smsCramWriteLogged = false;
+
+            g_vdp_reg_1_6_display = (byte)((_smsRegs[1] & 0x40) != 0 ? 1 : 0);
+            bool mode224 = SmsMode224(_smsRegs[0], _smsRegs[1]);
+            g_display_ysize = mode224 ? 224 : 192;
+            g_display_ycell = mode224 ? 28 : 24;
+            g_vertical_line_max = 262;
+            UpdateOutputWidth();
         }
     }
 }
