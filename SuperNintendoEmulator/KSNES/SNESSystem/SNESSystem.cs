@@ -462,6 +462,10 @@ public class SNESSystem : ISNESSystem
             _inIrq = true;
             CPU.IrqWanted = true;
         }
+        if (ROM.IrqWanted)
+        {
+            CPU.IrqWanted = true;
+        }
         if (XPos == 1024)
         {
             _inHblank = true;
@@ -1140,6 +1144,7 @@ public class SNESSystem : ISNESSystem
             Speed = rom[baseOff + 0x15] >> 4,
             MapMode = rom[baseOff + 0x15],
             Chips = rom[baseOff + 0x16] & 0xf,
+            ChipsetByte = rom[baseOff + 0x16],
             RomSize = 0x400 << rom[baseOff + 0x17],
             RamSize = 0x400 << rom[baseOff + 0x18],
             Region = rom[baseOff + 0x19],

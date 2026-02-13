@@ -14,6 +14,9 @@ public class ROM : IROM
     private ISNESSystem? _system;
     private KSNES.Specialchips.CX4.Cx4? _cx4;
     private KSNES.Specialchips.DSP1.Dsp1? _dsp1;
+    private KSNES.Specialchips.SuperFX.SuperFx? _superFx;
+    private bool _superFxHasBattery;
+    private ulong _superFxOverclock = 1;
     private Dsp1PortMapping _dsp1PortMapping;
     private bool _dsp1IsHiRom;
     private bool _dsp1BroadMap;
@@ -35,6 +38,24 @@ public class ROM : IROM
         _hasSram = header.Chips > 0;
         _banks = header.RomSize / 0x8000;
         _sramSize = header.RamSize;
+
+        bool hasSuperFx = header.MapMode == 0x20 && header.ChipsetByte >= 0x13 && header.ChipsetByte <= 0x1A;
+        if (hasSuperFx)
+        {
+            int ramLen = KSNES.Specialchips.SuperFX.SuperFx.GuessRamLen(_data);
+            _sram = new byte[ramLen];
+            _sramSize = _sram.Length;
+            _superFxHasBattery = KSNES.Specialchips.SuperFX.SuperFx.HasBattery(_data);
+            _hasSram = _superFxHasBattery;
+            _superFxOverclock = (ulong)ParseTraceLimit("EUTHERDRIVE_SUPERFX_OVERCLOCK", 1);
+            _superFx = new KSNES.Specialchips.SuperFX.SuperFx(_data, _sram, _superFxOverclock);
+        }
+        else
+        {
+            _superFx = null;
+            _superFxHasBattery = false;
+            _superFxOverclock = 1;
+        }
 
         if (header.ExCoprocessor == 0x10)
         {
@@ -101,12 +122,32 @@ public class ROM : IROM
         string fileName = GetSRAMFileName();
         if (new FileInfo(fileName).Exists)
         {
-            _sram = File.ReadAllBytes(fileName);
+            byte[] data = File.ReadAllBytes(fileName);
+            if (data.Length == _sram.Length)
+            {
+                Buffer.BlockCopy(data, 0, _sram, 0, data.Length);
+            }
+            else
+            {
+                _sram = data;
+                _sramSize = _sram.Length;
+                if (_superFx != null)
+                {
+                    _superFx = new KSNES.Specialchips.SuperFX.SuperFx(_data, _sram, _superFxOverclock);
+                }
+            }
         }
     }
 
     public byte Read(int bank, int adr)
     {
+        if (_superFx != null)
+        {
+            uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+            if (_superFx.Read(address, out byte value))
+                return value;
+        }
+
         if (_cx4 != null)
         {
             if ((bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
@@ -158,6 +199,17 @@ public class ROM : IROM
 
     public void Write(int bank, int adr, byte value)
     {
+        if (_superFx != null)
+        {
+            uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+            if (_superFx.Write(address, value, out bool wroteRam))
+            {
+                if (wroteRam && _hasSram)
+                    _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                return;
+            }
+        }
+
         if (_cx4 != null)
         {
             if ((bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
@@ -304,13 +356,17 @@ public class ROM : IROM
     {
         _cx4?.Reset();
         _dsp1?.Reset();
+        _superFx?.Reset();
     }
 
     public void RunCoprocessor(ulong snesCycles)
     {
         _cx4?.RunTo(snesCycles);
         _dsp1?.RunTo(snesCycles);
+        _superFx?.Tick(snesCycles);
     }
+
+    public bool IrqWanted => _superFx?.Irq ?? false;
 
     public byte ReadRomByteLoRom(uint address)
     {

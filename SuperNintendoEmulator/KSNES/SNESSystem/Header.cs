@@ -8,6 +8,7 @@ public class Header
     public int Type;
     public int Speed;
     public int MapMode;
+    public int ChipsetByte;
     public int Chips;
     public int RomSize;
     public int RamSize;

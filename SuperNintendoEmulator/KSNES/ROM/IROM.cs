@@ -11,4 +11,5 @@ public interface IROM : IHasAccessToSystem
     void ResetCoprocessor();
     void RunCoprocessor(ulong snesCycles);
     byte ReadRomByteLoRom(uint address);
+    bool IrqWanted { get; }
 }
