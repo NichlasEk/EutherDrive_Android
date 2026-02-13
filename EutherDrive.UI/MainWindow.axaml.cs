@@ -26,6 +26,7 @@ using EutherDrive.UI.Audio;
 using EutherDrive.Audio;
 using EutherDrive.Core.Savestates;
 using EutherDrive.UI.Savestates;
+using Tomlyn;
 using SdlApi = Silk.NET.SDL.Sdl;
 using GameControllerAxis = Silk.NET.SDL.GameControllerAxis;
 using GameControllerButton = Silk.NET.SDL.GameControllerButton;
@@ -242,7 +243,8 @@ public partial class MainWindow : Window
     private string? _romRegionKey;
     private bool _regionOverrideUpdating;
     private bool _frameRateUpdating;
-    private const string SettingsFileName = "eutherdrive_settings.json";
+    private const string SettingsFileName = "eutherdrive_settings.toml";
+    private const string LegacyJsonSettingsFileName = "eutherdrive_settings.json";
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
     private const string LegacyLastRomPathFileName = "eutherdrive_last_rom.txt";
     private const int DefaultMasterVolumePercent = 50;
@@ -1766,8 +1768,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                string json = File.ReadAllText(path);
-                var settings = JsonSerializer.Deserialize<UiSettings>(json);
+                var settings = TryLoadTomlSettings(path);
                 if (settings != null)
                 {
                     ApplySettings(settings);
@@ -1780,8 +1781,12 @@ public partial class MainWindow : Window
             }
         }
 
-        bool migrated = LoadLegacySettings();
+        bool migrated = TryMigrateJsonSettings();
         if (migrated)
+            return;
+
+        bool legacyMigrated = LoadLegacySettings();
+        if (legacyMigrated)
             SaveSettings();
     }
 
@@ -1905,12 +1910,57 @@ public partial class MainWindow : Window
             FrameRateMode = _frameRateMode,
             InputMappings = _inputMappings
         };
-        string json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(GetSettingsPath(), json);
+        WriteTomlSettings(GetSettingsPath(), settings);
     }
 
     private static string GetSettingsPath()
         => Path.Combine(Directory.GetCurrentDirectory(), SettingsFileName);
+
+    private static string GetLegacyJsonSettingsPath()
+        => Path.Combine(Directory.GetCurrentDirectory(), LegacyJsonSettingsFileName);
+
+    private static UiSettings? TryLoadTomlSettings(string path)
+    {
+        try
+        {
+            string toml = File.ReadAllText(path);
+            return Toml.ToModel<UiSettings>(toml);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private bool TryMigrateJsonSettings()
+    {
+        string legacyPath = GetLegacyJsonSettingsPath();
+        if (!File.Exists(legacyPath))
+            return false;
+
+        try
+        {
+            string json = File.ReadAllText(legacyPath);
+            var settings = JsonSerializer.Deserialize<UiSettings>(json);
+            if (settings == null)
+                return false;
+
+            ApplySettings(settings);
+            WriteTomlSettings(GetSettingsPath(), settings);
+            File.Move(legacyPath, legacyPath + ".bak", overwrite: true);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void WriteTomlSettings(string path, UiSettings settings)
+    {
+        string toml = Toml.FromModel(settings);
+        File.WriteAllText(path, toml);
+    }
 
     private void LoadLegacyRegionOverrideSetting()
     {
