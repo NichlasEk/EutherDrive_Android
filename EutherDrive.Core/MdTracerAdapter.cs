@@ -113,6 +113,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly bool TracePcPerFrame =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_FRAME"), "1", StringComparison.Ordinal);
     private static readonly int TracePcEveryFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_PC_FRAME_EVERY", 60);
+    private static readonly bool TraceReset =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RESET"), "1", StringComparison.Ordinal);
 
     // ASCII streaming mode for live viewer
     private static readonly bool AsciiStreamEnabled =
@@ -1167,6 +1169,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     public void Reset()
     {
         Console.WriteLine("[MdTracerAdapter] Reset begin - SHINOBI DEBUG");
+        if (TraceReset)
+            Console.WriteLine($"[MdTracerAdapter] Reset stack:\n{Environment.StackTrace}");
         Console.WriteLine($"[MdTracerAdapter] Reset _cpuReady={_cpuReady} _cpu={(_cpu != null ? "ok" : "null")}");
         _tick = 0;
 
