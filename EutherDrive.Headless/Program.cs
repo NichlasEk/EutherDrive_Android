@@ -157,6 +157,20 @@ class Program
                 }
 
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                StreamWriter? snesTraceWriter = null;
+                if (traceSnesFrames)
+                {
+                    string tracePath = Path.Combine(dumpDir, "headless_snes_trace.log");
+                    snesTraceWriter = new StreamWriter(tracePath, append: false, Encoding.UTF8)
+                    {
+                        AutoFlush = true
+                    };
+                }
+                void Trace(string message)
+                {
+                    Console.WriteLine(message);
+                    snesTraceWriter?.WriteLine(message);
+                }
                 Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_frame0.ppm"), traceSnesFrames);
 
@@ -168,17 +182,17 @@ class Program
                     if (traceSnesFrames)
                     {
                         var state = snes.GetPpuState();
-                        Console.WriteLine($"[HEADLESS] Frame {frame}: ppu forcedBlank={state.ForcedBlank} bright={state.Brightness} mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} overscan={state.OverscanEnabled} frameOverscan={state.FrameOverscan} pseudoHires={state.PseudoHires} interlace={state.Interlace} objInterlace={state.ObjInterlace} vblank={state.InVblank} hblank={state.InHblank} nmi={state.InNmi} xy=({state.XPos},{state.YPos})");
+                        Trace($"[HEADLESS] Frame {frame}: ppu forcedBlank={state.ForcedBlank} bright={state.Brightness} mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} overscan={state.OverscanEnabled} frameOverscan={state.FrameOverscan} pseudoHires={state.PseudoHires} interlace={state.Interlace} objInterlace={state.ObjInterlace} vblank={state.InVblank} hblank={state.InHblank} nmi={state.InNmi} xy=({state.XPos},{state.YPos})");
                         ReadOnlySpan<byte> fb = snes.GetFrameBuffer(out int width, out int height, out int stride);
                         var stats = GetFrameStats(fb, width, height, stride);
-                        Console.WriteLine($"[HEADLESS] Frame {frame}: snes_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        Trace($"[HEADLESS] Frame {frame}: snes_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
                         if (prevHasContent && !stats.HasContent)
                         {
-                            Console.WriteLine($"[HEADLESS] Frame {frame}: transition to BLACK (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
+                            Trace($"[HEADLESS] Frame {frame}: transition to BLACK (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
                         }
                         if (!prevHasContent && stats.HasContent)
                         {
-                            Console.WriteLine($"[HEADLESS] Frame {frame}: transition to CONTENT (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
+                            Trace($"[HEADLESS] Frame {frame}: transition to CONTENT (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
                         }
                         prevHasContent = stats.HasContent;
                     }
@@ -201,6 +215,7 @@ class Program
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"), traceSnesFrames);
                 snesAudioSink?.Dispose();
+                snesTraceWriter?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

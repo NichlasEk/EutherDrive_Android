@@ -11,6 +11,7 @@ public class PPU : IPPU
     private ISNESSystem? _snes;
     private ushort[] _vram = [];
     private ushort[] _cgram = [];
+    private ushort[] _cgramFrame = [];
     private ushort[] _oam = [];
     private ushort[] _highOam = [];
     private byte[] _spriteLineBuffer = [];
@@ -213,6 +214,7 @@ public class PPU : IPPU
     {
         _vram = new ushort[0x8000];
         _cgram = new ushort[0x100];
+        _cgramFrame = new ushort[0x100];
         _oam = new ushort[0x100];
         _highOam = new ushort[0x10];
         _spriteLineBuffer = new byte[256];
@@ -853,6 +855,7 @@ public class PPU : IPPU
             if (line == 1)
             {
                 _mosaicStartLine = 1;
+                Array.Copy(_cgram, _cgramFrame, _cgram.Length);
             }
             if (_mode == 7)
             {
@@ -1014,7 +1017,7 @@ public class PPU : IPPU
             }
         }
         layer = j == count ? 5 : layer;
-        ushort color = _cgram[pixel & 0xff];
+        ushort color = _cgramFrame[pixel & 0xff];
         if (_directColor && layer < 4 && _bitPerMode[_mode * 4 + layer] == 8)
         {
             int r = ((pixel & 0x7) << 2) | ((pixel & 0x100) >> 7);

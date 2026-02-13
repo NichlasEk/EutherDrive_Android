@@ -1137,11 +1137,13 @@ public class SNESSystem : ISNESSystem
             Name = str,
             Type = rom[baseOff + 0x15] & 0xf,
             Speed = rom[baseOff + 0x15] >> 4,
+            MapMode = rom[baseOff + 0x15],
             Chips = rom[baseOff + 0x16] & 0xf,
             RomSize = 0x400 << rom[baseOff + 0x17],
             RamSize = 0x400 << rom[baseOff + 0x18],
             Region = rom[baseOff + 0x19],
-            ExCoprocessor = ReadExCoprocessor(rom, baseOff)
+            ExCoprocessor = ReadExCoprocessor(rom, baseOff),
+            IsHiRom = (rom[baseOff + 0x15] & 0x0F) == 0x01
         };
         if (header.RomSize < rom.Length)
         {

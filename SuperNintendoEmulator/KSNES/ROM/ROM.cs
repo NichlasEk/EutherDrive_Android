@@ -13,8 +13,17 @@ public class ROM : IROM
 
     private ISNESSystem? _system;
     private KSNES.Specialchips.CX4.Cx4? _cx4;
+    private KSNES.Specialchips.DSP1.Dsp1? _dsp1;
+    private Dsp1PortMapping _dsp1PortMapping;
+    private bool _dsp1IsHiRom;
+    private bool _dsp1BroadMap;
+    private bool _dsp1SwapPorts;
     private static readonly bool TraceCx4Bus =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CX4_BUS"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceDsp1Bus =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_BUS"), "1", StringComparison.Ordinal);
+    private static readonly int TraceDsp1BusLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_DSP1_BUS_LIMIT", 500);
+    private int _traceDsp1BusCount;
 
     private Timer? _sRAMTimer;
 
@@ -37,6 +46,51 @@ public class ROM : IROM
         else
         {
             _cx4 = null;
+        }
+
+        bool hasDsp1 = header.ExCoprocessor == 0 && header.Chips >= 3 && header.Chips <= 5;
+        if (hasDsp1)
+        {
+            if (_system == null)
+                throw new InvalidOperationException("ROM system not set.");
+
+            byte[]? dspRom = TryLoadDsp1Rom();
+            if (dspRom == null)
+            {
+                Console.WriteLine("[DSP1] ROM not found; DSP-1 disabled.");
+                _dsp1 = null;
+            }
+            else
+            {
+                _dsp1 = new KSNES.Specialchips.DSP1.Dsp1(dspRom, _system);
+                _dsp1.Reset();
+            }
+            _dsp1IsHiRom = header.IsHiRom;
+            string? forceLo = Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_FORCE_LOROM");
+            string? forceHi = Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_FORCE_HIROM");
+            if (string.Equals(forceLo, "1", StringComparison.Ordinal))
+            {
+                _dsp1IsHiRom = false;
+                Console.WriteLine("[DSP1] Forcing LoROM port mapping.");
+            }
+            else if (string.Equals(forceHi, "1", StringComparison.Ordinal))
+            {
+                _dsp1IsHiRom = true;
+                Console.WriteLine("[DSP1] Forcing HiROM port mapping.");
+            }
+            _dsp1BroadMap = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_BROAD_MAP"), "1", StringComparison.Ordinal);
+            if (_dsp1BroadMap)
+                Console.WriteLine("[DSP1] Using broad port mapping (banks 00-3F/80-BF, $6000-$7FFF).");
+            _dsp1SwapPorts = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_SWAP_PORTS"), "1", StringComparison.Ordinal);
+            if (_dsp1SwapPorts)
+                Console.WriteLine("[DSP1] Swapping data/status port halves.");
+            _dsp1PortMapping = Dsp1PortMapping.FromMetadata(header.RomSize, header.RamSize);
+        }
+        else
+        {
+            _dsp1 = null;
+            _dsp1BroadMap = false;
+            _dsp1SwapPorts = false;
         }
     }
 
@@ -73,6 +127,65 @@ public class ROM : IROM
             return (byte)(_system?.OpenBus ?? 0);
         }
 
+        if (Header.IsHiRom)
+        {
+            if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
+            {
+                return _sram[(((bank & 0x1f) << 13) | (adr & 0x1fff)) & (_sramSize - 1)];
+            }
+
+            if (adr >= 0x8000 || (bank >= 0x40 && (bank & 0x7f) < 0x7e))
+            {
+                return ReadHiRom(bank, adr);
+            }
+            return (byte)(_system?.OpenBus ?? 0);
+        }
+
+        if (_dsp1 != null)
+        {
+            bool IsDataPort(int address) => _dsp1SwapPorts ? (address & 0x4000) != 0 : (address & 0x4000) == 0;
+
+            if (_dsp1BroadMap)
+            {
+                if ((bank & 0x7f) <= 0x3f && adr >= 0x6000 && adr < 0x8000)
+                {
+                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                    {
+                        string port = IsDataPort(adr) ? "DATA" : "STAT";
+                        Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} {port} (broad)");
+                    }
+                    return IsDataPort(adr) ? _dsp1.ReadData() : _dsp1.ReadStatus();
+                }
+            }
+            if (!_dsp1IsHiRom)
+            {
+                if (_dsp1PortMapping.IsDspPort(bank, adr))
+                {
+                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                    {
+                        string port = IsDataPort(adr) ? "DATA" : "STAT";
+                        Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} {port}");
+                    }
+                    return IsDataPort(adr) ? _dsp1.ReadData() : _dsp1.ReadStatus();
+                }
+            }
+            else
+            {
+                if (((bank & 0x7f) <= 0x0f) && adr >= 0x6000 && adr < 0x7000)
+                {
+                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                        Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} DATA");
+                    return _dsp1.ReadData();
+                }
+                if (((bank & 0x7f) <= 0x0f) && adr >= 0x7000 && adr < 0x8000)
+                {
+                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                        Console.WriteLine($"[DSP1-BUS-RD] bank=0x{bank:X2} adr=0x{adr:X4} STAT");
+                    return _dsp1.ReadStatus();
+                }
+            }
+        }
+
         if (adr < 0x8000)
         {
             if (bank >= 0x70 && bank < 0x7e && _hasSram)
@@ -102,6 +215,54 @@ public class ROM : IROM
             return;
         }
 
+        if (Header.IsHiRom)
+        {
+            if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
+            {
+                _sram[(((bank & 0x1f) << 13) | (adr & 0x1fff)) & (_sramSize - 1)] = value;
+                _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            }
+            return;
+        }
+
+        if (_dsp1 != null)
+        {
+            bool IsDataPort(int address) => _dsp1SwapPorts ? (address & 0x4000) != 0 : (address & 0x4000) == 0;
+
+            if (_dsp1BroadMap)
+            {
+                if ((bank & 0x7f) <= 0x3f && adr >= 0x6000 && adr < 0x8000)
+                {
+                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                        Console.WriteLine($"[DSP1-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} (broad)");
+                    if (IsDataPort(adr))
+                        _dsp1.WriteData(value);
+                    return;
+                }
+            }
+            if (!_dsp1IsHiRom)
+            {
+                if (_dsp1PortMapping.IsDspPort(bank, adr))
+                {
+                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                        Console.WriteLine($"[DSP1-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2}");
+                    if (IsDataPort(adr))
+                        _dsp1.WriteData(value);
+                    return;
+                }
+            }
+            else
+            {
+                if (((bank & 0x7f) <= 0x0f) && adr >= 0x6000 && adr < 0x7000)
+                {
+                    if (TraceDsp1Bus && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+                        Console.WriteLine($"[DSP1-BUS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2}");
+                    _dsp1.WriteData(value);
+                    return;
+                }
+            }
+        }
+
         if (adr < 0x8000 && bank >= 0x70 && bank < 0x7e && _hasSram)
         {
             _sram[(((bank - 0x70) << 15) | (adr & 0x7fff)) & (_sramSize - 1)] = value;
@@ -117,11 +278,13 @@ public class ROM : IROM
     public void ResetCoprocessor()
     {
         _cx4?.Reset();
+        _dsp1?.Reset();
     }
 
     public void RunCoprocessor(ulong snesCycles)
     {
         _cx4?.RunTo(snesCycles);
+        _dsp1?.RunTo(snesCycles);
     }
 
     public byte ReadRomByteLoRom(uint address)
@@ -157,5 +320,70 @@ public class ROM : IROM
     private string GetSRAMFileName()
     {
         return Path.ChangeExtension(_system!.FileName, ".srm");
+    }
+
+    private byte ReadHiRom(int bank, int adr)
+    {
+        uint address = (uint)(((bank & 0x7f) << 16) | (adr & 0xffff));
+        uint mask = (uint)_data.Length - 1;
+        if ((_data.Length & (_data.Length - 1)) == 0)
+            return _data[address & mask];
+        return _data[address % (uint)_data.Length];
+    }
+
+    private static bool IsHiRomSramBank(int bank)
+    {
+        int b = bank & 0x7f;
+        return b >= 0x20 && b < 0x40;
+    }
+
+    private static byte[]? TryLoadDsp1Rom()
+    {
+        string? fromEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_ROM");
+        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
+            return File.ReadAllBytes(fromEnv);
+
+        string defaultPath = "/home/nichlas/roms/DSP1 (World) (Enhancement Chip).bin";
+        if (File.Exists(defaultPath))
+            return File.ReadAllBytes(defaultPath);
+
+        return null;
+    }
+
+    private static int ParseTraceLimit(string envName, int defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(envName);
+        if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int limit) && limit > 0)
+            return limit;
+        return defaultValue;
+    }
+
+    private readonly struct Dsp1PortMapping
+    {
+        private readonly int _bankStart;
+        private readonly int _bankEndExclusive;
+        private readonly int _offsetMask;
+
+        private Dsp1PortMapping(int bankStart, int bankEndExclusive, int offsetMask)
+        {
+            _bankStart = bankStart;
+            _bankEndExclusive = bankEndExclusive;
+            _offsetMask = offsetMask;
+        }
+
+        public static Dsp1PortMapping FromMetadata(int romSize, int sramSize)
+        {
+            if (romSize > 1024 * 1024)
+                return new Dsp1PortMapping(0x60, 0x70, 0x0000);
+            if (sramSize != 0)
+                return new Dsp1PortMapping(0x20, 0x40, 0x8000);
+            return new Dsp1PortMapping(0x30, 0x40, 0x8000);
+        }
+
+        public bool IsDspPort(int bank, int adr)
+        {
+            int bankMasked = bank & 0x7f;
+            return bankMasked >= _bankStart && bankMasked < _bankEndExclusive && (adr & 0x8000) == _offsetMask;
+        }
     }
 }

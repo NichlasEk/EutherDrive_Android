@@ -33,6 +33,7 @@ public sealed class SnesAdapter : IEmulatorCore
     private float _lpLastL;
     private float _lpLastR;
     private float _masterVolumeScale = 1.0f;
+    private bool _sawBrightFrame;
     private const float DcBlockCoeff = 0.995f;
 
     public string? RomSummary => _romSummary;
@@ -61,6 +62,7 @@ public sealed class SnesAdapter : IEmulatorCore
     public void Reset()
     {
         _system.ResetForExternal();
+        _sawBrightFrame = false;
     }
 
     public void SetRegionOverride(ConsoleRegion region)
@@ -79,6 +81,22 @@ public sealed class SnesAdapter : IEmulatorCore
     public void RunFrame()
     {
         _system.RunFrameForExternal();
+        if (_system.PPU is PPU ppu)
+        {
+            if (!_sawBrightFrame)
+            {
+                if (ppu.Brightness == 0)
+                {
+                    EnsureFrameBuffer();
+                    Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
+                    EnsureAudioBuffer();
+                    ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
+                    TraceAudioIfEnabled();
+                    return;
+                }
+                _sawBrightFrame = true;
+            }
+        }
         int[] pixels = _system.PPU.GetPixels();
         EnsureFrameBuffer();
         ConvertArgbToBgra(pixels, _frameBuffer);
