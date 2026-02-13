@@ -153,6 +153,7 @@ public class SNESSystem : ISNESSystem
         FileName = fileName;
         byte[] data = File.ReadAllBytes(FileName);
         LoadRom(data);
+        ROM.LoadSRAM();
         GameName = ROM.Header.Name;
         Reset1();
         CPU.Reset();

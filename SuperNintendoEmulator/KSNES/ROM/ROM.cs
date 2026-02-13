@@ -70,6 +70,6 @@ public class ROM : IROM
 
     private string GetSRAMFileName()
     {
-        return _system!.FileName.Replace(".smc", ".srm").Replace(".sfc", ".srm");;
+        return Path.ChangeExtension(_system!.FileName, ".srm");
     }
 }
