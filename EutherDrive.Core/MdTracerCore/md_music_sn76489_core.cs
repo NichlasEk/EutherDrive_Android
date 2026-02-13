@@ -1,3 +1,5 @@
+using System;
+
 namespace EutherDrive.Core.MdTracerCore
 {
     //----------------------------------------------------------------
@@ -30,6 +32,23 @@ namespace EutherDrive.Core.MdTracerCore
         private int g_write_num_bk;
         private int g_shift_reg;
         private float g_ch2_clock;
+        private int _noiseGainPercent = 100;
+        private const float PSG_SOFTCLIP_SCALE = 12000f;
+        private const float PSG_DC_BLOCK_R = 0.995f;
+        private float _dcBlockX1;
+        private float _dcBlockY1;
+
+        public void SetNoiseGainPercent(int percent)
+        {
+            if (percent < 0) percent = 0;
+            else if (percent > 200) percent = 200;
+            _noiseGainPercent = percent;
+        }
+
+        private static float SoftClip(float x)
+        {
+            return x;
+        }
 
         public void SN76489_Start()
         {
@@ -53,6 +72,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             int w_out = 0;
             //toon
+            bool tone2Ticked = false;
             for (int w_ch = 0; w_ch <= 2; w_ch++)
             {
                 g_channel_out[w_ch] = (g_duty[w_ch] == true) ? g_vol[w_ch] : -g_vol[w_ch];
@@ -63,6 +83,8 @@ namespace EutherDrive.Core.MdTracerCore
                     if (g_freq[w_ch] >= FREQ_MIN)
                     {
                         g_duty[w_ch] = !g_duty[w_ch];
+                        if (w_ch == 2)
+                            tone2Ticked = true;
                     }
                     g_psg_clock[w_ch] += g_freq[w_ch];
                 }
@@ -76,28 +98,34 @@ namespace EutherDrive.Core.MdTracerCore
 
             //noise
             {
-                g_channel_out[NOISE_CHANNEL] = g_vol[NOISE_CHANNEL] * ((g_shift_reg & 0x1) * 2 - 1);
-                if (g_noise_mode == true)
-                {
-                    g_channel_out[NOISE_CHANNEL] >>= 1;
-                }
+                int noiseBit = g_shift_reg & 0x1;
+                g_channel_out[NOISE_CHANNEL] = noiseBit == 0 ? g_vol[NOISE_CHANNEL] : -g_vol[NOISE_CHANNEL];
                 if (g_freq[3] == 0x80)
                 {
-                    g_psg_clock[NOISE_CHANNEL] = g_ch2_clock;
+                    // Noise clocked by tone channel 2
+                    if (tone2Ticked)
+                    {
+                        int w_bit1;
+                        if (g_noise_mode == true)
+                        {
+                            // White noise (Sega variant): XOR bit0 and bit3, insert into bit14
+                            w_bit1 = ((g_shift_reg & 1) ^ ((g_shift_reg >> 3) & 1)) & 1;
+                        }
+                        else
+                        {
+                            // Periodic noise: use LSB
+                            w_bit1 = g_shift_reg & 1;
+                        }
+                        g_shift_reg = (g_shift_reg >> 1) | (w_bit1 << NOISESHIFT);
+                    }
                 }
                 else
                 {
                     g_psg_clock[NOISE_CHANNEL] -= CLOCK_INC;
-                }
-                if (g_psg_clock[NOISE_CHANNEL] <= 0)
-                {
-                    g_duty[NOISE_CHANNEL] = !g_duty[NOISE_CHANNEL];
-                    if (g_freq[3] != 0x80)
+                    if (g_psg_clock[NOISE_CHANNEL] <= 0)
                     {
                         g_psg_clock[NOISE_CHANNEL] += g_freq[3];
-                    }
-                    if (g_duty[NOISE_CHANNEL] == true)
-                    {
+
                         int w_bit1;
                         if (g_noise_mode == true)
                         {
@@ -116,12 +144,23 @@ namespace EutherDrive.Core.MdTracerCore
             //mix
             if (AudioMuteFmPsg)
                 return 0;
+            float mixedSum = 0;
             for (int w_ch = 0; w_ch <= 3; w_ch++)
             {
-                int mixed = g_channel_out[w_ch] * md_main.g_md_music.g_out_vol[w_ch + 6];
-                w_out += (mixed * PSG_GAIN_NUM) / PSG_GAIN_DEN;
+                float sample = g_channel_out[w_ch];
+                if (w_ch == NOISE_CHANNEL && _noiseGainPercent != 100)
+                    sample = sample * _noiseGainPercent / 100f;
+                sample *= md_main.g_md_music.g_out_vol[w_ch + 6];
+                mixedSum += sample;
             }
-            return w_out;
+            mixedSum *= (float)PSG_GAIN_NUM / PSG_GAIN_DEN;
+            float dcBlocked = mixedSum - _dcBlockX1 + (PSG_DC_BLOCK_R * _dcBlockY1);
+            _dcBlockX1 = mixedSum;
+            _dcBlockY1 = dcBlocked;
+            float clipped = SoftClip(dcBlocked / PSG_SOFTCLIP_SCALE) * PSG_SOFTCLIP_SCALE;
+            if (clipped > short.MaxValue) clipped = short.MaxValue;
+            else if (clipped < short.MinValue) clipped = short.MinValue;
+            return (int)MathF.Round(clipped);
         }
     }
 }

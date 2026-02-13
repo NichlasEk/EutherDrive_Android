@@ -223,6 +223,9 @@ public partial class MainWindow : Window
     private long _audioPullLastFrameCounter = -1;
     private long _audioPullLastFrameCounterTicks;
     private int _masterVolumePercent = DefaultMasterVolumePercent;
+    private int _psgMixPercent = DefaultPsgMixPercent;
+    private int _ymMixPercent = DefaultYmMixPercent;
+    private int _noiseMixPercent = DefaultNoiseMixPercent;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _defaultRegionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
@@ -235,6 +238,9 @@ public partial class MainWindow : Window
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
     private const string LegacyLastRomPathFileName = "eutherdrive_last_rom.txt";
     private const int DefaultMasterVolumePercent = 50;
+    private const int DefaultPsgMixPercent = 100;
+    private const int DefaultYmMixPercent = 100;
+    private const int DefaultNoiseMixPercent = 100;
     private const int DefaultCpuCyclesPerLine = 488;
 
     // UI heartbeat
@@ -289,6 +295,15 @@ public partial class MainWindow : Window
         if (MasterVolumeSlider != null)
             MasterVolumeSlider.Value = _masterVolumePercent;
         UpdateMasterVolumeText();
+        if (PsgMixSlider != null)
+            PsgMixSlider.Value = _psgMixPercent;
+        UpdatePsgMixText();
+        if (YmMixSlider != null)
+            YmMixSlider.Value = _ymMixPercent;
+        UpdateYmMixText();
+        if (NoiseMixSlider != null)
+            NoiseMixSlider.Value = _noiseMixPercent;
+        UpdateNoiseMixText();
         if (AudioEnabledCheck != null)
             AudioEnabledCheck.IsChecked = _audioEnabled || AudioEnvEnabled;
         UpdateYmResampleUi();
@@ -350,6 +365,7 @@ public partial class MainWindow : Window
             AddRecentRom(_romPath);
             _core = new MdTracerAdapter();
             ApplyMasterVolumeToCore();
+            ApplyAudioMixToCore();
             ApplyDefaultCpuCyclesPerLine();
             if (_core is MdTracerAdapter smsAdapter)
                 smsAdapter.SetShowSmsOverscan(_smsOverscanEnabled);
@@ -870,6 +886,7 @@ public partial class MainWindow : Window
             _core = new MdTracerAdapter();   // <-- Steg A core
                 Console.WriteLine("[UI] Core created (MdTracerAdapter).");
                 ApplyMasterVolumeToCore();
+                ApplyAudioMixToCore();
                 ApplyDefaultCpuCyclesPerLine();
                 if (_core is MdTracerAdapter smsAdapter)
                     smsAdapter.SetShowSmsOverscan(_smsOverscanEnabled);
@@ -1140,6 +1157,16 @@ public partial class MainWindow : Window
             adapter.SetMasterVolumePercent(_masterVolumePercent);
     }
 
+    private void ApplyAudioMixToCore()
+    {
+        if (_core is MdTracerAdapter adapter)
+        {
+            adapter.SetPsgMixPercent(_psgMixPercent);
+            adapter.SetYmMixPercent(_ymMixPercent);
+            adapter.SetPsgNoiseMixPercent(_noiseMixPercent);
+        }
+    }
+
     private void UpdateMasterVolumeText()
     {
         if (MasterVolumeValueText != null)
@@ -1158,6 +1185,64 @@ public partial class MainWindow : Window
         UpdateMasterVolumeText();
         ApplyMasterVolumeToCore();
         SaveSettings();
+    }
+
+    private void UpdatePsgMixText()
+    {
+        if (PsgMixValueText != null)
+            PsgMixValueText.Text = $"{_psgMixPercent}%";
+    }
+
+    private void UpdateYmMixText()
+    {
+        if (YmMixValueText != null)
+            YmMixValueText.Text = $"{_ymMixPercent}%";
+    }
+
+    private void UpdateNoiseMixText()
+    {
+        if (NoiseMixValueText != null)
+            NoiseMixValueText.Text = $"{_noiseMixPercent}%";
+    }
+
+    private void OnPsgMixChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        int percent = ClampMixPercent((int)Math.Round(e.NewValue));
+        if (percent == _psgMixPercent)
+            return;
+        _psgMixPercent = percent;
+        UpdatePsgMixText();
+        ApplyAudioMixToCore();
+        SaveSettings();
+    }
+
+    private void OnYmMixChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        int percent = ClampMixPercent((int)Math.Round(e.NewValue));
+        if (percent == _ymMixPercent)
+            return;
+        _ymMixPercent = percent;
+        UpdateYmMixText();
+        ApplyAudioMixToCore();
+        SaveSettings();
+    }
+
+    private void OnNoiseMixChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        int percent = ClampMixPercent((int)Math.Round(e.NewValue));
+        if (percent == _noiseMixPercent)
+            return;
+        _noiseMixPercent = percent;
+        UpdateNoiseMixText();
+        ApplyAudioMixToCore();
+        SaveSettings();
+    }
+
+    private static int ClampMixPercent(int value)
+    {
+        if (value < 0) return 0;
+        if (value > 200) return 200;
+        return value;
     }
 
     private void SetRegionOverride(ConsoleRegion region, bool resetIfRunning, bool persist)
@@ -1593,6 +1678,9 @@ public partial class MainWindow : Window
         public string? LastRomPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
+        public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
+        public int YmMixPercent { get; set; } = DefaultYmMixPercent;
+        public int NoiseMixPercent { get; set; } = DefaultNoiseMixPercent;
         public bool AudioEnabled { get; set; } = true;
         public bool YmResampleLinear { get; set; } = false;
         public double Z80CyclesMult { get; set; } = 1.0;
@@ -1657,6 +1745,9 @@ public partial class MainWindow : Window
         UpdateRecentRomCombo();
 
         _masterVolumePercent = ClampPercent(settings.MasterVolumePercent);
+        _psgMixPercent = ClampMixPercent(settings.PsgMixPercent);
+        _ymMixPercent = ClampMixPercent(settings.YmMixPercent);
+        _noiseMixPercent = ClampMixPercent(settings.NoiseMixPercent);
         _audioEnabled = settings.AudioEnabled;
         _ymResampleLinear = settings.YmResampleLinear;
         _z80CyclesMult = settings.Z80CyclesMult > 0 ? settings.Z80CyclesMult : 1.0;
@@ -1721,6 +1812,9 @@ public partial class MainWindow : Window
             LastRomPath = _romPath,
             RecentRomPaths = _recentRomPaths.ToList(),
             MasterVolumePercent = _masterVolumePercent,
+            PsgMixPercent = _psgMixPercent,
+            YmMixPercent = _ymMixPercent,
+            NoiseMixPercent = _noiseMixPercent,
             AudioEnabled = _audioEnabled,
             YmResampleLinear = _ymResampleLinear,
             Z80CyclesMult = _z80CyclesMult,

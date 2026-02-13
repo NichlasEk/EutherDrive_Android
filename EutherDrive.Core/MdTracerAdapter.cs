@@ -161,6 +161,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private long _psgLastFrame = -1;
     private bool _audioGeneratedThisFrame = false;
     private volatile int _masterVolumePercent = 50;
+    private volatile int _psgMixPercent = 100;
+    private volatile int _ymMixPercent = 100;
+    private volatile int _psgNoisePercent = 100;
     private int _ymSilentFrames;
     private bool _ymSilenceLogged;
     private SimpleLowPassFilter? _mixLowPass;
@@ -191,6 +194,28 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _masterVolumePercent = percent;
     }
 
+    public void SetPsgMixPercent(int percent)
+    {
+        if (percent < 0) percent = 0;
+        else if (percent > 200) percent = 200;
+        _psgMixPercent = percent;
+    }
+
+    public void SetYmMixPercent(int percent)
+    {
+        if (percent < 0) percent = 0;
+        else if (percent > 200) percent = 200;
+        _ymMixPercent = percent;
+    }
+
+    public void SetPsgNoiseMixPercent(int percent)
+    {
+        if (percent < 0) percent = 0;
+        else if (percent > 200) percent = 200;
+        _psgNoisePercent = percent;
+        md_main.g_md_music?.g_md_sn76489.SetNoiseGainPercent(_psgNoisePercent);
+    }
+
     private void ApplyMasterVolume(short[] buffer, int samples)
     {
         if (samples <= 0)
@@ -207,6 +232,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             else if (scaled < short.MinValue) scaled = short.MinValue;
             buffer[i] = (short)scaled;
         }
+    }
+
+    private static int ApplyMixPercent(int sample, int percent)
+    {
+        if (percent == 100)
+            return sample;
+        int scaled = sample * percent / 100;
+        if (scaled > short.MaxValue) return short.MaxValue;
+        if (scaled < short.MinValue) return short.MinValue;
+        return scaled;
     }
 
     private sealed class SimpleLowPassFilter
@@ -1346,6 +1381,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         bool wantPsg = !_psgDisabled;
         bool wantYm = _ymEnabled;
         
+        
         // Generate PSG samples
         if (wantPsg)
         {
@@ -2405,8 +2441,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (music == null)
             return ReadOnlySpan<short>.Empty;
 
+        music.g_md_sn76489.SetNoiseGainPercent(Volatile.Read(ref _psgNoisePercent));
         bool wantPsg = !_psgDisabled;
         bool wantYm = _ymEnabled;
+        int psgMixPercent = Volatile.Read(ref _psgMixPercent);
+        int ymMixPercent = Volatile.Read(ref _ymMixPercent);
         if (TraceAudioDebug && ShouldForceLogAudioPath())
         {
             Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBuffer enter wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
@@ -2478,6 +2517,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 int s = psg.SN76489_Update();
                 if (s > short.MaxValue) s = short.MaxValue;
                 else if (s < short.MinValue) s = short.MinValue;
+                s = ApplyMixPercent(s, psgMixPercent);
                 short sample = (short)s;
                 if (!psgMinMaxInit)
                 {
@@ -2878,6 +2918,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     else ymSample = (int)Math.Round(scaled);
                     _ymFrameBuffer[i] = (short)ymSample;
                 }
+                ymSample = ApplyMixPercent(ymSample, ymMixPercent);
+                _ymFrameBuffer[i] = (short)ymSample;
                 if (!ymMinMaxInit)
                 {
                     ymMinMaxInit = true;
@@ -3018,8 +3060,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (music == null)
             return ReadOnlySpan<short>.Empty;
 
+        music.g_md_sn76489.SetNoiseGainPercent(Volatile.Read(ref _psgNoisePercent));
         bool wantPsg = !_psgDisabled;
         bool wantYm = _ymEnabled;
+        int psgMixPercent = Volatile.Read(ref _psgMixPercent);
+        int ymMixPercent = Volatile.Read(ref _ymMixPercent);
         if (TraceAudioDebug && ShouldForceLogAudioPath())
         {
             Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBufferForFrames enter frames={frames} wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
@@ -3071,6 +3116,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 int s = psg.SN76489_Update();
                 if (s > short.MaxValue) s = short.MaxValue;
                 else if (s < short.MinValue) s = short.MinValue;
+                s = ApplyMixPercent(s, psgMixPercent);
                 short sample = (short)s;
                 if (!psgMinMaxInit)
                 {
@@ -3345,6 +3391,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     else ymSample = (int)Math.Round(scaled);
                     _ymFrameBuffer[i] = (short)ymSample;
                 }
+                ymSample = ApplyMixPercent(ymSample, ymMixPercent);
+                _ymFrameBuffer[i] = (short)ymSample;
                 if (!ymMinMaxInit)
                 {
                     ymMinMaxInit = true;

@@ -92,6 +92,37 @@
           <TextBlock Text="Audio Debug" FontWeight="Bold" VerticalAlignment="Center"/>
           <CheckBox Name="AudioDebugCheck" Content="Enabled" VerticalAlignment="Center"/>
         </StackPanel>
+        <TextBlock Text="Audio Mix (exp)" FontWeight="Bold" Margin="0,6,0,0"/>
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <TextBlock Text="PSG" Width="32" VerticalAlignment="Center"/>
+          <Slider Name="PsgMixSlider"
+                  Minimum="0"
+                  Maximum="200"
+                  Width="140"
+                  Value="100"
+                  ValueChanged="OnPsgMixChanged"/>
+          <TextBlock Name="PsgMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <TextBlock Text="YM" Width="32" VerticalAlignment="Center"/>
+          <Slider Name="YmMixSlider"
+                  Minimum="0"
+                  Maximum="200"
+                  Width="140"
+                  Value="100"
+                  ValueChanged="OnYmMixChanged"/>
+          <TextBlock Name="YmMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <TextBlock Text="Noise" Width="32" VerticalAlignment="Center"/>
+          <Slider Name="NoiseMixSlider"
+                  Minimum="0"
+                  Maximum="200"
+                  Width="140"
+                  Value="100"
+                  ValueChanged="OnNoiseMixChanged"/>
+          <TextBlock Name="NoiseMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
+        </StackPanel>
         <Border Padding="6,4" CornerRadius="4" Background="#1A2B1E" BorderBrush="#2E5A3A" BorderThickness="1">
           <TextBox Name="AudioDebugText"
                    IsReadOnly="True"
