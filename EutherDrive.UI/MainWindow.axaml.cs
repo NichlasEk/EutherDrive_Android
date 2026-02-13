@@ -2805,6 +2805,9 @@ public partial class MainWindow : Window
         if ((autoMask & 4) != 0 && c)
             c = IsAutoFireActive(nowTicks, autoRate);
 
+        if (!AllowResetMapping)
+            resetPressed = false;
+
         MdTracerAdapter.SetPad2Mirror(_pad2MirrorEnabled);
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
         if (core is MdTracerAdapter adapter)
@@ -2812,13 +2815,13 @@ public partial class MainWindow : Window
         if (TracePadMapping)
         {
             string gp1Down;
-            string gp2Down;
+            string gp2DownStr;
             lock (_gamepadStateLock)
             {
                 gp1Down = _gamepad1ButtonsDown.Count == 0 ? "-" : string.Join(",", _gamepad1ButtonsDown);
-                gp2Down = _gamepad2ButtonsDown.Count == 0 ? "-" : string.Join(",", _gamepad2ButtonsDown);
+                gp2DownStr = _gamepad2ButtonsDown.Count == 0 ? "-" : string.Join(",", _gamepad2ButtonsDown);
             }
-            Console.WriteLine($"[PADMAP] gp1down={gp1Down} gp2down={gp2Down} | a={a} b={b} c={c} start={start} pause={pause} reset={resetPressed} x={x} y={y} z={z} mode={mode}");
+            Console.WriteLine($"[PADMAP] gp1down={gp1Down} gp2down={gp2DownStr} | a={a} b={b} c={c} start={start} pause={pause} reset={resetPressed} x={x} y={y} z={z} mode={mode}");
         }
         if (resetPressed && !_resetPressedPrev)
         {
