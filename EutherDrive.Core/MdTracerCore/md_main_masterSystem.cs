@@ -13,6 +13,11 @@ namespace EutherDrive.Core.MdTracerCore
     internal enum SmsMapperType
     {
         Sega = 0,
-        Codemasters = 1
+        Codemasters = 1,
+        KoreanA000 = 2,
+        Korean6000Ram = 3,
+        Korean6000RamWide = 4,
+        Msx8k = 5,
+        Nemesis = 6
     }
 }

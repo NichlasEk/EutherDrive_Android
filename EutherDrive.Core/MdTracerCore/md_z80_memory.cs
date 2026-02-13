@@ -29,6 +29,10 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _smsBank0;
         private byte _smsBank1 = 1;
         private byte _smsBank2 = 2;
+        private byte _smsMsxBank0 = 2; // slot 2 ($8000-$9FFF)
+        private byte _smsMsxBank1 = 3; // slot 3 ($A000-$BFFF)
+        private byte _smsMsxBank2 = 0; // slot 0 ($4000-$5FFF)
+        private byte _smsMsxBank3 = 1; // slot 1 ($6000-$7FFF)
         private bool _smsCodemastersRamEnabled;
         private bool _smsSegaRamEnabled;
         private byte _smsSegaRamBank;
@@ -56,6 +60,10 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TraceSmsMapperLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_MAPPER_LIMIT", 128);
         private static readonly bool TraceSmsMapperFile =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_MAPPER_FILE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSmsBeDetail =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_BE_DETAIL"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSmsBeDetailLimit =
+            ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_BE_DETAIL_LIMIT", 512);
         private const int SmsMapperFileLogLimit = 5000;
         private static int _smsMapperFileLogCount;
         private static string? _smsMapperFileLogPath;
@@ -268,6 +276,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80MBX_WIDE_CMD"), "1", StringComparison.Ordinal);
         private static readonly bool LatchZ80MbxWideCmd =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_MBX_WIDE_CMD_LATCH"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSmsRomWrite =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_ROM_WRITE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSmsRomWriteLimit =
+            ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_ROM_WRITE_LIMIT", 512);
         private static readonly bool MirrorZ80Mailbox = ReadEnvDefaultOff("EUTHERDRIVE_MBX_MIRROR");
         private static readonly bool UseMdTracerCompat =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_MDTRACER_COMPAT"), "1", StringComparison.Ordinal);
@@ -308,12 +320,15 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly ushort? TraceZ80ReadRangeStart = ParseZ80Addr("EUTHERDRIVE_TRACE_Z80_RD_RANGE_START");
         private static readonly ushort? TraceZ80ReadRangeEnd = ParseZ80Addr("EUTHERDRIVE_TRACE_Z80_RD_RANGE_END");
         private static readonly int TraceZ80ReadRangeLimit = ParseWatchLimit("EUTHERDRIVE_TRACE_Z80_RD_RANGE_LIMIT");
+        private static readonly int SmsMsxBankBias = ParseIntEnv("EUTHERDRIVE_SMS_MSX_BANK_BIAS", 2);
+        private static readonly int SmsMsxFixedBias = ParseIntEnv("EUTHERDRIVE_SMS_MSX_FIXED_BIAS", 0);
         private int _z80RamReadRangeRemaining = TraceZ80RamReadRangeLimit;
         private int _z80ReadRangeRemaining = TraceZ80ReadRangeLimit;
         private long _z80Ram1800TraceStartFrame = -1;
         private long _z80Ram1800TraceEndFrame = -1;
         private int _smsMapperTraceRemaining = TraceSmsMapperLimit;
         private int _smsStatusTraceRemaining = TraceSmsStatusLimit;
+        private int _smsBeDetailRemaining = TraceSmsBeDetailLimit;
         private int _z80Flag65ReadRemaining = TraceZ80Flag65Limit;
         private int _z80Flag65WriteRemaining = TraceZ80Flag65Limit;
         private int _z80Flag65ReadOverrideRemaining = ForceZ80Flag65ReadLimit;
@@ -339,6 +354,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _smsRamWriteLogLines = 0;
         private string? _smsRamWriteLogPath;
         private bool _smsRamWriteLogInitialized;
+        private int _smsRomWriteRemaining = TraceSmsRomWriteLimit;
         private int _smsRamReadLogStartFrame = -1;
         private int _smsRamReadLogEndFrame = -1;
         private int _smsRamReadLogMaxLines = -1;
@@ -1579,6 +1595,22 @@ namespace EutherDrive.Core.MdTracerCore
                     return;
                 }
 
+                if (TraceSmsRomWrite && _smsRomWriteRemaining > 0)
+                {
+                    ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                    Console.WriteLine(
+                        $"[SMSROMWR] pc=0x{pc:X4} addr=0x{a:X4} val=0x{in_data:X2} mapper={md_main.g_masterSystemMapper}");
+                    if (_smsRomWriteRemaining != int.MaxValue)
+                        _smsRomWriteRemaining--;
+                }
+                if ((md_main.g_masterSystemMapper == SmsMapperType.Korean6000Ram ||
+                     md_main.g_masterSystemMapper == SmsMapperType.Korean6000RamWide) &&
+                    a >= 0x6000 && a <= 0x7FFF)
+                {
+                    _smsCartRam[(a - 0x6000) & 0x1FFF] = in_data;
+                    return;
+                }
+
                 if (HandleSmsMapperWrite(a, in_data))
                     return;
 
@@ -1590,7 +1622,11 @@ namespace EutherDrive.Core.MdTracerCore
                     return;
                 }
 
-                if (md_main.g_masterSystemMapper == SmsMapperType.Codemasters && _smsCodemastersRamEnabled && a >= 0xA000)
+                if ((md_main.g_masterSystemMapper == SmsMapperType.Codemasters ||
+                     md_main.g_masterSystemMapper == SmsMapperType.KoreanA000 ||
+                     md_main.g_masterSystemMapper == SmsMapperType.Korean6000Ram ||
+                     md_main.g_masterSystemMapper == SmsMapperType.Korean6000RamWide) &&
+                    _smsCodemastersRamEnabled && a >= 0xA000)
                 {
                     _smsCartRam[(a & 0x1FFF) % SmsCartRamSize] = in_data;
                     return;
@@ -1908,7 +1944,10 @@ namespace EutherDrive.Core.MdTracerCore
 
                 uint romIdx = (uint)(a & 0x3FFF);
                 int bankCount = Math.Max(1, (md_main.g_masterSystemRomSize + 0x3FFF) / 0x4000);
-                if (md_main.g_masterSystemMapper == SmsMapperType.Codemasters)
+                if (md_main.g_masterSystemMapper == SmsMapperType.Codemasters ||
+                    md_main.g_masterSystemMapper == SmsMapperType.KoreanA000 ||
+                    md_main.g_masterSystemMapper == SmsMapperType.Korean6000Ram ||
+                    md_main.g_masterSystemMapper == SmsMapperType.Korean6000RamWide)
                 {
                     if (_smsCodemastersRamEnabled && a >= 0xA000)
                     {
@@ -1927,6 +1966,56 @@ namespace EutherDrive.Core.MdTracerCore
                         TrackLastRead(a, val, false, 0);
                         return val;
                     }
+                }
+                if ((md_main.g_masterSystemMapper == SmsMapperType.Korean6000Ram ||
+                     md_main.g_masterSystemMapper == SmsMapperType.Korean6000RamWide) &&
+                    a >= 0x6000 && a <= 0x7FFF)
+                {
+                    byte val = _smsCartRam[(a - 0x6000) & 0x1FFF];
+                    TrackLastRead(a, val, false, 0);
+                    return val;
+                }
+
+                if (md_main.g_masterSystemMapper == SmsMapperType.Msx8k ||
+                    md_main.g_masterSystemMapper == SmsMapperType.Nemesis)
+                {
+                    int bankCount8k = Math.Max(1, (md_main.g_masterSystemRomSize + 0x1FFF) / 0x2000);
+                    uint bank8k;
+                    if (a < 0x2000)
+                    {
+                        bank8k = (md_main.g_masterSystemMapper == SmsMapperType.Nemesis)
+                            ? (uint)((bankCount8k - 1) % bankCount8k)
+                            : (uint)(SmsMsxFixedBias % bankCount8k);
+                    }
+                    else if (a < 0x4000)
+                    {
+                        bank8k = (md_main.g_masterSystemMapper == SmsMapperType.Nemesis)
+                            ? (uint)((bankCount8k - 2 + bankCount8k) % bankCount8k)
+                            : (uint)((SmsMsxFixedBias + 1) % bankCount8k);
+                    }
+                    else if (a < 0x6000)
+                    {
+                        bank8k = (uint)(_smsMsxBank2 % bankCount8k);
+                    }
+                    else if (a < 0x8000)
+                    {
+                        bank8k = (uint)(_smsMsxBank3 % bankCount8k);
+                    }
+                    else if (a < 0xA000)
+                    {
+                        bank8k = (uint)(_smsMsxBank0 % bankCount8k);
+                    }
+                    else
+                    {
+                        bank8k = (uint)(_smsMsxBank1 % bankCount8k);
+                    }
+
+                    uint idx8k = (bank8k * 0x2000u + (uint)(a & 0x1FFF)) % (uint)md_main.g_masterSystemRomSize;
+                    byte value8k = md_main.g_masterSystemRom[idx8k];
+                    TrackLastRead(a, value8k, true, idx8k);
+                    LogSmsRomReadIfNeeded(a, value8k, idx8k, true,
+                        md_main.g_masterSystemMapper == SmsMapperType.Nemesis ? "nemesis" : "msx");
+                    return value8k;
                 }
 
                 uint bank = a < 0x4000
@@ -1986,6 +2075,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 _z80DdcbBitRemaining = TraceZ80DdcbBitLimit;
             }
+            _smsBeDetailRemaining = TraceSmsBeDetailLimit;
             if (TraceSmsMapper)
                 _smsMapperTraceRemaining = TraceSmsMapperLimit;
             if (TraceSmsStatus)
@@ -2571,6 +2661,21 @@ namespace EutherDrive.Core.MdTracerCore
                         ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
                         Console.WriteLine($"[SMS IO] first BE write val=0x{data:X2} PC=0x{pc:X4}");
                     }
+                    if (TraceSmsBeDetail && _smsBeDetailRemaining > 0)
+                    {
+                        _smsBeDetailRemaining--;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        ushort hl = g_reg_HL;
+                        ushort sp = g_reg_SP;
+                        byte a = g_reg_A;
+                        byte f = g_status_flag;
+                        ushort bc = g_reg_BC;
+                        ushort de = g_reg_DE;
+                        ushort ret = (ushort)(PeekZ80ByteNoSideEffect(sp) | (PeekZ80ByteNoSideEffect((ushort)(sp + 1)) << 8));
+                        Console.WriteLine(
+                            $"[SMS BE] pc=0x{pc:X4} ret=0x{ret:X4} A=0x{a:X2} F=0x{f:X2} BC=0x{bc:X4} DE=0x{de:X4} HL=0x{hl:X4} " +
+                            $"lastAddr=0x{_lastReadAddr:X4} lastVal=0x{_lastReadValue:X2} lastPc=0x{_lastReadPc:X4}");
+                    }
                     md_main.g_md_vdp?.RecordSmsBeWrite();
                     md_main.g_md_vdp?.write8(0xC00000, data);
                     SmsPortLog(port, "write", data);
@@ -2676,6 +2781,136 @@ namespace EutherDrive.Core.MdTracerCore
                         _smsCodemastersRamEnabled = (value & 0x80) != 0;
                         LogSmsMapperWriteIfNeeded(addr, value);
                         LogSmsMapperWriteFile(addr, value, "Codemasters");
+                        return true;
+                    }
+                    return false;
+                case SmsMapperType.Msx8k:
+                case SmsMapperType.Nemesis:
+                    if (TraceSmsMapper && _smsMapperTraceRemaining > 0)
+                    {
+                        _smsMapperTraceRemaining--;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine(
+                            $"[SMS MAP] type={(md_main.g_masterSystemMapper == SmsMapperType.Nemesis ? "Nemesis" : "Msx8k")} pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2}");
+                    }
+                    if (addr <= 0x0003)
+                    {
+                        int bankCount8k = Math.Max(1, (md_main.g_masterSystemRomSize + 0x1FFF) / 0x2000);
+                        byte bank8k = (byte)(((value & 0x3F) + SmsMsxBankBias) % bankCount8k);
+                        int reg = addr & 0x0003;
+                        switch (reg)
+                        {
+                            case 0:
+                                _smsMsxBank0 = bank8k;
+                                break;
+                            case 1:
+                                _smsMsxBank1 = bank8k;
+                                break;
+                            case 2:
+                                _smsMsxBank2 = bank8k;
+                                break;
+                            case 3:
+                                _smsMsxBank3 = bank8k;
+                                break;
+                        }
+                        LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value,
+                            md_main.g_masterSystemMapper == SmsMapperType.Nemesis ? "Nemesis" : "Msx8k");
+                        return true;
+                    }
+                    return false;
+                case SmsMapperType.KoreanA000:
+                    if (TraceSmsMapper && _smsMapperTraceRemaining > 0)
+                    {
+                        _smsMapperTraceRemaining--;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine(
+                            $"[SMS MAP] type=KoreanA000 pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} bank={(byte)((value & 0x7F) % bankCount)} ram={(value & 0x80) != 0}");
+                    }
+                    if (addr >= 0xA000 && addr <= 0xBFFF)
+                    {
+                        bank = (byte)((value & 0x7F) % bankCount);
+                        _smsBank2 = bank;
+                        LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "KoreanA000");
+                        return true;
+                    }
+                    return false;
+                case SmsMapperType.Korean6000Ram:
+                    if (TraceSmsMapper && _smsMapperTraceRemaining > 0)
+                    {
+                        _smsMapperTraceRemaining--;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine(
+                            $"[SMS MAP] type=Korean6000Ram pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} bank={(byte)((value & 0x7F) % bankCount)} ram={(value & 0x80) != 0}");
+                    }
+                    bank = (byte)((value & 0x7F) % bankCount);
+                    if (addr == 0x0000)
+                    {
+                        _smsBank0 = bank;
+                        LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "Korean6000Ram");
+                        return true;
+                    }
+                    if (addr == 0x4000)
+                    {
+                        _smsBank1 = bank;
+                        LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "Korean6000Ram");
+                        return true;
+                    }
+                    if (addr == 0xA000)
+                    {
+                        if (_smsCodemastersRamEnabled && addr >= 0xA000)
+                        {
+                            g_ram[(ushort)(addr & 0x1FFF)] = value;
+                            LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Korean6000Ram");
+                            return true;
+                        }
+                        _smsBank2 = bank;
+                        _smsCodemastersRamEnabled = (value & 0x80) != 0;
+                        LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "Korean6000Ram");
+                        return true;
+                    }
+                    return false;
+                case SmsMapperType.Korean6000RamWide:
+                    if (TraceSmsMapper && _smsMapperTraceRemaining > 0)
+                    {
+                        _smsMapperTraceRemaining--;
+                        ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+                        Console.WriteLine(
+                            $"[SMS MAP] type=Korean6000RamWide pc=0x{pc:X4} addr=0x{addr:X4} val=0x{value:X2} bank={(byte)((value & 0x7F) % bankCount)} ram={(value & 0x80) != 0}");
+                    }
+                    bank = (byte)((value & 0x7F) % bankCount);
+                    if (addr <= 0x3FFF)
+                    {
+                        _smsBank0 = bank;
+                        LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "Korean6000RamWide");
+                        return true;
+                    }
+                    if (addr <= 0x7FFF)
+                    {
+                        _smsBank1 = bank;
+                        LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "Korean6000RamWide");
+                        return true;
+                    }
+                    if (addr >= 0xA000 && addr <= 0xBFFF)
+                    {
+                        if (_smsCodemastersRamEnabled && addr >= 0xA000)
+                        {
+                            g_ram[(ushort)(addr & 0x1FFF)] = value;
+                            LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Korean6000RamWide");
+                            return true;
+                        }
+                        _smsBank2 = bank;
+                        _smsCodemastersRamEnabled = (value & 0x80) != 0;
+                        LogSmsMapperWriteIfNeeded(addr, value);
+                        LogSmsMapperWriteFile(addr, value, "Korean6000RamWide");
                         return true;
                     }
                     return false;

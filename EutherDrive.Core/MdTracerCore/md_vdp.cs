@@ -29,6 +29,10 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_SMS_NT_DUMP_FRAME", -1);
         private static readonly string SmsNameTableDumpPath =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NT_DUMP_PATH") ?? "/tmp/sms_nt_dump.txt";
+        private static readonly int SmsCramDumpFrame =
+            ParseTraceLimit("EUTHERDRIVE_SMS_CRAM_DUMP_FRAME", -1);
+        private static readonly string SmsCramDumpPath =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_CRAM_DUMP_PATH") ?? "/tmp/sms_cram_dump.txt";
         private static readonly bool TraceSmsFrameDetail =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_FRAME_DETAIL"), "1", StringComparison.Ordinal);
         private static readonly int SmsVramDumpOnHashChanges =
@@ -78,6 +82,7 @@ private static readonly bool SpriteLinkSequential =
         private uint _smsLastFrameHash;
         private bool _smsVramDumped;
         private bool _smsNameTableDumped;
+        private bool _smsCramDumped;
         private int _smsVramDumpOnHashChangesLeft = SmsVramDumpOnHashChanges;
         private long _smsVramWritesTotal;
         private long _smsCramWritesTotal;
@@ -116,6 +121,11 @@ private static readonly bool SpriteLinkSequential =
         private int _smsVramWriteLogMaxLines = -1;
         private int _smsVramWriteLogLines = 0;
         private string? _smsVramWriteLogPath;
+        private int _smsCramWriteLogStartFrame = -1;
+        private int _smsCramWriteLogEndFrame = -1;
+        private int _smsCramWriteLogMaxLines = -1;
+        private int _smsCramWriteLogLines = 0;
+        private string? _smsCramWriteLogPath;
         private byte[] _smsCram = new byte[0x20];
         private uint[] _smsPalette = new uint[0x20];
         private long _frameCounter;
@@ -1394,7 +1404,8 @@ private static readonly bool SpriteLinkSequential =
             if (!md_main.g_masterSystemMode)
                 return;
 
-            bool dumpRequested = SmsVramDumpFrame >= 0 || SmsNameTableDumpFrame >= 0 || _smsVramDumpOnHashChangesLeft > 0 || TraceSmsFrameDetail;
+            bool dumpRequested = SmsVramDumpFrame >= 0 || SmsNameTableDumpFrame >= 0 || SmsCramDumpFrame >= 0 ||
+                                 _smsVramDumpOnHashChangesLeft > 0 || TraceSmsFrameDetail;
             if (!MdTracerCore.MdLog.Enabled && !dumpRequested)
                 return;
 
@@ -1436,6 +1447,11 @@ private static readonly bool SpriteLinkSequential =
             {
                 _smsNameTableDumped = true;
                 DumpSmsNameTable(SmsNameTableDumpPath);
+            }
+            if (!_smsCramDumped && SmsCramDumpFrame >= 0 && _frameCounter >= SmsCramDumpFrame)
+            {
+                _smsCramDumped = true;
+                DumpSmsCram(SmsCramDumpPath);
             }
 
             if (isHashSampleFrame)

@@ -455,7 +455,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             {
                 byte[] smsRom = NormalizeSmsRom(rawData);
                 var smsHeader = TryParseSmsHeader(smsRom);
-                SmsMapperType mapper = DetectSmsMapper(smsRom);
+                SmsMapperType mapper = DetectSmsMapper(smsRom, smsHeader.Found);
+                SmsMapperType? forcedMapper = TryParseSmsMapperOverride();
+                if (forcedMapper.HasValue)
+                {
+                    Console.WriteLine($"[MdTracerAdapter] SMS mapper override: {forcedMapper.Value}");
+                    mapper = forcedMapper.Value;
+                }
                 _rom = smsRom;
                 md_main.g_masterSystemMode = true;
                 md_main.g_masterSystemRom = smsRom;
@@ -479,6 +485,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 RomInfo.RegionHint = smsHeader.RegionHint;
                 RomInfo.RegionHeaderRaw = smsHeader.RegionRaw ?? string.Empty;
                 RomInfo.SerialNumber = smsHeader.ProductCode ?? string.Empty;
+                Console.WriteLine($"[MdTracerAdapter] SMS headerFound={smsHeader.Found} mapper={mapper}");
             }
             else
             {
@@ -698,7 +705,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         return sizeFromHeader;
     }
 
-    private static SmsMapperType DetectSmsMapper(byte[] rom)
+    private static SmsMapperType DetectSmsMapper(byte[] rom, bool headerFound)
     {
         const int codemastersChecksumAddr = 0x7FE6;
         if (rom.Length < 32 * 1024)
@@ -717,7 +724,127 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             checksum = (ushort)(checksum + word);
         }
 
-        return checksum == expected ? SmsMapperType.Codemasters : SmsMapperType.Sega;
+        if (checksum == expected)
+            return SmsMapperType.Codemasters;
+
+        // Heuristics for headerless or ambiguous ROMs (Korean mappers are common here).
+        if (LooksLikeKoreanA000Mapper(rom))
+            return SmsMapperType.KoreanA000;
+        if (LooksLikeKorean6000RamMapper(rom))
+            return SmsMapperType.Korean6000Ram;
+        if (!headerFound && LooksLikeCodemastersMapper(rom))
+            return SmsMapperType.Codemasters;
+
+        return SmsMapperType.Sega;
+    }
+
+    private static bool LooksLikeCodemastersMapper(byte[] rom)
+    {
+        // Heuristic for unlicensed/no-header ROMs: look for repeated LD (nn),A targeting
+        // typical Codemasters-style bank registers (0x0000..0x3FFF and 0x8000..0xBFFF).
+        int writesToA000 = 0;
+        int writesTo0000 = 0;
+        int writesTo4000 = 0;
+        int writesTo8000 = 0;
+        for (int i = 0; i + 2 < rom.Length; i++)
+        {
+            if (rom[i] != 0x32) // LD (nn),A
+                continue;
+            ushort addr = (ushort)(rom[i + 1] | (rom[i + 2] << 8));
+            if (addr == 0xA000)
+                writesToA000++;
+            else if (addr == 0x0000)
+                writesTo0000++;
+            else if (addr == 0x4000)
+                writesTo4000++;
+            else if (addr == 0x8000)
+                writesTo8000++;
+        }
+
+        // Codemasters typically uses writes at 0x0000, 0x4000, and 0x8000 for bank switches.
+        bool hasCodemastersTriplet =
+            writesTo0000 >= 2 && writesTo4000 >= 2 && writesTo8000 >= 2;
+        // Some titles poke 0xA000 for RAM enable, but don't use it as the sole signal.
+        return hasCodemastersTriplet || (writesToA000 >= 8 && writesTo8000 >= 2);
+    }
+
+    private static bool LooksLikeKoreanA000Mapper(byte[] rom)
+    {
+        // Heuristic for some Korean 1MB/2MB games: heavy use of LD (0xA000),A without header.
+        int writesToA000 = 0;
+        int writesTo0000 = 0;
+        int writesTo4000 = 0;
+        for (int i = 0; i + 2 < rom.Length; i++)
+        {
+            if (rom[i] != 0x32) // LD (nn),A
+                continue;
+            ushort addr = (ushort)(rom[i + 1] | (rom[i + 2] << 8));
+            if (addr == 0xA000)
+                writesToA000++;
+            else if (addr == 0x0000)
+                writesTo0000++;
+            else if (addr == 0x4000)
+                writesTo4000++;
+        }
+
+        bool midRom = rom.Length >= 256 * 1024;
+        bool bigRom = rom.Length >= 512 * 1024;
+        bool hugeRom = rom.Length >= 1024 * 1024;
+        if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SMS_MAPPER_DETECT"), "1", StringComparison.Ordinal))
+        {
+            Console.WriteLine($"[SMS MAP DETECT] KoreanA000: A000={writesToA000} 0000={writesTo0000} 4000={writesTo4000} size={rom.Length}");
+        }
+
+        if (writesToA000 >= 16)
+            return true;
+        if (writesToA000 >= 8 && midRom)
+            return true;
+        if (writesToA000 >= 6 && bigRom)
+            return true;
+        if (hugeRom && writesToA000 >= 2)
+            return true;
+        return writesToA000 >= 4 && (writesTo0000 > 0 || writesTo4000 > 0) && bigRom;
+    }
+
+    private static bool LooksLikeKorean6000RamMapper(byte[] rom)
+    {
+        int writesTo6000 = 0;
+        int writesToA000 = 0;
+        for (int i = 0; i + 2 < rom.Length; i++)
+        {
+            if (rom[i] != 0x32)
+                continue;
+            ushort addr = (ushort)(rom[i + 1] | (rom[i + 2] << 8));
+            if (addr >= 0x6000 && addr <= 0x7FFF)
+                writesTo6000++;
+            else if (addr == 0xA000)
+                writesToA000++;
+        }
+
+        return writesTo6000 >= 16 && writesToA000 > 0 && rom.Length >= 512 * 1024;
+    }
+
+    private static SmsMapperType? TryParseSmsMapperOverride()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_FORCE_MAPPER");
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+        raw = raw.Trim();
+        return raw.ToLowerInvariant() switch
+        {
+            "sega" => SmsMapperType.Sega,
+            "codemasters" => SmsMapperType.Codemasters,
+            "koreana000" => SmsMapperType.KoreanA000,
+            "korean_a000" => SmsMapperType.KoreanA000,
+            "korean6000ram" => SmsMapperType.Korean6000Ram,
+            "korean_6000_ram" => SmsMapperType.Korean6000Ram,
+            "korean6000ramwide" => SmsMapperType.Korean6000RamWide,
+            "korean_6000_ram_wide" => SmsMapperType.Korean6000RamWide,
+            "msx" => SmsMapperType.Msx8k,
+            "msx8k" => SmsMapperType.Msx8k,
+            "nemesis" => SmsMapperType.Nemesis,
+            _ => null
+        };
     }
 
     private static string BuildSmsSummary(int length)

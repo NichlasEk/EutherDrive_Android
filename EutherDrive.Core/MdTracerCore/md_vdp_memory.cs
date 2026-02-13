@@ -686,6 +686,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _smsCramWritesTotal++;
                     int cramAddr = _smsVdpAddr & 0x1F;
                     _smsCram[cramAddr] = value;
+                    LogSmsCramWriteIfNeeded(cramAddr, value);
                     _smsVdpAddr = (_smsVdpAddr + GetSmsAutoIncrement()) & 0x3FFF;
                     SmsUpdatePalette(cramAddr, value);
                     _smsReadBuffer = value;
@@ -926,6 +927,52 @@ namespace EutherDrive.Core.MdTracerCore
             string line = $"frame={_frameCounter} line={g_scanline} addr=0x{addr:X4} val=0x{value:X2} code={code} inc=0x{inc:X2} pc=0x{pc:X4}{bankInfo}\n";
             File.AppendAllText(_smsVramWriteLogPath, line);
             _smsVramWriteLogLines++;
+        }
+
+        private void LogSmsCramWriteIfNeeded(int addr, byte value)
+        {
+            if (!md_main.g_masterSystemMode)
+                return;
+
+            if (_smsCramWriteLogStartFrame < 0)
+            {
+                int start = ParseTraceLimit("EUTHERDRIVE_SMS_CRAM_WRITE_LOG_START_FRAME", -1);
+                int count = ParseTraceLimit("EUTHERDRIVE_SMS_CRAM_WRITE_LOG_FRAME_COUNT", 1);
+                int maxLines = ParseTraceLimit("EUTHERDRIVE_SMS_CRAM_WRITE_LOG_MAX_LINES", 20000);
+                _smsCramWriteLogStartFrame = start;
+                _smsCramWriteLogEndFrame = (start >= 0 && count > 0) ? (start + count - 1) : -1;
+                _smsCramWriteLogMaxLines = maxLines;
+            }
+
+            if (_smsCramWriteLogStartFrame < 0 || _smsCramWriteLogEndFrame < _smsCramWriteLogStartFrame)
+                return;
+
+            long frame = _frameCounter;
+            if (frame < _smsCramWriteLogStartFrame || frame > _smsCramWriteLogEndFrame)
+                return;
+
+            if (_smsCramWriteLogLines >= _smsCramWriteLogMaxLines)
+                return;
+
+            if (_smsCramWriteLogPath == null)
+            {
+                string dir = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR");
+                if (string.IsNullOrWhiteSpace(dir))
+                    dir = "/home/nichlas/EutherDrive/logs";
+                Directory.CreateDirectory(dir);
+                _smsCramWriteLogPath = Path.Combine(
+                    dir,
+                    $"sms_cram_writes_{_smsCramWriteLogStartFrame}_{_smsCramWriteLogEndFrame}.log");
+                File.WriteAllText(_smsCramWriteLogPath,
+                    $"SMS CRAM write log frames={_smsCramWriteLogStartFrame}-{_smsCramWriteLogEndFrame}\n");
+            }
+
+            int inc = GetSmsAutoIncrement();
+            int code = _smsVdpCode;
+            ushort pc = md_main.g_md_z80?.DebugPc ?? 0;
+            string line = $"frame={frame} addr=0x{addr:X2} val=0x{value:X2} code={code} inc=0x{inc:X2} pc=0x{pc:X4}\n";
+            File.AppendAllText(_smsCramWriteLogPath, line);
+            _smsCramWriteLogLines++;
         }
 
         private static bool SmsMode224(byte reg0, byte reg1)
