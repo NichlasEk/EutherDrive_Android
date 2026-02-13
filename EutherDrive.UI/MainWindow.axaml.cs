@@ -1761,6 +1761,34 @@ public partial class MainWindow : Window
         public InputMappingSettings InputMappings { get; set; } = new();
     }
 
+    private sealed class UiSettingsToml
+    {
+        public string? LastRomPath { get; set; }
+        public List<string>? RecentRomPaths { get; set; }
+        public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
+        public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
+        public int YmMixPercent { get; set; } = DefaultYmMixPercent;
+        public int NoiseMixPercent { get; set; } = DefaultNoiseMixPercent;
+        public bool AudioEnabled { get; set; } = true;
+        public bool YmResampleLinear { get; set; } = false;
+        public double Z80CyclesMult { get; set; } = 1.0;
+        public bool SpeedLockEnabled { get; set; } = true;
+        public bool RenderSkipEnabled { get; set; } = false;
+        public double SpeedScale { get; set; } = 1.0;
+        public bool SmsOverscanEnabled { get; set; } = false;
+        public string? DefaultRegionOverride { get; set; }
+        public Dictionary<string, string>? RomRegionOverrides { get; set; }
+        public string? FrameRateMode { get; set; }
+        public InputMappingSettingsToml? InputMappings { get; set; }
+    }
+
+    private sealed class InputMappingSettingsToml
+    {
+        public Dictionary<string, string>? KeyboardMappings { get; set; }
+        public Dictionary<string, string>? GamepadMappings { get; set; }
+        public Dictionary<string, string>? Gamepad2Mappings { get; set; }
+    }
+
     private void LoadSettings()
     {
         string path = GetSettingsPath();
@@ -1924,7 +1952,8 @@ public partial class MainWindow : Window
         try
         {
             string toml = File.ReadAllText(path);
-            return Toml.ToModel<UiSettings>(toml);
+            var raw = Toml.ToModel<UiSettingsToml>(toml);
+            return ConvertTomlToSettings(raw);
         }
         catch
         {
@@ -1958,8 +1987,162 @@ public partial class MainWindow : Window
 
     private static void WriteTomlSettings(string path, UiSettings settings)
     {
-        string toml = Toml.FromModel(settings);
+        UiSettingsToml model = ConvertSettingsToToml(settings);
+        string toml = Toml.FromModel(model);
         File.WriteAllText(path, toml);
+    }
+
+    private static UiSettingsToml ConvertSettingsToToml(UiSettings settings)
+    {
+        var model = new UiSettingsToml
+        {
+            LastRomPath = settings.LastRomPath,
+            RecentRomPaths = settings.RecentRomPaths,
+            MasterVolumePercent = settings.MasterVolumePercent,
+            PsgMixPercent = settings.PsgMixPercent,
+            YmMixPercent = settings.YmMixPercent,
+            NoiseMixPercent = settings.NoiseMixPercent,
+            AudioEnabled = settings.AudioEnabled,
+            YmResampleLinear = settings.YmResampleLinear,
+            Z80CyclesMult = settings.Z80CyclesMult,
+            SpeedLockEnabled = settings.SpeedLockEnabled,
+            RenderSkipEnabled = settings.RenderSkipEnabled,
+            SpeedScale = settings.SpeedScale,
+            SmsOverscanEnabled = settings.SmsOverscanEnabled,
+            DefaultRegionOverride = settings.DefaultRegionOverride.ToString(),
+            FrameRateMode = settings.FrameRateMode.ToString()
+        };
+
+        if (settings.RomRegionOverrides != null)
+        {
+            var table = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in settings.RomRegionOverrides)
+                table[entry.Key] = entry.Value.ToString();
+            if (table.Count > 0)
+                model.RomRegionOverrides = table;
+        }
+
+        if (settings.InputMappings != null)
+        {
+            model.InputMappings = new InputMappingSettingsToml
+            {
+                KeyboardMappings = ConvertKeyDict(settings.InputMappings.KeyboardMappings),
+                GamepadMappings = ConvertGamepadDict(settings.InputMappings.GamepadMappings),
+                Gamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Gamepad2Mappings)
+            };
+            if (model.InputMappings.KeyboardMappings == null
+                && model.InputMappings.GamepadMappings == null
+                && model.InputMappings.Gamepad2Mappings == null)
+            {
+                model.InputMappings = null;
+            }
+        }
+
+        return model;
+    }
+
+    private static UiSettings? ConvertTomlToSettings(UiSettingsToml? raw)
+    {
+        if (raw == null)
+            return null;
+
+        var settings = new UiSettings
+        {
+            LastRomPath = raw.LastRomPath,
+            RecentRomPaths = raw.RecentRomPaths,
+            MasterVolumePercent = raw.MasterVolumePercent,
+            PsgMixPercent = raw.PsgMixPercent,
+            YmMixPercent = raw.YmMixPercent,
+            NoiseMixPercent = raw.NoiseMixPercent,
+            AudioEnabled = raw.AudioEnabled,
+            YmResampleLinear = raw.YmResampleLinear,
+            Z80CyclesMult = raw.Z80CyclesMult,
+            SpeedLockEnabled = raw.SpeedLockEnabled,
+            RenderSkipEnabled = raw.RenderSkipEnabled,
+            SpeedScale = raw.SpeedScale,
+            SmsOverscanEnabled = raw.SmsOverscanEnabled
+        };
+
+        if (Enum.TryParse<ConsoleRegion>(raw.DefaultRegionOverride ?? string.Empty, out var region))
+            settings.DefaultRegionOverride = region;
+        if (Enum.TryParse<FrameRateMode>(raw.FrameRateMode ?? string.Empty, out var frameRate))
+            settings.FrameRateMode = frameRate;
+
+        if (raw.RomRegionOverrides != null)
+        {
+            settings.RomRegionOverrides = new Dictionary<string, ConsoleRegion>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in raw.RomRegionOverrides)
+            {
+                if (Enum.TryParse<ConsoleRegion>(entry.Value ?? string.Empty, out var regionOverride))
+                    settings.RomRegionOverrides[entry.Key] = regionOverride;
+            }
+        }
+
+        settings.InputMappings = ConvertTomlInputMappings(raw.InputMappings) ?? settings.InputMappings;
+        return settings;
+    }
+
+    private static InputMappingSettings? ConvertTomlInputMappings(InputMappingSettingsToml? raw)
+    {
+        if (raw == null)
+            return null;
+
+        var mappings = new InputMappingSettings();
+        bool any = false;
+
+        if (raw.KeyboardMappings != null)
+        {
+            foreach (var entry in raw.KeyboardMappings)
+            {
+                if (Enum.TryParse<Key>(entry.Value ?? string.Empty, out var key))
+                {
+                    mappings.KeyboardMappings[entry.Key] = key;
+                    any = true;
+                }
+            }
+        }
+
+        if (raw.GamepadMappings != null)
+        {
+            foreach (var entry in raw.GamepadMappings)
+            {
+                if (Enum.TryParse<GamepadButton>(entry.Value ?? string.Empty, out var button))
+                {
+                    mappings.GamepadMappings[entry.Key] = button;
+                    any = true;
+                }
+            }
+        }
+
+        if (raw.Gamepad2Mappings != null)
+        {
+            foreach (var entry in raw.Gamepad2Mappings)
+            {
+                if (Enum.TryParse<GamepadButton>(entry.Value ?? string.Empty, out var button))
+                {
+                    mappings.Gamepad2Mappings[entry.Key] = button;
+                    any = true;
+                }
+            }
+        }
+
+        return any ? mappings : null;
+    }
+
+    private static Dictionary<string, string>? ConvertKeyDict(Dictionary<string, Key> source)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in source)
+            result[entry.Key] = entry.Value.ToString();
+        return result.Count > 0 ? result : null;
+    }
+
+    private static Dictionary<string, string>? ConvertGamepadDict(Dictionary<string, GamepadButton> source)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in source)
+            result[entry.Key] = entry.Value.ToString();
+        return result.Count > 0 ? result : null;
     }
 
     private void LoadLegacyRegionOverrideSetting()
