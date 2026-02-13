@@ -97,6 +97,8 @@ public class SNESSystem : ISNESSystem
 
     public event EventHandler FrameRendered;
 
+    public bool IsPal { get; set; }
+
     [JsonIgnore]
     public IRenderer Renderer { get; set; }
 

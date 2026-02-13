@@ -417,6 +417,8 @@ public class PPU : IPPU
             case 0x3f:
                 int val8 = _evenFrame ? 0x80 : 0;
                 val8 |= CountersLatched ? 0x40 : 0;
+                if (_snes!.IsPal)
+                    val8 |= 0x10;
                 if (_snes!.PPULatch)
                 {
                     CountersLatched = false;

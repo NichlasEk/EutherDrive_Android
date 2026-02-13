@@ -1173,11 +1173,19 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_core is SnesAdapter)
+        if (_core is SnesAdapter snes)
         {
+            snes.SetRegionOverride(RegionOverride);
             UpdateEmuTargetFps();
-            if (resetIfRunning)
+            if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
+            {
+                snes.Reset();
+                StatusText.Text = $"Region override set to {RegionOverride}. Reset applied.";
+            }
+            else if (resetIfRunning)
+            {
                 StatusText.Text = $"Region override set to {RegionOverride}.";
+            }
         }
     }
 
@@ -1376,6 +1384,7 @@ public partial class MainWindow : Window
 
     private void UpdateSnesRomInfo(SnesAdapter adapter)
     {
+        adapter.SetRegionOverride(RegionOverride);
         if (RomInfoText != null)
             RomInfoText.Text = adapter.RomSummary ?? "SNES ROM loaded.";
         UpdateRomRegionHint(adapter.RomRegionHint);

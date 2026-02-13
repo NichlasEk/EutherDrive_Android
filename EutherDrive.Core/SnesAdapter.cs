@@ -25,6 +25,7 @@ public sealed class SnesAdapter : IEmulatorCore
     private bool _lowpassEnabled;
     private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
     private byte? _romRegionCode;
+    private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
     private float _dcLastInL;
     private float _dcLastOutL;
     private float _dcLastInR;
@@ -52,12 +53,19 @@ public sealed class SnesAdapter : IEmulatorCore
     {
         _system.LoadROMForExternal(path);
         DetectRegion(path);
+        UpdateIsPal();
         _romSummary = BuildRomSummary();
     }
 
     public void Reset()
     {
         _system.ResetForExternal();
+    }
+
+    public void SetRegionOverride(ConsoleRegion region)
+    {
+        _regionOverride = region;
+        UpdateIsPal();
     }
 
     public void RunFrame()
@@ -273,6 +281,12 @@ public sealed class SnesAdapter : IEmulatorCore
             _romRegionHint = ConsoleRegion.Auto;
             _romRegionCode = null;
         }
+    }
+
+    private void UpdateIsPal()
+    {
+        ConsoleRegion region = _regionOverride == ConsoleRegion.Auto ? _romRegionHint : _regionOverride;
+        _system.IsPal = region == ConsoleRegion.EU;
     }
 
     private static int GetHeaderOffset(byte[] data)
