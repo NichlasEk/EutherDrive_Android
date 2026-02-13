@@ -1,7 +1,13 @@
-﻿namespace KSNES.PictureProcessing;
+﻿using System.Threading;
+
+namespace KSNES.PictureProcessing;
 
 public class PPU : IPPU
 {
+    private static readonly bool TracePpu =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU"), "1", StringComparison.Ordinal);
+    private static readonly int TracePpuLimit = GetTracePpuLimit();
+    private static int _tracePpuCount;
     private ISNESSystem? _snes;
     private ushort[] _vram = [];
     private ushort[] _cgram = [];
@@ -437,6 +443,7 @@ public class PPU : IPPU
             case 0x00:
                 _forcedBlank = (value & 0x80) > 0;
                 _brightness = value & 0xf;
+                TracePpuWrite($"[PPU] INIDISP=0x{value:X2} forcedBlank={_forcedBlank} bright={_brightness}");
                 return;
             case 0x01:
                 _sprAdr1 = (value & 0x7) << 13;
@@ -624,6 +631,7 @@ public class PPU : IPPU
             case 0x21:
                 _cgramAdr = value;
                 _cgramSecond = false;
+                TracePpuWrite($"[PPU] CGRAM_ADDR=0x{_cgramAdr:X2}");
                 return;
             case 0x22:
                 if (!_cgramSecond)
@@ -637,6 +645,7 @@ public class PPU : IPPU
                     _cgram[_cgramAdr++] = (ushort) _cgramBuffer;
                     _cgramAdr &= 0xff;
                     _cgramSecond = false;
+                    TracePpuWrite($"[PPU] CGRAM_WRITE adr=0x{_cgramAdr:X2} val=0x{_cgramBuffer:X4}");
                 }
                 return;
             case 0x23:
@@ -724,6 +733,7 @@ public class PPU : IPPU
                 _preventMath = (value & 0x30) >> 4;
                 _addSub = (value & 0x2) > 0;
                 _directColor = (value & 0x1) > 0;
+                TracePpuWrite($"[PPU] CGWSEL=0x{value:X2} clip={_colorClip} prevent={_preventMath} addSub={_addSub} directColor={_directColor}");
                 return;
             case 0x31:
                 _subtractColors = (value & 0x80) > 0;
@@ -734,6 +744,7 @@ public class PPU : IPPU
                 _mathEnabled[3] = (value & 0x8) > 0;
                 _mathEnabled[4] = (value & 0x10) > 0;
                 _mathEnabled[5] = (value & 0x20) > 0;
+                TracePpuWrite($"[PPU] CGADSUB=0x{value:X2} sub={_subtractColors} half={_halfColors} math=[{MathMask()}]");
                 return;
             case 0x32:
                 if ((value & 0x80) > 0)
@@ -748,6 +759,7 @@ public class PPU : IPPU
                 {
                     _fixedColorR = value & 0x1f;
                 }
+                TracePpuWrite($"[PPU] COLDATA=0x{value:X2} fixedR={_fixedColorR} fixedG={_fixedColorG} fixedB={_fixedColorB}");
                 return;
             case 0x33:
                 _mode7ExBg = (value & 0x40) > 0;
@@ -762,6 +774,31 @@ public class PPU : IPPU
     public int[] GetPixels()
     {
         return _pixelOutput;
+    }
+
+    private static int GetTracePpuLimit()
+    {
+        if (int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_LIMIT"), out int limit) && limit > 0)
+            return limit;
+        return 2000;
+    }
+
+    private static void TracePpuWrite(string message)
+    {
+        if (!TracePpu)
+            return;
+        int count = Interlocked.Increment(ref _tracePpuCount);
+        if (count > TracePpuLimit)
+            return;
+        Console.WriteLine(message);
+    }
+
+    private string MathMask()
+    {
+        Span<char> mask = stackalloc char[6];
+        for (int i = 0; i < 6; i++)
+            mask[i] = _mathEnabled[i] ? '1' : '0';
+        return new string(mask);
     }
 
     public void CheckOverscan(int line) 
