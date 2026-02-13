@@ -118,6 +118,7 @@ public partial class MainWindow : Window
 
     // Input “håll nere”
     private readonly HashSet<Key> _keysDown = new();
+    private bool _resetPressedPrev;
     private InputMappingSettings _inputMappings = new InputMappingSettings();
     private IAudioSink? _audioOutput;
     private AudioEngine? _audioEngine;
@@ -173,6 +174,9 @@ public partial class MainWindow : Window
         Environment.GetEnvironmentVariable("EUTHERDRIVE_PAD2_MIRROR") == "1";
     private static readonly bool TracePadUiDefault =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PAD_UI") == "1";
+    private static readonly bool TracePadMapping =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PAD_MAPPING") == "1";
+    private static readonly bool AllowResetMapping = IsEnvEnabled("EUTHERDRIVE_ALLOW_RESET_MAPPING");
     private static readonly bool AudioOutPllEnabledEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUT_PLL") == "1";
     private static readonly bool AudioTimedDrainEnabledEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN") == "1";
     private TextWriter? _originalConsoleOut;
@@ -1424,6 +1428,8 @@ public partial class MainWindow : Window
             KeyboardMappings["B"] = Key.X;
             KeyboardMappings["C"] = Key.C;
             KeyboardMappings["Start"] = Key.Enter;
+            KeyboardMappings["Pause"] = Key.Enter;
+            KeyboardMappings["Reset"] = (Key)0;
             KeyboardMappings["X"] = Key.A;
             KeyboardMappings["Y"] = Key.S;
             KeyboardMappings["Z"] = Key.D;
@@ -1438,6 +1444,8 @@ public partial class MainWindow : Window
             GamepadMappings["B"] = GamepadButton.B;
             GamepadMappings["C"] = GamepadButton.X;
             GamepadMappings["Start"] = GamepadButton.Start;
+            GamepadMappings["Pause"] = GamepadButton.Start;
+            GamepadMappings["Reset"] = GamepadButton.None;
             GamepadMappings["X"] = GamepadButton.Y;
             GamepadMappings["Y"] = GamepadButton.LeftShoulder;
             GamepadMappings["Z"] = GamepadButton.RightShoulder;
@@ -1490,7 +1498,7 @@ public partial class MainWindow : Window
             WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
             // Convert mappings to list items
-            var actions = new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "Start", "X", "Y", "Z", "Mode" };
+            var actions = new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "Start", "Pause", "Reset", "X", "Y", "Z", "Mode" };
             foreach (var action in actions)
             {
                 Mappings.KeyboardMappings.TryGetValue(action, out Key key);
@@ -1839,6 +1847,18 @@ public partial class MainWindow : Window
                 foreach (var kv in _inputMappings.GamepadMappings)
                     _inputMappings.Gamepad2Mappings[kv.Key] = kv.Value;
             }
+            if (!_inputMappings.KeyboardMappings.ContainsKey("Pause"))
+                _inputMappings.KeyboardMappings["Pause"] = Key.Enter;
+            if (!_inputMappings.KeyboardMappings.ContainsKey("Reset"))
+                _inputMappings.KeyboardMappings["Reset"] = (Key)0;
+            if (!_inputMappings.GamepadMappings.ContainsKey("Pause"))
+                _inputMappings.GamepadMappings["Pause"] = GamepadButton.Start;
+            if (!_inputMappings.GamepadMappings.ContainsKey("Reset"))
+                _inputMappings.GamepadMappings["Reset"] = GamepadButton.None;
+            if (_inputMappings.Gamepad2Mappings != null && !_inputMappings.Gamepad2Mappings.ContainsKey("Pause"))
+                _inputMappings.Gamepad2Mappings["Pause"] = GamepadButton.Start;
+            if (_inputMappings.Gamepad2Mappings != null && !_inputMappings.Gamepad2Mappings.ContainsKey("Reset"))
+                _inputMappings.Gamepad2Mappings["Reset"] = GamepadButton.None;
         }
         UpdateYmResampleUi();
         UpdateZ80CyclesMultUi();
@@ -2664,10 +2684,12 @@ public partial class MainWindow : Window
         bool b;
         bool c;
         bool start;
+        bool pause;
         bool x;
         bool y;
         bool z;
         bool mode;
+        bool resetPressed;
         bool up2 = false;
         bool down2 = false;
         bool left2 = false;
@@ -2694,10 +2716,12 @@ public partial class MainWindow : Window
             b     = _inputMappings.KeyboardMappings.TryGetValue("B", out Key bKey) && _keysDown.Contains(bKey);
             c     = _inputMappings.KeyboardMappings.TryGetValue("C", out Key cKey) && _keysDown.Contains(cKey);
             start = _inputMappings.KeyboardMappings.TryGetValue("Start", out Key startKey) && _keysDown.Contains(startKey);
+            pause = _inputMappings.KeyboardMappings.TryGetValue("Pause", out Key pauseKey) && _keysDown.Contains(pauseKey);
             x     = _inputMappings.KeyboardMappings.TryGetValue("X", out Key xKey) && _keysDown.Contains(xKey);
             y     = _inputMappings.KeyboardMappings.TryGetValue("Y", out Key yKey) && _keysDown.Contains(yKey);
             z     = _inputMappings.KeyboardMappings.TryGetValue("Z", out Key zKey) && _keysDown.Contains(zKey);
             mode  = _inputMappings.KeyboardMappings.TryGetValue("Mode", out Key modeKey) && _keysDown.Contains(modeKey);
+            resetPressed = _inputMappings.KeyboardMappings.TryGetValue("Reset", out Key resetKey) && _keysDown.Contains(resetKey);
             padType = (PadType)Volatile.Read(ref _padTypeRaw);
         }
 
@@ -2718,6 +2742,8 @@ public partial class MainWindow : Window
             c |= IsGamepadButtonPressed(gpC);
         if (_inputMappings.GamepadMappings.TryGetValue("Start", out GamepadButton gpStart) && gpStart != GamepadButton.None)
             start |= IsGamepadButtonPressed(gpStart);
+        if (_inputMappings.GamepadMappings.TryGetValue("Pause", out GamepadButton gpPause) && gpPause != GamepadButton.None)
+            pause |= IsGamepadButtonPressed(gpPause);
         if (_inputMappings.GamepadMappings.TryGetValue("X", out GamepadButton gpX) && gpX != GamepadButton.None)
             x |= IsGamepadButtonPressed(gpX);
         if (_inputMappings.GamepadMappings.TryGetValue("Y", out GamepadButton gpY) && gpY != GamepadButton.None)
@@ -2726,6 +2752,8 @@ public partial class MainWindow : Window
             z |= IsGamepadButtonPressed(gpZ);
         if (_inputMappings.GamepadMappings.TryGetValue("Mode", out GamepadButton gpMode) && gpMode != GamepadButton.None)
             mode |= IsGamepadButtonPressed(gpMode);
+        if (_inputMappings.GamepadMappings.TryGetValue("Reset", out GamepadButton gpReset) && gpReset != GamepadButton.None)
+            resetPressed |= IsGamepadButtonPressed(gpReset);
 
         // Gamepad 2 mappings (no keyboard for P2)
         if (_inputMappings.Gamepad2Mappings.TryGetValue("Up", out GamepadButton gp2Up) && gp2Up != GamepadButton.None)
@@ -2752,6 +2780,20 @@ public partial class MainWindow : Window
             z2 |= IsGamepad2ButtonPressed(gp2Z);
         if (_inputMappings.Gamepad2Mappings.TryGetValue("Mode", out GamepadButton gp2Mode) && gp2Mode != GamepadButton.None)
             mode2 |= IsGamepad2ButtonPressed(gp2Mode);
+        if (_inputMappings.Gamepad2Mappings.TryGetValue("Reset", out GamepadButton gp2Reset) && gp2Reset != GamepadButton.None)
+            resetPressed |= IsGamepad2ButtonPressed(gp2Reset);
+
+        if (core is MdTracerAdapter smsAdapter && smsAdapter.IsMasterSystemMode)
+        {
+            // SMS Pause uses dedicated Pause mapping (separate from MD Start).
+            start = pause;
+
+            // SMS pads only have 2 buttons; ignore MD-only buttons to avoid accidental triggers.
+            x = false;
+            y = false;
+            z = false;
+            mode = false;
+        }
 
         autoMask = Volatile.Read(ref _autoFireMask);
         autoRate = Volatile.Read(ref _autoFireRateHz);
@@ -2767,6 +2809,24 @@ public partial class MainWindow : Window
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
         if (core is MdTracerAdapter adapter)
             adapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
+        if (TracePadMapping)
+        {
+            string gp1Down;
+            string gp2Down;
+            lock (_gamepadStateLock)
+            {
+                gp1Down = _gamepad1ButtonsDown.Count == 0 ? "-" : string.Join(",", _gamepad1ButtonsDown);
+                gp2Down = _gamepad2ButtonsDown.Count == 0 ? "-" : string.Join(",", _gamepad2ButtonsDown);
+            }
+            Console.WriteLine($"[PADMAP] gp1down={gp1Down} gp2down={gp2Down} | a={a} b={b} c={c} start={start} pause={pause} reset={resetPressed} x={x} y={y} z={z} mode={mode}");
+        }
+        if (resetPressed && !_resetPressedPrev)
+        {
+            if (TracePadMapping)
+                Console.WriteLine("[PADMAP] RESET TRIGGERED");
+            core.Reset();
+        }
+        _resetPressedPrev = resetPressed;
 
         // StatusText uppdateras i Tick()
     }

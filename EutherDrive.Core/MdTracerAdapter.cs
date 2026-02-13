@@ -3604,6 +3604,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         md_sms_io.SetPad1Input(state);
     }
 
+    public bool IsMasterSystemMode => md_main.g_masterSystemMode;
+
     public void SetPad2InputState(
         bool up,
         bool down,
