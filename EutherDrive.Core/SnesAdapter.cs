@@ -22,6 +22,14 @@ public sealed class SnesAdapter : IEmulatorCore
     private string? _romSummary;
     private long _lastAudioLogTicks;
     private bool _traceAudio;
+    private bool _lowpassEnabled;
+    private float _dcLastInL;
+    private float _dcLastOutL;
+    private float _dcLastInR;
+    private float _dcLastOutR;
+    private float _lpLastL;
+    private float _lpLastR;
+    private const float DcBlockCoeff = 0.995f;
 
     public string? RomSummary => _romSummary;
 
@@ -33,6 +41,7 @@ public sealed class SnesAdapter : IEmulatorCore
         var apu = new APU(new SPC700(), new DSP());
         _system = new SNESSystem(cpu, _renderer, rom, ppu, apu, _audioHandler);
         _traceAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_AUDIO") == "1";
+        _lowpassEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_AUDIO_LOWPASS") == "1";
     }
 
     public void LoadRom(string path)
@@ -123,14 +132,21 @@ public sealed class SnesAdapter : IEmulatorCore
             _audioBuffer = new short[needed];
     }
 
-    private static void ConvertFloatToPcm(float[] left, float[] right, short[] dest)
+    private void ConvertFloatToPcm(float[] left, float[] right, short[] dest)
     {
         int count = Math.Min(left.Length, right.Length);
         int di = 0;
         for (int i = 0; i < count && di + 1 < dest.Length; i++)
         {
-            dest[di++] = FloatToShort(left[i]);
-            dest[di++] = FloatToShort(right[i]);
+            float l = ApplyDcBlock(left[i], ref _dcLastInL, ref _dcLastOutL);
+            float r = ApplyDcBlock(right[i], ref _dcLastInR, ref _dcLastOutR);
+            if (_lowpassEnabled)
+            {
+                l = ApplyLowpass(l, ref _lpLastL);
+                r = ApplyLowpass(r, ref _lpLastR);
+            }
+            dest[di++] = FloatToShort(l);
+            dest[di++] = FloatToShort(r);
         }
     }
 
@@ -138,6 +154,22 @@ public sealed class SnesAdapter : IEmulatorCore
     {
         float clamped = Math.Clamp(value, -1f, 1f);
         return (short)MathF.Round(clamped * short.MaxValue);
+    }
+
+    private static float ApplyDcBlock(float input, ref float lastInput, ref float lastOutput)
+    {
+        float output = input - lastInput + (DcBlockCoeff * lastOutput);
+        lastInput = input;
+        lastOutput = output;
+        return output;
+    }
+
+    private static float ApplyLowpass(float input, ref float last)
+    {
+        const float alpha = 0.2f;
+        float output = last + alpha * (input - last);
+        last = output;
+        return output;
     }
 
     private void TraceAudioIfEnabled()
