@@ -7,7 +7,13 @@ public sealed class Cx4
 {
     private static readonly bool TraceCx4 =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CX4"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceCx4Io =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CX4_IO"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceCx4Ops =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CX4_OPS"), "1", StringComparison.Ordinal);
     private static readonly int TraceCx4Limit = GetTraceLimit();
+    private static readonly bool Cx4Instant =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_CX4_INSTANT"), "1", StringComparison.Ordinal);
     private static int _traceCount;
     private enum Cc : byte
     {
@@ -96,6 +102,8 @@ public sealed class Cx4
 
     public void Reset()
     {
+        if (TraceCx4)
+            System.Threading.Interlocked.Exchange(ref _traceCount, 0);
         Array.Clear(_ram, 0, _ram.Length);
         Array.Clear(_vectors, 0, _vectors.Length);
         Array.Clear(_reg, 0, _reg.Length);
@@ -136,6 +144,7 @@ public sealed class Cx4
         _dmaLength = 0;
         _dmaTimer = 0;
         Trace("[CX4] reset");
+        Trace($"[CX4] trace_io={TraceCx4Io} trace_ops={TraceCx4Ops}");
     }
 
     public byte Read(int address)
@@ -144,7 +153,7 @@ public sealed class Cx4
         TraceRead(address);
         if ((address & 0xfff) < 0xc00)
             return _ram[address & 0xfff];
-        if (address >= 0x7f80 && (address & 0x3f) <= 0x2f)
+        if (address >= 0x7f80 && address <= 0x7faf)
         {
             int reg = address & 0x3f;
             return (byte)GetByte(_reg[reg / 3], reg % 3);
@@ -161,7 +170,7 @@ public sealed class Cx4
             _ram[address & 0xfff] = data;
             return;
         }
-        if (address >= 0x7f80 && (address & 0x3f) <= 0x2f)
+        if (address >= 0x7f80 && address <= 0x7faf)
         {
             int reg = address & 0x3f;
             SetByte(ref _reg[reg / 3], data, reg % 3);
@@ -213,19 +222,28 @@ public sealed class Cx4
 
     private static void SetByte(ref uint var, uint data, int offset)
     {
-        int shift = (offset & 3) * 8;
+        int idx = offset & 3;
+        if (idx >= 3)
+            return;
+        int shift = idx * 8;
         var = (var & ~(0xffu << shift)) | ((data & 0xffu) << shift);
     }
 
     private static void SetByte(ref ushort var, uint data, int offset)
     {
-        int shift = (offset & 1) * 8;
+        int idx = offset & 3;
+        if (idx >= 2)
+            return;
+        int shift = idx * 8;
         var = (ushort)((var & ~(0xff << shift)) | ((data & 0xff) << shift));
     }
 
     private static uint GetByte(uint var, int offset)
     {
-        int shift = (offset & 3) * 8;
+        int idx = offset & 3;
+        if (idx >= 3)
+            return 0;
+        int shift = idx * 8;
         return (var >> shift) & 0xffu;
     }
 
@@ -246,8 +264,15 @@ public sealed class Cx4
 
     private uint GetA(int subOp)
     {
-        int shift = (0x10080100 >> (8 * subOp)) & 0xff;
-        return _a << shift;
+        int shift = subOp switch
+        {
+            0 => 0,
+            1 => 1,
+            2 => 8,
+            3 => 16,
+            _ => 0
+        };
+        return (_a << shift) & 0xffffff;
     }
 
     private uint ResolveCacheAddress() => _prgBaseAddress + (uint)(_pb * (CachePage << 1));
@@ -268,8 +293,8 @@ public sealed class Cx4
         for (int i = 0; i < CachePage; i++)
         {
             uint a = address++;
-            int lo = ReadSnes(a);
-            int hi = ReadSnes(address++);
+            int lo = ReadRomLoRom(a);
+            int hi = ReadRomLoRom(address++);
             _prg[_prgCachePage, i] = (ushort)(lo | (hi << 8));
         }
         _prgCacheTimer += ((_waitstate & 0x07) * CachePage) * 2;
@@ -422,6 +447,8 @@ public sealed class Cx4
                     _cyclesStart = _cycles;
                     DoCache();
                     Trace($"[CX4] start pb=0x{_pb:X4} pc=0x{_pc:X2} base=0x{_prgBaseAddress:X6}");
+                    if (Cx4Instant)
+                        RunUntilStop();
                 }
                 break;
             case 0x7f50: _waitstate = (byte)(data & 0x77); break;
@@ -469,6 +496,11 @@ public sealed class Cx4
             }
             else if (_suspendTimer != 0)
             {
+                if (_suspendTimer < 0)
+                {
+                    CycleAdvance(1);
+                    continue;
+                }
                 tcyc = BusCyclesLeft() > _suspendTimer ? (int)_suspendTimer : 1;
                 if (_suspendTimer > 0)
                     _suspendTimer -= tcyc;
@@ -484,6 +516,49 @@ public sealed class Cx4
             }
             CycleAdvance(tcyc);
         }
+    }
+
+    private void RunUntilStop()
+    {
+        const int maxSteps = 2_000_000;
+        int steps = 0;
+        int ops = 0;
+        if (_suspendTimer < 0)
+            _suspendTimer = 0;
+        while (steps++ < maxSteps)
+        {
+            if (_prgCacheTimer > 0)
+            {
+                int tcyc = _prgCacheTimer > 1 ? 1 : _prgCacheTimer;
+                _prgCacheTimer -= tcyc;
+                CycleAdvance(tcyc);
+                continue;
+            }
+            if (_dmaTimer > 0)
+            {
+                int tcyc = _dmaTimer > 1 ? 1 : _dmaTimer;
+                _dmaTimer -= tcyc;
+                CycleAdvance(tcyc);
+                continue;
+            }
+            if (_suspendTimer != 0)
+            {
+                if (_suspendTimer < 0)
+                {
+                    _suspendTimer = 0;
+                }
+                int tcyc = _suspendTimer > 1 ? 1 : (int)_suspendTimer;
+                if (_suspendTimer > 0)
+                    _suspendTimer -= tcyc;
+                CycleAdvance(tcyc);
+                continue;
+            }
+            if (_running == 0)
+                return;
+            ops++;
+            RunInsn();
+        }
+        Trace($"[CX4] instant run hit step limit ops={ops} cache={_prgCacheTimer} dma={_dmaTimer} suspend={_suspendTimer}");
     }
 
     private void RunInsn()
@@ -518,8 +593,19 @@ public sealed class Cx4
                 CycleAdvance(_busTimer);
                 break;
             case 0x2400:
-                if ((((_cc >> ((0x13 >> subOp) & 3)) & 1) != 0) == (immed != 0))
-                    Fetch();
+                {
+                    int value = immed & 1;
+                    bool flag = subOp switch
+                    {
+                        1 => GetFlag(Cc.C),
+                        2 => GetFlag(Cc.Z),
+                        3 => GetFlag(Cc.N),
+                        _ => false
+                    };
+                    if ((flag ? 1 : 0) == value)
+                        Fetch();
+                    break;
+                }
                 break;
             case 0x4000:
                 _busAddressPointer = (_busAddressPointer + 1) & 0xffffff;
@@ -533,15 +619,25 @@ public sealed class Cx4
                 Sub((uint)GetA(subOp), GetImmed(opcode, subOp, immed));
                 break;
             case 0x5800:
-                _a = (uint)(SignExtend((int)_a, subOp << 3) & 0xffffff);
-                SetNZ((int)_a);
+                if (subOp == 1)
+                {
+                    _a = (uint)((sbyte)_a) & 0xffffff;
+                    SetNZ((int)_a);
+                }
+                else if (subOp == 2)
+                {
+                    _a = (uint)((short)_a) & 0xffffff;
+                    SetNZ((int)_a);
+                }
                 break;
             case 0x6000:
             case 0x6400:
                 switch (subOp)
                 {
                     case 0: _a = GetImmed(opcode, subOp, immed); break;
-                    case 1: _busData = GetImmed(opcode, subOp, immed); break;
+                    case 1:
+                        _busData = GetImmed(opcode, subOp, immed);
+                        break;
                     case 2: _busAddressPointer = GetImmed(opcode, subOp, immed); break;
                     case 3: _pbLatch = (ushort)(GetImmed(opcode, subOp, immed) & 0x7fff); break;
                 }
@@ -580,6 +676,10 @@ public sealed class Cx4
                 break;
             case 0x7400:
                 _romData = _rom[((subOp << 8) | immed) & 0x3ff];
+                break;
+            case 0x7800:
+                SetByte(ref _pbLatch, GetImmed(opcode, subOp, immed), subOp);
+                _pbLatch &= 0x7fff;
                 break;
             case 0x7c00:
                 SetByte(ref _pbLatch, (uint)immed, subOp);
@@ -644,8 +744,8 @@ public sealed class Cx4
                 break;
             case 0xf000:
                 temp = _a;
-                _a = _reg[immed & 0xf];
-                _reg[immed & 0xf] = temp;
+                _a = _reg[immed & 0xf] & 0xffffff;
+                _reg[immed & 0xf] = temp & 0xffffff;
                 break;
             case 0xf800:
                 _a = _ramAddressPointer = _ramData = _pbLatch = 0;
@@ -672,8 +772,8 @@ public sealed class Cx4
             DoCache();
         }
         CycleAdvance(1);
-        if (TraceCx4)
-            Trace($"[CX4] op=0x{opcode:X4} pb=0x{_pb:X4} pc=0x{_pc:X2} a=0x{_a:X6}");
+        if (TraceCx4Ops)
+            Trace($"[CX4-OP] op=0x{opcode:X4} pb=0x{_pb:X4} pc=0x{_pc:X2} a=0x{_a:X6}");
         return opcode;
     }
 
@@ -751,13 +851,14 @@ public sealed class Cx4
     {
         switch (address & 0x7f)
         {
+            case 0x00: return _a & 0xffffff;
             case 0x01: return (uint)((_multiplier >> 24) & 0xffffff);
             case 0x02: return (uint)((_multiplier >> 0) & 0xffffff);
-            case 0x03: return _busData;
+            case 0x03: return _busData & 0xff;
             case 0x08: return _romData;
             case 0x0c: return _ramData;
             case 0x13: return _busAddressPointer;
-            case 0x1c: return _ramAddressPointer;
+            case 0x1c: return _ramAddressPointer & 0xfff;
             case 0x20: return _pc;
             case 0x28: return _pbLatch;
             case 0x2e:
@@ -786,7 +887,7 @@ public sealed class Cx4
             case 0x64: case 0x65: case 0x66: case 0x67:
             case 0x68: case 0x69: case 0x6a: case 0x6b:
             case 0x6c: case 0x6d: case 0x6e: case 0x6f:
-                return _reg[address & 0x0f];
+                return _reg[address & 0x0f] & 0xffffff;
         }
         return 0;
     }
@@ -795,13 +896,14 @@ public sealed class Cx4
     {
         switch (address & 0x7f)
         {
+            case 0x00: _a = data & 0xffffff; break;
             case 0x01: _multiplier = (_multiplier & 0x000000ffffff) | ((ulong)data << 24); break;
             case 0x02: _multiplier = (_multiplier & 0xffffff000000) | ((ulong)data << 0); break;
-            case 0x03: _busData = data; break;
+            case 0x03: _busData = data & 0xff; break;
             case 0x08: _romData = data; break;
             case 0x0c: _ramData = data; break;
-            case 0x13: _busAddressPointer = data; break;
-            case 0x1c: _ramAddressPointer = data; break;
+            case 0x13: _busAddressPointer = data & 0xffffff; break;
+            case 0x1c: _ramAddressPointer = data & 0xfff; break;
             case 0x20: _pc = (byte)data; break;
             case 0x28: _pbLatch = (ushort)(data & 0x7fff); break;
             case 0x2e:
@@ -814,7 +916,7 @@ public sealed class Cx4
             case 0x64: case 0x65: case 0x66: case 0x67:
             case 0x68: case 0x69: case 0x6a: case 0x6b:
             case 0x6c: case 0x6d: case 0x6e: case 0x6f:
-                _reg[address & 0x0f] = data; break;
+                _reg[address & 0x0f] = data & 0xffffff; break;
         }
     }
 
@@ -826,6 +928,11 @@ public sealed class Cx4
     private void WriteSnes(uint address, byte value)
     {
         _snes.Write((int)address, value, true);
+    }
+
+    private byte ReadRomLoRom(uint address)
+    {
+        return _snes.ROM.ReadRomByteLoRom(address);
     }
 
     private void SyncToSnes()
@@ -855,12 +962,14 @@ public sealed class Cx4
 
     private static void TraceRead(int address)
     {
-        Trace($"[CX4-RD] addr=0x{address:X4}");
+        if (TraceCx4Io)
+            Trace($"[CX4-RD] addr=0x{address:X4}");
     }
 
     private static void TraceWrite(int address, byte data)
     {
-        Trace($"[CX4-WR] addr=0x{address:X4} val=0x{data:X2}");
+        if (TraceCx4Io)
+            Trace($"[CX4-WR] addr=0x{address:X4} val=0x{data:X2}");
     }
 
     private struct StackEntry

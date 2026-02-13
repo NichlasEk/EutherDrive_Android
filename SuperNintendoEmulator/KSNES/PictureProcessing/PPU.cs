@@ -205,7 +205,7 @@ public class PPU : IPPU
         _highOam = new ushort[0x10];
         _spriteLineBuffer = new byte[256];
         _spritePrioBuffer = new byte[256];
-        _pixelOutput = new int[57344];
+        _pixelOutput = new int[256 * 240];
         _mode7Xcoords = new int[256];
         _mode7Ycoords = new int[256];
         _cgramAdr= 0;

@@ -337,7 +337,8 @@ public sealed class SnesAdapter : IEmulatorCore
     private static void ConvertArgbToBgra(int[] source, byte[] dest)
     {
         int di = 0;
-        for (int i = 0; i < source.Length; i++)
+        int pixelsToCopy = Math.Min(source.Length, dest.Length / 4);
+        for (int i = 0; i < pixelsToCopy; i++)
         {
             uint argb = unchecked((uint)source[i]);
             dest[di + 0] = (byte)argb;         // B

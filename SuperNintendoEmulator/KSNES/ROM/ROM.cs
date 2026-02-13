@@ -40,6 +40,8 @@ public class ROM : IROM
         }
     }
 
+    public int RomLength => _data.Length;
+
     public void LoadSRAM()
     {
         string fileName = GetSRAMFileName();
@@ -120,6 +122,17 @@ public class ROM : IROM
     public void RunCoprocessor(ulong snesCycles)
     {
         _cx4?.RunTo(snesCycles);
+    }
+
+    public byte ReadRomByteLoRom(uint address)
+    {
+        if (_data.Length == 0)
+            return 0;
+        uint mapped = ((address & 0x7F0000) >> 1) | (address & 0x007FFF);
+        uint mask = (uint)_data.Length - 1;
+        if ((_data.Length & (_data.Length - 1)) == 0)
+            return _data[mapped & mask];
+        return _data[mapped % (uint)_data.Length];
     }
 
     private void SaveSRAM(object? state)
