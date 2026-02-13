@@ -1025,6 +1025,16 @@ public class SNESSystem : ISNESSystem
         _joypad1State &= ~(1 << (int) button) & 0xfff;
     }
 
+    public void SetKeyDown2(SNESButton button)
+    {
+        _joypad2State |= 1 << (int) button;
+    }
+
+    public void SetKeyUp2(SNESButton button)
+    {
+        _joypad2State &= ~(1 << (int) button) & 0xfff;
+    }
+
     private static Header ParseHeader(byte[] rom)
     {
         string str = Encoding.ASCII.GetString(rom, 0x7FC0, 21);

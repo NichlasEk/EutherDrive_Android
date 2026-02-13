@@ -110,12 +110,48 @@ public sealed class SnesAdapter : IEmulatorCore
         SetButton(SNESButton.Sel, mode);
     }
 
+    public void SetInputState2(
+        bool up,
+        bool down,
+        bool left,
+        bool right,
+        bool a,
+        bool b,
+        bool c,
+        bool start,
+        bool x,
+        bool y,
+        bool z,
+        bool mode)
+    {
+        SetButton2(SNESButton.Up, up);
+        SetButton2(SNESButton.Down, down);
+        SetButton2(SNESButton.Left, left);
+        SetButton2(SNESButton.Right, right);
+        SetButton2(SNESButton.A, a);
+        SetButton2(SNESButton.B, b);
+        SetButton2(SNESButton.X, x);
+        SetButton2(SNESButton.Y, y);
+        SetButton2(SNESButton.L, z);
+        SetButton2(SNESButton.R, c);
+        SetButton2(SNESButton.Start, start);
+        SetButton2(SNESButton.Sel, mode);
+    }
+
     private void SetButton(SNESButton button, bool down)
     {
         if (down)
             _system.SetKeyDown(button);
         else
             _system.SetKeyUp(button);
+    }
+
+    private void SetButton2(SNESButton button, bool down)
+    {
+        if (down)
+            _system.SetKeyDown2(button);
+        else
+            _system.SetKeyUp2(button);
     }
 
     private void EnsureFrameBuffer()

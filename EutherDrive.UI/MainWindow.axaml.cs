@@ -3156,7 +3156,7 @@ public partial class MainWindow : Window
             mode |= IsGamepadButtonPressed(gpMode);
 
         // Gamepad 2 mappings (no keyboard for P2)
-        if (core is MdTracerAdapter && _activeGamepad2 != IntPtr.Zero && mappingSet.Gamepad2Mappings.Count > 0)
+        if (_activeGamepad2 != IntPtr.Zero && mappingSet.Gamepad2Mappings.Count > 0)
         {
             if (mappingSet.Gamepad2Mappings.TryGetValue("Up", out GamepadButton gp2Up) && gp2Up != GamepadButton.None)
                 up2 |= IsGamepad2ButtonPressed(gp2Up);
@@ -3221,6 +3221,8 @@ public partial class MainWindow : Window
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
         if (core is MdTracerAdapter adapter)
             adapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
+        else if (core is SnesAdapter snesAdapter)
+            snesAdapter.SetInputState2(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2);
         if (TracePadMapping)
         {
             string gp1Down;
