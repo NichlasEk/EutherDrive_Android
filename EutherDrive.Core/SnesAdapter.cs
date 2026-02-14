@@ -33,8 +33,10 @@ public sealed class SnesAdapter : IEmulatorCore
     private float _lpLastL;
     private float _lpLastR;
     private float _masterVolumeScale = 1.0f;
+    private const float SnesMixScale = 0.5f;
     private bool _sawBrightFrame;
     private const float DcBlockCoeff = 0.995f;
+    private double _audioSampleAccumulator;
 
     public string? RomSummary => _romSummary;
     public ConsoleRegion RomRegionHint => _romRegionHint;
@@ -56,6 +58,7 @@ public sealed class SnesAdapter : IEmulatorCore
         _system.LoadROMForExternal(path);
         DetectRegion(path);
         UpdateIsPal();
+        _audioSampleAccumulator = 0;
         _romSummary = BuildRomSummary();
     }
 
@@ -63,6 +66,9 @@ public sealed class SnesAdapter : IEmulatorCore
     {
         _system.ResetForExternal();
         _sawBrightFrame = false;
+        _audioSampleAccumulator = 0;
+        _lpLastL = 0;
+        _lpLastR = 0;
     }
 
     public void SetRegionOverride(ConsoleRegion region)
@@ -80,6 +86,8 @@ public sealed class SnesAdapter : IEmulatorCore
 
     public void RunFrame()
     {
+        int samplesPerFrame = GetSamplesPerFrame();
+        _audioHandler.EnsureCapacity(samplesPerFrame);
         _system.RunFrameForExternal();
         if (_system.PPU is PPU ppu)
         {
@@ -89,7 +97,7 @@ public sealed class SnesAdapter : IEmulatorCore
                 {
                     EnsureFrameBuffer();
                     Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
-                    EnsureAudioBuffer();
+                    EnsureAudioBuffer(samplesPerFrame);
                     ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
                     TraceAudioIfEnabled();
                     return;
@@ -100,7 +108,7 @@ public sealed class SnesAdapter : IEmulatorCore
         int[] pixels = _system.PPU.GetPixels();
         EnsureFrameBuffer();
         ConvertArgbToBgra(pixels, _frameBuffer);
-        EnsureAudioBuffer();
+        EnsureAudioBuffer(samplesPerFrame);
         ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
         TraceAudioIfEnabled();
     }
@@ -240,9 +248,9 @@ public sealed class SnesAdapter : IEmulatorCore
             _frameBuffer = new byte[needed];
     }
 
-    private void EnsureAudioBuffer()
+    private void EnsureAudioBuffer(int samplesPerFrame)
     {
-        int needed = SnesAudioHandler.SamplesPerFrame * 2;
+        int needed = samplesPerFrame * 2;
         if (_audioBuffer.Length != needed)
             _audioBuffer = new short[needed];
     }
@@ -260,10 +268,10 @@ public sealed class SnesAdapter : IEmulatorCore
                 l = ApplyLowpass(l, ref _lpLastL);
                 r = ApplyLowpass(r, ref _lpLastR);
             }
-            l *= _masterVolumeScale;
-            r *= _masterVolumeScale;
-            dest[di++] = FloatToShort(l);
-            dest[di++] = FloatToShort(r);
+            l *= _masterVolumeScale * SnesMixScale;
+            r *= _masterVolumeScale * SnesMixScale;
+            dest[di++] = FloatToShort(SoftClip(l));
+            dest[di++] = FloatToShort(SoftClip(r));
         }
     }
 
@@ -271,6 +279,14 @@ public sealed class SnesAdapter : IEmulatorCore
     {
         float clamped = Math.Clamp(value, -1f, 1f);
         return (short)MathF.Round(clamped * short.MaxValue);
+    }
+
+    private static float SoftClip(float x)
+    {
+        // Simple cubic soft clip: preserves small signals, tames peaks.
+        if (x <= -1f) return -1f;
+        if (x >= 1f) return 1f;
+        return x - (x * x * x) / 3f;
     }
 
     private static float ApplyDcBlock(float input, ref float lastInput, ref float lastOutput)
@@ -309,6 +325,19 @@ public sealed class SnesAdapter : IEmulatorCore
             if (v > peak) peak = v;
         }
         Console.WriteLine($"[SNES-AUDIO] peak={peak} samples={_audioBuffer.Length}");
+    }
+
+    private int GetSamplesPerFrame()
+    {
+        double fps = GetTargetFps(_regionOverride);
+        if (fps <= 0)
+            fps = 60.0;
+        _audioSampleAccumulator += SnesAudioHandler.SampleRate / fps;
+        int samples = (int)_audioSampleAccumulator;
+        if (samples < 1)
+            samples = 1;
+        _audioSampleAccumulator -= samples;
+        return samples;
     }
 
     private string BuildRomSummary()
@@ -431,11 +460,21 @@ public sealed class SnesAdapter : IEmulatorCore
 
     private sealed class SnesAudioHandler : IAudioHandler
     {
-        public const int SamplesPerFrame = 735;
         public const int SampleRate = 44100;
 
-        public float[] SampleBufferL { get; set; } = new float[SamplesPerFrame];
-        public float[] SampleBufferR { get; set; } = new float[SamplesPerFrame];
+        public float[] SampleBufferL { get; set; } = Array.Empty<float>();
+        public float[] SampleBufferR { get; set; } = Array.Empty<float>();
+
+        public void EnsureCapacity(int samplesPerFrame)
+        {
+            if (samplesPerFrame < 1)
+                samplesPerFrame = 1;
+            if (SampleBufferL.Length != samplesPerFrame)
+            {
+                SampleBufferL = new float[samplesPerFrame];
+                SampleBufferR = new float[samplesPerFrame];
+            }
+        }
 
         public void NextBuffer()
         {

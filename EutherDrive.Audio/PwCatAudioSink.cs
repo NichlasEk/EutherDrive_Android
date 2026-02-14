@@ -11,7 +11,7 @@ namespace EutherDrive.Audio;
 
 public sealed class PwCatAudioSink : IAudioSink, IDisposable
 {
-    private const int QueueCapacity = 16;
+    private const int QueueCapacity = 64;
     private readonly Channel<byte[]> _channel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(QueueCapacity)
     {
         SingleReader = true,
@@ -146,7 +146,7 @@ public sealed class PwCatAudioSink : IAudioSink, IDisposable
         if (_process?.StandardInput == null)
             return;
 
-        var stdin = _process.StandardInput.BaseStream;
+        var stdin = new BufferedStream(_process.StandardInput.BaseStream, 64 * 1024);
 
         while (_channel.Reader.WaitToReadAsync().AsTask().Result)
         {
@@ -160,7 +160,6 @@ public sealed class PwCatAudioSink : IAudioSink, IDisposable
                 try
                 {
                     stdin.Write(chunk, 0, chunk.Length);
-                    stdin.Flush();
                 }
                 catch (Exception ex)
                 {

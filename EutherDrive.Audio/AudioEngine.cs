@@ -170,8 +170,19 @@ public sealed class AudioEngine : IDisposable
 
         lock (_lock)
         {
-            int available = _ring.Length - _count;
-            toWrite = interleaved.Length <= available ? interleaved.Length : available;
+            int attempts = 0;
+            while (true)
+            {
+                int available = _ring.Length - _count;
+                toWrite = interleaved.Length <= available ? interleaved.Length : available;
+                if (toWrite > 0 || attempts >= 5)
+                    break;
+
+                // Wait briefly for drain to free space instead of dropping immediately.
+                Monitor.Wait(_lock, 5);
+                attempts++;
+            }
+
             if (toWrite == 0)
             {
                 dropped = interleaved.Length;
@@ -264,6 +275,7 @@ public sealed class AudioEngine : IDisposable
 
                     _count -= toRead;
                     currentFrames = _count / _channels;
+                    Monitor.PulseAll(_lock);
                 }
             }
 
@@ -283,18 +295,28 @@ public sealed class AudioEngine : IDisposable
                 int missingFrames = _batch.Length / _channels;
                 Interlocked.Increment(ref _underrunEventsTotal);
                 Interlocked.Add(ref _underrunFramesTotal, missingFrames);
+                // Submit silence to keep output timing stable.
+                Array.Clear(_batch, 0, _batch.Length);
+                _sink.Submit(_batch);
+                Interlocked.Add(ref _consumedFramesTotal, _framesPerBatch);
+                Interlocked.Increment(ref _drainBatchesTotal);
+                Interlocked.Add(ref _drainBatchFramesTotal, _framesPerBatch);
+                UpdateBufferedStats(currentFrames);
                 if (TimedDrainEnabled)
-                {
                     PaceDrain(_framesPerBatch);
-                }
                 else
-                {
                     _dataEvent.WaitOne(10);
-                }
             }
 
             if (TraceStats)
                 MaybeLogStats();
+
+            if (TraceStats && Stopwatch.GetTimestamp() - _lastStatsTicks >= Stopwatch.Frequency)
+            {
+                _lastStatsTicks = Stopwatch.GetTimestamp();
+                int buffered = Volatile.Read(ref _currentBufferedFrames);
+                Console.WriteLine($"[AUDIO-STATS] buffered={buffered} dropFrames={DroppedFramesTotal} underrunEvents={UnderrunEventsTotal} underrunFrames={UnderrunFramesTotal}");
+            }
         }
     }
 

@@ -1,24 +1,19 @@
-﻿namespace KSNES.AudioProcessing;
+using System;
 
-public class DSP : IDSP
+namespace KSNES.AudioProcessing;
+
+public sealed class DSP : IDSP
 {
-    public float[] SamplesL { get; private set; } = [];
-    public float[] SamplesR { get; private set; } = [];
+    public float[] SamplesL { get; private set; } = Array.Empty<float>();
+    public float[] SamplesR { get; private set; } = Array.Empty<float>();
     public int SampleOffset { get; set; }
 
     private IAPU? _apu;
-    private byte[] _ram = [];
 
-    [JsonIgnore]
-    private readonly int[] _rates = [
-        0, 2048, 1536, 1280, 1024, 768, 640, 512,
-        384, 320, 256, 192, 160, 128, 96, 80,
-        64, 48, 40, 32, 24, 20, 16, 12,
-        10, 8, 6, 5, 4, 3, 2, 1
-    ];
+    private const int BrrBlockLen = 9;
+    private const int BrrBufferLen = 12;
 
-    [JsonIgnore]
-    private readonly int[] _gaussVals = [
+    private static readonly int[] Gaussian = [
         0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000,
         0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x002, 0x002, 0x002, 0x002, 0x002,
         0x002, 0x002, 0x003, 0x003, 0x003, 0x003, 0x003, 0x004, 0x004, 0x004, 0x004, 0x004, 0x005, 0x005, 0x005, 0x005,
@@ -50,530 +45,873 @@ public class DSP : IDSP
         0x4BD, 0x4C0, 0x4C3, 0x4C5, 0x4C8, 0x4CB, 0x4CD, 0x4D0, 0x4D2, 0x4D5, 0x4D7, 0x4D9, 0x4DC, 0x4DE, 0x4E0, 0x4E3,
         0x4E5, 0x4E7, 0x4E9, 0x4EB, 0x4ED, 0x4EF, 0x4F1, 0x4F3, 0x4F5, 0x4F6, 0x4F8, 0x4FA, 0x4FB, 0x4FD, 0x4FF, 0x500,
         0x502, 0x503, 0x504, 0x506, 0x507, 0x508, 0x50A, 0x50B, 0x50C, 0x50D, 0x50E, 0x50F, 0x510, 0x511, 0x511, 0x512,
-        0x513, 0x514, 0x514, 0x515, 0x516, 0x516, 0x517, 0x517, 0x517, 0x518, 0x518, 0x518, 0x518, 0x518, 0x519, 0x519
+        0x513, 0x514, 0x514, 0x515, 0x516, 0x516, 0x517, 0x517, 0x517, 0x518, 0x518, 0x518, 0x518, 0x518, 0x519, 0x519,
     ];
 
-    private short[] _decodeBuffer = [];
-    private short[] _rateNums = [];
+    private static readonly ushort[] EnvelopeRate = [
+        ushort.MaxValue, 2048, 1536, 1280,
+        1024, 768, 640, 512,
+        384, 320, 256, 192,
+        160, 128, 96, 80,
+        64, 48, 40, 32,
+        24, 20, 16, 12,
+        10, 8, 6, 5,
+        4, 3, 2, 1,
+    ];
 
-    private int[] _pitch = [];
-    private int[] _counter = [];
-    private bool[] _pitchMod = [];
+    private static readonly ushort[] EnvelopeOffset = [
+        ushort.MaxValue, 0, 1040,
+        536, 0, 1040,
+        536, 0, 1040,
+        536, 0, 1040,
+        536, 0, 1040,
+        536, 0, 1040,
+        536, 0, 1040,
+        536, 0, 1040,
+        536, 0, 1040,
+        536, 0, 1040,
+        0,
+        0,
+    ];
 
-    private int[] _srcn = [];
-    private int[] _decodeOffset = [];
-    private int[] _prevFlags = [];
-    private int[] _old = [];
-    private int[] _older = [];
-    private bool[] _enableNoise = [];
+    private enum EnvelopeMode { Adsr, Gain }
+    private enum GainMode { Direct, Custom }
+    private enum EnvelopePhase { Attack, Decay, Sustain, Release }
 
-    private int _noiseSample;
-    private int _noiseRate;
-    private int _noiseCounter;
+    private sealed class BrrRingBuffer
+    {
+        private readonly short[] _buffer = new short[BrrBufferLen];
+        private int _fillIdx;
+        private int _sampleIdx;
 
-    private int[] _rateCounter = [];
-    private int[] _adsrState = [];
-    private int[] _sustainLevel = [];
-    private bool[] _useGain = [];
-    private int[] _gainMode = [];
-    private bool[] _directGain = [];
-    private int[] _gainValue = [];
-    private int[] _gain = [];
-    private int[] _channelVolumeL = [];
-    private int[] _channelVolumeR = [];
+        public void Reset()
+        {
+            _fillIdx = 0;
+            _sampleIdx = 0;
+            Array.Clear(_buffer, 0, _buffer.Length);
+        }
 
-    private int _volumeL;
-    private int _volumeR;
-    private bool _mute;
+        public void Write(short sample)
+        {
+            _buffer[_fillIdx] = sample;
+            _fillIdx = (_fillIdx + 1) % BrrBufferLen;
+        }
 
-    private bool _resetFlag;
-    private bool[] _noteOff = [];
+        public void ShiftSampleIdx()
+        {
+            _sampleIdx = (_sampleIdx + 4) % BrrBufferLen;
+        }
 
-    private int[] _sampleOut = [];
+        public (short older, short old) LastTwoWrittenSamples()
+        {
+            if (_fillIdx == 0)
+                return (_buffer[BrrBufferLen - 2], _buffer[BrrBufferLen - 1]);
+            if (_fillIdx == 1)
+                return (_buffer[BrrBufferLen - 1], _buffer[0]);
+            return (_buffer[_fillIdx - 2], _buffer[_fillIdx - 1]);
+        }
 
-    private int _dirPage;
+        public short this[int index]
+        {
+            get
+            {
+                int idx = (_sampleIdx + index) % BrrBufferLen;
+                return _buffer[idx];
+            }
+        }
+    }
+
+    private sealed class Voice
+    {
+        public byte InstrumentNumber;
+        public ushort SampleRate;
+        public bool PitchModulationEnabled;
+        public EnvelopeMode EnvelopeMode;
+        public byte AttackRate;
+        public byte DecayRate;
+        public byte SustainRate;
+        public byte SustainLevel;
+        public GainMode GainMode;
+        public byte GainValue;
+        public sbyte VolumeL;
+        public sbyte VolumeR;
+        public bool KeyedOn;
+        public bool KeyedOff;
+        public bool OutputNoise;
+        public byte LastPitchHWrite;
+
+        public ushort BrrBlockAddress;
+        public readonly BrrRingBuffer BrrBuffer = new();
+        public ushort BrrDecoderIdx;
+        public ushort PitchCounter;
+        public ushort EnvelopeLevel;
+        public ushort ClippedEnvelopeValue;
+        public EnvelopePhase EnvelopePhase;
+        public short CurrentSample;
+        public bool RestartPending;
+        public byte RestartDelayRemaining;
+        public bool EndFlagSeen;
+
+        public void Reset()
+        {
+            InstrumentNumber = 0;
+            SampleRate = 0;
+            PitchModulationEnabled = false;
+            EnvelopeMode = EnvelopeMode.Gain;
+            AttackRate = 0;
+            DecayRate = 0;
+            SustainRate = 0;
+            SustainLevel = 0;
+            GainMode = GainMode.Direct;
+            GainValue = 0;
+            VolumeL = 0;
+            VolumeR = 0;
+            KeyedOn = false;
+            KeyedOff = false;
+            OutputNoise = false;
+            LastPitchHWrite = 0;
+            BrrBlockAddress = 0;
+            BrrBuffer.Reset();
+            BrrDecoderIdx = 0;
+            PitchCounter = 0;
+            EnvelopeLevel = 0;
+            ClippedEnvelopeValue = 0;
+            EnvelopePhase = EnvelopePhase.Release;
+            CurrentSample = 0;
+            RestartPending = false;
+            RestartDelayRemaining = 0;
+            EndFlagSeen = false;
+        }
+
+        public void WritePitchLow(byte value) => SampleRate = (ushort)((SampleRate & 0x3F00) | value);
+
+        public void WritePitchHigh(byte value)
+        {
+            SampleRate = (ushort)((SampleRate & 0x00FF) | ((value & 0x3F) << 8));
+            LastPitchHWrite = value;
+        }
+
+        public void WriteAdsrLow(byte value)
+        {
+            AttackRate = (byte)(value & 0x0F);
+            DecayRate = (byte)((value >> 4) & 0x07);
+            EnvelopeMode = ((value & 0x80) != 0) ? EnvelopeMode.Adsr : EnvelopeMode.Gain;
+        }
+
+        public byte ReadAdsrLow() => (byte)(AttackRate | (DecayRate << 4) | (EnvelopeMode == EnvelopeMode.Adsr ? 0x80 : 0x00));
+
+        public void WriteAdsrHigh(byte value)
+        {
+            SustainRate = (byte)(value & 0x1F);
+            SustainLevel = (byte)(value >> 5);
+        }
+
+        public byte ReadAdsrHigh() => (byte)(SustainRate | (SustainLevel << 5));
+
+        public void WriteGain(byte value)
+        {
+            GainMode = (value & 0x80) != 0 ? GainMode.Custom : GainMode.Direct;
+            GainValue = (byte)(value & 0x7F);
+        }
+
+        public byte ReadGain() => (byte)((GainMode == GainMode.Custom ? 0x80 : 0x00) | GainValue);
+
+        public byte ReadEnvelope() => (byte)((EnvelopeLevel >> 4) & 0xFF);
+
+        public byte ReadOutput() => (byte)((CurrentSample >> 7) & 0xFF);
+
+        public void WriteKeyOn(bool keyOn)
+        {
+            KeyedOn = keyOn;
+            if (keyOn)
+            {
+                EnvelopePhase = EnvelopePhase.Attack;
+                EnvelopeLevel = 0;
+                RestartPending = true;
+                KeyedOff = false;
+            }
+        }
+
+        public void WriteKeyOff(bool keyOff)
+        {
+            KeyedOff = keyOff;
+            if (keyOff)
+                EnvelopePhase = EnvelopePhase.Release;
+        }
+
+        public void SoftReset()
+        {
+            WriteKeyOff(true);
+            EnvelopeLevel = 0;
+        }
+
+        public void Clock(DspRegisters registers, byte[] audioRam, short prevVoiceSample, short noiseOutput)
+        {
+            if (RestartPending)
+            {
+                RestartPending = false;
+                Restart(registers, audioRam);
+            }
+
+            if (RestartDelayRemaining != 0)
+            {
+                CurrentSample = 0;
+                if (RestartDelayRemaining <= 3 && (KeyedOff || registers.SoftReset))
+                    EnvelopePhase = EnvelopePhase.Release;
+
+                RestartDelayRemaining--;
+                if (RestartDelayRemaining == 0)
+                {
+                    BrrBuffer.Reset();
+                    BrrDecoderIdx = 0;
+                    for (int i = 0; i < 2; i++)
+                        DecodeBrrGroup(registers.SampleTableAddress, audioRam);
+                }
+                return;
+            }
+
+            short interpolatedSample;
+            if (OutputNoise)
+            {
+                interpolatedSample = noiseOutput;
+            }
+            else
+            {
+                int sampleIdx = PitchCounter >> 12;
+                int offset = (PitchCounter >> 4) & 0xFF;
+                int interp = GaussianInterpolate(BrrBuffer[sampleIdx], BrrBuffer[sampleIdx + 1], BrrBuffer[sampleIdx + 2], BrrBuffer[sampleIdx + 3], offset);
+                interpolatedSample = (short)interp;
+            }
+
+            ClockEnvelope(registers.GlobalCounter);
+
+            int sample = ((interpolatedSample * EnvelopeLevel) >> 11);
+            CurrentSample = (short)sample;
+
+            PitchCounter += SampleRate;
+            if (PitchModulationEnabled && !OutputNoise)
+            {
+                int modulation = ((prevVoiceSample >> 5) * SampleRate) >> 10;
+                int mod = PitchCounter + modulation;
+                if (mod < 0) mod = 0;
+                if (mod > 0x7FFF) mod = 0x7FFF;
+                PitchCounter = (ushort)mod;
+            }
+
+            if (PitchCounter >= 0x4000)
+            {
+                PitchCounter -= 0x4000;
+                DecodeBrrGroup(registers.SampleTableAddress, audioRam);
+                BrrBuffer.ShiftSampleIdx();
+            }
+        }
+
+        private void Restart(DspRegisters registers, byte[] audioRam)
+        {
+            int tableAddr = registers.SampleTableAddress + (InstrumentNumber << 2);
+            ushort startAddr = (ushort)(audioRam[tableAddr] | (audioRam[tableAddr + 1] << 8));
+            BrrBlockAddress = startAddr;
+            PitchCounter = 0;
+            RestartDelayRemaining = 5;
+            EndFlagSeen = false;
+        }
+
+        private void DecodeBrrGroup(ushort sampleTableAddress, byte[] audioRam)
+        {
+            if (BrrDecoderIdx == 16)
+            {
+                byte prevHeader = audioRam[BrrBlockAddress];
+                bool endFlag = (prevHeader & 0x01) != 0;
+                if (endFlag)
+                {
+                    EndFlagSeen = true;
+                    int tableAddr = sampleTableAddress + (InstrumentNumber << 2);
+                    ushort loopAddr = (ushort)(audioRam[tableAddr + 2] | (audioRam[tableAddr + 3] << 8));
+                    BrrBlockAddress = loopAddr;
+                }
+                else
+                {
+                    BrrBlockAddress = (ushort)(BrrBlockAddress + BrrBlockLen);
+                }
+                BrrDecoderIdx = 0;
+            }
+
+            byte header = audioRam[BrrBlockAddress];
+            byte shift = (byte)(header >> 4);
+            byte filter = (byte)((header >> 2) & 0x03);
+            bool loopFlag = (header & 0x02) != 0;
+            bool endFlag2 = (header & 0x01) != 0;
+            if (endFlag2 && !loopFlag)
+            {
+                EnvelopePhase = EnvelopePhase.Release;
+                EnvelopeLevel = 0;
+            }
+
+            sbyte[] nibbles = new sbyte[4];
+            int decoderIdx = BrrDecoderIdx;
+            for (int i = 0; i < 2; i++)
+            {
+                int sampleAddr = BrrBlockAddress + 1 + (decoderIdx >> 1) + i;
+                byte pair = audioRam[sampleAddr];
+                sbyte first = (sbyte)pair;
+                first >>= 4;
+                sbyte second = (sbyte)(pair << 4);
+                second >>= 4;
+                nibbles[i * 2] = first;
+                nibbles[i * 2 + 1] = second;
+            }
+            BrrDecoderIdx += 4;
+
+            var (older, old) = BrrBuffer.LastTwoWrittenSamples();
+            foreach (var nibble in nibbles)
+            {
+                short shifted = ApplyBrrShift(nibble, shift);
+                short sample = ApplyBrrFilter(shifted, filter, old, older);
+                BrrBuffer.Write(sample);
+                older = old;
+                old = sample;
+            }
+        }
+
+        private void ClockEnvelope(ushort globalCounter)
+        {
+            if (EnvelopePhase == EnvelopePhase.Release)
+            {
+                EnvelopeLevel = (ushort)Math.Max(0, EnvelopeLevel - 8);
+                ClippedEnvelopeValue = (ushort)((EnvelopeLevel - 8) & 0x7FF);
+                return;
+            }
+
+            if (EnvelopePhase == EnvelopePhase.Attack && EnvelopeLevel >= 0x7E0)
+                EnvelopePhase = EnvelopePhase.Decay;
+
+            if (EnvelopePhase == EnvelopePhase.Decay)
+            {
+                int sustain = (SustainLevel + 1) << 8;
+                if (EnvelopeLevel <= sustain)
+                    EnvelopePhase = EnvelopePhase.Sustain;
+            }
+
+            int current = EnvelopeLevel;
+            int rate;
+            int step;
+
+            if (EnvelopeMode == EnvelopeMode.Gain && GainMode == GainMode.Direct)
+            {
+                int target = GainValue << 4;
+                if (current == target)
+                {
+                    rate = 0; step = 0;
+                }
+                else
+                {
+                    rate = 31; step = target - current;
+                }
+            }
+            else if (EnvelopeMode == EnvelopeMode.Gain && GainMode == GainMode.Custom)
+            {
+                rate = GainValue & 0x1F;
+                int mode = GainValue & 0x60;
+                step = mode switch
+                {
+                    0x00 => -32,
+                    0x20 => ComputeExpDecay(current),
+                    0x40 => 32,
+                    0x60 => (ClippedEnvelopeValue < 0x600) ? 32 : 8,
+                    _ => 0
+                };
+            }
+            else
+            {
+                switch (EnvelopePhase)
+                {
+                    case EnvelopePhase.Attack:
+                        rate = (AttackRate << 1) | 0x01;
+                        step = rate == 31 ? 1024 : 32;
+                        break;
+                    case EnvelopePhase.Decay:
+                        rate = 0x10 | (DecayRate << 1);
+                        step = ComputeExpDecay(current);
+                        break;
+                    case EnvelopePhase.Sustain:
+                        rate = SustainRate;
+                        step = ComputeExpDecay(current);
+                        break;
+                    default:
+                        rate = 31;
+                        step = -8;
+                        break;
+                }
+            }
+
+            if (rate != 0 && IsEnvelopeTick(globalCounter, rate))
+            {
+                int newVal = current + step;
+                if (newVal < 0) newVal = 0;
+                if (newVal > 0x7FF) newVal = 0x7FF;
+                EnvelopeLevel = (ushort)newVal;
+                ClippedEnvelopeValue = (ushort)(newVal & 0x7FF);
+            }
+        }
+    }
+
+    private sealed class NoiseGenerator
+    {
+        public short Output = (short)(short.MinValue >> 1);
+
+        public void Clock(ushort globalCounter, byte noiseFrequency)
+        {
+            int rate = noiseFrequency;
+            if (rate != 0 && IsEnvelopeTick(globalCounter, rate))
+            {
+                int newBit = (Output & 1) ^ ((Output >> 1) & 1);
+                Output = (short)(((Output >> 1) & 0x3FFF) | (newBit << 14));
+                Output = (short)((Output << 1) >> 1);
+            }
+        }
+    }
+
+    private sealed class EchoFilter
+    {
+        public bool[] EchoEnabled = new bool[8];
+        public ushort BufferStartAddress;
+        public ushort BufferCurrentOffset;
+        public ushort BufferSamplesRemaining = 1;
+        public ushort BufferSizeSamples = 1;
+        public sbyte VolumeL;
+        public sbyte VolumeR;
+        public sbyte FeedbackVolume;
+        public sbyte[] FirCoefficients = new sbyte[8];
+        private readonly short[] _sampleBufferL = new short[8];
+        private readonly short[] _sampleBufferR = new short[8];
+        private int _sampleBufferIdx;
+        public byte LastEdlWrite;
+
+        public void Reset()
+        {
+            Array.Clear(EchoEnabled);
+            BufferStartAddress = 0;
+            BufferCurrentOffset = 0;
+            BufferSamplesRemaining = 1;
+            BufferSizeSamples = 1;
+            VolumeL = 0;
+            VolumeR = 0;
+            FeedbackVolume = 0;
+            Array.Clear(FirCoefficients);
+            Array.Clear(_sampleBufferL);
+            Array.Clear(_sampleBufferR);
+            _sampleBufferIdx = 0;
+            LastEdlWrite = 0;
+        }
+
+        public void WriteEchoEnabled(byte eon)
+        {
+            for (int i = 0; i < 8; i++) EchoEnabled[i] = (eon & (1 << i)) != 0;
+        }
+
+        public byte ReadEchoEnabled()
+        {
+            int v = 0;
+            for (int i = 0; i < 8; i++) if (EchoEnabled[i]) v |= (1 << i);
+            return (byte)v;
+        }
+
+        public void WriteEchoBufferSize(byte edl)
+        {
+            BufferSizeSamples = (edl & 0x0F) == 0 ? (ushort)1 : (ushort)(edl << 9);
+            LastEdlWrite = edl;
+        }
+
+        public (int l, int r) DoFilter(bool echoWritesEnabled, byte[] audioRam, int[] voiceSamplesL, int[] voiceSamplesR)
+        {
+            ushort currentAddr = (ushort)(BufferStartAddress + BufferCurrentOffset);
+            _sampleBufferL[_sampleBufferIdx] = ReadEchoSample(audioRam, currentAddr);
+            _sampleBufferR[_sampleBufferIdx] = ReadEchoSample(audioRam, (ushort)(currentAddr + 2));
+
+            int firL = 0;
+            int firR = 0;
+            for (int i = 0; i < 7; i++)
+            {
+                int coeff = FirCoefficients[i];
+                int idx = (_sampleBufferIdx + i + 1) & 0x07;
+                firL += (coeff * _sampleBufferL[idx]) >> 6;
+                firR += (coeff * _sampleBufferR[idx]) >> 6;
+            }
+            firL = (short)firL;
+            firR = (short)firR;
+            firL += (FirCoefficients[7] * _sampleBufferL[_sampleBufferIdx]) >> 6;
+            firR += (FirCoefficients[7] * _sampleBufferR[_sampleBufferIdx]) >> 6;
+            firL = Math.Clamp(firL, short.MinValue, short.MaxValue);
+            firR = Math.Clamp(firR, short.MinValue, short.MaxValue);
+            firL &= ~1;
+            firR &= ~1;
+
+            if (echoWritesEnabled)
+                WriteToEchoBuffer(audioRam, voiceSamplesL, voiceSamplesR, firL, firR);
+
+            _sampleBufferIdx = (_sampleBufferIdx + 1) & 0x07;
+
+            BufferSamplesRemaining--;
+            if (BufferSamplesRemaining == 0)
+            {
+                BufferCurrentOffset = 0;
+                BufferSamplesRemaining = BufferSizeSamples;
+            }
+            else
+            {
+                BufferCurrentOffset += 4;
+            }
+
+            int echoOutL = (firL * VolumeL) >> 7;
+            int echoOutR = (firR * VolumeR) >> 7;
+            return (echoOutL, echoOutR);
+        }
+
+        private void WriteToEchoBuffer(byte[] audioRam, int[] voiceSamplesL, int[] voiceSamplesR, int firL, int firR)
+        {
+            int sumL = 0;
+            int sumR = 0;
+            for (int i = 0; i < 8; i++)
+            {
+                if (!EchoEnabled[i]) continue;
+                sumL += voiceSamplesL[i];
+                sumR += voiceSamplesR[i];
+                sumL = Math.Clamp(sumL, short.MinValue, short.MaxValue);
+                sumR = Math.Clamp(sumR, short.MinValue, short.MaxValue);
+            }
+            int feedbackL = (firL * FeedbackVolume) >> 7;
+            int feedbackR = (firR * FeedbackVolume) >> 7;
+            int echoSampleL = (sumL + feedbackL).Clamp(short.MinValue, short.MaxValue) & ~1;
+            int echoSampleR = (sumR + feedbackR).Clamp(short.MinValue, short.MaxValue) & ~1;
+
+            ushort currentAddr = (ushort)(BufferStartAddress + BufferCurrentOffset);
+            WriteEchoSample(audioRam, currentAddr, (short)echoSampleL);
+            WriteEchoSample(audioRam, (ushort)(currentAddr + 2), (short)echoSampleR);
+        }
+
+        private static short ReadEchoSample(byte[] audioRam, ushort address)
+        {
+            byte lsb = audioRam[address];
+            byte msb = audioRam[(ushort)(address + 1)];
+            short v = (short)(lsb | (msb << 8));
+            return (short)(v >> 1);
+        }
+
+        private static void WriteEchoSample(byte[] audioRam, ushort address, short value)
+        {
+            byte lsb = (byte)(value & 0xFF);
+            byte msb = (byte)((value >> 8) & 0xFF);
+            audioRam[address] = lsb;
+            audioRam[(ushort)(address + 1)] = msb;
+        }
+    }
+
+    private sealed class DspRegisters
+    {
+        public ushort SampleTableAddress;
+        public sbyte MasterVolumeL;
+        public sbyte MasterVolumeR;
+        public byte NoiseFrequency;
+        public bool EchoBufferWritesEnabled;
+        public bool MuteAmplifier;
+        public bool SoftReset;
+        public ushort GlobalCounter;
+        public readonly byte[] UnusedXa = new byte[8];
+        public readonly byte[] UnusedXb = new byte[8];
+        public readonly byte[] UnusedXe = new byte[8];
+        public byte Unused1d;
+
+        public void WriteFlg(byte value)
+        {
+            NoiseFrequency = (byte)(value & 0x1F);
+            EchoBufferWritesEnabled = (value & 0x20) == 0;
+            MuteAmplifier = (value & 0x40) != 0;
+            SoftReset = (value & 0x80) != 0;
+        }
+
+        public byte ReadFlg()
+        {
+            int v = NoiseFrequency;
+            if (!EchoBufferWritesEnabled) v |= 0x20;
+            if (MuteAmplifier) v |= 0x40;
+            if (SoftReset) v |= 0x80;
+            return (byte)v;
+        }
+    }
+
+    private readonly Voice[] _voices = new Voice[8];
+    private readonly DspRegisters _registers = new();
+    private readonly NoiseGenerator _noise = new();
+    private readonly EchoFilter _echo = new();
+    private byte _registerAddress;
+
+    public DSP()
+    {
+        for (int i = 0; i < 8; i++)
+            _voices[i] = new Voice();
+    }
+
+    public void SetAPU(IAPU apu) => _apu = apu;
 
     public void Reset()
     {
-        _ram = new byte[0x80];
-        _decodeBuffer = new short[19 * 8];
-        _rateNums = new short[5 * 8];
-        for (var i = 0; i < 8; i++)
-        {
-            _rateNums[i * 5 + 3] = 1;
-        }
         SamplesL = new float[534];
         SamplesR = new float[534];
         SampleOffset = 0;
-        
-        _pitch = new int[8];
-        _counter = new int[8];
-        _pitchMod = new bool[8];
-        _srcn = new int[8];
-        _decodeOffset = new int[8];
-        _prevFlags = new int[8];
-        _old = new int[8];
-        _older = new int[8];
-        _enableNoise = new bool[8];
-        _noiseSample = -0x4000;
-        _noiseRate = 0;
-        _noiseCounter = 0;
-        _rateCounter = new int[8];
-        _adsrState = [3, 3, 3, 3, 3, 3, 3, 3];
-        _sustainLevel = new int[8];
-        _useGain = new bool[8];
-        _gainMode = new int[8];
-        _directGain = new bool[8];
-        _gainValue = new int[8];
-        _gain = new int[8];
-        _channelVolumeL = new int[8];
-        _channelVolumeR = new int[8];
-        _volumeL = 0;
-        _volumeR = 0;
-        _mute = true;
-        _resetFlag = true;
-        _noteOff = [true, true, true, true, true, true, true, true];
-        _sampleOut = new int[8];
-        _dirPage = 0;
+        _registerAddress = 0;
+        _registers.SampleTableAddress = 0;
+        _registers.MasterVolumeL = 0;
+        _registers.MasterVolumeR = 0;
+        _registers.NoiseFrequency = 0;
+        _registers.EchoBufferWritesEnabled = false;
+        _registers.MuteAmplifier = true;
+        _registers.SoftReset = true;
+        _registers.GlobalCounter = 0;
+        Array.Clear(_registers.UnusedXa);
+        Array.Clear(_registers.UnusedXb);
+        Array.Clear(_registers.UnusedXe);
+        _registers.Unused1d = 0;
+        _noise.Output = (short)(short.MinValue >> 1);
+        _echo.Reset();
+        for (int i = 0; i < 8; i++)
+            _voices[i].Reset();
     }
 
-    public void SetAPU(IAPU apu)
+    public void Cycle()
     {
-        _apu = apu;
-    }
+        if (_apu == null) return;
+        var audioRam = _apu.RAM;
 
-    public void Cycle() 
-    {
-        var totalL = 0;
-        var totalR = 0;
-        for (var i = 0; i < 8; i++)
+        _registers.GlobalCounter = _registers.GlobalCounter == 0 ? (ushort)0x77FF : (ushort)(_registers.GlobalCounter - 1);
+        _noise.Clock(_registers.GlobalCounter, _registers.NoiseFrequency);
+
+        for (int i = 0; i < 8; i++)
         {
-            CycleChannel(i);
-            totalL += (_sampleOut[i] * _channelVolumeL[i]) >> 6;
-            totalR += (_sampleOut[i] * _channelVolumeR[i]) >> 6;
-            totalL = totalL < -0x8000 ? -0x8000 : totalL > 0x7fff ? 0x7fff : totalL;
-            totalR = totalR < -0x8000 ? -0x8000 : totalR > 0x7fff ? 0x7fff : totalR;
+            short prev = i != 0 ? _voices[i - 1].CurrentSample : (short)0;
+            _voices[i].Clock(_registers, audioRam, prev, _noise.Output);
         }
-        totalL = (totalL * _volumeL) >> 7;
-        totalR = (totalR * _volumeR) >> 7;
-        totalL = totalL < -0x8000 ? -0x8000 : totalL > 0x7fff ? 0x7fff : totalL;
-        totalR = totalR < -0x8000 ? -0x8000 : totalR > 0x7fff ? 0x7fff : totalR;
-        if (_mute)
+
+        int[] voiceSamplesL = new int[8];
+        int[] voiceSamplesR = new int[8];
+        int sumL = 0;
+        int sumR = 0;
+        for (int i = 0; i < 8; i++)
         {
-            totalL = 0;
-            totalR = 0;
+            int sL = (_voices[i].CurrentSample * _voices[i].VolumeL) >> 6;
+            int sR = (_voices[i].CurrentSample * _voices[i].VolumeR) >> 6;
+            voiceSamplesL[i] = sL;
+            voiceSamplesR[i] = sR;
+            sumL += sL;
+            sumR += sR;
+            sumL = Math.Clamp(sumL, short.MinValue, short.MaxValue);
+            sumR = Math.Clamp(sumR, short.MinValue, short.MaxValue);
         }
-        HandleNoise();
-        SamplesL[SampleOffset] = (float) totalL / 0x8000;
-        SamplesR[SampleOffset] = (float) totalR / 0x8000;
-        SampleOffset++;
-        if (SampleOffset > 533)
+
+        var (echoL, echoR) = _echo.DoFilter(_registers.EchoBufferWritesEnabled, audioRam, voiceSamplesL, voiceSamplesR);
+
+        sumL = (sumL * _registers.MasterVolumeL) >> 7;
+        sumR = (sumR * _registers.MasterVolumeR) >> 7;
+        sumL = Math.Clamp(sumL, short.MinValue, short.MaxValue);
+        sumR = Math.Clamp(sumR, short.MinValue, short.MaxValue);
+
+        int outL = sumL + echoL;
+        int outR = sumR + echoR;
+        outL = Math.Clamp(outL, short.MinValue, short.MaxValue);
+        outR = Math.Clamp(outR, short.MinValue, short.MaxValue);
+
+        if (_registers.MuteAmplifier)
         {
-            SampleOffset = 533;
+            outL = 0;
+            outR = 0;
+        }
+
+        if (SampleOffset < SamplesL.Length)
+        {
+            SamplesL[SampleOffset] = outL / 32768f;
+            SamplesR[SampleOffset] = outR / 32768f;
+            SampleOffset++;
         }
     }
 
     public byte Read(int adr)
     {
-        return _ram[adr & 0x7f];
+        int address = adr & 0x7F;
+        int voice = address >> 4;
+        switch (address & 0x0F)
+        {
+            case 0x00: return (byte)_voices[voice].VolumeL;
+            case 0x01: return (byte)_voices[voice].VolumeR;
+            case 0x02: return (byte)(_voices[voice].SampleRate & 0xFF);
+            case 0x03: return _voices[voice].LastPitchHWrite;
+            case 0x04: return _voices[voice].InstrumentNumber;
+            case 0x05: return _voices[voice].ReadAdsrLow();
+            case 0x06: return _voices[voice].ReadAdsrHigh();
+            case 0x07: return _voices[voice].ReadGain();
+            case 0x08: return _voices[voice].ReadEnvelope();
+            case 0x09: return _voices[voice].ReadOutput();
+            case 0x0A: return _registers.UnusedXa[voice];
+            case 0x0B: return _registers.UnusedXb[voice];
+            case 0x0E: return _registers.UnusedXe[voice];
+            case 0x0F: return (byte)_echo.FirCoefficients[voice];
+            case 0x0C:
+            case 0x0D:
+                return address switch
+                {
+                    0x0C => (byte)_registers.MasterVolumeL,
+                    0x1C => (byte)_registers.MasterVolumeR,
+                    0x2C => (byte)_echo.VolumeL,
+                    0x3C => (byte)_echo.VolumeR,
+                    0x4C => (byte)BuildFlags(i => _voices[i].KeyedOn),
+                    0x5C => (byte)BuildFlags(i => _voices[i].KeyedOff),
+                    0x6C => _registers.ReadFlg(),
+                    0x7C => (byte)BuildFlags(i => _voices[i].EndFlagSeen),
+                    0x0D => (byte)_echo.FeedbackVolume,
+                    0x1D => _registers.Unused1d,
+                    0x2D => (byte)BuildFlags(i => i != 0 && _voices[i].PitchModulationEnabled),
+                    0x3D => (byte)BuildFlags(i => _voices[i].OutputNoise),
+                    0x4D => _echo.ReadEchoEnabled(),
+                    0x5D => (byte)(_registers.SampleTableAddress >> 8),
+                    0x6D => (byte)(_echo.BufferStartAddress >> 8),
+                    0x7D => _echo.LastEdlWrite,
+                    _ => 0
+                };
+            default:
+                return 0;
+        }
     }
 
     public void Write(int adr, byte value)
     {
-        int channel = (adr & 0x70) >> 4;
-        switch (adr)
+        int address = adr & 0x7F;
+        int voice = address >> 4;
+        switch (address & 0x0F)
         {
-            case 0x0:
-            case 0x10:
-            case 0x20:
-            case 0x30:
-            case 0x40:
-            case 0x50:
-            case 0x60:
-            case 0x70:
-                _channelVolumeL[channel] = value > 0x7f ? value - 0x100 : value;
-                break;
-            case 0x1:
-            case 0x11:
-            case 0x21:
-            case 0x31:
-            case 0x41:
-            case 0x51:
-            case 0x61:
-            case 0x71:
-                _channelVolumeR[channel] = value > 0x7f ? value - 0x100 : value;
-                break;
-            case 0x2:
-            case 0x12:
-            case 0x22:
-            case 0x32:
-            case 0x42:
-            case 0x52:
-            case 0x62:
-            case 0x72:
-                _pitch[channel] &= 0x3f00;
-                _pitch[channel] |= value;
-                break;
-            case 0x3:
-            case 0x13:
-            case 0x23:
-            case 0x33:
-            case 0x43:
-            case 0x53:
-            case 0x63:
-            case 0x73:
-                _pitch[channel] &= 0xff;
-                _pitch[channel] |= (value << 8) & 0x3f00;
-                break;
-            case 0x4:
-            case 0x14:
-            case 0x24:
-            case 0x34:
-            case 0x44:
-            case 0x54:
-            case 0x64:
-            case 0x74:
-                _srcn[channel] = value;
-                break;
-            case 0x5:
-            case 0x15:
-            case 0x25:
-            case 0x35:
-            case 0x45:
-            case 0x55:
-            case 0x65:
-            case 0x75:
-                _rateNums[channel * 5 + 0] = (short) _rates[(value & 0xf) * 2 + 1];
-                _rateNums[channel * 5 + 1] = (short) _rates[((value & 0x70) >> 4) * 2 + 16];
-                _useGain[channel] = (value & 0x80) == 0;
-                break;
-            case 0x6:
-            case 0x16:
-            case 0x26:
-            case 0x36:
-            case 0x46:
-            case 0x56:
-            case 0x66:
-            case 0x76:
-                _rateNums[channel * 5 + 2] = (short) _rates[value & 0x1f];
-                _sustainLevel[channel] = (((value & 0xe0) >> 5) + 1) * 0x100;
-                break;
-            case 0x7:
-            case 0x17:
-            case 0x27:
-            case 0x37:
-            case 0x47:
-            case 0x57:
-            case 0x67:
-            case 0x77:
-                if ((value & 0x80) > 0)
+            case 0x00: _voices[voice].VolumeL = (sbyte)value; break;
+            case 0x01: _voices[voice].VolumeR = (sbyte)value; break;
+            case 0x02: _voices[voice].WritePitchLow(value); break;
+            case 0x03: _voices[voice].WritePitchHigh(value); break;
+            case 0x04: _voices[voice].InstrumentNumber = value; break;
+            case 0x05: _voices[voice].WriteAdsrLow(value); break;
+            case 0x06: _voices[voice].WriteAdsrHigh(value); break;
+            case 0x07: _voices[voice].WriteGain(value); break;
+            case 0x08: _registers.UnusedXa[voice] = value; break;
+            case 0x09: _registers.UnusedXb[voice] = value; break;
+            case 0x0E: _registers.UnusedXe[voice] = value; break;
+            case 0x0F: _echo.FirCoefficients[voice] = (sbyte)value; break;
+            case 0x0C:
+            case 0x0D:
+                switch (address)
                 {
-                    _directGain[channel] = false;
-                    _gainMode[channel] = (value & 0x60) >> 5;
-                    _rateNums[channel * 5 + 4] = (short) _rates[value & 0x1f];
-                }
-                else
-                {
-                    _directGain[channel] = true;
-                    _gainValue[channel] = (value & 0x7f) * 16;
-                }
-                break;
-            case 0x0c:
-                _volumeL = value > 0x7f ? value - 0x100 : value;
-                break;
-            case 0x1c:
-                _volumeR = value > 0x7f ? value - 0x100 : value;
-                break;
-            case 0x2c:
-                break;
-            case 0x3c:
-                break;
-            case 0x4c:
-                var test = 1;
-                for (var i = 0; i < 8; i++)
-                {
-                    if ((value & test) > 0)
-                    {
-                        _prevFlags[i] = 0;
-                        int sampleAdr = (_dirPage << 8) + _srcn[i] * 4;
-                        int startAdr = _apu!.RAM[sampleAdr & 0xffff];
-                        startAdr |= _apu.RAM[(sampleAdr + 1) & 0xffff] << 8;
-                        _decodeOffset[i] = startAdr;
-                        _gain[i] = 0;
-                        if (_useGain[i])
+                    case 0x0C: _registers.MasterVolumeL = (sbyte)value; break;
+                    case 0x1C: _registers.MasterVolumeR = (sbyte)value; break;
+                    case 0x2C: _echo.VolumeL = (sbyte)value; break;
+                    case 0x3C: _echo.VolumeR = (sbyte)value; break;
+                    case 0x4C:
+                        for (int i = 0; i < 8; i++) _voices[i].WriteKeyOn((value & (1 << i)) != 0);
+                        break;
+                    case 0x5C:
+                        for (int i = 0; i < 8; i++) _voices[i].WriteKeyOff((value & (1 << i)) != 0);
+                        break;
+                    case 0x6C:
+                        _registers.WriteFlg(value);
+                        if (_registers.SoftReset)
                         {
-                            _adsrState[i] = 4;
+                            for (int i = 0; i < 8; i++) _voices[i].SoftReset();
                         }
-                        else
-                        {
-                            _adsrState[i] = 0;
-                        }
-                        for (var j = 0; j < 19; j++)
-                        {
-                            _decodeBuffer[i * 19 + j] = 0;
-                        }
-                    }
-                    test <<= 1;
+                        break;
+                    case 0x7C:
+                        // ENDX is cleared on write
+                        for (int i = 0; i < 8; i++) _voices[i].EndFlagSeen = false;
+                        break;
+                    case 0x0D:
+                        _echo.FeedbackVolume = (sbyte)value; break;
+                    case 0x1D:
+                        _registers.Unused1d = value; break;
+                    case 0x2D:
+                        for (int i = 1; i < 8; i++) _voices[i].PitchModulationEnabled = (value & (1 << i)) != 0;
+                        break;
+                    case 0x3D:
+                        for (int i = 0; i < 8; i++) _voices[i].OutputNoise = (value & (1 << i)) != 0;
+                        break;
+                    case 0x4D:
+                        _echo.WriteEchoEnabled(value); break;
+                    case 0x5D:
+                        _registers.SampleTableAddress = (ushort)(value << 8); break;
+                    case 0x6D:
+                        _echo.BufferStartAddress = (ushort)(value << 8); break;
+                    case 0x7D:
+                        _echo.WriteEchoBufferSize(value); break;
                 }
                 break;
-            case 0x5c:
-                var test2 = 1;
-                for (var i = 0; i < 8; i++)
-                {
-                    _noteOff[i] = (value & test2) > 0;
-                    test2 <<= 1;
-                }
-                break;
-            case 0x6c:
-                _resetFlag = (value & 0x80) > 0;
-                _mute = (value & 0x40) > 0;
-                _noiseRate = _rates[value & 0x1f];
-                break;
-            case 0x7c:
-                _ram[0x7c] = 0;
-                value = 0;
-                break;
-            case 0x0d:
-                break;
-            case 0x2d:
-                var test3 = 2;
-                for (var i = 1; i < 8; i++)
-                {
-                    _pitchMod[i] = (value & test3) > 0;
-                    test3 <<= 1;
-                }
-                break;
-            case 0x3d:
-                var test4 = 1;
-                for (var i = 0; i < 8; i++)
-                {
-                    _enableNoise[i] = (value & test4) > 0;
-                    test4 <<= 1;
-                }
-                break;
-            case 0x4d:
-                break;
-            case 0x5d:
-                _dirPage = value;
-                break;
-            case 0x6d:
-                break;
-            case 0x7d:
-                break;
-            case 0xf:
-            case 0x1f:
-            case 0x2f:
-            case 0x3f:
-            case 0x4f:
-            case 0x5f:
-            case 0x6f:
-            case 0x7f:
-                break;
-        }
-        _ram[adr & 0x7f] = value;
-    }
-
-    private void DecodeBrr(int ch) 
-    {
-        _decodeBuffer[ch * 19] = _decodeBuffer[ch * 19 + 16];
-        _decodeBuffer[ch * 19 + 1] = _decodeBuffer[ch * 19 + 17];
-        _decodeBuffer[ch * 19 + 2] = _decodeBuffer[ch * 19 + 18];
-        if (_prevFlags[ch] == 1 || _prevFlags[ch] == 3)
-        {
-            int sampleAdr = (_dirPage << 8) + _srcn[ch] * 4;
-            int loopAdr = _apu!.RAM[(sampleAdr + 2) & 0xffff];
-            loopAdr |= _apu.RAM[(sampleAdr + 3) & 0xffff] << 8;
-            _decodeOffset[ch] = loopAdr;
-            if (_prevFlags[ch] == 1)
-            {
-                _gain[ch] = 0;
-                _adsrState[ch] = 3;
-            }
-            _ram[0x7c] |= (byte) (1 << ch);
-        }
-        byte header = _apu!.RAM[_decodeOffset[ch]++];
-        _decodeOffset[ch] &= 0xffff;
-        int shift = header >> 4;
-        int filter = (header & 0xc) >> 2;
-        _prevFlags[ch] = header & 0x3;
-        int byt = 0;
-        for (var i = 0; i < 16; i++)
-        {
-            int s = byt & 0xf;
-            if ((i & 1) == 0)
-            {
-                byt = _apu.RAM[_decodeOffset[ch]++];
-                _decodeOffset[ch] &= 0xffff;
-                s = byt >> 4;
-            }
-            s = s > 7 ? s - 16 : s;
-            if (shift <= 0xc)
-            {
-                s = (s << shift) >> 1;
-            }
-            else
-            {
-                s = s < 0 ? -2048 : 2048;
-            }
-            int old = _old[ch];
-            int older = _older[ch];
-            switch (filter)
-            {
-                case 1:
-                    s = s + old * 1 + ((-old * 1) >> 4);
-                    break;
-                case 2:
-                    s = s + old * 2 + ((-old * 3) >> 5) - older + ((older * 1) >> 4);
-                    break;
-                case 3:
-                    s = s + old * 2 + ((-old * 13) >> 6) - older + ((older * 3) >> 4);
-                    break;
-            }
-            s = s > 0x7fff ? 0x7fff : s;
-            s = s < -0x8000 ? -0x8000 : s;
-            s &= 0x7fff;
-            s = s > 0x3fff ? s - 0x8000 : s;
-            _older[ch] = _old[ch];
-            _old[ch] = s;
-            _decodeBuffer[ch * 19 + i + 3] = (short) s;
         }
     }
 
-    private int Interpolate(int ch, int sampleNum, int offset) 
+    private static int BuildFlags(Func<int, bool> pred)
     {
-        short news = _decodeBuffer[ch * 19 + sampleNum + 3];
-        short old = _decodeBuffer[ch * 19 + sampleNum + 2];
-        short older = _decodeBuffer[ch * 19 + sampleNum + 1];
-        short oldest = _decodeBuffer[ch * 19 + sampleNum];
-        int outR = (_gaussVals[0xff - offset] * oldest) >> 10;
-        outR += (_gaussVals[0x1ff - offset] * older) >> 10;
-        outR += (_gaussVals[0x100 + offset] * old) >> 10;
-        outR &= 0xffff;
-        outR = outR > 0x7fff ? outR - 0x10000 : outR;
-        outR += (_gaussVals[offset] * news) >> 10;
-        outR = outR > 0x7fff ? 0x7fff : outR < -0x8000 ? -0x8000 : outR;
-        return outR >> 1;
+        int v = 0;
+        for (int i = 0; i < 8; i++) if (pred(i)) v |= 1 << i;
+        return v;
     }
 
-    private void HandleNoise() 
+    private static bool IsEnvelopeTick(ushort globalCounter, int rateIndex)
     {
-        if (_noiseRate != 0)
-        {
-            _noiseCounter++;
-        }
-        if (_noiseRate != 0 && _noiseCounter >= _noiseRate)
-        {
-            _noiseCounter = 0;
-            int bit0 = _noiseSample & 1;
-            int bit1 = (_noiseSample >> 1) & 1;
-            _noiseSample = ((_noiseSample >> 1) & 0x3fff) | ((bit0 ^ bit1) << 14);
-            _noiseSample = _noiseSample > 0x3fff ? _noiseSample - 0x8000 : _noiseSample;
-        }
+        if (rateIndex <= 0) return false;
+        int rate = EnvelopeRate[rateIndex];
+        if (rate == 0 || rate == ushort.MaxValue) return false;
+        int offset = EnvelopeOffset[rateIndex];
+        return ((globalCounter + offset) % rate) == 0;
     }
 
-    private void CycleChannel(int ch)
+    private static short ApplyBrrShift(sbyte nibble, byte shift)
     {
-        int pitch = _pitch[ch];
-        if (_pitchMod[ch])
+        return shift switch
         {
-            int factor = (_sampleOut[ch - 1] >> 4) + 0x400;
-            pitch = (pitch * factor) >> 10;
-            pitch = pitch > 0x3fff ? 0x3fff : pitch;
-        }
-        _counter[ch] += pitch;
-        if (_counter[ch] > 0xffff)
-        {
-            DecodeBrr(ch);
-        }
-        _counter[ch] &= 0xffff;
-        int sample = _enableNoise[ch] ? _noiseSample : Interpolate(ch, _counter[ch] >> 12, (_counter[ch] >> 4) & 0xff);
-        if (_noteOff[ch] || _resetFlag)
-        {
-            _adsrState[ch] = 3;
-            if (_resetFlag)
-            {
-                _gain[ch] = 0;
-            }
-        }
-        short rate = _rateNums[ch * 5 + _adsrState[ch]];
-        if (rate != 0)
-        {
-            _rateCounter[ch]++;
-        }
-        if (rate != 0 && _rateCounter[ch] >= rate)
-        {
-            _rateCounter[ch] = 0;
-            if (!_directGain[ch] || !_useGain[ch] || _adsrState[ch] == 3)
-            {
-                switch (_adsrState[ch])
-                {
-                    case 0:
-                        _gain[ch] += rate == 1 ? 1024 : 32;
-                        if (_gain[ch] >= 0x7e0)
-                        {
-                            _adsrState[ch] = 1;
-                        }
-                        if (_gain[ch] > 0x7ff)
-                        {
-                            _gain[ch] = 0x7ff;
-                        }
-                        break;
-                    case 1:
-                        _gain[ch] -= ((_gain[ch] - 1) >> 8) + 1;
-                        if (_gain[ch] < _sustainLevel[ch])
-                        {
-                            _adsrState[ch] = 2;
-                        }
-                        break;
-                    case 2:
-                        _gain[ch] -= ((_gain[ch] - 1) >> 8) + 1;
-                        break;
-                    case 3:
-                        _gain[ch] -= 8;
-                        if (_gain[ch] < 0)
-                        {
-                            _gain[ch] = 0;
-                        }
-                        break;
-                    case 4:
-                        switch (_gainMode[ch])
-                        {
-                            case 0:
-                                _gain[ch] -= 32;
-                                if (_gain[ch] < 0)
-                                {
-                                    _gain[ch] = 0;
-                                }
-                                break;
-                            case 1:
-                                _gain[ch] -= ((_gain[ch] - 1) >> 8) + 1;
-                                break;
-                            case 2:
-                                _gain[ch] += 32;
-                                if (_gain[ch] > 0x7ff)
-                                {
-                                    _gain[ch] = 0x7ff;
-                                }
-                                break;
-                            case 3:
-                                _gain[ch] += _gain[ch] < 0x600 ? 32 : 8;
-                                if (_gain[ch] > 0x7ff)
-                                {
-                                    _gain[ch] = 0x7ff;
-                                }
-                                break;
-                        }
-                        break;
-                }
-            }
-        }
-        if (_directGain[ch] && _useGain[ch] && _adsrState[ch] != 3)
-        {
-            _gain[ch] = _gainValue[ch];
-        }
-        int gainedVal = (sample * _gain[ch]) >> 11;
-        _ram[(ch << 4) | 8] = (byte) (_gain[ch] >> 4);
-        _ram[(ch << 4) | 9] = (byte) (gainedVal >> 7);
-        _sampleOut[ch] = gainedVal;
+            0 => (short)(nibble >> 1),
+            >= 1 and <= 12 => (short)(nibble << (shift - 1)),
+            >= 13 and <= 15 => (short)(nibble < 0 ? -2048 : 0),
+            _ => 0
+        };
     }
+
+    private static short ApplyBrrFilter(short sample, byte filter, short old, short older)
+    {
+        int s = sample;
+        int o = old;
+        int od = older;
+        int filtered = filter switch
+        {
+            0 => s,
+            1 => s + o + (-o >> 4),
+            2 => s + (o << 1) + (-(3 * o) >> 5) - od + (od >> 4),
+            3 => s + (o << 1) + (-(13 * o) >> 6) - od + ((3 * od) >> 4),
+            _ => s
+        };
+
+        if (filtered > short.MaxValue) filtered = short.MaxValue;
+        else if (filtered < short.MinValue) filtered = short.MinValue;
+        short clamped = (short)filtered;
+        return (short)((clamped << 1) >> 1);
+    }
+
+    private static int GaussianInterpolate(short oldest, short older, short old, short sample, int offset)
+    {
+        int outR = (Gaussian[0x0FF - offset] * oldest) >> 11;
+        outR += (Gaussian[0x1FF - offset] * older) >> 11;
+        outR += (Gaussian[0x100 + offset] * old) >> 11;
+        short clipped = (short)((short)outR << 1 >> 1);
+        int sum = clipped + ((Gaussian[offset] * sample) >> 11);
+        if (sum > 0x3FFF) sum = 0x3FFF;
+        else if (sum < -0x4000) sum = -0x4000;
+        return sum;
+    }
+
+    private static int ComputeExpDecay(int currentValue)
+    {
+        return -(((currentValue - 1) >> 8) + 1);
+    }
+}
+
+static class IntClampExt
+{
+    public static int Clamp(this int v, int min, int max) => v < min ? min : (v > max ? max : v);
 }

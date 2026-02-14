@@ -122,6 +122,14 @@ public partial class MainWindow : Window
     private InputMappingSettings _inputMappings = new InputMappingSettings();
     private IAudioSink? _audioOutput;
     private AudioEngine? _audioEngine;
+    private IAudioSink? _audioEngineSink;
+    private bool _snesAudioFillEnabled = true;
+    private readonly object _snesAudioLock = new();
+    private short[] _snesAudioRing = Array.Empty<short>();
+    private int _snesAudioRead;
+    private int _snesAudioWrite;
+    private int _snesAudioCount;
+    private short[] _snesAudioTemp = Array.Empty<short>();
     private bool _audioEnabled = true;
     private bool _audioFormatMismatchLogged;
     private const int AudioSampleRate = 44100;
@@ -138,6 +146,8 @@ public partial class MainWindow : Window
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_STATS") == "1";
     private static readonly bool AudioRawTiming =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING") == "1";
+    private static readonly string? AudioSinkEnv =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_SINK");
     private static readonly bool TraceConsoleEnabled =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CONSOLE") != "0" && !AudioRawTiming;
     private static readonly bool TraceAudioLevel =
@@ -2626,15 +2636,33 @@ public partial class MainWindow : Window
             return;
         }
 
-        _audioEngine = new AudioEngine(new PwCatAudioSink(), AudioSampleRate, AudioChannels, framesPerBatch: AudioEngineBatchFrames, bufferFrames: AudioEngineBufferFrames);
+        string? sinkPref = AudioSinkEnv?.Trim().ToLowerInvariant();
+        if (sinkPref == "openal")
+        {
+            _audioEngineSink = OpenAlAudioOutput.TryCreate();
+            if (_audioEngineSink == null)
+                _audioEngineSink = new PwCatAudioSink();
+        }
+        else if (sinkPref == "pwcat" || string.IsNullOrEmpty(sinkPref))
+        {
+            _audioEngineSink = new PwCatAudioSink();
+        }
+        else
+        {
+            _audioEngineSink = new PwCatAudioSink();
+        }
+        _audioEngine = new AudioEngine(_audioEngineSink, AudioSampleRate, AudioChannels, framesPerBatch: AudioEngineBatchFrames, bufferFrames: AudioEngineBufferFrames);
         _audioEngine.SetTargetBufferedFrames(AudioTargetBufferedFrames);
         _audioEngine.Start();
-        if (AudioPullEnabled && _core is not SnesAdapter)
+        if (AudioPullEnabled)
         {
             _audioPullMode = true;
             _audioPullReady = false;
             _audioEngine.EnablePullMode(AudioPullProducer, targetBufferedFrames: AudioTargetBufferedFrames, maxFramesPerPull: AudioPullMaxFrames);
-            PrimePullAudio();
+            if (_core is MdTracerAdapter)
+                PrimePullAudio();
+            else
+                _audioPullReady = true;
         }
         else
         {
@@ -2645,6 +2673,7 @@ public partial class MainWindow : Window
         ResetAudioTiming();
         if (_core is MdTracerAdapter adapter)
             PrefillAudioEngineBuffer(adapter);
+        InitSnesAudioRing();
     }
 
     private void StopAudioEngine()
@@ -2654,6 +2683,10 @@ public partial class MainWindow : Window
 
         _audioEngine.Stop();
         _audioEngine = null;
+        _audioEngineSink?.Dispose();
+        _audioEngineSink = null;
+        _snesAudioFillEnabled = true;
+        ResetSnesAudioRing();
         _audioPullMode = false;
         _audioPullReady = false;
         ResetAudioTiming();
@@ -2677,6 +2710,82 @@ public partial class MainWindow : Window
         _audioPullReady = false;
         _audioPullLastFrameCounter = -1;
         _audioPullLastFrameCounterTicks = 0;
+    }
+
+    private void InitSnesAudioRing()
+    {
+        int neededSamples = AudioEngineBufferFrames * AudioChannels;
+        if (_snesAudioRing.Length != neededSamples)
+            _snesAudioRing = new short[neededSamples];
+        _snesAudioTemp = Array.Empty<short>();
+        _snesAudioRead = 0;
+        _snesAudioWrite = 0;
+        _snesAudioCount = 0;
+    }
+
+    private void ResetSnesAudioRing()
+    {
+        lock (_snesAudioLock)
+        {
+            _snesAudioRead = 0;
+            _snesAudioWrite = 0;
+            _snesAudioCount = 0;
+        }
+    }
+
+    private void EnqueueSnesAudio(ReadOnlySpan<short> audio)
+    {
+        if (audio.IsEmpty)
+            return;
+        lock (_snesAudioLock)
+        {
+            if (_snesAudioRing.Length == 0)
+                InitSnesAudioRing();
+
+            int available = _snesAudioRing.Length - _snesAudioCount;
+            int toWrite = Math.Min(audio.Length, available);
+            if (toWrite <= 0)
+                return;
+
+            int first = Math.Min(toWrite, _snesAudioRing.Length - _snesAudioWrite);
+            audio.Slice(0, first).CopyTo(_snesAudioRing.AsSpan(_snesAudioWrite));
+            _snesAudioWrite = (_snesAudioWrite + first) % _snesAudioRing.Length;
+            int remaining = toWrite - first;
+            if (remaining > 0)
+            {
+                audio.Slice(first, remaining).CopyTo(_snesAudioRing.AsSpan(0));
+                _snesAudioWrite = remaining;
+            }
+            _snesAudioCount += toWrite;
+        }
+    }
+
+    private ReadOnlySpan<short> DequeueSnesAudio(int frames)
+    {
+        if (frames <= 0)
+            return ReadOnlySpan<short>.Empty;
+        int neededSamples = frames * AudioChannels;
+        lock (_snesAudioLock)
+        {
+            if (_snesAudioCount <= 0)
+                return ReadOnlySpan<short>.Empty;
+
+            int toRead = Math.Min(neededSamples, _snesAudioCount);
+            if (_snesAudioTemp.Length < toRead)
+                _snesAudioTemp = new short[toRead];
+
+            int first = Math.Min(toRead, _snesAudioRing.Length - _snesAudioRead);
+            _snesAudioRing.AsSpan(_snesAudioRead, first).CopyTo(_snesAudioTemp);
+            _snesAudioRead = (_snesAudioRead + first) % _snesAudioRing.Length;
+            int remaining = toRead - first;
+            if (remaining > 0)
+            {
+                _snesAudioRing.AsSpan(0, remaining).CopyTo(_snesAudioTemp.AsSpan(first));
+                _snesAudioRead = remaining;
+            }
+            _snesAudioCount -= toRead;
+            return _snesAudioTemp.AsSpan(0, toRead);
+        }
     }
 
     private void PrefillAudioEngineBuffer(MdTracerAdapter adapter)
@@ -3755,11 +3864,29 @@ public partial class MainWindow : Window
                     ApplyInputToCore(core);
                     core.RunFrame();
                     GenerateAudioFromSystemCycles(core);
-                    if (_audioEngine != null && !_audioPullMode && core is SnesAdapter)
+                    if (core is SnesAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
-                            _audioEngine.Submit(audio);
+                        {
+                            if (_audioEngine != null && !_audioPullMode)
+                            {
+                                int buffered = _audioEngine.BufferedFrames;
+                                int lowWater = Math.Max(AudioEngineBatchFrames * 8, AudioTargetBufferedFrames / 2);
+                                int highWater = Math.Max(lowWater + AudioEngineBatchFrames * 8, (AudioTargetBufferedFrames * 95) / 100);
+                                if (buffered <= lowWater)
+                                    _snesAudioFillEnabled = true;
+                                else if (buffered >= highWater)
+                                    _snesAudioFillEnabled = false;
+
+                                if (_snesAudioFillEnabled)
+                                    _audioEngine.Submit(audio);
+                            }
+                            else if (_audioPullMode)
+                            {
+                                EnqueueSnesAudio(audio);
+                            }
+                        }
                     }
                 }
 
@@ -3876,9 +4003,11 @@ public partial class MainWindow : Window
 
     private ReadOnlySpan<short> AudioPullProducer(int frames)
     {
-        if (_core is not MdTracerAdapter adapter)
-            return ReadOnlySpan<short>.Empty;
-        return adapter.GetAudioBufferForFrames(frames, out _, out _);
+        if (_core is MdTracerAdapter adapter)
+            return adapter.GetAudioBufferForFrames(frames, out _, out _);
+        if (_core is SnesAdapter)
+            return DequeueSnesAudio(frames);
+        return ReadOnlySpan<short>.Empty;
     }
 
     private void AppendPullAudio(ReadOnlySpan<short> audio)
