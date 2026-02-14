@@ -3,6 +3,7 @@
 ![EutherDrive logo](Icons/logo.jpeg)
 
 EutherDrive är en Mega Drive / Genesis-emulator skriven i C# med [Avalonia UI](https://avaloniaui.net/) som frontend.  
+Nu även med PC Engine (HuCard) och PC Engine CD-stöd.
 Projektet bygger på kärnkod från [MDTracer](https://github.com/sasayaki-japan/MDTracer) (MIT-licens) och utökar den med ett modernt, plattformsoberoende gränssnitt och förbättrad kompatibilitet.
 
 Emulatorn spelar också Sega Mastersystem spel. Alla titlar som jag provat fungerar inklusive korean mappers och Codemaster spel.
@@ -12,9 +13,15 @@ Grundläggande SNES-stöd är inlagt via SuperNintendoEmulator-projektet (se ref
 Det grundläggande SNES stödet är påbyggt med specialcip och ny ljudmotor. Dessa är främst portar från jgenesis se referens nedan.
 Emulatorn spelar nu väldigt många SNES titlar
 
+PC Engine (HuCard) och PC Engine CD stöds nu också. BIOS för CD behövs.
+Du kan lägga BIOS i EutherDrive/bios/ med något av namnen:
+syscard3.pce, syscard2.pce, syscard1.pce, systemcard.pce, bios.pce
+CD-ljudet är WIP.
+
 ## Funktioner
 - Spelar upp Mega Drive ROM:ar direkt från filväljare
 - Grundläggande SNES-stöd (via separat core)
+- PC Engine (HuCard) och PC Engine CD-stöd
 - Avalonia-baserad frontend (Windows, Linux, macOS, Android)
 - Input-hantering för tangentbord och gamepads
 - Ljudutgång via Pipewire på Linux (planerar android fork)
@@ -45,6 +52,7 @@ dotnet run --project EutherDrive.UI
 ## Referenser
 ```
 https://github.com/Kookpot/SuperNintendoEmulator
+https://github.com/unknowall/emuPCE
 ```
 
 https://github.com/jsgroth/jgenesis/

@@ -4,6 +4,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
   </PropertyGroup>
 
@@ -29,6 +30,10 @@
     <Compile Remove="MdTracerCore/md_vdp.IO.cs" />
 
 </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\PCE_CD_Core\**\*.cs" Link="PCE_CD_Core\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="SharpCompress" Version="0.36.0" />

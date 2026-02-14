@@ -456,9 +456,17 @@ public partial class MainWindow : Window
 
     private static IEmulatorCore CreateCoreForRom(string? path)
     {
+        if (!string.IsNullOrWhiteSpace(path) && IsPceRom(path))
+            return new PceCdAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
             return new SnesAdapter();
         return new MdTracerAdapter();
+    }
+
+    private static bool IsPceRom(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".pce" or ".cue";
     }
 
     private static bool IsSnesRom(string path)
@@ -533,6 +541,8 @@ public partial class MainWindow : Window
             target = adapter.GetTargetFps();
         else if (_core is SnesAdapter snes)
             target = snes.GetTargetFps(RegionOverride);
+        else if (_core is PceCdAdapter pce)
+            target = pce.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -917,13 +927,13 @@ public partial class MainWindow : Window
 
         var options = new FilePickerOpenOptions
         {
-            Title = "Select Mega Drive ROM",
+            Title = "Select ROM",
             AllowMultiple = false,
             FileTypeFilter = new[]
             {
                 new FilePickerFileType("ROMs")
                 {
-                    Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.sms", "*.sg", "*.gg", "*.zip", "*.7z", "*.iso", "*.*" }
+                    Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.sms", "*.sg", "*.gg", "*.smc", "*.sfc", "*.pce", "*.cue", "*.zip", "*.7z", "*.iso", "*.*" }
                 }
             }
         };
@@ -3864,7 +3874,7 @@ public partial class MainWindow : Window
                     ApplyInputToCore(core);
                     core.RunFrame();
                     GenerateAudioFromSystemCycles(core);
-                    if (core is SnesAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -4005,7 +4015,7 @@ public partial class MainWindow : Window
     {
         if (_core is MdTracerAdapter adapter)
             return adapter.GetAudioBufferForFrames(frames, out _, out _);
-        if (_core is SnesAdapter)
+        if (_core is SnesAdapter || _core is PceCdAdapter)
             return DequeueSnesAudio(frames);
         return ReadOnlySpan<short>.Empty;
     }

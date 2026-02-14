@@ -15,6 +15,7 @@ eutherdrive_settings.toml
 savestates/
 roms/
 logs/
+bios/
 
 # Local notes
 MEMO.md
