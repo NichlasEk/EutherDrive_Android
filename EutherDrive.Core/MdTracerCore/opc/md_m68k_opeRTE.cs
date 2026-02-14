@@ -3,11 +3,17 @@ namespace EutherDrive.Core.MdTracerCore;
 internal partial class md_m68k
 {
     // RTE: Return from Exception
-    internal static void analyse_RTE()
+    internal void analyse_RTE()
     {
         g_clock += 20;
 
         uint oldPc = g_reg_PC;
+
+        if (!g_status_S)
+        {
+            RaiseException("PRIV", 0x0020);
+            return;
+        }
 
         // Clear whichever interrupt was active
         if (g_interrupt_H_act) g_interrupt_H_act = false;

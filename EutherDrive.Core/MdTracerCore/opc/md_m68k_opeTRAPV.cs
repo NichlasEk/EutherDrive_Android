@@ -7,8 +7,15 @@ namespace EutherDrive.Core.MdTracerCore
         private void analyse_TRAPV()
         {
             g_reg_PC += 2;
-            if(g_status_V == true) g_reg_PC = md_main.g_md_bus.read32(28);
-            g_clock += 37;
+            if (g_status_V == true)
+            {
+                g_clock += 37;
+                RaiseException("TRAPV", 0x001C);
+            }
+            else
+            {
+                g_clock += 4;
+            }
         }
    }
 }

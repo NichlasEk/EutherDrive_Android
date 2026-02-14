@@ -6,6 +6,11 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private void analyse_STOP()
         {
+            if (!g_status_S)
+            {
+                RaiseException("PRIV", 0x0020);
+                return;
+            }
             g_reg_PC += 2;
             g_work_data.w = md_main.g_md_bus.read16(g_reg_PC);
             g_reg_PC += 2;

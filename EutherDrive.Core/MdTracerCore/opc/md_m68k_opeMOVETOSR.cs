@@ -6,6 +6,11 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private void analyse_MOVETOSR()
         {
+            if (!g_status_S)
+            {
+                RaiseException("PRIV", 0x0020);
+                return;
+            }
             g_clock += 12;
             g_reg_PC += 2;
             adressing_func_address(g_op3, g_op4, 1);
