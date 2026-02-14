@@ -1922,6 +1922,7 @@ NextPc:;
             }
         }
 
+        [NonSerialized]
         private readonly uint[] log_trace = new uint[100];
 
         private void traceout()
