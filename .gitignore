@@ -11,7 +11,10 @@ rom_*.log
 eutherdrive_last_rom.txt
 eutherdrive_region.txt
 eutherdrive_settings.json
+eutherdrive_settings.toml
 savestates/
+roms/
+logs/
 
 # Local notes
 MEMO.md
