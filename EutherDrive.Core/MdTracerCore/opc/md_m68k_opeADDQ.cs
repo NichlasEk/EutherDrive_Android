@@ -25,6 +25,13 @@ namespace EutherDrive.Core.MdTracerCore
             g_work_val2.l = (uint)((g_opcode >> 9) & 0x07);
             if (g_work_val2.l == 0) g_work_val2.l = 8;
 
+            // Address register direct: size ignored, 32-bit add, no flags
+            if (g_op3 == 1)
+            {
+                g_reg_addr[g_op4].l = g_reg_addr[g_op4].l + g_work_val2.l;
+                return;
+            }
+
             // EA
             if (g_opcode == 0x544A)
             {
@@ -48,21 +55,18 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // Flags: uppdateras inte för adressregister-direkt (mode 1)
-            if (g_op3 != 1)
-            {
-                uint w_mask = MASKBIT[w_size];
-                uint w_most = MOSTBIT[w_size];
+            uint w_mask = MASKBIT[w_size];
+            uint w_most = MOSTBIT[w_size];
 
-                bool SMC = (g_work_val2.l & w_most) != 0; // source msb
-                bool DMC = (g_work_val1.l & w_most) != 0; // dest   msb
-                bool RMC = (g_work_data.l & w_most) != 0; // result msb
+            bool SMC = (g_work_val2.l & w_most) != 0; // source msb
+            bool DMC = (g_work_val1.l & w_most) != 0; // dest   msb
+            bool RMC = (g_work_data.l & w_most) != 0; // result msb
 
-                g_status_N = RMC;
-                g_status_Z = (g_work_data.l & w_mask) == 0;
-                g_status_V = (SMC ^ RMC) & (DMC ^ RMC);
-                g_status_C = (SMC && DMC) || (!RMC && DMC) || (SMC && !RMC);
-                g_status_X = g_status_C;
-            }
+            g_status_N = RMC;
+            g_status_Z = (g_work_data.l & w_mask) == 0;
+            g_status_V = (SMC ^ RMC) & (DMC ^ RMC);
+            g_status_C = (SMC && DMC) || (!RMC && DMC) || (SMC && !RMC);
+            g_status_X = g_status_C;
         }
     }
 }
