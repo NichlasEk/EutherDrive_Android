@@ -5,7 +5,12 @@
 EutherDrive är en Mega Drive / Genesis-emulator skriven i C# med [Avalonia UI](https://avaloniaui.net/) som frontend.  
 Projektet bygger på kärnkod från [MDTracer](https://github.com/sasayaki-japan/MDTracer) (MIT-licens) och utökar den med ett modernt, plattformsoberoende gränssnitt och förbättrad kompatibilitet.
 
+Emulatorn spelar också Sega Mastersystem spel. Alla titlar som jag provat fungerar inklusive korean mappers och Codemaster spel.
+
 Grundläggande SNES-stöd är inlagt via SuperNintendoEmulator-projektet (se referens nedan).
+
+Det grundläggande SNES stödet är påbyggt med specialcip och ny ljudmotor. Dessa är främst portar från jgenesis se referens nedan.
+Emulatorn spelar nu väldigt många SNES titlar
 
 ## Funktioner
 - Spelar upp Mega Drive ROM:ar direkt från filväljare
@@ -41,6 +46,8 @@ dotnet run --project EutherDrive.UI
 ```
 https://github.com/Kookpot/SuperNintendoEmulator
 ```
+
+https://github.com/jsgroth/jgenesis/
 
 ## Att göra
 Fixa Z80 beroende ljud. något är trasigt
