@@ -705,6 +705,9 @@ class Program
             adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_frame0.ppm"));
 
             int hangFrames = ParseOptionalIntEnv("EUTHERDRIVE_HANG_FRAMES") ?? 120;
+            int? forceZ80DumpFrame = ParseOptionalIntEnv("EUTHERDRIVE_FORCE_Z80_DUMP_FRAME");
+            bool forceZ80DumpExtra = Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_Z80_DUMP_EXTRA") == "1";
+            string? forceZ80DumpPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_Z80_DUMP_PATH");
             uint lastM68kPc = 0;
             ushort lastZ80Pc = 0;
             long lastCycles = 0;
@@ -714,6 +717,10 @@ class Program
             for (int frame = 0; frame < framesToRun; frame++)
             {
                 adapter.StepFrame();
+                if (forceZ80DumpFrame.HasValue && frame == forceZ80DumpFrame.Value && adapter is MdTracerAdapter mdAdapter)
+                {
+                    mdAdapter.ForceDumpZ80($"forced frame={frame}", forceZ80DumpExtra, forceZ80DumpPath);
+                }
                 uint m68kPc = adapter.GetM68kPc();
                 ushort z80Pc = adapter.GetZ80Pc();
                 long cycles = adapter.GetSystemCycles();

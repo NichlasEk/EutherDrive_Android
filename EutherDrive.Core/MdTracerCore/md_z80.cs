@@ -172,6 +172,10 @@ namespace EutherDrive.Core.MdTracerCore
             ParseZ80Addr("EUTHERDRIVE_TRACE_Z80_PC_RANGE_END");
         private static readonly int TraceZ80PcRangeLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_Z80_PC_RANGE_LIMIT", 128);
+        private static readonly int? TraceZ80PcRangeFrameStart =
+            ParseOptionalIntEnv("EUTHERDRIVE_TRACE_Z80_PC_RANGE_FRAME_START");
+        private static readonly int? TraceZ80PcRangeFrameEnd =
+            ParseOptionalIntEnv("EUTHERDRIVE_TRACE_Z80_PC_RANGE_FRAME_END");
         private static readonly bool ForceZ80FlagJr =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80FLAG_FORCE_JR"), "1", StringComparison.Ordinal);
         private static readonly ushort? ForceZ80FlagJrTargetOverride =
@@ -203,6 +207,11 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _z80Dumped;
         private bool _z80DumpedFrame;
         private bool _pcLeftBootRangeSinceLastSummary;
+        private ushort _lastPcBefore;
+        private byte _lastOp1;
+        private byte _lastOp2;
+        private byte _lastOp3;
+        private byte _lastOp4;
         private long _z80StatsLastTicks;
         private long _z80StatsInstrCount;
         private long _z80StatsCycleCount;
@@ -213,8 +222,8 @@ namespace EutherDrive.Core.MdTracerCore
         private int _bootFileLogged;
         private string? _bootFilePath;
         private int _runCount;
-        private readonly int[] _pcHist = new int[0x10000];
-        private int _pcHistTotal;
+        [NonSerialized] private readonly int[] _pcHist = new int[0x10000];
+        [NonSerialized] private int _pcHistTotal;
         private int _forceZ80FlagJrRemaining = ForceZ80FlagJrLimit;
         private int _z80PcRangeRemaining = TraceZ80PcRangeLimit;
         private int _z80ResetHoldRemaining;
@@ -342,6 +351,17 @@ namespace EutherDrive.Core.MdTracerCore
             if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
                 return parsed;
             return fallback;
+        }
+
+        private static int? ParseOptionalIntEnv(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+                return null;
+            return parsed;
         }
 
         private static int _smsControlLogCount;
@@ -1015,6 +1035,14 @@ namespace EutherDrive.Core.MdTracerCore
                                 _z80PcRangeRemaining > 0 &&
                                 pcBefore >= TraceZ80PcRangeStart.Value &&
                                 pcBefore <= TraceZ80PcRangeEnd.Value;
+            if (tracePcRange && (TraceZ80PcRangeFrameStart.HasValue || TraceZ80PcRangeFrameEnd.HasValue))
+            {
+                long frameNowLocal = md_main.g_md_vdp?.FrameCounter ?? -1;
+                if (TraceZ80PcRangeFrameStart.HasValue && frameNowLocal < TraceZ80PcRangeFrameStart.Value)
+                    tracePcRange = false;
+                if (TraceZ80PcRangeFrameEnd.HasValue && frameNowLocal > TraceZ80PcRangeFrameEnd.Value)
+                    tracePcRange = false;
+            }
             bool logDdcbBit = false;
             bool logJrNz = false;
             bool logRetNz = false;
@@ -1054,6 +1082,11 @@ namespace EutherDrive.Core.MdTracerCore
                     $"A=0x{g_reg_A:X2} BC=0x{g_reg_BC:X4} DE=0x{g_reg_DE:X4} HL=0x{g_reg_HL:X4} SP=0x{g_reg_SP:X4}");
             }
             LogZ80PcFile(pcBefore, opcode, opcode2, opcode3, opcode4);
+            _lastPcBefore = pcBefore;
+            _lastOp1 = opcode;
+            _lastOp2 = opcode2;
+            _lastOp3 = opcode3;
+            _lastOp4 = opcode4;
             g_operand[opcode]();   // exekvera en instruktion
             if (_waitCycles > 0)
             {
@@ -1391,6 +1424,62 @@ NextPc:;
         DumpZ80Region(0x1B80, 0x0080);
     }
 
+    internal void ForceDumpRam(string reason, bool extra, string? dumpPath)
+    {
+        if (g_ram == null || g_ram.Length == 0)
+            return;
+        string header =
+            $"[Z80DUMP] reason={reason} PC=0x{g_reg_PC:X4} SP=0x{g_reg_SP:X4} " +
+            $"A=0x{g_reg_A:X2} BC=0x{g_reg_BC:X4} " +
+            $"DE=0x{g_reg_DE:X4} HL=0x{g_reg_HL:X4} IX=0x{g_reg_IX:X4} " +
+            $"IY=0x{g_reg_IY:X4} I=0x{g_reg_I:X2} R=0x{g_reg_R:X2} " +
+            $"IM={g_interruptMode} IFF1={(g_IFF1 ? 1 : 0)} IFF2={(g_IFF2 ? 1 : 0)} " +
+            $"HALT={(g_halt ? 1 : 0)} IRQ={(g_interrupt_irq ? 1 : 0)} NMI={(g_interrupt_nmi ? 1 : 0)} " +
+            $"bank=0x{g_bank_register:X6}";
+        Console.WriteLine(header);
+        DumpZ80Region(0x0000, 0x0200);
+        if (extra)
+        {
+            DumpZ80Region(0x0500, 0x0200);
+            DumpZ80Region(0x0600, 0x0200);
+            DumpZ80Region(0x0900, 0x0200);
+            DumpZ80Region(0x0B00, 0x0200);
+            DumpZ80Region(0x0C00, 0x0200);
+            DumpZ80Region(0x0E00, 0x0200);
+            DumpZ80Region(0x0F00, 0x0100);
+        }
+        DumpZ80Region(0x1B80, 0x0080);
+        DumpZ80Region(0x1F00, 0x0100);
+
+        if (!string.IsNullOrWhiteSpace(dumpPath))
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine(header);
+            DumpZ80RegionTo(sb, 0x0000, 0x0200);
+            if (extra)
+            {
+                DumpZ80RegionTo(sb, 0x0500, 0x0200);
+                DumpZ80RegionTo(sb, 0x0600, 0x0200);
+                DumpZ80RegionTo(sb, 0x0900, 0x0200);
+                DumpZ80RegionTo(sb, 0x0B00, 0x0200);
+                DumpZ80RegionTo(sb, 0x0C00, 0x0200);
+                DumpZ80RegionTo(sb, 0x0E00, 0x0200);
+                DumpZ80RegionTo(sb, 0x0F00, 0x0100);
+            }
+            DumpZ80RegionTo(sb, 0x1B80, 0x0080);
+            DumpZ80RegionTo(sb, 0x1F00, 0x0100);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(dumpPath) ?? ".");
+                File.WriteAllText(dumpPath, sb.ToString());
+            }
+            catch
+            {
+                // ignore dump file errors to avoid breaking runtime
+            }
+        }
+    }
+
     private void DumpZ80Region(int start, int length)
     {
         int end = Math.Min(start + length, g_ram.Length);
@@ -1404,6 +1493,27 @@ NextPc:;
                 sb.Append(g_ram[addr + i].ToString("X2")).Append(' ');
             }
             Console.WriteLine(sb.ToString().TrimEnd());
+        }
+    }
+
+    private void DumpZ80RegionTo(StringBuilder sb, int start, int length)
+    {
+        if (g_ram == null || g_ram.Length == 0)
+            return;
+        int end = start + length;
+        if (end > g_ram.Length)
+            end = g_ram.Length;
+        int addr = start;
+        while (addr < end)
+        {
+            sb.Append($"[Z80RAM] 0x{addr:X4}:");
+            for (int i = 0; i < 16 && addr + i < end; i++)
+            {
+                sb.Append(' ');
+                sb.Append(g_ram[addr + i].ToString("X2"));
+            }
+            sb.AppendLine();
+            addr += 16;
         }
     }
 

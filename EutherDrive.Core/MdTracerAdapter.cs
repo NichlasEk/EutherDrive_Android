@@ -2041,6 +2041,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         return MdTracerCore.md_m68k.g_reg_PC;
     }
 
+    public void ForceDumpZ80(string reason, bool extra, string? dumpPath)
+    {
+        md_main.g_md_z80?.ForceDumpRam(reason, extra, dumpPath);
+    }
+
     public void SaveState(BinaryWriter writer)
     {
         if (writer == null)

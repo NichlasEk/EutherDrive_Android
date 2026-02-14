@@ -1204,6 +1204,8 @@ namespace EutherDrive.Core.MdTracerCore
             if (addr < 0x4000)
             {
                 ushort ramAddr = (ushort)(addr & 0x1FFF);
+                if (g_ram == null || g_ram.Length == 0)
+                    return 0xFF;
                 byte value = g_ram[ramAddr];
                 value = MaybeOverrideFlag65Read(ramAddr, value);
                 return ApplyForceZ80FlagBit2(ramAddr, value);
@@ -1454,6 +1456,8 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 // 8 KB Z80 RAM (0x0000..0x1FFF) speglad över 0x0000..0x3FFF
                 ushort ramAddr = (ushort)(a & 0x1FFF);
+                if (g_ram == null || g_ram.Length == 0)
+                    return 0xFF;
                 w_out = g_ram[ramAddr];
                 w_out = MaybeOverrideFlag65Read(ramAddr, w_out);
                 w_out = ApplyForceZ80FlagBit2(ramAddr, w_out);
@@ -1775,6 +1779,8 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 // 8 KB Z80 RAM (0x0000..0x1FFF) speglad över 0x0000..0x3FFF
                 ushort ramAddr = (ushort)(a & 0x1FFF);
+                if (g_ram == null || g_ram.Length == 0)
+                    return;
                 byte oldValue = g_ram[ramAddr];
                 g_ram[ramAddr] = in_data;
                 if (ShouldTraceZ80Ram1800(ramAddr))

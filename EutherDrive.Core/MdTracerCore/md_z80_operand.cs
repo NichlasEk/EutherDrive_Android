@@ -1805,6 +1805,15 @@ namespace EutherDrive.Core.MdTracerCore
         {
             // Fix: lås CPU tills IRQ/NMI – flytta inte PC.
             g_halt = true;
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_HALT"), "1", StringComparison.Ordinal))
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine(
+                    $"[Z80-HALT] frame={frame} pc=0x{g_reg_PC:X4} lastpc=0x{_lastPcBefore:X4} " +
+                    $"op=0x{_lastOp1:X2} op2=0x{_lastOp2:X2} op3=0x{_lastOp3:X2} op4=0x{_lastOp4:X2} " +
+                    $"IM={g_interruptMode} IFF1={(g_IFF1 ? 1 : 0)} IFF2={(g_IFF2 ? 1 : 0)} " +
+                    $"IRQ={(g_interrupt_irq ? 1 : 0)} NMI={(g_interrupt_nmi ? 1 : 0)}");
+            }
             g_clock = 4;
         }
         private void op_DI()
