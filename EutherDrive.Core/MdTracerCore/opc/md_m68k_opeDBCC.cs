@@ -15,10 +15,14 @@ namespace EutherDrive.Core.MdTracerCore
 
             bool conditionFalse = !g_flag_chack[(g_opcode >> 8) & 0x0f]();
             ushort before = g_reg_data[g_op4].w;
-            ushort after = (ushort)(before - 1);
-            g_reg_data[g_op4].w = after;
-
-            bool branch = conditionFalse && after != 0xFFFF;
+            ushort after = before;
+            bool branch = false;
+            if (conditionFalse)
+            {
+                after = (ushort)(before - 1);
+                g_reg_data[g_op4].w = after;
+                branch = after != 0xFFFF;
+            }
             if (branch)
                 g_reg_PC = (uint)(basePc + displacement);
 

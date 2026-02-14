@@ -8,7 +8,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_clock += 20;
             uint w_pc = g_reg_PC;
-            g_reg_SR = stack_pop16();
+            ushort ccr = stack_pop16();
+            g_reg_SR = (ushort)((g_reg_SR & 0xFF00) | (ccr & 0x00FF));
             g_reg_PC = stack_pop32();
             md_main.g_form_code_trace.CPU_Trace_pop(g_reg_PC, w_pc, g_reg_addr[7].l);
         }

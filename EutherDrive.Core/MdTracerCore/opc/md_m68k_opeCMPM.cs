@@ -11,8 +11,8 @@ namespace EutherDrive.Core.MdTracerCore
             g_work_val1.l = md_main.g_md_bus.read8(g_reg_addr[g_op1].l);
             g_work_val2.l = md_main.g_md_bus.read8(g_reg_addr[g_op4].l);
             g_work_data.l = g_work_val1.l - g_work_val2.l;
-            g_reg_addr[g_op1].l += 1;
-            g_reg_addr[g_op4].l += 1;
+            g_reg_addr[g_op1].l += (uint)(g_op1 == 7 ? 2 : 1);
+            g_reg_addr[g_op4].l += (uint)(g_op4 == 7 ? 2 : 1);
             uint w_mask = MASKBIT[g_op2 & 0x03];
             uint w_most = MOSTBIT[g_op2 & 0x03];
             bool SMC = ((g_work_val2.l & w_most)) == 0 ? false : true;

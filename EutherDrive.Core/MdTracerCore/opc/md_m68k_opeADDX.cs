@@ -44,8 +44,8 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             int w_size = g_op2 & 0x03;
 
-            g_reg_addr[g_op1].l -= 1;
-            g_reg_addr[g_op4].l -= 1;
+            g_reg_addr[g_op1].l -= (uint)(g_op1 == 7 ? 2 : 1);
+            g_reg_addr[g_op4].l -= (uint)(g_op4 == 7 ? 2 : 1);
 
             g_work_val1.l = md_main.g_md_bus.read8(g_reg_addr[g_op1].l);
             g_work_val2.l = md_main.g_md_bus.read8(g_reg_addr[g_op4].l);

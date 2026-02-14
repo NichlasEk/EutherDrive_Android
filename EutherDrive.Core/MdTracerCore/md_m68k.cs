@@ -63,6 +63,10 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FIX_MOVEM_PREDEC"), "1", StringComparison.Ordinal);
         internal static readonly bool TraceMovemPredec =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MOVEM_PREDEC"), "1", StringComparison.Ordinal);
+        internal static readonly bool AllowTasWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_ALLOW_TAS_WRITES"), "1", StringComparison.Ordinal);
+        internal static readonly bool FixBranchBaseAfterExtension =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FIX_BRANCH_BASE_AFTER_EXT"), "1", StringComparison.Ordinal);
         internal static int TraceMovemPredecRemaining = 8;
         internal static readonly List<(uint Start, uint End)> FixMovemPredecRanges =
             ParseWatchRangeList("EUTHERDRIVE_FIX_MOVEM_PREDEC_PC_RANGE");

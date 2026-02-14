@@ -10,7 +10,15 @@ namespace EutherDrive.Core.MdTracerCore
             adressing_func_address(g_op3, g_op4, 1);
             g_clock = 158;
             g_work_data.w = (ushort)adressing_func_read(g_op3, g_op4, 1);
-            if (g_work_data.w == 0) { g_reg_PC = md_main.g_md_bus.read32(20); return; }
+            if (g_work_data.w == 0)
+            {
+                g_status_C = false;
+                g_status_V = false;
+                g_status_N = false;
+                g_status_Z = false;
+                RaiseException("DIV0", 0x0014);
+                return;
+            }
             g_work_val1.l = (uint)((int)g_reg_data[g_op1].l / (short)g_work_data.w);
             if (((int)g_work_val1.l < -32768)|| (32767 < (int)g_work_val1.l)) { g_status_V = true; }
             else {

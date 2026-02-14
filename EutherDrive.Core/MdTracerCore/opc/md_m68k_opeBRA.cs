@@ -8,7 +8,16 @@ namespace EutherDrive.Core.MdTracerCore
         {
            g_clock += 10;
            g_reg_PC += 2;
-           g_reg_PC = (uint)(g_reg_PC + (short)md_main.g_md_bus.read16(g_reg_PC));
+           if (FixBranchBaseAfterExtension)
+           {
+               short disp = (short)md_main.g_md_bus.read16(g_reg_PC);
+               g_reg_PC += 2;
+               g_reg_PC = (uint)(g_reg_PC + disp);
+           }
+           else
+           {
+               g_reg_PC = (uint)(g_reg_PC + (short)md_main.g_md_bus.read16(g_reg_PC));
+           }
         }
         private void analyse_BRA_b()
         {

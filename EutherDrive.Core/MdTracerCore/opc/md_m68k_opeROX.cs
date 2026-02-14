@@ -22,6 +22,11 @@ namespace EutherDrive.Core.MdTracerCore
             g_work_data.l = read_g_reg_data(g_op4, w_size);
             g_status_V = false;
             g_status_C = false;
+            if (wcnt == 0)
+            {
+                // 68k behavior: ROX with count=0 leaves data unchanged and sets C = X
+                g_status_C = g_status_X;
+            }
             if(w_dr == 0)
             {
                 for (int i = 0; i < wcnt; i++)
