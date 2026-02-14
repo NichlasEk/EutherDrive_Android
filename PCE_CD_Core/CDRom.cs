@@ -32,6 +32,8 @@ namespace ePceCD
         private CDLOOPMODE CdLoopMode;
         private enum CDLOOPMODE { LOOP, IRQ, STOP };
         byte[] CDSBuffer = new byte[SECTOR_SIZE];
+        private int _cdSectorOffsetBytes = -1;
+        private int _cdSectorDataOffset = DATA_SECTOR_OFFSET;
 
         // 光盘数据结构
         public enum TrackType { AUDIO, MODE1, MODE2, MODE1_2352 }
@@ -105,6 +107,9 @@ namespace ePceCD
 
         public ADPCM _ADPCM;
         public AUDIOFADE _AUDIOFADE = new AUDIOFADE();
+        private readonly float _psgMix;
+        private readonly float _cdMix;
+        private readonly bool _cdAudioBigEndian;
 
         [NonSerialized]
         public BUS Bus;
@@ -114,6 +119,9 @@ namespace ePceCD
             _ADPCM = new ADPCM(this);
 
             Bus = bus;
+            _psgMix = GetEnvMix("EUTHERDRIVE_PCE_PSG_MIX", 0.8f);
+            _cdMix = GetEnvMix("EUTHERDRIVE_PCE_CD_MIX", 0.2f);
+            _cdAudioBigEndian = GetEnvEndian();
         }
 
         public CDRom()
@@ -150,6 +158,7 @@ namespace ePceCD
                             return;
                         case CDLOOPMODE.LOOP:
                             AudioCS = AudioSS;
+                            _cdSectorOffsetBytes = -1;
                             break;
                         case CDLOOPMODE.IRQ:
                             ActiveIrqs |= (byte)CdRomIrqSource.Stop;
@@ -157,22 +166,72 @@ namespace ePceCD
                             return;
                     }
                 }
-                if (FileTrack.File == null) return;
-                FileTrack.File.Seek(AudioCS * SECTOR_SIZE, SeekOrigin.Begin);
-                FileTrack.File.Read(CDSBuffer, 0, SECTOR_SIZE);
-                for (int i = DATA_SECTOR_OFFSET; i < SECTOR_SIZE && samplesMixed < len; i += 4)
+                var track = tracks.FirstOrDefault(t => t.SectorStart <= AudioCS && t.SectorEnd > AudioCS);
+                if (track == null)
+                    return;
+                if (track.File == null)
+                    return;
+                if (_cdSectorOffsetBytes < 0 || _cdSectorOffsetBytes >= SECTOR_SIZE)
                 {
-                    short sampleL = (short)((CDSBuffer[i + 1] << 8) | CDSBuffer[i]);
-                    short sampleR = (short)((CDSBuffer[i + 3] << 8) | CDSBuffer[i + 2]);
-
-                    int mixedL = (int)(Buffer[samplesMixed] * 0.8f + sampleL * 0.2f);
-                    int mixedR = (int)(Buffer[samplesMixed + 1] * 0.8f + sampleR * 0.2f);
-
-                    Buffer[samplesMixed++] = SoftClip(mixedL);
-                    Buffer[samplesMixed++] = SoftClip(mixedR);
+                    long relSector = AudioCS - track.SectorStart;
+                    long fileOffset = track.OffsetStart + relSector * SECTOR_SIZE;
+                    track.File.Seek(fileOffset, SeekOrigin.Begin);
+                    track.File.Read(CDSBuffer, 0, SECTOR_SIZE);
+                    _cdSectorDataOffset = track.Type == TrackType.AUDIO ? 0 : DATA_SECTOR_OFFSET;
+                    _cdSectorOffsetBytes = _cdSectorDataOffset;
                 }
-                AudioCS++;
+
+                while (_cdSectorOffsetBytes + 3 < SECTOR_SIZE && samplesMixed < len)
+                {
+                    int i = _cdSectorOffsetBytes;
+                    short sampleL;
+                    short sampleR;
+                    if (track.Type == TrackType.AUDIO && _cdAudioBigEndian)
+                    {
+                        sampleL = (short)((CDSBuffer[i] << 8) | CDSBuffer[i + 1]);
+                        sampleR = (short)((CDSBuffer[i + 2] << 8) | CDSBuffer[i + 3]);
+                    }
+                    else
+                    {
+                        sampleL = (short)((CDSBuffer[i + 1] << 8) | CDSBuffer[i]);
+                        sampleR = (short)((CDSBuffer[i + 3] << 8) | CDSBuffer[i + 2]);
+                    }
+
+                    int mixedR = (int)(Buffer[samplesMixed] * _psgMix + sampleR * _cdMix);
+                    int mixedL = (int)(Buffer[samplesMixed + 1] * _psgMix + sampleL * _cdMix);
+
+                    Buffer[samplesMixed++] = SoftClip(mixedR);
+                    Buffer[samplesMixed++] = SoftClip(mixedL);
+                    _cdSectorOffsetBytes += 4;
+                }
+
+                if (_cdSectorOffsetBytes >= SECTOR_SIZE)
+                {
+                    _cdSectorOffsetBytes = -1;
+                    AudioCS++;
+                }
             }
+        }
+
+        private static float GetEnvMix(string name, float fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!float.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float value))
+                return fallback;
+            if (value < 0f) return 0f;
+            if (value > 1f) return 1f;
+            return value;
+        }
+
+        private static bool GetEnvEndian()
+        {
+            string raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CD_ENDIAN");
+            if (string.IsNullOrWhiteSpace(raw))
+                return false;
+            raw = raw.Trim().ToLowerInvariant();
+            return raw != "little";
         }
 
         private int MSFToLBA(int m, int s, int f) => m * 60 * 75 + s * 75 + f;
@@ -286,16 +345,22 @@ namespace ePceCD
         private void CalculateTrackMSF()
         {
             long fileOffset = 0;
+            string lastFile = string.Empty;
             foreach (var track in tracks)
             {
+                if (!string.Equals(track.FileName, lastFile, StringComparison.OrdinalIgnoreCase))
+                    fileOffset = 0;
+                lastFile = track.FileName ?? string.Empty;
+                long baseOffset = GetFileDataOffset(track.FileName);
+
                 track.SectorStart = MSFToLBA(track.StartPos.MSF_M, track.StartPos.MSF_S, track.StartPos.MSF_F);
-                track.OffsetStart = fileOffset;
+                track.OffsetStart = baseOffset + fileOffset;
 
                 var nextTrack = tracks.FirstOrDefault(t => t.Number == track.Number + 1);
                 track.SectorEnd = nextTrack?.SectorStart ?? (track.File.Length / SECTOR_SIZE);
 
                 track.OffsetEnd = track.OffsetStart + (track.SectorEnd - track.SectorStart) * SECTOR_SIZE;
-                fileOffset = track.OffsetEnd;
+                fileOffset = track.OffsetEnd - baseOffset;
 
                 track.EndPos = new PosMSF
                 {
@@ -304,6 +369,41 @@ namespace ePceCD
                     MSF_F = (int)(track.SectorEnd % 75)
                 };
             }
+        }
+
+        private static long GetFileDataOffset(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+                return 0;
+            if (!fileName.EndsWith(".wav", StringComparison.OrdinalIgnoreCase))
+                return 0;
+            try
+            {
+                using var fs = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var br = new BinaryReader(fs);
+                if (fs.Length < 12)
+                    return 0;
+                uint riff = br.ReadUInt32();
+                uint riffSize = br.ReadUInt32();
+                uint wave = br.ReadUInt32();
+                if (riff != 0x46464952 || wave != 0x45564157)
+                    return 0;
+                while (fs.Position + 8 <= fs.Length)
+                {
+                    uint chunkId = br.ReadUInt32();
+                    uint chunkSize = br.ReadUInt32();
+                    if (chunkId == 0x61746164)
+                        return fs.Position;
+                    fs.Position += chunkSize;
+                    if ((chunkSize & 1) != 0)
+                        fs.Position += 1;
+                }
+            }
+            catch
+            {
+                return 0;
+            }
+            return 0;
         }
         #endregion
 
@@ -489,6 +589,7 @@ namespace ePceCD
                     case ScsiCommand.AudioPause:
                         Console.WriteLine($"CD-ROM: AudioPause");
                         CdPlaying = false;
+                        _cdSectorOffsetBytes = -1;
                         SendStatus(0);
                         break;
                     default:
@@ -529,17 +630,22 @@ namespace ePceCD
             byte[] sectorBuffer = new byte[SECTOR_SIZE];
 
             Console.WriteLine($"CD-ROM: ReadSector {currentSector} to {SectorsToRead + currentSector - 1}");
-            long fileOffset = 0;
             long datasize = 0;
             currentTrack = tracks.FirstOrDefault(t => currentSector >= t.SectorStart && currentSector + SectorsToRead <= t.SectorEnd);
+            if (currentTrack == null)
+                currentTrack = FileTrack;
             int ssize = (currentTrack.Type == TrackType.AUDIO) ? SECTOR_SIZE : MODE1_DATA_SIZE;
             byte[] data = new byte[ssize * SectorsToRead];
             do
             {
-                fileOffset = currentSector * SECTOR_SIZE;
-                FileTrack.File.Seek(fileOffset, SeekOrigin.Begin);
-                FileTrack.File.Read(sectorBuffer, 0, SECTOR_SIZE);
-                switch (currentTrack.Type)
+                var track = tracks.FirstOrDefault(t => t.SectorStart <= currentSector && t.SectorEnd > currentSector) ?? currentTrack;
+                if (track.File == null)
+                    break;
+                long relSector = currentSector - track.SectorStart;
+                long fileOffset = track.OffsetStart + relSector * SECTOR_SIZE;
+                track.File.Seek(fileOffset, SeekOrigin.Begin);
+                track.File.Read(sectorBuffer, 0, SECTOR_SIZE);
+                switch (track.Type)
                 {
                     case TrackType.MODE1:
                     case TrackType.MODE1_2352:
@@ -695,6 +801,7 @@ namespace ePceCD
         {
             AudioSS = AudioGetPos();
             AudioCS = AudioSS;
+            _cdSectorOffsetBytes = -1;
             Console.WriteLine($"CD-ROM: AudioStartPos [{AudioSS}]");
             if (CMDBuffer[1] == 0)
             {

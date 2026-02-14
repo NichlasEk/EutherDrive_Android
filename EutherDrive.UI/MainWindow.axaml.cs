@@ -1276,6 +1276,8 @@ public partial class MainWindow : Window
             adapter.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is SnesAdapter snes)
             snes.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is PceCdAdapter pce)
+            pce.SetMasterVolumePercent(_masterVolumePercent);
     }
 
     private void ApplyAudioMixToCore()
@@ -1544,6 +1546,7 @@ public partial class MainWindow : Window
     {
         public InputMappingSet MdSms { get; set; } = new();
         public InputMappingSet Snes { get; set; } = new();
+        public InputMappingSet Pce { get; set; } = new();
 
         // Legacy accessors (MD/SMS)
         public Dictionary<string, Key> KeyboardMappings
@@ -1568,6 +1571,7 @@ public partial class MainWindow : Window
         {
             ApplyMdSmsDefaults(MdSms);
             ApplySnesDefaults(Snes);
+            ApplyPceDefaults(Pce);
         }
 
         private static void ApplyMdSmsDefaults(InputMappingSet set)
@@ -1631,6 +1635,27 @@ public partial class MainWindow : Window
             set.GamepadMappings["Start"] = GamepadButton.Start;
             set.GamepadMappings["Select"] = GamepadButton.Back;
         }
+
+        private static void ApplyPceDefaults(InputMappingSet set)
+        {
+            set.KeyboardMappings["Up"] = Key.Up;
+            set.KeyboardMappings["Down"] = Key.Down;
+            set.KeyboardMappings["Left"] = Key.Left;
+            set.KeyboardMappings["Right"] = Key.Right;
+            set.KeyboardMappings["A"] = Key.Z;
+            set.KeyboardMappings["B"] = Key.X;
+            set.KeyboardMappings["Start"] = Key.Enter;
+            set.KeyboardMappings["Select"] = Key.RightShift;
+
+            set.GamepadMappings["Up"] = GamepadButton.DPadUp;
+            set.GamepadMappings["Down"] = GamepadButton.DPadDown;
+            set.GamepadMappings["Left"] = GamepadButton.DPadLeft;
+            set.GamepadMappings["Right"] = GamepadButton.DPadRight;
+            set.GamepadMappings["A"] = GamepadButton.B;
+            set.GamepadMappings["B"] = GamepadButton.A;
+            set.GamepadMappings["Start"] = GamepadButton.Start;
+            set.GamepadMappings["Select"] = GamepadButton.Back;
+        }
     }
 
     private sealed class MappingItem
@@ -1656,6 +1681,7 @@ public partial class MainWindow : Window
         public InputMappingSettings Mappings { get; }
         private readonly List<MappingItem> _mdItems = new();
         private readonly List<MappingItem> _snesItems = new();
+        private readonly List<MappingItem> _pceItems = new();
         private MappingItem? _currentlyRecording;
         private TextBlock? _recordingHint;
         private readonly Func<GamepadButton?>? _gamepad1ButtonProvider;
@@ -1676,6 +1702,7 @@ public partial class MainWindow : Window
 
             BuildMappingItems(Mappings.MdSms, _mdItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "Start", "Pause", "X", "Y", "Z", "Mode" });
             BuildMappingItems(Mappings.Snes, _snesItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R", "Start", "Select" });
+            BuildMappingItems(Mappings.Pce, _pceItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "Start", "Select" });
 
             BuildUi();
         }
@@ -1714,6 +1741,11 @@ public partial class MainWindow : Window
             {
                 Header = "SNES",
                 Content = BuildMappingGrid(_snesItems)
+            });
+            tabControl.Items.Add(new TabItem
+            {
+                Header = "PCE",
+                Content = BuildMappingGrid(_pceItems)
             });
 
             stack.Children.Add(tabControl);
@@ -1845,6 +1877,7 @@ public partial class MainWindow : Window
         {
             ApplyItemsToMappings(_mdItems, Mappings.MdSms);
             ApplyItemsToMappings(_snesItems, Mappings.Snes);
+            ApplyItemsToMappings(_pceItems, Mappings.Pce);
             Close(true);
         }
 
@@ -1991,6 +2024,9 @@ public partial class MainWindow : Window
         public Dictionary<string, string>? SnesKeyboardMappings { get; set; }
         public Dictionary<string, string>? SnesGamepadMappings { get; set; }
         public Dictionary<string, string>? SnesGamepad2Mappings { get; set; }
+        public Dictionary<string, string>? PceKeyboardMappings { get; set; }
+        public Dictionary<string, string>? PceGamepadMappings { get; set; }
+        public Dictionary<string, string>? PceGamepad2Mappings { get; set; }
     }
 
     private void LoadSettings()
@@ -2076,6 +2112,7 @@ public partial class MainWindow : Window
             _inputMappings = settings.InputMappings;
             NormalizeMappingSet(_inputMappings.MdSms, includePause: true);
             NormalizeMappingSet(_inputMappings.Snes, includePause: false);
+            NormalizeMappingSet(_inputMappings.Pce, includePause: false);
         }
         UpdateYmResampleUi();
         UpdateZ80CyclesMultUi();
@@ -2244,14 +2281,20 @@ public partial class MainWindow : Window
                 Gamepad2Mappings = ConvertGamepadDict(settings.InputMappings.MdSms.Gamepad2Mappings),
                 SnesKeyboardMappings = ConvertKeyDict(settings.InputMappings.Snes.KeyboardMappings),
                 SnesGamepadMappings = ConvertGamepadDict(settings.InputMappings.Snes.GamepadMappings),
-                SnesGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Snes.Gamepad2Mappings)
+                SnesGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Snes.Gamepad2Mappings),
+                PceKeyboardMappings = ConvertKeyDict(settings.InputMappings.Pce.KeyboardMappings),
+                PceGamepadMappings = ConvertGamepadDict(settings.InputMappings.Pce.GamepadMappings),
+                PceGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Pce.Gamepad2Mappings)
             };
             if (model.InputMappings.KeyboardMappings == null
                 && model.InputMappings.GamepadMappings == null
                 && model.InputMappings.Gamepad2Mappings == null
                 && model.InputMappings.SnesKeyboardMappings == null
                 && model.InputMappings.SnesGamepadMappings == null
-                && model.InputMappings.SnesGamepad2Mappings == null)
+                && model.InputMappings.SnesGamepad2Mappings == null
+                && model.InputMappings.PceKeyboardMappings == null
+                && model.InputMappings.PceGamepadMappings == null
+                && model.InputMappings.PceGamepad2Mappings == null)
             {
                 model.InputMappings = null;
             }
@@ -2316,6 +2359,10 @@ public partial class MainWindow : Window
         any |= ApplyTomlMappings(raw.SnesKeyboardMappings, mappings.Snes.KeyboardMappings);
         any |= ApplyTomlMappings(raw.SnesGamepadMappings, mappings.Snes.GamepadMappings);
         any |= ApplyTomlMappings(raw.SnesGamepad2Mappings, mappings.Snes.Gamepad2Mappings);
+
+        any |= ApplyTomlMappings(raw.PceKeyboardMappings, mappings.Pce.KeyboardMappings);
+        any |= ApplyTomlMappings(raw.PceGamepadMappings, mappings.Pce.GamepadMappings);
+        any |= ApplyTomlMappings(raw.PceGamepad2Mappings, mappings.Pce.Gamepad2Mappings);
 
         return any ? mappings : null;
     }
@@ -3223,7 +3270,8 @@ public partial class MainWindow : Window
         UpdateGamepadState();
 
         bool isSnes = core is SnesAdapter;
-        var mappingSet = isSnes ? _inputMappings.Snes : _inputMappings.MdSms;
+        bool isPce = core is PceCdAdapter;
+        var mappingSet = isSnes ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms);
         bool up;
         bool down;
         bool left;
@@ -3267,7 +3315,10 @@ public partial class MainWindow : Window
             x     = mappingSet.KeyboardMappings.TryGetValue("X", out Key xKey) && _keysDown.Contains(xKey);
             y     = mappingSet.KeyboardMappings.TryGetValue("Y", out Key yKey) && _keysDown.Contains(yKey);
             z     = mappingSet.KeyboardMappings.TryGetValue("Z", out Key zKey) && _keysDown.Contains(zKey);
-            mode  = mappingSet.KeyboardMappings.TryGetValue("Mode", out Key modeKey) && _keysDown.Contains(modeKey);
+            if (isPce)
+                mode = mappingSet.KeyboardMappings.TryGetValue("Select", out Key selKey) && _keysDown.Contains(selKey);
+            else
+                mode = mappingSet.KeyboardMappings.TryGetValue("Mode", out Key modeKey) && _keysDown.Contains(modeKey);
             padType = (PadType)Volatile.Read(ref _padTypeRaw);
 
             if (isSnes)
@@ -3306,8 +3357,16 @@ public partial class MainWindow : Window
             y |= IsGamepadButtonPressed(gpY);
         if (mappingSet.GamepadMappings.TryGetValue("Z", out GamepadButton gpZ) && gpZ != GamepadButton.None)
             z |= IsGamepadButtonPressed(gpZ);
-        if (mappingSet.GamepadMappings.TryGetValue("Mode", out GamepadButton gpMode) && gpMode != GamepadButton.None)
-            mode |= IsGamepadButtonPressed(gpMode);
+        if (isPce)
+        {
+            if (mappingSet.GamepadMappings.TryGetValue("Select", out GamepadButton gpSelPce) && gpSelPce != GamepadButton.None)
+                mode |= IsGamepadButtonPressed(gpSelPce);
+        }
+        else
+        {
+            if (mappingSet.GamepadMappings.TryGetValue("Mode", out GamepadButton gpMode) && gpMode != GamepadButton.None)
+                mode |= IsGamepadButtonPressed(gpMode);
+        }
 
         // Gamepad 2 mappings (no keyboard for P2)
         if (_activeGamepad2 != IntPtr.Zero && mappingSet.Gamepad2Mappings.Count > 0)
@@ -3334,8 +3393,16 @@ public partial class MainWindow : Window
                 y2 |= IsGamepad2ButtonPressed(gp2Y);
             if (mappingSet.Gamepad2Mappings.TryGetValue("Z", out GamepadButton gp2Z) && gp2Z != GamepadButton.None)
                 z2 |= IsGamepad2ButtonPressed(gp2Z);
-            if (mappingSet.Gamepad2Mappings.TryGetValue("Mode", out GamepadButton gp2Mode) && gp2Mode != GamepadButton.None)
-                mode2 |= IsGamepad2ButtonPressed(gp2Mode);
+            if (isPce)
+            {
+                if (mappingSet.Gamepad2Mappings.TryGetValue("Select", out GamepadButton gp2SelPce) && gp2SelPce != GamepadButton.None)
+                    mode2 |= IsGamepad2ButtonPressed(gp2SelPce);
+            }
+            else
+            {
+                if (mappingSet.Gamepad2Mappings.TryGetValue("Mode", out GamepadButton gp2Mode) && gp2Mode != GamepadButton.None)
+                    mode2 |= IsGamepad2ButtonPressed(gp2Mode);
+            }
         }
 
         if (core is MdTracerAdapter smsAdapter && smsAdapter.IsMasterSystemMode)

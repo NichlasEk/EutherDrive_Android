@@ -18,6 +18,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
     private int _frameHeight = DefaultHeight;
     private int _frameStride = DefaultWidth * 4;
     private bool _frameReady;
+    private float _masterVolumeScale = 1.0f;
 
     public PceCdAdapter()
     {
@@ -76,6 +77,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         int samplesPerFrame = GetSamplesPerFrame();
         EnsureAudioBuffer(samplesPerFrame * 2);
         _bus.APU.GetSamples(_audioBuffer, _audioBuffer.Length);
+        ApplyMasterVolume(_audioBuffer);
 
         if (!_frameReady)
         {
@@ -122,6 +124,13 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         _bus.JoyPort.KeyState(PCEKEY.B, (short)(b ? 0 : 1));
         _bus.JoyPort.KeyState(PCEKEY.Start, (short)(start ? 0 : 1));
         _bus.JoyPort.KeyState(PCEKEY.Select, (short)(mode ? 0 : 1));
+    }
+
+    public void SetMasterVolumePercent(int percent)
+    {
+        if (percent < 0) percent = 0;
+        else if (percent > 100) percent = 100;
+        _masterVolumeScale = percent / 100f;
     }
 
     public void RenderFrame(int[] pixels, int width, int height)
@@ -177,6 +186,23 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
     {
         if (_audioBuffer.Length != neededSamples)
             _audioBuffer = new short[neededSamples];
+    }
+
+    private void ApplyMasterVolume(short[] buffer)
+    {
+        if (buffer.Length == 0)
+            return;
+        if (_masterVolumeScale >= 0.999f)
+            return;
+
+        float scale = _masterVolumeScale;
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            int v = (int)(buffer[i] * scale);
+            if (v > short.MaxValue) v = short.MaxValue;
+            else if (v < short.MinValue) v = short.MinValue;
+            buffer[i] = (short)v;
+        }
     }
 
     private static string? FindBiosPath()
