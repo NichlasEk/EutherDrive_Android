@@ -93,7 +93,7 @@ namespace XamariNES.Cartridge
 
             //Set Flags6
             Flags6 = ROM[6];
-            bool batteryBacked = Flags6.IsFlagSet(Byte6Flags.BatteryBacked);
+            bool batteryBacked = Flags6.IsFlagSet(Byte6Flags.BatteryBackedPRGRAM);
 
             //Move PGR ROM Start if Trainer Present
             if (Flags6.IsFlagSet(Byte6Flags.TrainerPresent))
