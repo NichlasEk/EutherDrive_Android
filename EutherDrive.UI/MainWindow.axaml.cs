@@ -1311,6 +1311,8 @@ public partial class MainWindow : Window
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Content = layout
         };
+        dialog.KeyDown += (_, args) => zuulView.InjectKeyDown(args.Key);
+        dialog.KeyUp += (_, args) => zuulView.InjectKeyUp(args.Key);
 
         await dialog.ShowDialog(this);
     }

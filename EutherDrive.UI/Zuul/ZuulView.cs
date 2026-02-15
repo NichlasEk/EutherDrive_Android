@@ -87,6 +87,16 @@ internal sealed class ZuulView : Control
         _keysDown.Remove(e.Key);
     }
 
+    public void InjectKeyDown(Key key)
+    {
+        _keysDown.Add(key);
+    }
+
+    public void InjectKeyUp(Key key)
+    {
+        _keysDown.Remove(key);
+    }
+
     public void LoadDefault()
     {
         try
