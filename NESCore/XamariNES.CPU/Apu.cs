@@ -19,6 +19,7 @@ namespace XamariNES.APU
         private bool _frameIrqFlag;
         private bool _frameIrqClearPending;
         private readonly Func<int, byte> _memoryRead;
+        private XamariNES.Cartridge.Mappers.IExpansionAudioProvider _expansionAudio;
 
         private double _sampleAccumulator;
         private readonly double _cyclesPerSample;
@@ -31,6 +32,11 @@ namespace XamariNES.APU
             _memoryRead = memoryRead;
             _dmc = new DmcChannel(memoryRead);
             _cyclesPerSample = CpuHz / SampleRate;
+        }
+
+        public void AttachExpansionAudio(XamariNES.Cartridge.Mappers.IExpansionAudioProvider provider)
+        {
+            _expansionAudio = provider;
         }
 
         public void WriteRegister(int offset, byte value)
@@ -174,11 +180,13 @@ namespace XamariNES.APU
             if (_sampleAccumulator >= _cyclesPerSample)
             {
                 _sampleAccumulator -= _cyclesPerSample;
-                double mixed = MixSamples();
-                short pcm = ToPcm(mixed);
-                _audio.Add(pcm);
-                _audio.Add(pcm);
-            }
+            double mixed = MixSamples();
+            if (_expansionAudio != null)
+                mixed = _expansionAudio.MixAudio(mixed);
+            short pcm = ToPcm(mixed);
+            _audio.Add(pcm);
+            _audio.Add(pcm);
+        }
         }
 
         private double MixSamples()
@@ -190,7 +198,10 @@ namespace XamariNES.APU
             byte d = _dmc.Sample();
             double pulse = MixTables.PulseTable[p1 + p2];
             double tnd = MixTables.TndTable[d, t, n];
-            return pulse + tnd; // 0..1
+            double mixed = pulse + tnd;
+            if (mixed < 0.0) return 0.0;
+            if (mixed > 1.0) return 1.0;
+            return mixed;
         }
 
         private static short ToPcm(double value)

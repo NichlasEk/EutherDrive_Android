@@ -134,6 +134,16 @@ namespace XamariNES.Cartridge
                 case 4:
                     MemoryMapper = new MMC3(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, _nametableMirroring);
                     break;
+                case 5:
+                {
+                    if (prgRAMSize == 0)
+                    {
+                        prgRAMSize = 65536;
+                        _prgRam = new byte[prgRAMSize];
+                    }
+                    MemoryMapper = new MMC5(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, _nametableMirroring);
+                    break;
+                }
                 default:
                     throw new Exception($"Unsupported Mapper: {mapperNumber}");
             }

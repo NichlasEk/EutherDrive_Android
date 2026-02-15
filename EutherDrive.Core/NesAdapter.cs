@@ -21,6 +21,7 @@ public sealed class NesAdapter : IEmulatorCore
     private PpuCore? _ppu;
     private NESController? _controller;
     private IMapperIrqProvider? _irqProvider;
+    private IMapperCpuTick? _cpuTickProvider;
     private Apu? _apu;
     private byte[] _frameBuffer = new byte[DefaultHeight * DefaultStride];
     private short[] _audioBuffer = Array.Empty<short>();
@@ -47,6 +48,9 @@ public sealed class NesAdapter : IEmulatorCore
         _apu = new Apu(ReadCpuMemory);
         _cpu.CPUMemory.AttachApu(_apu);
         _irqProvider = _cartridge.MemoryMapper as IMapperIrqProvider;
+        _cpuTickProvider = _cartridge.MemoryMapper as IMapperCpuTick;
+        if (_cartridge.MemoryMapper is IExpansionAudioProvider expansion)
+            _apu.AttachExpansionAudio(expansion);
         _saveRamProvider = _cartridge.MemoryMapper as ISaveRamProvider;
         _saveRamPath = null;
         if (_saveRamProvider != null && _saveRamProvider.BatteryBacked && !string.IsNullOrWhiteSpace(_romPath))
@@ -119,6 +123,8 @@ public sealed class NesAdapter : IEmulatorCore
 
             if (_apu != null)
                 _apu.TickCpu(cpuTicks);
+            if (_cpuTickProvider != null)
+                _cpuTickProvider.TickCpu(cpuTicks);
 
             if (_ppu.FrameReady)
             {

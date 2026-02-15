@@ -97,6 +97,8 @@ namespace XamariNES.PPU
         /// </summary>
         public Memory PPUMemory;
 
+        private readonly IMapper _memoryMapper;
+
         /// <summary>
         ///     PPU Constructor
         /// </summary>
@@ -104,6 +106,7 @@ namespace XamariNES.PPU
         /// <param name="dmaWriteDelegate">DMA Write Delegate - Invoked to copy data from CPU memory to the OAM buffer</param>
         public Core(IMapper memoryMapper, DMAWriteDelegate dmaWriteDelegate)
         {
+            _memoryMapper = memoryMapper;
             //Declare the things
             _oamData = new byte[256];
             _sprites = new byte[32];
@@ -124,6 +127,8 @@ namespace XamariNES.PPU
 
                 //Update Register
                 _registerPPUCTRL = value;
+                if (memoryMapper is IPpuCtrlObserver ctrlObserver)
+                    ctrlObserver.OnPpuCtrlWrite(value);
 
                 //Cache the new value here
                 _registerPPUSCROLL = (_registerPPUSCROLL & 0xF3FF) | ((value & 0x03) << 10);
@@ -135,6 +140,8 @@ namespace XamariNES.PPU
                 UpdatePPUSTATUSRegister(value);
 
                 _registerPPUMASK = value;
+                if (memoryMapper is IPpuMaskObserver maskObserver)
+                    maskObserver.OnPpuMaskWrite(value);
             }, 0x2001);
 
             //PPUSTATUS ($2002, READ)
@@ -212,6 +219,9 @@ namespace XamariNES.PPU
             //PPUDATA ($2007, READ)
             memoryMapper.RegisterReadInterceptor(delegate
             {
+                if (memoryMapper is IPpuDataObserver dataObserver)
+                    dataObserver.OnPpuDataAccess();
+
                 var data = PPUMemory.ReadByte(_registerPPUADDR);
 
                 // Buffered read emulation
@@ -241,6 +251,9 @@ namespace XamariNES.PPU
             memoryMapper.RegisterWriteInterceptor(delegate(int offset, byte value)
             {
                 UpdatePPUSTATUSRegister(value);
+
+                if (memoryMapper is IPpuDataObserver dataObserver)
+                    dataObserver.OnPpuDataAccess();
 
                 PPUMemory.WriteByte(_registerPPUADDR, value);
 
@@ -423,6 +436,13 @@ namespace XamariNES.PPU
             if (_currentCycle > 257 && _currentCycle <= 320 &&
                 (_scanLineState.IsFlagSet(ScanLineStateFlags.PreRender) ||
                  _scanLineState.IsFlagSet(ScanLineStateFlags.Visible))) _registerOAMADDR = 0;
+
+            if (_currentCycle == 1 && _memoryMapper is IPpuScanlineObserver scanlineObserver)
+            {
+                bool renderingEnabled = _registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowSprites) ||
+                                        _registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowBackground);
+                scanlineObserver.OnPpuScanline(_currentScanline, renderingEnabled);
+            }
 
             if (_currentCycle == 260 && _scanLineState.IsFlagSet(ScanLineStateFlags.Visible) &&
                 (_registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowSprites) ||
@@ -737,8 +757,8 @@ namespace XamariNES.PPU
 
             // Read the 2 bytes in the bitfield for the y coordinate
             var pattern = new byte[2];
-            pattern[0] = PPUMemory.ReadByte(yAddr);
-            pattern[1] = PPUMemory.ReadByte(yAddr + 8);
+            pattern[0] = PPUMemory.ReadByteRender(yAddr, true);
+            pattern[1] = PPUMemory.ReadByteRender(yAddr + 8, true);
 
             // Extract correct bits based on x coordinate
             var loBit = (pattern[0] >> (7 - xPos)) & 1;

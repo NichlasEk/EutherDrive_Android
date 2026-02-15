@@ -740,9 +740,6 @@ public partial class MainWindow : Window
 
     private void HandleKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Source is TextBox)
-            return;
-
         if (e.Key == Key.F9 && e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             if (_core is MdTracerAdapter adapter)
@@ -771,12 +768,15 @@ public partial class MainWindow : Window
 
     private void HandleKeyUp(object? sender, KeyEventArgs e)
     {
-        if (e.Source is TextBox)
-            return;
-
         lock (_keysDown)
             _keysDown.Remove(e.Key);
         e.Handled = true;
+    }
+
+    private bool IsKeyDownMapped(Key key)
+    {
+        lock (_keysDown)
+            return _keysDown.Contains(key);
     }
 
     private bool HandleSavestateHotkey(Key key)
@@ -3346,36 +3346,33 @@ public partial class MainWindow : Window
         PadType padType;
         int autoMask;
         int autoRate;
-        lock (_keysDown)
-        {
-            // Use configured keyboard mappings
-            up    = mappingSet.KeyboardMappings.TryGetValue("Up", out Key upKey) && _keysDown.Contains(upKey);
-            down  = mappingSet.KeyboardMappings.TryGetValue("Down", out Key downKey) && _keysDown.Contains(downKey);
-            left  = mappingSet.KeyboardMappings.TryGetValue("Left", out Key leftKey) && _keysDown.Contains(leftKey);
-            right = mappingSet.KeyboardMappings.TryGetValue("Right", out Key rightKey) && _keysDown.Contains(rightKey);
-            a     = mappingSet.KeyboardMappings.TryGetValue("A", out Key aKey) && _keysDown.Contains(aKey);
-            b     = mappingSet.KeyboardMappings.TryGetValue("B", out Key bKey) && _keysDown.Contains(bKey);
-            c     = mappingSet.KeyboardMappings.TryGetValue("C", out Key cKey) && _keysDown.Contains(cKey);
-            start = mappingSet.KeyboardMappings.TryGetValue("Start", out Key startKey) && _keysDown.Contains(startKey);
-            pause = mappingSet.KeyboardMappings.TryGetValue("Pause", out Key pauseKey) && _keysDown.Contains(pauseKey);
-            x     = mappingSet.KeyboardMappings.TryGetValue("X", out Key xKey) && _keysDown.Contains(xKey);
-            y     = mappingSet.KeyboardMappings.TryGetValue("Y", out Key yKey) && _keysDown.Contains(yKey);
-            z     = mappingSet.KeyboardMappings.TryGetValue("Z", out Key zKey) && _keysDown.Contains(zKey);
-            if (isPce || isNes)
-                mode = mappingSet.KeyboardMappings.TryGetValue("Select", out Key selKey) && _keysDown.Contains(selKey);
-            else
-                mode = mappingSet.KeyboardMappings.TryGetValue("Mode", out Key modeKey) && _keysDown.Contains(modeKey);
-            padType = (PadType)Volatile.Read(ref _padTypeRaw);
+        // Use configured keyboard mappings
+        up    = mappingSet.KeyboardMappings.TryGetValue("Up", out Key upKey) && IsKeyDownMapped(upKey);
+        down  = mappingSet.KeyboardMappings.TryGetValue("Down", out Key downKey) && IsKeyDownMapped(downKey);
+        left  = mappingSet.KeyboardMappings.TryGetValue("Left", out Key leftKey) && IsKeyDownMapped(leftKey);
+        right = mappingSet.KeyboardMappings.TryGetValue("Right", out Key rightKey) && IsKeyDownMapped(rightKey);
+        a     = mappingSet.KeyboardMappings.TryGetValue("A", out Key aKey) && IsKeyDownMapped(aKey);
+        b     = mappingSet.KeyboardMappings.TryGetValue("B", out Key bKey) && IsKeyDownMapped(bKey);
+        c     = mappingSet.KeyboardMappings.TryGetValue("C", out Key cKey) && IsKeyDownMapped(cKey);
+        start = mappingSet.KeyboardMappings.TryGetValue("Start", out Key startKey) && IsKeyDownMapped(startKey);
+        pause = mappingSet.KeyboardMappings.TryGetValue("Pause", out Key pauseKey) && IsKeyDownMapped(pauseKey);
+        x     = mappingSet.KeyboardMappings.TryGetValue("X", out Key xKey) && IsKeyDownMapped(xKey);
+        y     = mappingSet.KeyboardMappings.TryGetValue("Y", out Key yKey) && IsKeyDownMapped(yKey);
+        z     = mappingSet.KeyboardMappings.TryGetValue("Z", out Key zKey) && IsKeyDownMapped(zKey);
+        if (isPce || isNes)
+            mode = mappingSet.KeyboardMappings.TryGetValue("Select", out Key selKey) && IsKeyDownMapped(selKey);
+        else
+            mode = mappingSet.KeyboardMappings.TryGetValue("Mode", out Key modeKey) && IsKeyDownMapped(modeKey);
+        padType = (PadType)Volatile.Read(ref _padTypeRaw);
 
-            if (isSnes)
-            {
-                if (mappingSet.KeyboardMappings.TryGetValue("L", out Key lKey) && _keysDown.Contains(lKey))
-                    z = true;
-                if (mappingSet.KeyboardMappings.TryGetValue("R", out Key rKey) && _keysDown.Contains(rKey))
-                    c = true;
-                if (mappingSet.KeyboardMappings.TryGetValue("Select", out Key selKey) && _keysDown.Contains(selKey))
-                    mode = true;
-            }
+        if (isSnes)
+        {
+            if (mappingSet.KeyboardMappings.TryGetValue("L", out Key lKey) && IsKeyDownMapped(lKey))
+                z = true;
+            if (mappingSet.KeyboardMappings.TryGetValue("R", out Key rKey) && IsKeyDownMapped(rKey))
+                c = true;
+            if (mappingSet.KeyboardMappings.TryGetValue("Select", out Key selKey) && IsKeyDownMapped(selKey))
+                mode = true;
         }
 
         // Combine with gamepad inputs if mapped

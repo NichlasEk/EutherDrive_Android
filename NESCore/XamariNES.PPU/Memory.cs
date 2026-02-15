@@ -43,6 +43,13 @@ namespace XamariNES.PPU
             return ReadByteInternal(offset, ppuCycle, true);
         }
 
+        public byte ReadByteRender(int offset, bool sprite)
+        {
+            if (_memoryMapper is IPpuMemoryMapperEx ppuMapper)
+                return ppuMapper.ReadPpuRender(offset, _ppuVram, sprite);
+            return ReadByteInternal(offset, -1, false);
+        }
+
         public void ClockMapperScanline()
         {
             if (_memoryMapper is IMapperScanlineCounter counter)
@@ -56,6 +63,9 @@ namespace XamariNES.PPU
 
             if (offset >= 0x3F00 && offset <= 0x3FFF) // Palette RAM
                 return _paletteMemory[GetPaletteRamOffsetIndex(offset)];
+
+            if (_memoryMapper is IPpuMemoryMapper ppuMapper)
+                return ppuMapper.ReadPpu(offset, _ppuVram);
 
             if (offset < 0x2000) // CHR (ROM or RAM) pattern tables
             {
@@ -77,13 +87,23 @@ namespace XamariNES.PPU
         {
             if (offset < 0x2000)
             {
-                _memoryMapper.WriteByte(offset, data);
+                if (_memoryMapper is IPpuMemoryMapper ppuMapper)
+                {
+                    ppuMapper.WritePpu(offset, data, _ppuVram);
+                }
+                else
+                {
+                    _memoryMapper.WriteByte(offset, data);
+                }
                 return;
             }
 
             if (offset >= 0x2000 && offset <= 0x3EFF) // Internal VRAM
             {
-                _ppuVram[VramOffsetToOffsetIndex(offset)] = data;
+                if (_memoryMapper is IPpuMemoryMapper ppuMapper)
+                    ppuMapper.WritePpu(offset, data, _ppuVram);
+                else
+                    _ppuVram[VramOffsetToOffsetIndex(offset)] = data;
                 return;
             }
 
