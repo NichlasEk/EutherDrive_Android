@@ -36,6 +36,8 @@ public class SNESSystem : ISNESSystem
     private ushort[] _hdmaTableAdr = [];
     private byte[] _hdmaRepCount = [];
     private byte[] _dmaUnusedByte = [];
+    private bool[] _dmaNotifyActive = [];
+    private int _dmaNotifyCount;
 
     public int XPos { get; private set; }
     public int YPos { get; private set; }
@@ -268,6 +270,13 @@ public class SNESSystem : ISNESSystem
         if (bank == 0x7e || bank == 0x7f)
         {
             _ram[((bank & 0x1) << 16) | adr] = (byte) value;
+            if (_traceWramWrites && (adr == 0x0028 || adr == 0x002A || adr == 0x002B || adr == 0x00AD || adr < 0x0400))
+            {
+                int pc = -1;
+                if (CPU is KSNES.CPU.CPU cpu)
+                    pc = cpu.ProgramCounter24;
+                Console.WriteLine($"[WRAM-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+            }
             if (dma && _traceWramWrites && adr < 0x2000)
             {
                 int pc = -1;
@@ -281,6 +290,13 @@ public class SNESSystem : ISNESSystem
             if (adr < 0x2000)
             {
                 _ram[adr & 0x1fff] = (byte) value;
+                if (_traceWramWrites && (adr == 0x0028 || adr == 0x002A || adr == 0x002B || adr == 0x00AD || adr < 0x0400))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-WR] adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+                }
                 if (_traceWramWrites && adr >= 0x1F00 && adr < 0x2100)
                 {
                     int pc = -1;
@@ -324,6 +340,8 @@ public class SNESSystem : ISNESSystem
         _hdmaTableAdr = new ushort[8];
         _hdmaRepCount = new byte[8];
         _dmaUnusedByte = new byte[8];
+        _dmaNotifyActive = new bool[8];
+        _dmaNotifyCount = 0;
     }
 
     private void Reset2()
@@ -596,6 +614,16 @@ public class SNESSystem : ISNESSystem
             _dmaOffIndex = 0;
             return;
         }
+        if (!_dmaFromB[i] && !_dmaNotifyActive[i])
+        {
+            uint sourceAddress = (uint)((_dmaAadrBank[i] << 16) | _dmaAadr[i]);
+            if (sourceAddress >= 0x400000 && sourceAddress < 0x500000 && ROM is KSNES.ROM.ROM rom)
+            {
+                rom.NotifyDmaStart(sourceAddress);
+                _dmaNotifyActive[i] = true;
+                _dmaNotifyCount++;
+            }
+        }
         int tableOff = _dmaMode[i] * 4 + _dmaOffIndex++;
         _dmaOffIndex &= 0x3;
         if (_dmaFromB[i])
@@ -624,6 +652,15 @@ public class SNESSystem : ISNESSystem
         {
             _dmaOffIndex = 0;
             _dmaActive[i] = false;
+            if (_dmaNotifyActive[i])
+            {
+                _dmaNotifyActive[i] = false;
+                _dmaNotifyCount--;
+                if (_dmaNotifyCount == 0 && ROM is KSNES.ROM.ROM rom)
+                {
+                    rom.NotifyDmaEnd();
+                }
+            }
             _dmaTimer += 8;
         }
     }
@@ -729,6 +766,13 @@ public class SNESSystem : ISNESSystem
                 int val = 0x1;
                 val |= _inNmi ? 0x80 : 0;
                 val |= OpenBus & 0x70;
+                if (_traceDma)
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[INT-STAT] RDNMI read pc=0x{pc:X6} val=0x{val:X2}");
+                }
                 _inNmi = false;
                 return val;
             case 0x4211:
@@ -818,6 +862,13 @@ public class SNESSystem : ISNESSystem
                 _hIrqEnabled = (value & 0x10) > 0;
                 _vIrqEnabled = (value & 0x20) > 0;
                 _nmiEnabled = (value & 0x80) > 0;
+                if (_traceDma)
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[INT-CTL] NMI={(value & 0x80) > 0} VIRQ={(value & 0x20) > 0} HIRQ={(value & 0x10) > 0} AUTOJOY={(value & 0x1) > 0} pc=0x{pc:X6} val=0x{value:X2}");
+                }
                 return;
             case 0x4201:
                 if (PPULatch && (value & 0x80) == 0)
@@ -872,6 +923,19 @@ public class SNESSystem : ISNESSystem
                 _dmaActive[7] = (value & 0x80) > 0;
                 _dmaBusy = value > 0;
                 _dmaTimer += _dmaBusy ? 8 : 0;
+                if (_traceDma)
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[DMA-CTL] MDMAEN=0x{value:X2} pc=0x{pc:X6}");
+                    for (int ch = 0; ch < 8; ch++)
+                    {
+                        if (!_dmaActive[ch])
+                            continue;
+                        Console.WriteLine($"[DMA-STATE] ch={ch} mode={_dmaMode[ch]} bbus=0x{_dmaBadr[ch]:X2} aaddr=0x{_dmaAadr[ch]:X4} abank=0x{_dmaAadrBank[ch]:X2} size=0x{_dmaSize[ch]:X4} fromB={_dmaFromB[ch]} fixed={_dmaFixed[ch]} dec={_dmaDec[ch]}");
+                    }
+                }
                 return;
             case 0x420c:
                 _hdmaActive[0] = (value & 0x1) > 0;
@@ -891,6 +955,14 @@ public class SNESSystem : ISNESSystem
         if (adr >= 0x4300 && adr < 0x4380)
         {
             int channel = (adr & 0xf0) >> 4;
+            if (_traceDma)
+            {
+                int pc = -1;
+                if (CPU is KSNES.CPU.CPU cpu)
+                    pc = cpu.ProgramCounter24;
+                int reg = adr & 0x0f;
+                Console.WriteLine($"[DMA-REG] ch={channel} reg=0x{reg:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+            }
             switch (adr & 0xff0f)
             {
                 case 0x4300:
@@ -952,8 +1024,16 @@ public class SNESSystem : ISNESSystem
         }
         if (adr == 0x80)
         {
-            int val = _ram[_ramAdr++];
-            _ramAdr &= 0x1ffff;
+            int addr = _ramAdr;
+            int val = _ram[addr];
+            _ramAdr = (addr + 1) & 0x1ffff;
+            if (_traceWramWrites && (addr < 0x0400 || (addr >= 0x1F00 && addr < 0x2000)))
+            {
+                int pc = -1;
+                if (CPU is KSNES.CPU.CPU cpu)
+                    pc = cpu.ProgramCounter24;
+                Console.WriteLine($"[WRAM-PORT-RD] addr=0x{addr:X5} val=0x{val:X2} pc=0x{pc:X6}");
+            }
             return val;
         }
         return OpenBus;
@@ -976,6 +1056,13 @@ public class SNESSystem : ISNESSystem
         switch (adr)
         {
             case 0x80:
+                if (_traceWramWrites && (_ramAdr < 0x0400 || (_ramAdr >= 0x1F00 && _ramAdr < 0x2000)))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-PORT-WR] addr=0x{_ramAdr:X5} val=0x{value:X2} pc=0x{pc:X6}");
+                }
                 _ram[_ramAdr++] = (byte) value;
                 _ramAdr &= 0x1ffff;
                 return;
@@ -1003,6 +1090,16 @@ public class SNESSystem : ISNESSystem
         }
         switch (adr)
         {
+            case 0x02: // OAMADDL
+            case 0x03: // OAMADDH
+            case 0x04: // OAMDATA
+            case 0x15: // VMAIN
+            case 0x16: // VMADDL
+            case 0x17: // VMADDH
+            case 0x18: // VMDATAL
+            case 0x19: // VMDATAH
+            case 0x21: // CGADD
+            case 0x22: // CGDATA
             case 0x00: // INIDISP
             case 0x05: // BGMODE
             case 0x2C: // TM
@@ -1016,6 +1113,7 @@ public class SNESSystem : ISNESSystem
                 string src = dma ? "DMA" : "CPU";
                 int pc = -1;
                 string pcBytes = "";
+                string regs = "";
                 if (CPU is KSNES.CPU.CPU cpu)
                 {
                     pc = cpu.ProgramCounter24;
@@ -1023,9 +1121,13 @@ public class SNESSystem : ISNESSystem
                     int b1 = Rread((pc + 1) & 0xffffff);
                     int b2 = Rread((pc + 2) & 0xffffff);
                     pcBytes = $" op=[{b0:X2} {b1:X2} {b2:X2}]";
+                    if (adr == 0x00)
+                    {
+                        regs = $" regs={cpu.GetTraceState()}";
+                    }
                 }
                 Console.WriteLine(
-                    $"[PPU-BUS] {src} write $21{adr:X2}=0x{value:X2} pc=0x{pc:X6}{pcBytes} xy=({XPos},{YPos}) vblank={_inVblank} hblank={_inHblank}");
+                    $"[PPU-BUS] {src} write $21{adr:X2}=0x{value:X2} pc=0x{pc:X6}{pcBytes}{regs} xy=({XPos},{YPos}) vblank={_inVblank} hblank={_inHblank}");
                 _tracePpuBusCount++;
                 return;
         }
@@ -1038,13 +1140,29 @@ public class SNESSystem : ISNESSystem
         adr &= 0xffff;
         if (bank == 0x7e || bank == 0x7f)
         {
-            return _ram[((bank & 0x1) << 16) | adr];
+            int val = _ram[((bank & 0x1) << 16) | adr];
+            if (_traceWramWrites && (adr == 0x004E || adr == 0x1F4E))
+            {
+                int pc = -1;
+                if (CPU is KSNES.CPU.CPU cpu)
+                    pc = cpu.ProgramCounter24;
+                Console.WriteLine($"[WRAM-RD] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{val:X2} pc=0x{pc:X6}");
+            }
+            return val;
         }
         if (adr < 0x8000 && (bank < 0x40 || bank >= 0x80 && bank < 0xc0))
         {
             if (adr < 0x2000)
             {
-                return _ram[adr & 0x1fff];
+                int val = _ram[adr & 0x1fff];
+                if (_traceWramWrites && (adr == 0x004E || adr == 0x1F4E))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-RD] adr=0x{adr:X4} val=0x{val:X2} pc=0x{pc:X6}");
+                }
+                return val;
             }
             if (adr >= 0x2100 && adr < 0x2200)
             {

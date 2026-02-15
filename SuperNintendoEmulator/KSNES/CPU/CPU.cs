@@ -45,6 +45,12 @@ public class CPU : ICPU
 
     public int ProgramCounter24 => (_r[K] << 16) | _br[PC];
 
+    internal string GetTraceState()
+    {
+        byte p = GetP();
+        return $"A=0x{_br[A]:X4} X=0x{_br[X]:X4} Y=0x{_br[Y]:X4} SP=0x{_br[SP]:X4} D=0x{_br[DPR]:X4} DBR=0x{_r[DBR]:X2} PB=0x{_r[K]:X2} P=0x{p:X2} E={(_e ? 1 : 0)} M={(_m ? 1 : 0)} Xf={(_x ? 1 : 0)}";
+    }
+
     private readonly bool _tracePc =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_PC"), "1", StringComparison.Ordinal);
     private readonly int _tracePcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_CPU_PC_LIMIT", 200);
@@ -52,6 +58,8 @@ public class CPU : ICPU
     private readonly bool _traceWramPc =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_WRAM_PC"), "1", StringComparison.Ordinal);
     private bool _traceWramPcLogged;
+    private static readonly bool TraceLdaWatch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_LDA_WATCH"), "1", StringComparison.Ordinal);
 
     [JsonIgnore]
     private readonly int[] _modes = [
@@ -1350,13 +1358,22 @@ public class CPU : ICPU
         if (_m)
         {
             int value = _snes.Read(adr);
+            if (TraceLdaWatch && _snes is KSNES.SNESSystem.SNESSystem && adr >= 0x6040 && adr <= 0x6050)
+            {
+                Console.WriteLine($"[LDA-WATCH] adr=0x{adr:X4} val=0x{value:X2} pc=0x{ProgramCounter24:X6} m=1");
+            }
             _br[A] = (ushort) ((_br[A] & 0xff00) | (value & 0xff));
             SetZAndN(value, _m);
         }
         else
         {
             CyclesLeft++;
-            _br[A] = (ushort) ReadWord(adr, adrh);
+            int value = ReadWord(adr, adrh);
+            if (TraceLdaWatch && _snes is KSNES.SNESSystem.SNESSystem && adr >= 0x6040 && adr <= 0x6050)
+            {
+                Console.WriteLine($"[LDA-WATCH] adr=0x{adr:X4} adrh=0x{adrh:X4} val=0x{value:X4} pc=0x{ProgramCounter24:X6} m=0");
+            }
+            _br[A] = (ushort) value;
             SetZAndN(_br[A], _m);
         }
     }

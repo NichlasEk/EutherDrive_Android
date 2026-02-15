@@ -1,0 +1,101 @@
+# SA-1 Investigation Notes (Kirby's Dream Land 3)
+
+## Scope
+- Goal: match SA-1 behavior with jgenesis using first-divergence tracing.
+- Test ROM: `/home/nichlas/roms/Kirby's Dream Land 3 (USA).sfc`.
+- EutherDrive: SA-1 trace in `logs/sa1_trace.log` with `EUTHERDRIVE_TRACE_SA1=1`.
+- jgenesis: headless trace runner `frontend/jgenesis-cli/src/bin/sa1_trace.rs` with `JGENESIS_TRACE_SA1=1`.
+
+## Tooling Added (EutherDrive)
+- SA-1 trace machine (event log + hash blocks): `SuperNintendoEmulator/KSNES/Tracing/Sa1Trace.cs`.
+- Trace hooks in `SuperNintendoEmulator/KSNES/Specialchips/SA1/Sa1.cs` and `SuperNintendoEmulator/KSNES/ROM/ROM.cs`.
+- Register write tracing: CCNT/SIE/SIC, vectors, BW-RAM mapping regs, DMA regs.
+
+## Tooling Added (jgenesis)
+- Headless runner to avoid GPU: `frontend/jgenesis-cli/src/bin/sa1_trace.rs`.
+- Minimal SA-1 bus trace logging in `backend/snes-coprocessors/src/sa1/bus.rs` (prints `[JG-SA1-TRACE]`).
+
+## Confirmed Match (Early Init)
+The sequence of SNES SA-1 register writes during early init matches jgenesis:
+- `CCNT/SIE/SIC` writes
+- `C/D/E/F` bank regs (`CXB/DXB/EXB/FXB`)
+- `BMAPS`, `BWPA`, `SBWE`, `SIWP`
+- `CRV` reset vector
+- `CCNT` release
+- SA-1 side `CIE/CIC/SCNT/BMAP/CBWE/CIWP`
+
+## First Divergence (SA-1 non-ROM events)
+When comparing **SA-1 non-ROM events** (I-RAM, BW-RAM, SA1-IO), first divergence is:
+- **jgenesis** does a BW-RAM read at `0x406000` (BW-RAM full) right after zeroing I-RAM.
+- **EutherDrive** continues reading I-RAM at `0x300C` instead of BW-RAM.
+
+Window (SA-1 non-ROM events):
+- jgenesis: I-RAM writes up to `0x300C`, then `BW-RAM` read at `0x406000`, then back to I-RAM.
+- EutherDrive: I-RAM reads/writes continue without the BW-RAM read at that point.
+
+## Hypothesis
+This divergence strongly suggests **incorrect M/X flag state** during SA-1 init:
+- The opcode stream includes `A9 FE` + `54 00 00` (MVN), which should use 16-bit A if M=0.
+- If A stays 8-bit, MVN transfers **1 byte** instead of **0xFF+1 bytes**, changing subsequent program flow and missing the BW-RAM read.
+- Potential culprit: CPU status (M flag) not reset/updated correctly for SA-1 execution.
+
+## Patch Applied
+- Set IRQ disable on reset:
+  - `SuperNintendoEmulator/KSNES/CPU/CPU.cs` sets `_i = true` on reset.
+  - Commit: `d0de4d8`.
+
+## Current Status
+- Still black screen in Kirby after 20 frames.
+- First divergence in SA-1 non-ROM events persists (missing BW-RAM read at `0x406000`).
+
+## Next Steps (Minimal)
+1. Verify SA-1 CPU status at entry:
+   - Confirm M/X flags after reset and after `C2 30` (REP #$30).
+2. Verify MVN/MVP handling uses correct A width.
+3. Re-run traces and re-compare non-ROM event sequence.
+
+
+## Instrumentation Update (Pending)
+- Added optional SA-1 register snapshot in trace lines when `EUTHERDRIVE_TRACE_SA1_REGS=1`.
+- Purpose: capture A/X/Y/DP/DBR/PB/P/E/M/X at the first divergence (pc=0x0082C7) without heavy logging.
+- Added SA-1 mirror trace for SNES reads of I-RAM/BW-RAM to match jgenesis dual-logging.
+- Added SNES DMA -> SA-1 CCDMA notification hook (NotifyDmaStart/End) to let SA-1 provide CCDMA data during SNES DMA from BW-RAM.
+- Expanded PPU bus trace to include VRAM/CGRAM/OAM regs ($2115-$2119, $2121-$2122, $2102-$2104) for DMA visibility.
+- Added interrupt control trace for writes to $4200 when DMA tracing is enabled (NMI/VIRQ/HIRQ/AUTOJOY).
+- Added DMA register write trace for $4300-$437F when DMA tracing is enabled.
+- Expanded MDMAEN trace to dump active channel state (mode/bbus/aaddr/abank/size).
+- Added SA-1 SCNT/SIC trace to see SNES IRQ/message handshakes.
+- Added RDNMI ($4210) read trace when DMA tracing is enabled.
+- Added optional SNES vector read trace (RDNMI/IRQ vectors) via `EUTHERDRIVE_TRACE_SNES_VECTORS=1`.
+- Added targeted WRAM write trace for $0028/$002A/$002B/$00AD when `EUTHERDRIVE_TRACE_SNES_WRAM=1`.
+- Added WRAM write trace for $7E/7F:0028/002A/002B/00AD when `EUTHERDRIVE_TRACE_SNES_WRAM=1`.
+
+## 2026-02-15 Update (Kirby 3 black screen)
+- SA-1 trace (non-ROM events) now matches jgenesis for ~150k SA-1 events; no early divergence found.
+- SNES PPU bus trace shows DMA to CGRAM ($2122) and OAM ($2104), but no VRAM writes ($2118/$2119).
+- INIDISP ($2100) stays at 0x80 (forced blank never cleared).
+- RDNMI ($4210) reads occur; NMI loop likely running, but game never flips display.
+
+### New Instrumentation
+- DMA register writes ($4300-$437F) now logged under `EUTHERDRIVE_TRACE_SNES_DMA=1` as `[DMA-REG]`.
+- WRAM writes now log for low page (`$0000-$03FF`) when `EUTHERDRIVE_TRACE_SNES_WRAM=1`.
+
+### Next trace focus
+1. Capture DMA reg programming sequence before MDMAEN to see if VRAM DMA is ever configured.
+2. Observe WRAM low-page writes to find the flag that should enable display (INIDISP clear).
+3. Correlate INIDISP write (if any) with a specific WRAM flag.
+
+## 2026-02-15 Update (BW-RAM flag discovery)
+- BMAPS/BMAP are set to `0x03`, so SNES and SA-1 BW-RAM windows map to base `0x6000`.
+- INIDISP ($2100) writes are fed from BW-RAM offset `0x604C` (direct page `D=0x6000`, `LDA $4C`).
+- BW-RAM `0x604C` is written by SNES as `0x80` and then repeatedly read as `0x80` (forced blank).
+- BW-RAM `0x604E` is read as `0x0009`, and that value is used for $2105 (BGMODE), but it **does not** affect $2100.
+- No SA-1 BW-RAM writes observed at `0x604C` (no `src=SA1` in BW-RAM watch).
+
+### Implication
+Kirby 3 stays black because the BW-RAM flag that drives INIDISP (`0x604C`) never clears. The SA-1 is likely supposed to clear or update it, but currently does not.
+
+### Next Steps
+1. Compare SA-1 trace vs jgenesis around the point where it should update BW-RAM `0x604C` (likely near PC `0x0082C7` or when BW-RAM flag flips in jgenesis).
+2. Verify SA-1 DMA-to-BW-RAM or IRQ/message handshakes; missing SA-1-side update would keep the screen blank.
+3. If SA-1 writes are blocked, check CBWE/SBWE timing or SA-1 DMA destination mapping.

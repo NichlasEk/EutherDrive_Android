@@ -7,6 +7,8 @@ internal static class Sa1Trace
 {
     private static readonly bool Enabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1"), "1", StringComparison.Ordinal);
+    private static readonly bool IncludeRegs =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_REGS"), "1", StringComparison.Ordinal);
     private static readonly int Limit = ParseLimit("EUTHERDRIVE_TRACE_SA1_LIMIT", 200000);
     private static readonly int HashEvery = ParseLimit("EUTHERDRIVE_TRACE_SA1_HASH_EVERY", 10000);
     private static readonly string TracePath =
@@ -18,6 +20,7 @@ internal static class Sa1Trace
     private static ulong _hash = 1469598103934665603UL;
 
     public static bool IsEnabled => Enabled;
+    public static bool IncludeRegsEnabled => IncludeRegs;
 
     public static void Log(
         string cpu,
@@ -27,7 +30,8 @@ internal static class Sa1Trace
         string rw,
         byte value,
         string region,
-        uint? resolved)
+        uint? resolved,
+        string? regs = null)
     {
         if (!Enabled || _budget-- <= 0)
             return;
@@ -47,6 +51,10 @@ internal static class Sa1Trace
         string resolvedText = resolved.HasValue ? $"0x{resolved.Value:X6}" : "--";
         string line =
             $"[SA1-TRACE] ev={ev} cpu={cpu} pc=0x{pc:X6} op={opText} rw={rw} addr=0x{address:X6} val=0x{value:X2} region={region} res={resolvedText}";
+        if (!string.IsNullOrWhiteSpace(regs))
+        {
+            line += $" regs=[{regs}]";
+        }
 
         lock (TraceLock)
         {

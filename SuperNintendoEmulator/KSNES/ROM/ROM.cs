@@ -30,6 +30,10 @@ public class ROM : IROM
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_BUS"), "1", StringComparison.Ordinal);
     private static readonly int TraceDsp1BusLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_DSP1_BUS_LIMIT", 500);
     private int _traceDsp1BusCount;
+    private static readonly bool TraceSnesVectors =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_VECTORS"), "1", StringComparison.Ordinal);
+    private readonly bool _traceSa1BwramWatch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal);
 
     private Timer? _sRAMTimer;
 
@@ -162,6 +166,10 @@ public class ROM : IROM
 
     public byte Read(int bank, int adr)
     {
+        if (TraceSnesVectors && bank == 0x00 && (adr == 0xFFEA || adr == 0xFFEB || adr == 0xFFEE || adr == 0xFFEF))
+        {
+            Console.WriteLine($"[SNES-VEC] read bank=0x{bank:X2} adr=0x{adr:X4}");
+        }
         if (_sa1 != null)
         {
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
@@ -170,6 +178,22 @@ public class ROM : IROM
                 byte? sa1Value = _sa1.SnesRead(address);
                 if (sa1Value.HasValue)
                 {
+                    if (Sa1Trace.IsEnabled && (region.StartsWith("I-RAM", StringComparison.Ordinal) || region.StartsWith("BW-RAM", StringComparison.Ordinal)))
+                    {
+                        _sa1.TraceSnesReadMirror(address, sa1Value.Value, region, resolved);
+                    }
+                    if (_traceSa1BwramWatch && region.StartsWith("BW-RAM", StringComparison.Ordinal))
+                    {
+                        uint adr16 = address & 0xFFFF;
+                        uint off = resolved ?? 0;
+                        if (adr16 == 0x604E || adr16 == 0x604F || (off & 0xFFFF) == 0x004E || (off & 0xFFFF) == 0x004F)
+                        {
+                            int pc2 = -1;
+                            if (TryGetSnesPc(out int snesPc, out _))
+                                pc2 = snesPc;
+                            Console.WriteLine($"[SNES-BWRAM-RD] addr=0x{address:X6} bwram=0x{off:X6} val=0x{sa1Value.Value:X2} pc=0x{pc2:X6}");
+                        }
+                    }
                     if (Sa1Trace.IsEnabled && TryGetSnesPc(out int pc, out int op))
                         Sa1Trace.Log("SNES", pc, op, address, "R", sa1Value.Value, region, resolved);
                     return sa1Value.Value;
@@ -416,6 +440,16 @@ public class ROM : IROM
         _dsp1?.RunTo(snesCycles);
         _superFx?.Tick(snesCycles);
         _sa1?.Tick(snesCycles);
+    }
+
+    public void NotifyDmaStart(uint sourceAddress)
+    {
+        _sa1?.NotifyDmaStart(sourceAddress);
+    }
+
+    public void NotifyDmaEnd()
+    {
+        _sa1?.NotifyDmaEnd();
     }
 
     public bool IrqWanted => (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);

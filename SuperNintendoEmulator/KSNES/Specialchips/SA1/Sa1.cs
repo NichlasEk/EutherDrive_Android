@@ -12,6 +12,8 @@ namespace KSNES.Specialchips.SA1;
 internal sealed class Sa1
 {
     private const int IramLen = 2 * 1024;
+    private const uint IramWatchOffset = 0x64E;
+    private const uint BwramWatchOffset = 0x004E;
 
     private readonly byte[] _rom;
     private byte[] _iram = new byte[IramLen];
@@ -23,6 +25,10 @@ internal sealed class Sa1
     private ulong _bwramWaitCycles;
     private ulong _lastSnesCycles;
     private readonly Sa1System _system;
+    private readonly bool _traceIramWatch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_IRAM_WATCH"), "1", StringComparison.Ordinal);
+    private readonly bool _traceBwramWatch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal);
     private bool _inReset = true;
     private bool _lastSa1Reset;
     private bool _lastSa1Wait;
@@ -171,7 +177,8 @@ internal sealed class Sa1
             return;
         int pc = _cpu.ProgramCounter24;
         int op = TryGetSa1OpByte(pc);
-        Sa1Trace.Log("SA1", pc, op, address, rw, value, region, resolved);
+        string? regs = Sa1Trace.IncludeRegsEnabled ? _cpu.GetTraceState() : null;
+        Sa1Trace.Log("SA1", pc, op, address, rw, value, region, resolved, regs);
     }
 
     private void TraceState(string state)
@@ -180,7 +187,33 @@ internal sealed class Sa1
             return;
         int pc = _cpu.ProgramCounter24;
         int op = TryGetSa1OpByte(pc);
-        Sa1Trace.Log("SA1", pc, op, 0, "S", 0, state, null);
+        string? regs = Sa1Trace.IncludeRegsEnabled ? _cpu.GetTraceState() : null;
+        Sa1Trace.Log("SA1", pc, op, 0, "S", 0, state, null, regs);
+    }
+
+    private void TraceIramWatch(string source, string rw, uint address, byte value, int pc)
+    {
+        if (!_traceIramWatch)
+            return;
+        uint offset = address & 0x7FF;
+        if (offset != IramWatchOffset)
+            return;
+        Console.WriteLine($"[I-RAM-WATCH] src={source} rw={rw} addr=0x{address:X6} off=0x{offset:X3} val=0x{value:X2} pc=0x{pc:X6}");
+    }
+
+    private void TraceBwramWatch(string source, string rw, uint address, uint bwramAddr, byte value, int pc)
+    {
+        if (!_traceBwramWatch)
+            return;
+        uint offset = bwramAddr & 0xFFFF;
+        uint adr16 = address & 0xFFFF;
+        if (offset != BwramWatchOffset
+            && adr16 != 0x604C && adr16 != 0x604D
+            && adr16 != 0x604E && adr16 != 0x604F
+            && (offset & 0xFFFF) != 0x004C
+            && (offset & 0xFFFF) != 0x004D)
+            return;
+        Console.WriteLine($"[BW-RAM-WATCH] src={source} rw={rw} addr=0x{address:X6} bwram=0x{bwramAddr:X6} val=0x{value:X2} pc=0x{pc:X6}");
     }
 
     public bool TryResolveSnesAccess(uint address, out string region, out uint? resolved)
@@ -228,6 +261,16 @@ internal sealed class Sa1
         return false;
     }
 
+    public void TraceSnesReadMirror(uint address, byte value, string region, uint? resolved)
+    {
+        if (!Sa1Trace.IsEnabled)
+            return;
+        int pc = _cpu.ProgramCounter24;
+        int op = TryGetSa1OpByte(pc);
+        string? regs = Sa1Trace.IncludeRegsEnabled ? _cpu.GetTraceState() : null;
+        Sa1Trace.Log("SA1", pc, op, address, "R", value, region, resolved, regs);
+    }
+
     public byte? SnesRead(uint address)
     {
         uint bank = (address >> 16) & 0xFF;
@@ -257,12 +300,18 @@ internal sealed class Sa1
                 return _registers.SnesRead(address);
             case (<= 0x3F, >= 0x3000 and <= 0x37FF):
             case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
-                return _iram[(int)(address & 0x7FF)];
+                {
+                    byte value = _iram[(int)(address & 0x7FF)];
+                    TraceIramWatch("SNES", "R", address, value, -1);
+                    return value;
+                }
             case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
             case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
                 {
                     uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
-                    return _bwram[(int)bwramAddr];
+                    byte value = _bwram[(int)bwramAddr];
+                    TraceBwramWatch("SNES", "R", address, bwramAddr, value, -1);
+                    return value;
                 }
             case (>= 0x40 and <= 0x4F, _):
                 if (_registers.CcdmaTransferInProgress)
@@ -270,7 +319,9 @@ internal sealed class Sa1
                 else
                 {
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
-                    return _bwram[(int)bwramAddr];
+                    byte value = _bwram[(int)bwramAddr];
+                    TraceBwramWatch("SNES", "R", address, bwramAddr, value, -1);
+                    return value;
                 }
         }
 
@@ -294,6 +345,7 @@ internal sealed class Sa1
                     int writeProtectIdx = (int)(iramAddr >> 8);
                     if (_registers.SnesIramWritesEnabled[writeProtectIdx])
                         _iram[(int)iramAddr] = value;
+                    TraceIramWatch("SNES", "W", address, value, -1);
                     break;
                 }
             case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
@@ -302,6 +354,7 @@ internal sealed class Sa1
                     uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
                     if (_registers.CanWriteBwram(bwramAddr))
                         _bwram[(int)bwramAddr] = value;
+                    TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
                     break;
                 }
             case (>= 0x40 and <= 0x4F, _):
@@ -309,6 +362,7 @@ internal sealed class Sa1
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
                     if (_registers.CanWriteBwram(bwramAddr))
                         _bwram[(int)bwramAddr] = value;
+                    TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
                     break;
                 }
         }
@@ -380,6 +434,7 @@ internal sealed class Sa1
                 {
                     byte value = _iram[(int)(address & 0x7FF)];
                     TraceSa1("R", address, value, "I-RAM", address & 0x7FF);
+                    TraceIramWatch("SA1", "R", address, value, _cpu.ProgramCounter24);
                     return value;
                 }
             case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
@@ -390,6 +445,7 @@ internal sealed class Sa1
                     uint bwramAddr = ((_mmc.Sa1BwramBaseAddr & 0x3E000) | (address & 0x01FFF)) & (uint)(_bwram.Length - 1);
                     byte value = _bwram[(int)bwramAddr];
                     TraceSa1("R", address, value, "BW-RAM-WIN", bwramAddr);
+                    TraceBwramWatch("SA1", "R", address, bwramAddr, value, _cpu.ProgramCounter24);
                     return value;
                 }
                 {
@@ -404,6 +460,7 @@ internal sealed class Sa1
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
                     byte value = _bwram[(int)bwramAddr];
                     TraceSa1("R", address, value, "BW-RAM", bwramAddr);
+                    TraceBwramWatch("SA1", "R", address, bwramAddr, value, _cpu.ProgramCounter24);
                     return value;
                 }
             case (>= 0x60 and <= 0x6F, _):
@@ -443,6 +500,7 @@ internal sealed class Sa1
                     if (_registers.Sa1IramWritesEnabled[writeProtectIdx])
                         _iram[(int)iramAddr] = value;
                     TraceSa1("W", address, value, "I-RAM", address & 0x7FF);
+                    TraceIramWatch("SA1", "W", address, value, _cpu.ProgramCounter24);
                     handled = true;
                     break;
                 }
@@ -455,6 +513,7 @@ internal sealed class Sa1
                     if (_registers.CanWriteBwram(bwramAddr))
                         _bwram[(int)bwramAddr] = value;
                     TraceSa1("W", address, value, "BW-RAM-WIN", bwramAddr);
+                    TraceBwramWatch("SA1", "W", address, bwramAddr, value, _cpu.ProgramCounter24);
                 }
                 else
                 {
@@ -470,6 +529,7 @@ internal sealed class Sa1
                     if (_registers.CanWriteBwram(bwramAddr))
                         _bwram[(int)bwramAddr] = value;
                     TraceSa1("W", address, value, "BW-RAM", bwramAddr);
+                    TraceBwramWatch("SA1", "W", address, bwramAddr, value, _cpu.ProgramCounter24);
                 }
                 handled = true;
                 break;

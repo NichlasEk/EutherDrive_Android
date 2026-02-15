@@ -440,6 +440,8 @@ internal sealed class Sa1Registers
             SnesIrqFromSa1 = false;
         if (value.Bit(5))
             CharacterConversionIrq = false;
+        if (TraceSa1Regs && value.Bit(7))
+            LogReg("[SA1-REGS] SIC cleared SNES IRQ");
     }
 
     private void WriteCie(byte value)
@@ -518,6 +520,8 @@ internal sealed class Sa1Registers
         SnesIrqVectorSource = InterruptVectorSourceExtensions.FromBit(value.Bit(6));
         SnesNmiVectorSource = InterruptVectorSourceExtensions.FromBit(value.Bit(4));
         MessageToSnes = (byte)(value & 0x0F);
+        if (TraceSa1Regs)
+            LogReg($"[SA1-REGS] SCNT=0x{value:X2} snes_irq={(SnesIrqFromSa1 ? 1 : 0)} msg=0x{MessageToSnes:X2}");
     }
 
     private void WriteSbwe(byte value)
