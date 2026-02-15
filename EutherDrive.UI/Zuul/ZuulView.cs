@@ -101,7 +101,7 @@ internal sealed class ZuulView : Control
     {
         try
         {
-            LoadEmbedded("zuul_demo.jox");
+            LoadEmbedded("zuul_svg.jox");
         }
         catch (Exception ex)
         {
