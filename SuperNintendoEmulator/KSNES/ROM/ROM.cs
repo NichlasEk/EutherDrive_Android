@@ -156,28 +156,21 @@ public class ROM : IROM
         if (new FileInfo(fileName).Exists)
         {
             byte[] data = File.ReadAllBytes(fileName);
-            if (data.Length == _sram.Length)
+            int copy = Math.Min(data.Length, _sram.Length);
+            if (copy > 0)
             {
-                Buffer.BlockCopy(data, 0, _sram, 0, data.Length);
+                Buffer.BlockCopy(data, 0, _sram, 0, copy);
             }
-            else
+            if (data.Length != _sram.Length)
             {
-                _sram = data;
-                _sramSize = _sram.Length;
-                if (_superFx != null)
-                {
-                    _superFx = new KSNES.Specialchips.SuperFX.SuperFx(_data, _sram, _superFxOverclock);
-                }
-                if (_sa1 != null)
-                {
-                    _sa1.SetBwram(_sram);
-                }
+                Console.WriteLine($"[SRAM] Loaded size {data.Length} != expected {_sram.Length}. Truncated to {copy}.");
             }
         }
     }
 
     public byte Read(int bank, int adr)
     {
+        int SramIndex(int idx) => _sramSize <= 0 ? 0 : idx % _sramSize;
         if (TraceSnesVectors && bank == 0x00 && (adr == 0xFFEA || adr == 0xFFEB || adr == 0xFFEE || adr == 0xFFEF))
         {
             Console.WriteLine($"[SNES-VEC] read bank=0x{bank:X2} adr=0x{adr:X4}");
@@ -230,7 +223,8 @@ public class ROM : IROM
             }
             if (adr < 0x8000 && _hasSram && ((bank >= 0x70 && bank < 0x7e) || bank >= 0xf0))
             {
-                return _sram[(((bank & 0x0f) << 15) | (adr & 0x7fff)) & (_sramSize - 1)];
+                int idx = ((bank & 0x0f) << 15) | (adr & 0x7fff);
+                return _sram[SramIndex(idx)];
             }
             bank &= 0x7f;
             if (adr >= 0x8000 || bank >= 0x40)
@@ -249,7 +243,8 @@ public class ROM : IROM
         {
             if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
             {
-                return _sram[(((bank & 0x1f) << 13) | (adr & 0x1fff)) & (_sramSize - 1)];
+                int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
+                return _sram[SramIndex(idx)];
             }
 
             if (adr >= 0x8000 || (bank >= 0x40 && (bank & 0x7f) < 0x7e))
@@ -263,7 +258,8 @@ public class ROM : IROM
         {
             if (bank >= 0x70 && bank < 0x7e && _hasSram)
             {
-                return _sram[(((bank - 0x70) << 15) | (adr & 0x7fff)) & (_sramSize - 1)];
+                int idx = ((bank - 0x70) << 15) | (adr & 0x7fff);
+                return _sram[SramIndex(idx)];
             }
         }
         return _data[((bank & (_banks - 1)) << 15) | (adr & 0x7fff)];
@@ -271,6 +267,7 @@ public class ROM : IROM
 
     public void Write(int bank, int adr, byte value)
     {
+        int SramIndex(int idx) => _sramSize <= 0 ? 0 : idx % _sramSize;
         if (_sa1 != null)
         {
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
@@ -307,7 +304,8 @@ public class ROM : IROM
             }
             if (adr < 0x8000 && _hasSram && ((bank >= 0x70 && bank < 0x7e) || bank >= 0xf0))
             {
-                _sram[(((bank & 0x0f) << 15) | (adr & 0x7fff)) & (_sramSize - 1)] = value;
+                int idx = ((bank & 0x0f) << 15) | (adr & 0x7fff);
+                _sram[SramIndex(idx)] = value;
                 _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
             }
             return;
@@ -322,7 +320,8 @@ public class ROM : IROM
         {
             if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
             {
-                _sram[(((bank & 0x1f) << 13) | (adr & 0x1fff)) & (_sramSize - 1)] = value;
+                int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
+                _sram[SramIndex(idx)] = value;
                 _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
             }
             return;
@@ -330,7 +329,8 @@ public class ROM : IROM
 
         if (adr < 0x8000 && bank >= 0x70 && bank < 0x7e && _hasSram)
         {
-            _sram[(((bank - 0x70) << 15) | (adr & 0x7fff)) & (_sramSize - 1)] = value;
+            int idx = ((bank - 0x70) << 15) | (adr & 0x7fff);
+            _sram[SramIndex(idx)] = value;
             _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
         }
     }
