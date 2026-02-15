@@ -14,5 +14,8 @@ The key fix was to drive YM2612 ticking from `SystemCycles` increments instead o
 - `EutherDrive.Core/MdTracerCore/md_music.cs`
 - `EutherDrive.Core/MdTracerCore/md_music_ym2612_jgenesis.cs`
 
+**Reference commit**
+- `6e5ad9e` (Drive YM tick from SystemCycles increments)
+
 **Why it matters**
 YM2612 timing must be driven by CPU time, not by audio callback timing. When it is only advanced per frame or per resampler batch, the chip outputs samples in bursts, which stretches or smears transient sounds. Ticking on each `SystemCycles` increment keeps FM/DAC behavior aligned with the rest of the system.
