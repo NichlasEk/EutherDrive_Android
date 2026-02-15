@@ -2,14 +2,13 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_music
     {
-        private readonly md_ym2612 g_md_ym2612 = new md_ym2612();
         private readonly md_sn76489 g_md_sn76489 = new md_sn76489();
-        private JgYm2612? _jgYm;
+        private readonly JgYm2612 _jgYm = new JgYm2612();
         private readonly JgSn76489 _jgPsg = new JgSn76489();
         private static readonly bool UseJgenesisPsg = ReadEnvDefaultOn("EUTHERDRIVE_PSG_JGENESIS");
         private int _psgNoiseGainPercent = 100;
 
-        private JgYm2612 JgYm => _jgYm ??= new JgYm2612(g_md_ym2612);
+        private JgYm2612 JgYm => _jgYm;
 
         public void reset()
         {
@@ -145,7 +144,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal void FlushAudioStats(long frame)
         {
-            if (!md_ym2612.AudStatEnabled)
+            if (!JgYm.AudStatEnabled)
             {
                 JgYm.FlushTimerStats(frame);
                 return;
