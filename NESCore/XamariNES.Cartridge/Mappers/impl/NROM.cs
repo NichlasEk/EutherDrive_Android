@@ -12,7 +12,9 @@ namespace XamariNES.Cartridge.Mappers.impl
     public class NROM : MapperBase, IMapper
     {
         //ROM Internal Memory
+        [NonSerialized]
         private readonly byte[] _prgRom = new byte[0x8000];
+        [NonSerialized]
         private readonly byte[] _chrRom = new byte[0x2000];
 
         public enumNametableMirroring NametableMirroring { get; set; }

@@ -23,6 +23,7 @@ namespace XamariNES.APU
 
         private double _sampleAccumulator;
         private readonly double _cyclesPerSample;
+        [NonSerialized]
         private readonly List<short> _audio = new List<short>(2048);
 
         public bool IrqPending => (_frameIrqFlag && !_frameCounter.InterruptInhibit) || _dmc.InterruptFlag;

@@ -55,6 +55,10 @@ internal static class StateBinarySerializer
 
     private static bool IsSupportedType(Type type)
     {
+        Type? nullableUnderlying = Nullable.GetUnderlyingType(type);
+        if (nullableUnderlying != null)
+            return IsSupportedType(nullableUnderlying);
+
         if (type.IsPointer || type == typeof(IntPtr) || type == typeof(UIntPtr))
             return false;
         if (type.IsByRef || type.IsByRefLike)
@@ -78,6 +82,16 @@ internal static class StateBinarySerializer
 
     private static void WriteValue(BinaryWriter writer, Type type, object? value)
     {
+        Type? nullableUnderlying = Nullable.GetUnderlyingType(type);
+        if (nullableUnderlying != null)
+        {
+            bool hasValue = value != null;
+            writer.Write(hasValue);
+            if (hasValue)
+                WriteValue(writer, nullableUnderlying, value);
+            return;
+        }
+
         if (type.IsEnum)
         {
             WriteValue(writer, Enum.GetUnderlyingType(type), value);
@@ -123,6 +137,23 @@ internal static class StateBinarySerializer
     {
         Type type = field.FieldType;
         bool isReadonly = field.IsInitOnly;
+
+        Type? nullableUnderlying = Nullable.GetUnderlyingType(type);
+        if (nullableUnderlying != null)
+        {
+            bool hasValue = reader.ReadBoolean();
+            if (!hasValue)
+            {
+                if (!isReadonly)
+                    field.SetValue(target, null);
+                return;
+            }
+
+            object? value = ReadValue(reader, nullableUnderlying);
+            if (!isReadonly)
+                field.SetValue(target, value);
+            return;
+        }
 
         if (type.IsEnum)
         {
@@ -352,6 +383,15 @@ internal static class StateBinarySerializer
 
     private static object? ReadValue(BinaryReader reader, Type type)
     {
+        Type? nullableUnderlying = Nullable.GetUnderlyingType(type);
+        if (nullableUnderlying != null)
+        {
+            bool hasValue = reader.ReadBoolean();
+            if (!hasValue)
+                return null;
+            return ReadValue(reader, nullableUnderlying);
+        }
+
         if (type.IsEnum)
         {
             object value = ReadPrimitive(reader, Enum.GetUnderlyingType(type));

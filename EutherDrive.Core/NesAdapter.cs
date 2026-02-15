@@ -5,12 +5,13 @@ using XamariNES.Controller;
 using XamariNES.Controller.Enums;
 using XamariNES.Cartridge.Mappers;
 using XamariNES.APU;
+using EutherDrive.Core.Savestates;
 using CpuCore = XamariNES.CPU.Core;
 using PpuCore = XamariNES.PPU.Core;
 
 namespace EutherDrive.Core;
 
-public sealed class NesAdapter : IEmulatorCore
+public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
 {
     private const int DefaultWidth = 256;
     private const int DefaultHeight = 240;
@@ -31,8 +32,13 @@ public sealed class NesAdapter : IEmulatorCore
     private string? _saveRamPath;
     private ISaveRamProvider? _saveRamProvider;
     private float _masterVolumeScale = 1.0f;
+    private readonly object _stateLock = new();
+    private long _frameCounter;
+    private RomIdentity? _romIdentity;
 
     public string? RomSummary => _romSummary;
+    public RomIdentity? RomIdentity => _romIdentity;
+    public long? FrameCounter => _frameCounter;
 
     public void LoadRom(string path)
     {
@@ -73,6 +79,7 @@ public sealed class NesAdapter : IEmulatorCore
         }
         Reset();
         _romSummary = BuildRomSummary(path, rom);
+        _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(rom));
     }
 
     public void Reset()
@@ -83,6 +90,7 @@ public sealed class NesAdapter : IEmulatorCore
         _ppu.Reset();
         _cpu.Cycles = 4;
         _cpuIdleCycles = 0;
+        _frameCounter = 0;
         _apu?.ConsumeAudioBuffer();
     }
 
@@ -130,6 +138,7 @@ public sealed class NesAdapter : IEmulatorCore
             {
                 ConvertFrameBuffer(_ppu.FrameBuffer, _frameBuffer);
                 _ppu.FrameReady = false;
+                _frameCounter++;
                 if (_apu != null)
                 {
                     _audioBuffer = _apu.ConsumeAudioBuffer();
@@ -205,6 +214,85 @@ public sealed class NesAdapter : IEmulatorCore
             _controller.ButtonPress(button);
         else
             _controller.ButtonRelease(button);
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        if (writer == null)
+            throw new ArgumentNullException(nameof(writer));
+        if (_cpu == null || _ppu == null || _apu == null || _controller == null || _cartridge == null)
+            throw new InvalidOperationException("NES core not initialized.");
+
+        lock (_stateLock)
+        {
+            const int version = 1;
+            writer.Write(version);
+            writer.Write(_frameCounter);
+            writer.Write(_cpuIdleCycles);
+
+            // CPU registers/state
+            writer.Write(_cpu.A);
+            writer.Write(_cpu.X);
+            writer.Write(_cpu.Y);
+            writer.Write(_cpu.PC);
+            writer.Write(_cpu.SP);
+            writer.Write(_cpu.Cycles);
+            writer.Write(_cpu.NMI);
+            writer.Write(_cpu.IRQ);
+            writer.Write(_cpu.Status.ToByte());
+
+            // CPU internal RAM
+            byte[] ram = _cpu.CPUMemory.GetInternalRam();
+            writer.Write(ram.Length);
+            writer.Write(ram);
+
+            // Mapper state (PRG/CHR RAM, IRQs, banks, etc.)
+            StateBinarySerializer.WriteInto(writer, _cartridge.MemoryMapper);
+
+            // PPU/APU/Controller state
+            StateBinarySerializer.WriteInto(writer, _ppu);
+            StateBinarySerializer.WriteInto(writer, _apu);
+            StateBinarySerializer.WriteInto(writer, _controller);
+        }
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        if (reader == null)
+            throw new ArgumentNullException(nameof(reader));
+        if (_cpu == null || _ppu == null || _apu == null || _controller == null || _cartridge == null)
+            throw new InvalidOperationException("NES core not initialized.");
+
+        lock (_stateLock)
+        {
+            int version = reader.ReadInt32();
+            if (version != 1)
+                throw new InvalidDataException($"Unsupported NES savestate version: {version}.");
+
+            _frameCounter = reader.ReadInt64();
+            _cpuIdleCycles = reader.ReadInt32();
+
+            _cpu.A = reader.ReadByte();
+            _cpu.X = reader.ReadByte();
+            _cpu.Y = reader.ReadByte();
+            _cpu.PC = reader.ReadInt32();
+            _cpu.SP = reader.ReadByte();
+            _cpu.Cycles = reader.ReadInt64();
+            _cpu.NMI = reader.ReadBoolean();
+            _cpu.IRQ = reader.ReadBoolean();
+            _cpu.Status.FromByte(reader.ReadByte());
+
+            int ramLen = reader.ReadInt32();
+            byte[] ram = reader.ReadBytes(ramLen);
+            _cpu.CPUMemory.SetInternalRam(ram);
+
+            StateBinarySerializer.ReadInto(reader, _cartridge.MemoryMapper);
+            StateBinarySerializer.ReadInto(reader, _ppu);
+            StateBinarySerializer.ReadInto(reader, _apu);
+            StateBinarySerializer.ReadInto(reader, _controller);
+
+            _apu.ConsumeAudioBuffer();
+        }
     }
 
     private byte[] DmaTransfer(byte[] oam, int oamOffset, int offset)

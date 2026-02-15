@@ -13,9 +13,12 @@ namespace XamariNES.CPU
     /// </summary>
     public class Memory
     {
+        [NonSerialized]
         private readonly IMapper _memoryMapper;
+        [NonSerialized]
         private readonly IController _controller;
         private readonly byte[] _internalRam;
+        [NonSerialized]
         private IApu _apu;
 
         public Memory(IMapper memoryMapper, IController controller, IApu apu = null)
@@ -29,6 +32,18 @@ namespace XamariNES.CPU
         public void AttachApu(IApu apu)
         {
             _apu = apu;
+        }
+
+        public byte[] GetInternalRam() => _internalRam;
+
+        public void SetInternalRam(byte[] data)
+        {
+            if (data == null || data.Length == 0)
+                return;
+            int copy = data.Length < _internalRam.Length ? data.Length : _internalRam.Length;
+            Buffer.BlockCopy(data, 0, _internalRam, 0, copy);
+            if (copy < _internalRam.Length)
+                Array.Clear(_internalRam, copy, _internalRam.Length - copy);
         }
 
         /// <summary>

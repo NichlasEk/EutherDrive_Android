@@ -90,7 +90,7 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
     public void Refresh()
     {
         var core = _coreProvider();
-        if (core == null || core.RomIdentity == null)
+        if (core == null)
         {
             IsAvailable = false;
             Slot1Label = "S1: Empty";
@@ -100,6 +100,14 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
         }
 
         IsAvailable = true;
+        if (core.RomIdentity == null)
+        {
+            Slot1Label = "S1: Empty";
+            Slot2Label = "S2: Empty";
+            Slot3Label = "S3: Empty";
+            return;
+        }
+
         var slots = _service.GetSlotInfo(core);
         Slot1Label = FormatSlotLabel(slots[0]);
         Slot2Label = FormatSlotLabel(slots[1]);

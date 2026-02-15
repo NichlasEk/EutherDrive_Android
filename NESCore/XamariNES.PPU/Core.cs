@@ -97,6 +97,7 @@ namespace XamariNES.PPU
         /// </summary>
         public Memory PPUMemory;
 
+        [NonSerialized]
         private readonly IMapper _memoryMapper;
 
         /// <summary>

@@ -12,7 +12,9 @@ namespace XamariNES.Cartridge.Mappers.impl
     public sealed class VRC6 : MapperBase, IMapper, IMapperIrqProvider, ISaveRamProvider, IMapperCpuTick,
         IExpansionAudioProvider
     {
+        [NonSerialized]
         private readonly byte[] _prgRom;
+        [NonSerialized]
         private readonly byte[] _chrRom;
         private readonly byte[] _prgRam;
         private readonly bool _useChrRam;

@@ -11,7 +11,9 @@ namespace XamariNES.Cartridge.Mappers.impl
     /// </summary>
     public class MMC3 : MapperBase, IMapper, IMapperIrqProvider, IPpuA12Observer, IMapperScanlineCounter, ISaveRamProvider
     {
+        [NonSerialized]
         private readonly byte[] _prgRom;
+        [NonSerialized]
         private readonly byte[] _chrRom;
         private readonly byte[] _prgRam;
         private bool _saveRamDirty;

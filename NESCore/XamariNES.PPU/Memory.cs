@@ -13,6 +13,7 @@ namespace XamariNES.PPU
     /// </summary>
     public class Memory
     {
+        [NonSerialized]
         private readonly IMapper _memoryMapper;
         private readonly byte[] _ppuVram;
         private readonly byte[] _paletteMemory;

@@ -17,6 +17,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         ///
         ///     256kb Capacity
         /// </summary>
+        [NonSerialized]
         private readonly byte[] _prgRom;
 
         /// <summary>
@@ -38,6 +39,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         ///
         ///     128kb Capacity
         /// </summary>
+        [NonSerialized]
         private readonly byte[] _chrRom;
 
         //Registers

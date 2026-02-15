@@ -47,30 +47,38 @@
                 ValueChanged="OnAutoFireRateChanged"/>
         <TextBlock Name="AutoFireRateText" Width="34" Text="12Hz" VerticalAlignment="Center"/>
       </StackPanel>
-      <Border Name="SavestatePanel" Padding="6,4" BorderBrush="#2E3844" BorderThickness="1" CornerRadius="6" Background="#161B21"
-              x:DataType="savestates:SavestateViewModel">
-        <StackPanel Spacing="4">
-          <StackPanel Orientation="Horizontal" Spacing="4">
-            <TextBlock Text="{Binding Slot1Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
-            <Button Content="Save" Command="{Binding SaveSlot1Command}" Padding="6,2" FontSize="11"/>
-            <Button Content="Load" Command="{Binding LoadSlot1Command}" Padding="6,2" FontSize="11"/>
-            <Button Content="Clear" Command="{Binding ClearSlot1Command}" Padding="6,2" FontSize="11"/>
+      <StackPanel Spacing="6">
+        <Border Name="SavestatePanel" Padding="6,4" BorderBrush="#2E3844" BorderThickness="1" CornerRadius="6" Background="#161B21"
+                x:DataType="savestates:SavestateViewModel">
+          <StackPanel Spacing="4">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <TextBlock Text="{Binding Slot1Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
+              <Button Content="Save" Command="{Binding SaveSlot1Command}" Padding="6,2" FontSize="11"/>
+              <Button Content="Load" Command="{Binding LoadSlot1Command}" Padding="6,2" FontSize="11"/>
+              <Button Content="Clear" Command="{Binding ClearSlot1Command}" Padding="6,2" FontSize="11"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <TextBlock Text="{Binding Slot2Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
+              <Button Content="Save" Command="{Binding SaveSlot2Command}" Padding="6,2" FontSize="11"/>
+              <Button Content="Load" Command="{Binding LoadSlot2Command}" Padding="6,2" FontSize="11"/>
+              <Button Content="Clear" Command="{Binding ClearSlot2Command}" Padding="6,2" FontSize="11"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <TextBlock Text="{Binding Slot3Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
+              <Button Content="Save" Command="{Binding SaveSlot3Command}" Padding="6,2" FontSize="11"/>
+              <Button Content="Load" Command="{Binding LoadSlot3Command}" Padding="6,2" FontSize="11"/>
+              <Button Content="Clear" Command="{Binding ClearSlot3Command}" Padding="6,2" FontSize="11"/>
+            </StackPanel>
           </StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="4">
-            <TextBlock Text="{Binding Slot2Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
-            <Button Content="Save" Command="{Binding SaveSlot2Command}" Padding="6,2" FontSize="11"/>
-            <Button Content="Load" Command="{Binding LoadSlot2Command}" Padding="6,2" FontSize="11"/>
-            <Button Content="Clear" Command="{Binding ClearSlot2Command}" Padding="6,2" FontSize="11"/>
-          </StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="4">
-            <TextBlock Text="{Binding Slot3Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
-            <Button Content="Save" Command="{Binding SaveSlot3Command}" Padding="6,2" FontSize="11"/>
-            <Button Content="Load" Command="{Binding LoadSlot3Command}" Padding="6,2" FontSize="11"/>
-            <Button Content="Clear" Command="{Binding ClearSlot3Command}" Padding="6,2" FontSize="11"/>
-          </StackPanel>
-        </StackPanel>
-      </Border>
-      <TextBlock Name="StatusText" VerticalAlignment="Center"/>
+        </Border>
+        <TextBox Name="StatusText"
+                 IsReadOnly="True"
+                 BorderThickness="0"
+                 Background="Transparent"
+                 TextWrapping="Wrap"
+                 SelectionBrush="#3A7BD5"
+                 MinWidth="320"/>
+      </StackPanel>
     </StackPanel>
 
     <!-- Left: info (scrollable) -->

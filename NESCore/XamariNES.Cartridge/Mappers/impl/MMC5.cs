@@ -14,7 +14,9 @@ namespace XamariNES.Cartridge.Mappers.impl
     {
         private const int CpuCyclesPerQuarterFrame = 7457;
 
+        [NonSerialized]
         private readonly byte[] _prgRom;
+        [NonSerialized]
         private readonly byte[] _chrRom;
         private readonly byte[] _prgRam;
         private readonly bool _useChrRam;

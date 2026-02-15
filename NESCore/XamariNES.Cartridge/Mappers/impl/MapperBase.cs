@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 
 namespace XamariNES.Cartridge.Mappers.impl
 {
@@ -12,11 +13,15 @@ namespace XamariNES.Cartridge.Mappers.impl
         public delegate void WriteInterceptor(int offset, byte value);
 
         //Dictionary of Interceptors
+        [NonSerialized]
         protected readonly Dictionary<int, ReadInterceptor> ReadInterceptors = new Dictionary<int, ReadInterceptor>();
+        [NonSerialized]
         protected readonly Dictionary<int, WriteInterceptor> WriteInterceptors = new Dictionary<int, WriteInterceptor>();
 
         //Cached Interceptors
+        [NonSerialized]
         protected ReadInterceptor currentReadInterceptor;
+        [NonSerialized]
         protected WriteInterceptor currentWriteInterceptor;
 
         protected MapperBase() { }
