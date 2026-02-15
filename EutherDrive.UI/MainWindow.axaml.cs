@@ -481,6 +481,8 @@ public partial class MainWindow : Window
         string ext = Path.GetExtension(path).ToLowerInvariant();
         if (ext is ".smc" or ".sfc")
             return true;
+        if (ext is ".nes")
+            return false;
         if (ext is ".md" or ".gen" or ".smd" or ".bin")
             return false;
         try
@@ -503,7 +505,22 @@ public partial class MainWindow : Window
     private static bool IsNesRom(string path)
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
-        return ext == ".nes";
+        if (ext != ".nes")
+            return false;
+        try
+        {
+            byte[] data = File.ReadAllBytes(path);
+            if (data.Length < 16)
+                return false;
+            return data[0] == (byte)'N'
+                && data[1] == (byte)'E'
+                && data[2] == (byte)'S'
+                && data[3] == 0x1A;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool LooksLikeMegaDriveHeader(byte[] data)
