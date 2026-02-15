@@ -6,7 +6,6 @@ using KSNES.AudioProcessing;
 using KSNES.Rendering;
 using KSNES.ROM;
 using KSNES.Tracing;
-using KSNES.Tracing;
 
 namespace KSNES.Specialchips.SA1;
 
@@ -132,74 +131,6 @@ internal sealed class Sa1
         _registers.NotifySnesDmaEnd();
     }
 
-    private int TryGetSa1OpByte(int pc)
-    {
-        uint address = (uint)pc & 0xFFFFFF;
-        uint bank = (address >> 16) & 0xFF;
-        uint offset = address & 0xFFFF;
-        if ((bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF)) && (offset <= 0x07FF || (offset >= 0x3000 && offset <= 0x37FF)))
-        {
-            return _iram[offset & 0x7FF];
-        }
-        uint? romAddr = _mmc.MapRomAddress(address);
-        if (romAddr.HasValue && romAddr.Value < _rom.Length)
-            return _rom[(int)romAddr.Value];
-        return -1;
-    }
-
-    private void TraceSa1(string rw, uint address, byte value, string region, uint? resolved = null)
-    {
-        if (!Sa1Trace.IsEnabled)
-            return;
-        int pc = _cpu.ProgramCounter24;
-        int op = TryGetSa1OpByte(pc);
-        Sa1Trace.Log("SA1", pc, op, address, rw, value, region, resolved);
-    }
-
-    public bool TryResolveSnesAccess(uint address, out string region, out uint? resolved)
-    {
-        uint bank = (address >> 16) & 0xFF;
-        uint offset = address & 0xFFFF;
-        switch (bank, offset)
-        {
-            case (<= 0x3F, >= 0x2200 and <= 0x22FF):
-            case (>= 0x80 and <= 0xBF, >= 0x2200 and <= 0x22FF):
-                region = "SA1-IO";
-                resolved = null;
-                return true;
-            case (<= 0x3F, >= 0x2300 and <= 0x230F):
-            case (>= 0x80 and <= 0xBF, >= 0x2300 and <= 0x230F):
-                region = "SA1-IO";
-                resolved = null;
-                return true;
-            case (<= 0x3F, >= 0x3000 and <= 0x37FF):
-            case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
-                region = "I-RAM";
-                resolved = (address & 0x7FF);
-                return true;
-            case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
-            case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
-                region = "BW-RAM-WIN";
-                resolved = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
-                return true;
-            case (>= 0x40 and <= 0x4F, _):
-                region = _registers.CcdmaTransferInProgress ? "CCDMA" : "BW-RAM";
-                resolved = address & (uint)(_bwram.Length - 1);
-                return true;
-            case (<= 0x3F, >= 0x8000):
-            case (>= 0x80 and <= 0xBF, >= 0x8000):
-            case (>= 0xC0 and <= 0xFF, _):
-                {
-                    uint? romAddr = _mmc.MapRomAddress(address);
-                    region = "ROM";
-                    resolved = romAddr;
-                    return romAddr.HasValue;
-                }
-        }
-        region = "UNMAPPED";
-        resolved = null;
-        return false;
-    }
 
     private int TryGetSa1OpByte(int pc)
     {
