@@ -24,6 +24,8 @@ internal sealed class Sa1
     private ulong _lastSnesCycles;
     private readonly Sa1System _system;
     private bool _inReset = true;
+    private bool _lastSa1Reset;
+    private bool _lastSa1Wait;
 
     public Sa1(byte[] rom, byte[] bwram, bool isPal)
     {
@@ -37,6 +39,8 @@ internal sealed class Sa1
         _timer = new Sa1Timer(isPal);
         _system = new Sa1System(this, _cpu);
         _cpu.SetSystem(_system);
+        _lastSa1Reset = _registers.Sa1Reset;
+        _lastSa1Wait = _registers.Sa1Wait;
     }
 
     public byte[] Bwram => _bwram;
@@ -77,6 +81,18 @@ internal sealed class Sa1
         {
             _cpu.Reset();
             _inReset = false;
+            TraceState("RESET-RELEASE");
+        }
+
+        if (_registers.Sa1Reset != _lastSa1Reset)
+        {
+            _lastSa1Reset = _registers.Sa1Reset;
+            TraceState(_registers.Sa1Reset ? "RESET-ASSERT" : "RESET-DEASSERT");
+        }
+        if (_registers.Sa1Wait != _lastSa1Wait)
+        {
+            _lastSa1Wait = _registers.Sa1Wait;
+            TraceState(_registers.Sa1Wait ? "WAIT-ASSERT" : "WAIT-DEASSERT");
         }
 
         if (!_registers.CpuHalted() && !_registers.Sa1Wait && !_registers.Sa1Reset)
@@ -119,6 +135,8 @@ internal sealed class Sa1
         _bwramWaitCycles = 0;
         _lastSnesCycles = 0;
         _inReset = true;
+        _lastSa1Reset = _registers.Sa1Reset;
+        _lastSa1Wait = _registers.Sa1Wait;
     }
 
     public void NotifyDmaStart(uint sourceAddress)
@@ -154,6 +172,15 @@ internal sealed class Sa1
         int pc = _cpu.ProgramCounter24;
         int op = TryGetSa1OpByte(pc);
         Sa1Trace.Log("SA1", pc, op, address, rw, value, region, resolved);
+    }
+
+    private void TraceState(string state)
+    {
+        if (!Sa1Trace.IsEnabled)
+            return;
+        int pc = _cpu.ProgramCounter24;
+        int op = TryGetSa1OpByte(pc);
+        Sa1Trace.Log("SA1", pc, op, 0, "S", 0, state, null);
     }
 
     public bool TryResolveSnesAccess(uint address, out string region, out uint? resolved)
@@ -297,12 +324,42 @@ internal sealed class Sa1
             case (<= 0x3F, >= 0x8000):
             case (>= 0x80 and <= 0xBF, >= 0x8000):
             case (>= 0xC0 and <= 0xFF, _):
-                if (bank == 0x00 && offset == 0xFFEA) return _registers.Sa1NmiVector.Lsb();
-                if (bank == 0x00 && offset == 0xFFEB) return _registers.Sa1NmiVector.Msb();
-                if (bank == 0x00 && offset == 0xFFEE) return _registers.Sa1IrqVector.Lsb();
-                if (bank == 0x00 && offset == 0xFFEF) return _registers.Sa1IrqVector.Msb();
-                if (bank == 0x00 && offset == 0xFFFC) return _registers.Sa1ResetVector.Lsb();
-                if (bank == 0x00 && offset == 0xFFFD) return _registers.Sa1ResetVector.Msb();
+                if (bank == 0x00 && offset == 0xFFEA)
+                {
+                    byte value = _registers.Sa1NmiVector.Lsb();
+                    TraceSa1("R", address, value, "SA1-VEC");
+                    return value;
+                }
+                if (bank == 0x00 && offset == 0xFFEB)
+                {
+                    byte value = _registers.Sa1NmiVector.Msb();
+                    TraceSa1("R", address, value, "SA1-VEC");
+                    return value;
+                }
+                if (bank == 0x00 && offset == 0xFFEE)
+                {
+                    byte value = _registers.Sa1IrqVector.Lsb();
+                    TraceSa1("R", address, value, "SA1-VEC");
+                    return value;
+                }
+                if (bank == 0x00 && offset == 0xFFEF)
+                {
+                    byte value = _registers.Sa1IrqVector.Msb();
+                    TraceSa1("R", address, value, "SA1-VEC");
+                    return value;
+                }
+                if (bank == 0x00 && offset == 0xFFFC)
+                {
+                    byte value = _registers.Sa1ResetVector.Lsb();
+                    TraceSa1("R", address, value, "SA1-VEC");
+                    return value;
+                }
+                if (bank == 0x00 && offset == 0xFFFD)
+                {
+                    byte value = _registers.Sa1ResetVector.Msb();
+                    TraceSa1("R", address, value, "SA1-VEC");
+                    return value;
+                }
                 {
                     uint? romAddr = _mmc.MapRomAddress(address);
                     byte value = romAddr.HasValue && romAddr.Value < _rom.Length ? _rom[(int)romAddr.Value] : (byte)0;
