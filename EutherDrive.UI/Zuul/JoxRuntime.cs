@@ -39,6 +39,8 @@ internal sealed class JoxRuntime
 
     public uint TicksPerSecond => _tps;
     public IReadOnlyList<Line2> Lines => _lines;
+    public float Yaw => _yaw;
+    public float Pitch => _pitch;
 
     public void Load(JoxFile file)
     {
@@ -186,6 +188,20 @@ internal sealed class JoxRuntime
     {
         for (int i = 0; i < ticks; i++)
             Tick();
+    }
+
+    public void SetRotation(float yaw, float pitch)
+    {
+        _yaw = yaw;
+        _pitch = pitch;
+        RebuildLines();
+    }
+
+    public void AddRotation(float yawDelta, float pitchDelta)
+    {
+        _yaw += yawDelta;
+        _pitch += pitchDelta;
+        RebuildLines();
     }
 
     private void ApplyLerps()

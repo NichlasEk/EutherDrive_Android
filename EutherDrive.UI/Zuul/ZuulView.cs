@@ -5,6 +5,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Platform;
+using Avalonia.Input;
 using Avalonia.Threading;
 using EutherDrive.Audio;
 
@@ -19,15 +20,49 @@ internal sealed class ZuulView : Control
     private short[] _roarSamples = Array.Empty<short>();
     private int _roarRate = 22050;
     private int _roarChannels = 1;
+    private bool _dragging;
+    private Point _lastPointerPos;
 
     public ZuulView()
     {
         _runtime.EventEmitted += HandleEvent;
+        PointerPressed += OnPointerPressed;
+        PointerMoved += OnPointerMoved;
+        PointerReleased += OnPointerReleased;
         _timer.Tick += (_, _) =>
         {
             _runtime.Tick();
             InvalidateVisual();
         };
+    }
+
+    private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        _dragging = true;
+        _lastPointerPos = e.GetPosition(this);
+        e.Pointer.Capture(this);
+    }
+
+    private void OnPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!_dragging)
+            return;
+        Point pos = e.GetPosition(this);
+        double dx = pos.X - _lastPointerPos.X;
+        double dy = pos.Y - _lastPointerPos.Y;
+        _lastPointerPos = pos;
+
+        float yawDelta = (float)(dx * 0.01);
+        float pitchDelta = (float)(dy * 0.01);
+        _runtime.AddRotation(yawDelta, pitchDelta);
+        InvalidateVisual();
+    }
+
+    private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        _dragging = false;
+        if (e.Pointer.Captured == this)
+            e.Pointer.Capture(null);
     }
 
     public void LoadDefault()
