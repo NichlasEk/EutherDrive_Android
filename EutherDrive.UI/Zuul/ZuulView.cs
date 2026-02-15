@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Buffers.Binary;
 using Avalonia;
@@ -8,6 +9,9 @@ using Avalonia.Platform;
 using Avalonia.Input;
 using Avalonia.Threading;
 using EutherDrive.Audio;
+using SdlApi = Silk.NET.SDL.Sdl;
+using GameControllerAxis = Silk.NET.SDL.GameControllerAxis;
+using GameControllerButton = Silk.NET.SDL.GameControllerButton;
 
 namespace EutherDrive.UI.Zuul;
 
@@ -22,6 +26,10 @@ internal sealed class ZuulView : Control
     private int _roarChannels = 1;
     private bool _dragging;
     private Point _lastPointerPos;
+    private readonly HashSet<Key> _keysDown = new();
+    private SdlApi? _sdl;
+    private IntPtr _gamepad = IntPtr.Zero;
+    private bool _sdlReady;
 
     public ZuulView()
     {
@@ -29,9 +37,12 @@ internal sealed class ZuulView : Control
         PointerPressed += OnPointerPressed;
         PointerMoved += OnPointerMoved;
         PointerReleased += OnPointerReleased;
+        KeyDown += OnKeyDown;
+        KeyUp += OnKeyUp;
         _timer.Tick += (_, _) =>
         {
             _runtime.Tick();
+            ApplyInputRotation();
             InvalidateVisual();
         };
     }
@@ -41,6 +52,7 @@ internal sealed class ZuulView : Control
         _dragging = true;
         _lastPointerPos = e.GetPosition(this);
         e.Pointer.Capture(this);
+        Focus();
     }
 
     private void OnPointerMoved(object? sender, PointerEventArgs e)
@@ -63,6 +75,16 @@ internal sealed class ZuulView : Control
         _dragging = false;
         if (e.Pointer.Captured == this)
             e.Pointer.Capture(null);
+    }
+
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        _keysDown.Add(e.Key);
+    }
+
+    private void OnKeyUp(object? sender, KeyEventArgs e)
+    {
+        _keysDown.Remove(e.Key);
     }
 
     public void LoadDefault()
@@ -93,6 +115,8 @@ internal sealed class ZuulView : Control
         if (_loaded)
             return;
         _loaded = true;
+        Focusable = true;
+        InitGamepad();
         if (_runtime.Lines.Count == 0)
             LoadDefault();
     }
@@ -103,6 +127,7 @@ internal sealed class ZuulView : Control
         _timer.Stop();
         _audioSink?.Dispose();
         _audioSink = null;
+        CloseGamepad();
     }
 
     public override void Render(DrawingContext context)
@@ -141,6 +166,106 @@ internal sealed class ZuulView : Control
         _timer.Interval = TimeSpan.FromSeconds(1.0 / tps);
         if (!_timer.IsEnabled)
             _timer.Start();
+    }
+
+    private void ApplyInputRotation()
+    {
+        float yaw = 0f;
+        float pitch = 0f;
+
+        if (_keysDown.Contains(Key.Left))
+            yaw -= 0.03f;
+        if (_keysDown.Contains(Key.Right))
+            yaw += 0.03f;
+        if (_keysDown.Contains(Key.Up))
+            pitch -= 0.03f;
+        if (_keysDown.Contains(Key.Down))
+            pitch += 0.03f;
+
+        if (_sdlReady && _gamepad != IntPtr.Zero && _sdl != null)
+        {
+            unsafe
+            {
+                var controller = (Silk.NET.SDL.GameController*)_gamepad;
+                float rx = NormalizeAxis(_sdl.GameControllerGetAxis(controller, GameControllerAxis.Rightx));
+                float ry = NormalizeAxis(_sdl.GameControllerGetAxis(controller, GameControllerAxis.Righty));
+                yaw += rx * 0.05f;
+                pitch += ry * 0.05f;
+
+                if (_sdl.GameControllerGetButton(controller, GameControllerButton.DpadLeft) != 0)
+                    yaw -= 0.03f;
+                if (_sdl.GameControllerGetButton(controller, GameControllerButton.DpadRight) != 0)
+                    yaw += 0.03f;
+                if (_sdl.GameControllerGetButton(controller, GameControllerButton.DpadUp) != 0)
+                    pitch -= 0.03f;
+                if (_sdl.GameControllerGetButton(controller, GameControllerButton.DpadDown) != 0)
+                    pitch += 0.03f;
+            }
+        }
+
+        if (yaw != 0f || pitch != 0f)
+            _runtime.AddRotation(yaw, pitch);
+    }
+
+    private static float NormalizeAxis(short value)
+    {
+        const float deadZone = 8000f;
+        if (value > -deadZone && value < deadZone)
+            return 0f;
+        return Math.Clamp(value / 32767f, -1f, 1f);
+    }
+
+    private void InitGamepad()
+    {
+        try
+        {
+            _sdl = SdlApi.GetApi();
+            int rc = _sdl.Init(SdlApi.InitGamecontroller | SdlApi.InitJoystick | SdlApi.InitEvents);
+            if (rc != 0)
+            {
+                _sdlReady = false;
+                return;
+            }
+            _sdlReady = true;
+            TryOpenFirstGamepad();
+        }
+        catch
+        {
+            _sdlReady = false;
+        }
+    }
+
+    private void TryOpenFirstGamepad()
+    {
+        if (_sdl == null)
+            return;
+        int count = _sdl.NumJoysticks();
+        for (int i = 0; i < count; i++)
+        {
+            if (_sdl.IsGameController(i) == 0)
+                continue;
+            unsafe
+            {
+                var controller = _sdl.GameControllerOpen(i);
+                if (controller != null)
+                {
+                    _gamepad = (IntPtr)controller;
+                    return;
+                }
+            }
+        }
+    }
+
+    private void CloseGamepad()
+    {
+        if (_sdl == null || _gamepad == IntPtr.Zero)
+            return;
+        unsafe
+        {
+            var controller = (Silk.NET.SDL.GameController*)_gamepad;
+            _sdl.GameControllerClose(controller);
+        }
+        _gamepad = IntPtr.Zero;
     }
 
     private void HandleEvent(ushort eventId)
