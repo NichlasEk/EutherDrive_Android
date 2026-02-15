@@ -160,7 +160,7 @@ public class CPU : ICPU
         _m = true;
         _x = true;
         _d = false;
-        _i = false;
+        _i = true;
         _z = false;
         _c = false;
         _e = true;
