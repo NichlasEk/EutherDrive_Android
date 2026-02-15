@@ -9,11 +9,13 @@ namespace XamariNES.Cartridge.Mappers.impl
     ///
     ///     More Info: https://www.nesdev.org/wiki/MMC3
     /// </summary>
-    public class MMC3 : MapperBase, IMapper, IMapperIrqProvider
+    public class MMC3 : MapperBase, IMapper, IMapperIrqProvider, IPpuA12Observer, IMapperScanlineCounter, ISaveRamProvider
     {
         private readonly byte[] _prgRom;
         private readonly byte[] _chrRom;
         private readonly byte[] _prgRam;
+        private bool _saveRamDirty;
+        public bool BatteryBacked { get; }
         private readonly bool _useChrRam;
         private readonly int _prgBankCount8k;
         private readonly int _chrBankCount1k;
@@ -29,28 +31,30 @@ namespace XamariNES.Cartridge.Mappers.impl
         private bool _irqEnabled;
         private bool _irqPending;
         private bool _lastA12;
+        private long _lastA12LowCycle = -100000;
+        private readonly bool _useScanlineClock = true;
 
         public enumNametableMirroring NametableMirroring { get; set; }
 
         public bool IrqPending => _irqPending;
 
-        public MMC3(byte[] prgRom, byte[] chrRom, bool useChrRam,
+        public MMC3(byte[] prgRom, byte[] chrRom, bool useChrRam, int prgRamSize, bool batteryBacked,
             enumNametableMirroring mirroring = enumNametableMirroring.Horizontal)
         {
             _prgRom = prgRom;
             _chrRom = chrRom;
             _useChrRam = useChrRam;
-            _prgRam = new byte[0x2000];
+            _prgRam = new byte[Math.Max(1, prgRamSize)];
             _prgBankCount8k = Math.Max(1, _prgRom.Length / 0x2000);
             _chrBankCount1k = Math.Max(1, _chrRom.Length / 0x0400);
             NametableMirroring = mirroring;
+            BatteryBacked = batteryBacked;
         }
 
         public byte ReadByte(int offset)
         {
             if (offset <= 0x1FFF)
             {
-                UpdateA12(offset);
                 int chrIndex = ResolveChrAddress(offset);
                 return _chrRom[chrIndex];
             }
@@ -90,7 +94,12 @@ namespace XamariNES.Cartridge.Mappers.impl
 
             if (offset >= 0x6000 && offset <= 0x7FFF)
             {
-                _prgRam[offset - 0x6000] = data;
+                int idx = (offset - 0x6000) % _prgRam.Length;
+                if (_prgRam[idx] != data)
+                {
+                    _prgRam[idx] = data;
+                    _saveRamDirty = true;
+                }
                 return;
             }
 
@@ -211,26 +220,64 @@ namespace XamariNES.Cartridge.Mappers.impl
             return bankIndex * 0x0400 + bankOffset;
         }
 
-        private void UpdateA12(int ppuAddress)
+        public void NotifyPpuA12(int ppuAddress, long ppuCycle)
+        {
+            if (_useScanlineClock)
+                return;
+            UpdateA12(ppuAddress, ppuCycle);
+        }
+
+        private void UpdateA12(int ppuAddress, long ppuCycle)
         {
             bool a12 = (ppuAddress & 0x1000) != 0;
+            if (!a12)
+                _lastA12LowCycle = ppuCycle;
+
             if (!_lastA12 && a12)
             {
-                if (_irqCounter == 0 || _irqReload)
+                if (ppuCycle - _lastA12LowCycle >= 12)
                 {
-                    _irqCounter = _irqLatch;
-                    _irqReload = false;
-                }
-                else
-                {
-                    _irqCounter--;
-                }
+                    if (_irqCounter == 0 || _irqReload)
+                    {
+                        _irqCounter = _irqLatch;
+                        _irqReload = false;
+                    }
+                    else
+                    {
+                        _irqCounter--;
+                    }
 
-                if (_irqCounter == 0 && _irqEnabled)
-                    _irqPending = true;
+                    if (_irqCounter == 0 && _irqEnabled)
+                        _irqPending = true;
+                }
             }
 
             _lastA12 = a12;
+        }
+
+        public void ClockScanline()
+        {
+            if (_irqCounter == 0 || _irqReload)
+            {
+                _irqCounter = _irqLatch;
+                _irqReload = false;
+            }
+            else
+            {
+                _irqCounter--;
+            }
+
+            if (_irqCounter == 0 && _irqEnabled)
+                _irqPending = true;
+        }
+
+        public bool IsSaveRamDirty => _saveRamDirty;
+
+        public byte[] GetSaveRam() => _prgRam;
+
+        public void ClearSaveRamDirty()
+        {
+            _saveRamDirty = false;
         }
     }
 }

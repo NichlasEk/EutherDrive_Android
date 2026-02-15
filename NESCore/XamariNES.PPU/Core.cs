@@ -359,6 +359,13 @@ namespace XamariNES.PPU
                     _countedSprites = 0;
             }
 
+            if (_currentCycle >= 257 && _currentCycle <= 320 &&
+                (_scanLineState.IsFlagSet(ScanLineStateFlags.Visible) ||
+                 _scanLineState.IsFlagSet(ScanLineStateFlags.PreRender)))
+            {
+                SpriteFetchTick();
+            }
+
             //Time to render a Pixel?
             if (_scanLineState.IsFlagSet(ScanLineStateFlags.Visible) && _cycleState.IsFlagSet(CycleStateFlags.Visible))
                 RenderPixel();
@@ -382,13 +389,14 @@ namespace XamariNES.PPU
                         break;
                     //Nametable byte
                     case 1:
-                        _nameTableByte = PPUMemory.ReadByte(0x2000 | (_registerPPUADDR & 0x0FFF));
+                        _nameTableByte = PPUMemory.ReadByteWithA12(0x2000 | (_registerPPUADDR & 0x0FFF), Cycles);
                         break;
                     //Attribute table byte
                     case 3:
                         _attributeTableByte =
-                            PPUMemory.ReadByte(0x23C0 | (_registerPPUADDR & 0x0C00) |
-                                               ((_registerPPUADDR >> 4) & 0x38) | ((_registerPPUADDR >> 2) & 0x07));
+                            PPUMemory.ReadByteWithA12(0x23C0 | (_registerPPUADDR & 0x0C00) |
+                                                      ((_registerPPUADDR >> 4) & 0x38) | ((_registerPPUADDR >> 2) & 0x07),
+                                Cycles);
                         break;
                     //Pattern table tile low
                     case 5:
@@ -397,7 +405,7 @@ namespace XamariNES.PPU
                                 ? 0x1000
                                 : 0x0000;
                         var patternTableTileLowAddress = patternTableTileLowBase + _nameTableByte * 16 + FineY();
-                        _tileDataLow = PPUMemory.ReadByte(patternTableTileLowAddress);
+                        _tileDataLow = PPUMemory.ReadByteWithA12(patternTableTileLowAddress, Cycles);
                         break;
                     //Pattern table tile high(+8 bytes from pattern table tile low)
                     case 7:
@@ -406,7 +414,7 @@ namespace XamariNES.PPU
                                 ? 0x1000
                                 : 0x0000;
                         var patternTableTileHighAddress = patternTableTileHighBase + _nameTableByte * 16 + FineY() + 8;
-                        _tileDataHigh = PPUMemory.ReadByte(patternTableTileHighAddress);
+                        _tileDataHigh = PPUMemory.ReadByteWithA12(patternTableTileHighAddress, Cycles);
                         break;
                 }
             }
@@ -415,6 +423,13 @@ namespace XamariNES.PPU
             if (_currentCycle > 257 && _currentCycle <= 320 &&
                 (_scanLineState.IsFlagSet(ScanLineStateFlags.PreRender) ||
                  _scanLineState.IsFlagSet(ScanLineStateFlags.Visible))) _registerOAMADDR = 0;
+
+            if (_currentCycle == 260 && _scanLineState.IsFlagSet(ScanLineStateFlags.Visible) &&
+                (_registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowSprites) ||
+                 _registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowBackground)))
+            {
+                PPUMemory.ClockMapperScanline();
+            }
 
             // Copy horizontal position data from t to v on _cycle 257 of each scanline if rendering enabled
             if (_currentCycle == 257 && (_scanLineState.IsFlagSet(ScanLineStateFlags.Visible) ||
@@ -829,6 +844,65 @@ namespace XamariNES.PPU
             if (!_registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowBackground)) return 0;
             if (!_registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowBackgroundInLeftMost) && (_currentCycle - 1) < 8) return 0;
             return (byte) ((_tileShiftRegister >> (_X * 4)) & 0xF);
+        }
+
+        private void SpriteFetchTick()
+        {
+            int spriteCycle = _currentCycle - 257;
+            if (spriteCycle < 0)
+                return;
+
+            int spriteIndex = spriteCycle / 8;
+            if (spriteIndex >= 8)
+                return;
+
+            int sub = spriteCycle % 8;
+            if (sub == 0 || sub == 1)
+            {
+                PPUMemory.ReadByteWithA12(0x2000 + spriteIndex, Cycles);
+                return;
+            }
+
+            if (sub != 2 && sub != 4)
+                return;
+
+            int spriteOffset = spriteIndex * 4;
+            byte y = _sprites[spriteOffset];
+            byte tileIndex = _sprites[spriteOffset + 1];
+            byte attributes = _sprites[spriteOffset + 2];
+
+            int yOffset = (_currentScanline - 1) - y;
+            int h = _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.SpriteSize) ? 15 : 7;
+            if (yOffset < 0 || yOffset > h)
+            {
+                int baseAddr = _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.SpriteTableAddress) ? 0x1000 : 0x0000;
+                int addr = baseAddr + (sub == 4 ? 8 : 0);
+                PPUMemory.ReadByteWithA12(addr, Cycles);
+                return;
+            }
+
+            bool flipVertical = (attributes & 0x80) != 0;
+            if (flipVertical)
+                yOffset = h - yOffset;
+
+            int patternBase;
+            if (_registerPPUCTRL.IsFlagSet(PPUCtrlFlags.SpriteSize))
+            {
+                patternBase = (tileIndex & 1) * 0x1000;
+                tileIndex = (byte)(tileIndex & 0xFE);
+                if (yOffset >= 8)
+                {
+                    tileIndex++;
+                    yOffset -= 8;
+                }
+            }
+            else
+            {
+                patternBase = _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.SpriteTableAddress) ? 0x1000 : 0x0000;
+            }
+
+            int patternAddress = patternBase + (tileIndex * 16) + yOffset + (sub == 4 ? 8 : 0);
+            PPUMemory.ReadByteWithA12(patternAddress, Cycles);
         }
 
         /*---------------------------

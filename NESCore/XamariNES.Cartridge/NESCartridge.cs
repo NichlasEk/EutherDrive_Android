@@ -93,6 +93,7 @@ namespace XamariNES.Cartridge
 
             //Set Flags6
             Flags6 = ROM[6];
+            bool batteryBacked = Flags6.IsFlagSet(Byte6Flags.BatteryBacked);
 
             //Move PGR ROM Start if Trainer Present
             if (Flags6.IsFlagSet(Byte6Flags.TrainerPresent))
@@ -106,6 +107,7 @@ namespace XamariNES.Cartridge
 
             var prgRAMSize = ROM[8] == 0 ? 8192 : ROM[8] * 8192; //0 denoted default 8k
             _prgRam = new byte[prgRAMSize];
+            bool usePrgRam = prgRAMSize > 0;
 
             //Load PRG ROM
             Array.Copy(ROM, prgROMOffset, _prgRom, 0, prgROMSize);
@@ -121,7 +123,7 @@ namespace XamariNES.Cartridge
                     MemoryMapper = new NROM(_prgRom, _chrRom, _nametableMirroring);
                     break;
                 case 1:
-                    MemoryMapper = new MMC1(_prgRomBanks, _chrRom, _prgRom, UsesCHRRAM, false, _nametableMirroring);
+                    MemoryMapper = new MMC1(_prgRomBanks, _chrRom, _prgRom, UsesCHRRAM, usePrgRam, prgRAMSize, batteryBacked, _nametableMirroring);
                     break;
                 case 2:
                     MemoryMapper = new UxROM(_prgRom, _prgRomBanks, _chrRom, _nametableMirroring);
@@ -130,7 +132,7 @@ namespace XamariNES.Cartridge
                     MemoryMapper = new CNROM(_prgRom, _prgRomBanks, _chrRom, _nametableMirroring);
                     break;
                 case 4:
-                    MemoryMapper = new MMC3(_prgRom, _chrRom, UsesCHRRAM, _nametableMirroring);
+                    MemoryMapper = new MMC3(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, _nametableMirroring);
                     break;
                 default:
                     throw new Exception($"Unsupported Mapper: {mapperNumber}");

@@ -85,11 +85,11 @@ namespace XamariNES.CPU
         /// </summary>
         /// <param name="memoryMapper">Cartridge Memory Mapper</param>
         /// <param name="controller">NES Controller (Player 1)</param>
-        public Core(IMapper memoryMapper, IController controller = null)
+        public Core(IMapper memoryMapper, IController controller = null, IApu apu = null)
         {
             Status = new CPUStatus();
             Instruction = new CPUInstruction();
-            CPUMemory = new Memory(memoryMapper, controller);
+            CPUMemory = new Memory(memoryMapper, controller, apu);
 
             //Setup the Instructions
             _cpuInstructions = DeclareInstructions();

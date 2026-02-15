@@ -10,7 +10,7 @@ namespace XamariNES.Cartridge.Mappers.impl
     ///
     ///     More Info: https://wiki.nesdev.com/w/index.php/MMC1
     /// </summary>
-    public class MMC1 : MapperBase, IMapper
+    public class MMC1 : MapperBase, IMapper, ISaveRamProvider
     {
         /// <summary>
         ///     PRG ROM
@@ -29,7 +29,9 @@ namespace XamariNES.Cartridge.Mappers.impl
         ///
         ///     32kb Capacity
         /// </summary>
-        private readonly byte[] _prgRam = new byte[0x8000];
+        private readonly byte[] _prgRam;
+        private bool _saveRamDirty;
+        public bool BatteryBacked { get; }
 
         /// <summary>
         ///     CHR ROM
@@ -62,7 +64,7 @@ namespace XamariNES.Cartridge.Mappers.impl
 
         public enumNametableMirroring NametableMirroring { get; set; }
 
-        public MMC1(int prgRomBanks, byte[] chrRom, byte[] prgRom, bool useChrRam, bool usePrgRam,
+        public MMC1(int prgRomBanks, byte[] chrRom, byte[] prgRom, bool useChrRam, bool usePrgRam, int prgRamSize, bool batteryBacked,
             enumNametableMirroring mirroring = enumNametableMirroring.Horizontal)
         {
             _prgRomBanks = prgRomBanks;
@@ -71,6 +73,8 @@ namespace XamariNES.Cartridge.Mappers.impl
             NametableMirroring = mirroring;
             _useChrRam = useChrRam;
             _usePrgRam = usePrgRam;
+            _prgRam = new byte[Math.Max(1, prgRamSize)];
+            BatteryBacked = batteryBacked;
 
             //Set Startup Values
             _registerShift = 0x0C;
@@ -157,7 +161,12 @@ namespace XamariNES.Cartridge.Mappers.impl
                 if (!_usePrgRam)
                     throw new AccessViolationException($"Attempt to write PRG RAM when disabled. Offset ${offset:X4}");
 
-                _prgRam[offset - 0x6000] = data;
+                int idx = (offset - 0x6000) % _prgRam.Length;
+                if (_prgRam[idx] != data)
+                {
+                    _prgRam[idx] = data;
+                    _saveRamDirty = true;
+                }
                 return;
             }
 
@@ -305,6 +314,15 @@ namespace XamariNES.Cartridge.Mappers.impl
                 default:
                     throw new ArgumentException("Invalid PRG Mode Specified");
             }
+        }
+
+        public bool IsSaveRamDirty => _saveRamDirty;
+
+        public byte[] GetSaveRam() => _prgRam;
+
+        public void ClearSaveRamDirty()
+        {
+            _saveRamDirty = false;
         }
     }
 }

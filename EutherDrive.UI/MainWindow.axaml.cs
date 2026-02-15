@@ -384,9 +384,9 @@ public partial class MainWindow : Window
             _romPath = romPath;
             AddRecentRom(_romPath);
             _core = CreateCoreForRom(_romPath);
+            ApplyMasterVolumeToCore();
             if (_core is MdTracerAdapter)
             {
-                ApplyMasterVolumeToCore();
                 ApplyAudioMixToCore();
                 ApplyDefaultCpuCyclesPerLine();
                 if (_core is MdTracerAdapter smsAdapter)
@@ -1010,9 +1010,9 @@ public partial class MainWindow : Window
             {
                 _core = CreateCoreForRom(_romPath);
                 Console.WriteLine($"[UI] Core created ({_core.GetType().Name}).");
+                ApplyMasterVolumeToCore();
                 if (_core is MdTracerAdapter)
                 {
-                    ApplyMasterVolumeToCore();
                     ApplyAudioMixToCore();
                     ApplyDefaultCpuCyclesPerLine();
                     if (_core is MdTracerAdapter smsAdapter)
@@ -1313,6 +1313,8 @@ public partial class MainWindow : Window
             snes.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is PceCdAdapter pce)
             pce.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is NesAdapter nes)
+            nes.SetMasterVolumePercent(_masterVolumePercent);
     }
 
     private void ApplyAudioMixToCore()
@@ -3985,7 +3987,7 @@ public partial class MainWindow : Window
                     ApplyInputToCore(core);
                     core.RunFrame();
                     GenerateAudioFromSystemCycles(core);
-                    if (core is SnesAdapter || core is PceCdAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)

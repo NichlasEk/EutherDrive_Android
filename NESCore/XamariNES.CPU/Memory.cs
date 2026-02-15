@@ -16,12 +16,19 @@ namespace XamariNES.CPU
         private readonly IMapper _memoryMapper;
         private readonly IController _controller;
         private readonly byte[] _internalRam;
+        private IApu _apu;
 
-        public Memory(IMapper memoryMapper, IController controller)
+        public Memory(IMapper memoryMapper, IController controller, IApu apu = null)
         {
             _memoryMapper = memoryMapper;
             _controller = controller;
+            _apu = apu;
             _internalRam = new byte[2048];
+        }
+
+        public void AttachApu(IApu apu)
+        {
+            _apu = apu;
         }
 
         /// <summary>
@@ -46,6 +53,8 @@ namespace XamariNES.CPU
                 {
                     case 0x4016:
                         return _controller.ReadController();
+                    case 0x4015:
+                        return _apu != null ? _apu.ReadStatus() : (byte)0x0;
                     default:
                         return 0x0;
                 }
@@ -97,6 +106,10 @@ namespace XamariNES.CPU
                 {
                     case 0x4016:
                         _controller.SignalController(data);
+                        break;
+                    default:
+                        if (_apu != null && offset <= 0x4017)
+                            _apu.WriteRegister(offset, data);
                         break;
                 }
                 return;

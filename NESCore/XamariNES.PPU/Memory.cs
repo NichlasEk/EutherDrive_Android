@@ -35,11 +35,32 @@ namespace XamariNES.PPU
 
         public byte ReadByte(int offset)
         {
+            return ReadByteInternal(offset, -1, false);
+        }
+
+        public byte ReadByteWithA12(int offset, long ppuCycle)
+        {
+            return ReadByteInternal(offset, ppuCycle, true);
+        }
+
+        public void ClockMapperScanline()
+        {
+            if (_memoryMapper is IMapperScanlineCounter counter)
+                counter.ClockScanline();
+        }
+
+        private byte ReadByteInternal(int offset, long ppuCycle, bool notifyA12)
+        {
+            if (notifyA12 && _memoryMapper is IPpuA12Observer observer && ppuCycle >= 0)
+                observer.NotifyPpuA12(offset, ppuCycle);
+
             if (offset >= 0x3F00 && offset <= 0x3FFF) // Palette RAM
                 return _paletteMemory[GetPaletteRamOffsetIndex(offset)];
 
             if (offset < 0x2000) // CHR (ROM or RAM) pattern tables
+            {
                 return _memoryMapper.ReadByte(offset);
+            }
 
             if (offset <= 0x3EFF) // Internal _vRam
                 return _ppuVram[VramOffsetToOffsetIndex(offset)];

@@ -4,6 +4,7 @@ using XamariNES.Cartridge;
 using XamariNES.Controller;
 using XamariNES.Controller.Enums;
 using XamariNES.Cartridge.Mappers;
+using XamariNES.APU;
 using CpuCore = XamariNES.CPU.Core;
 using PpuCore = XamariNES.PPU.Core;
 
@@ -20,10 +21,15 @@ public sealed class NesAdapter : IEmulatorCore
     private PpuCore? _ppu;
     private NESController? _controller;
     private IMapperIrqProvider? _irqProvider;
+    private Apu? _apu;
     private byte[] _frameBuffer = new byte[DefaultHeight * DefaultStride];
     private short[] _audioBuffer = Array.Empty<short>();
     private int _cpuIdleCycles;
     private string? _romSummary;
+    private string? _romPath;
+    private string? _saveRamPath;
+    private ISaveRamProvider? _saveRamProvider;
+    private float _masterVolumeScale = 1.0f;
 
     public string? RomSummary => _romSummary;
 
@@ -33,11 +39,34 @@ public sealed class NesAdapter : IEmulatorCore
             throw new FileNotFoundException("ROM not found", path);
 
         byte[] rom = File.ReadAllBytes(path);
+        _romPath = path;
         _cartridge = new NESCartridge(rom);
         _controller = new NESController();
         _ppu = new PpuCore(_cartridge.MemoryMapper, DmaTransfer);
         _cpu = new CpuCore(_cartridge.MemoryMapper, _controller);
+        _apu = new Apu(ReadCpuMemory);
+        _cpu.CPUMemory.AttachApu(_apu);
         _irqProvider = _cartridge.MemoryMapper as IMapperIrqProvider;
+        _saveRamProvider = _cartridge.MemoryMapper as ISaveRamProvider;
+        _saveRamPath = null;
+        if (_saveRamProvider != null && _saveRamProvider.BatteryBacked && !string.IsNullOrWhiteSpace(_romPath))
+        {
+            _saveRamPath = Path.ChangeExtension(_romPath, ".srm");
+            if (File.Exists(_saveRamPath))
+            {
+                try
+                {
+                    var data = File.ReadAllBytes(_saveRamPath);
+                    var ram = _saveRamProvider.GetSaveRam();
+                    int copy = Math.Min(data.Length, ram.Length);
+                    Buffer.BlockCopy(data, 0, ram, 0, copy);
+                }
+                catch
+                {
+                    // Ignore load failures for now
+                }
+            }
+        }
         Reset();
         _romSummary = BuildRomSummary(path, rom);
     }
@@ -50,6 +79,7 @@ public sealed class NesAdapter : IEmulatorCore
         _ppu.Reset();
         _cpu.Cycles = 4;
         _cpuIdleCycles = 0;
+        _apu?.ConsumeAudioBuffer();
     }
 
     public void RunFrame()
@@ -83,13 +113,23 @@ public sealed class NesAdapter : IEmulatorCore
                 _cpu.NMI = true;
             }
 
-            if (_irqProvider != null)
-                _cpu.IRQ = _irqProvider.IrqPending;
+            bool mapperIrq = _irqProvider != null && _irqProvider.IrqPending;
+            bool apuIrq = _apu != null && _apu.IrqPending;
+            _cpu.IRQ = mapperIrq || apuIrq;
+
+            if (_apu != null)
+                _apu.TickCpu(cpuTicks);
 
             if (_ppu.FrameReady)
             {
                 ConvertFrameBuffer(_ppu.FrameBuffer, _frameBuffer);
                 _ppu.FrameReady = false;
+                if (_apu != null)
+                {
+                    _audioBuffer = _apu.ConsumeAudioBuffer();
+                    ApplyMasterVolume(_audioBuffer);
+                }
+                SaveRamIfDirty();
                 break;
             }
         }
@@ -105,9 +145,16 @@ public sealed class NesAdapter : IEmulatorCore
 
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
     {
-        sampleRate = 44100;
+        sampleRate = _apu != null ? _apu.SampleRate : 44100;
         channels = 2;
         return _audioBuffer;
+    }
+
+    public void SetMasterVolumePercent(int percent)
+    {
+        if (percent < 0) percent = 0;
+        else if (percent > 100) percent = 100;
+        _masterVolumeScale = percent / 100f;
     }
 
     public void SetInputState(
@@ -169,6 +216,46 @@ public sealed class NesAdapter : IEmulatorCore
             _cpuIdleCycles++;
 
         return oam;
+    }
+
+    private byte ReadCpuMemory(int address)
+    {
+        if (_cpu == null)
+            return 0;
+        return _cpu.CPUMemory.ReadByte(address);
+    }
+
+    private void SaveRamIfDirty()
+    {
+        if (_saveRamProvider == null || !_saveRamProvider.BatteryBacked || _saveRamPath == null)
+            return;
+        if (!_saveRamProvider.IsSaveRamDirty)
+            return;
+        try
+        {
+            File.WriteAllBytes(_saveRamPath, _saveRamProvider.GetSaveRam());
+            _saveRamProvider.ClearSaveRamDirty();
+        }
+        catch
+        {
+            // Ignore save failures for now
+        }
+    }
+
+    private void ApplyMasterVolume(short[] buffer)
+    {
+        if (buffer.Length == 0)
+            return;
+        if (_masterVolumeScale >= 0.999f)
+            return;
+        float scale = _masterVolumeScale;
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            int v = (int)Math.Round(buffer[i] * scale);
+            if (v > short.MaxValue) v = short.MaxValue;
+            else if (v < short.MinValue) v = short.MinValue;
+            buffer[i] = (short)v;
+        }
     }
 
     private static void ConvertFrameBuffer(byte[] src, byte[] dst)
