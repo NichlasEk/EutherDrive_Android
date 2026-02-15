@@ -9,6 +9,7 @@ Projektet bygger på kärnkod från [MDTracer](https://github.com/sasayaki-japan
 Emulatorn spelar också Sega Mastersystem spel. Alla titlar som jag provat fungerar inklusive korean mappers och Codemaster spel.
 
 Grundläggande SNES-stöd är inlagt via SuperNintendoEmulator-projektet (se referens nedan).
+Grundläggande NES stöd är nu integrerat via XamariNES också refererat nedan
 
 Det grundläggande SNES stödet är påbyggt med specialcip och ny ljudmotor. Dessa är främst portar från jgenesis se referens nedan.
 Emulatorn spelar nu väldigt många SNES titlar
@@ -53,6 +54,8 @@ dotnet run --project EutherDrive.UI
 ```
 https://github.com/Kookpot/SuperNintendoEmulator
 https://github.com/unknowall/emuPCE
+https://github.com/enusbaum/XamariNES
+https://github.com/jsgroth/jgenesis
 ```
 
 https://github.com/jsgroth/jgenesis/
