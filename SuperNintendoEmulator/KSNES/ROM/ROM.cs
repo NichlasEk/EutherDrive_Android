@@ -1,4 +1,6 @@
-﻿namespace KSNES.ROM;
+﻿using KSNES.Tracing;
+
+namespace KSNES.ROM;
 
 public class ROM : IROM
 {
@@ -15,6 +17,7 @@ public class ROM : IROM
     private KSNES.Specialchips.CX4.Cx4? _cx4;
     private KSNES.Specialchips.DSP1.Dsp1? _dsp1;
     private KSNES.Specialchips.SuperFX.SuperFx? _superFx;
+    private KSNES.Specialchips.SA1.Sa1? _sa1;
     private bool _superFxHasBattery;
     private ulong _superFxOverclock = 1;
     private Dsp1PortMapping _dsp1PortMapping;
@@ -67,6 +70,20 @@ public class ROM : IROM
         else
         {
             _cx4 = null;
+        }
+
+        if (IsSa1Chipset(header.ChipsetByte))
+        {
+            if (_system == null)
+                throw new InvalidOperationException("ROM system not set.");
+            _sa1 = new KSNES.Specialchips.SA1.Sa1(_data, _sram, _system.IsPal);
+            _sram = _sa1.Bwram;
+            _sramSize = _sram.Length;
+            _hasSram = KSNES.Specialchips.SA1.Sa1.HasBattery(_data, _sramSize);
+        }
+        else
+        {
+            _sa1 = null;
         }
 
         bool hasDsp1 = header.ExCoprocessor == 0 && header.Chips >= 3 && header.Chips <= 5;
@@ -135,12 +152,31 @@ public class ROM : IROM
                 {
                     _superFx = new KSNES.Specialchips.SuperFX.SuperFx(_data, _sram, _superFxOverclock);
                 }
+                if (_sa1 != null)
+                {
+                    _sa1.SetBwram(_sram);
+                }
             }
         }
     }
 
     public byte Read(int bank, int adr)
     {
+        if (_sa1 != null)
+        {
+            uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+            if (_sa1.TryResolveSnesAccess(address, out string region, out uint? resolved))
+            {
+                byte? sa1Value = _sa1.SnesRead(address);
+                if (sa1Value.HasValue)
+                {
+                    if (Sa1Trace.IsEnabled && TryGetSnesPc(out int pc, out int op))
+                        Sa1Trace.Log("SNES", pc, op, address, "R", sa1Value.Value, region, resolved);
+                    return sa1Value.Value;
+                }
+            }
+        }
+
         if (_superFx != null)
         {
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
@@ -199,6 +235,20 @@ public class ROM : IROM
 
     public void Write(int bank, int adr, byte value)
     {
+        if (_sa1 != null)
+        {
+            uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+            if (_sa1.TryResolveSnesAccess(address, out string region, out uint? resolved))
+            {
+                _sa1.SnesWrite(address, value);
+                if (Sa1Trace.IsEnabled && TryGetSnesPc(out int pc, out int op))
+                    Sa1Trace.Log("SNES", pc, op, address, "W", value, region, resolved);
+                if (_hasSram && region.StartsWith("BW-RAM", StringComparison.Ordinal))
+                    _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                return;
+            }
+        }
+
         if (_superFx != null)
         {
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
@@ -357,6 +407,7 @@ public class ROM : IROM
         _cx4?.Reset();
         _dsp1?.Reset();
         _superFx?.Reset();
+        _sa1?.Reset();
     }
 
     public void RunCoprocessor(ulong snesCycles)
@@ -364,9 +415,10 @@ public class ROM : IROM
         _cx4?.RunTo(snesCycles);
         _dsp1?.RunTo(snesCycles);
         _superFx?.Tick(snesCycles);
+        _sa1?.Tick(snesCycles);
     }
 
-    public bool IrqWanted => _superFx?.Irq ?? false;
+    public bool IrqWanted => (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);
 
     public byte ReadRomByteLoRom(uint address)
     {
@@ -401,6 +453,23 @@ public class ROM : IROM
     private string GetSRAMFileName()
     {
         return Path.ChangeExtension(_system!.FileName, ".srm");
+    }
+
+    private static bool IsSa1Chipset(int chipsetByte)
+    {
+        return chipsetByte == 0x32 || chipsetByte == 0x34 || chipsetByte == 0x35;
+    }
+
+    private bool TryGetSnesPc(out int pc, out int op)
+    {
+        pc = 0;
+        op = -1;
+        if (_system is not KSNES.SNESSystem.SNESSystem snes)
+            return false;
+        if (snes.CPU is not KSNES.CPU.CPU cpu)
+            return false;
+        pc = cpu.ProgramCounter24;
+        return true;
     }
 
     private byte ReadHiRom(int bank, int adr)
