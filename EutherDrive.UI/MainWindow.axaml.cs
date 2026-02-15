@@ -429,6 +429,11 @@ public partial class MainWindow : Window
                     UpdateSnesRomInfo(snes);
                     Console.WriteLine(snes.RomSummary ?? "SNES ROM loaded.");
                 }
+                else if (_core is NesAdapter nes)
+                {
+                    UpdateNesRomInfo(nes);
+                    Console.WriteLine(nes.RomSummary ?? "NES ROM loaded.");
+                }
             }
             _savestateViewModel.Refresh();
         }
@@ -460,6 +465,8 @@ public partial class MainWindow : Window
             return new PceCdAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
             return new SnesAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && IsNesRom(path))
+            return new NesAdapter();
         return new MdTracerAdapter();
     }
 
@@ -491,6 +498,12 @@ public partial class MainWindow : Window
             return false;
         }
         return false;
+    }
+
+    private static bool IsNesRom(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext == ".nes";
     }
 
     private static bool LooksLikeMegaDriveHeader(byte[] data)
@@ -1032,6 +1045,11 @@ public partial class MainWindow : Window
                             UpdateSnesRomInfo(snes);
                             Console.WriteLine(snes.RomSummary ?? "SNES ROM loaded.");
                         }
+                        else if (_core is NesAdapter nes)
+                        {
+                            UpdateNesRomInfo(nes);
+                            Console.WriteLine(nes.RomSummary ?? "NES ROM loaded.");
+                        }
                         _audioPullReady = true;
                         PrimePullAudio();
                         AddRecentRom(_romPath);
@@ -1426,6 +1444,14 @@ public partial class MainWindow : Window
         if (RomInfoText != null)
             RomInfoText.Text = adapter.RomSummary ?? "SNES ROM loaded.";
         UpdateRomRegionHint(adapter.RomRegionHint);
+        _romRegionKey = null;
+    }
+
+    private void UpdateNesRomInfo(NesAdapter adapter)
+    {
+        if (RomInfoText != null)
+            RomInfoText.Text = adapter.RomSummary ?? "NES ROM loaded.";
+        UpdateRomRegionHint(ConsoleRegion.Auto);
         _romRegionKey = null;
     }
 
@@ -3271,7 +3297,8 @@ public partial class MainWindow : Window
 
         bool isSnes = core is SnesAdapter;
         bool isPce = core is PceCdAdapter;
-        var mappingSet = isSnes ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms);
+        bool isNes = core is NesAdapter;
+        var mappingSet = isSnes ? _inputMappings.Snes : (isPce || isNes ? _inputMappings.Pce : _inputMappings.MdSms);
         bool up;
         bool down;
         bool left;
@@ -3315,7 +3342,7 @@ public partial class MainWindow : Window
             x     = mappingSet.KeyboardMappings.TryGetValue("X", out Key xKey) && _keysDown.Contains(xKey);
             y     = mappingSet.KeyboardMappings.TryGetValue("Y", out Key yKey) && _keysDown.Contains(yKey);
             z     = mappingSet.KeyboardMappings.TryGetValue("Z", out Key zKey) && _keysDown.Contains(zKey);
-            if (isPce)
+            if (isPce || isNes)
                 mode = mappingSet.KeyboardMappings.TryGetValue("Select", out Key selKey) && _keysDown.Contains(selKey);
             else
                 mode = mappingSet.KeyboardMappings.TryGetValue("Mode", out Key modeKey) && _keysDown.Contains(modeKey);
