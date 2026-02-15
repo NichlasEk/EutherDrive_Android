@@ -158,3 +158,13 @@ We might be stuck in early init block moves longer than expected (or a flag that
 1. Run Kirby 3 for a longer window with `EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE=0083C0-008410` and `EUTHERDRIVE_LOG_VERBOSE=1`.
 2. Keep `EUTHERDRIVE_TRACE_SNES_INIDISP=1` on and confirm if `$2100` is ever written after the initial `$80`.
 3. If still not reached, compare SA-1 side progress (SA-1 trace) to see if the SA-1 ever signals the SNES to proceed past init.
+
+## Next Step Checklist
+1. Run Kirby 3 (120–600 frames) with:
+   - `EUTHERDRIVE_LOG_VERBOSE=1`
+   - `EUTHERDRIVE_TRACE_SNES_INIDISP=1`
+   - `EUTHERDRIVE_TRACE_SNES_WRAM=1`
+2. Verify whether WRAM `$004C` changes and whether `$2100` ever gets a value `< 0x80`.
+3. If `$004C` never changes:
+   - Track writes to `$002E/$002F/$004C` to find the gating logic.
+   - Cross-check SA-1 trace for message/IRQ that should trigger the SNES update path.
