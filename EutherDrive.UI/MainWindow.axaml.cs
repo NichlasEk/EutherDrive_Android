@@ -2702,7 +2702,7 @@ public partial class MainWindow : Window
 
         try
         {
-            using var sink = new PwCatAudioSink();
+            using var sink = CreateAudioSink(AudioSinkEnv);
             sink.Start(48000, 2);
             var tone = TestToneGenerator.GenerateSine(48000, 440, 2.0, 2);
             sink.Submit(tone);
@@ -2772,21 +2772,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        string? sinkPref = AudioSinkEnv?.Trim().ToLowerInvariant();
-        if (sinkPref == "openal")
-        {
-            _audioEngineSink = OpenAlAudioOutput.TryCreate();
-            if (_audioEngineSink == null)
-                _audioEngineSink = new PwCatAudioSink();
-        }
-        else if (sinkPref == "pwcat" || string.IsNullOrEmpty(sinkPref))
-        {
-            _audioEngineSink = new PwCatAudioSink();
-        }
-        else
-        {
-            _audioEngineSink = new PwCatAudioSink();
-        }
+        _audioEngineSink = CreateAudioSink(AudioSinkEnv);
         _audioEngine = new AudioEngine(_audioEngineSink, AudioSampleRate, AudioChannels, framesPerBatch: AudioEngineBatchFrames, bufferFrames: AudioEngineBufferFrames);
         _audioEngine.SetTargetBufferedFrames(AudioTargetBufferedFrames);
         _audioEngine.Start();
@@ -2810,6 +2796,34 @@ public partial class MainWindow : Window
         if (_core is MdTracerAdapter adapter)
             PrefillAudioEngineBuffer(adapter);
         InitSnesAudioRing();
+    }
+
+    private static IAudioSink CreateAudioSink(string? sinkPrefRaw)
+    {
+        string? sinkPref = sinkPrefRaw?.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(sinkPref) || sinkPref == "sdl2")
+        {
+            IAudioSink? sdlSink = Sdl2AudioSink.TryCreate();
+            if (sdlSink != null)
+                return sdlSink;
+
+            IAudioSink? openAlSink = OpenAlAudioOutput.TryCreate();
+            if (openAlSink != null)
+                return openAlSink;
+
+            return new PwCatAudioSink();
+        }
+
+        if (sinkPref == "openal")
+        {
+            IAudioSink? openAlSink = OpenAlAudioOutput.TryCreate();
+            return openAlSink ?? new PwCatAudioSink();
+        }
+
+        if (sinkPref == "pwcat")
+            return new PwCatAudioSink();
+
+        return new PwCatAudioSink();
     }
 
     private void StopAudioEngine()
