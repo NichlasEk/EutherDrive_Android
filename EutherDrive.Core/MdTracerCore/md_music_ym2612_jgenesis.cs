@@ -9,7 +9,6 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _lastYmAddr;
         private byte _lastYmVal;
         private string _lastYmSource = "none";
-        private long _lastSystemCycles;
         private long _systemCycleRemainder;
         private short[] _ringBuffer = new short[RingFramesDefault * 2];
         private int _ringRead;
@@ -67,7 +66,6 @@ namespace EutherDrive.Core.MdTracerCore
         public void Start()
         {
             _ym.Reset();
-            _lastSystemCycles = 0;
             _systemCycleRemainder = 0;
             _ringRead = 0;
             _ringWrite = 0;
@@ -77,7 +75,6 @@ namespace EutherDrive.Core.MdTracerCore
         public void FullReset()
         {
             _ym.Reset();
-            _lastSystemCycles = 0;
             _systemCycleRemainder = 0;
             _ringRead = 0;
             _ringWrite = 0;
@@ -100,8 +97,6 @@ namespace EutherDrive.Core.MdTracerCore
             int maxFrames = dst.Length / 2;
             if (frames > maxFrames)
                 frames = maxFrames;
-
-            AdvanceFromSystemCycles();
 
             int write = 0;
             for (int i = 0; i < frames; i++)
@@ -126,7 +121,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void EnsureAdvanceEachFrame()
         {
-            AdvanceFromSystemCycles();
+            // YM timing is driven by AdvanceSystemCycles()
         }
 
         public void TickTimersFromZ80Cycles(int z80Cycles)
@@ -219,21 +214,12 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
-        private void AdvanceFromSystemCycles()
+        public void AdvanceSystemCycles(long cycles)
         {
-            long currentSystemCycles = md_main.SystemCycles;
-            if (_lastSystemCycles == 0)
-            {
-                _lastSystemCycles = currentSystemCycles;
-                return;
-            }
-
-            long elapsed = currentSystemCycles - _lastSystemCycles;
-            if (elapsed <= 0)
+            if (cycles <= 0)
                 return;
 
-            _lastSystemCycles = currentSystemCycles;
-            long totalCycles = elapsed + _systemCycleRemainder;
+            long totalCycles = cycles + _systemCycleRemainder;
             long ymTicks = totalCycles / SystemCyclesPerYmTick;
             _systemCycleRemainder = totalCycles % SystemCyclesPerYmTick;
 

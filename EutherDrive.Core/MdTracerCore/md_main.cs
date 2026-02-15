@@ -248,11 +248,10 @@ namespace EutherDrive.Core.MdTracerCore
         internal static long SystemCycles => _systemCycles;
         internal static void AdvanceSystemCycles(long cycles)
         {
+            if (cycles <= 0)
+                return;
             _systemCycles += cycles;
-            
-            // DON'T sync YM2612 here - it causes too many calls
-            // YM2612 will be synced at frame boundaries via EnsureAdvanceEachFrame()
-            // or when audio is rendered via YM2612_Update()
+            g_md_music?.YmAdvanceSystemCycles(cycles);
         }
 
         // Synkroniseringssystem för gemensam tidsbas (inspirerat av andra emulatorer)

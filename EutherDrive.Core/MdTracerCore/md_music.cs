@@ -73,6 +73,11 @@ namespace EutherDrive.Core.MdTracerCore
             JgYm.EnsureAdvanceEachFrame();
         }
 
+        public void YmAdvanceSystemCycles(long cycles)
+        {
+            JgYm.AdvanceSystemCycles(cycles);
+        }
+
         public void TickYmTimersFromZ80(int z80Cycles)
         {
             JgYm.TickTimersFromZ80Cycles(z80Cycles);
