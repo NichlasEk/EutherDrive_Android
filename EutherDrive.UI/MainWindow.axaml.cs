@@ -1241,22 +1241,75 @@ public partial class MainWindow : Window
 
     private async void OnAbout(object? sender, RoutedEventArgs e)
     {
-        var text = new TextBlock
+        var zuulView = new Zuul.ZuulView
         {
-            Text = "Made by Nichlas and AI",
-            Margin = new Thickness(16),
+            Width = 360,
+            Height = 280,
             HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
             VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
         };
+        zuulView.LoadDefault();
+
+        var credit = new TextBlock
+        {
+            Text = "Made by Nichlas and AI",
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            Margin = new Thickness(0, 6, 0, 2)
+        };
+
+        var loadButton = new Button
+        {
+            Content = "Load JOX...",
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            Margin = new Thickness(0, 4, 0, 8)
+        };
+        loadButton.Click += async (_, _) =>
+        {
+            if (StorageProvider == null)
+                return;
+            var options = new FilePickerOpenOptions
+            {
+                Title = "Load JOX Demon ROM",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("JOX Demon ROM")
+                    {
+                        Patterns = new[] { "*.jox" }
+                    }
+                }
+            };
+            var files = await StorageProvider.OpenFilePickerAsync(options);
+            if (files.Count == 0)
+                return;
+            await using var stream = await files[0].OpenReadAsync();
+            try
+            {
+                zuulView.LoadFromStream(stream);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ZuulView] load failed: {ex.Message}");
+            }
+        };
+
+        var layout = new StackPanel
+        {
+            Spacing = 4,
+            Margin = new Thickness(12)
+        };
+        layout.Children.Add(zuulView);
+        layout.Children.Add(credit);
+        layout.Children.Add(loadButton);
 
         var dialog = new Window
         {
             Title = "About",
-            Width = 260,
-            Height = 120,
+            Width = 420,
+            Height = 420,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = text
+            Content = layout
         };
 
         await dialog.ShowDialog(this);
