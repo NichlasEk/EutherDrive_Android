@@ -963,7 +963,7 @@ public partial class MainWindow : Window
             {
                 new FilePickerFileType("ROMs")
                 {
-                    Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.sms", "*.sg", "*.gg", "*.smc", "*.sfc", "*.pce", "*.cue", "*.zip", "*.7z", "*.iso", "*.*" }
+                    Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.sms", "*.sg", "*.gg", "*.nes", "*.smc", "*.sfc", "*.pce", "*.cue", "*.zip", "*.7z", "*.iso", "*.*" }
                 }
             }
         };
@@ -1124,8 +1124,42 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = $"Start failed: {ex.Message}";
+            TryUpdateNesRomInfoOnFailure(_romPath);
             LogException(ex, "Start");
             _audioPullReady = false;
+        }
+    }
+
+    private void TryUpdateNesRomInfoOnFailure(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        if (!IsNesRom(path))
+            return;
+
+        string? info = BuildNesRomInfo(path);
+        if (info != null && RomInfoText != null)
+            RomInfoText.Text = info;
+    }
+
+    private static string? BuildNesRomInfo(string path)
+    {
+        try
+        {
+            byte[] data = File.ReadAllBytes(path);
+            if (data.Length < 16)
+                return $"NES: {Path.GetFileName(path)}";
+
+            int prgBanks = data[4];
+            int chrBanks = data[5];
+            int mapper = (data[7] & 0xF0) | ((data[6] >> 4) & 0x0F);
+            int prgSize = prgBanks * 16;
+            int chrSize = chrBanks * 8;
+            return $"NES: {Path.GetFileName(path)} | PRG {prgSize}KB | CHR {chrSize}KB | Mapper {mapper}";
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -1784,7 +1818,7 @@ public partial class MainWindow : Window
             });
             tabControl.Items.Add(new TabItem
             {
-                Header = "SNES",
+                Header = "SNES/NES",
                 Content = BuildMappingGrid(_snesItems)
             });
             tabControl.Items.Add(new TabItem
@@ -3317,7 +3351,8 @@ public partial class MainWindow : Window
         bool isSnes = core is SnesAdapter;
         bool isPce = core is PceCdAdapter;
         bool isNes = core is NesAdapter;
-        var mappingSet = isSnes ? _inputMappings.Snes : (isPce || isNes ? _inputMappings.Pce : _inputMappings.MdSms);
+        bool isSnesLike = isSnes || isNes;
+        var mappingSet = isSnesLike ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms);
         bool up;
         bool down;
         bool left;
@@ -3365,7 +3400,7 @@ public partial class MainWindow : Window
             mode = mappingSet.KeyboardMappings.TryGetValue("Mode", out Key modeKey) && IsKeyDownMapped(modeKey);
         padType = (PadType)Volatile.Read(ref _padTypeRaw);
 
-        if (isSnes)
+        if (isSnesLike)
         {
             if (mappingSet.KeyboardMappings.TryGetValue("L", out Key lKey) && IsKeyDownMapped(lKey))
                 z = true;
@@ -3400,7 +3435,7 @@ public partial class MainWindow : Window
             y |= IsGamepadButtonPressed(gpY);
         if (mappingSet.GamepadMappings.TryGetValue("Z", out GamepadButton gpZ) && gpZ != GamepadButton.None)
             z |= IsGamepadButtonPressed(gpZ);
-        if (isPce)
+        if (isPce || isNes)
         {
             if (mappingSet.GamepadMappings.TryGetValue("Select", out GamepadButton gpSelPce) && gpSelPce != GamepadButton.None)
                 mode |= IsGamepadButtonPressed(gpSelPce);
@@ -3436,7 +3471,7 @@ public partial class MainWindow : Window
                 y2 |= IsGamepad2ButtonPressed(gp2Y);
             if (mappingSet.Gamepad2Mappings.TryGetValue("Z", out GamepadButton gp2Z) && gp2Z != GamepadButton.None)
                 z2 |= IsGamepad2ButtonPressed(gp2Z);
-            if (isPce)
+            if (isPce || isNes)
             {
                 if (mappingSet.Gamepad2Mappings.TryGetValue("Select", out GamepadButton gp2SelPce) && gp2SelPce != GamepadButton.None)
                     mode2 |= IsGamepad2ButtonPressed(gp2SelPce);
@@ -3460,7 +3495,7 @@ public partial class MainWindow : Window
             mode = false;
         }
 
-        if (isSnes)
+        if (isSnesLike)
         {
             // SNES uses L/R/Select instead of C/Mode.
             if (mappingSet.GamepadMappings.TryGetValue("L", out GamepadButton gpL) && gpL != GamepadButton.None)

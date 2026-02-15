@@ -162,7 +162,7 @@ namespace XamariNES.PPU
                     index %= 0x400;
                     break;
                 case enumNametableMirroring.SingleUpper:
-                    index = index % 400 + 0x400;
+                    index = index % 0x400 + 0x400;
                     break;
                 default:
                     throw new ArgumentOutOfRangeException();
