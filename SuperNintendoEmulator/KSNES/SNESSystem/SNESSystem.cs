@@ -1,12 +1,15 @@
-﻿namespace KSNES.SNESSystem;
+﻿using System;
+
+namespace KSNES.SNESSystem;
 
 public class SNESSystem : ISNESSystem
 {
-    public ICPU CPU { get; private set; }
-    public IPPU PPU { get; private set; }
-    public IAPU APU { get; private set; }
+    [field: NonSerialized] public ICPU CPU { get; private set; }
+    [field: NonSerialized] public IPPU PPU { get; private set; }
+    [field: NonSerialized] public IAPU APU { get; private set; }
 
     [JsonIgnore]
+    [field: NonSerialized]
     public IROM ROM { get; set; }
 
     private byte[] _ram = [];
@@ -117,12 +120,15 @@ public class SNESSystem : ISNESSystem
     public ulong Cycles { get; private set; }
 
     [JsonIgnore]
+    [field: NonSerialized]
     public IRenderer Renderer { get; set; }
 
     [JsonIgnore]
+    [field: NonSerialized]
     public IAudioHandler AudioHandler { get; set; }
 
     [JsonIgnore]
+    [field: NonSerialized]
     public string GameName { get; set; }
 
     [JsonIgnore]

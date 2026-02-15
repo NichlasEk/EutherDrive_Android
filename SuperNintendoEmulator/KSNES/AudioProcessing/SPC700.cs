@@ -1,4 +1,6 @@
-﻿namespace KSNES.AudioProcessing;
+﻿using System;
+
+namespace KSNES.AudioProcessing;
 
 public class SPC700 : ISPC700
 {
@@ -29,6 +31,7 @@ public class SPC700 : ISPC700
     private const int IAX = 18;
     private const int IPI = 19;
 
+    [NonSerialized]
     private IAPU _apu;
     private byte[] _r = [];
     private readonly ushort[] _br = new ushort[1];

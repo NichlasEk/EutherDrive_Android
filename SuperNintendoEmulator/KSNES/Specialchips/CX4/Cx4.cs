@@ -33,6 +33,7 @@ public sealed class Cx4
 
     private const int CachePage = 0x100;
 
+    [NonSerialized]
     private readonly ISNESSystem _snes;
 
     private ulong _cycles;

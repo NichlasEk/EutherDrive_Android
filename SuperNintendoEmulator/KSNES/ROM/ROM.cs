@@ -1,4 +1,5 @@
-﻿using KSNES.Tracing;
+﻿using System;
+using KSNES.Tracing;
 
 namespace KSNES.ROM;
 
@@ -7,16 +8,22 @@ public class ROM : IROM
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     public Header Header { get; private set; }
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
+    [NonSerialized]
     private byte[] _data = [];
     private byte[] _sram = [];
     private bool _hasSram;
     private int _banks;
     private int _sramSize;
 
+    [NonSerialized]
     private ISNESSystem? _system;
+    [NonSerialized]
     private KSNES.Specialchips.CX4.Cx4? _cx4;
+    [NonSerialized]
     private KSNES.Specialchips.DSP1.Dsp1? _dsp1;
+    [NonSerialized]
     private KSNES.Specialchips.SuperFX.SuperFx? _superFx;
+    [NonSerialized]
     private KSNES.Specialchips.SA1.Sa1? _sa1;
     private bool _superFxHasBattery;
     private ulong _superFxOverclock = 1;
@@ -35,6 +42,7 @@ public class ROM : IROM
     private readonly bool _traceSa1BwramWatch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal);
 
+    [NonSerialized]
     private Timer? _sRAMTimer;
 
     public void LoadROM(byte[] data, Header header)
@@ -137,6 +145,10 @@ public class ROM : IROM
     }
 
     public int RomLength => _data.Length;
+    internal KSNES.Specialchips.CX4.Cx4? Cx4 => _cx4;
+    internal KSNES.Specialchips.DSP1.Dsp1? Dsp1 => _dsp1;
+    internal KSNES.Specialchips.SuperFX.SuperFx? SuperFx => _superFx;
+    internal KSNES.Specialchips.SA1.Sa1? Sa1 => _sa1;
 
     public void LoadSRAM()
     {

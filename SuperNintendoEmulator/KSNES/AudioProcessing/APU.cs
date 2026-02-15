@@ -1,8 +1,12 @@
-﻿namespace KSNES.AudioProcessing;
+﻿using System;
+
+namespace KSNES.AudioProcessing;
 
 public class APU : IAPU
 {
+    [NonSerialized]
     private readonly ISPC700 _spc;
+    [NonSerialized]
     private readonly IDSP _dsp;
 
     [JsonIgnore] private readonly byte[] _bootRom =
@@ -54,6 +58,9 @@ public class APU : IAPU
         _dsp = dsp;
         Attach();
     }
+
+    public ISPC700 Spc => _spc;
+    public IDSP Dsp => _dsp;
 
     public void Attach()
     {

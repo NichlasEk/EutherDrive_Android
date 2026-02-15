@@ -8,6 +8,7 @@ public sealed class DSP : IDSP
     public float[] SamplesR { get; private set; } = Array.Empty<float>();
     public int SampleOffset { get; set; }
 
+    [NonSerialized]
     private IAPU? _apu;
 
     private const int BrrBlockLen = 9;

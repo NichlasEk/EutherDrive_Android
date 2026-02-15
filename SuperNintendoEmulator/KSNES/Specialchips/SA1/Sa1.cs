@@ -15,6 +15,7 @@ internal sealed class Sa1
     private const uint IramWatchOffset = 0x64E;
     private const uint BwramWatchOffset = 0x004E;
 
+    [NonSerialized]
     private readonly byte[] _rom;
     private byte[] _iram = new byte[IramLen];
     private byte[] _bwram;
@@ -24,6 +25,7 @@ internal sealed class Sa1
     private readonly Sa1Timer _timer;
     private ulong _bwramWaitCycles;
     private ulong _lastSnesCycles;
+    [NonSerialized]
     private readonly Sa1System _system;
     private readonly bool _traceIramWatch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_IRAM_WATCH"), "1", StringComparison.Ordinal);

@@ -1,4 +1,5 @@
-﻿using System.Globalization;
+﻿using System;
+using System.Globalization;
 
 namespace KSNES.CPU;
 
@@ -132,6 +133,7 @@ public class CPU : ICPU
 
     public int CyclesLeft { get; set; }
 
+    [NonSerialized]
     private ISNESSystem _snes;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.

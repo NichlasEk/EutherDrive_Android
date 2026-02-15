@@ -1,3 +1,5 @@
+using System;
+
 namespace KSNES.Specialchips.DSP1;
 
 internal sealed class Upd77c25
@@ -6,7 +8,9 @@ internal sealed class Upd77c25
     private const ulong SnesMasterClockNtsc = 21_477_272;
     private const ulong SnesMasterClockPal = 21_281_370;
 
+    [NonSerialized]
     private readonly uint[] _programRom;
+    [NonSerialized]
     private readonly ushort[] _dataRom;
     private readonly ushort[] _ram;
     private readonly Registers _registers;

@@ -5,10 +5,12 @@ using KSNES.Rendering;
 using KSNES.ROM;
 using KSNES.SNESSystem;
 using System.Diagnostics;
+using EutherDrive.Core.Savestates;
+using System.IO;
 
 namespace EutherDrive.Core;
 
-public sealed class SnesAdapter : IEmulatorCore
+public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
 {
     private const int DefaultWidth = 256;
     private const int DefaultHeight = 224;
@@ -26,6 +28,9 @@ public sealed class SnesAdapter : IEmulatorCore
     private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
     private byte? _romRegionCode;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
+    private readonly object _stateLock = new();
+    private long _frameCounter;
+    private RomIdentity? _romIdentity;
     private float _dcLastInL;
     private float _dcLastOutL;
     private float _dcLastInR;
@@ -41,6 +46,8 @@ public sealed class SnesAdapter : IEmulatorCore
     public string? RomSummary => _romSummary;
     public ConsoleRegion RomRegionHint => _romRegionHint;
     public byte? RomRegionCode => _romRegionCode;
+    public RomIdentity? RomIdentity => _romIdentity;
+    public long? FrameCounter => _frameCounter;
 
     public SnesAdapter()
     {
@@ -59,7 +66,17 @@ public sealed class SnesAdapter : IEmulatorCore
         DetectRegion(path);
         UpdateIsPal();
         _audioSampleAccumulator = 0;
+        _frameCounter = 0;
         _romSummary = BuildRomSummary();
+        if (File.Exists(path))
+        {
+            byte[] data = File.ReadAllBytes(path);
+            _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(data));
+        }
+        else
+        {
+            _romIdentity = null;
+        }
     }
 
     public void Reset()
@@ -69,6 +86,7 @@ public sealed class SnesAdapter : IEmulatorCore
         _audioSampleAccumulator = 0;
         _lpLastL = 0;
         _lpLastR = 0;
+        _frameCounter = 0;
     }
 
     public void SetRegionOverride(ConsoleRegion region)
@@ -111,6 +129,108 @@ public sealed class SnesAdapter : IEmulatorCore
         EnsureAudioBuffer(samplesPerFrame);
         ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
         TraceAudioIfEnabled();
+        _frameCounter++;
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        if (writer == null)
+            throw new ArgumentNullException(nameof(writer));
+
+        lock (_stateLock)
+        {
+            const int version = 2;
+            writer.Write(version);
+            writer.Write(_frameCounter);
+            writer.Write(_audioSampleAccumulator);
+            writer.Write(_sawBrightFrame);
+            writer.Write(_dcLastInL);
+            writer.Write(_dcLastOutL);
+            writer.Write(_dcLastInR);
+            writer.Write(_dcLastOutR);
+            writer.Write(_lpLastL);
+            writer.Write(_lpLastR);
+
+            StateBinarySerializer.WriteInto(writer, _system);
+            StateBinarySerializer.WriteInto(writer, (CPU)_system.CPU);
+            StateBinarySerializer.WriteInto(writer, (PPU)_system.PPU);
+            var rom = (ROM)_system.ROM;
+            StateBinarySerializer.WriteInto(writer, rom);
+            var apu = (APU)_system.APU;
+            StateBinarySerializer.WriteInto(writer, apu);
+            StateBinarySerializer.WriteInto(writer, apu.Spc);
+            StateBinarySerializer.WriteInto(writer, apu.Dsp);
+            WriteChipState(writer, rom.Cx4);
+            WriteChipState(writer, rom.Dsp1);
+            WriteChipState(writer, rom.SuperFx);
+            WriteChipState(writer, rom.Sa1);
+        }
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        if (reader == null)
+            throw new ArgumentNullException(nameof(reader));
+
+        lock (_stateLock)
+        {
+            int version = reader.ReadInt32();
+            if (version != 2)
+                throw new InvalidDataException($"Unsupported SNES savestate version: {version}.");
+
+            _frameCounter = reader.ReadInt64();
+            _audioSampleAccumulator = reader.ReadDouble();
+            _sawBrightFrame = reader.ReadBoolean();
+            _dcLastInL = reader.ReadSingle();
+            _dcLastOutL = reader.ReadSingle();
+            _dcLastInR = reader.ReadSingle();
+            _dcLastOutR = reader.ReadSingle();
+            _lpLastL = reader.ReadSingle();
+            _lpLastR = reader.ReadSingle();
+
+            StateBinarySerializer.ReadInto(reader, _system);
+            StateBinarySerializer.ReadInto(reader, (CPU)_system.CPU);
+            StateBinarySerializer.ReadInto(reader, (PPU)_system.PPU);
+            var rom = (ROM)_system.ROM;
+            StateBinarySerializer.ReadInto(reader, rom);
+            var apu = (APU)_system.APU;
+            StateBinarySerializer.ReadInto(reader, apu);
+            StateBinarySerializer.ReadInto(reader, apu.Spc);
+            StateBinarySerializer.ReadInto(reader, apu.Dsp);
+            ReadChipState(reader, rom.Cx4, "CX4");
+            ReadChipState(reader, rom.Dsp1, "DSP1");
+            ReadChipState(reader, rom.SuperFx, "SuperFX");
+            ReadChipState(reader, rom.Sa1, "SA1");
+
+            _system.ROM.SetSystem(_system);
+            _system.CPU.SetSystem(_system);
+            _system.PPU.SetSystem(_system);
+            _system.APU.Attach();
+        }
+    }
+
+    private static void WriteChipState(BinaryWriter writer, object? chip)
+    {
+        bool has = chip != null;
+        writer.Write(has);
+        if (has)
+            StateBinarySerializer.WriteInto(writer, chip!);
+    }
+
+    private static void ReadChipState(BinaryReader reader, object? chip, string name)
+    {
+        bool has = reader.ReadBoolean();
+        if (!has)
+        {
+            if (chip != null)
+                throw new InvalidDataException($"Savestate expects no {name} chip, but ROM has one.");
+            return;
+        }
+
+        if (chip == null)
+            throw new InvalidDataException($"Savestate expects {name} chip, but ROM does not have one.");
+
+        StateBinarySerializer.ReadInto(reader, chip);
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)

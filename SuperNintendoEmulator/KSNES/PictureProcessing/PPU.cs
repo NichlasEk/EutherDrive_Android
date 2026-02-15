@@ -1,4 +1,5 @@
-﻿using System.Threading;
+﻿using System;
+using System.Threading;
 
 namespace KSNES.PictureProcessing;
 
@@ -8,6 +9,7 @@ public class PPU : IPPU
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU"), "1", StringComparison.Ordinal);
     private static readonly int TracePpuLimit = GetTracePpuLimit();
     private static int _tracePpuCount;
+    [NonSerialized]
     private ISNESSystem? _snes;
     private ushort[] _vram = [];
     private ushort[] _cgram = [];

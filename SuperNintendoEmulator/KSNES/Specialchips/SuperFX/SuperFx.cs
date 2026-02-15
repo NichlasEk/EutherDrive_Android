@@ -4,6 +4,7 @@ namespace KSNES.Specialchips.SuperFX;
 
 internal sealed class SuperFx
 {
+    [NonSerialized]
     private readonly byte[] _rom;
     private readonly byte[] _ram;
     private readonly GraphicsSupportUnit _gsu;
