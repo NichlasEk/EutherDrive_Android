@@ -2,6 +2,7 @@ using System;
 
 using System;
 using System.IO;
+using KSNES.Tracing;
 
 namespace KSNES.Specialchips.SA1;
 
@@ -256,6 +257,15 @@ internal sealed class Sa1Registers
 
     public void SnesWrite(uint address, byte value, Sa1Mmc mmc)
     {
+        if (Sa1Trace.IsEnabled)
+        {
+            switch (address & 0xFFFF)
+            {
+                case 0x2200: TraceReg("SNES", "CCNT", address, value); break;
+                case 0x2201: TraceReg("SNES", "SIE", address, value); break;
+                case 0x2202: TraceReg("SNES", "SIC", address, value); break;
+            }
+        }
         if (TraceSa1Regs)
             LogReg($"[SA1-REGS] SNES WR addr=0x{address & 0xFFFF:X4} val=0x{value:X2}");
         switch (address & 0xFFFF)
@@ -289,6 +299,15 @@ internal sealed class Sa1Registers
 
     public void Sa1Write(uint address, byte value, Sa1Timer timer, Sa1Mmc mmc, byte[] rom, byte[] iram)
     {
+        if (Sa1Trace.IsEnabled)
+        {
+            switch (address & 0xFFFF)
+            {
+                case 0x2209: TraceReg("SA1", "SCNT", address, value); break;
+                case 0x220A: TraceReg("SA1", "CIE", address, value); break;
+                case 0x220B: TraceReg("SA1", "CIC", address, value); break;
+            }
+        }
         if (TraceSa1Regs)
             LogReg($"[SA1-REGS] SA1 WR addr=0x{address & 0xFFFF:X4} val=0x{value:X2}");
         switch (address & 0xFFFF)
@@ -443,6 +462,11 @@ internal sealed class Sa1Registers
             TraceSa1RegsWriter ??= CreateTraceWriter();
             TraceSa1RegsWriter.WriteLine(line);
         }
+    }
+
+    private static void TraceReg(string cpu, string name, uint address, byte value)
+    {
+        Sa1Trace.Log(cpu, 0, -1, address & 0xFFFFFF, "W", value, $"REG-{name}", null);
     }
 
     private static StreamWriter CreateTraceWriter()
