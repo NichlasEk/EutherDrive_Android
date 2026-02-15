@@ -1893,11 +1893,6 @@ namespace EutherDrive.Core.MdTracerCore
                     Console.WriteLine($"[PSG-ERROR] md_main.g_md_music is null!");
                     return;
                 }
-                if (md_main.g_md_music.g_md_sn76489 == null)
-                {
-                    Console.WriteLine($"[PSG-ERROR] g_md_sn76489 is null!");
-                    return;
-                }
                 md_main.g_md_music.PsgWrite(in_data);
                 md_psg_trace.TraceWrite("68K", in_address, in_data, md_m68k.g_reg_PC);
                 return;
@@ -1919,7 +1914,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (in_address >= 0xA04000 && in_address <= 0xA04003)
             {
                 // DEBUG: Log all YM writes from 68K
-                Console.WriteLine($"[68K-YM-WRITE] addr=0x{in_address:X6} val=0x{in_data:X2} PC=0x{md_m68k.g_reg_PC:X6} music={md_main.g_md_music != null} ym={md_main.g_md_music?.g_md_ym2612 != null}");
+                Console.WriteLine($"[68K-YM-WRITE] addr=0x{in_address:X6} val=0x{in_data:X2} PC=0x{md_m68k.g_reg_PC:X6} music={md_main.g_md_music != null}");
                 if (_ymEnabled)
                 {
                     md_main.g_md_music?.YmWrite(in_address, in_data, "M68K");

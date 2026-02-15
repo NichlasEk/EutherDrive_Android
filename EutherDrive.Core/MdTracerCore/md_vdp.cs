@@ -2735,9 +2735,9 @@ private static readonly bool SpriteLinkSequential =
             int psgWrites = 0;
             if (md_ym2612.AudStatEnabled && md_main.g_md_music != null)
             {
-                md_main.g_md_music.g_md_ym2612.ConsumeAudStatCounters(
+                md_main.g_md_music.ConsumeAudStatCounters(
                     out ymKeyOn, out ymFnum, out ymParam, out ymDacCmd, out ymDacDat);
-                psgWrites = md_main.g_md_music.g_md_sn76489.ConsumeAudStatWrites();
+                psgWrites = md_main.g_md_music.ConsumePsgAudStatWrites();
             }
 
             // Check CRAM colors - count non-black colors

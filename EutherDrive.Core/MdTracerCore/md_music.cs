@@ -2,15 +2,18 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_music
     {
-        internal readonly md_ym2612 g_md_ym2612 = new md_ym2612();
-        internal readonly md_sn76489 g_md_sn76489 = new md_sn76489();
+        private readonly md_ym2612 g_md_ym2612 = new md_ym2612();
+        private readonly md_sn76489 g_md_sn76489 = new md_sn76489();
+        private JgYm2612? _jgYm;
         private readonly JgSn76489 _jgPsg = new JgSn76489();
         private static readonly bool UseJgenesisPsg = ReadEnvDefaultOn("EUTHERDRIVE_PSG_JGENESIS");
         private int _psgNoiseGainPercent = 100;
 
+        private JgYm2612 JgYm => _jgYm ??= new JgYm2612(g_md_ym2612);
+
         public void reset()
         {
-            g_md_ym2612.YM2612_Start();
+            JgYm.Start();
             g_md_sn76489.SN76489_Start();
             if (UseJgenesisPsg)
                 _jgPsg.Reset();
@@ -28,57 +31,78 @@ namespace EutherDrive.Core.MdTracerCore
 
         public byte YmRead(uint address)
         {
-            return g_md_ym2612.read8(address);
+            return JgYm.Read(address);
         }
 
         public byte YmReadStatus(bool clearOnRead)
         {
-            return g_md_ym2612.ReadStatus(clearOnRead);
+            return JgYm.ReadStatus(clearOnRead);
         }
 
         public void YmWrite(uint address, byte value, string source)
         {
-            g_md_ym2612.write8(address, value, source);
+            JgYm.Write(address, value, source);
         }
 
         public void YmStart()
         {
-            g_md_ym2612.YM2612_Start();
+            JgYm.Start();
         }
 
         public void YmFullReset()
         {
-            g_md_ym2612.FullReset();
+            JgYm.FullReset();
         }
 
         public void MarkZ80SafeBootComplete()
         {
-            g_md_ym2612.MarkZ80SafeBootComplete();
+            JgYm.MarkZ80SafeBootComplete();
         }
 
         public void YmUpdate()
         {
-            g_md_ym2612.YM2612_Update();
+            JgYm.Update();
         }
 
         public void YmUpdateBatch(Span<short> dst, int frames)
         {
-            g_md_ym2612.YM2612_UpdateBatch(dst, frames);
+            JgYm.UpdateBatch(dst, frames);
         }
 
         public void YmEnsureAdvanceEachFrame()
         {
-            g_md_ym2612.EnsureAdvanceEachFrame();
+            JgYm.EnsureAdvanceEachFrame();
         }
 
         public void TickYmTimersFromZ80(int z80Cycles)
         {
-            g_md_ym2612.TickTimersFromZ80Cycles(z80Cycles);
+            JgYm.TickTimersFromZ80Cycles(z80Cycles);
         }
 
         public void FlushDacRateFrame(long frame)
         {
-            g_md_ym2612.FlushDacRateFrame(frame);
+            JgYm.FlushDacRateFrame(frame);
+        }
+
+        public int DebugDacEnabled => JgYm.DebugDacEnabled;
+        public int DebugDacData => JgYm.DebugDacData;
+        public byte DebugLastYmAddr => JgYm.DebugLastYmAddr;
+        public byte DebugLastYmVal => JgYm.DebugLastYmVal;
+        public string DebugLastYmSource => JgYm.DebugLastYmSource;
+
+        public void DumpRecentYmWrites(string tag, int limit)
+        {
+            JgYm.DumpRecentYmWrites(tag, limit);
+        }
+
+        public void ConsumeAudStatCounters(
+            out int keyOn,
+            out int fnum,
+            out int param,
+            out int dacCmd,
+            out int dacDat)
+        {
+            JgYm.ConsumeAudStatCounters(out keyOn, out fnum, out param, out dacCmd, out dacDat);
         }
 
         public void PsgWrite(byte value)
@@ -114,22 +138,27 @@ namespace EutherDrive.Core.MdTracerCore
             g_md_sn76489.SetNoiseGainPercent(percent);
         }
 
+        public int ConsumePsgAudStatWrites()
+        {
+            return g_md_sn76489.ConsumeAudStatWrites();
+        }
+
         internal void FlushAudioStats(long frame)
         {
             if (!md_ym2612.AudStatEnabled)
             {
-                g_md_ym2612.FlushTimerStats(frame);
+                JgYm.FlushTimerStats(frame);
                 return;
             }
 
-            g_md_ym2612.ConsumeAudStatCounters(
+            JgYm.ConsumeAudStatCounters(
                 out int keyOn, out int fnum, out int param, out int dacCmd, out int dacDat);
             int psgWrites = g_md_sn76489.ConsumeAudStatWrites();
 
             Console.WriteLine(
                 $"[AUDSTAT] frame={frame} ym_keyon={keyOn} ym_fnum={fnum} ym_param={param} " +
                 $"ym_dac_cmd={dacCmd} ym_dac_dat={dacDat} psg={psgWrites}");
-            g_md_ym2612.FlushTimerStats(frame);
+            JgYm.FlushTimerStats(frame);
         }
     }
 }

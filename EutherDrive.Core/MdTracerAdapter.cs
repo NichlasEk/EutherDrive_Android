@@ -2555,7 +2555,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (wantYm)
         {
             long frameNow = md_main.g_md_vdp?.FrameCounter ?? -1;
-            bool dacEnabledNow = music.g_md_ym2612.DebugDacEnabled != 0;
+            bool dacEnabledNow = music.DebugDacEnabled != 0;
             if (TraceAudioDebug && !_ymResampleDebugOnce)
             {
                 Console.Error.WriteLine($"[YM-RESAMPLE-DBG-ENTER] frame={frameNow} frames={frames} samples={samples} dacEnabled={(dacEnabledNow ? 1 : 0)}");
@@ -3158,7 +3158,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (wantYm)
         {
             long frameNow = md_main.g_md_vdp?.FrameCounter ?? -1;
-            bool dacEnabledNow = music.g_md_ym2612.DebugDacEnabled != 0;
+            bool dacEnabledNow = music.DebugDacEnabled != 0;
             if (TraceAudioDebug && !_ymInternalForcedLoggedOnce)
             {
                 Console.Error.WriteLine($"[YM-INT-FORCE] enter wantYm=1 frames={frames} samples={samples}");
@@ -3240,10 +3240,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             if (TraceAudioDebug && !_ymInternalDacStateLoggedOnce && (frameNow >= 200 || dacEnabledNow))
             {
                 int dacEnabled = dacEnabledNow ? 1 : 0;
-                int dacData = music.g_md_ym2612.DebugDacData;
-                byte lastAddr = music.g_md_ym2612.DebugLastYmAddr;
-                byte lastVal = music.g_md_ym2612.DebugLastYmVal;
-                string lastSrc = music.g_md_ym2612.DebugLastYmSource;
+                int dacData = music.DebugDacData;
+                byte lastAddr = music.DebugLastYmAddr;
+                byte lastVal = music.DebugLastYmVal;
+                string lastSrc = music.DebugLastYmSource;
                 Console.Error.WriteLine(
                     $"[YM-DAC-STATE] frame={frameNow} enabled={dacEnabled} dacData=0x{dacData:X3} lastAddr=0x{lastAddr:X2} lastVal=0x{lastVal:X2} src={lastSrc}");
                 _ymInternalDacStateLoggedOnce = true;
@@ -3527,7 +3527,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             _ymSilentFrames++;
             if (!_ymSilenceLogged && _ymSilentFrames >= TraceYmSilenceFrames)
             {
-                music.g_md_ym2612.DumpRecentYmWrites("silence", TraceYmSilenceDump);
+                music.DumpRecentYmWrites("silence", TraceYmSilenceDump);
                 _ymSilenceLogged = true;
             }
         }
