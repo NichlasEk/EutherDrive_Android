@@ -533,6 +533,8 @@ internal sealed class Sa1Registers
         DmaType = DmaTypeExtensions.FromBit(value.Bit(5));
         DmaPriority = DmaPriorityExtensions.FromBit(value.Bit(6));
         DmaEnabled = value.Bit(7);
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2230, "W", value, "REG-DCNT", null);
     }
 
     private void WriteCdma(byte value)
@@ -542,13 +544,37 @@ internal sealed class Sa1Registers
 
         if (value.Bit(7) && IsCharacterConversion())
             DmaState = DmaState.Idle;
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2231, "W", value, "REG-CDMA", null);
     }
 
-    private void WriteSdaLow(byte value) => Sa1Utils.SetLowByte(ref DmaSourceAddress, value);
-    private void WriteSdaMid(byte value) => Sa1Utils.SetMidByte(ref DmaSourceAddress, value);
-    private void WriteSdaHigh(byte value) => Sa1Utils.SetHighByte(ref DmaSourceAddress, value);
+    private void WriteSdaLow(byte value)
+    {
+        Sa1Utils.SetLowByte(ref DmaSourceAddress, value);
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2232, "W", value, "REG-SDA-L", null);
+    }
 
-    private void WriteDdaLow(byte value) => Sa1Utils.SetLowByte(ref DmaDestinationAddress, value);
+    private void WriteSdaMid(byte value)
+    {
+        Sa1Utils.SetMidByte(ref DmaSourceAddress, value);
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2233, "W", value, "REG-SDA-M", null);
+    }
+
+    private void WriteSdaHigh(byte value)
+    {
+        Sa1Utils.SetHighByte(ref DmaSourceAddress, value);
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2234, "W", value, "REG-SDA-H", null);
+    }
+
+    private void WriteDdaLow(byte value)
+    {
+        Sa1Utils.SetLowByte(ref DmaDestinationAddress, value);
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2235, "W", value, "REG-DDA-L", null);
+    }
     private void WriteDdaMid(byte value)
     {
         Sa1Utils.SetMidByte(ref DmaDestinationAddress, value);
@@ -560,6 +586,8 @@ internal sealed class Sa1Registers
         {
             StartCharacterConversion();
         }
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2236, "W", value, "REG-DDA-M", null);
     }
 
     private void WriteDdaHigh(byte value)
@@ -569,10 +597,23 @@ internal sealed class Sa1Registers
         {
             DmaState = DmaState.NormalCopying;
         }
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2237, "W", value, "REG-DDA-H", null);
     }
 
-    private void WriteDtcLow(byte value) => Sa1Utils.SetLsb(ref DmaTerminalCounter, value);
-    private void WriteDtcHigh(byte value) => Sa1Utils.SetMsb(ref DmaTerminalCounter, value);
+    private void WriteDtcLow(byte value)
+    {
+        Sa1Utils.SetLsb(ref DmaTerminalCounter, value);
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2238, "W", value, "REG-DTC-L", null);
+    }
+
+    private void WriteDtcHigh(byte value)
+    {
+        Sa1Utils.SetMsb(ref DmaTerminalCounter, value);
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SA1", 0, -1, 0x2239, "W", value, "REG-DTC-H", null);
+    }
 
     private void StartCharacterConversion()
     {
