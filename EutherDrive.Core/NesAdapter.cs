@@ -3,6 +3,7 @@ using System.IO;
 using XamariNES.Cartridge;
 using XamariNES.Controller;
 using XamariNES.Controller.Enums;
+using XamariNES.Cartridge.Mappers;
 using CpuCore = XamariNES.CPU.Core;
 using PpuCore = XamariNES.PPU.Core;
 
@@ -18,6 +19,7 @@ public sealed class NesAdapter : IEmulatorCore
     private CpuCore? _cpu;
     private PpuCore? _ppu;
     private NESController? _controller;
+    private IMapperIrqProvider? _irqProvider;
     private byte[] _frameBuffer = new byte[DefaultHeight * DefaultStride];
     private short[] _audioBuffer = Array.Empty<short>();
     private int _cpuIdleCycles;
@@ -35,6 +37,7 @@ public sealed class NesAdapter : IEmulatorCore
         _controller = new NESController();
         _ppu = new PpuCore(_cartridge.MemoryMapper, DmaTransfer);
         _cpu = new CpuCore(_cartridge.MemoryMapper, _controller);
+        _irqProvider = _cartridge.MemoryMapper as IMapperIrqProvider;
         Reset();
         _romSummary = BuildRomSummary(path, rom);
     }
@@ -79,6 +82,9 @@ public sealed class NesAdapter : IEmulatorCore
                 _ppu.NMI = false;
                 _cpu.NMI = true;
             }
+
+            if (_irqProvider != null)
+                _cpu.IRQ = _irqProvider.IrqPending;
 
             if (_ppu.FrameReady)
             {
