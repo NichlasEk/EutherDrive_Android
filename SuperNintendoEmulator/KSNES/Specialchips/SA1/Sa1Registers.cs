@@ -272,6 +272,7 @@ internal sealed class Sa1Registers
                 case 0x2200: TraceReg("SNES", "CCNT", address, value); break;
                 case 0x2201: TraceReg("SNES", "SIE", address, value); break;
                 case 0x2202: TraceReg("SNES", "SIC", address, value); break;
+                case 0x2224: TraceReg("SNES", "BMAPS", address, value); break;
             }
         }
         if (TraceSa1Regs)
@@ -314,6 +315,8 @@ internal sealed class Sa1Registers
                 case 0x2209: TraceReg("SA1", "SCNT", address, value); break;
                 case 0x220A: TraceReg("SA1", "CIE", address, value); break;
                 case 0x220B: TraceReg("SA1", "CIC", address, value); break;
+                case 0x2225: TraceReg("SA1", "BMAP", address, value); break;
+                case 0x223F: TraceReg("SA1", "BBF", address, value); break;
             }
         }
         if (TraceSa1Regs)
