@@ -194,7 +194,8 @@ internal sealed class Sa1Registers
     public ushort SnesNmiVector;
     public ushort SnesIrqVector;
 
-    public bool BwramWritesEnabled;
+    public bool SnesBwramWritesEnabled;
+    public bool Sa1BwramWritesEnabled;
     public uint BwramWriteProtectionSize = 1 << 23;
 
     public bool[] SnesIramWritesEnabled = new bool[8];
@@ -526,12 +527,12 @@ internal sealed class Sa1Registers
 
     private void WriteSbwe(byte value)
     {
-        BwramWritesEnabled = value.Bit(7);
+        SnesBwramWritesEnabled = value.Bit(7);
     }
 
     private void WriteCbwe(byte value)
     {
-        BwramWritesEnabled = value.Bit(7);
+        Sa1BwramWritesEnabled = value.Bit(7);
     }
 
     private void WriteBwpa(byte value)
@@ -729,9 +730,10 @@ internal sealed class Sa1Registers
         }
     }
 
-    public bool CanWriteBwram(uint bwramAddr)
+    public bool CanWriteBwram(uint bwramAddr, bool isSnes)
     {
-        return BwramWritesEnabled || bwramAddr >= BwramWriteProtectionSize;
+        bool writeEnabled = isSnes ? SnesBwramWritesEnabled : Sa1BwramWritesEnabled;
+        return writeEnabled || bwramAddr >= BwramWriteProtectionSize;
     }
 
     public void Reset(Sa1Timer timer, Sa1Mmc mmc)

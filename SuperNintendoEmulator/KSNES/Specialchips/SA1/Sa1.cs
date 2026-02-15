@@ -352,7 +352,7 @@ internal sealed class Sa1
             case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
                 {
                     uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
-                    if (_registers.CanWriteBwram(bwramAddr))
+                    if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
                         _bwram[(int)bwramAddr] = value;
                     TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
                     break;
@@ -360,7 +360,7 @@ internal sealed class Sa1
             case (>= 0x40 and <= 0x4F, _):
                 {
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
-                    if (_registers.CanWriteBwram(bwramAddr))
+                    if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
                         _bwram[(int)bwramAddr] = value;
                     TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
                     break;
@@ -510,7 +510,7 @@ internal sealed class Sa1
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
                     uint bwramAddr = ((_mmc.Sa1BwramBaseAddr & 0x3E000) | (address & 0x01FFF)) & (uint)(_bwram.Length - 1);
-                    if (_registers.CanWriteBwram(bwramAddr))
+                    if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
                         _bwram[(int)bwramAddr] = value;
                     TraceSa1("W", address, value, "BW-RAM-WIN", bwramAddr);
                     TraceBwramWatch("SA1", "W", address, bwramAddr, value, _cpu.ProgramCounter24);
@@ -526,7 +526,7 @@ internal sealed class Sa1
                 bwramWait = true;
                 {
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
-                    if (_registers.CanWriteBwram(bwramAddr))
+                    if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
                         _bwram[(int)bwramAddr] = value;
                     TraceSa1("W", address, value, "BW-RAM", bwramAddr);
                     TraceBwramWatch("SA1", "W", address, bwramAddr, value, _cpu.ProgramCounter24);

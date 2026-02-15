@@ -219,28 +219,26 @@ public class CPU : ICPU
                 }
                 if (_tracePc && _tracePcCount < _tracePcLimit)
                 {
-                    int b0 = 0, b1 = 0, b2 = 0;
                     if (_snes is KSNES.SNESSystem.SNESSystem snes)
                     {
-                        b0 = snes.Peek(pcAddr);
-                        b1 = snes.Peek((pcAddr + 1) & 0xffffff);
-                        b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                        int b0 = snes.Peek(pcAddr);
+                        int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
+                        int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                        Console.WriteLine($"[CPU-PC] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}]");
+                        _tracePcCount++;
                     }
-                    Console.WriteLine($"[CPU-PC] pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}]");
-                    _tracePcCount++;
                 }
                 if (_tracePcRange && _tracePcRangeCount < _tracePcRangeLimit && pcAddr >= _tracePcRangeStart && pcAddr <= _tracePcRangeEnd)
                 {
-                    int b0 = 0, b1 = 0, b2 = 0;
                     if (_snes is KSNES.SNESSystem.SNESSystem snes)
                     {
-                        b0 = snes.Peek(pcAddr);
-                        b1 = snes.Peek((pcAddr + 1) & 0xffffff);
-                        b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                        int b0 = snes.Peek(pcAddr);
+                        int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
+                        int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                        string regs = GetTraceState();
+                        Console.WriteLine($"[CPU-PC-RANGE] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
+                        _tracePcRangeCount++;
                     }
-                    string regs = GetTraceState();
-                    Console.WriteLine($"[CPU-PC-RANGE] pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
-                    _tracePcRangeCount++;
                 }
                 int instr = _snes.Read((_r[K] << 16) | _br[PC]++);
                 CyclesLeft = _cycles[instr];

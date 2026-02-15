@@ -126,3 +126,35 @@ We need to confirm whether the SNES ever reaches the routine at `00:83FC` (ROM o
 ### Next Steps
 1. Run Kirby 3 with the PC range trace to confirm if `00:83FC` is ever executed.
 2. If not reached, inspect the gating flags in `$002E/$002F/$004C` and track which code path should set them.
+
+## 2026-02-15 Update (PC range trace was SA-1 CPU)
+### Finding
+The new PC range trace was logging the **SA-1 CPU**, not the SNES CPU. The trace used `SNESSystem.Peek` only, so when the SA-1 CPU hit the same addresses the op bytes appeared as `00` even though the ROM byte is `0x54`.
+
+### Fix
+PC range trace now logs **only when the CPU is SNES** and labels `cpu=SNES`. For SA-1 CPU execution, use `EUTHERDRIVE_TRACE_SA1=1`.
+
+### Note
+If you only set `EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE` (non-`1` value), headless logging is silenced unless `EUTHERDRIVE_LOG_VERBOSE=1` or another `EUTHERDRIVE_TRACE_*` is set to `1`.
+
+### Follow-up
+Standard SNES PC trace (`EUTHERDRIVE_TRACE_SNES_CPU_PC=1`) now logs only for the SNES CPU (SA-1 CPU no longer consumes the trace budget).
+
+## 2026-02-15 Update (Current State + Thoughts)
+### What I did
+- Added a focused SNES PC range trace and clarified headless logging (requires `EUTHERDRIVE_LOG_VERBOSE=1` if the trace env var is not `"1"`).
+- Confirmed the SNES PC trace now logs only the SNES CPU.
+- Captured SNES PC traces during Kirby 3 boot and checked op bytes against ROM.
+
+### What I saw
+- SNES spends a long time in `MVN` loops (`op=0x54`) early in boot (e.g., `pc=0x008019` and later `pc=0x008039`), likely clearing/copying memory.
+- The PC range trace around `00:83FC` (the `LDA $004C -> STA $2100` routine) still did not trigger within the short window tested.
+- This suggests we may simply not be reaching the display-enable routine within a few frames, or a gating condition is never satisfied.
+
+### Hypothesis
+We might be stuck in early init block moves longer than expected (or a flag that should be set by SA-1 / DMA never flips). The next check is whether the SNES ever reaches the `00:83FC` routine when running longer (e.g., 60–120 frames).
+
+### Next actions
+1. Run Kirby 3 for a longer window with `EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE=0083C0-008410` and `EUTHERDRIVE_LOG_VERBOSE=1`.
+2. Keep `EUTHERDRIVE_TRACE_SNES_INIDISP=1` on and confirm if `$2100` is ever written after the initial `$80`.
+3. If still not reached, compare SA-1 side progress (SA-1 trace) to see if the SA-1 ever signals the SNES to proceed past init.
