@@ -101,6 +101,8 @@ namespace EutherDrive.Core.MdTracerCore
             if (frames > maxFrames)
                 frames = maxFrames;
 
+            AdvanceFromSystemCycles();
+
             int write = 0;
             for (int i = 0; i < frames; i++)
             {
@@ -116,43 +118,15 @@ namespace EutherDrive.Core.MdTracerCore
                     continue;
                 }
 
-                // Fallback: generate directly if buffer is empty (should be rare)
-                double l = 0.0;
-                double r = 0.0;
-                _ym.Tick(FmSampleDivider, (left, right) => { l = left; r = right; });
-                dst[write++] = ToSample(l);
-                dst[write++] = ToSample(r);
+                // Underflow: output silence instead of time-stretching
+                dst[write++] = 0;
+                dst[write++] = 0;
             }
         }
 
         public void EnsureAdvanceEachFrame()
         {
-            long currentSystemCycles = md_main.SystemCycles;
-            if (_lastSystemCycles == 0)
-            {
-                _lastSystemCycles = currentSystemCycles;
-                return;
-            }
-
-            long elapsed = currentSystemCycles - _lastSystemCycles;
-            if (elapsed <= 0)
-                return;
-
-            _lastSystemCycles = currentSystemCycles;
-            long totalCycles = elapsed + _systemCycleRemainder;
-            long ymTicks = totalCycles / SystemCyclesPerYmTick;
-            _systemCycleRemainder = totalCycles % SystemCyclesPerYmTick;
-
-            if (ymTicks <= 0)
-                return;
-
-            if (ymTicks > int.MaxValue)
-                ymTicks = int.MaxValue;
-
-            _ym.Tick((int)ymTicks, (left, right) =>
-            {
-                WriteSample(ToSample(left), ToSample(right));
-            });
+            AdvanceFromSystemCycles();
         }
 
         public void TickTimersFromZ80Cycles(int z80Cycles)
@@ -243,6 +217,36 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 _ringCountFrames++;
             }
+        }
+
+        private void AdvanceFromSystemCycles()
+        {
+            long currentSystemCycles = md_main.SystemCycles;
+            if (_lastSystemCycles == 0)
+            {
+                _lastSystemCycles = currentSystemCycles;
+                return;
+            }
+
+            long elapsed = currentSystemCycles - _lastSystemCycles;
+            if (elapsed <= 0)
+                return;
+
+            _lastSystemCycles = currentSystemCycles;
+            long totalCycles = elapsed + _systemCycleRemainder;
+            long ymTicks = totalCycles / SystemCyclesPerYmTick;
+            _systemCycleRemainder = totalCycles % SystemCyclesPerYmTick;
+
+            if (ymTicks <= 0)
+                return;
+
+            if (ymTicks > int.MaxValue)
+                ymTicks = int.MaxValue;
+
+            _ym.Tick((int)ymTicks, (left, right) =>
+            {
+                WriteSample(ToSample(left), ToSample(right));
+            });
         }
     }
 
