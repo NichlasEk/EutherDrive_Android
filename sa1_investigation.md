@@ -99,3 +99,17 @@ Kirby 3 stays black because the BW-RAM flag that drives INIDISP (`0x604C`) never
 1. Compare SA-1 trace vs jgenesis around the point where it should update BW-RAM `0x604C` (likely near PC `0x0082C7` or when BW-RAM flag flips in jgenesis).
 2. Verify SA-1 DMA-to-BW-RAM or IRQ/message handshakes; missing SA-1-side update would keep the screen blank.
 3. If SA-1 writes are blocked, check CBWE/SBWE timing or SA-1 DMA destination mapping.
+
+## 2026-02-15 Update (PPU bus + forced blank persistence)
+- PPU bus trace confirms initial `INIDISP` write to `$2100=0x80` (forced blank), coming from ROM sequence at `0x008041` (`8D 00 21`).
+- The following ROM instruction is `8D 4C 60` (write to BW-RAM `$604C`), which matches the op bytes shown in the PPU bus log (PC already advanced).
+- After the initial `$2100=0x80`, **no later writes to `$2100`** were observed within 5 frames.
+- jgenesis trace shows the same BW-RAM write `$00604C=0x80` and no later write to clear it, so `$604C` is **not** the flag that should release forced blank.
+
+### Implication
+The forced blank is not being cleared by the BW-RAM flag at `$604C`. We should instead identify **which flag** (likely in WRAM/SA-1 mailbox/IRQ) drives the later `$2100` write, and why that write is never issued in EutherDrive.
+
+### Next Trace Targets
+1. SNES CPU: locate the code path that should write `$2100` after init (look for `8D 00 21` after the initial one).
+2. SNES WRAM low-page trace: find the state flag that gates that write.
+3. SA-1 mailbox / IRQ handshake: confirm message/IRQ bits that might unblock the SNES-side flow.
