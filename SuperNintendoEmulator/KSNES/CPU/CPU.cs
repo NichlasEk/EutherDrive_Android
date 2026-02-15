@@ -276,6 +276,13 @@ public class CPU : ICPU
         _i = (value & 0x04) > 0;
         _z = (value & 0x02) > 0;
         _c = (value & 0x01) > 0;
+        if (_e)
+        {
+            // Emulation mode forces M/X and stack page 1
+            _m = true;
+            _x = true;
+            _br[SP] = (ushort) (0x0100 | (_br[SP] & 0xff));
+        }
         if (_x)
         {
             _br[X] &= 0xff;
