@@ -235,12 +235,17 @@ internal sealed class Sa1Registers
 
     public byte? SnesRead(uint address)
     {
-        return (address & 0xFFFF) == 0x2300 ? (byte?)ReadSfr() : null;
+        if ((address & 0xFFFF) != 0x2300)
+            return null;
+        byte value = ReadSfr();
+        if (Sa1Trace.IsEnabled)
+            Sa1Trace.Log("SNES", 0, -1, address & 0xFFFFFF, "R", value, "REG-SFR", null);
+        return value;
     }
 
     public byte Sa1Read(uint address, Sa1Timer timer)
     {
-        return (address & 0xFFFF) switch
+        byte value = (address & 0xFFFF) switch
         {
             0x2301 => ReadCfr(timer),
             0x2302 => timer.ReadHcrLow(),
@@ -253,6 +258,9 @@ internal sealed class Sa1Registers
             0x230D => ReadVdpHigh(),
             _ => 0
         };
+        if (Sa1Trace.IsEnabled && (address & 0xFFFF) == 0x2301)
+            Sa1Trace.Log("SA1", 0, -1, address & 0xFFFFFF, "R", value, "REG-CFR", null);
+        return value;
     }
 
     public void SnesWrite(uint address, byte value, Sa1Mmc mmc)
