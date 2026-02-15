@@ -570,7 +570,7 @@ namespace EutherDrive.Core.MdTracerCore
                     LineCycles += burn;
                     if (TraceZ80Stats)
                         _z80StatsCycleCount += burn;
-                    md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(burn);
+                    md_main.g_md_music?.TickYmTimersFromZ80(burn);
                     g_clock_total -= burn;
                     continue;
                 }
@@ -600,7 +600,7 @@ namespace EutherDrive.Core.MdTracerCore
                     MaybeLogZ80Speed(nmiCycles);
                     cyclesConsumed += nmiCycles;
                     LineCycles += nmiCycles;
-                    md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(nmiCycles);
+                    md_main.g_md_music?.TickYmTimersFromZ80(nmiCycles);
                     g_clock_total -= nmiCycles;
                     continue;
                 }
@@ -632,7 +632,7 @@ namespace EutherDrive.Core.MdTracerCore
                         _totalCycles += irqCycles;
                         MaybeLogZ80Speed(irqCycles);
                         cyclesConsumed += irqCycles;
-                        md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(irqCycles);
+                        md_main.g_md_music?.TickYmTimersFromZ80(irqCycles);
                         g_clock_total -= irqCycles;
 
                         switch (g_interruptMode)
@@ -1102,7 +1102,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (TraceZ80Stats)
                 _z80StatsCycleCount += g_clock;
             // Advance YM2612 based on elapsed SystemCycles
-            md_main.g_md_music?.g_md_ym2612.TickTimersFromZ80Cycles(g_clock);
+            md_main.g_md_music?.TickYmTimersFromZ80(g_clock);
             TickIrqAutoClear(g_clock);
             ApplyEiDelay();
 

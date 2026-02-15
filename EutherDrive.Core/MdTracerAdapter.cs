@@ -215,7 +215,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (percent < 0) percent = 0;
         else if (percent > 200) percent = 200;
         _psgNoisePercent = percent;
-        md_main.g_md_music?.g_md_sn76489.SetNoiseGainPercent(_psgNoisePercent);
+        md_main.g_md_music?.SetPsgNoiseGainPercent(_psgNoisePercent);
     }
 
     private void ApplyMasterVolume(short[] buffer, int samples)
@@ -1199,15 +1199,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // FullReset() assumes YM2612_Start() has already initialized arrays
         md_main.g_md_music.reset();
         
-        if (md_main.g_md_music.g_md_ym2612 != null)
-        {
-            Console.WriteLine($"[RESET-DEBUG] Calling YM2612.FullReset()");
-            md_main.g_md_music.g_md_ym2612.FullReset();
-        }
-        else
-        {
-            Console.WriteLine($"[RESET-DEBUG] YM2612 is null even after initialization");
-        }
+        Console.WriteLine($"[RESET-DEBUG] Calling YM2612.FullReset()");
+        md_main.g_md_music.YmFullReset();
         
         // CRITICAL FIX: Reset Z80 when system resets to ensure proper timing synchronization
         // Z80 must start from address 0 at the same time as M68K and YM2612
@@ -1398,30 +1391,28 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // Generate PSG samples
         if (wantPsg)
         {
-            var psg = music.g_md_sn76489;
             if (TraceAudioDebug)
                 Console.WriteLine($"[AUDIO-TIMING] Generating {samplesToGenerate} PSG samples");
             for (int i = 0; i < samplesToGenerate; i++)
             {
-                psg.SN76489_Update(); // Generate samples into PSG's internal buffer
+                music.PsgUpdate(); // Generate samples into PSG's internal buffer
             }
         }
         
         // Generate YM2612 samples
-        if (wantYm && music.g_md_ym2612 != null)
+        if (wantYm)
         {
-            var ym = music.g_md_ym2612;
             // YM generates at internal rate (~53.267 kHz)
             int ymSamplesToGenerate = framesToGenerate * (int)(YmInternalSampleRate / GetTargetFps());
             if (TraceAudioDebug)
                 Console.WriteLine($"[AUDIO-TIMING] Generating {ymSamplesToGenerate} YM samples");
             for (int i = 0; i < ymSamplesToGenerate; i++)
             {
-                ym.YM2612_Update(); // Generate samples into YM's internal buffer
+                music.YmUpdate(); // Generate samples into YM's internal buffer
             }
             
             // Also advance YM timers
-            ym.EnsureAdvanceEachFrame();
+            music.YmEnsureAdvanceEachFrame();
         }
         
         // Mark audio system as ready immediately
@@ -1729,7 +1720,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
 
             md_main.MaybeInjectMbx(frame);
-            md_main.g_md_music?.g_md_ym2612.FlushDacRateFrame(frame);
+            md_main.g_md_music?.FlushDacRateFrame(frame);
             md_main.g_md_music?.FlushAudioStats(frame);
             md_main.g_md_bus?.FlushZ80WinHist(frame);
             md_main.g_md_bus?.FlushZ80WinStat(frame);
@@ -1764,13 +1755,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                      // CRITICAL FIX: Always ensure YM2612 advances each frame
                      // This fixes "elastic music" where tempo changes with button presses
                      // YM2612 must advance on time, not just when audio is generated
-                     if (md_main.g_md_music?.g_md_ym2612 != null)
+                     md_main.g_md_music?.YmEnsureAdvanceEachFrame();
+                     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMING") == "1" && md_main.YmAdvanceCallsLastFrame == 0)
                      {
-                         md_main.g_md_music.g_md_ym2612.EnsureAdvanceEachFrame();
-                         if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_TIMING") == "1" && md_main.YmAdvanceCallsLastFrame == 0)
-                         {
-                             Console.WriteLine($"[YM-TIMING] Ensured advance for frame {currentFrame} (ymAdvanceCalls was 0)");
-                         }
+                         Console.WriteLine($"[YM-TIMING] Ensured advance for frame {currentFrame} (ymAdvanceCalls was 0)");
                      }
                      
                      // Reset for next frame
@@ -1799,10 +1787,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
 
         // Ensure YM2612 advances each frame (fix for elastic music)
-        if (md_main.g_md_music?.g_md_ym2612 != null)
-        {
-            md_main.g_md_music.g_md_ym2612.EnsureAdvanceEachFrame();
-        }
+        md_main.g_md_music?.YmEnsureAdvanceEachFrame();
 
         // Blitta VDP RGB555 -> UI BGRA staging buffer
         EnsureFramebufferInitialized("RunFrame");
@@ -2459,7 +2444,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (music == null)
             return ReadOnlySpan<short>.Empty;
 
-        music.g_md_sn76489.SetNoiseGainPercent(Volatile.Read(ref _psgNoisePercent));
+        music.SetPsgNoiseGainPercent(Volatile.Read(ref _psgNoisePercent));
         bool wantPsg = !_psgDisabled;
         bool wantYm = _ymEnabled;
         int psgMixPercent = Volatile.Read(ref _psgMixPercent);
@@ -2529,10 +2514,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int psgNonZero = 0;
         if (wantPsg)
         {
-            var psg = music.g_md_sn76489;
             for (int i = 0; i < frames; i++)
             {
-                int s = psg.SN76489_Update();
+                int s = music.PsgUpdateSample();
                 if (s > short.MaxValue) s = short.MaxValue;
                 else if (s < short.MinValue) s = short.MinValue;
                 s = ApplyMixPercent(s, psgMixPercent);
@@ -2622,7 +2606,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             if (genFrames > 0)
             {
                 var dst = _ymInternalBuffer.AsSpan(writeOffsetFrames * PsgChannels, genFrames * PsgChannels);
-                music.g_md_ym2612.YM2612_UpdateBatch(dst, genFrames);
+                music.YmUpdateBatch(dst, genFrames);
             }
             if (TraceAudioDebug && !_ymInternalForcedLoggedOnce)
             {
@@ -3078,7 +3062,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (music == null)
             return ReadOnlySpan<short>.Empty;
 
-        music.g_md_sn76489.SetNoiseGainPercent(Volatile.Read(ref _psgNoisePercent));
+        music.SetPsgNoiseGainPercent(Volatile.Read(ref _psgNoisePercent));
         bool wantPsg = !_psgDisabled;
         bool wantYm = _ymEnabled;
         int psgMixPercent = Volatile.Read(ref _psgMixPercent);
@@ -3128,10 +3112,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int psgNonZero = 0;
         if (wantPsg)
         {
-            var psg = music.g_md_sn76489;
             for (int i = 0; i < frames; i++)
             {
-                int s = psg.SN76489_Update();
+                int s = music.PsgUpdateSample();
                 if (s > short.MaxValue) s = short.MaxValue;
                 else if (s < short.MinValue) s = short.MinValue;
                 s = ApplyMixPercent(s, psgMixPercent);
@@ -3205,7 +3188,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             if (genFrames > 0)
             {
                 var dst = _ymInternalBuffer.AsSpan(writeOffsetFrames * PsgChannels, genFrames * PsgChannels);
-                music.g_md_ym2612.YM2612_UpdateBatch(dst, genFrames);
+                music.YmUpdateBatch(dst, genFrames);
             }
             if (TraceAudioDebug && !_ymInternalForcedLoggedOnce)
             {

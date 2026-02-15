@@ -1187,7 +1187,7 @@ namespace EutherDrive.Core.MdTracerCore
                     md_main.BeginZ80ResetCycle();
                     // CRITICAL FIX: YM2612_Start() must be called BEFORE Z80 starts running
                     // to ensure YM2612 state is initialized before Z80 can write to it
-                    md_main.g_md_music?.g_md_ym2612.YM2612_Start();
+                    md_main.g_md_music?.YmStart();
                     md_main.g_md_z80.ArmPostResetHold();
                     
                     // CRITICAL FIX FOR YM BUSY EMULATION:
@@ -1213,7 +1213,7 @@ namespace EutherDrive.Core.MdTracerCore
             
             // Notify YM2612 that Z80 safe boot is complete
             // This allows YM2612 busy emulation to start working
-            md_main.g_md_music?.g_md_ym2612.MarkZ80SafeBootComplete();
+            md_main.g_md_music?.MarkZ80SafeBootComplete();
         }
 
         private void ReleaseZ80SafeBootBusReq(long frame)
@@ -1487,7 +1487,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (in_address >= 0xA04000 && in_address <= 0xA04003)
             {
                 byte val = _ymEnabled && md_main.g_md_music != null
-                    ? md_main.g_md_music.g_md_ym2612.read8(in_address)
+                    ? md_main.g_md_music.YmRead(in_address)
                     : (byte)0xFF;
                 LogBusWatch(in_address, 1, write: false, value: val);
                 return val;
@@ -1898,7 +1898,7 @@ namespace EutherDrive.Core.MdTracerCore
                     Console.WriteLine($"[PSG-ERROR] g_md_sn76489 is null!");
                     return;
                 }
-                md_main.g_md_music.g_md_sn76489.write8(in_data);
+                md_main.g_md_music.PsgWrite(in_data);
                 md_psg_trace.TraceWrite("68K", in_address, in_data, md_m68k.g_reg_PC);
                 return;
             }
@@ -1922,7 +1922,7 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[68K-YM-WRITE] addr=0x{in_address:X6} val=0x{in_data:X2} PC=0x{md_m68k.g_reg_PC:X6} music={md_main.g_md_music != null} ym={md_main.g_md_music?.g_md_ym2612 != null}");
                 if (_ymEnabled)
                 {
-                    md_main.g_md_music?.g_md_ym2612.write8(in_address, in_data, "M68K");
+                    md_main.g_md_music?.YmWrite(in_address, in_data, "M68K");
                     if (TraceYm && _ymWriteLogRemaining > 0)
                     {
                         _ymWriteLogRemaining--;
@@ -2892,7 +2892,7 @@ namespace EutherDrive.Core.MdTracerCore
                     if (OtherEmuMode)
                         md_main.SyncZ80ToSystemCycles();
                     md_main.BeginZ80ResetCycle();
-                    md_main.g_md_music?.g_md_ym2612.YM2612_Start();
+                    md_main.g_md_music?.YmStart();
                     md_main.g_md_z80.reset(); // Reset Z80 when reset is released (sets PC=0)
                     md_main.g_md_z80.ArmPostResetHold();
                     // Set SP to same value as boot code would (0x1B80) since we skip boot code execution

@@ -1542,10 +1542,10 @@ namespace EutherDrive.Core.MdTracerCore
                 if (a <= 0x4003 && Z80YmWaitCycles > 0)
                     AddWaitCycles(Z80YmWaitCycles);
                 w_out = UseMdTracerCompat
-                    ? md_main.g_md_music.g_md_ym2612.read8(a)
+                    ? md_main.g_md_music.YmRead(a)
                     : (a == 0x4000 || a == 0x4002
-                        ? md_main.g_md_music.g_md_ym2612.ReadStatus(false)
-                        : md_main.g_md_music.g_md_ym2612.read8(a));
+                        ? md_main.g_md_music.YmReadStatus(clearOnRead: false)
+                        : md_main.g_md_music.YmRead(a));
                 if (a == 0x4000 || a == 0x4002)
                     RecordYmStatusRead();
                 if (ShouldTraceBootIo())
@@ -1851,7 +1851,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 if (a <= 0x4003 && Z80YmWaitCycles > 0)
                     AddWaitCycles(Z80YmWaitCycles);
-                md_main.g_md_music.g_md_ym2612.write8(a, in_data, "Z80");
+                md_main.g_md_music.YmWrite(a, in_data, "Z80");
                 if (ShouldTraceBootIo())
                     LogBootIo("write", a, in_data);
                 if (TraceYm && _ymWriteLogRemaining > 0)
@@ -1901,7 +1901,7 @@ namespace EutherDrive.Core.MdTracerCore
                 if (Z80PsgWaitCycles > 0)
                     AddWaitCycles(Z80PsgWaitCycles);
                 md_psg_trace.TraceWrite("Z80", a, in_data, DebugPc);
-                md_main.g_md_music.g_md_sn76489.write8(in_data);
+                md_main.g_md_music.PsgWrite(in_data);
                 RecordPsgWrite();
                 if (ShouldTraceBootIo())
                     LogBootIo("write", a, in_data);
@@ -2854,7 +2854,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (!a7 && a6)
             {
                 md_psg_trace.TraceWrite("Z80-SMS", port, data, md_main.g_md_z80?.DebugPc ?? 0);
-                md_main.g_md_music?.g_md_sn76489.write8(data);
+                md_main.g_md_music?.PsgWrite(data);
                 SmsPortLog(port, "write", data);
                 SmsPortLogFile(port, "write", data);
                 return true;
