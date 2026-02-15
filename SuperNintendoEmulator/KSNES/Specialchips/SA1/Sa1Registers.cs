@@ -584,6 +584,8 @@ internal sealed class Sa1Registers
         if (DmaEnabled && DmaType == DmaType.Normal && DmaDestination == DmaDestinationDevice.Iram)
         {
             DmaState = DmaState.NormalCopying;
+            if (Sa1Trace.IsEnabled)
+                Sa1Trace.Log("SA1", 0, -1, 0x2236, "S", 0, "DMA-START-IRAM", null);
         }
         if (DmaEnabled && DmaType == DmaType.CharacterConversion)
         {
@@ -599,6 +601,8 @@ internal sealed class Sa1Registers
         if (DmaEnabled && DmaType == DmaType.Normal && DmaDestination == DmaDestinationDevice.Bwram)
         {
             DmaState = DmaState.NormalCopying;
+            if (Sa1Trace.IsEnabled)
+                Sa1Trace.Log("SA1", 0, -1, 0x2237, "S", 0, "DMA-START-BWRAM", null);
         }
         if (Sa1Trace.IsEnabled)
             Sa1Trace.Log("SA1", 0, -1, 0x2237, "W", value, "REG-DDA-H", null);
