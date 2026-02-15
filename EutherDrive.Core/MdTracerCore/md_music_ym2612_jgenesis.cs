@@ -9,6 +9,12 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _lastYmAddr;
         private byte _lastYmVal;
         private string _lastYmSource = "none";
+        private long _lastSystemCycles;
+        private long _systemCycleRemainder;
+        private short[] _ringBuffer = new short[RingFramesDefault * 2];
+        private int _ringRead;
+        private int _ringWrite;
+        private int _ringCountFrames;
 
         public JgYm2612()
         {
@@ -61,11 +67,21 @@ namespace EutherDrive.Core.MdTracerCore
         public void Start()
         {
             _ym.Reset();
+            _lastSystemCycles = 0;
+            _systemCycleRemainder = 0;
+            _ringRead = 0;
+            _ringWrite = 0;
+            _ringCountFrames = 0;
         }
 
         public void FullReset()
         {
             _ym.Reset();
+            _lastSystemCycles = 0;
+            _systemCycleRemainder = 0;
+            _ringRead = 0;
+            _ringWrite = 0;
+            _ringCountFrames = 0;
         }
 
         public void MarkZ80SafeBootComplete()
@@ -88,24 +104,55 @@ namespace EutherDrive.Core.MdTracerCore
             int write = 0;
             for (int i = 0; i < frames; i++)
             {
+                if (_ringCountFrames > 0)
+                {
+                    int idx = _ringRead * 2;
+                    dst[write++] = _ringBuffer[idx];
+                    dst[write++] = _ringBuffer[idx + 1];
+                    _ringRead++;
+                    if (_ringRead >= RingFramesCapacity)
+                        _ringRead = 0;
+                    _ringCountFrames--;
+                    continue;
+                }
+
+                // Fallback: generate directly if buffer is empty (should be rare)
                 double l = 0.0;
                 double r = 0.0;
-                _ym.Tick(FmSampleDivider, (left, right) =>
-                {
-                    l = left;
-                    r = right;
-                });
-
-                short sl = ToSample(l);
-                short sr = ToSample(r);
-                dst[write++] = sl;
-                dst[write++] = sr;
+                _ym.Tick(FmSampleDivider, (left, right) => { l = left; r = right; });
+                dst[write++] = ToSample(l);
+                dst[write++] = ToSample(r);
             }
         }
 
         public void EnsureAdvanceEachFrame()
         {
-            // Timers are advanced as part of tick() in UpdateBatch
+            long currentSystemCycles = md_main.SystemCycles;
+            if (_lastSystemCycles == 0)
+            {
+                _lastSystemCycles = currentSystemCycles;
+                return;
+            }
+
+            long elapsed = currentSystemCycles - _lastSystemCycles;
+            if (elapsed <= 0)
+                return;
+
+            _lastSystemCycles = currentSystemCycles;
+            long totalCycles = elapsed + _systemCycleRemainder;
+            long ymTicks = totalCycles / SystemCyclesPerYmTick;
+            _systemCycleRemainder = totalCycles % SystemCyclesPerYmTick;
+
+            if (ymTicks <= 0)
+                return;
+
+            if (ymTicks > int.MaxValue)
+                ymTicks = int.MaxValue;
+
+            _ym.Tick((int)ymTicks, (left, right) =>
+            {
+                WriteSample(ToSample(left), ToSample(right));
+            });
         }
 
         public void TickTimersFromZ80Cycles(int z80Cycles)
@@ -169,6 +216,34 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private const int FmSampleDivider = 24;
+        private const int SystemCyclesPerYmTick = 6;
+        private const int RingFramesDefault = 16384;
+
+        private int RingFramesCapacity => _ringBuffer.Length / 2;
+
+        private void WriteSample(short left, short right)
+        {
+            if (_ringBuffer.Length == 0)
+                return;
+
+            int idx = _ringWrite * 2;
+            _ringBuffer[idx] = left;
+            _ringBuffer[idx + 1] = right;
+            _ringWrite++;
+            if (_ringWrite >= RingFramesCapacity)
+                _ringWrite = 0;
+
+            if (_ringCountFrames == RingFramesCapacity)
+            {
+                _ringRead++;
+                if (_ringRead >= RingFramesCapacity)
+                    _ringRead = 0;
+            }
+            else
+            {
+                _ringCountFrames++;
+            }
+        }
     }
 
     internal enum Opn2BusyBehavior
