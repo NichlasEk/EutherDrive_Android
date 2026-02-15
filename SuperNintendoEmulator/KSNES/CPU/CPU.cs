@@ -1,4 +1,6 @@
-﻿namespace KSNES.CPU;
+﻿using System.Globalization;
+
+namespace KSNES.CPU;
 
 public class CPU : ICPU
 {
@@ -55,6 +57,11 @@ public class CPU : ICPU
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_PC"), "1", StringComparison.Ordinal);
     private readonly int _tracePcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_CPU_PC_LIMIT", 200);
     private int _tracePcCount;
+    private readonly bool _tracePcRange;
+    private readonly int _tracePcRangeStart;
+    private readonly int _tracePcRangeEnd;
+    private readonly int _tracePcRangeLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE_LIMIT", 200);
+    private int _tracePcRangeCount;
     private readonly bool _traceWramPc =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_WRAM_PC"), "1", StringComparison.Ordinal);
     private bool _traceWramPcLogged;
@@ -150,6 +157,13 @@ public class CPU : ICPU
             Beq, Sbc, Sbc, Sbc, Pea, Sbc, Inc, Sbc, Sed, Sbc, Plx, Xce, Jsr, Sbc, Inc, Sbc,
             Abo, Nmi, Irq
         ];
+
+        if (TryParseTraceRange("EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE", out int start, out int end))
+        {
+            _tracePcRange = true;
+            _tracePcRangeStart = start;
+            _tracePcRangeEnd = end;
+        }
     }
 
     public void SetSystem(ISNESSystem system)
@@ -214,6 +228,19 @@ public class CPU : ICPU
                     }
                     Console.WriteLine($"[CPU-PC] pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}]");
                     _tracePcCount++;
+                }
+                if (_tracePcRange && _tracePcRangeCount < _tracePcRangeLimit && pcAddr >= _tracePcRangeStart && pcAddr <= _tracePcRangeEnd)
+                {
+                    int b0 = 0, b1 = 0, b2 = 0;
+                    if (_snes is KSNES.SNESSystem.SNESSystem snes)
+                    {
+                        b0 = snes.Peek(pcAddr);
+                        b1 = snes.Peek((pcAddr + 1) & 0xffffff);
+                        b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                    }
+                    string regs = GetTraceState();
+                    Console.WriteLine($"[CPU-PC-RANGE] pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
+                    _tracePcRangeCount++;
                 }
                 int instr = _snes.Read((_r[K] << 16) | _br[PC]++);
                 CyclesLeft = _cycles[instr];
@@ -1803,5 +1830,33 @@ public class CPU : ICPU
         if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value > 0)
             return value;
         return fallback;
+    }
+
+    private static bool TryParseTraceRange(string name, out int start, out int end)
+    {
+        start = 0;
+        end = 0;
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+        string[] parts = raw.Split('-', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 2)
+            return false;
+        if (!TryParseHex(parts[0], out start) || !TryParseHex(parts[1], out end))
+            return false;
+        if (end < start)
+        {
+            int tmp = start;
+            start = end;
+            end = tmp;
+        }
+        return true;
+    }
+
+    private static bool TryParseHex(string raw, out int value)
+    {
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            raw = raw[2..];
+        return int.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
     }
 }

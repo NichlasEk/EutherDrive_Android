@@ -113,3 +113,16 @@ The forced blank is not being cleared by the BW-RAM flag at `$604C`. We should i
 1. SNES CPU: locate the code path that should write `$2100` after init (look for `8D 00 21` after the initial one).
 2. SNES WRAM low-page trace: find the state flag that gates that write.
 3. SA-1 mailbox / IRQ handshake: confirm message/IRQ bits that might unblock the SNES-side flow.
+
+## 2026-02-15 Update (PC range trace + WRAM $004C watch)
+### Why
+We need to confirm whether the SNES ever reaches the routine at `00:83FC` (ROM offset `0x0003FC`) that does `LDA $4C` → `STA $2100`.
+
+### New Instrumentation
+- `EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE=0083C0-008410` logs a focused execution trace around the `$2100` write routine.
+- `EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE_LIMIT` controls log volume (default 200).
+- WRAM read trace now includes `$004C` alongside `$002E/$002F`.
+
+### Next Steps
+1. Run Kirby 3 with the PC range trace to confirm if `00:83FC` is ever executed.
+2. If not reached, inspect the gating flags in `$002E/$002F/$004C` and track which code path should set them.

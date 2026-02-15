@@ -95,6 +95,8 @@ public class SNESSystem : ISNESSystem
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_WRAM"), "1", StringComparison.Ordinal);
     private readonly bool _traceDma =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_DMA"), "1", StringComparison.Ordinal);
+    private readonly bool _traceInidisp =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_INIDISP"), "1", StringComparison.Ordinal);
 
     private int[] _dmaMode = [];
     private bool[] _dmaFixed = [];
@@ -1043,6 +1045,17 @@ public class SNESSystem : ISNESSystem
     {
         if (adr < 0x34)
         {
+            if (_traceInidisp && adr == 0x00)
+            {
+                int pc = -1;
+                string regs = string.Empty;
+                if (CPU is KSNES.CPU.CPU cpu)
+                {
+                    pc = cpu.ProgramCounter24;
+                    regs = cpu.GetTraceState();
+                }
+                Console.WriteLine($"[INIDISP] write $2100=0x{value:X2} pc=0x{pc:X6} dma={(dma ? 1 : 0)} regs=[{regs}]");
+            }
             TracePpuBusWrite(adr, value, dma);
             PPU.Write(adr, value);
             return;
@@ -1141,7 +1154,7 @@ public class SNESSystem : ISNESSystem
         if (bank == 0x7e || bank == 0x7f)
         {
             int val = _ram[((bank & 0x1) << 16) | adr];
-            if (_traceWramWrites && (adr == 0x004E || adr == 0x1F4E))
+            if (_traceWramWrites && (adr == 0x002E || adr == 0x002F || adr == 0x004C || adr == 0x004E || adr == 0x1F4E))
             {
                 int pc = -1;
                 if (CPU is KSNES.CPU.CPU cpu)
@@ -1155,7 +1168,7 @@ public class SNESSystem : ISNESSystem
             if (adr < 0x2000)
             {
                 int val = _ram[adr & 0x1fff];
-                if (_traceWramWrites && (adr == 0x004E || adr == 0x1F4E))
+                if (_traceWramWrites && (adr == 0x002E || adr == 0x002F || adr == 0x004C || adr == 0x004E || adr == 0x1F4E))
                 {
                     int pc = -1;
                     if (CPU is KSNES.CPU.CPU cpu)
