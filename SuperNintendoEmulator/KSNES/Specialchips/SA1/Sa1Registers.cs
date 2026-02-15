@@ -278,6 +278,10 @@ internal sealed class Sa1Registers
                 case 0x2206: TraceReg("SNES", "CNV-H", address, value); break;
                 case 0x2207: TraceReg("SNES", "CIV-L", address, value); break;
                 case 0x2208: TraceReg("SNES", "CIV-H", address, value); break;
+                case 0x2220: TraceReg("SNES", "CXB", address, value); break;
+                case 0x2221: TraceReg("SNES", "DXB", address, value); break;
+                case 0x2222: TraceReg("SNES", "EXB", address, value); break;
+                case 0x2223: TraceReg("SNES", "FXB", address, value); break;
                 case 0x2224: TraceReg("SNES", "BMAPS", address, value); break;
                 case 0x2226: TraceReg("SNES", "SBWE", address, value); break;
                 case 0x2228: TraceReg("SNES", "BWPA", address, value); break;
