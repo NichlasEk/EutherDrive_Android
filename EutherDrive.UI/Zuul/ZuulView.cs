@@ -101,14 +101,26 @@ internal sealed class ZuulView : Control
     {
         try
         {
-            var uri = new Uri("avares://EutherDrive.UI/Assets/zuul_demo.jox");
+            LoadEmbedded("zuul_demo.jox");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ZuulView] failed to load default JOX: {ex.Message}");
+        }
+    }
+
+    public void LoadEmbedded(string assetName)
+    {
+        try
+        {
+            var uri = new Uri($"avares://EutherDrive.UI/Assets/{assetName}");
             using Stream stream = AssetLoader.Open(uri);
             LoadFromStream(stream);
             EnsureRoarLoaded();
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[ZuulView] failed to load default JOX: {ex.Message}");
+            Console.WriteLine($"[ZuulView] failed to load embedded JOX '{assetName}': {ex.Message}");
         }
     }
 

@@ -1279,6 +1279,9 @@ public partial class MainWindow : Window
                     }
                 }
             };
+            var startFolder = await TryGetJoxAssetsFolderAsync();
+            if (startFolder != null)
+                options.SuggestedStartLocation = startFolder;
             var files = await StorageProvider.OpenFilePickerAsync(options);
             if (files.Count == 0)
                 return;
@@ -1293,6 +1296,14 @@ public partial class MainWindow : Window
             }
         };
 
+        var logoButton = new Button
+        {
+            Content = "Load EutherDrive Logo",
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 6)
+        };
+        logoButton.Click += (_, _) => zuulView.LoadEmbedded("eutherdrive_logo.jox");
+
         var layout = new StackPanel
         {
             Spacing = 4,
@@ -1300,6 +1311,7 @@ public partial class MainWindow : Window
         };
         layout.Children.Add(zuulView);
         layout.Children.Add(credit);
+        layout.Children.Add(logoButton);
         layout.Children.Add(loadButton);
 
         var dialog = new Window
@@ -1315,6 +1327,39 @@ public partial class MainWindow : Window
         dialog.KeyUp += (_, args) => zuulView.InjectKeyUp(args.Key);
 
         await dialog.ShowDialog(this);
+    }
+
+    private async Task<IStorageFolder?> TryGetJoxAssetsFolderAsync()
+    {
+        if (StorageProvider == null)
+            return null;
+
+        string? FindAssetsPath()
+        {
+            string baseDir = AppContext.BaseDirectory;
+            string[] candidates =
+            {
+                Path.Combine(baseDir, "Assets"),
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "EutherDrive.UI", "Assets")),
+                Path.Combine(Environment.CurrentDirectory, "EutherDrive.UI", "Assets"),
+                Path.Combine(Environment.CurrentDirectory, "Assets")
+            };
+
+            foreach (string path in candidates)
+            {
+                if (File.Exists(Path.Combine(path, "zuul_demo.jox")))
+                    return path;
+                if (Directory.Exists(path))
+                    return path;
+            }
+
+            return null;
+        }
+
+        string? assetsPath = FindAssetsPath();
+        if (string.IsNullOrWhiteSpace(assetsPath))
+            return null;
+        return await StorageProvider.TryGetFolderFromPathAsync(assetsPath);
     }
 
     private void ApplyRegionOverrideToCore(bool resetIfRunning)
