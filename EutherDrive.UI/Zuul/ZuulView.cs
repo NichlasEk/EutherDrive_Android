@@ -1,10 +1,12 @@
 using System;
 using System.IO;
+using System.Buffers.Binary;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using EutherDrive.Audio;
 
 namespace EutherDrive.UI.Zuul;
 
@@ -13,9 +15,14 @@ internal sealed class ZuulView : Control
     private readonly JoxRuntime _runtime = new();
     private readonly DispatcherTimer _timer = new();
     private bool _loaded;
+    private Sdl2AudioSink? _audioSink;
+    private short[] _roarSamples = Array.Empty<short>();
+    private int _roarRate = 22050;
+    private int _roarChannels = 1;
 
     public ZuulView()
     {
+        _runtime.EventEmitted += HandleEvent;
         _timer.Tick += (_, _) =>
         {
             _runtime.Tick();
@@ -30,6 +37,7 @@ internal sealed class ZuulView : Control
             var uri = new Uri("avares://EutherDrive.UI/Assets/zuul_demo.jox");
             using Stream stream = AssetLoader.Open(uri);
             LoadFromStream(stream);
+            EnsureRoarLoaded();
         }
         catch (Exception ex)
         {
@@ -58,6 +66,8 @@ internal sealed class ZuulView : Control
     {
         base.OnDetachedFromVisualTree(e);
         _timer.Stop();
+        _audioSink?.Dispose();
+        _audioSink = null;
     }
 
     public override void Render(DrawingContext context)
@@ -96,5 +106,95 @@ internal sealed class ZuulView : Control
         _timer.Interval = TimeSpan.FromSeconds(1.0 / tps);
         if (!_timer.IsEnabled)
             _timer.Start();
+    }
+
+    private void HandleEvent(ushort eventId)
+    {
+        if (eventId == 1)
+            PlayRoar();
+    }
+
+    private void EnsureRoarLoaded()
+    {
+        if (_roarSamples.Length != 0)
+            return;
+        try
+        {
+            var uri = new Uri("avares://EutherDrive.UI/Assets/jox.wav");
+            using Stream stream = AssetLoader.Open(uri);
+            LoadWav(stream, out _roarSamples, out _roarRate, out _roarChannels);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ZuulView] failed to load jox.wav: {ex.Message}");
+        }
+    }
+
+    private void PlayRoar()
+    {
+        EnsureRoarLoaded();
+        if (_roarSamples.Length == 0)
+            return;
+        _audioSink ??= Sdl2AudioSink.TryCreate();
+        if (_audioSink == null)
+            return;
+        _audioSink.Start(_roarRate, _roarChannels);
+        _audioSink.Submit(_roarSamples);
+    }
+
+    private static void LoadWav(Stream stream, out short[] samples, out int sampleRate, out int channels)
+    {
+        samples = Array.Empty<short>();
+        sampleRate = 22050;
+        channels = 1;
+
+        using var br = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+        Span<byte> id = stackalloc byte[4];
+        if (br.Read(id) != 4 || id[0] != (byte)'R' || id[1] != (byte)'I' || id[2] != (byte)'F' || id[3] != (byte)'F')
+            throw new InvalidDataException("Not a RIFF file.");
+        br.ReadInt32();
+        if (br.Read(id) != 4 || id[0] != (byte)'W' || id[1] != (byte)'A' || id[2] != (byte)'V' || id[3] != (byte)'E')
+            throw new InvalidDataException("Not a WAVE file.");
+
+        ushort fmt = 0;
+        ushort bits = 0;
+        int dataSize = 0;
+        long dataPos = 0;
+
+        while (stream.Position + 8 <= stream.Length)
+        {
+            if (br.Read(id) != 4)
+                break;
+            int size = br.ReadInt32();
+            string chunk = System.Text.Encoding.ASCII.GetString(id);
+            long next = stream.Position + size;
+            if (chunk == "fmt ")
+            {
+                fmt = br.ReadUInt16();
+                channels = br.ReadUInt16();
+                sampleRate = br.ReadInt32();
+                br.ReadInt32();
+                br.ReadUInt16();
+                bits = br.ReadUInt16();
+            }
+            else if (chunk == "data")
+            {
+                dataPos = stream.Position;
+                dataSize = size;
+            }
+            stream.Position = next + (size % 2);
+        }
+
+        if (fmt != 1 || bits != 16 || dataSize == 0)
+            throw new InvalidDataException("Unsupported WAV (need PCM16).");
+
+        stream.Position = dataPos;
+        byte[] raw = br.ReadBytes(dataSize);
+        int count = raw.Length / 2;
+        samples = new short[count];
+        for (int i = 0; i < count; i++)
+        {
+            samples[i] = (short)BinaryPrimitives.ReadInt16LittleEndian(raw.AsSpan(i * 2, 2));
+        }
     }
 }

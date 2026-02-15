@@ -37,5 +37,6 @@
       <Link>Assets/logo_crop.jpeg</Link>
     </AvaloniaResource>
     <AvaloniaResource Include="Assets\zuul_demo.jox" />
+    <AvaloniaResource Include="Assets\jox.wav" />
   </ItemGroup>
 </Project>
