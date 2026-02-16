@@ -59,7 +59,10 @@ public sealed class PsxAdapter : IEmulatorCore
     private int _frameWidth = 320;
     private int _frameHeight = 240;
     private int _frameStride = 320 * 4;
-    private short[] _audioBuffer = Array.Empty<short>();
+    private readonly object _audioLock = new();
+    private short[] _audioQueue = Array.Empty<short>();
+    private int _audioQueuedCount;
+    private short[] _audioReadBuffer = Array.Empty<short>();
 
     public void LoadRom(string path)
     {
@@ -97,7 +100,18 @@ public sealed class PsxAdapter : IEmulatorCore
     {
         sampleRate = 44100;
         channels = 2;
-        return _audioBuffer;
+        lock (_audioLock)
+        {
+            if (_audioQueuedCount == 0)
+                return ReadOnlySpan<short>.Empty;
+
+            if (_audioReadBuffer.Length != _audioQueuedCount)
+                _audioReadBuffer = new short[_audioQueuedCount];
+
+            _audioQueue.AsSpan(0, _audioQueuedCount).CopyTo(_audioReadBuffer);
+            _audioQueuedCount = 0;
+            return _audioReadBuffer;
+        }
     }
 
     public void SetInputState(
@@ -183,14 +197,26 @@ public sealed class PsxAdapter : IEmulatorCore
     private void PushAudio(byte[] samples)
     {
         int sampleCount = samples.Length / 2;
-        if (_audioBuffer.Length != sampleCount)
-            _audioBuffer = new short[sampleCount];
+        if (sampleCount == 0)
+            return;
 
-        int si = 0;
-        for (int i = 0; i < sampleCount; i++)
+        lock (_audioLock)
         {
-            _audioBuffer[i] = (short)(samples[si] | (samples[si + 1] << 8));
-            si += 2;
+            int needed = _audioQueuedCount + sampleCount;
+            if (_audioQueue.Length < needed)
+            {
+                int newSize = Math.Max(needed, _audioQueue.Length == 0 ? sampleCount : _audioQueue.Length * 2);
+                Array.Resize(ref _audioQueue, newSize);
+            }
+
+            int si = 0;
+            int di = _audioQueuedCount;
+            for (int i = 0; i < sampleCount; i++)
+            {
+                _audioQueue[di++] = (short)(samples[si] | (samples[si + 1] << 8));
+                si += 2;
+            }
+            _audioQueuedCount = di;
         }
     }
 }
