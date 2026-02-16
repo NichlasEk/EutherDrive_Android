@@ -50,7 +50,7 @@ public sealed class SegaCdMemory
     public SegaCdCdcStub Cdc { get; } = new();
     public SegaCdCddStub Cdd { get; } = new();
     public SegaCdPcmStub Pcm { get; } = new();
-    public SegaCdGraphicsStub Graphics { get; } = new();
+    public SegaCdGraphicsCoprocessor Graphics { get; } = new();
 
     public bool EnableRamCartridge { get; set; } = true;
 
@@ -82,6 +82,7 @@ public sealed class SegaCdMemory
 
         Cdc.Tick();
         Cdd.Tick(Registers.CddHostClockOn);
+        Graphics.Tick(masterClockCycles, WordRam, Registers.GraphicsInterruptEnabled);
     }
 
     public void EmulateSubCpuHandshake()
