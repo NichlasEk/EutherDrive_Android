@@ -77,6 +77,12 @@ public sealed class SegaCdCddStub
         UpdateStatus();
     }
 
+    public void Tick(bool hostClockOn)
+    {
+        if (hostClockOn)
+            _interruptPending = true;
+    }
+
     public void SetDiscPresent(bool present)
     {
         _discPresent = present;

@@ -79,6 +79,9 @@ public sealed class SegaCdMemory
             _timerDivider = TimerDivider;
         }
         _timerDivider -= cycles;
+
+        Cdc.Tick();
+        Cdd.Tick(Registers.CddHostClockOn);
     }
 
     public void EmulateSubCpuHandshake()
