@@ -37,14 +37,17 @@ public sealed class SegaCdAdapter : IEmulatorCore
         RegionHint = DiscInfoToRegion(_discInfo);
         _bios = SegaCdBios.Load(RegionHint == ConsoleRegion.Auto ? ConsoleRegion.US : RegionHint);
         _memory = new SegaCdMemory(_bios);
-        _mainBus = new EutherDrive.Core.MdTracerCore.md_bus
-        {
-            OverrideBus = new SegaCdMainBusOverride(_memory)
-        };
+        EutherDrive.Core.MdTracerCore.md_main.initialize();
+        _mainBus = EutherDrive.Core.MdTracerCore.md_main.g_md_bus;
+        if (_mainBus != null)
+            _mainBus.OverrideBus = new SegaCdMainBusOverride(_memory);
         _subBus = new EutherDrive.Core.MdTracerCore.md_bus
         {
             OverrideBus = new SegaCdSubBusOverride(_memory)
         };
+
+        if (EutherDrive.Core.MdTracerCore.md_main.g_md_vdp != null)
+            EutherDrive.Core.MdTracerCore.md_main.g_md_vdp.reset();
 
         uint initialSp = ReadMainVector(_memory, 0);
         uint initialPc = ReadMainVector(_memory, 4);
@@ -84,13 +87,48 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
         EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
         _memory.Tick((uint)mainCycles);
+
+        var vdp = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp;
+        if (vdp != null)
+        {
+            EutherDrive.Core.MdTracerCore.md_m68k.ApplyContext(_mainContext);
+            int lines = vdp.g_vertical_line_max > 0 ? vdp.g_vertical_line_max : 262;
+            for (int line = 0; line < lines; line++)
+                vdp.run(line);
+            EutherDrive.Core.MdTracerCore.md_m68k.CaptureContext(_mainContext);
+
+            int w = vdp.FrameWidth > 0 ? vdp.FrameWidth : DefaultW;
+            int h = vdp.FrameHeight > 0 ? vdp.FrameHeight : DefaultH;
+            int needed = w * h * 4;
+            if (_frameBuffer.Length != needed)
+                _frameBuffer = new byte[needed];
+
+            var src = vdp.RgbaFrame;
+            int pixels = Math.Min(w * h, src.Length / 4);
+            int si = 0;
+            int di = 0;
+            for (int i = 0; i < pixels; i++)
+            {
+                byte r = src[si + 0];
+                byte g = src[si + 1];
+                byte b = src[si + 2];
+                byte a = src[si + 3];
+                _frameBuffer[di + 0] = b;
+                _frameBuffer[di + 1] = g;
+                _frameBuffer[di + 2] = r;
+                _frameBuffer[di + 3] = a;
+                si += 4;
+                di += 4;
+            }
+        }
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
-        width = DefaultW;
-        height = DefaultH;
-        stride = DefaultStride;
+        var vdp = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp;
+        width = vdp?.FrameWidth ?? DefaultW;
+        height = vdp?.FrameHeight ?? DefaultH;
+        stride = width * 4;
         return _frameBuffer;
     }
 

@@ -18,58 +18,67 @@ internal sealed class SegaCdMainBusOverride : IM68kBusOverride
 
     public bool TryRead8(uint address, out byte value)
     {
-        if (Handles(address))
-            value = _memory.ReadMainByte(address);
-        else
-            value = 0xFF;
+        if (!Handles(address))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = _memory.ReadMainByte(address);
         return true;
     }
 
     public bool TryRead16(uint address, out ushort value)
     {
-        if (Handles(address))
-            value = _memory.ReadMainWord(address);
-        else
-            value = 0xFFFF;
+        if (!Handles(address))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = _memory.ReadMainWord(address);
         return true;
     }
 
     public bool TryRead32(uint address, out uint value)
     {
-        if (Handles(address))
+        if (!Handles(address))
         {
-            ushort msw = _memory.ReadMainWord(address);
-            ushort lsw = _memory.ReadMainWord(address + 2);
-            value = (uint)((msw << 16) | lsw);
+            value = 0;
+            return false;
         }
-        else
-        {
-            value = 0xFFFF_FFFF;
-        }
+
+        ushort msw = _memory.ReadMainWord(address);
+        ushort lsw = _memory.ReadMainWord(address + 2);
+        value = (uint)((msw << 16) | lsw);
         return true;
     }
 
     public bool TryWrite8(uint address, byte value)
     {
-        if (Handles(address))
-            _memory.WriteMainByte(address, value);
+        if (!Handles(address))
+            return false;
+
+        _memory.WriteMainByte(address, value);
         return true;
     }
 
     public bool TryWrite16(uint address, ushort value)
     {
-        if (Handles(address))
-            _memory.WriteMainWord(address, value);
+        if (!Handles(address))
+            return false;
+
+        _memory.WriteMainWord(address, value);
         return true;
     }
 
     public bool TryWrite32(uint address, uint value)
     {
-        if (Handles(address))
-        {
-            _memory.WriteMainWord(address, (ushort)(value >> 16));
-            _memory.WriteMainWord(address + 2, (ushort)value);
-        }
+        if (!Handles(address))
+            return false;
+
+        _memory.WriteMainWord(address, (ushort)(value >> 16));
+        _memory.WriteMainWord(address + 2, (ushort)value);
         return true;
     }
 }
