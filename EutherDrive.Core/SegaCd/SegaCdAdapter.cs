@@ -18,6 +18,11 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private SegaCdDiscInfo? _discInfo;
     private byte[]? _bios;
     private SegaCdMemory? _memory;
+    private readonly MdTracerM68kContextRunner _cpuRunner = new();
+    private EutherDrive.Core.MdTracerCore.md_m68k.MdM68kContext? _mainContext;
+    private EutherDrive.Core.MdTracerCore.md_m68k.MdM68kContext? _subContext;
+    private EutherDrive.Core.MdTracerCore.md_bus? _mainBus;
+    private EutherDrive.Core.MdTracerCore.md_bus? _subBus;
 
     public SegaCdDiscInfo? DiscInfo => _discInfo;
     public ConsoleRegion RegionHint { get; private set; } = ConsoleRegion.Auto;
@@ -32,6 +37,19 @@ public sealed class SegaCdAdapter : IEmulatorCore
         RegionHint = DiscInfoToRegion(_discInfo);
         _bios = SegaCdBios.Load(RegionHint == ConsoleRegion.Auto ? ConsoleRegion.US : RegionHint);
         _memory = new SegaCdMemory(_bios);
+        _mainBus = new EutherDrive.Core.MdTracerCore.md_bus
+        {
+            OverrideBus = new SegaCdMainBusOverride(_memory)
+        };
+        _subBus = new EutherDrive.Core.MdTracerCore.md_bus
+        {
+            OverrideBus = new SegaCdSubBusOverride(_memory)
+        };
+
+        uint initialSp = ReadMainVector(_memory, 0);
+        uint initialPc = ReadMainVector(_memory, 4);
+        _mainContext = CreateResetContext(initialPc, initialSp);
+        _subContext = CreateResetContext(0, 0);
 
         // TODO: Instantiate Sega CD emulator core once ported.
         // For now, just clear framebuffer.
@@ -47,7 +65,25 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
     public void RunFrame()
     {
-        // TODO: Run Sega CD frame (main+sub CPU, VDP, CDDA/PCM).
+        if (_memory == null || _mainContext == null || _subContext == null || _mainBus == null || _subBus == null)
+            return;
+
+        // Rough cycle budgets; refine later.
+        const int mainCycles = 127_000;
+        const int subCycles = 127_000;
+
+        EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
+        _cpuRunner.RunSome(_mainContext, mainCycles);
+
+        if (!_memory.SubCpuHalt && !_memory.SubCpuReset)
+        {
+            EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _subBus;
+            _cpuRunner.RunSome(_subContext, subCycles);
+            _memory.FlushBufferedSubWrites();
+        }
+
+        EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
+        _memory.Tick((uint)mainCycles);
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -99,5 +135,29 @@ public sealed class SegaCdAdapter : IEmulatorCore
             "PAL" => ConsoleRegion.EU,
             _ => ConsoleRegion.Auto
         };
+    }
+
+    private static uint ReadMainVector(SegaCdMemory memory, uint address)
+    {
+        ushort msw = memory.ReadMainWord(address);
+        ushort lsw = memory.ReadMainWord(address + 2);
+        return (uint)((msw << 16) | lsw);
+    }
+
+    private static EutherDrive.Core.MdTracerCore.md_m68k.MdM68kContext CreateResetContext(uint initialPc, uint initialSp)
+    {
+        var ctx = new EutherDrive.Core.MdTracerCore.md_m68k.MdM68kContext
+        {
+            RegPc = initialPc,
+            InitialPc = initialPc,
+            StackTop = initialSp,
+            RegAddrUsp = 0,
+            Stop = false,
+            StatusS = true,
+            StatusInterruptMask = 7
+        };
+
+        ctx.RegAddr[7] = initialSp;
+        return ctx;
     }
 }

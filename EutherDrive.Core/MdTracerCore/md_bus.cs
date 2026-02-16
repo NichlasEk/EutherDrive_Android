@@ -55,7 +55,8 @@ namespace EutherDrive.Core.MdTracerCore
         // ------------------------------------------------------------
         // READ
         // ------------------------------------------------------------
-         public static MegaDriveBus? Current { get; set; }
+        public static MegaDriveBus? Current { get; set; }
+        public IM68kBusOverride? OverrideBus { get; set; }
         private bool _z80BusGranted = false;
         [NonSerialized] private bool _z80BusReqRequested = false;
         [NonSerialized] private bool _z80BusReqLastRequested = false;
@@ -1392,6 +1393,9 @@ namespace EutherDrive.Core.MdTracerCore
         public byte read8(uint in_address)
         {
             in_address &= 0x00FF_FFFF;
+
+            if (OverrideBus != null && OverrideBus.TryRead8(in_address, out byte overrideValue))
+                return overrideValue;
             
             // Debug logging for Madou palette reads (DMA)
             if (TraceBusReadDebug && ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0)))
@@ -1559,6 +1563,9 @@ namespace EutherDrive.Core.MdTracerCore
         {
             in_address &= 0x00FF_FFFF;
 
+            if (OverrideBus != null && OverrideBus.TryRead16(in_address, out ushort overrideValue))
+                return overrideValue;
+
             if (IsZ80BusReq(in_address))
             {
                 ushort val = BuildBusAckRead16();
@@ -1689,6 +1696,9 @@ namespace EutherDrive.Core.MdTracerCore
         {
             in_address &= 0x00FF_FFFF;
 
+            if (OverrideBus != null && OverrideBus.TryRead32(in_address, out uint overrideValue))
+                return overrideValue;
+
             if (IsZ80BusReq(in_address))
             {
                 ushort word = BuildBusAckRead16();
@@ -1815,6 +1825,9 @@ namespace EutherDrive.Core.MdTracerCore
         public void write8(uint in_address, byte in_data)
         {
             in_address &= 0x00FF_FFFF;
+
+            if (OverrideBus != null && OverrideBus.TryWrite8(in_address, in_data))
+                return;
             LogBusWatch(in_address, 1, write: true, value: in_data);
             
             // Debug logging for Madou palette writes and VDP register writes
@@ -2049,6 +2062,9 @@ namespace EutherDrive.Core.MdTracerCore
         public void write16(uint in_address, ushort in_data)
         {
             in_address &= 0x00FF_FFFF;
+
+            if (OverrideBus != null && OverrideBus.TryWrite16(in_address, in_data))
+                return;
             LogBusWatch(in_address, 2, write: true, value: in_data);
             
             // Debug logging for Madou palette writes
@@ -2385,6 +2401,9 @@ namespace EutherDrive.Core.MdTracerCore
         public void write32(uint in_address, uint in_data)
         {
             in_address &= 0x00FF_FFFF;
+
+            if (OverrideBus != null && OverrideBus.TryWrite32(in_address, in_data))
+                return;
             LogBusWatch(in_address, 4, write: true, value: in_data);
 
             if (IsZ80BusReq(in_address))
