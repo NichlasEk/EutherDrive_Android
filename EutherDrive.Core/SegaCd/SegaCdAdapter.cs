@@ -17,6 +17,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private string? _romPath;
     private SegaCdDiscInfo? _discInfo;
     private byte[]? _bios;
+    private readonly WordRam _wordRam = new();
 
     public SegaCdDiscInfo? DiscInfo => _discInfo;
     public ConsoleRegion RegionHint { get; private set; } = ConsoleRegion.Auto;
