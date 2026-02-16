@@ -37,6 +37,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
         RegionHint = DiscInfoToRegion(_discInfo);
         _bios = SegaCdBios.Load(RegionHint == ConsoleRegion.Auto ? ConsoleRegion.US : RegionHint);
         _memory = new SegaCdMemory(_bios);
+        _memory.Cdd.SetDiscPresent(true);
         EutherDrive.Core.MdTracerCore.md_main.initialize();
         _mainBus = EutherDrive.Core.MdTracerCore.md_main.g_md_bus;
         if (_mainBus != null)
