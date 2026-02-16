@@ -17,7 +17,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private string? _romPath;
     private SegaCdDiscInfo? _discInfo;
     private byte[]? _bios;
-    private readonly WordRam _wordRam = new();
+    private SegaCdMemory? _memory;
 
     public SegaCdDiscInfo? DiscInfo => _discInfo;
     public ConsoleRegion RegionHint { get; private set; } = ConsoleRegion.Auto;
@@ -31,6 +31,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
         _discInfo = SegaCdDiscInfo.Read(path);
         RegionHint = DiscInfoToRegion(_discInfo);
         _bios = SegaCdBios.Load(RegionHint == ConsoleRegion.Auto ? ConsoleRegion.US : RegionHint);
+        _memory = new SegaCdMemory(_bios);
 
         // TODO: Instantiate Sega CD emulator core once ported.
         // For now, just clear framebuffer.
