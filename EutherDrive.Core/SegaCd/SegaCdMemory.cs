@@ -46,6 +46,7 @@ public sealed class SegaCdMemory
 
     public SegaCdRegisters Registers { get; } = new();
     public WordRam WordRam { get; } = new();
+    public SegaCdFontRegisters FontRegisters { get; } = new();
     public SegaCdCdcStub Cdc { get; } = new();
     public SegaCdCddStub Cdd { get; } = new();
     public SegaCdPcmStub Pcm { get; } = new();
@@ -478,6 +479,17 @@ public sealed class SegaCdMemory
                 return Cdd.Status[(reg - 8) & 0x0F];
             case >= 0x0042 and <= 0x004B:
                 return Registers.CddCommand[(reg - 2) & 0x0F];
+            case 0x004C:
+                return FontRegisters.ReadColor();
+            case 0x004E:
+                return (byte)(FontRegisters.FontBits >> 8);
+            case 0x004F:
+                return (byte)(FontRegisters.FontBits & 0xFF);
+            case >= 0x0050 and <= 0x0057:
+                {
+                    ushort word = FontRegisters.ReadFontData(reg);
+                    return (reg & 1) != 0 ? (byte)(word & 0xFF) : (byte)(word >> 8);
+                }
             case >= 0x0058 and <= 0x0067:
                 return Graphics.ReadRegisterByte(reg);
             default:
@@ -523,6 +535,12 @@ public sealed class SegaCdMemory
                     int rel = (int)((reg - 2) & 0x0F);
                     return (ushort)((Registers.CddCommand[rel] << 8) | Registers.CddCommand[(rel + 1) & 0x0F]);
                 }
+            case 0x004C:
+                return FontRegisters.ReadColor();
+            case 0x004E:
+                return FontRegisters.FontBits;
+            case >= 0x0050 and <= 0x0057:
+                return FontRegisters.ReadFontData(reg);
             case >= 0x0058 and <= 0x0067:
                 return Graphics.ReadRegisterWord(reg);
             default:
@@ -605,6 +623,16 @@ public sealed class SegaCdMemory
                         Cdd.SendCommand(Registers.CddCommand);
                     break;
                 }
+            case 0x004C:
+            case 0x004D:
+                FontRegisters.WriteColor(value);
+                break;
+            case 0x004E:
+                FontRegisters.WriteFontBitsMsb(value);
+                break;
+            case 0x004F:
+                FontRegisters.WriteFontBitsLsb(value);
+                break;
             case >= 0x0058 and <= 0x0067:
                 Graphics.WriteRegisterByte(reg, value);
                 break;
@@ -667,6 +695,15 @@ public sealed class SegaCdMemory
                         Cdd.SendCommand(Registers.CddCommand);
                     break;
                 }
+            case 0x004C:
+                FontRegisters.WriteColor((byte)value);
+                break;
+            case 0x004E:
+                FontRegisters.WriteFontBits(value);
+                break;
+            case >= 0x0050 and <= 0x0057:
+                // Read-only font data registers
+                break;
             case >= 0x0058 and <= 0x0067:
                 Graphics.WriteRegisterWord(reg, value);
                 break;
