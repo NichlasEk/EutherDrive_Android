@@ -4113,6 +4113,8 @@ public partial class MainWindow : Window
         if (_wb == null)
             return;
 
+        ApplyPsxAspectIfNeeded(core, w, h);
+
         // Check if this is actually a new frame
         long currentFrameId = _presentTickCounter;
         if (core is EutherDrive.Core.Savestates.ISavestateCapable sc && sc.FrameCounter.HasValue)
@@ -4219,6 +4221,30 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ApplyPsxAspectIfNeeded(IEmulatorCore core, int width, int height)
+    {
+        if (ScreenGrid == null || ScreenImage == null)
+            return;
+
+        if (core is not PsxAdapter || height <= 0)
+            return;
+
+        double targetWidth = Math.Round(height * (4.0 / 3.0));
+        double targetHeight = height;
+
+        if (Math.Abs(ScreenGrid.Width - targetWidth) > 0.5 || Math.Abs(ScreenGrid.Height - targetHeight) > 0.5)
+        {
+            ScreenGrid.Width = targetWidth;
+            ScreenGrid.Height = targetHeight;
+        }
+
+        if (Math.Abs(ScreenImage.Width - targetWidth) > 0.5 || Math.Abs(ScreenImage.Height - targetHeight) > 0.5)
+        {
+            ScreenImage.Width = targetWidth;
+            ScreenImage.Height = targetHeight;
+        }
+    }
+
     private void PresentPendingFrame()
     {
         var core = _pendingPresentCore;
@@ -4315,7 +4341,7 @@ public partial class MainWindow : Window
                     ApplyInputToCore(core);
                     core.RunFrame();
                     GenerateAudioFromSystemCycles(core);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter || core is PsxAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
