@@ -216,6 +216,21 @@ private static readonly bool SpriteLinkSequential =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_FRAME_SIZE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVramWriteDetail =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_WRITE_DETAIL"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVramNonZero =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_NONZERO"), "1", StringComparison.Ordinal);
+        private static readonly string? TraceDumpTileEnv =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DUMP_TILE");
+        private static readonly bool TraceDumpTileEnabled =
+            TryParseHexU16(TraceDumpTileEnv, out _traceDumpTileIndex);
+        private static readonly int _traceDumpTileIndex;
+        private static readonly int TraceVramNonZeroLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_NONZERO_LIMIT", 64);
+        private static readonly int TraceVramDumpFrame =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_DUMP_FRAME", -1);
+        private static readonly int TraceVramDumpBase =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_DUMP_BASE", -1);
+        private static readonly int TraceVramDumpWords =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_DUMP_WORDS", 64);
         private static int _traceVramRangeStart;
         private static int _traceVramRangeEnd;
 
@@ -758,6 +773,9 @@ private static readonly bool SpriteLinkSequential =
                 $"[NT-BASE] frame={_frameCounter} scanline={g_scanline} " +
                 $"A=0x{baseA:X4} B=0x{baseB:X4} W=0x{baseW:X4} S=0x{baseS:X4} HS=0x{hscrollBase:X4}");
 
+            if (TraceDumpTileEnabled)
+                DumpTilePattern("ENV", 0, _traceDumpTileIndex & 0x7FF);
+
             Console.WriteLine(
                 $"[VSRAM] frame={_frameCounter} scanline={g_scanline} mode={(g_vdp_reg_11_2_vscroll != 0 ? 1 : 0)} " +
                 $"A0=0x{g_vsram[0]:X4} B0=0x{g_vsram[1]:X4} A1=0x{g_vsram[2]:X4} B1=0x{g_vsram[3]:X4}");
@@ -855,12 +873,17 @@ private static readonly bool SpriteLinkSequential =
         {
             int baseAddr = (tile & 0x07FF) << 5;
             int baseWord = (tile & 0x07FF) << 4;
-            Console.WriteLine($"[TILE-{label}] i={index} tile=0x{tile:X3} base=0x{baseAddr:X4}");
+            Console.WriteLine($"[TILE-{label}] frame={_frameCounter} i={index} tile=0x{tile:X3} base=0x{baseAddr:X4}");
 
             for (int y = 0; y < 8; y++)
             {
                 char[] rowVram = new char[8];
                 char[] rowCache = new char[8];
+                int byteBase = baseAddr + (y << 2);
+                byte b0 = g_vram[byteBase & 0xFFFF];
+                byte b1 = g_vram[(byteBase + 1) & 0xFFFF];
+                byte b2 = g_vram[(byteBase + 2) & 0xFFFF];
+                byte b3 = g_vram[(byteBase + 3) & 0xFFFF];
                 for (int x = 0; x < 8; x++)
                 {
                     int byteAddr = baseAddr + (y << 2) + ((x >> 2) << 1);
@@ -874,7 +897,7 @@ private static readonly bool SpriteLinkSequential =
                     rowCache[x] = "0123456789ABCDEF"[cacheNib];
                 }
                 Console.WriteLine(
-                    $"[TILE-{label}-ROW] i={index} y={y} vram={new string(rowVram)} cache={new string(rowCache)}");
+                    $"[TILE-{label}-ROW] frame={_frameCounter} i={index} y={y} vram={new string(rowVram)} cache={new string(rowCache)} raw={b0:X2}{b1:X2}{b2:X2}{b3:X2}");
             }
         }
 
@@ -1931,6 +1954,24 @@ private static readonly bool SpriteLinkSequential =
             }
         }
 
+        private void MaybeDumpVramRange()
+        {
+            if (TraceVramDumpFrame < 0 || _frameCounter != TraceVramDumpFrame)
+                return;
+            if (TraceVramDumpBase < 0)
+                return;
+
+            int baseAddr = TraceVramDumpBase & 0xFFFF;
+            int words = TraceVramDumpWords <= 0 ? 64 : TraceVramDumpWords;
+            Console.WriteLine($"[VRAM-DUMP] frame={_frameCounter} base=0x{baseAddr:X4} words={words}");
+            for (int i = 0; i < words; i++)
+            {
+                int addr = (baseAddr + (i << 1)) & 0xFFFF;
+                ushort val = vram_read_w(addr);
+                Console.WriteLine($"[VRAM-DUMP] +0x{(i << 1):X4} addr=0x{addr:X4} val=0x{val:X4}");
+            }
+        }
+
         // Track writes to specific scroll regions
         public void TrackScrollRegionWrite(int address)
         {
@@ -1994,7 +2035,7 @@ private static readonly bool SpriteLinkSequential =
                    int reg4Base = g_vdp_reg_4_scrollb;
                    byte reg16PlaneSize = g_vdp_reg[16];
                    
-                   Console.WriteLine($"[VDP-FRAME] frame={_frameCounter} scanline={g_scanline} reg12=0x{reg12Data:X2} width={width} reg1.display={reg1Display} reg2.base=0x{reg2Base:X4} reg4.base=0x{reg4Base:X4} reg16=0x{reg16PlaneSize:X2}");
+                   Console.WriteLine($"[VDP-FRAME] frame={_frameCounter} scanline={g_scanline} reg12=0x{reg12Data:X2} width={width} reg1.display={reg1Display} vram128={g_vdp_reg_1_7_vram128} reg2.base=0x{reg2Base:X4} reg4.base=0x{reg4Base:X4} reg5.base=0x{g_vdp_reg_5_sprite:X4} reg16=0x{reg16PlaneSize:X2} reg17=0x{g_vdp_reg[17]:X2} reg18=0x{g_vdp_reg[18]:X2}");
                }
               
                // REMOVED: Sonic 2 special stage hack that was causing H32 mode in all games at frame 4910
@@ -2026,6 +2067,9 @@ private static readonly bool SpriteLinkSequential =
                   int hscrollBase = reg13; // computed base address
                   Console.WriteLine($"[HSCROLL-REG] frame={_frameCounter} reg11=0x{reg11:X2} hscrollMode={hscrollMode} vscrollMode={vscrollMode} extMode={extMode} reg13=0x{reg13:X4} base=0x{hscrollBase:X4}");
               }
+
+              // One-shot VRAM dump at a specific frame (gated)
+              MaybeDumpVramRange();
 
               // [HSCROLL] dump for debugging
               if (Environment.GetEnvironmentVariable("EUTHERDRIVE_DEBUG_HSCROLL") == "1") // && _frameCounter >= 4904 && _frameCounter <= 4910
@@ -2276,6 +2320,13 @@ private static readonly bool SpriteLinkSequential =
                         _vramWriteCpuLogRemaining--;
                 }
 
+                if (TraceVramNonZero && _vramNonZeroLogRemaining > 0 && in_data != 0)
+                {
+                    Console.WriteLine($"[VRAM-NONZERO-CPU] frame={_frameCounter} addr=0x{maskedAddr:X4} val=0x{in_data:X4} autoInc={autoInc}");
+                    if (_vramNonZeroLogRemaining != int.MaxValue)
+                        _vramNonZeroLogRemaining--;
+                }
+
                 // Watchpoint: first non-zero in scroll regions
                 if (maskedAddr >= 0xC000 && maskedAddr < 0xC100)
                 {
@@ -2307,6 +2358,7 @@ private static readonly bool SpriteLinkSequential =
         private int _vramWriteCpuLogRemaining = TraceVramWriteCpuLimit;
         private int _vdpCtrlWriteLogRemaining = TraceVdpCtrlWriteLimit;
         private int _vdpAddrSetLogRemaining = TraceVdpAddrSetLimit;
+        private int _vramNonZeroLogRemaining = TraceVramNonZeroLimit;
 
         // Trace VDP control port writes (CPU -> VDP control)
         private void TraceVdpControlWrite(uint in_address, ushort in_data, bool commandSelect, ushort commandWord)

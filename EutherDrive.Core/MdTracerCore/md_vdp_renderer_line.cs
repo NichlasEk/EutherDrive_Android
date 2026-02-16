@@ -5,6 +5,20 @@ namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
+        private static readonly bool TraceWindowHud =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_HUD_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceWindowHudScanline =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_HUD_WINDOW_SCANLINE", 32);
+        private static readonly bool TraceWindowHudDumpTile =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_HUD_WINDOW_DUMP_TILE"), "1", StringComparison.Ordinal);
+        private static readonly bool TracePlaneAHud =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_HUD_PLANEA"), "1", StringComparison.Ordinal);
+        private static readonly int TracePlaneAHudScanline =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_HUD_PLANEA_SCANLINE", 32);
+        private static readonly bool TracePlaneBHud =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_HUD_PLANEB"), "1", StringComparison.Ordinal);
+        private static readonly int TracePlaneBHudScanline =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_HUD_PLANEB_SCANLINE", 32);
         private static readonly bool TraceRenderPlaneDebug =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RENDER_PLANE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRenderRead =
@@ -21,6 +35,9 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool ForceDirectVramReadPlanes =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_DIRECT_VRAM_PLANES"), "1", StringComparison.Ordinal);
+        private static readonly bool ForceDirectVramReadWindow =
+            AllowRenderDebug &&
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_DIRECT_VRAM_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly bool DisableSpriteMask =
             AllowRenderDebug &&
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPRITE_DISABLE_MASK"), "1", StringComparison.Ordinal);
@@ -142,8 +159,10 @@ namespace EutherDrive.Core.MdTracerCore
             return (uint)((word >> ((3 - (x & 3)) << 2)) & 0x0f);
         }
 
-        private ushort ReadNameTableWord(int wordIndex)
+        private ushort ReadNameTableWord(int baseWord, int offsetWord)
         {
+            // Nametable size is limited to 8KB (0x1000 words); wrap the offset.
+            int wordIndex = baseWord + (offsetWord & 0x0FFF);
             int byteAddr = (wordIndex << 1) & 0xFFFF;
             return vram_read_render(byteAddr);
         }
@@ -244,6 +263,24 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_screen_adrdr = scrollB_byte_addr >> 1;
                 int w_pic_addr = 0;
 
+                if (TracePlaneBHud && g_scanline == TracePlaneBHudScanline)
+                {
+                    int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
+                    int w_view_y = ForceScrollZero ? g_scanline : g_line_snap[g_scanline].vscrollB[0];
+                    int nameBaseWord = w_screen_adrdr;
+                    int nameRow = (w_view_y >> cellShift);
+                    int nameIndexBase = nameBaseWord + (nameRow * g_scroll_xcell);
+                    Console.WriteLine($"[HUD-PLANE-B] frame={_frameCounter} scanline={g_scanline} lineY={lineY} " +
+                        $"hscrollB={g_line_snap[g_scanline].hscrollB} vscrollB0={w_view_y} base=0x{nameBaseWord:X4} " +
+                        $"row={nameRow} rowBase=0x{nameIndexBase:X4} scrollXcells={g_scroll_xcell}");
+                    for (int i = 0; i < 8; i++)
+                    {
+                        int idx = nameIndexBase + i;
+                        uint val = ReadNameTableWord(nameBaseWord, idx - nameBaseWord);
+                        Console.WriteLine($"[HUD-PLANE-B] nt[{i}] idx=0x{idx:X4} val=0x{val:X4} char=0x{(val & 0x7FF):X3} pal={(val>>13)&3} pri={(val>>15)&1}");
+                    }
+                }
+
                  // Debug log first entry in interlace mode 2
                 if (g_vdp_interlace_mode == 2 && g_scanline == 0 && MdTracerCore.MdLog.Enabled)
                 {
@@ -283,7 +320,7 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         w_view_x %= g_scroll_xsize;
                         w_view_dx = w_view_x & 7;
-                          uint w_val = ReadNameTableWord(w_view_addr + (w_view_x >> 3));
+                         uint w_val = ReadNameTableWord(w_screen_adrdr, (w_view_addr - w_screen_adrdr) + (w_view_x >> 3));
                          w_priority = ((w_val >> 15) & 0x0001);
                          w_palette  = (((w_val >> 13) & 0x0003) << 4);
                           w_reverse  = ((w_val >> 11) & 0x0003);
@@ -371,6 +408,24 @@ namespace EutherDrive.Core.MdTracerCore
                  }
                     int w_pic_addr = 0;
 
+                    if (TracePlaneAHud && g_scanline == TracePlaneAHudScanline)
+                    {
+                        int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
+                        int w_view_y = ForceScrollZero ? g_scanline : g_line_snap[g_scanline].vscrollA[0];
+                        int nameBaseWord = w_screen_adrdr;
+                        int nameRow = (w_view_y >> cellShift);
+                        int nameIndexBase = nameBaseWord + (nameRow * g_scroll_xcell);
+                        Console.WriteLine($"[HUD-PLANE-A] frame={_frameCounter} scanline={g_scanline} lineY={lineY} " +
+                            $"hscrollA={g_line_snap[g_scanline].hscrollA} vscrollA0={w_view_y} base=0x{nameBaseWord:X4} " +
+                            $"row={nameRow} rowBase=0x{nameIndexBase:X4} scrollXcells={g_scroll_xcell}");
+                        for (int i = 0; i < 8; i++)
+                        {
+                            int idx = nameIndexBase + i;
+                            uint val = ReadNameTableWord(nameBaseWord, idx - nameBaseWord);
+                            Console.WriteLine($"[HUD-PLANE-A] nt[{i}] idx=0x{idx:X4} val=0x{val:X4} char=0x{(val & 0x7FF):X3} pal={(val>>13)&3} pri={(val>>15)&1}");
+                        }
+                    }
+
                     for (int wx = 0; wx < g_display_xsize; wx++)
                     {
                         if ((wx & w_vscroll_mask) == 0)
@@ -384,7 +439,7 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         w_view_x %= g_scroll_xsize;
                         w_view_dx = w_view_x & 7;
-                          uint w_val = ReadNameTableWord(w_view_addr + (w_view_x >> 3));
+                          uint w_val = ReadNameTableWord(w_screen_adrdr, (w_view_addr - w_screen_adrdr) + (w_view_x >> 3));
                             w_priority = ((w_val >> 15) & 0x0001);
                             w_palette  = (((w_val >> 13) & 0x0003) << 4);
                         w_reverse  = ((w_val >> 11) & 0x0003);
@@ -598,7 +653,41 @@ namespace EutherDrive.Core.MdTracerCore
                     // Window-rader behöver full interlace-linje i mode 2 för korrekt tile-rad.
                     int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
                     int w_view_dy = GetRowInCell(lineY);
-                     int w_addr = (g_vdp_reg_3_windows >> 1) + ((lineY >> cellShift) * g_scroll_xcell) + w_xcell_st;
+                    int windowWidthCells = IsH40Mode() ? 64 : 32;
+                    int w_addr = (g_vdp_reg_3_windows >> 1) + ((lineY >> cellShift) * windowWidthCells) + w_xcell_st;
+
+                    if (TraceWindowHud && g_scanline == TraceWindowHudScanline)
+                    {
+                        Console.WriteLine($"[HUD-WINDOW] frame={_frameCounter} scanline={g_scanline} lineY={lineY} w_st={w_xcell_st} w_ed={w_xcell_ed} " +
+                            $"base=0x{(g_vdp_reg_3_windows >> 1):X4} addr=0x{w_addr:X4} winW={windowWidthCells} cellShift={cellShift}");
+                        int dumpTile = -1;
+                        int dumpTileAlt = -1;
+                        for (int i = 0; i < 8 && (w_xcell_st + i) <= w_xcell_ed; i++)
+                        {
+                            int addr = w_addr + i;
+                            uint val = ReadNameTableWord(g_vdp_reg_3_windows >> 1, addr - (g_vdp_reg_3_windows >> 1));
+                            Console.WriteLine($"[HUD-WINDOW] nt[{i}] addr=0x{addr:X4} val=0x{val:X4} char=0x{(val & 0x7FF):X3} pal={(val>>13)&3} pri={(val>>15)&1}");
+                            if (dumpTile < 0)
+                            {
+                                int tile = (int)(val & 0x7FF);
+                                if (tile != 0)
+                                    dumpTile = tile;
+                            }
+                            if (dumpTileAlt < 0)
+                            {
+                                int tile = (int)(val & 0x7FF);
+                                if (tile >= 0x40)
+                                    dumpTileAlt = tile;
+                            }
+                        }
+                        if (TraceWindowHudDumpTile)
+                        {
+                            if (dumpTile >= 0)
+                                DumpTilePattern("WIN", 0, dumpTile);
+                            if (dumpTileAlt >= 0 && dumpTileAlt != dumpTile)
+                                DumpTilePattern("WIN", 1, dumpTileAlt);
+                        }
+                    }
                      
                      // DEBUG: Log window info
                      if (g_scanline == 100 && _frameCounter >= 7058 && _frameCounter <= 7060)
@@ -614,7 +703,7 @@ namespace EutherDrive.Core.MdTracerCore
                     int w_posx = w_xcell_st << 3;
                     for (int w_cx = w_xcell_st; w_cx <= w_xcell_ed; w_cx++)
                     {
-                        uint w_val = ReadNameTableWord(w_addr++);
+                        uint w_val = ReadNameTableWord(g_vdp_reg_3_windows >> 1, w_addr++ - (g_vdp_reg_3_windows >> 1));
                         uint w_priority = ((w_val >> 15) & 0x0001);
                         uint w_palette  = (((w_val >> 13) & 0x0003) << 4);
                         uint w_reverse_bits = (w_val >> 11) & 0x0003;
@@ -625,7 +714,7 @@ namespace EutherDrive.Core.MdTracerCore
                             if ((g_game_cmap[w_posx] == 0) || (g_game_primap[w_posx] <= w_priority))
                             {
                                 // DIRECT VRAM MODE: Read pattern directly from vram[]
-                                if (ForceDirectVramReadPlanes || w_reverse_bits != 0)
+                                if (ForceDirectVramReadWindow || ForceDirectVramReadPlanes || w_reverse_bits != 0)
                                 {
                                     uint picValueDirect = ReadPatternPixelDirect((int)w_char, w_dx, w_view_dy, w_reverse_bits, TileRebaseKind.Window);
 

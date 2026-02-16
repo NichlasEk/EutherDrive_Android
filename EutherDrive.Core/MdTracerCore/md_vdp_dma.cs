@@ -10,8 +10,13 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_SRC"), "1", StringComparison.Ordinal);
         private static readonly int TraceDmaSourceReadLimit =
             ParseDmaTraceLimit("EUTHERDRIVE_TRACE_DMA_SRC_LIMIT", 128);
+        private static readonly bool TraceDmaNonZero =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_NONZERO"), "1", StringComparison.Ordinal);
+        private static readonly int TraceDmaNonZeroLimit =
+            ParseDmaTraceLimit("EUTHERDRIVE_TRACE_DMA_NONZERO_LIMIT", 64);
         [NonSerialized] private int _traceDmaSourceRemaining;
         [NonSerialized] private long _traceDmaSourceFrame = -1;
+        [NonSerialized] private int _traceDmaNonZeroRemaining;
         private int g_dma_mode;
         private uint g_dma_src_addr;
         private int g_dma_leng;
@@ -114,6 +119,10 @@ namespace EutherDrive.Core.MdTracerCore
                     $"[DMA-SRC-TRACE-START] frame={_frameCounter} pc=0x{md_m68k.g_reg_PC:X6} srcWord=0x{srcWordAddr:X6} srcByte=0x{g_dma_src_addr:X6} " +
                     $"region={region} len=0x{g_dma_leng:X4} dest=0x{g_vdp_reg_dest_address:X4} code=0x{g_vdp_reg_code:X2}");
             }
+            if (TraceDmaNonZero)
+            {
+                _traceDmaNonZeroRemaining = TraceDmaNonZeroLimit;
+            }
             
             if (TraceDmaRegs)
             {
@@ -195,6 +204,12 @@ namespace EutherDrive.Core.MdTracerCore
                 uint srcByteAddr = (srcHigh << 17) | ((uint)srcLow << 1);
                 g_dma_src_addr = srcByteAddr;
                 ushort w_val = ReadDmaSourceWord(srcByteAddr);
+                if (TraceDmaNonZero && _traceDmaNonZeroRemaining > 0 && w_val != 0)
+                {
+                    Console.WriteLine($"[DMA-NONZERO] frame={_frameCounter} src=0x{srcByteAddr:X6} val=0x{w_val:X4} dest=0x{g_vdp_reg_dest_address:X4} code=0x{g_vdp_reg_code:X2}");
+                    if (_traceDmaNonZeroRemaining != int.MaxValue)
+                        _traceDmaNonZeroRemaining--;
+                }
                 int writeAddr = g_vdp_reg_dest_address;
                 
                 switch (g_vdp_reg_code & 0x0f)
@@ -202,7 +217,7 @@ namespace EutherDrive.Core.MdTracerCore
                     case 1: // VRAM
                         vram_write_w(writeAddr, w_val);
                         pattern_chk(writeAddr, (byte)(w_val >> 8));
-                        pattern_chk(writeAddr + 1, (byte)(w_val & 0xff));
+                        pattern_chk(writeAddr ^ 1, (byte)(w_val & 0xff));
                         this.RecordVramWriteForTracking(writeAddr, w_val);
                         this.TrackScrollRegionWrite(writeAddr & 0xFFFF);
                         this.LogVramWrite("DMA", writeAddr, w_val, g_vdp_reg_15_autoinc, g_vdp_reg_code);
@@ -280,7 +295,7 @@ namespace EutherDrive.Core.MdTracerCore
                     case 1: // VRAM
                         vram_write_w(currentAddr, g_dma_fill_data);
                         pattern_chk(currentAddr, (byte)(g_dma_fill_data >> 8));
-                        pattern_chk(currentAddr + 1, (byte)(g_dma_fill_data & 0xff));
+                        pattern_chk(currentAddr ^ 1, (byte)(g_dma_fill_data & 0xff));
                         this.RecordVramWriteForTracking(currentAddr, g_dma_fill_data);
                         this.TrackScrollRegionWrite(currentAddr & 0xFFFF);
                         this.LogVramWrite("DMA-FILL", currentAddr, g_dma_fill_data, g_vdp_reg_15_autoinc, g_vdp_reg_code);
@@ -360,7 +375,7 @@ namespace EutherDrive.Core.MdTracerCore
                 // Write to destination VRAM
                 vram_write_w(currentDest, w_val);
                 pattern_chk(currentDest, (byte)(w_val >> 8));
-                pattern_chk(currentDest + 1, (byte)(w_val & 0xff));
+                pattern_chk(currentDest ^ 1, (byte)(w_val & 0xff));
                 this.RecordVramWriteForTracking(currentDest, w_val);
                 this.TrackScrollRegionWrite(currentDest & 0xFFFF);
                 this.LogVramWrite("DMA-COPY-VRAM", currentDest, w_val, g_vdp_reg_15_autoinc, g_vdp_reg_code);

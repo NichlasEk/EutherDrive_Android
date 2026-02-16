@@ -23,6 +23,8 @@ namespace EutherDrive.Core.MdTracerCore
             md_m68k.ParseWatchRangeList("EUTHERDRIVE_TRACE_CRAM_PC_RANGE");
         private static readonly bool TraceVdpCtrlAll =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdpCtrlAllNoLimit =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL_ALL"), "1", StringComparison.Ordinal);
         private static readonly int TraceVdpCtrlLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_CTRL_LIMIT", 200);
         private static readonly bool TraceVdpCtrlPc =
@@ -47,6 +49,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE_DISABLE"), "1", StringComparison.Ordinal);
         private static readonly bool StrictVdpAccess =
             ReadEnvDefaultOn("EUTHERDRIVE_VDP_STRICT");
+        private static readonly bool DmaIgnoreEnable =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_IGNORE_ENABLE"), "1", StringComparison.Ordinal);
 
         private byte[]   g_vram = Array.Empty<byte>();
         private ushort[] g_cram = Array.Empty<ushort>();
@@ -168,7 +172,7 @@ namespace EutherDrive.Core.MdTracerCore
                 switch (g_vdp_reg_code)
                 {
                     case 0:
-                        w_out = vram_read_w(g_vdp_reg_dest_address);
+                        w_out = vram_read_w(g_vdp_reg_dest_address & 0xFFFE);
                         break;
                     case 8:
                         w_out = g_cram[(g_vdp_reg_dest_address >> 1) & 0x3f];
@@ -331,83 +335,9 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address <= 0xc00003)
             {
-                _mdDataWritesThisFrame++;
-                RecordDataPortWriteCode(g_vdp_reg_code);
-
-                bool dmaActive = g_vdp_status_1_dma != 0 || g_dma_mode != 0 || g_dma_leng > 0;
-                if (GateCpuWritesDuringDma && !DisableDmaWriteGate && dmaActive)
-                {
-                    _mdDataWritesDroppedThisFrame++;
-                    if ((g_vdp_reg_code & 0x0f) == 1)
-                        _mdVramWritesDroppedThisFrame++;
-                    return;
-                }
-
-                if (g_dma_fill_req)
-                {
-                    g_dma_fill_req = false;
-                    ushort fillWord = (ushort)((in_data << 8) | in_data);
-                    dma_run_fill_req(fillWord);
-                    return;
-                }
-
-                int writeAddr = g_vdp_reg_dest_address;
-
-                switch (g_vdp_reg_code & 0x0f)
-                {
-                    case 1: // VRAM byte write
-                    {
-                        int vramIndex = ((writeAddr & 1) == 0) ? writeAddr : (writeAddr ^ 1);
-                        g_vram[vramIndex & 0xFFFF] = in_data;
-                        pattern_chk(writeAddr, in_data);
-
-                        int wordAddr = writeAddr & 0xFFFE;
-                        ushort wordVal = vram_read_w(wordAddr);
-                        TraceVdpDataWrite(in_address, wordVal, g_vdp_reg_code, writeAddr, g_vdp_reg_15_autoinc);
-                        TraceDataPortWindowWrite(in_address, wordVal);
-                        this.RecordVramWriteForTracking(wordAddr, wordVal);
-                        this.TrackScrollRegionWrite(wordAddr & 0xFFFF);
-                        this.LogVramWrite("CPU8", wordAddr & 0xFFFF, wordVal, g_vdp_reg_15_autoinc, g_vdp_reg_code);
-                        g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
-                        break;
-                    }
-
-                    case 3: // CRAM byte write
-                    {
-                        _mdCramWritesThisFrame++;
-                        TraceVdpDataWrite(in_address, (ushort)((in_data << 8) | in_data), g_vdp_reg_code, writeAddr, g_vdp_reg_15_autoinc);
-                        TraceDataPortWindowWrite(in_address, (ushort)((in_data << 8) | in_data));
-                        int col = (writeAddr >> 1) & 0x3f;
-                        ushort existing = g_cram[col];
-                        ushort next = (ushort)((writeAddr & 1) == 0
-                            ? ((in_data << 8) | (existing & 0x00ff))
-                            : ((existing & 0xff00) | in_data));
-                        cram_set(col, next);
-                        g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
-                        break;
-                    }
-
-                    case 5: // VSRAM byte write
-                    {
-                        TraceVdpDataWrite(in_address, (ushort)((in_data << 8) | in_data), g_vdp_reg_code, writeAddr, g_vdp_reg_15_autoinc);
-                        TraceDataPortWindowWrite(in_address, (ushort)((in_data << 8) | in_data));
-                        int waddr = (writeAddr >> 1) & 0x3f;
-                        if (waddr < 40)
-                        {
-                            ushort existing = g_vsram[waddr];
-                            g_vsram[waddr] = (ushort)((writeAddr & 1) == 0
-                                ? ((in_data << 8) | (existing & 0x00ff))
-                                : ((existing & 0xff00) | in_data));
-                        }
-                        g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
-                        break;
-                    }
-
-                    default:
-                        break;
-                }
-
-                g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
+                // MD VDP data port byte writes mirror the byte into a word.
+                ushort mirrored = (ushort)((in_data << 8) | in_data);
+                write16(in_address, mirrored);
                 return;
             }
 
@@ -476,7 +406,7 @@ namespace EutherDrive.Core.MdTracerCore
                         int writeAddr = g_vdp_reg_dest_address;
                         vram_write_w(writeAddr, in_data);
                         pattern_chk(writeAddr, (byte)(in_data >> 8));
-                        pattern_chk(writeAddr + 1, (byte)(in_data & 0xff));
+                        pattern_chk(writeAddr ^ 1, (byte)(in_data & 0xff));
                         // Track the write using VDP's tracking method
                         this.RecordVramWriteForTracking(writeAddr, in_data);
                         // Also track scroll region writes
@@ -583,12 +513,14 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     // address set (2nd word)
                     g_command_select   = false;
-                    int codeMask = g_vdp_reg_1_4_dma == 1 ? 0x3C : 0x1C;
+                    // Always decode the full code field (including DMA request bit).
+                    // DMA enable only gates execution, not decoding.
+                    int codeMask = 0x3C;
                     g_vdp_reg_dest_address = (ushort)((g_vdp_reg_dest_address & 0x3fff) | ((in_data & 0x0007) << 14));
                     g_vdp_reg_code = (g_vdp_reg_code & ~codeMask) | ((in_data >> 2) & codeMask);
 
                     // Log VDP command decoding (gated)
-                    if (TraceVdpCtrlAll && _vdpCtrlLogRemaining > 0 && _frameCounter < 100) // Only log early frames
+                    if (TraceVdpCtrlAll && _vdpCtrlLogRemaining > 0 && (_frameCounter < 100 || TraceVdpCtrlAllNoLimit))
                     {
                         int codeLow = g_vdp_reg_code & 0x0f;
                         string target = codeLow switch
@@ -607,7 +539,13 @@ namespace EutherDrive.Core.MdTracerCore
                             _vdpCtrlLogRemaining--;
                     }
 
-                    if ((g_vdp_reg_code & 0x20) != 0 && g_vdp_reg_1_4_dma == 1)
+                    if (TraceVdpCtrlAll && (_frameCounter < 100 || TraceVdpCtrlAllNoLimit) && (g_vdp_reg_code & 0x20) != 0 && g_vdp_reg_1_4_dma == 0)
+                    {
+                        Console.WriteLine(
+                            $"[VDP-DMA-IGNORE] frame={_frameCounter} ignore={(DmaIgnoreEnable ? 1 : 0)} code=0x{g_vdp_reg_code:X2} addr=0x{g_vdp_reg_dest_address:X4}");
+                    }
+
+                    if ((g_vdp_reg_code & 0x20) != 0 && (g_vdp_reg_1_4_dma == 1 || DmaIgnoreEnable))
                     {
                         // Log DMA trigger - will be logged in dma_run_memory_req
                         switch (g_vdp_reg_23_dma_mode)
@@ -1081,12 +1019,12 @@ namespace EutherDrive.Core.MdTracerCore
         // sub
         // ----------------------------------------------------------------
         private ushort vram_read_w(int addr) =>
-        (ushort)((g_vram[addr] << 8) | g_vram[(addr + 1) & 0xffff]);
+        (ushort)((g_vram[addr & 0xffff] << 8) | g_vram[(addr ^ 1) & 0xffff]);
 
         private void vram_write_w(int addr, ushort data)
         {
-            // MDs byte-swap på VRAM-porten: lågbyte går till “addr ^ 1”
-            g_vram[addr] = (byte)(data >> 8);
+            // MD VDP VRAM word write: low byte stored at addr ^ 1 (matches hardware/jgenesis).
+            g_vram[addr & 0xffff] = (byte)(data >> 8);
             g_vram[(addr ^ 1) & 0xffff] = (byte)(data & 0xff);
             if (TraceVramWrites)
                 Console.WriteLine($"[VRAM] frame={_frameCounter} addr=0x{(addr & 0xffff):X4} data=0x{data:X4}");
@@ -1106,19 +1044,31 @@ namespace EutherDrive.Core.MdTracerCore
 
             int spriteBase = GetSpriteTableBase();
             int spriteSize = GetSpriteTableSize();
-            int spriteWordAddr = addr & 0xFFFE;
-            if (spriteWordAddr >= spriteBase && spriteWordAddr < spriteBase + spriteSize)
+            int addr0 = addr & 0xFFFF;
+            int addr1 = (addr ^ 1) & 0xFFFF;
+            bool spriteTouched = false;
+            if ((uint)(addr0 - spriteBase) < (uint)spriteSize)
             {
                 EnsureSpriteTableCache();
-                int offset = spriteWordAddr - g_sprite_cache_base;
+                int offset = addr0 - g_sprite_cache_base;
                 if ((uint)offset < (uint)g_sprite_table_cache.Length)
                 {
                     g_sprite_table_cache[offset] = (byte)(data >> 8);
-                    if ((uint)(offset + 1) < (uint)g_sprite_table_cache.Length)
-                        g_sprite_table_cache[offset + 1] = (byte)(data & 0xff);
+                    spriteTouched = true;
                 }
-                InvalidateSpriteRowCache();
             }
+            if ((uint)(addr1 - spriteBase) < (uint)spriteSize)
+            {
+                EnsureSpriteTableCache();
+                int offset = addr1 - g_sprite_cache_base;
+                if ((uint)offset < (uint)g_sprite_table_cache.Length)
+                {
+                    g_sprite_table_cache[offset] = (byte)(data & 0xff);
+                    spriteTouched = true;
+                }
+            }
+            if (spriteTouched)
+                InvalidateSpriteRowCache();
         }
 
         private void UpdateSpriteCacheByte(int addr, byte value)
