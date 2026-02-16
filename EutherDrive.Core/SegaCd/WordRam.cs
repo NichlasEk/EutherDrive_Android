@@ -123,7 +123,7 @@ public sealed class WordRam
         if (prev != _bank0Owner1m)
             _swapRequest = false;
 
-        _priorityMode = (value >> 3) & 0x03 switch
+        _priorityMode = ((value >> 3) & 0x03) switch
         {
             0x00 => WordRamPriorityMode.Off,
             0x01 => WordRamPriorityMode.Underwrite,
