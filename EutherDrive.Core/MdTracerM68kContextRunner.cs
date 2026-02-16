@@ -2,7 +2,7 @@ namespace EutherDrive.Core;
 
 using EutherDrive.Core.MdTracerCore;
 
-public sealed class MdTracerM68kContextRunner
+internal sealed class MdTracerM68kContextRunner
 {
     private readonly MdTracerM68kRunner _runner = new();
 
