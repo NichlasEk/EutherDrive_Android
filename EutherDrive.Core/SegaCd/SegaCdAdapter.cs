@@ -14,6 +14,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
     private byte[] _frameBuffer = new byte[DefaultStride * DefaultH];
     private short[] _audioBuffer = Array.Empty<short>();
+    private int _frameWidth;
+    private int _frameHeight;
     private string? _romPath;
     private SegaCdDiscInfo? _discInfo;
     private byte[]? _bios;
@@ -105,6 +107,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
             int w = vdp.FrameWidth > 0 ? vdp.FrameWidth : DefaultW;
             int h = vdp.FrameHeight > 0 ? vdp.FrameHeight : DefaultH;
+            _frameWidth = w;
+            _frameHeight = h;
             int needed = w * h * 4;
             if (_frameBuffer.Length != needed)
                 _frameBuffer = new byte[needed];
@@ -127,13 +131,25 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 di += 4;
             }
         }
+
+        if (_memory != null && _memory.Graphics.TryGetImageBufferDimensions(out int gw, out int gh))
+        {
+            int needed = gw * gh * 4;
+            if (_frameBuffer.Length != needed)
+                _frameBuffer = new byte[needed];
+
+            if (_memory.Graphics.TryRenderImageBuffer(_memory.WordRam, _frameBuffer, out int rw, out int rh))
+            {
+                _frameWidth = rw;
+                _frameHeight = rh;
+            }
+        }
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
-        var vdp = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp;
-        width = vdp?.FrameWidth ?? DefaultW;
-        height = vdp?.FrameHeight ?? DefaultH;
+        width = _frameWidth > 0 ? _frameWidth : DefaultW;
+        height = _frameHeight > 0 ? _frameHeight : DefaultH;
         stride = width * 4;
         return _frameBuffer;
     }

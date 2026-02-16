@@ -182,6 +182,51 @@ public sealed class SegaCdGraphicsCoprocessor
         _interruptPending = false;
     }
 
+    public bool TryGetImageBufferDimensions(out int width, out int height)
+    {
+        width = (int)_imageBufferHDotSize;
+        height = (int)_imageBufferVDotSize;
+        return width > 0 && height > 0;
+    }
+
+    public bool TryRenderImageBuffer(WordRam wordRam, Span<byte> rgbaBuffer, out int width, out int height)
+    {
+        width = (int)_imageBufferHDotSize;
+        height = (int)_imageBufferVDotSize;
+        if (width <= 0 || height <= 0)
+            return false;
+
+        int required = width * height * 4;
+        if (rgbaBuffer.Length < required)
+            return false;
+
+        uint imageBufferLineSize = 8 * _imageBufferVCellSize;
+        if (imageBufferLineSize == 0)
+            return false;
+
+        for (int y = 0; y < height; y++)
+        {
+            uint line = (_imageBufferVOffset + (uint)y) % imageBufferLineSize;
+            for (int x = 0; x < width; x++)
+            {
+                uint dot = _imageBufferHOffset + (uint)x;
+                uint addr = _imageBufferStartAddress
+                    + ComputeRelativeAddrVThenH(imageBufferLineSize, dot, line);
+                byte raw = ReadWordRam(wordRam, addr);
+                byte pixel = (dot & 1) != 0 ? (byte)(raw & 0x0F) : (byte)(raw >> 4);
+                byte shade = (byte)(pixel * 17);
+
+                int di = (y * width + x) * 4;
+                rgbaBuffer[di + 0] = shade;
+                rgbaBuffer[di + 1] = shade;
+                rgbaBuffer[di + 2] = shade;
+                rgbaBuffer[di + 3] = 0xFF;
+            }
+        }
+
+        return true;
+    }
+
     private void PerformGraphicsOperation(WordRam wordRam)
     {
         uint stampMapDimensionPixels = OneDimensionInPixels(_stampMapSize);
@@ -264,7 +309,7 @@ public sealed class SegaCdGraphicsCoprocessor
 
     private static byte ReadWordRam(WordRam wordRam, uint address)
     {
-        return wordRam.SubCpuReadRam(WordRam.SubBaseAddress | address);
+        return wordRam.SubCpuReadRam(WordRam.SubBaseAddress | (address & WordRam.AddressMask));
     }
 
     private static uint ComputeStampMapAddress(uint baseAddr, StampSizeDots stampSize, StampMapSizeScreens mapSize, uint x, uint y)
