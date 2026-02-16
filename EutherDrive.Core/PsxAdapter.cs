@@ -189,7 +189,7 @@ public sealed class PsxAdapter : IEmulatorCore
                 _frameBuffer[o + 0] = (byte)(color & 0xFF);
                 _frameBuffer[o + 1] = (byte)((color >> 8) & 0xFF);
                 _frameBuffer[o + 2] = (byte)((color >> 16) & 0xFF);
-                _frameBuffer[o + 3] = is24Bit ? (byte)0xFF : (byte)((color >> 24) & 0xFF);
+                _frameBuffer[o + 3] = 0xFF;
             }
         }
     }
