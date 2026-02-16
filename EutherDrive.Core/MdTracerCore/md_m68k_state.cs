@@ -4,7 +4,7 @@ namespace EutherDrive.Core.MdTracerCore;
 
 internal partial class md_m68k
 {
-    internal sealed class MdM68kContext
+    public sealed class MdM68kContext
     {
         public ushort Opcode;
         public byte Op;

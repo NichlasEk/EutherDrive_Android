@@ -96,25 +96,6 @@ public sealed class WordRam
         return (byte)((modeBit << 2) | ((dmna ? 1 : 0) << 1) | (ret ? 1 : 0));
     }
 
-    public byte ReadControl()
-    {
-        bool dmna;
-        bool ret;
-        if (_mode == WordRamMode.TwoM)
-        {
-            dmna = _owner2m == ScdCpu.Sub;
-            ret = !dmna;
-        }
-        else
-        {
-            dmna = _swapRequest;
-            ret = _bank0Owner1m == ScdCpu.Sub;
-        }
-
-        byte modeBit = _mode == WordRamMode.OneM ? (byte)1 : (byte)0;
-        return (byte)((modeBit << 2) | ((dmna ? 1 : 0) << 1) | (ret ? 1 : 0));
-    }
-
     public void MainCpuWriteControl(byte value)
     {
         bool dmna = (value & 0x02) != 0;
