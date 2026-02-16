@@ -137,13 +137,13 @@ public sealed class PsxAdapter : IEmulatorCore
         SetButton(GamepadInputsEnum.Down, down);
         SetButton(GamepadInputsEnum.Left, left);
         SetButton(GamepadInputsEnum.Right, right);
-        SetButton(GamepadInputsEnum.Z, a);
-        SetButton(GamepadInputsEnum.C, b);
-        SetButton(GamepadInputsEnum.D1, c);
+        SetButton(GamepadInputsEnum.S, a);     // Cross
+        SetButton(GamepadInputsEnum.D, b);     // Circle
+        SetButton(GamepadInputsEnum.A, c);     // Square
         SetButton(GamepadInputsEnum.Enter, start);
-        SetButton(GamepadInputsEnum.D3, x);
-        SetButton(GamepadInputsEnum.Q, y);
-        SetButton(GamepadInputsEnum.E, z);
+        SetButton(GamepadInputsEnum.W, x);     // Triangle
+        SetButton(GamepadInputsEnum.Q, y);     // L1
+        SetButton(GamepadInputsEnum.E, z);     // R1
         SetButton(GamepadInputsEnum.Space, mode);
     }
 
@@ -178,13 +178,28 @@ public sealed class PsxAdapter : IEmulatorCore
 
         for (int y = 0; y < height; y++)
         {
-            int srcY = (baseY + y) % vramHeight;
-            int srcRow = srcY * vramWidth;
             int dstRow = y * stride;
+            int srcY = baseY + y;
+            if ((uint)srcY >= (uint)vramHeight)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int o = dstRow + (x << 2);
+                    _frameBuffer[o + 0] = 0;
+                    _frameBuffer[o + 1] = 0;
+                    _frameBuffer[o + 2] = 0;
+                    _frameBuffer[o + 3] = 0xFF;
+                }
+                continue;
+            }
+
+            int srcRow = srcY * vramWidth;
             for (int x = 0; x < width; x++)
             {
-                int srcX = (baseX + x) % vramWidth;
-                int color = vram[srcRow + srcX];
+                int srcX = baseX + x;
+                int color = 0;
+                if ((uint)srcX < (uint)vramWidth)
+                    color = vram[srcRow + srcX];
                 int o = dstRow + (x << 2);
                 _frameBuffer[o + 0] = (byte)(color & 0xFF);
                 _frameBuffer[o + 1] = (byte)((color >> 8) & 0xFF);
@@ -193,6 +208,7 @@ public sealed class PsxAdapter : IEmulatorCore
             }
         }
     }
+
 
     private void PushAudio(byte[] samples)
     {
