@@ -69,18 +69,7 @@ public sealed class MdTracerM68kRunner
 
     public void EnsureInitAndReset()
     {
-        if (!_inited)
-        {
-            if (_init != null)
-            {
-                _init.Invoke(null, null);
-            }
-            else if (_initInstance != null && _instance != null)
-            {
-                _initInstance.Invoke(_instance, null);
-            }
-            _inited = true;
-        }
+        EnsureInit();
 
         if (_reset != null)
         {
@@ -90,6 +79,22 @@ public sealed class MdTracerM68kRunner
         {
             _resetInstance.Invoke(_instance, null);
         }
+    }
+
+    public void EnsureInit()
+    {
+        if (_inited)
+            return;
+
+        if (_init != null)
+        {
+            _init.Invoke(null, null);
+        }
+        else if (_initInstance != null && _instance != null)
+        {
+            _initInstance.Invoke(_instance, null);
+        }
+        _inited = true;
     }
 
     /// <summary>
