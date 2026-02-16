@@ -127,6 +127,9 @@ namespace EutherDrive.Core.MdTracerCore
             var mem = g_memory!;
 
             var addr = NormalizeAddr(in_address);
+            var bus = md_main.g_md_bus;
+            if (bus?.OverrideBus != null && bus.OverrideBus.TryRead8(addr, out byte overrideValue))
+                return overrideValue;
             byte value = mem[addr];
             if (addr == 0x00FFB154 && ForceB154ReadValue.HasValue)
             {
@@ -150,6 +153,9 @@ namespace EutherDrive.Core.MdTracerCore
             var mem = g_memory!;
 
             var addr = NormalizeAddr(in_address);
+            var bus = md_main.g_md_bus;
+            if (bus?.OverrideBus != null && bus.OverrideBus.TryRead16(addr, out ushort overrideValue))
+                return overrideValue;
 
             byte hi = mem[addr];
             byte lo = mem[addr + 1];
@@ -164,6 +170,9 @@ namespace EutherDrive.Core.MdTracerCore
             var mem = g_memory!;
 
             var addr = NormalizeAddr(in_address);
+            var bus = md_main.g_md_bus;
+            if (bus?.OverrideBus != null && bus.OverrideBus.TryRead32(addr, out uint overrideValue))
+                return overrideValue;
 
             uint b3 = mem[addr];
             uint b2 = mem[addr + 1];
@@ -187,6 +196,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (IsRomWriteBlocked(logical))
                 return;
             var addr = NormalizeAddr(in_address);
+            var bus = md_main.g_md_bus;
+            if (bus?.OverrideBus != null && bus.OverrideBus.TryWrite8(addr, in_data))
+                return;
             mem[addr] = in_data;
             RecordMemoryAccess(addr, 1, true, in_data);
         }
@@ -200,6 +212,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (IsRomWriteBlocked(logical))
                 return;
             var addr = NormalizeAddr(in_address);
+            var bus = md_main.g_md_bus;
+            if (bus?.OverrideBus != null && bus.OverrideBus.TryWrite16(addr, in_data))
+                return;
 
             mem[addr]     = (byte)(in_data >> 8);
             mem[addr + 1] = (byte)(in_data & 0x00FF);
@@ -215,6 +230,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (IsRomWriteBlocked(logical))
                 return;
             var addr = NormalizeAddr(in_address);
+            var bus = md_main.g_md_bus;
+            if (bus?.OverrideBus != null && bus.OverrideBus.TryWrite32(addr, in_data))
+                return;
 
             mem[addr]     = (byte)(in_data >> 24);
             mem[addr + 1] = (byte)((in_data >> 16) & 0x00FF);
