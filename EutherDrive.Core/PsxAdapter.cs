@@ -63,6 +63,7 @@ public sealed class PsxAdapter : IEmulatorCore
     private short[] _audioQueue = Array.Empty<short>();
     private int _audioQueuedCount;
     private short[] _audioReadBuffer = Array.Empty<short>();
+    private float _masterVolumeScale = 1.0f;
 
     public void LoadRom(string path)
     {
@@ -112,6 +113,15 @@ public sealed class PsxAdapter : IEmulatorCore
             _audioQueuedCount = 0;
             return _audioReadBuffer;
         }
+    }
+
+    public void SetMasterVolumePercent(int percent)
+    {
+        if (percent < 0)
+            percent = 0;
+        else if (percent > 100)
+            percent = 100;
+        _masterVolumeScale = percent / 100f;
     }
 
     public void SetInputState(
@@ -229,7 +239,20 @@ public sealed class PsxAdapter : IEmulatorCore
             int di = _audioQueuedCount;
             for (int i = 0; i < sampleCount; i++)
             {
-                _audioQueue[di++] = (short)(samples[si] | (samples[si + 1] << 8));
+                short raw = (short)(samples[si] | (samples[si + 1] << 8));
+                if (_masterVolumeScale != 1.0f)
+                {
+                    int scaled = (int)(raw * _masterVolumeScale);
+                    if (scaled > short.MaxValue)
+                        scaled = short.MaxValue;
+                    else if (scaled < short.MinValue)
+                        scaled = short.MinValue;
+                    _audioQueue[di++] = (short)scaled;
+                }
+                else
+                {
+                    _audioQueue[di++] = raw;
+                }
                 si += 2;
             }
             _audioQueuedCount = di;

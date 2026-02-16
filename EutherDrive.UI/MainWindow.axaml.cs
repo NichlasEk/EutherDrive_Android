@@ -1574,6 +1574,8 @@ public partial class MainWindow : Window
             pce.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is NesAdapter nes)
             nes.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is PsxAdapter psx)
+            psx.SetMasterVolumePercent(_masterVolumePercent);
     }
 
     private void ApplyAudioMixToCore()
