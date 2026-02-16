@@ -81,6 +81,17 @@ public sealed class SegaCdMemory
         _timerDivider -= cycles;
     }
 
+    public void EmulateSubCpuHandshake()
+    {
+        if (Registers.SubCpuReset || Registers.SubCpuBusReq)
+            return;
+
+        for (int i = 0; i < Registers.CommunicationCommands.Length; i++)
+            Registers.CommunicationStatuses[i] = Registers.CommunicationCommands[i];
+
+        Registers.SubCpuCommunicationFlags = Registers.MainCpuCommunicationFlags;
+    }
+
     public void FlushBufferedSubWrites()
     {
         if (_bufferedSubWriteCount == 0)

@@ -85,6 +85,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
             _cpuRunner.RunSome(_subContext, subCycles);
             _memory.FlushBufferedSubWrites();
         }
+        else
+        {
+            _memory.EmulateSubCpuHandshake();
+        }
 
         EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
         _memory.Tick((uint)mainCycles);
