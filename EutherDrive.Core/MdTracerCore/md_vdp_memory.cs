@@ -33,6 +33,10 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_CTRL_PC_LIMIT", 256);
         private static readonly List<(uint Start, uint End)> TraceVdpCtrlPcRanges =
             md_m68k.ParseWatchRangeList("EUTHERDRIVE_TRACE_VDP_CTRL_PC_RANGE");
+        private static readonly bool TraceVdpData8 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_DATA8"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdpCtrl8 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_CTRL8"), "1", StringComparison.Ordinal);
         private static readonly bool TracePatternWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_PATTERN_WRITES"), "1", StringComparison.Ordinal);
         private static readonly bool TracePatternWritesPc =
@@ -335,6 +339,11 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address <= 0xc00003)
             {
+                if (TraceVdpData8 && TraceConsoleEnabledMemory)
+                {
+                    uint pc = md_m68k.g_reg_PC;
+                    Console.WriteLine($"[VDP-DATA8] frame={_frameCounter} addr=0x{in_address:X6} val=0x{in_data:X2} pc=0x{pc:X6}");
+                }
                 // MD VDP data port byte writes mirror the byte into a word.
                 ushort mirrored = (ushort)((in_data << 8) | in_data);
                 write16(in_address, mirrored);
@@ -342,6 +351,11 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // Default: mirror byte to both halves and use 16-bit path.
+            if ((in_address & 0x00FF_FFFF) == 0xC00004 && TraceVdpCtrl8 && TraceConsoleEnabledMemory)
+            {
+                uint pc = md_m68k.g_reg_PC;
+                Console.WriteLine($"[VDP-CTRL8] frame={_frameCounter} addr=0x{in_address:X6} val=0x{in_data:X2} pc=0x{pc:X6}");
+            }
             ushort w = (ushort)((in_data << 8) | in_data);
             write16(in_address, w);
         }

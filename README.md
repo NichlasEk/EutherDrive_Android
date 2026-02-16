@@ -52,6 +52,7 @@ dotnet run --project EutherDrive.UI
 
 ## Referenser
 ```
+https://github.com/sasayaki-japan/MDTracer-Genesis-megadrive-Emulator
 https://github.com/Kookpot/SuperNintendoEmulator
 https://github.com/unknowall/emuPCE
 https://github.com/enusbaum/XamariNES

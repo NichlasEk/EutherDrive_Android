@@ -128,19 +128,7 @@ namespace EutherDrive.Core.MdTracerCore
             int displayY = g_display_ysize * windowScale;
             if ((reg17 & 0x80) == 0)
             {
-                if (w_pos < g_display_xsize)
-                {
-                    g_screenA_left_x  = w_pos;
-                    g_screenA_right_x = g_display_xsize - 1;
-                }
-                else
-                {
-                    g_screenA_left_x = 0;
-                    g_screenA_right_x = 0;
-                }
-            }
-            else
-            {
+                // Window on left: 0 .. w_pos-1
                 if (w_pos == 0)
                 {
                     g_screenA_left_x = 0;
@@ -157,6 +145,20 @@ namespace EutherDrive.Core.MdTracerCore
                     g_screenA_right_x = g_display_xsize - 1;
                 }
             }
+            else
+            {
+                // Window on right: w_pos .. end
+                if (w_pos < g_display_xsize)
+                {
+                    g_screenA_left_x  = w_pos;
+                    g_screenA_right_x = g_display_xsize - 1;
+                }
+                else
+                {
+                    g_screenA_left_x = 0;
+                    g_screenA_right_x = 0;
+                }
+            }
 
             byte reg18 = g_vdp_reg[18];
             int w_pos_y = (reg18 & 0x1f) << 3;
@@ -164,19 +166,7 @@ namespace EutherDrive.Core.MdTracerCore
                 w_pos_y <<= 1;
             if ((reg18 & 0x80) == 0)
             {
-                if (w_pos_y < displayY)
-                {
-                    g_screenA_top_y    = w_pos_y;
-                    g_screenA_bottom_y = displayY - 1;
-                }
-                else
-                {
-                    g_screenA_top_y = 0;
-                    g_screenA_bottom_y = 0;
-                }
-            }
-            else
-            {
+                // Window on top: 0 .. w_pos_y-1
                 if (w_pos_y == 0)
                 {
                     g_screenA_top_y = 0;
@@ -191,6 +181,20 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     g_screenA_top_y    = 0;
                     g_screenA_bottom_y = displayY - 1;
+                }
+            }
+            else
+            {
+                // Window on bottom: w_pos_y .. end
+                if (w_pos_y < displayY)
+                {
+                    g_screenA_top_y    = w_pos_y;
+                    g_screenA_bottom_y = displayY - 1;
+                }
+                else
+                {
+                    g_screenA_top_y = 0;
+                    g_screenA_bottom_y = 0;
                 }
             }
         }
