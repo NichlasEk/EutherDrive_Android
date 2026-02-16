@@ -439,6 +439,10 @@ public partial class MainWindow : Window
                 {
                     UpdatePsxRomInfo(_romPath);
                 }
+                else if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
+                {
+                    UpdateSegaCdRomInfo(segaCd, _romPath);
+                }
             }
             _savestateViewModel.Refresh();
         }
@@ -466,6 +470,8 @@ public partial class MainWindow : Window
 
     private static IEmulatorCore CreateCoreForRom(string? path)
     {
+        if (!string.IsNullOrWhiteSpace(path) && IsSegaCdRom(path))
+            return new EutherDrive.Core.SegaCd.SegaCdAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsPsxRom(path))
             return new PsxAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsPceRom(path))
@@ -492,6 +498,18 @@ public partial class MainWindow : Window
         if (ext is ".bin" or ".img" or ".iso" or ".chd" or ".pbp")
             return ProbePsxSignature(path);
         return false;
+    }
+
+    private static bool IsSegaCdRom(string path)
+    {
+        try
+        {
+            return EutherDrive.Core.SegaCd.SegaCdDiscInfo.IsSegaCdDisc(path);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool IsPceRom(string path)
@@ -1192,6 +1210,10 @@ public partial class MainWindow : Window
                         {
                             UpdatePsxRomInfo(_romPath);
                         }
+                        else if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
+                        {
+                            UpdateSegaCdRomInfo(segaCd, _romPath);
+                        }
                         _audioPullReady = true;
                         PrimePullAudio();
                         AddRecentRom(_romPath);
@@ -1743,6 +1765,35 @@ public partial class MainWindow : Window
         var info = TryBuildPsxRomInfo(romPath);
         RomInfoText.Text = info ?? "PSX ROM loaded.";
         UpdateRomRegionHint(ConsoleRegion.Auto);
+        _romRegionKey = null;
+    }
+
+    private void UpdateSegaCdRomInfo(EutherDrive.Core.SegaCd.SegaCdAdapter adapter, string romPath)
+    {
+        if (RomInfoText == null)
+            return;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("ROM");
+        sb.AppendLine(romPath);
+
+        var info = adapter.DiscInfo;
+        if (info != null)
+        {
+            if (!string.IsNullOrWhiteSpace(info.Title))
+                sb.AppendLine($"Title: {info.Title}");
+            if (!string.IsNullOrWhiteSpace(info.Serial))
+                sb.AppendLine($"Serial: {info.Serial}");
+            if (!string.IsNullOrWhiteSpace(info.Region))
+                sb.AppendLine($"Region: {info.Region}");
+        }
+
+        string? biosPath = EutherDrive.Core.SegaCd.SegaCdBios.ResolvePath(adapter.RegionHint);
+        if (!string.IsNullOrWhiteSpace(biosPath))
+            sb.AppendLine($"BIOS: {biosPath}");
+
+        RomInfoText.Text = sb.ToString().TrimEnd();
+        UpdateRomRegionHint(adapter.RegionHint);
         _romRegionKey = null;
     }
 
