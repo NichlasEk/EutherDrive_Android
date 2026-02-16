@@ -461,6 +461,8 @@ public partial class MainWindow : Window
 
     private static IEmulatorCore CreateCoreForRom(string? path)
     {
+        if (!string.IsNullOrWhiteSpace(path) && IsPsxRom(path))
+            return new PsxAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsPceRom(path))
             return new PceCdAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
@@ -468,6 +470,23 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(path) && IsNesRom(path))
             return new NesAdapter();
         return new MdTracerAdapter();
+    }
+
+    private static bool IsPsxRom(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is ".exe")
+            return true;
+        if (ext is ".cue")
+        {
+            string? cueTrack = TryGetCueTrackPath(path);
+            if (!string.IsNullOrWhiteSpace(cueTrack) && ProbePsxSignature(cueTrack))
+                return true;
+            return false;
+        }
+        if (ext is ".bin" or ".img" or ".iso" or ".chd" or ".pbp")
+            return ProbePsxSignature(path);
+        return false;
     }
 
     private static bool IsPceRom(string path)
@@ -500,6 +519,55 @@ public partial class MainWindow : Window
             return false;
         }
         return false;
+    }
+
+    private static string? TryGetCueTrackPath(string cuePath)
+    {
+        try
+        {
+            string baseDir = Path.GetDirectoryName(cuePath) ?? ".";
+            foreach (string line in File.ReadLines(cuePath))
+            {
+                string trimmed = line.Trim();
+                if (!trimmed.StartsWith("FILE", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                int firstQuote = trimmed.IndexOf('"');
+                int lastQuote = trimmed.LastIndexOf('"');
+                if (firstQuote >= 0 && lastQuote > firstQuote)
+                {
+                    string file = trimmed.Substring(firstQuote + 1, lastQuote - firstQuote - 1);
+                    return Path.Combine(baseDir, file);
+                }
+            }
+        }
+        catch
+        {
+            return null;
+        }
+        return null;
+    }
+
+    private static bool ProbePsxSignature(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+                return false;
+            using var fs = File.OpenRead(path);
+            int readLen = (int)Math.Min(0x20000, fs.Length);
+            byte[] buf = new byte[readLen];
+            int n = fs.Read(buf, 0, readLen);
+            if (n <= 0)
+                return false;
+            string text = System.Text.Encoding.ASCII.GetString(buf, 0, n);
+            return text.Contains("PLAYSTATION", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("PS-X EXE", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Sony Computer Entertainment", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool IsNesRom(string path)
@@ -963,7 +1031,7 @@ public partial class MainWindow : Window
             {
                 new FilePickerFileType("ROMs")
                 {
-                    Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.sms", "*.sg", "*.gg", "*.nes", "*.smc", "*.sfc", "*.pce", "*.cue", "*.zip", "*.7z", "*.iso", "*.*" }
+                    Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.sms", "*.sg", "*.gg", "*.nes", "*.smc", "*.sfc", "*.pce", "*.cue", "*.zip", "*.7z", "*.iso", "*.img", "*.chd", "*.pbp", "*.exe", "*.*" }
                 }
             }
         };

@@ -42,6 +42,7 @@
   <ItemGroup>
     <ProjectReference Include="..\SuperNintendoEmulator\KSNES\KSNES.csproj" />
     <ProjectReference Include="..\NESCore\XamariNES.Emulator\XamariNES.Emulator.csproj" />
+    <ProjectReference Include="..\ProjectPSX\ProjectPSX.csproj" />
   </ItemGroup>
 
 </Project>
