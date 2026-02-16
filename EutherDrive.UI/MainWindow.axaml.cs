@@ -1764,7 +1764,22 @@ public partial class MainWindow : Window
         {
             var discInfo = PsxDiscInfo.Read(romPath);
             if (discInfo == null)
-                return null;
+            {
+                string? fallbackId = TryDiscIdFromPath(romPath);
+                if (fallbackId == null)
+                    return null;
+
+                var sbFallback = new StringBuilder();
+                sbFallback.AppendLine("ROM");
+                sbFallback.AppendLine(romPath);
+                sbFallback.AppendLine($"ID: {fallbackId}");
+                string? region = PsxDiscInfo.MapRegionFromDiscId(fallbackId);
+                if (!string.IsNullOrWhiteSpace(region))
+                    sbFallback.AppendLine($"Region: {region}");
+                if (!string.IsNullOrWhiteSpace(PsxAdapter.BiosPath))
+                    sbFallback.AppendLine($"BIOS: {PsxAdapter.BiosPath}");
+                return sbFallback.ToString().TrimEnd();
+            }
 
             var sb = new StringBuilder();
             sb.AppendLine("ROM");
@@ -1787,6 +1802,28 @@ public partial class MainWindow : Window
         {
             return null;
         }
+    }
+
+    private static string? TryDiscIdFromPath(string romPath)
+    {
+        if (string.IsNullOrWhiteSpace(romPath))
+            return null;
+        string name = Path.GetFileNameWithoutExtension(romPath).ToUpperInvariant();
+        string[] prefixes = { "SLUS", "SLES", "SLPS", "SCUS", "SCES", "SCPS" };
+        foreach (string prefix in prefixes)
+        {
+            int idx = name.IndexOf(prefix, StringComparison.Ordinal);
+            if (idx < 0)
+                continue;
+
+            int end = idx + prefix.Length;
+            while (end < name.Length && (char.IsDigit(name[end]) || name[end] == '-' || name[end] == '_'))
+                end++;
+
+            string id = name.Substring(idx, end - idx).Replace('_', '-');
+            return id;
+        }
+        return null;
     }
 
     private sealed class PsxDiscInfo
@@ -2020,7 +2057,7 @@ public partial class MainWindow : Window
             return null;
         }
 
-        private static string? MapRegionFromDiscId(string? discId)
+        public static string? MapRegionFromDiscId(string? discId)
         {
             if (string.IsNullOrWhiteSpace(discId))
                 return null;
