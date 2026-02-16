@@ -7,7 +7,7 @@ public sealed class SegaCdCddStub
     private bool _playingAudio;
     private ushort _faderVolume;
     private bool _discPresent;
-    private Status _state = Status.NoDisc;
+    private DriveStatus _state = DriveStatus.NoDisc;
     private ReportType _reportType = ReportType.AbsoluteTime;
 
     public byte[] Status => _status;
@@ -37,30 +37,30 @@ public sealed class SegaCdCddStub
             case 0x00: // NOP
                 break;
             case 0x01: // Stop motor
-                _state = Status.Stopped;
+                _state = DriveStatus.Stopped;
                 break;
             case 0x02: // Read TOC
-                _reportType = ReportTypeExtensions.FromCommand(command);
-                _state = _discPresent ? Status.Paused : Status.NoDisc;
+                _reportType = ReportTypeHelpers.FromCommand(command);
+                _state = _discPresent ? DriveStatus.Paused : DriveStatus.NoDisc;
                 break;
             case 0x03: // Seek and play
             case 0x07: // Play
-                _state = _discPresent ? Status.Playing : Status.NoDisc;
+                _state = _discPresent ? DriveStatus.Playing : DriveStatus.NoDisc;
                 break;
             case 0x04: // Seek
-                _state = _discPresent ? Status.Seeking : Status.NoDisc;
+                _state = _discPresent ? DriveStatus.Seeking : DriveStatus.NoDisc;
                 break;
             case 0x06: // Pause
-                _state = _discPresent ? Status.Paused : Status.NoDisc;
+                _state = _discPresent ? DriveStatus.Paused : DriveStatus.NoDisc;
                 break;
             case 0x0D: // Open tray
-                _state = Status.TrayOpen;
+                _state = DriveStatus.TrayOpen;
                 break;
             case 0x0C: // Close tray
-                _state = _discPresent ? Status.Paused : Status.NoDisc;
+                _state = _discPresent ? DriveStatus.Paused : DriveStatus.NoDisc;
                 break;
             default:
-                _state = Status.InvalidCommand;
+                _state = DriveStatus.InvalidCommand;
                 break;
         }
 
@@ -73,17 +73,17 @@ public sealed class SegaCdCddStub
         _interruptPending = false;
         _playingAudio = false;
         _faderVolume = 0;
-        _state = _discPresent ? Status.Paused : Status.NoDisc;
+        _state = _discPresent ? DriveStatus.Paused : DriveStatus.NoDisc;
         UpdateStatus();
     }
 
     public void SetDiscPresent(bool present)
     {
         _discPresent = present;
-        if (!_discPresent && _state != Status.TrayOpen)
-            _state = Status.NoDisc;
-        else if (_discPresent && _state == Status.NoDisc)
-            _state = Status.Paused;
+        if (!_discPresent && _state != DriveStatus.TrayOpen)
+            _state = DriveStatus.NoDisc;
+        else if (_discPresent && _state == DriveStatus.NoDisc)
+            _state = DriveStatus.Paused;
         UpdateStatus();
     }
 
@@ -92,7 +92,7 @@ public sealed class SegaCdCddStub
         for (int i = 0; i < _status.Length; i++)
             _status[i] = 0;
         _status[0] = (byte)_state;
-        _status[1] = ReportTypeExtensions.ToByte(_reportType);
+        _status[1] = ReportTypeHelpers.ToByte(_reportType);
         UpdateChecksum();
     }
 
@@ -104,7 +104,7 @@ public sealed class SegaCdCddStub
         _status[9] = (byte)((~sum) & 0x0F);
     }
 
-    private enum Status : byte
+    private enum DriveStatus : byte
     {
         Stopped = 0x00,
         Playing = 0x01,
@@ -130,7 +130,7 @@ public sealed class SegaCdCddStub
         StartAndEndTracks = 0x04
     }
 
-    private static class ReportTypeExtensions
+    private static class ReportTypeHelpers
     {
         public static ReportType FromCommand(byte[] command)
         {
@@ -147,7 +147,7 @@ public sealed class SegaCdCddStub
             };
         }
 
-        public static byte ToByte(this ReportType reportType)
+        public static byte ToByte(ReportType reportType)
         {
             return (byte)reportType;
         }
