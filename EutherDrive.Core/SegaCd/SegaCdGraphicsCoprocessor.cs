@@ -5,6 +5,10 @@ namespace EutherDrive.Core.SegaCd;
 public sealed class SegaCdGraphicsCoprocessor
 {
     private const uint SubCpuDivider = 12;
+    private static readonly bool LogImageBuffer = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_IMAGE"),
+        "1",
+        StringComparison.Ordinal);
 
     private StampSizeDots _stampSize = StampSizeDots.Sixteen;
     private StampMapSizeScreens _stampMapSize = StampMapSizeScreens.One;
@@ -139,12 +143,20 @@ public sealed class SegaCdGraphicsCoprocessor
                 break;
             case 0x0062:
                 _imageBufferHDotSize = (uint)(value & 0x01FF);
+                if (LogImageBuffer)
+                    Console.WriteLine($"[SCD-IMG] HDOT={_imageBufferHDotSize}");
                 break;
             case 0x0064:
                 _imageBufferVDotSize = (uint)(value & 0x00FF);
+                if (LogImageBuffer)
+                    Console.WriteLine($"[SCD-IMG] VDOT={_imageBufferVDotSize}");
                 break;
             case 0x0066:
                 _traceVectorBaseAddress = (uint)(value & 0xFFFE) << 2;
+                if (LogImageBuffer)
+                {
+                    Console.WriteLine($"[SCD-IMG] TRACE=0x{_traceVectorBaseAddress:X6} START=0x{_imageBufferStartAddress:X6} VCELL={_imageBufferVCellSize} HOFF={_imageBufferHOffset} VOFF={_imageBufferVOffset} HDOT={_imageBufferHDotSize} VDOT={_imageBufferVDotSize}");
+                }
                 uint hDot = _imageBufferHDotSize;
                 uint vDot = _imageBufferVDotSize;
                 uint estimatedPerLine = 4 + 2 * hDot + hDot / 4;
@@ -194,7 +206,11 @@ public sealed class SegaCdGraphicsCoprocessor
         width = (int)_imageBufferHDotSize;
         height = (int)_imageBufferVDotSize;
         if (width <= 0 || height <= 0)
+        {
+            if (LogImageBuffer)
+                Console.WriteLine($"[SCD-IMG] Skip render HDOT={_imageBufferHDotSize} VDOT={_imageBufferVDotSize}");
             return false;
+        }
 
         int required = width * height * 4;
         if (rgbaBuffer.Length < required)
