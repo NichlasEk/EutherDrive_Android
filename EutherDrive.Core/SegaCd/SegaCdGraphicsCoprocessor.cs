@@ -184,7 +184,7 @@ public sealed class SegaCdGraphicsCoprocessor
 
     private void PerformGraphicsOperation(WordRam wordRam)
     {
-        uint stampMapDimensionPixels = _stampMapSize.OneDimensionInPixels();
+        uint stampMapDimensionPixels = OneDimensionInPixels(_stampMapSize);
         bool repeats = _stampMapRepeats;
         uint stampMapBase = StampMapBaseMasked();
         uint traceBase = _traceVectorBaseAddress;
@@ -223,7 +223,7 @@ public sealed class SegaCdGraphicsCoprocessor
                 }
                 else
                 {
-                    uint stampMapAddr = ComputeStampMapAddress(stampMapBase, _stampSize, _stampMapSize, x, y);
+        uint stampMapAddr = ComputeStampMapAddress(stampMapBase, _stampSize, _stampMapSize, x, y);
                     ushort stampWord = (ushort)((ReadWordRam(wordRam, stampMapAddr) << 8)
                         | ReadWordRam(wordRam, stampMapAddr + 1));
                     var stamp = StampData.FromWord(stampWord);
@@ -269,8 +269,8 @@ public sealed class SegaCdGraphicsCoprocessor
 
     private static uint ComputeStampMapAddress(uint baseAddr, StampSizeDots stampSize, StampMapSizeScreens mapSize, uint x, uint y)
     {
-        uint stampDimensionPixels = stampSize.OneDimensionInPixels();
-        uint mapDimensionPixels = mapSize.OneDimensionInPixels();
+        uint stampDimensionPixels = OneDimensionInPixels(stampSize);
+        uint mapDimensionPixels = OneDimensionInPixels(mapSize);
         uint stampMapX = (x & (mapDimensionPixels - 1)) / stampDimensionPixels;
         uint stampMapY = (y & (mapDimensionPixels - 1)) / stampDimensionPixels;
         uint relativeAddr = 2 * (stampMapY * mapDimensionPixels / stampDimensionPixels + stampMapX);
@@ -283,7 +283,7 @@ public sealed class SegaCdGraphicsCoprocessor
         if (stampNumber == 0)
             return 0;
 
-        uint stampSizePixels = stampSize.OneDimensionInPixels();
+        uint stampSizePixels = OneDimensionInPixels(stampSize);
         uint stampAddr = stampNumber * (stampSizePixels * stampSizePixels / 2);
 
         x &= stampSizePixels - 1;
@@ -428,19 +428,13 @@ public sealed class SegaCdGraphicsCoprocessor
             => new(StateKind.Processing, cyclesRemaining, performed);
     }
 
-    private static class StampSizeExtensions
+    private static uint OneDimensionInPixels(StampSizeDots size)
     {
-        public static uint OneDimensionInPixels(this StampSizeDots size)
-        {
-            return size == StampSizeDots.ThirtyTwo ? 32u : 16u;
-        }
+        return size == StampSizeDots.ThirtyTwo ? 32u : 16u;
     }
 
-    private static class StampMapSizeExtensions
+    private static uint OneDimensionInPixels(StampMapSizeScreens size)
     {
-        public static uint OneDimensionInPixels(this StampMapSizeScreens size)
-        {
-            return size == StampMapSizeScreens.Sixteen ? 4096u : 256u;
-        }
+        return size == StampMapSizeScreens.Sixteen ? 4096u : 256u;
     }
 }
