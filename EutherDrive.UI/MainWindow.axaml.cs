@@ -435,6 +435,10 @@ public partial class MainWindow : Window
                     UpdateNesRomInfo(nes);
                     Console.WriteLine(nes.RomSummary ?? "NES ROM loaded.");
                 }
+                else if (_core is PsxAdapter)
+                {
+                    UpdatePsxRomInfo(_romPath);
+                }
             }
             _savestateViewModel.Refresh();
         }
@@ -1184,6 +1188,10 @@ public partial class MainWindow : Window
                             UpdateNesRomInfo(nes);
                             Console.WriteLine(nes.RomSummary ?? "NES ROM loaded.");
                         }
+                        else if (_core is PsxAdapter)
+                        {
+                            UpdatePsxRomInfo(_romPath);
+                        }
                         _audioPullReady = true;
                         PrimePullAudio();
                         AddRecentRom(_romPath);
@@ -1725,6 +1733,17 @@ public partial class MainWindow : Window
         _romRegionKey = null;
     }
 
+    private void UpdatePsxRomInfo(string romPath)
+    {
+        if (RomInfoText == null)
+            return;
+
+        var info = TryBuildPsxRomInfo(romPath);
+        RomInfoText.Text = info ?? "PSX ROM loaded.";
+        UpdateRomRegionHint(ConsoleRegion.Auto);
+        _romRegionKey = null;
+    }
+
     private void UpdateRomRegionHintText()
     {
         if (RomRegionHintText != null)
@@ -1737,6 +1756,282 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(serial))
             return null;
         return $"serial:{serial}";
+    }
+
+    private static string? TryBuildPsxRomInfo(string romPath)
+    {
+        try
+        {
+            var discInfo = PsxDiscInfo.Read(romPath);
+            if (discInfo == null)
+                return null;
+
+            var sb = new StringBuilder();
+            sb.AppendLine("ROM");
+            sb.AppendLine(romPath);
+            if (!string.IsNullOrWhiteSpace(discInfo.VolumeId))
+                sb.AppendLine($"Title: {discInfo.VolumeId}");
+            if (!string.IsNullOrWhiteSpace(discInfo.DiscId))
+            {
+                sb.AppendLine($"ID: {discInfo.DiscId}");
+                if (!string.IsNullOrWhiteSpace(discInfo.Region))
+                    sb.AppendLine($"Region: {discInfo.Region}");
+            }
+            if (!string.IsNullOrWhiteSpace(discInfo.BootFile))
+                sb.AppendLine($"Boot: {discInfo.BootFile}");
+            if (!string.IsNullOrWhiteSpace(PsxAdapter.BiosPath))
+                sb.AppendLine($"BIOS: {PsxAdapter.BiosPath}");
+            return sb.ToString().TrimEnd();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private sealed class PsxDiscInfo
+    {
+        public string? VolumeId { get; init; }
+        public string? DiscId { get; init; }
+        public string? BootFile { get; init; }
+        public string? Region { get; init; }
+
+        public static PsxDiscInfo? Read(string romPath)
+        {
+            if (string.IsNullOrWhiteSpace(romPath))
+                return null;
+
+            string path = ResolveCueDataPath(romPath) ?? romPath;
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext == ".exe")
+                return ReadPsxExe(path);
+
+            using var stream = File.OpenRead(path);
+            int sectorSize = GuessSectorSize(stream.Length);
+            if (sectorSize <= 0)
+                return null;
+
+            byte[] pvd = ReadSector(stream, 16, sectorSize);
+            if (pvd.Length < 2048 || pvd[0] != 1 || Encoding.ASCII.GetString(pvd, 1, 5) != "CD001")
+                return null;
+
+            string volumeId = ReadAscii(pvd, 40, 32).Trim();
+            var root = ReadDirectoryRecord(pvd, 156);
+            if (root == null)
+                return new PsxDiscInfo { VolumeId = volumeId };
+
+            var systemCnf = FindFileInDirectory(stream, sectorSize, root.Value, "SYSTEM.CNF");
+            string? bootFile = null;
+            string? discId = null;
+            string? region = null;
+            if (systemCnf != null)
+            {
+                string text = Encoding.ASCII.GetString(systemCnf);
+                bootFile = ExtractBootPath(text);
+                discId = ExtractDiscId(bootFile);
+                region = MapRegionFromDiscId(discId);
+            }
+
+            return new PsxDiscInfo
+            {
+                VolumeId = volumeId,
+                BootFile = bootFile,
+                DiscId = discId,
+                Region = region
+            };
+        }
+
+        private static PsxDiscInfo? ReadPsxExe(string path)
+        {
+            using var stream = File.OpenRead(path);
+            if (stream.Length < 0x800)
+                return null;
+            byte[] header = new byte[0x800];
+            stream.Read(header, 0, header.Length);
+            string magic = Encoding.ASCII.GetString(header, 0, 8);
+            if (!magic.StartsWith("PS-X EXE", StringComparison.Ordinal))
+                return null;
+            string title = ReadAscii(header, 0x10, 0x3C).Trim();
+            return new PsxDiscInfo { VolumeId = title };
+        }
+
+        private static string? ResolveCueDataPath(string path)
+        {
+            if (!path.EndsWith(".cue", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            string baseDir = Path.GetDirectoryName(path) ?? "";
+            foreach (var rawLine in File.ReadLines(path))
+            {
+                string line = rawLine.Trim();
+                if (!line.StartsWith("FILE", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                int firstQuote = line.IndexOf('"');
+                if (firstQuote >= 0)
+                {
+                    int secondQuote = line.IndexOf('"', firstQuote + 1);
+                    if (secondQuote > firstQuote)
+                    {
+                        string fileName = line.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
+                        string candidate = Path.Combine(baseDir, fileName);
+                        if (File.Exists(candidate))
+                            return candidate;
+                    }
+                }
+                else
+                {
+                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2)
+                    {
+                        string candidate = Path.Combine(baseDir, parts[1]);
+                        if (File.Exists(candidate))
+                            return candidate;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static int GuessSectorSize(long length)
+        {
+            if (length <= 0)
+                return 0;
+            if (length % 2352 == 0)
+                return 2352;
+            if (length % 2048 == 0)
+                return 2048;
+            return 2048;
+        }
+
+        private static byte[] ReadSector(Stream stream, int lba, int sectorSize)
+        {
+            byte[] buffer = new byte[2048];
+            long offset = sectorSize == 2352
+                ? (long)lba * 2352 + 16
+                : (long)lba * 2048;
+            stream.Seek(offset, SeekOrigin.Begin);
+            stream.Read(buffer, 0, buffer.Length);
+            return buffer;
+        }
+
+        private static (int Lba, int Size)? ReadDirectoryRecord(byte[] sector, int offset)
+        {
+            if (offset < 0 || offset >= sector.Length)
+                return null;
+            int len = sector[offset];
+            if (len <= 0 || offset + len > sector.Length)
+                return null;
+            int lba = BitConverter.ToInt32(sector, offset + 2);
+            int size = BitConverter.ToInt32(sector, offset + 10);
+            return (lba, size);
+        }
+
+        private static byte[]? FindFileInDirectory(Stream stream, int sectorSize, (int Lba, int Size) dir, string fileName)
+        {
+            int remaining = dir.Size;
+            int lba = dir.Lba;
+            string target = fileName.ToUpperInvariant();
+            while (remaining > 0)
+            {
+                byte[] sector = ReadSector(stream, lba, sectorSize);
+                int offset = 0;
+                while (offset < sector.Length)
+                {
+                    int len = sector[offset];
+                    if (len == 0)
+                        break;
+                    int entryLba = BitConverter.ToInt32(sector, offset + 2);
+                    int entrySize = BitConverter.ToInt32(sector, offset + 10);
+                    int nameLen = sector[offset + 32];
+                    string name = Encoding.ASCII.GetString(sector, offset + 33, nameLen);
+                    name = name.TrimEnd(';', '1').ToUpperInvariant();
+                    if (name == target)
+                        return ReadFile(stream, sectorSize, entryLba, entrySize);
+                    offset += len;
+                }
+                remaining -= sector.Length;
+                lba++;
+            }
+            return null;
+        }
+
+        private static byte[] ReadFile(Stream stream, int sectorSize, int lba, int size)
+        {
+            byte[] data = new byte[size];
+            int offset = 0;
+            int remaining = size;
+            int currentLba = lba;
+            while (remaining > 0)
+            {
+                byte[] sector = ReadSector(stream, currentLba, sectorSize);
+                int toCopy = Math.Min(remaining, sector.Length);
+                Buffer.BlockCopy(sector, 0, data, offset, toCopy);
+                remaining -= toCopy;
+                offset += toCopy;
+                currentLba++;
+            }
+            return data;
+        }
+
+        private static string ReadAscii(byte[] data, int offset, int length)
+        {
+            if (offset < 0 || offset + length > data.Length)
+                return string.Empty;
+            return Encoding.ASCII.GetString(data, offset, length).TrimEnd('\0', ' ');
+        }
+
+        private static string? ExtractBootPath(string text)
+        {
+            foreach (string line in text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string trimmed = line.Trim();
+                if (!trimmed.StartsWith("BOOT", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                int idx = trimmed.IndexOf("cdrom:", StringComparison.OrdinalIgnoreCase);
+                if (idx < 0)
+                    continue;
+                int start = trimmed.IndexOf('\\', idx);
+                if (start < 0)
+                    continue;
+                int end = trimmed.IndexOf(';', start);
+                string path = end > start ? trimmed.Substring(start + 1, end - start - 1) : trimmed.Substring(start + 1);
+                return path.Trim();
+            }
+            return null;
+        }
+
+        private static string? ExtractDiscId(string? bootFile)
+        {
+            if (string.IsNullOrWhiteSpace(bootFile))
+                return null;
+            string upper = bootFile.ToUpperInvariant();
+            string file = upper;
+            int slash = file.LastIndexOfAny(new[] { '\\', '/' });
+            if (slash >= 0 && slash + 1 < file.Length)
+                file = file.Substring(slash + 1);
+
+            file = file.Replace(';', '\0').TrimEnd('\0');
+            file = file.Trim();
+            file = file.Replace('_', '-');
+            if (file.StartsWith("SL") || file.StartsWith("SC"))
+                return file;
+            return null;
+        }
+
+        private static string? MapRegionFromDiscId(string? discId)
+        {
+            if (string.IsNullOrWhiteSpace(discId))
+                return null;
+            if (discId.StartsWith("SLUS", StringComparison.OrdinalIgnoreCase) || discId.StartsWith("SCUS", StringComparison.OrdinalIgnoreCase))
+                return "NTSC-U";
+            if (discId.StartsWith("SLES", StringComparison.OrdinalIgnoreCase) || discId.StartsWith("SCES", StringComparison.OrdinalIgnoreCase))
+                return "PAL";
+            if (discId.StartsWith("SLPS", StringComparison.OrdinalIgnoreCase) || discId.StartsWith("SCPS", StringComparison.OrdinalIgnoreCase))
+                return "NTSC-J";
+            return null;
+        }
     }
 
     private void UpdateRegionOverrideCombo()
