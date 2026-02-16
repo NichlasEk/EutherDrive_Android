@@ -180,6 +180,13 @@
         <TextBlock Text="ROM" FontWeight="Bold"/>
         <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
         <TextBlock x:Name="RomInfoText" Opacity="0.85" FontSize="12" TextWrapping="Wrap"/>
+        <Separator/>
+        <TextBlock Text="PSX BIOS" FontWeight="Bold"/>
+        <TextBlock Name="PsxBiosPathText" Text="(none)" TextWrapping="Wrap"/>
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <Button Content="Select BIOS…" Click="OnSelectPsxBios"/>
+          <Button Content="Clear" Click="OnClearPsxBios"/>
+        </StackPanel>
         <CheckBox Content="SMS overscan (debug)" IsChecked="False" Name="SmsOverscanCheck" Checked="OnSmsOverscanToggle" Unchecked="OnSmsOverscanToggle"/>
         <Separator/>
         <TextBlock Text="Perf" FontWeight="Bold"/>

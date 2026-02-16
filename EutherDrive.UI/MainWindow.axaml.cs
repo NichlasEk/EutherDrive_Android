@@ -114,6 +114,7 @@ public partial class MainWindow : Window
     private IEmulatorCore? _pendingPresentCore;
 
     private string? _romPath;
+    private string? _psxBiosPath;
     private readonly List<string> _recentRomPaths = new();
     private bool _recentRomUpdating;
 
@@ -1052,6 +1053,54 @@ public partial class MainWindow : Window
         AddRecentRom(_romPath);
     }
 
+    private async void OnSelectPsxBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        IStorageFolder? startFolder = null;
+        if (!string.IsNullOrWhiteSpace(_psxBiosPath))
+        {
+            string? folderPath = Path.GetDirectoryName(_psxBiosPath);
+            if (!string.IsNullOrWhiteSpace(folderPath))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(folderPath);
+        }
+
+        var options = new FilePickerOpenOptions
+        {
+            Title = "Select PSX BIOS (SCPH1001.BIN)",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("PSX BIOS")
+                {
+                    Patterns = new[] { "*.bin", "*.BIN", "*.*" }
+                }
+            }
+        };
+
+        if (startFolder != null)
+            options.SuggestedStartLocation = startFolder;
+
+        var files = await StorageProvider.OpenFilePickerAsync(options);
+        if (files.Count == 0)
+            return;
+
+        _psxBiosPath = files[0].TryGetLocalPath();
+        PsxAdapter.BiosPath = _psxBiosPath;
+        if (PsxBiosPathText != null)
+            PsxBiosPathText.Text = _psxBiosPath ?? files[0].Name;
+        StatusText.Text = "PSX BIOS selected";
+        SaveSettings();
+    }
+
+    private void OnClearPsxBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        _psxBiosPath = null;
+        PsxAdapter.BiosPath = null;
+        if (PsxBiosPathText != null)
+            PsxBiosPathText.Text = "(none)";
+        StatusText.Text = "PSX BIOS cleared";
+        SaveSettings();
+    }
+
     private void OnStart(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         try
@@ -1794,6 +1843,7 @@ public partial class MainWindow : Window
         public InputMappingSet MdSms { get; set; } = new();
         public InputMappingSet Snes { get; set; } = new();
         public InputMappingSet Pce { get; set; } = new();
+        public InputMappingSet Psx { get; set; } = new();
 
         // Legacy accessors (MD/SMS)
         public Dictionary<string, Key> KeyboardMappings
@@ -1819,6 +1869,7 @@ public partial class MainWindow : Window
             ApplyMdSmsDefaults(MdSms);
             ApplySnesDefaults(Snes);
             ApplyPceDefaults(Pce);
+            ApplyPsxDefaults(Psx);
         }
 
         private static void ApplyMdSmsDefaults(InputMappingSet set)
@@ -1903,6 +1954,35 @@ public partial class MainWindow : Window
             set.GamepadMappings["Start"] = GamepadButton.Start;
             set.GamepadMappings["Select"] = GamepadButton.Back;
         }
+
+        private static void ApplyPsxDefaults(InputMappingSet set)
+        {
+            set.KeyboardMappings["Up"] = Key.Up;
+            set.KeyboardMappings["Down"] = Key.Down;
+            set.KeyboardMappings["Left"] = Key.Left;
+            set.KeyboardMappings["Right"] = Key.Right;
+            set.KeyboardMappings["A"] = Key.Z;       // Cross
+            set.KeyboardMappings["B"] = Key.X;       // Circle
+            set.KeyboardMappings["C"] = Key.C;       // Square
+            set.KeyboardMappings["X"] = Key.A;       // Triangle
+            set.KeyboardMappings["Y"] = Key.Q;       // L1
+            set.KeyboardMappings["Z"] = Key.W;       // R1
+            set.KeyboardMappings["Start"] = Key.Enter;
+            set.KeyboardMappings["Mode"] = Key.RightShift; // Select
+
+            set.GamepadMappings["Up"] = GamepadButton.DPadUp;
+            set.GamepadMappings["Down"] = GamepadButton.DPadDown;
+            set.GamepadMappings["Left"] = GamepadButton.DPadLeft;
+            set.GamepadMappings["Right"] = GamepadButton.DPadRight;
+            set.GamepadMappings["A"] = GamepadButton.A;
+            set.GamepadMappings["B"] = GamepadButton.B;
+            set.GamepadMappings["C"] = GamepadButton.X;
+            set.GamepadMappings["X"] = GamepadButton.Y;
+            set.GamepadMappings["Y"] = GamepadButton.LeftShoulder;
+            set.GamepadMappings["Z"] = GamepadButton.RightShoulder;
+            set.GamepadMappings["Start"] = GamepadButton.Start;
+            set.GamepadMappings["Mode"] = GamepadButton.Back;
+        }
     }
 
     private sealed class MappingItem
@@ -1929,6 +2009,7 @@ public partial class MainWindow : Window
         private readonly List<MappingItem> _mdItems = new();
         private readonly List<MappingItem> _snesItems = new();
         private readonly List<MappingItem> _pceItems = new();
+        private readonly List<MappingItem> _psxItems = new();
         private MappingItem? _currentlyRecording;
         private TextBlock? _recordingHint;
         private readonly Func<GamepadButton?>? _gamepad1ButtonProvider;
@@ -1950,6 +2031,7 @@ public partial class MainWindow : Window
             BuildMappingItems(Mappings.MdSms, _mdItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "Start", "Pause", "X", "Y", "Z", "Mode" });
             BuildMappingItems(Mappings.Snes, _snesItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R", "Start", "Select" });
             BuildMappingItems(Mappings.Pce, _pceItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "Start", "Select" });
+            BuildMappingItems(Mappings.Psx, _psxItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "X", "Y", "Z", "Start", "Mode" });
 
             BuildUi();
         }
@@ -1993,6 +2075,11 @@ public partial class MainWindow : Window
             {
                 Header = "PCE",
                 Content = BuildMappingGrid(_pceItems)
+            });
+            tabControl.Items.Add(new TabItem
+            {
+                Header = "PSX",
+                Content = BuildMappingGrid(_psxItems)
             });
 
             stack.Children.Add(tabControl);
@@ -2125,6 +2212,7 @@ public partial class MainWindow : Window
             ApplyItemsToMappings(_mdItems, Mappings.MdSms);
             ApplyItemsToMappings(_snesItems, Mappings.Snes);
             ApplyItemsToMappings(_pceItems, Mappings.Pce);
+            ApplyItemsToMappings(_psxItems, Mappings.Psx);
             Close(true);
         }
 
@@ -2225,6 +2313,7 @@ public partial class MainWindow : Window
     {
         public string? LastRomPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
+        public string? PsxBiosPath { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -2246,6 +2335,7 @@ public partial class MainWindow : Window
     {
         public string? LastRomPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
+        public string? PsxBiosPath { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -2274,6 +2364,9 @@ public partial class MainWindow : Window
         public Dictionary<string, string>? PceKeyboardMappings { get; set; }
         public Dictionary<string, string>? PceGamepadMappings { get; set; }
         public Dictionary<string, string>? PceGamepad2Mappings { get; set; }
+        public Dictionary<string, string>? PsxKeyboardMappings { get; set; }
+        public Dictionary<string, string>? PsxGamepadMappings { get; set; }
+        public Dictionary<string, string>? PsxGamepad2Mappings { get; set; }
     }
 
     private void LoadSettings()
@@ -2312,6 +2405,13 @@ public partial class MainWindow : Window
             _romPath = settings.LastRomPath;
             if (RomPathText != null)
                 RomPathText.Text = _romPath;
+        }
+        if (!string.IsNullOrWhiteSpace(settings.PsxBiosPath))
+        {
+            _psxBiosPath = settings.PsxBiosPath;
+            PsxAdapter.BiosPath = _psxBiosPath;
+            if (PsxBiosPathText != null)
+                PsxBiosPathText.Text = _psxBiosPath;
         }
 
         _recentRomPaths.Clear();
@@ -2419,6 +2519,7 @@ public partial class MainWindow : Window
         {
             LastRomPath = _romPath,
             RecentRomPaths = _recentRomPaths.ToList(),
+            PsxBiosPath = _psxBiosPath,
             MasterVolumePercent = _masterVolumePercent,
             PsgMixPercent = _psgMixPercent,
             YmMixPercent = _ymMixPercent,
@@ -2495,6 +2596,7 @@ public partial class MainWindow : Window
         {
             LastRomPath = settings.LastRomPath,
             RecentRomPaths = settings.RecentRomPaths,
+            PsxBiosPath = settings.PsxBiosPath,
             MasterVolumePercent = settings.MasterVolumePercent,
             PsgMixPercent = settings.PsgMixPercent,
             YmMixPercent = settings.YmMixPercent,
@@ -2531,7 +2633,10 @@ public partial class MainWindow : Window
                 SnesGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Snes.Gamepad2Mappings),
                 PceKeyboardMappings = ConvertKeyDict(settings.InputMappings.Pce.KeyboardMappings),
                 PceGamepadMappings = ConvertGamepadDict(settings.InputMappings.Pce.GamepadMappings),
-                PceGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Pce.Gamepad2Mappings)
+                PceGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Pce.Gamepad2Mappings),
+                PsxKeyboardMappings = ConvertKeyDict(settings.InputMappings.Psx.KeyboardMappings),
+                PsxGamepadMappings = ConvertGamepadDict(settings.InputMappings.Psx.GamepadMappings),
+                PsxGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Psx.Gamepad2Mappings)
             };
             if (model.InputMappings.KeyboardMappings == null
                 && model.InputMappings.GamepadMappings == null
@@ -2541,7 +2646,10 @@ public partial class MainWindow : Window
                 && model.InputMappings.SnesGamepad2Mappings == null
                 && model.InputMappings.PceKeyboardMappings == null
                 && model.InputMappings.PceGamepadMappings == null
-                && model.InputMappings.PceGamepad2Mappings == null)
+                && model.InputMappings.PceGamepad2Mappings == null
+                && model.InputMappings.PsxKeyboardMappings == null
+                && model.InputMappings.PsxGamepadMappings == null
+                && model.InputMappings.PsxGamepad2Mappings == null)
             {
                 model.InputMappings = null;
             }
@@ -2559,6 +2667,7 @@ public partial class MainWindow : Window
         {
             LastRomPath = raw.LastRomPath,
             RecentRomPaths = raw.RecentRomPaths,
+            PsxBiosPath = raw.PsxBiosPath,
             MasterVolumePercent = raw.MasterVolumePercent,
             PsgMixPercent = raw.PsgMixPercent,
             YmMixPercent = raw.YmMixPercent,
@@ -2610,6 +2719,10 @@ public partial class MainWindow : Window
         any |= ApplyTomlMappings(raw.PceKeyboardMappings, mappings.Pce.KeyboardMappings);
         any |= ApplyTomlMappings(raw.PceGamepadMappings, mappings.Pce.GamepadMappings);
         any |= ApplyTomlMappings(raw.PceGamepad2Mappings, mappings.Pce.Gamepad2Mappings);
+
+        any |= ApplyTomlMappings(raw.PsxKeyboardMappings, mappings.Psx.KeyboardMappings);
+        any |= ApplyTomlMappings(raw.PsxGamepadMappings, mappings.Psx.GamepadMappings);
+        any |= ApplyTomlMappings(raw.PsxGamepad2Mappings, mappings.Psx.Gamepad2Mappings);
 
         return any ? mappings : null;
     }
@@ -3533,8 +3646,9 @@ public partial class MainWindow : Window
         bool isSnes = core is SnesAdapter;
         bool isPce = core is PceCdAdapter;
         bool isNes = core is NesAdapter;
+        bool isPsx = core is PsxAdapter;
         bool isSnesLike = isSnes || isNes;
-        var mappingSet = isSnesLike ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms);
+        var mappingSet = isPsx ? _inputMappings.Psx : (isSnesLike ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms));
         bool up;
         bool down;
         bool left;

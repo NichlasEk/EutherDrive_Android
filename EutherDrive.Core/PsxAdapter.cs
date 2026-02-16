@@ -7,6 +7,7 @@ namespace EutherDrive.Core;
 
 public sealed class PsxAdapter : IEmulatorCore
 {
+    public static string? BiosPath { get; set; }
     private sealed class PsxHostWindow : IHostWindow
     {
         private readonly PsxAdapter _owner;
@@ -66,6 +67,8 @@ public sealed class PsxAdapter : IEmulatorCore
             throw new FileNotFoundException("PSX image not found.", path);
 
         _diskPath = path;
+        if (!string.IsNullOrWhiteSpace(BiosPath))
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS", BiosPath);
         _host = new PsxHostWindow(this);
         _core = new ProjectPSX.ProjectPSX(_host, path);
     }
