@@ -23,15 +23,20 @@ public sealed class SegaCdDiscInfo
         if (!TryReadSector0(dataPath, out var header))
             return null;
 
-        // Sega CD header data starts at offset 0x010 of the data track
-        // (first 16 bytes are sync/header for 2352-byte sectors).
+        // Sega CD header data starts at offset 0x010 for 2352-byte sectors,
+        // but at 0x000 for 2048-byte ISO sectors. Try both.
         int baseOffset = 0x010;
         if (header.Length < baseOffset + 0x200)
             return null;
 
         string headerStr = ReadAscii(header, baseOffset, 0x100);
         if (!LooksLikeSegaCdHeader(headerStr))
-            return null;
+        {
+            baseOffset = 0x000;
+            headerStr = ReadAscii(header, baseOffset, 0x100);
+            if (!LooksLikeSegaCdHeader(headerStr))
+                return null;
+        }
 
         string title = ReadAscii(header, baseOffset + 0x120, 0x30).Trim();
         string serial = ReadAscii(header, baseOffset + 0x180, 0x10).Trim();
