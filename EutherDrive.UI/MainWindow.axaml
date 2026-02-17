@@ -181,6 +181,11 @@
         <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
         <TextBlock x:Name="RomInfoText" Opacity="0.85" FontSize="12" TextWrapping="Wrap"/>
         <Separator/>
+        <TextBlock Text="Sega CD" FontWeight="Bold"/>
+        <CheckBox Name="SegaCdRamCartCheck" Content="Enable RAM cartridge" Checked="OnSegaCdRamCartToggle" Unchecked="OnSegaCdRamCartToggle"/>
+        <CheckBox Name="SegaCdLoadCdToRamCheck" Content="Load CD-ROM into RAM at startup" Checked="OnSegaCdLoadCdToRamToggle" Unchecked="OnSegaCdLoadCdToRamToggle"/>
+        <TextBlock Name="SegaCdOptionsInfo" Opacity="0.7" FontSize="11" TextWrapping="Wrap" Text="Applies per Sega CD disc."/>
+        <Separator/>
         <TextBlock Text="PSX BIOS" FontWeight="Bold"/>
         <TextBlock Name="PsxBiosPathText" Text="(none)" TextWrapping="Wrap"/>
         <StackPanel Orientation="Horizontal" Spacing="6">

@@ -252,6 +252,11 @@ public partial class MainWindow : Window
     private FrameRateMode _frameRateMode = FrameRateMode.Auto;
     private readonly Dictionary<string, ConsoleRegion> _romRegionOverrides = new(StringComparer.OrdinalIgnoreCase);
     private string? _romRegionKey;
+    private readonly Dictionary<string, bool> _romSegaCdRamCartOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> _romSegaCdLoadCdToRamOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private string? _romSegaCdKey;
+    private bool _segaCdRamCartEnabled;
+    private bool _segaCdLoadCdToRam;
     private bool _regionOverrideUpdating;
     private bool _frameRateUpdating;
     private const string SettingsFileName = "eutherdrive_settings.toml";
@@ -352,6 +357,7 @@ public partial class MainWindow : Window
         UpdateRenderSkipUi();
         UpdateSpeedUi();
         UpdateSmsOverscanUi();
+        UpdateSegaCdOptionsUi();
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
@@ -1157,6 +1163,11 @@ public partial class MainWindow : Window
                     if (_core is MdTracerAdapter smsAdapter)
                         smsAdapter.SetShowSmsOverscan(_smsOverscanEnabled);
                 }
+                else if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
+                {
+                    PrepareSegaCdOptionsForRom(_romPath, segaCd.DiscInfo);
+                    ApplySegaCdOptionsToCore(segaCd);
+                }
 
                 if (!string.IsNullOrWhiteSpace(_romPath))
                 {
@@ -1738,6 +1749,11 @@ public partial class MainWindow : Window
         }
 
         SetRegionOverride(target, resetIfRunning: false, persist: false);
+
+        _romSegaCdKey = null;
+        _segaCdRamCartEnabled = false;
+        _segaCdLoadCdToRam = false;
+        UpdateSegaCdOptionsUi();
     }
 
     private void UpdateSnesRomInfo(SnesAdapter adapter)
@@ -1747,6 +1763,10 @@ public partial class MainWindow : Window
             RomInfoText.Text = adapter.RomSummary ?? "SNES ROM loaded.";
         UpdateRomRegionHint(adapter.RomRegionHint);
         _romRegionKey = null;
+        _romSegaCdKey = null;
+        _segaCdRamCartEnabled = false;
+        _segaCdLoadCdToRam = false;
+        UpdateSegaCdOptionsUi();
     }
 
     private void UpdateNesRomInfo(NesAdapter adapter)
@@ -1755,6 +1775,10 @@ public partial class MainWindow : Window
             RomInfoText.Text = adapter.RomSummary ?? "NES ROM loaded.";
         UpdateRomRegionHint(ConsoleRegion.Auto);
         _romRegionKey = null;
+        _romSegaCdKey = null;
+        _segaCdRamCartEnabled = false;
+        _segaCdLoadCdToRam = false;
+        UpdateSegaCdOptionsUi();
     }
 
     private void UpdatePsxRomInfo(string romPath)
@@ -1766,6 +1790,10 @@ public partial class MainWindow : Window
         RomInfoText.Text = info ?? "PSX ROM loaded.";
         UpdateRomRegionHint(ConsoleRegion.Auto);
         _romRegionKey = null;
+        _romSegaCdKey = null;
+        _segaCdRamCartEnabled = false;
+        _segaCdLoadCdToRam = false;
+        UpdateSegaCdOptionsUi();
     }
 
     private void UpdateSegaCdRomInfo(EutherDrive.Core.SegaCd.SegaCdAdapter adapter, string romPath)
@@ -1795,6 +1823,101 @@ public partial class MainWindow : Window
         RomInfoText.Text = sb.ToString().TrimEnd();
         UpdateRomRegionHint(adapter.RegionHint);
         _romRegionKey = null;
+
+        PrepareSegaCdOptionsForRom(romPath, adapter.DiscInfo);
+        UpdateSegaCdOptionsUi();
+        ApplySegaCdOptionsToCore(adapter);
+    }
+
+    private void PrepareSegaCdOptionsForRom(string? romPath, EutherDrive.Core.SegaCd.SegaCdDiscInfo? info)
+    {
+        if (info == null && !string.IsNullOrWhiteSpace(romPath))
+            info = EutherDrive.Core.SegaCd.SegaCdDiscInfo.Read(romPath);
+        _romSegaCdKey = GetSegaCdRomKey(info, romPath);
+        if (!string.IsNullOrWhiteSpace(_romSegaCdKey))
+        {
+            _segaCdRamCartEnabled = _romSegaCdRamCartOverrides.TryGetValue(_romSegaCdKey, out var ramCart) && ramCart;
+            _segaCdLoadCdToRam = _romSegaCdLoadCdToRamOverrides.TryGetValue(_romSegaCdKey, out var loadCd) && loadCd;
+        }
+        else
+        {
+            _segaCdRamCartEnabled = false;
+            _segaCdLoadCdToRam = false;
+        }
+    }
+
+    private void UpdateSegaCdOptionsUi()
+    {
+        bool enabled = _core is EutherDrive.Core.SegaCd.SegaCdAdapter;
+        if (SegaCdRamCartCheck != null)
+        {
+            SegaCdRamCartCheck.IsEnabled = enabled;
+            SegaCdRamCartCheck.IsChecked = enabled && _segaCdRamCartEnabled;
+        }
+        if (SegaCdLoadCdToRamCheck != null)
+        {
+            SegaCdLoadCdToRamCheck.IsEnabled = enabled;
+            SegaCdLoadCdToRamCheck.IsChecked = enabled && _segaCdLoadCdToRam;
+        }
+        if (SegaCdOptionsInfo != null)
+            SegaCdOptionsInfo.IsVisible = enabled;
+    }
+
+    private void ApplySegaCdOptionsToCore(EutherDrive.Core.SegaCd.SegaCdAdapter adapter)
+    {
+        adapter.EnableRamCartridge = _segaCdRamCartEnabled;
+        adapter.LoadCdIntoRam = _segaCdLoadCdToRam;
+    }
+
+    private static string? GetSegaCdRomKey(EutherDrive.Core.SegaCd.SegaCdDiscInfo? info, string? romPath)
+    {
+        string serial = info?.Serial?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(serial))
+            return $"scd:serial:{serial}";
+
+        if (string.IsNullOrWhiteSpace(romPath))
+            return null;
+
+        try
+        {
+            return $"path:{Path.GetFullPath(romPath)}";
+        }
+        catch
+        {
+            return $"path:{romPath}";
+        }
+    }
+
+    private void OnSegaCdRamCartToggle(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        bool enabled = SegaCdRamCartCheck?.IsChecked == true;
+        _segaCdRamCartEnabled = enabled;
+        if (!string.IsNullOrWhiteSpace(_romSegaCdKey))
+        {
+            if (enabled)
+                _romSegaCdRamCartOverrides[_romSegaCdKey] = true;
+            else
+                _romSegaCdRamCartOverrides.Remove(_romSegaCdKey);
+        }
+        if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
+            segaCd.EnableRamCartridge = enabled;
+        SaveSettings();
+    }
+
+    private void OnSegaCdLoadCdToRamToggle(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        bool enabled = SegaCdLoadCdToRamCheck?.IsChecked == true;
+        _segaCdLoadCdToRam = enabled;
+        if (!string.IsNullOrWhiteSpace(_romSegaCdKey))
+        {
+            if (enabled)
+                _romSegaCdLoadCdToRamOverrides[_romSegaCdKey] = true;
+            else
+                _romSegaCdLoadCdToRamOverrides.Remove(_romSegaCdKey);
+        }
+        if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
+            segaCd.LoadCdIntoRam = enabled;
+        SaveSettings();
     }
 
     private void UpdateRomRegionHintText()
@@ -2712,6 +2835,8 @@ public partial class MainWindow : Window
         public bool SmsOverscanEnabled { get; set; } = false;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
+        public Dictionary<string, bool>? RomSegaCdRamCartOverrides { get; set; }
+        public Dictionary<string, bool>? RomSegaCdLoadCdToRamOverrides { get; set; }
         public FrameRateMode FrameRateMode { get; set; } = FrameRateMode.Auto;
         public InputMappingSettings InputMappings { get; set; } = new();
     }
@@ -2734,6 +2859,8 @@ public partial class MainWindow : Window
         public bool SmsOverscanEnabled { get; set; } = false;
         public string? DefaultRegionOverride { get; set; }
         public Dictionary<string, string>? RomRegionOverrides { get; set; }
+        public Dictionary<string, bool>? RomSegaCdRamCartOverrides { get; set; }
+        public Dictionary<string, bool>? RomSegaCdLoadCdToRamOverrides { get; set; }
         public string? FrameRateMode { get; set; }
         public InputMappingSettingsToml? InputMappings { get; set; }
     }
@@ -2834,6 +2961,20 @@ public partial class MainWindow : Window
                 _romRegionOverrides[entry.Key] = entry.Value;
         }
 
+        _romSegaCdRamCartOverrides.Clear();
+        if (settings.RomSegaCdRamCartOverrides != null)
+        {
+            foreach (var entry in settings.RomSegaCdRamCartOverrides)
+                _romSegaCdRamCartOverrides[entry.Key] = entry.Value;
+        }
+
+        _romSegaCdLoadCdToRamOverrides.Clear();
+        if (settings.RomSegaCdLoadCdToRamOverrides != null)
+        {
+            foreach (var entry in settings.RomSegaCdLoadCdToRamOverrides)
+                _romSegaCdLoadCdToRamOverrides[entry.Key] = entry.Value;
+        }
+
         RegionOverride = _defaultRegionOverride;
         _frameRateMode = settings.FrameRateMode;
         UpdateFrameRateCombo();
@@ -2918,6 +3059,8 @@ public partial class MainWindow : Window
             SmsOverscanEnabled = _smsOverscanEnabled,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
+            RomSegaCdRamCartOverrides = new Dictionary<string, bool>(_romSegaCdRamCartOverrides, StringComparer.OrdinalIgnoreCase),
+            RomSegaCdLoadCdToRamOverrides = new Dictionary<string, bool>(_romSegaCdLoadCdToRamOverrides, StringComparer.OrdinalIgnoreCase),
             FrameRateMode = _frameRateMode,
             InputMappings = _inputMappings
         };
@@ -3006,6 +3149,12 @@ public partial class MainWindow : Window
                 model.RomRegionOverrides = table;
         }
 
+        if (settings.RomSegaCdRamCartOverrides != null && settings.RomSegaCdRamCartOverrides.Count > 0)
+            model.RomSegaCdRamCartOverrides = new Dictionary<string, bool>(settings.RomSegaCdRamCartOverrides, StringComparer.OrdinalIgnoreCase);
+
+        if (settings.RomSegaCdLoadCdToRamOverrides != null && settings.RomSegaCdLoadCdToRamOverrides.Count > 0)
+            model.RomSegaCdLoadCdToRamOverrides = new Dictionary<string, bool>(settings.RomSegaCdLoadCdToRamOverrides, StringComparer.OrdinalIgnoreCase);
+
         if (settings.InputMappings != null)
         {
             model.InputMappings = new InputMappingSettingsToml
@@ -3079,6 +3228,20 @@ public partial class MainWindow : Window
                 if (Enum.TryParse<ConsoleRegion>(entry.Value ?? string.Empty, out var regionOverride))
                     settings.RomRegionOverrides[entry.Key] = regionOverride;
             }
+        }
+
+        if (raw.RomSegaCdRamCartOverrides != null)
+        {
+            settings.RomSegaCdRamCartOverrides = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in raw.RomSegaCdRamCartOverrides)
+                settings.RomSegaCdRamCartOverrides[entry.Key] = entry.Value;
+        }
+
+        if (raw.RomSegaCdLoadCdToRamOverrides != null)
+        {
+            settings.RomSegaCdLoadCdToRamOverrides = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in raw.RomSegaCdLoadCdToRamOverrides)
+                settings.RomSegaCdLoadCdToRamOverrides[entry.Key] = entry.Value;
         }
 
         settings.InputMappings = ConvertTomlInputMappings(raw.InputMappings) ?? settings.InputMappings;
