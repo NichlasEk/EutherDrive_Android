@@ -10,6 +10,9 @@ internal sealed class SegaCdCdController
 
     private readonly SegaCdCddStub _cdd;
     private readonly SegaCdCdcStub _cdc;
+    private static readonly bool TraceCdTick =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CD_TICK"), "1", StringComparison.Ordinal);
+    private long _traceLastTicks;
 
     private ulong _driveCycleProduct;
     private readonly List<short> _audioBuffer = new();
@@ -35,6 +38,15 @@ internal sealed class SegaCdCdController
 
     public void Tick(ulong mclkCycles, WordRam wordRam, byte[] prgRam, bool prgRamAccessible, SegaCdPcmStub pcm)
     {
+        if (TraceCdTick)
+        {
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (now - _traceLastTicks >= System.Diagnostics.Stopwatch.Frequency)
+            {
+                _traceLastTicks = now;
+                Console.Error.WriteLine($"[SCD-CD] tick mclk={mclkCycles} driveProd={_driveCycleProduct}");
+            }
+        }
         _driveCycleProduct += mclkCycles * CdDaFrequency;
         while (_driveCycleProduct >= SegaCdMclkFrequency)
         {

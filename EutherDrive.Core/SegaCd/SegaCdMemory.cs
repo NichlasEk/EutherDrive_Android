@@ -58,13 +58,17 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_MAINREG_READ"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool LogMainRegProbe = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_MAINREG_PROBE"),
+        "1",
+        StringComparison.Ordinal);
     private bool _subRegAccessLogged;
     public const int BiosLen = 128 * 1024;
     public const int PrgRamLen = 512 * 1024;
     public const int BackupRamLen = 8 * 1024;
     public const int RamCartLen = 128 * 1024;
     private const byte RamCartSizeByte = 0x04;
-    private const uint TimerDivider = 1536;
+    private static readonly uint TimerDivider = ReadDivider("EUTHERDRIVE_SCD_TIMER_DIVIDER", 1536);
 
     private readonly byte[] _bios;
     private readonly byte[] _prgRam = new byte[PrgRamLen];
@@ -148,6 +152,16 @@ public sealed class SegaCdMemory
         return _cdController.ConsumeAudioBuffer();
     }
 
+    internal short[] ConsumeCdAudioBuffer()
+    {
+        return _cdController.ConsumeAudioBuffer();
+    }
+
+    internal short[] ConsumePcmAudioBuffer()
+    {
+        return Pcm.ConsumeAudioBuffer();
+    }
+
     public void Reset()
     {
         Registers.Reset();
@@ -215,6 +229,18 @@ public sealed class SegaCdMemory
         }
 
         Registers.StopwatchCounter = (ushort)((Registers.StopwatchCounter + 1) & 0x0FFF);
+    }
+
+    private static uint ReadDivider(string key, uint fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(key);
+        if (!string.IsNullOrWhiteSpace(raw)
+            && uint.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out uint value)
+            && value > 0)
+        {
+            return value;
+        }
+        return fallback;
     }
 
     public byte ReadMainByte(uint address)
@@ -469,7 +495,7 @@ public sealed class SegaCdMemory
 
     private byte ReadMainRegisterByte(uint address)
     {
-        if (_mainRegProbeRemaining > 0)
+        if (LogMainRegProbe && _mainRegProbeRemaining > 0)
         {
             _mainRegProbeRemaining--;
             Console.WriteLine($"[SCD-MAINREG-PROBE] R8 0x{address:X6}");
@@ -503,7 +529,7 @@ public sealed class SegaCdMemory
 
     private ushort ReadMainRegisterWord(uint address)
     {
-        if (_mainRegProbeRemaining > 0)
+        if (LogMainRegProbe && _mainRegProbeRemaining > 0)
         {
             _mainRegProbeRemaining--;
             Console.WriteLine($"[SCD-MAINREG-PROBE] R16 0x{address:X6}");
@@ -527,7 +553,7 @@ public sealed class SegaCdMemory
 
     private void WriteMainRegisterByte(uint address, byte value)
     {
-        if (_mainRegProbeRemaining > 0)
+        if (LogMainRegProbe && _mainRegProbeRemaining > 0)
         {
             _mainRegProbeRemaining--;
             Console.WriteLine($"[SCD-MAINREG-PROBE] W8 0x{address:X6} = 0x{value:X2}");
@@ -578,7 +604,7 @@ public sealed class SegaCdMemory
 
     private void WriteMainRegisterWord(uint address, ushort value)
     {
-        if (_mainRegProbeRemaining > 0)
+        if (LogMainRegProbe && _mainRegProbeRemaining > 0)
         {
             _mainRegProbeRemaining--;
             Console.WriteLine($"[SCD-MAINREG-PROBE] W16 0x{address:X6} = 0x{value:X4}");
@@ -814,8 +840,9 @@ public sealed class SegaCdMemory
     {
         uint reg = address & SubRegisterAddressMask;
         LogFirstSubRegAccess(reg, isWrite: true);
-        if (reg is 0x0004 or 0x0005 or 0x0007 or 0x0030 or 0x0031 or 0x0033 or 0x0034 or 0x0035 or 0x0037
-            or >= 0x0042 and <= 0x004B)
+        if (LogSubRegs
+            && reg is 0x0004 or 0x0005 or 0x0007 or 0x0030 or 0x0031 or 0x0033 or 0x0034 or 0x0035 or 0x0037
+                or >= 0x0042 and <= 0x004B)
         {
             Console.WriteLine($"[SCD-SUBREG-W] 0x{reg:X4} = 0x{value:X2}");
         }
@@ -927,8 +954,9 @@ public sealed class SegaCdMemory
     {
         uint reg = address & SubRegisterAddressMask;
         LogFirstSubRegAccess(reg, isWrite: true);
-        if (reg is 0x0004 or 0x0008 or 0x000A or 0x0030 or 0x0032 or 0x0034 or 0x0036
-            or >= 0x0042 and <= 0x004B)
+        if (LogSubRegs
+            && reg is 0x0004 or 0x0008 or 0x000A or 0x0030 or 0x0032 or 0x0034 or 0x0036
+                or >= 0x0042 and <= 0x004B)
         {
             Console.WriteLine($"[SCD-SUBREG-W] 0x{reg:X4} = 0x{value:X4}");
         }
