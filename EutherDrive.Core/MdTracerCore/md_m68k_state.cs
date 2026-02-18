@@ -4,6 +4,7 @@ namespace EutherDrive.Core.MdTracerCore;
 
 internal partial class md_m68k
 {
+    private static int _ctxSpZeroLogRemaining = 16;
     public sealed class MdM68kContext
     {
         public ushort Opcode;
@@ -84,6 +85,12 @@ internal partial class md_m68k
             ctx.RegAddr[i] = g_reg_addr[i].l;
         ctx.RegAddrUsp = g_reg_addr_usp.l;
 
+        if (_ctxSpZeroLogRemaining > 0 && ctx.RegAddr[7] == 0)
+        {
+            _ctxSpZeroLogRemaining--;
+            Console.WriteLine($"[m68k ctx] CaptureContext SP=0 pc=0x{g_reg_PC:X6} sr=0x{g_reg_SR:X4} usp=0x{g_reg_addr_usp.l:X8}");
+        }
+
         ctx.InitialPc = g_initial_PC;
         ctx.StackTop = g_stack_top;
 
@@ -121,6 +128,12 @@ internal partial class md_m68k
 
     internal static void ApplyContext(MdM68kContext ctx)
     {
+        if (_ctxSpZeroLogRemaining > 0 && ctx.RegAddr[7] == 0)
+        {
+            _ctxSpZeroLogRemaining--;
+            Console.WriteLine($"[m68k ctx] ApplyContext SP=0 ctx.pc=0x{ctx.RegPc:X6} cur.pc=0x{g_reg_PC:X6} usp=0x{ctx.RegAddrUsp:X8}");
+        }
+
         g_opcode = ctx.Opcode;
         g_op = ctx.Op;
         g_op1 = ctx.Op1;

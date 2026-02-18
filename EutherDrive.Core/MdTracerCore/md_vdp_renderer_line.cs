@@ -81,6 +81,10 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TracePriMapWidth =
             ParseTraceInt("EUTHERDRIVE_TRACE_PRI_MAP_WIDTH", 32);
         [NonSerialized] private long _tracePriMapFrame = -1;
+        private static readonly bool VScrollUseHScroll =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VSCROLL_USE_HSCROLL"), "0", StringComparison.Ordinal);
+        private static readonly bool VScrollUseH40Neg1 =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VSCROLL_H40_NEG1"), "0", StringComparison.Ordinal);
 
         private static int ParseTraceInt(string name, int fallback)
         {
@@ -252,6 +256,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (!DisablePlaneB)
             {
                 int w_view_x = ForceScrollZero ? 0 : g_line_snap[g_scanline].hscrollB;
+                int fineScrollX = w_view_x & 0x0F;
                 uint w_priority = 0;
                 uint w_palette = 0;
                 uint w_reverse = 0;
@@ -311,7 +316,40 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     if ((wx & w_vscroll_mask) == 0)
                     {
-                        int w_view_y = ForceScrollZero ? g_scanline : g_line_snap[g_scanline].vscrollB[wx >> 4];
+                        int vscrollIndex = wx >> 4;
+                        if (VScrollUseHScroll)
+                        {
+                            int scrolledX = wx + w_view_x;
+                            vscrollIndex = scrolledX >> 4;
+                            if (!IsH40Mode())
+                            {
+                                vscrollIndex &= 0x0F;
+                            }
+                            else if (vscrollIndex >= VSRAM_DATASIZE)
+                            {
+                                vscrollIndex %= VSRAM_DATASIZE;
+                            }
+                        }
+                        int w_view_y;
+                        if (VScrollUseH40Neg1 && !ForceScrollZero && IsH40Mode() && g_vdp_reg_11_2_vscroll != 0 && fineScrollX != 0 && wx < fineScrollX)
+                        {
+                            ushort vsramWord = g_vsram.Length > 39 ? g_vsram[39] : g_vsram[1];
+                            int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
+                            if (g_vdp_interlace_mode == 0)
+                                vsramWord &= 0x3ff;
+                            else
+                                vsramWord &= 0x7ff;
+                            if (g_vdp_interlace_mode == 2)
+                                vsramWord &= 0x7fe;
+                            int view = VScrollSubtract ? (lineY - vsramWord) : (vsramWord + lineY);
+                            view %= g_scroll_ysize;
+                            if (view < 0) view += g_scroll_ysize;
+                            w_view_y = view;
+                        }
+                        else
+                        {
+                            w_view_y = ForceScrollZero ? g_scanline : g_line_snap[g_scanline].vscrollB[vscrollIndex];
+                        }
                         w_view_dy = GetRowInCell(w_view_y);
                         w_view_addr = w_screen_adrdr + ((w_view_y >> cellShift) * g_scroll_xcell);
                         w_view_dx = 8;
@@ -342,7 +380,7 @@ namespace EutherDrive.Core.MdTracerCore
                             int tileBase = (int)(w_char & 0x07FF) << 5;
                             Console.WriteLine(
                                 $"[TILEFETCH] plane=B frame={_frameCounter} scanline={g_scanline} wx={wx} " +
-                                $"hscroll={g_line_snap[g_scanline].hscrollB} vscroll={g_line_snap[g_scanline].vscrollB[wx >> 4]} " +
+                                $"hscroll={g_line_snap[g_scanline].hscrollB} vscroll={g_line_snap[g_scanline].vscrollB[(VScrollUseHScroll ? ((wx + w_view_x) >> 4) % VSRAM_DATASIZE : (wx >> 4))]} " +
                                 $"nameBase=0x{scrollB_byte_addr:X4} nameIdx=0x{nameIndex:X4} nameAddr=0x{nameByteAddr:X4} " +
                                 $"raw=0x{w_val:X4} tile=0x{w_char:X3} pal={w_palette >> 4} prio={w_priority} rev={w_reverse} " +
                                 $"tileBase=0x{tileBase:X4} picAddr={(w_pic_addr >= 0 ? $"0x{w_pic_addr:X4}" : "direct")}");
@@ -380,13 +418,14 @@ namespace EutherDrive.Core.MdTracerCore
             if (!DisablePlaneA)
             {
                 int w_view_x = ForceScrollZero ? 0 : g_line_snap[g_scanline].hscrollA;
-                    uint w_priority = 0;
-                    uint w_palette = 0;
-                    uint w_reverse = 0;
-                    uint w_char = 0;
-                    int w_view_addr = 0;
-                    int w_view_dx = 8;
-                    int w_view_dy = 0;
+                int fineScrollX = w_view_x & 0x0F;
+                uint w_priority = 0;
+                uint w_palette = 0;
+                uint w_reverse = 0;
+                uint w_char = 0;
+                int w_view_addr = 0;
+                int w_view_dx = 8;
+                int w_view_dy = 0;
                      int scrollA_byte_addr = g_vdp_reg_2_scrolla & (IsH40Mode() ? 0xFE00 : 0xFC00);
                      int w_screen_adrdr = scrollA_byte_addr >> 1;
                      
@@ -426,15 +465,48 @@ namespace EutherDrive.Core.MdTracerCore
                         }
                     }
 
-                    for (int wx = 0; wx < g_display_xsize; wx++)
+                for (int wx = 0; wx < g_display_xsize; wx++)
+                {
+                    if ((wx & w_vscroll_mask) == 0)
                     {
-                        if ((wx & w_vscroll_mask) == 0)
+                        int vscrollIndex = wx >> 4;
+                        if (VScrollUseHScroll)
                         {
-                            int w_view_y = ForceScrollZero ? g_scanline : g_line_snap[g_scanline].vscrollA[wx >> 4];
-                            w_view_dy = GetRowInCell(w_view_y);
-                            w_view_addr = w_screen_adrdr + ((w_view_y >> cellShift) * g_scroll_xcell);
-                            w_view_dx = 8;
+                            int scrolledX = wx + w_view_x;
+                            vscrollIndex = scrolledX >> 4;
+                            if (!IsH40Mode())
+                            {
+                                vscrollIndex &= 0x0F;
+                            }
+                            else if (vscrollIndex >= VSRAM_DATASIZE)
+                            {
+                                vscrollIndex %= VSRAM_DATASIZE;
+                            }
                         }
+                        int w_view_y;
+                        if (VScrollUseH40Neg1 && !ForceScrollZero && IsH40Mode() && g_vdp_reg_11_2_vscroll != 0 && fineScrollX != 0 && wx < fineScrollX)
+                        {
+                            ushort vsramWord = g_vsram.Length > 38 ? g_vsram[38] : g_vsram[0];
+                            int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
+                            if (g_vdp_interlace_mode == 0)
+                                vsramWord &= 0x3ff;
+                            else
+                                vsramWord &= 0x7ff;
+                            if (g_vdp_interlace_mode == 2)
+                                vsramWord &= 0x7fe;
+                            int view = VScrollSubtract ? (lineY - vsramWord) : (vsramWord + lineY);
+                            view %= g_scroll_ysize;
+                            if (view < 0) view += g_scroll_ysize;
+                            w_view_y = view;
+                        }
+                        else
+                        {
+                            w_view_y = ForceScrollZero ? g_scanline : g_line_snap[g_scanline].vscrollA[vscrollIndex];
+                        }
+                        w_view_dy = GetRowInCell(w_view_y);
+                        w_view_addr = w_screen_adrdr + ((w_view_y >> cellShift) * g_scroll_xcell);
+                        w_view_dx = 8;
+                    }
                     if (w_view_dx == 8)
                     {
                         w_view_x %= g_scroll_xsize;
@@ -456,7 +528,7 @@ namespace EutherDrive.Core.MdTracerCore
                             int tileBase = (int)(w_char & 0x07FF) << 5;
                             Console.WriteLine(
                                 $"[TILEFETCH] plane=A frame={_frameCounter} scanline={g_scanline} wx={wx} " +
-                                $"hscroll={g_line_snap[g_scanline].hscrollA} vscroll={g_line_snap[g_scanline].vscrollA[wx >> 4]} " +
+                                $"hscroll={g_line_snap[g_scanline].hscrollA} vscroll={g_line_snap[g_scanline].vscrollA[(VScrollUseHScroll ? ((wx + w_view_x) >> 4) % VSRAM_DATASIZE : (wx >> 4))]} " +
                                 $"nameBase=0x{scrollA_byte_addr:X4} nameIdx=0x{nameIndex:X4} nameAddr=0x{nameByteAddr:X4} " +
                                 $"raw=0x{w_val:X4} tile=0x{w_char:X3} pal={w_palette >> 4} prio={w_priority} rev={w_reverse} " +
                                 $"tileBase=0x{tileBase:X4} picAddr={(w_pic_addr >= 0 ? $"0x{w_pic_addr:X4}" : "direct")}");

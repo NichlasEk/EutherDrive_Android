@@ -4,6 +4,10 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        private static readonly bool TraceDbfSub =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DBF_SUB"), "1", StringComparison.Ordinal);
+        private static int _traceDbfSubRemaining = 64;
+
         private void analyse_DBcc()
         {
             g_clock += 12;
@@ -31,6 +35,13 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 Console.WriteLine(
                     $"[OP51C9] pc=0x{startPc:X6} D{g_op4} pre=0x{before:X4} post=0x{after:X4} branch={(branch ? 1 : 0)} disp=0x{displacement:X4}");
+            }
+            if (TraceDbfSub && _traceDbfSubRemaining > 0 && startPc >= 0x0002E0 && startPc <= 0x0002E2)
+            {
+                _traceDbfSubRemaining--;
+                Console.WriteLine(
+                    $"[DBF-SUB] pc=0x{startPc:X6} op=0x{g_opcode:X4} D{g_op4} pre=0x{before:X4} post=0x{after:X4} branch={(branch ? 1 : 0)} " +
+                    $"D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} D2=0x{g_reg_data[2].l:X8} A0=0x{g_reg_addr[0].l:X8}");
             }
         }
 

@@ -157,9 +157,9 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock_now = 0;
             g_clock = 0;
 
-            _bootTraceEnabled = true;
-            _bootTraceRemaining = 200;
-            _bootTraceProbeRemaining = 16;
+            _bootTraceEnabled = TraceM68kBoot;
+            _bootTraceRemaining = TraceM68kBoot ? TraceM68kBootLimit : 0;
+            _bootTraceProbeRemaining = TraceM68kBoot ? TraceM68kBootProbeLimit : 0;
             _btstLogRemaining = 16;
             _bneLogRemaining = 32;
             _d1LogRemaining = 64;

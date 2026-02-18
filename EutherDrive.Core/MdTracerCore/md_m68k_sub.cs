@@ -265,6 +265,11 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static void SwapStacks()
         {
+            if (_swapLogRemaining > 0)
+            {
+                _swapLogRemaining--;
+                Console.WriteLine($"[m68k] SwapStacks S={(g_status_S ? 1 : 0)} A7=0x{g_reg_addr[7].l:X8} USP=0x{g_reg_addr_usp.l:X8}");
+            }
             uint temp = g_reg_addr_usp.l;
             g_reg_addr_usp.l = g_reg_addr[7].l;
             g_reg_addr[7].l = temp;
@@ -272,72 +277,36 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static void stack_push32(uint in_val)
         {
-            if (g_status_S)
-            {
-                g_reg_addr[7].l -= 4;
-                write32(g_reg_addr[7].l, in_val);
-            }
-            else
-            {
-                g_reg_addr_usp.l -= 4;
-                write32(g_reg_addr_usp.l, in_val);
-            }
+            g_reg_addr[7].l -= 4;
+            write32(g_reg_addr[7].l, in_val);
         }
 
         private static uint stack_pop32()
         {
             uint w_val;
 
-            if (g_status_S)
-            {
-                uint sp = g_reg_addr[7].l;
-                w_val = read32(sp);
-                write32(sp, 0);
-                g_reg_addr[7].l = sp + 4;
-            }
-            else
-            {
-                uint sp = g_reg_addr_usp.l;
-                w_val = read32(sp);
-                write32(sp, 0);
-                g_reg_addr_usp.l = sp + 4;
-            }
+            uint sp = g_reg_addr[7].l;
+            w_val = read32(sp);
+            write32(sp, 0);
+            g_reg_addr[7].l = sp + 4;
 
             return w_val;
         }
 
         private static void stack_push16(ushort in_val)
         {
-            if (g_status_S)
-            {
-                g_reg_addr[7].l -= 2;
-                write16(g_reg_addr[7].l, in_val);
-            }
-            else
-            {
-                g_reg_addr_usp.l -= 2;
-                write16(g_reg_addr_usp.l, in_val);
-            }
+            g_reg_addr[7].l -= 2;
+            write16(g_reg_addr[7].l, in_val);
         }
 
         private static ushort stack_pop16()
         {
             ushort w_val;
 
-            if (g_status_S)
-            {
-                uint sp = g_reg_addr[7].l;
-                w_val = read16(sp);
-                write16(sp, 0);
-                g_reg_addr[7].l = sp + 2;
-            }
-            else
-            {
-                uint sp = g_reg_addr_usp.l;
-                w_val = read16(sp);
-                write16(sp, 0);
-                g_reg_addr_usp.l = sp + 2;
-            }
+            uint sp = g_reg_addr[7].l;
+            w_val = read16(sp);
+            write16(sp, 0);
+            g_reg_addr[7].l = sp + 2;
 
             return w_val;
         }

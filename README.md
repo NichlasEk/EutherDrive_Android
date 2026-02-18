@@ -19,6 +19,8 @@ Du kan lägga BIOS i EutherDrive/bios/ med något av namnen:
 syscard3.pce, syscard2.pce, syscard1.pce, systemcard.pce, bios.pce
 CD-ljudet är WIP.
 
+Planerat är att också prova att tråda in ProjectPSX i UI för att kunna bygga vidare på och spela PSX titlar
+
 ## Funktioner
 - Spelar upp Mega Drive ROM:ar direkt från filväljare
 - Grundläggande SNES-stöd (via separat core)
@@ -57,6 +59,7 @@ https://github.com/Kookpot/SuperNintendoEmulator
 https://github.com/unknowall/emuPCE
 https://github.com/enusbaum/XamariNES
 https://github.com/jsgroth/jgenesis
+https://github.com/BluestormDNA/ProjectPSX
 ```
 
 https://github.com/jsgroth/jgenesis/

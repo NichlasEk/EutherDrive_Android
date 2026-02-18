@@ -67,6 +67,8 @@ public sealed class WordRam
     private WordRamPriorityMode _priorityMode = WordRamPriorityMode.Off;
     private ScdCpu _owner2m = ScdCpu.Main;
     private ScdCpu _bank0Owner1m = ScdCpu.Main;
+    private static readonly bool LogWordRam =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_WORDRAM"), "1", StringComparison.Ordinal);
 
     private const uint CellImageV32Size = 32 * 8 * 8 / 2;
     private const uint CellImageV16Size = 16 * 8 * 8 / 2;
@@ -76,6 +78,23 @@ public sealed class WordRam
 
     public WordRamMode Mode => _mode;
     public WordRamPriorityMode PriorityMode => _priorityMode;
+
+    public void Reset()
+    {
+        Array.Clear(_ram, 0, _ram.Length);
+        _subBufferedCount = 0;
+        _subBlockedRead = false;
+        _swapRequest = false;
+        _mode = WordRamMode.TwoM;
+        _priorityMode = WordRamPriorityMode.Off;
+        _owner2m = ScdCpu.Main;
+        _bank0Owner1m = ScdCpu.Main;
+    }
+
+    public string GetDebugState()
+    {
+        return $"mode={_mode} owner2m={_owner2m} bank0Owner1m={_bank0Owner1m} swapRequest={_swapRequest} priority={_priorityMode}";
+    }
 
     public byte ReadControl()
     {
@@ -108,6 +127,9 @@ public sealed class WordRam
 
         if (_mode == WordRamMode.OneM && !dmna)
             _swapRequest = true;
+
+        if (LogWordRam)
+            Console.WriteLine($"[SCD-WORDRAM] main ctl=0x{value:X2} {GetDebugState()}");
     }
 
     public void SubCpuWriteControl(byte value)
@@ -130,6 +152,9 @@ public sealed class WordRam
             0x02 => WordRamPriorityMode.Overwrite,
             _ => WordRamPriorityMode.Invalid
         };
+
+        if (LogWordRam)
+            Console.WriteLine($"[SCD-WORDRAM] sub ctl=0x{value:X2} {GetDebugState()}");
     }
 
     public byte MainCpuReadRam(uint address)

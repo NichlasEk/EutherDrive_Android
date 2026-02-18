@@ -22,6 +22,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using EutherDrive.Core;
 using EutherDrive.Core.MdTracerCore;
+using EutherDrive.Core.SegaCd;
 using EutherDrive.UI.Audio;
 using EutherDrive.Audio;
 using EutherDrive.Core.Savestates;
@@ -4889,7 +4890,7 @@ public partial class MainWindow : Window
                     ApplyInputToCore(core);
                     core.RunFrame();
                     GenerateAudioFromSystemCycles(core);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter || core is PsxAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter || core is PsxAdapter || core is SegaCdAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -5030,7 +5031,7 @@ public partial class MainWindow : Window
     {
         if (_core is MdTracerAdapter adapter)
             return adapter.GetAudioBufferForFrames(frames, out _, out _);
-        if (_core is SnesAdapter || _core is PceCdAdapter)
+        if (_core is SnesAdapter || _core is PceCdAdapter || _core is SegaCdAdapter)
             return DequeueSnesAudio(frames);
         return ReadOnlySpan<short>.Empty;
     }

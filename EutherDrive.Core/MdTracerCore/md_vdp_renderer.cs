@@ -156,6 +156,9 @@ namespace EutherDrive.Core.MdTracerCore
                      Console.WriteLine($"[VDP-RENDER] frame={_frameCounter} scanline={g_scanline} display=ON");
                  }
                  
+                 // Latch scroll-related state per scanline (closer to VDP behavior)
+                 LatchScrollForLine();
+
                  // Ta snapshot av VDP-tillstånd för den här linjen
                  rendering_line_snap();
 

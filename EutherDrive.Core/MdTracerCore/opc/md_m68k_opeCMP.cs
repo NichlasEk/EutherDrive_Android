@@ -4,6 +4,10 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        private static readonly bool TraceSubChkCmp =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SUB_CHK"), "1", StringComparison.Ordinal);
+        private static int _traceSubChkRemaining = 8;
+
         private void analyse_CMP()
         {
             uint pcBefore = (uint)(g_reg_PC);
@@ -47,6 +51,15 @@ namespace EutherDrive.Core.MdTracerCore
             g_status_Z = ((g_work_data.l & w_mask) == 0) ? true: false;
             g_status_V = ((SMC ^ DMC) & (DMC ^ RMC));
             g_status_C = ((SMC & !DMC) | (RMC & !DMC) | (SMC & RMC));
+
+            if (TraceSubChkCmp && _traceSubChkRemaining > 0 && g_opcode == 0xB041 && pcBefore == 0x0002F0)
+            {
+                _traceSubChkRemaining--;
+                Console.WriteLine(
+                    $"[SUB-CHK-CMP] pc=0x{pcBefore:X6} D0=0x{g_reg_data[0].w:X4} D1=0x{g_reg_data[1].w:X4} " +
+                    $"src=0x{g_work_val2.l & w_mask:X4} dst=0x{g_work_val1.l & w_mask:X4} res=0x{g_work_data.l & w_mask:X4} " +
+                    $"Z={(g_status_Z ? 1 : 0)} N={(g_status_N ? 1 : 0)} V={(g_status_V ? 1 : 0)} C={(g_status_C ? 1 : 0)}");
+            }
         }
    }
 }

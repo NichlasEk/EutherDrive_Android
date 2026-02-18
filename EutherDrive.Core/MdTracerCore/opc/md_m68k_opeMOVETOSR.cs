@@ -15,7 +15,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             adressing_func_address(g_op3, g_op4, 1);
             g_work_data.w = (ushort)adressing_func_read(g_op3, g_op4, 1);
-            g_reg_SR = g_work_data.w;
+            WriteSR(g_work_data.w);
         }
    }
 }

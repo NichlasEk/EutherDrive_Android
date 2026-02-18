@@ -13,8 +13,8 @@ internal sealed class MdTracerM68kContextRunner
 
     public void RunSome(md_m68k.MdM68kContext context, int budget)
     {
-        md_m68k.ApplyContext(context);
         _runner.EnsureInit();
+        md_m68k.ApplyContext(context);
         _runner.RunSome(budget);
         md_m68k.CaptureContext(context);
     }

@@ -24,6 +24,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
         private void analyse_Bcc_b()
         {
+            uint pc = g_reg_PC;
             g_clock += 10;
             g_reg_PC += 2;
            uint w_next_pc_work = (uint)(g_reg_PC + (sbyte)(g_opcode & 0x00ff));
@@ -36,6 +37,10 @@ namespace EutherDrive.Core.MdTracerCore
                    _bneLogRemaining--;
                    MdLog.WriteLine($"[m68k] BNE disp=0x{(byte)g_opcode:X2} Z={(g_status_Z ? 1 : 0)} take={(take ? 1 : 0)}");
                }
+           }
+           if (pc == 0x000B92)
+           {
+               Console.WriteLine($"[m68k] Bcc pc=0x{pc:X6} cond=0x{cond:X} Z={(g_status_Z ? 1 : 0)} take={(take ? 1 : 0)} disp=0x{(byte)g_opcode:X2}");
            }
            if (take) g_reg_PC = w_next_pc_work;
         }

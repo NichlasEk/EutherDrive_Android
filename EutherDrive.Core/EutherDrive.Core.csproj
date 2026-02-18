@@ -40,9 +40,9 @@
   </ItemGroup>
   
   <ItemGroup>
-    <ProjectReference Include="..\SuperNintendoEmulator\KSNES\KSNES.csproj" />
-    <ProjectReference Include="..\NESCore\XamariNES.Emulator\XamariNES.Emulator.csproj" />
-    <ProjectReference Include="..\ProjectPSX\ProjectPSX.csproj" />
+    <ProjectReference Include="..\SuperNintendoEmulator\KSNES\KSNES.csproj" Condition="Exists('..\SuperNintendoEmulator\KSNES\KSNES.csproj')" />
+    <ProjectReference Include="..\NESCore\XamariNES.Emulator\XamariNES.Emulator.csproj" Condition="Exists('..\NESCore\XamariNES.Emulator\XamariNES.Emulator.csproj')" />
+    <ProjectReference Include="..\ProjectPSX\ProjectPSX.csproj" Condition="Exists('..\ProjectPSX\ProjectPSX.csproj')" />
   </ItemGroup>
 
 </Project>

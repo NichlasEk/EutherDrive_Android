@@ -1,10 +1,26 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 
 namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
+        private static readonly bool TraceScrollRegs =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SCROLL_REGS"), "1", StringComparison.Ordinal);
+        private static readonly int TraceScrollRegsLimit =
+            ParseTraceIntLocalReg("EUTHERDRIVE_TRACE_SCROLL_REGS_LIMIT", 128);
+        private int _traceScrollRegsRemaining = TraceScrollRegsLimit;
+
+        private static int ParseTraceIntLocalReg(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value < 0 ? fallback : value;
+        }
         // Småhjälp för "headless" varningar
         private static void Warn(string msg)
         {
@@ -275,6 +291,10 @@ namespace EutherDrive.Core.MdTracerCore
         private ushort build_vdp_status_word()
         {
             ushort w_out = 0;
+            // Align DMA active with actual DMA state (jgenesis-style control_port.dma_active).
+            byte dmaActive = (byte)((g_dma_mode != 0 || g_dma_leng > 0) ? 1 : 0);
+            g_vdp_status_1_dma = dmaActive;
+
             w_out = g_vdp_status_9_empl;
             w_out = (ushort)((w_out << 1) | g_vdp_status_8_full);
             w_out = (ushort)((w_out << 1) | g_vdp_status_7_vinterrupt);
@@ -375,6 +395,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void set_vdp_register(uint in_num, byte in_data)
         {
+            byte oldRaw = g_vdp_reg[in_num];
             g_vdp_reg[in_num] = in_data;
             switch (in_num)
             {
@@ -477,14 +498,32 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
 
                 case 10:
+                {
+                    byte oldVal = g_vdp_reg_10_hint;
                     g_vdp_reg_10_hint = in_data;
+                    if (TraceScrollRegs && _traceScrollRegsRemaining > 0 && oldVal != g_vdp_reg_10_hint)
+                    {
+                        if (_traceScrollRegsRemaining != int.MaxValue)
+                            _traceScrollRegsRemaining--;
+                        Console.WriteLine($"[VDP-REG10] frame={_frameCounter} old=0x{oldVal:X2} new=0x{g_vdp_reg_10_hint:X2}");
+                    }
                     break;
+                }
 
                 case 11:
+                {
+                    byte oldVal = oldRaw;
                     g_vdp_reg_11_3_ext     = (byte)((in_data >> 3) & 0x01);
                     g_vdp_reg_11_2_vscroll = (byte)((in_data >> 2) & 0x01);
                     g_vdp_reg_11_1_hscroll = (byte)(in_data & 0x03);
+                    if (TraceScrollRegs && _traceScrollRegsRemaining > 0 && oldVal != in_data)
+                    {
+                        if (_traceScrollRegsRemaining != int.MaxValue)
+                            _traceScrollRegsRemaining--;
+                        Console.WriteLine($"[VDP-REG11] frame={_frameCounter} old=0x{oldVal:X2} new=0x{in_data:X2} hscroll={g_vdp_reg_11_1_hscroll} vscroll={g_vdp_reg_11_2_vscroll} ext={g_vdp_reg_11_3_ext}");
+                    }
                     break;
+                }
 
                   case 12:
                         // Register 12 is latched on V-Int (takes effect at next VBlank)
@@ -507,8 +546,17 @@ namespace EutherDrive.Core.MdTracerCore
                        break;
 
                 case 13:
+                {
+                    int oldVal = g_vdp_reg_13_hscroll;
                     g_vdp_reg_13_hscroll = (ushort)((in_data & 0x3f) << 10);
+                    if (TraceScrollRegs && _traceScrollRegsRemaining > 0 && oldVal != g_vdp_reg_13_hscroll)
+                    {
+                        if (_traceScrollRegsRemaining != int.MaxValue)
+                            _traceScrollRegsRemaining--;
+                        Console.WriteLine($"[VDP-REG13] frame={_frameCounter} old=0x{oldVal:X4} new=0x{g_vdp_reg_13_hscroll:X4} raw=0x{in_data:X2}");
+                    }
                     break;
+                }
 
                 case 14:
                 {
@@ -524,14 +572,34 @@ namespace EutherDrive.Core.MdTracerCore
                 }
 
                 case 15:
+                {
+                    byte oldVal = g_vdp_reg_15_autoinc;
                     g_vdp_reg_15_autoinc = in_data;
+                    if (TraceScrollRegs && _traceScrollRegsRemaining > 0 && oldVal != g_vdp_reg_15_autoinc)
+                    {
+                        if (_traceScrollRegsRemaining != int.MaxValue)
+                            _traceScrollRegsRemaining--;
+                        Console.WriteLine($"[VDP-REG15] frame={_frameCounter} old=0x{oldVal:X2} new=0x{g_vdp_reg_15_autoinc:X2}");
+                    }
                     break;
+                }
 
                 case 16:
+                {
+                    int oldV = g_vdp_reg_16_5_scrollV;
+                    int oldH = g_vdp_reg_16_1_scrollH;
                     g_vdp_reg_16_5_scrollV = (in_data >> 4) & 0x03;
                     g_vdp_reg_16_1_scrollH = in_data & 0x03;
                     RecomputeScrollSizes();
+                    if (TraceScrollRegs && _traceScrollRegsRemaining > 0
+                        && (oldV != g_vdp_reg_16_5_scrollV || oldH != g_vdp_reg_16_1_scrollH))
+                    {
+                        if (_traceScrollRegsRemaining != int.MaxValue)
+                            _traceScrollRegsRemaining--;
+                        Console.WriteLine($"[VDP-REG16] frame={_frameCounter} oldV={oldV} oldH={oldH} newV={g_vdp_reg_16_5_scrollV} newH={g_vdp_reg_16_1_scrollH} raw=0x{in_data:X2}");
+                    }
                     break;
+                }
 
                 case 17:
                 {

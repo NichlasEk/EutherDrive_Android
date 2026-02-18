@@ -68,7 +68,8 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     break;
                 case 7:
-                    g_analyze_address = get_int_cast(read16(g_reg_PC), 1);
+                    // Absolute short is sign-extended, then masked to 24-bit address.
+                    g_analyze_address = (uint)(short)read16(g_reg_PC) & 0x00FF_FFFF;
                     g_reg_PC += 2;
                     if (in_size == 2) g_clock += 12; else g_clock += 8;
                     break;

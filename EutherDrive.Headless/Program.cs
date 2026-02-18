@@ -11,6 +11,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using EutherDrive.Core;
+using EutherDrive.Core.SegaCd;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.Savestates;
 using EutherDrive.Audio;
@@ -140,8 +141,14 @@ class Program
             string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
             bool useSnes = string.Equals(coreOverride, "snes", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsSnesRomPath(romPath));
+            bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "scd", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
+            {
                 useSnes = false;
+                useSegaCd = false;
+            }
 
             if (useSnes)
             {
@@ -216,6 +223,48 @@ class Program
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"), traceSnesFrames);
                 snesAudioSink?.Dispose();
                 snesTraceWriter?.Dispose();
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useSegaCd)
+            {
+                Console.WriteLine("[HEADLESS] Using Sega CD core");
+                var scd = new SegaCdAdapter();
+                scd.LoadRom(romPath);
+
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> fb0 = scd.GetFrameBuffer(out int w0, out int h0, out int s0);
+                var stats0 = GetFrameStats(fb0, w0, h0, s0);
+                Console.WriteLine($"[HEADLESS] SegaCD fb_has_content={stats0.HasContent} nonzero_pixels={stats0.NonZeroPixels} first_nonzero=({stats0.FirstX},{stats0.FirstY})");
+                DumpBgraToPpm(fb0, w0, h0, s0, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    scd.RunFrame();
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                    {
+                        ReadOnlySpan<byte> fb = scd.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                        DumpBgraToPpm(fb, w, h, s, ppmPath);
+                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                    }
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> fbOut = scd.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] SegaCD fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_PRG") == "1")
+                {
+                    string prgPath = Path.Combine(dumpDir, "headless_prg_ram.bin");
+                    scd.DumpPrgRam(prgPath);
+                    Console.WriteLine($"[HEADLESS] Dumped PRG RAM to {prgPath}");
+                }
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -506,6 +555,23 @@ class Program
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
         return ext is ".smc" or ".sfc";
+    }
+
+    private static bool IsSegaCdRomPath(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is ".cue" or ".iso" or ".bin" or ".chd")
+        {
+            try
+            {
+                return SegaCdDiscInfo.IsSegaCdDisc(path);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        return false;
     }
 
     private static void DumpSnesFrame(SnesAdapter snes, string path, bool logStats)

@@ -23,7 +23,7 @@ internal partial class md_m68k
         // Restore SR and PC from stack (SR update handles S-bit swap)
         ushort newSr = stack_pop16();
         uint newPc = stack_pop32();
-        g_reg_SR = newSr;
+        WriteSR(newSr);
         g_reg_PC = newPc;
 
         if (_intLogRemaining > 0)

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Xml.Linq;
+using EutherDrive.Core.SegaCd;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -17,6 +18,7 @@ namespace EutherDrive.Core.MdTracerCore
         [NonSerialized] private int _traceDmaSourceRemaining;
         [NonSerialized] private long _traceDmaSourceFrame = -1;
         [NonSerialized] private int _traceDmaNonZeroRemaining;
+        private ushort _dmaOpenBus;
         private int g_dma_mode;
         private uint g_dma_src_addr;
         private int g_dma_leng;
@@ -415,6 +417,13 @@ namespace EutherDrive.Core.MdTracerCore
         {
             var bus = md_main.g_md_bus;
             ushort value = bus != null ? bus.read16(address) : md_m68k.read16(address);
+            // Sega CD: DMA reads from Word RAM (0x200000-0x3FFFFF) are delayed by one word.
+            if (bus?.OverrideBus is SegaCdMainBusOverride && address >= 0x200000 && address <= 0x3FFFFF)
+            {
+                ushort delayed = _dmaOpenBus;
+                _dmaOpenBus = value;
+                value = delayed;
+            }
             if (TraceDmaSourceReads && _traceDmaSourceRemaining > 0)
             {
                 if (_traceDmaSourceRemaining != int.MaxValue)

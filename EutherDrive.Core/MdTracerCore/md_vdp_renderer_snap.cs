@@ -5,6 +5,26 @@ namespace EutherDrive.Core.MdTracerCore
 {
     public partial class md_vdp
     {
+        private static readonly bool UseScrollLatch =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_LATCH_SCROLL"), "0", StringComparison.Ordinal);
+
+        private ushort _latchedVsramA;
+        private ushort _latchedVsramB;
+        private byte _latchedReg11HScroll;
+        private byte _latchedReg11VScroll;
+        private int _latchedReg13HScroll;
+
+        private void LatchScrollForLine()
+        {
+            if (!UseScrollLatch)
+                return;
+
+            _latchedReg11HScroll = g_vdp_reg_11_1_hscroll;
+            _latchedReg11VScroll = g_vdp_reg_11_2_vscroll;
+            _latchedReg13HScroll = g_vdp_reg_13_hscroll;
+            _latchedVsramA = g_vsram.Length > 0 ? g_vsram[0] : (ushort)0;
+            _latchedVsramB = g_vsram.Length > 1 ? g_vsram[1] : (ushort)0;
+        }
         private static readonly bool HScrollUnsigned =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSCROLL_UNSIGNED"), "1", StringComparison.Ordinal);
         private static readonly bool HScrollDirect =
@@ -140,8 +160,9 @@ namespace EutherDrive.Core.MdTracerCore
             // HScroll A/B
             {
                 int hscrollLine = GetHScrollLine(scrollScanline);
-                int w_addr = g_vdp_reg_13_hscroll;
-                int hscrollMask = g_vdp_reg_11_1_hscroll switch
+                int hscrollMode = UseScrollLatch ? _latchedReg11HScroll : g_vdp_reg_11_1_hscroll;
+                int w_addr = UseScrollLatch ? _latchedReg13HScroll : g_vdp_reg_13_hscroll;
+                int hscrollMask = hscrollMode switch
                 {
                     1 => 0x0007, // per 8-line block (tile row)
                     2 => 0x00F8, // per 8-line groups
@@ -180,8 +201,8 @@ namespace EutherDrive.Core.MdTracerCore
                     if (_traceScrollLineRemaining != int.MaxValue)
                         _traceScrollLineRemaining--;
                     Console.WriteLine(
-                        $"[SCROLLLINE] frame={_frameCounter} scanline={g_scanline} hmode={g_vdp_reg_11_1_hscroll} " +
-                        $"hbase=0x{g_vdp_reg_13_hscroll:X4} hline={hscrollLine} addr=0x{(w_addr << 1):X4} " +
+                        $"[SCROLLLINE] frame={_frameCounter} scanline={g_scanline} hmode={hscrollMode} " +
+                        $"hbase=0x{w_addr:X4} hline={hscrollLine} addr=0x{(w_addr << 1):X4} " +
                         $"hsA=0x{w_hscrollA:X3} hsB=0x{w_hscrollB:X3} viewA={w_view_xA} viewB={w_view_xB} " +
                         $"xsize={g_scroll_xsize} source={(ScrollUseOutputLine ? "out" : "scan")}");
                 }
@@ -220,10 +241,11 @@ namespace EutherDrive.Core.MdTracerCore
             // VScroll A/B
             {
                 int lineY = (g_vdp_interlace_mode == 0) ? scrollScanline : GetInterlaceLine(scrollScanline);
-                if (g_vdp_reg_11_2_vscroll == 0)
+                int vscrollMode = UseScrollLatch ? _latchedReg11VScroll : g_vdp_reg_11_2_vscroll;
+                if (vscrollMode == 0)
                 {
-                    ushort w_vscrollA = g_vsram[0];
-                    ushort w_vscrollB = g_vsram[1];
+                    ushort w_vscrollA = UseScrollLatch ? _latchedVsramA : g_vsram[0];
+                    ushort w_vscrollB = UseScrollLatch ? _latchedVsramB : g_vsram[1];
 
                     if (g_vdp_interlace_mode == 0)
                     {

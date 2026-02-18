@@ -48,6 +48,9 @@ internal partial class md_m68k
     // --- Interrupt flags (VDP och RTE m.fl. behöver dessa) ---
     internal static bool g_interrupt_V_req, g_interrupt_H_req, g_interrupt_EXT_req;
     internal static bool g_interrupt_V_act, g_interrupt_H_act, g_interrupt_EXT_act;
+    internal static byte g_interrupt_EXT_level = 2;
+    internal static uint g_interrupt_EXT_vector = 0x0068;
+    internal static Action<byte>? g_interrupt_EXT_ack;
 
     internal static bool g_68k_stop;
 

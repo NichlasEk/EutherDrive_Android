@@ -17,7 +17,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_reg_PC += 2;
             g_work_val1.w = g_reg_SR;
             g_work_data.w = (ushort)(g_work_val1.w  &  g_work_val2.w);
-            g_reg_SR = g_work_data.w;
+            WriteSR(g_work_data.w);
         }
    }
 }

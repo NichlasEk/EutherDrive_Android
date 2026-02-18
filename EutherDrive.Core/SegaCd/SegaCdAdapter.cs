@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using EutherDrive.Core.MdTracerCore;
 
 namespace EutherDrive.Core.SegaCd;
 
@@ -16,6 +17,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private short[] _audioBuffer = Array.Empty<short>();
     private int _frameWidth;
     private int _frameHeight;
+    private byte[] _gfxBuffer = Array.Empty<byte>();
+    private int _gfxWidth;
+    private int _gfxHeight;
     private string? _romPath;
     private SegaCdDiscInfo? _discInfo;
     private byte[]? _bios;
@@ -32,6 +36,43 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private int _subChecksumLogRemaining = 16;
     private bool _subChecksumComputed;
     private bool _lastSubReset;
+    private bool _subPcSawChecksumRegion;
+    private bool _subPcLoggedExit;
+    private int _subPcAfterExitRemaining;
+    private bool _subIrqHandlerLogged;
+    private byte _subLastIntMask = 0xFF;
+    private static readonly bool TraceSubPcAfterExit =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SUBPC_AFTER_EXIT"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceMainPc =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAINPC"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceMainPcFrame =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAINPC_FRAME"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceSubWait =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SUBWAIT"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceFrameBuffer =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_FRAMEBUFFER"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool EnableGfxOverlay =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_GFX_OVERLAY"),
+            "1",
+            StringComparison.Ordinal);
+    private int _mainPcLogRemaining = 32;
+    private long _lastMainPcFrame = -1;
+    private int _mainDecompLogRemaining = 64;
+    private long _lastSubWaitFrame = -1;
+    private int _lastFbLogW = -1;
+    private int _lastFbLogH = -1;
+    private int _lastFbLogStride = -1;
+    private int _lastFbLogSrcLen = -1;
 
     public SegaCdDiscInfo? DiscInfo => _discInfo;
     public ConsoleRegion RegionHint { get; private set; } = ConsoleRegion.Auto;
@@ -82,6 +123,14 @@ public sealed class SegaCdAdapter : IEmulatorCore
             LoadRom(_romPath);
     }
 
+    public void DumpPrgRam(string path)
+    {
+        if (_memory == null)
+            return;
+        byte[] snapshot = _memory.GetPrgRamSnapshot();
+        File.WriteAllBytes(path, snapshot);
+    }
+
     public void RunFrame()
     {
         if (_memory == null || _mainContext == null || _subContext == null || _mainBus == null || _subBus == null)
@@ -107,8 +156,30 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 int subSlice = subPerLine + (line < subRemainder ? 1 : 0);
 
             EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
+            if (TraceMainPcFrame)
+            {
+                long frame = vdp?.FrameCounter ?? -1;
+                if (frame != _lastMainPcFrame)
+                {
+                    _lastMainPcFrame = frame;
+                    Console.WriteLine($"[SCD-MAIN-FRAME] frame={frame} pc=0x{_mainContext.RegPc:X6} sp=0x{_mainContext.RegAddr[7]:X8} op=0x{_mainContext.Opcode:X4}");
+                }
+            }
             if (mainSlice > 0)
                 _cpuRunner.RunSome(_mainContext, mainSlice);
+            if (TraceMainPc && _mainPcLogRemaining > 0)
+            {
+                _mainPcLogRemaining--;
+                Console.WriteLine($"[SCD-MAIN] pc=0x{_mainContext.RegPc:X6} sp=0x{_mainContext.RegAddr[7]:X8} op=0x{_mainContext.Opcode:X4}");
+            }
+            if (_mainDecompLogRemaining > 0 && _mainContext.RegPc >= 0x00090E && _mainContext.RegPc <= 0x00098C)
+            {
+                _mainDecompLogRemaining--;
+                Console.WriteLine(
+                    $"[SCD-MAIN-DECOMP] pc=0x{_mainContext.RegPc:X6} op=0x{_mainContext.Opcode:X4} " +
+                    $"A0=0x{_mainContext.RegAddr[0]:X8} A1=0x{_mainContext.RegAddr[1]:X8} " +
+                    $"D0=0x{_mainContext.RegData[0]:X8} D1=0x{_mainContext.RegData[1]:X8} D2=0x{_mainContext.RegData[2]:X8} D3=0x{_mainContext.RegData[3]:X8}");
+            }
 
             bool subReset = _memory.SubCpuReset;
             if (subReset && !_lastSubReset)
@@ -117,6 +188,14 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
             if (!_memory.SubCpuHalt && !_memory.SubCpuReset)
             {
+                    // Preserve main CPU interrupt state while running the sub CPU.
+                    bool mainVReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req;
+                    bool mainHReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req;
+                    bool mainExtReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req;
+                    bool mainVAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act;
+                    bool mainHAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act;
+                    bool mainExtAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act;
+
                     if (!EnsureSubContextInitialized(_memory))
                     {
                         if (_subInitLogRemaining > 0)
@@ -134,16 +213,57 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_level = subLevel;
                             EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_vector = (uint)(0x0060 + (subLevel * 4));
                             EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_ack = _memory.AcknowledgeSubInterrupt;
-                            EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req = true;
                         }
+                        _subContext.InterruptExtReq = subLevel != 0;
                         EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _subBus;
-                        if (subSlice > 0)
-                            _cpuRunner.RunSome(_subContext, subSlice);
-                        if (_subPcLogRemaining > 0)
+                    if (subSlice > 0)
+                        _cpuRunner.RunSome(_subContext, subSlice);
+                    uint subPc = _subContext.RegPc;
+                    if (subPc >= 0x0002C0 && subPc <= 0x000320)
+                    {
+                        _subPcSawChecksumRegion = true;
+                    }
+                    else if (_subPcSawChecksumRegion && !_subPcLoggedExit)
+                    {
+                        _subPcLoggedExit = true;
+                        Console.WriteLine($"[SCD-SUB] left checksum region pc=0x{subPc:X6}");
+                        if (TraceSubPcAfterExit)
+                            _subPcAfterExitRemaining = 16;
+                    }
+                    if (!_subIrqHandlerLogged && subPc >= 0x0005F2 && subPc <= 0x000610)
+                    {
+                        _subIrqHandlerLogged = true;
+                        Console.WriteLine($"[SCD-SUB] entered IRQ handler pc=0x{subPc:X6}");
+                    }
+                    if (_subPcAfterExitRemaining > 0)
+                    {
+                        _subPcAfterExitRemaining--;
+                        Console.WriteLine($"[SCD-SUB] post-exit pc=0x{subPc:X6} op=0x{_subContext.Opcode:X4}");
+                    }
+                    if (TraceSubWait && subPc >= 0x0005E0 && subPc <= 0x0005F0)
+                    {
+                        long frame = vdp?.FrameCounter ?? -1;
+                        if (frame != _lastSubWaitFrame)
                         {
-                            _subPcLogRemaining--;
-                            Console.WriteLine($"[SCD-SUB] pc=0x{_subContext.RegPc:X6} sp=0x{_subContext.RegAddr[7]:X8} op=0x{_subContext.Opcode:X4}");
+                            _lastSubWaitFrame = frame;
+                            byte prgFlag = _memory.ReadSubByte(0x0005EA4);
+                            byte subFlag = _memory.ReadSubByte(0xFF800F);
+                            byte mainFlag = _memory.ReadSubByte(0xFF800E);
+                            Console.WriteLine(
+                                $"[SCD-SUBWAIT] frame={frame} pc=0x{subPc:X6} prg[0x005EA4]=0x{prgFlag:X2} " +
+                                $"mainFlag=0x{mainFlag:X2} subFlag=0x{subFlag:X2}");
                         }
+                    }
+                    if (_subContext.StatusInterruptMask != _subLastIntMask)
+                    {
+                        _subLastIntMask = _subContext.StatusInterruptMask;
+                        Console.WriteLine($"[SCD-SUB] int-mask={_subLastIntMask}");
+                    }
+                    if (_subPcLogRemaining > 0)
+                    {
+                        _subPcLogRemaining--;
+                        Console.WriteLine($"[SCD-SUB] pc=0x{_subContext.RegPc:X6} sp=0x{_subContext.RegAddr[7]:X8} op=0x{_subContext.Opcode:X4}");
+                    }
                         if (_subDumpRemaining > 0 && _subContext.RegPc >= 0x0002E0 && _subContext.RegPc <= 0x0002E2)
                         {
                             _subDumpRemaining--;
@@ -191,6 +311,14 @@ public sealed class SegaCdAdapter : IEmulatorCore
                         }
                         _memory.FlushBufferedSubWrites();
                     }
+
+                    // Restore main CPU interrupt state after sub CPU run.
+                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req = mainVReq;
+                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req = mainHReq;
+                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req = mainExtReq;
+                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act = mainVAct;
+                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act = mainHAct;
+                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act = mainExtAct;
                 }
                 else
                 {
@@ -202,6 +330,14 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     _memory.Tick((uint)mainSlice);
 
                 vdp.run(line);
+
+                // Capture VDP-driven interrupt requests into the main CPU context.
+                _mainContext.InterruptVReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req;
+                _mainContext.InterruptHReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req;
+                _mainContext.InterruptExtReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req;
+                _mainContext.InterruptVAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act;
+                _mainContext.InterruptHAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act;
+                _mainContext.InterruptExtAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act;
             }
             // Ensure main CPU context is active before capturing.
             EutherDrive.Core.MdTracerCore.md_m68k.ApplyContext(_mainContext);
@@ -216,6 +352,18 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 _frameBuffer = new byte[needed];
 
             var src = vdp.RgbaFrame;
+            if (TraceFrameBuffer)
+            {
+                int stride = frameW * 4;
+                if (frameW != _lastFbLogW || frameH != _lastFbLogH || stride != _lastFbLogStride || src.Length != _lastFbLogSrcLen)
+                {
+                    _lastFbLogW = frameW;
+                    _lastFbLogH = frameH;
+                    _lastFbLogStride = stride;
+                    _lastFbLogSrcLen = src.Length;
+                    Console.WriteLine($"[SCD-FRAME] vdp w={frameW} h={frameH} stride={stride} srcLen={src.Length}");
+                }
+            }
             int pixels = Math.Min(frameW * frameH, src.Length / 4);
             int si = 0;
             int di = 0;
@@ -237,15 +385,34 @@ public sealed class SegaCdAdapter : IEmulatorCore
         if (_memory != null && _memory.Graphics.TryGetImageBufferDimensions(out int gw, out int gh))
         {
             int needed = gw * gh * 4;
-            if (_frameBuffer.Length != needed)
-                _frameBuffer = new byte[needed];
+            if (_gfxBuffer.Length != needed)
+                _gfxBuffer = new byte[needed];
 
-            if (_memory.Graphics.TryRenderImageBuffer(_memory.WordRam, _frameBuffer, out int rw, out int rh))
+            if (_memory.Graphics.TryRenderImageBuffer(_memory.WordRam, _gfxBuffer, out int rw, out int rh))
             {
-                _frameWidth = rw;
-                _frameHeight = rh;
+                _gfxWidth = rw;
+                _gfxHeight = rh;
+                if (TraceFrameBuffer)
+                    Console.WriteLine($"[SCD-FRAME] gfx w={rw} h={rh} stride={rw * 4}");
+
+                // Composite gfx buffer over the VDP output without changing the frame size.
+                if (EnableGfxOverlay)
+                {
+                    int copyW = Math.Min(_frameWidth, _gfxWidth);
+                    int copyH = Math.Min(_frameHeight, _gfxHeight);
+                    int dstStride = _frameWidth * 4;
+                    int srcStride = _gfxWidth * 4;
+                    for (int y = 0; y < copyH; y++)
+                    {
+                        int srcRow = y * srcStride;
+                        int dstRow = y * dstStride;
+                        Array.Copy(_gfxBuffer, srcRow, _frameBuffer, dstRow, copyW * 4);
+                    }
+                }
             }
         }
+
+        _audioBuffer = _memory != null ? _memory.ConsumeAudioBuffer() : Array.Empty<short>();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -278,11 +445,28 @@ public sealed class SegaCdAdapter : IEmulatorCore
         bool mode,
         PadType padType)
     {
-        _ = up; _ = down; _ = left; _ = right;
-        _ = a; _ = b; _ = c; _ = start;
-        _ = x; _ = y; _ = z; _ = mode;
-        _ = padType;
-        // TODO: wire inputs to Genesis controller once Sega CD core is ported
+        var io = md_main.g_md_io;
+        if (io == null)
+            return;
+
+        var state = new MdPadState
+        {
+            Up = up,
+            Down = down,
+            Left = left,
+            Right = right,
+            A = a,
+            B = b,
+            C = c,
+            Start = start,
+            X = x,
+            Y = y,
+            Z = z,
+            Mode = mode
+        };
+
+        io.SetPad1Input(state, padType);
+        md_sms_io.SetPad1Input(state);
     }
 
     private static ConsoleRegion DiscInfoToRegion(SegaCdDiscInfo? info)

@@ -3410,6 +3410,9 @@ namespace EutherDrive.Core.MdTracerCore
         // BUSACK semantics: bit0 == 1 when Z80 is running, bit0 == 0 when bus granted to 68k.
         private byte BuildBusAckRead8()
         {
+            // Sega CD BIOS expects Z80 bus granted; return 0 in Sega CD mode.
+            if (md_main.g_md_bus?.OverrideBus is EutherDrive.Core.SegaCd.SegaCdMainBusOverride)
+                return 0x00;
             bool busAck = !_z80BusGranted && !_z80Reset;
             return (byte)(busAck ? 0x01 : 0x00);
         }

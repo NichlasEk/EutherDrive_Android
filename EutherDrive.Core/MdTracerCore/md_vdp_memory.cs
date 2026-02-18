@@ -33,6 +33,10 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_TRACE_VDP_CTRL_PC_LIMIT", 256);
         private static readonly List<(uint Start, uint End)> TraceVdpCtrlPcRanges =
             md_m68k.ParseWatchRangeList("EUTHERDRIVE_TRACE_VDP_CTRL_PC_RANGE");
+        private static readonly bool TraceVsramWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VSRAM"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVsramWritesLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VSRAM_LIMIT", 256);
         private static readonly bool TraceVdpData8 =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VDP_DATA8"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpCtrl8 =
@@ -77,6 +81,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _vdpCtrlPcRemaining = TraceVdpCtrlPcLimit;
         private int _cramPcRemaining = TraceCramWritesPcLimit;
         private int _patternPcRemaining = TracePatternWritesPcLimit;
+        private int _vsramLogRemaining = TraceVsramWritesLimit;
 
         // Centraliserad felhantering (strict by default; disable with EUTHERDRIVE_VDP_STRICT=0).
         private static void Error(string where)
@@ -199,7 +204,11 @@ namespace EutherDrive.Core.MdTracerCore
                 LogStatusRead(w_out, postStatus);
                 if (TraceStatusRead)
                 {
-                    Console.WriteLine($"[VDP-STATUS-RD] frame={_frameCounter} status=0x{w_out:X4} vblank={((w_out & VDP_STATUS_VBLANK_MASK) != 0 ? 1 : 0)} overflow={((w_out & 0x0040) != 0 ? 1 : 0)} collision={((w_out & 0x0020) != 0 ? 1 : 0)}");
+                    int dmaBit = (w_out & 0x0002) != 0 ? 1 : 0;
+                    Console.WriteLine(
+                        $"[VDP-STATUS-RD] frame={_frameCounter} status=0x{w_out:X4} vblank={((w_out & VDP_STATUS_VBLANK_MASK) != 0 ? 1 : 0)} " +
+                        $"overflow={((w_out & 0x0040) != 0 ? 1 : 0)} collision={((w_out & 0x0020) != 0 ? 1 : 0)} dmaBit={dmaBit} " +
+                        $"dmaMode={g_dma_mode} dmaLen={g_dma_leng}");
                 }
                 if (TraceStatusLoop)
                 {
@@ -443,6 +452,15 @@ namespace EutherDrive.Core.MdTracerCore
                     case 5: // VSRAM write
                         if (g_vdp_reg_dest_address < 80)
                         {
+                            if (TraceVsramWrites && _vsramLogRemaining > 0)
+                            {
+                                if (_vsramLogRemaining != int.MaxValue)
+                                    _vsramLogRemaining--;
+                                Console.WriteLine(
+                                    $"[VSRAM-WR] frame={_frameCounter} scanline={g_scanline} pc=0x{md_m68k.g_reg_PC:X6} " +
+                                    $"addr=0x{g_vdp_reg_dest_address:X4} idx={(g_vdp_reg_dest_address >> 1)} val=0x{in_data:X4} " +
+                                    $"autoinc=0x{g_vdp_reg_15_autoinc:X2} code=0x{g_vdp_reg_code:X2}");
+                            }
                             g_vsram[g_vdp_reg_dest_address >> 1] = in_data;
                             g_vdp_reg_dest_address = (ushort)((g_vdp_reg_dest_address + g_vdp_reg_15_autoinc) & 0xffff);
                         }

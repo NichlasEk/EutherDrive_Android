@@ -157,8 +157,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (bus?.OverrideBus != null && bus.OverrideBus.TryRead16(addr, out ushort overrideValue))
                 return overrideValue;
 
+            uint addr1 = NormalizeAddr(in_address + 1);
             byte hi = mem[addr];
-            byte lo = mem[addr + 1];
+            byte lo = mem[addr1];
             ushort value = (ushort)((hi << 8) | lo);
             RecordMemoryAccess(addr, 2, false, value);
             return value;
@@ -174,10 +175,14 @@ namespace EutherDrive.Core.MdTracerCore
             if (bus?.OverrideBus != null && bus.OverrideBus.TryRead32(addr, out uint overrideValue))
                 return overrideValue;
 
+            uint addr1 = NormalizeAddr(in_address + 1);
+            uint addr2 = NormalizeAddr(in_address + 2);
+            uint addr3 = NormalizeAddr(in_address + 3);
+
             uint b3 = mem[addr];
-            uint b2 = mem[addr + 1];
-            uint b1 = mem[addr + 2];
-            uint b0 = mem[addr + 3];
+            uint b2 = mem[addr1];
+            uint b1 = mem[addr2];
+            uint b0 = mem[addr3];
 
             uint value = (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
             RecordMemoryAccess(addr, 4, false, value);
@@ -216,8 +221,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (bus?.OverrideBus != null && bus.OverrideBus.TryWrite16(addr, in_data))
                 return;
 
-            mem[addr]     = (byte)(in_data >> 8);
-            mem[addr + 1] = (byte)(in_data & 0x00FF);
+            uint addr1 = NormalizeAddr(in_address + 1);
+            mem[addr]  = (byte)(in_data >> 8);
+            mem[addr1] = (byte)(in_data & 0x00FF);
             RecordMemoryAccess(addr, 2, true, in_data);
         }
 
@@ -234,10 +240,14 @@ namespace EutherDrive.Core.MdTracerCore
             if (bus?.OverrideBus != null && bus.OverrideBus.TryWrite32(addr, in_data))
                 return;
 
-            mem[addr]     = (byte)(in_data >> 24);
-            mem[addr + 1] = (byte)((in_data >> 16) & 0x00FF);
-            mem[addr + 2] = (byte)((in_data >> 8) & 0x00FF);
-            mem[addr + 3] = (byte)(in_data & 0x00FF);
+            uint addr1 = NormalizeAddr(in_address + 1);
+            uint addr2 = NormalizeAddr(in_address + 2);
+            uint addr3 = NormalizeAddr(in_address + 3);
+
+            mem[addr]  = (byte)(in_data >> 24);
+            mem[addr1] = (byte)((in_data >> 16) & 0x00FF);
+            mem[addr2] = (byte)((in_data >> 8) & 0x00FF);
+            mem[addr3] = (byte)(in_data & 0x00FF);
             RecordMemoryAccess(addr, 4, true, in_data);
         }
     }
