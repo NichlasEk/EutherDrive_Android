@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace EutherDrive.Core.SegaCd;
 
@@ -37,6 +38,29 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_SUBREAD"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool LogCddCmd = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_CDDCMD"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool LogCddStatus = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_CDDSTATUS"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool LogCddReset = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_CDDRESET"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool LogCddResetEdge = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_CDDRESET_EDGE"),
+        "1",
+        StringComparison.Ordinal);
+    private int _cddStatusLogRemaining = 64;
+    private int _cddResetLogRemaining = 32;
+    private bool _subCdcDestLogged;
+    private bool _subCdcRegAddrLogged;
+    private bool _subCdcRegDataLogged;
+    private bool _subAckCddLogged;
+    private bool _cddResetLineHigh = true;
     private static readonly bool LogPrgRamWatch = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_WATCH"),
         "1",
@@ -77,6 +101,7 @@ public sealed class SegaCdMemory
     private bool _ramCartWritesEnabled = true;
     private bool _backupRamDirty;
     private uint _timerDivider = TimerDivider;
+    private readonly long[] _subAckCounts = new long[6];
     public const uint SubBusAddressMask = 0x0FFFFF;
     private const uint SubRegisterAddressMask = 0x01FF;
 
@@ -121,18 +146,25 @@ public sealed class SegaCdMemory
         _bios = bios;
         Cdc = new SegaCdCdcStub();
         Cdd = new SegaCdCddStub();
-        Cdd.SetModel(ParseCdModel());
+        Cdd.SetModel(ParseCdModel(bios));
         Pcm = new SegaCdPcmStub();
         _cdController = new SegaCdCdController(Cdd, Cdc);
     }
 
-    private static SegaCdCddStub.CdModel ParseCdModel()
+    private static SegaCdCddStub.CdModel ParseCdModel(byte[] bios)
     {
         string? modelEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_MODEL");
-        return string.Equals(modelEnv, "2", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(modelEnv, "two", StringComparison.OrdinalIgnoreCase)
-            ? SegaCdCddStub.CdModel.Two
-            : SegaCdCddStub.CdModel.One;
+        if (string.Equals(modelEnv, "2", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(modelEnv, "two", StringComparison.OrdinalIgnoreCase))
+            return SegaCdCddStub.CdModel.Two;
+        if (string.Equals(modelEnv, "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(modelEnv, "one", StringComparison.OrdinalIgnoreCase))
+            return SegaCdCddStub.CdModel.One;
+
+        // Match jgenesis: detect from BIOS version string at 0x18A..0x18C ("1.")
+        if (bios.Length >= 0x18C && bios[0x18A] == (byte)'1' && bios[0x18B] == (byte)'.')
+            return SegaCdCddStub.CdModel.One;
+        return SegaCdCddStub.CdModel.Two;
     }
 
     public byte[] GetPrgRamSnapshot()
@@ -145,6 +177,17 @@ public sealed class SegaCdMemory
     internal void SetDisc(CdRom? disc)
     {
         _cdController.SetDisc(disc);
+        if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_DISC"), "1", StringComparison.Ordinal))
+        {
+            if (disc == null)
+            {
+                Console.Error.WriteLine("[SCD-DISC] SetDisc: null");
+            }
+            else
+            {
+                Console.Error.WriteLine($"[SCD-DISC] SetDisc: tracks={disc.Cue.Tracks.Count} end={disc.Cue.LastTrack.EndTime}");
+            }
+        }
     }
 
     internal short[] ConsumeAudioBuffer()
@@ -745,11 +788,26 @@ public sealed class SegaCdMemory
                     | ((Registers.SoftwareInterruptEnabled ? 1 : 0) << 2)
                     | ((Registers.GraphicsInterruptEnabled ? 1 : 0) << 1));
             case 0x0036:
-                return (byte)(Cdd.PlayingAudio ? 0 : 1);
+                {
+                    byte value = (byte)(Cdd.PlayingAudio ? 0 : 1);
+                    if (LogCddStatus && _cddStatusLogRemaining-- > 0)
+                        Console.WriteLine($"[SCD-CDD-STATUS] R8 0x0036 -> 0x{value:X2}");
+                    return value;
+                }
             case 0x0037:
-                return (byte)((Registers.CddHostClockOn ? 1 : 0) << 2);
+                {
+                    byte value = (byte)((Registers.CddHostClockOn ? 1 : 0) << 2);
+                    if (LogCddStatus && _cddStatusLogRemaining-- > 0)
+                        Console.WriteLine($"[SCD-CDD-STATUS] R8 0x0037 -> 0x{value:X2}");
+                    return value;
+                }
             case >= 0x0038 and <= 0x0041:
-                return Cdd.Status[(reg - 8) & 0x0F];
+                {
+                    byte value = Cdd.Status[(reg - 8) & 0x0F];
+                    if (LogCddStatus && _cddStatusLogRemaining-- > 0)
+                        Console.WriteLine($"[SCD-CDD-STATUS] R8 0x{reg:X4} -> 0x{value:X2}");
+                    return value;
+                }
             case >= 0x0042 and <= 0x004B:
                 return Registers.CddCommand[(reg - 2) & 0x0F];
             case 0x004C:
@@ -816,7 +874,10 @@ public sealed class SegaCdMemory
             case >= 0x0038 and <= 0x0041:
                 {
                     int rel = (int)((reg - 8) & 0x0F);
-                    return (ushort)((Cdd.Status[rel] << 8) | Cdd.Status[(rel + 1) & 0x0F]);
+                    ushort value = (ushort)((Cdd.Status[rel] << 8) | Cdd.Status[(rel + 1) & 0x0F]);
+                    if (LogCddStatus && _cddStatusLogRemaining-- > 0)
+                        Console.WriteLine($"[SCD-CDD-STATUS] R16 0x{reg:X4} -> 0x{value:X4}");
+                    return value;
                 }
             case >= 0x0042 and <= 0x004B:
                 {
@@ -840,6 +901,21 @@ public sealed class SegaCdMemory
     {
         uint reg = address & SubRegisterAddressMask;
         LogFirstSubRegAccess(reg, isWrite: true);
+        if (reg == 0x0004 && !_subCdcDestLogged)
+        {
+            _subCdcDestLogged = true;
+            Console.Error.WriteLine($"[SCD-SUB-CDC] W 0x0004 = 0x{value:X2}");
+        }
+        if (reg == 0x0005 && !_subCdcRegAddrLogged)
+        {
+            _subCdcRegAddrLogged = true;
+            Console.Error.WriteLine($"[SCD-SUB-CDC] W 0x0005 = 0x{value:X2}");
+        }
+        if (reg == 0x0007 && !_subCdcRegDataLogged)
+        {
+            _subCdcRegDataLogged = true;
+            Console.Error.WriteLine($"[SCD-SUB-CDC] W 0x0007 = 0x{value:X2}");
+        }
         if (LogSubRegs
             && reg is 0x0004 or 0x0005 or 0x0007 or 0x0030 or 0x0031 or 0x0033 or 0x0034 or 0x0035 or 0x0037
                 or >= 0x0042 and <= 0x004B)
@@ -855,8 +931,19 @@ public sealed class SegaCdMemory
                 Registers.LedRed = (value & 0x01) != 0;
                 break;
             case 0x0001:
-                if ((value & 0x01) == 0)
-                    Cdd.Reset();
+                if (LogCddReset && _cddResetLogRemaining-- > 0)
+                    Console.WriteLine($"[SCD-CDD-RESET] W8 0x0001 = 0x{value:X2}");
+                {
+                    bool lineHigh = (value & 0x01) != 0;
+                    if (_cddResetLineHigh && !lineHigh)
+                    {
+                        if (LogCddResetEdge)
+                            Console.WriteLine("[SCD-CDD-RESET-EDGE] 1->0");
+                    }
+                    if (!lineHigh)
+                        Cdd.Reset();
+                    _cddResetLineHigh = lineHigh;
+                }
                 break;
             case 0x0002:
             case 0x0003:
@@ -928,8 +1015,14 @@ public sealed class SegaCdMemory
                 {
                     int rel = (int)((reg - 2) & 0x0F);
                     Registers.CddCommand[rel] = (byte)(value & 0x0F);
+                    if (LogCddCmd)
+                        Console.WriteLine($"[SCD-CDD-CMDW] W8 0x{reg:X4} = 0x{value:X2} rel={rel}");
                     if (reg == 0x004B)
+                    {
+                        if (LogCddCmd)
+                            Console.WriteLine($"[SCD-CDD-CMDSEND] CMD={string.Join(" ", Registers.CddCommand)}");
                         Cdd.SendCommand(Registers.CddCommand);
+                    }
                     break;
                 }
             case 0x004C:
@@ -1013,8 +1106,14 @@ public sealed class SegaCdMemory
                     int rel = (int)((reg - 2) & 0x0F);
                     Registers.CddCommand[rel] = (byte)((value >> 8) & 0x0F);
                     Registers.CddCommand[(rel + 1) & 0x0F] = (byte)(value & 0x0F);
+                    if (LogCddCmd)
+                        Console.WriteLine($"[SCD-CDD-CMDW] W16 0x{reg:X4} = 0x{value:X4} rel={rel}");
                     if (reg == 0x004A)
+                    {
+                        if (LogCddCmd)
+                            Console.WriteLine($"[SCD-CDD-CMDSEND] CMD={string.Join(" ", Registers.CddCommand)}");
                         Cdd.SendCommand(Registers.CddCommand);
+                    }
                     break;
                 }
             case 0x004C:
@@ -1266,6 +1365,13 @@ public sealed class SegaCdMemory
     {
         if (LogSubInt)
             Console.WriteLine($"[SCD-SUBINT] ack level={level}");
+        if (level == 4 && !_subAckCddLogged)
+        {
+            _subAckCddLogged = true;
+            Console.Error.WriteLine("[SCD-SUBINT-ACK4] first CDD ack");
+        }
+        if ((uint)level < (uint)_subAckCounts.Length)
+            _subAckCounts[level]++;
         switch (level)
         {
             case 1:
@@ -1284,6 +1390,15 @@ public sealed class SegaCdMemory
                 Cdc.AcknowledgeInterrupt();
                 break;
         }
+    }
+
+    public void ConsumeSubAckCounts(out long level1, out long level2, out long level3, out long level4, out long level5)
+    {
+        level1 = Interlocked.Exchange(ref _subAckCounts[1], 0);
+        level2 = Interlocked.Exchange(ref _subAckCounts[2], 0);
+        level3 = Interlocked.Exchange(ref _subAckCounts[3], 0);
+        level4 = Interlocked.Exchange(ref _subAckCounts[4], 0);
+        level5 = Interlocked.Exchange(ref _subAckCounts[5], 0);
     }
 
     public bool SubCpuHalt => Registers.SubCpuBusReq;

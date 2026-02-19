@@ -177,7 +177,6 @@ public sealed class SegaCdGraphicsCoprocessor
         if (mclkCycles >= _state.CyclesRemaining)
         {
             _state = State.Idle;
-            _imageBufferVDotSize = 0;
             if (graphicsInterruptEnabled)
                 _interruptPending = true;
         }
@@ -231,12 +230,13 @@ public sealed class SegaCdGraphicsCoprocessor
                 byte raw = ReadWordRam(wordRam, addr);
                 byte pixel = (dot & 1) != 0 ? (byte)(raw & 0x0F) : (byte)(raw >> 4);
                 byte shade = (byte)(pixel * 17);
+                byte alpha = pixel == 0 ? (byte)0x00 : (byte)0xFF;
 
                 int di = (y * width + x) * 4;
                 rgbaBuffer[di + 0] = shade;
                 rgbaBuffer[di + 1] = shade;
                 rgbaBuffer[di + 2] = shade;
-                rgbaBuffer[di + 3] = 0xFF;
+                rgbaBuffer[di + 3] = alpha;
             }
         }
 

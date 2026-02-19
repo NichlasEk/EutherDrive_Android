@@ -33,7 +33,11 @@ namespace EutherDrive.Core.MdTracerCore
         private static int _spOverflowLogRemaining = 16;
         private static int _spZeroLogRemaining = 16;
         private static int _spZeroAsyncLogRemaining = 16;
-        private static int _a7WriteLogRemaining = 128;
+        private static readonly bool TraceA7Write =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_A7_WRITE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceOp30FC =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OPCODE_30FC"), "1", StringComparison.Ordinal);
+        private static int _a7WriteLogRemaining = TraceA7Write ? 128 : 0;
         private static uint _lastSpBeforeOp;
         private static uint _lastSpAfterOp;
         private static uint _lastPcBeforeOp;
@@ -329,7 +333,7 @@ namespace EutherDrive.Core.MdTracerCore
                     }
 
 
-                    if (g_opcode == 0x30FC)
+                    if (g_opcode == 0x30FC && TraceOp30FC)
                     {
                         ushort imm = read16(g_reg_PC + 2);
                         ushort addr = read16(g_reg_PC + 4);

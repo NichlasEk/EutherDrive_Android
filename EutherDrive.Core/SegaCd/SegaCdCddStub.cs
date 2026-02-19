@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using EutherDrive.Core;
 
@@ -95,6 +97,7 @@ public sealed class SegaCdCddStub
     private ushort _currentVolume;
     private ushort _audioSampleIdx;
     private bool _loadedAudioSector;
+    private State _lastStatusState;
     private int _dataSpeed = 1;
     private double _lastAudioLeft;
     private double _lastAudioRight;
@@ -109,6 +112,15 @@ public sealed class SegaCdCddStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_CDD_IRQ"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceCddTimeline = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDD_TIMELINE"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool TraceCddState = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDD_STATE"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly long TraceStartTicks = Stopwatch.GetTimestamp();
 
     public byte[] Status => _status;
     public bool InterruptPending => _interruptPending;
@@ -141,6 +153,8 @@ public sealed class SegaCdCddStub
         _audioSampleIdx = 0;
         _loadedAudioSector = false;
         UpdateStatus();
+        _lastStatusState = _state;
+        _lastStatusState = _state;
     }
 
     internal void ChangeDisc(CdRom? disc)
@@ -169,6 +183,7 @@ public sealed class SegaCdCddStub
         _audioSampleIdx = 0;
         _loadedAudioSector = false;
         UpdateStatus();
+        _lastStatusState = _state;
     }
 
     public void SendCommand(byte[] command)
@@ -176,6 +191,11 @@ public sealed class SegaCdCddStub
         if (command == null || command.Length < 10)
             return;
 
+        if (TraceCddTimeline)
+        {
+            Console.Error.WriteLine(
+                $"[SCD-TL CDD] t={TraceStamp()} cmd={string.Join(" ", command)} state={_state}");
+        }
         if (LogCdd)
             Console.WriteLine($"[SCD-CDD] CMD: {string.Join(" ", command)}");
 
@@ -246,6 +266,12 @@ public sealed class SegaCdCddStub
 
         UpdateStatus();
 
+        if (TraceCddTimeline)
+        {
+            Console.Error.WriteLine(
+                $"[SCD-TL CDD] t={TraceStamp()} status={string.Join(" ", _status)} state={_state}");
+        }
+
         if (prevPlayingTime.HasValue && _state != State.Playing)
             _nextClockPlay = prevPlayingTime.Value;
     }
@@ -263,6 +289,7 @@ public sealed class SegaCdCddStub
         _audioSampleIdx = 0;
         _loadedAudioSector = false;
         UpdateStatus();
+        _lastStatusState = _state;
     }
 
     public string? DiscTitle(ConsoleRegion region)
@@ -323,9 +350,12 @@ public sealed class SegaCdCddStub
 
     private void Clock75Hz(SegaCdCdcStub cdc)
     {
+        State prevState = _state;
         _interruptPending = true;
         if (LogCddIrq)
             Console.WriteLine($"[SCD-CDD-IRQ] pending=1 state={_state} time={CurrentTime()}");
+        if (TraceCddState)
+            Console.Error.WriteLine($"[SCD-CDD-STATE] t={TraceStamp()} state={_state} time={CurrentTime()}");
 
         if (_audioSampleIdx != 0)
             _audioSampleIdx = 0;
@@ -395,6 +425,8 @@ public sealed class SegaCdCddStub
                 {
                     _state = State.Playing;
                     _loadedAudioSector = false;
+                    if (TraceCddState)
+                        Console.Error.WriteLine($"[SCD-CDD-STATE] t={TraceStamp()} -> Playing time={_stateTime}");
                 }
                 else
                 {
@@ -402,10 +434,13 @@ public sealed class SegaCdCddStub
                 }
                 break;
             case State.Playing:
+                if (TraceCddState)
+                    Console.Error.WriteLine($"[SCD-CDD-STATE] t={TraceStamp()} Playing time={_stateTime}");
                 HandlePlaying(_stateTime, changeState: true, cdc);
                 break;
             case State.MotorStopped:
-                _state = _disc == null ? State.NoDisc : State.ReadingToc;
+                if (_disc == null)
+                    _state = State.NoDisc;
                 break;
             case State.TrayOpening:
                 _state = State.TrayOpen;
@@ -419,6 +454,11 @@ public sealed class SegaCdCddStub
                 if (_trayAutoClose)
                     _state = State.TrayClosing;
                 break;
+        }
+        if (_state != prevState && _state != _lastStatusState)
+        {
+            UpdateStatus();
+            _lastStatusState = _state;
         }
     }
 
@@ -442,7 +482,8 @@ public sealed class SegaCdCddStub
             return;
         }
 
-        _disc.ReadSector(time, _sectorBuffer);
+        CdTime relativeTime = time.SaturatingSub(track.StartTime);
+        _disc.ReadSector(track.Number, relativeTime, _sectorBuffer);
         cdc.DecodeBlock(_sectorBuffer);
         _loadedAudioSector = track.TrackType == CdTrackType.Audio;
 
@@ -483,7 +524,10 @@ public sealed class SegaCdCddStub
             return;
         }
 
-        _status[1] = (byte)_reportType;
+        byte report = (byte)_reportType;
+        if (report > 0x05)
+            report = 0x00;
+        _status[1] = report;
 
         if (_disc != null)
         {
@@ -526,7 +570,7 @@ public sealed class SegaCdCddStub
                     {
                         int trackNum = _reportTrackNumber;
                         CdTrack track = trackNum <= _disc.Cue.LastTrack.Number ? _disc.Cue.Track(trackNum) : _disc.Cue.LastTrack;
-                        WriteTimeToStatus(track.StartTime);
+                        WriteTimeToStatus(track.EffectiveStartTime());
                         if (track.TrackType == CdTrackType.Data)
                             _status[6] |= 0x08;
                         _status[8] = (byte)(trackNum % 10);
@@ -592,10 +636,8 @@ public sealed class SegaCdCddStub
 
     private void ExecuteReadToc(byte[] command)
     {
-        _reportType = (ReportType)(command[3] & 0x0F);
-        _reportTrackNumber = 0;
-        if (_reportType == ReportType.TrackNStartTime)
-            _reportTrackNumber = 10 * (command[4] & 0x0F) + (command[5] & 0x0F);
+        _reportType = ReportTypeFromCommand(command, out int trackNumber);
+        _reportTrackNumber = trackNumber;
 
         State nextState = (_state, _disc) switch
         {
@@ -611,6 +653,28 @@ public sealed class SegaCdCddStub
             if (_state == State.Paused)
                 _stateTime = CdTime.Zero;
         }
+    }
+
+    private static ReportType ReportTypeFromCommand(byte[] command, out int trackNumber)
+    {
+        trackNumber = 0;
+        byte report = (byte)(command[3] & 0x0F);
+        return report switch
+        {
+            0x00 => ReportType.AbsoluteTime,
+            0x01 => ReportType.RelativeTime,
+            0x02 => ReportType.CurrentTrack,
+            0x03 => ReportType.DiscLength,
+            0x04 => ReportType.StartAndEndTracks,
+            0x05 => TrackNStart(command, out trackNumber),
+            _ => ReportType.AbsoluteTime
+        };
+    }
+
+    private static ReportType TrackNStart(byte[] command, out int trackNumber)
+    {
+        trackNumber = 10 * (command[4] & 0x0F) + (command[5] & 0x0F);
+        return ReportType.TrackNStartTime;
     }
 
     private void ExecuteSeek(byte[] command, ReaderStatus nextStatus)
@@ -761,6 +825,13 @@ public sealed class SegaCdCddStub
             }
         }
         return sb.ToString().Trim();
+    }
+
+    private static string TraceStamp()
+    {
+        long ticks = Stopwatch.GetTimestamp() - TraceStartTicks;
+        double ms = ticks * 1000.0 / Stopwatch.Frequency;
+        return ms.ToString("0.000", CultureInfo.InvariantCulture);
     }
 
     private static bool TryReadTimeFromCommand(byte[] command, out CdTime time)

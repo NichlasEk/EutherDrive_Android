@@ -102,11 +102,12 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private long _profileAudioTicks;
     private static readonly int MainCyclesPerFrame = ReadCyclesPerFrame("EUTHERDRIVE_SCD_MAIN_CYCLES");
     private static readonly int SubCyclesPerFrame = ReadCyclesPerFrame("EUTHERDRIVE_SCD_SUB_CYCLES");
-    private static readonly int MclkPerSubCycle = ReadCyclesPerFrame("EUTHERDRIVE_SCD_MCLK_PER_SUB", 4);
     private static readonly double? TargetFpsOverride = ReadDouble("EUTHERDRIVE_SCD_TARGET_FPS");
     private const double MainClockHz = 7_670_453.0;
     private const double SubClockHz = 12_500_000.0;
     private const double Z80ClockHz = 3_579_545.0;
+    private const ulong SegaCdMclkHz = 50_000_000;
+    private static readonly ulong GenesisMasterClockHz = (ulong)Math.Round(MainClockHz * 7.0);
     private const int PcmDivider = 384;
     private const double PcmSampleRate = SubClockHz / PcmDivider;
     private const int PsgSampleRate = 44100;
@@ -117,6 +118,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private const double PsgCoefficient = 0.44668359215096315; // jgenesis PSG coefficient
     private static readonly double YmResampleScale = GetYmResampleScale();
     private static readonly double FmMixGain = GetFmMixGain();
+    private static readonly double ScdCpuCycleScale = ReadDoubleOr("EUTHERDRIVE_SCD_CPU_SCALE", 1.0);
     private static readonly double PcmMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_PCM_GAIN", PcmCoefficient);
     private static readonly double CdMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_CD_GAIN", CdCoefficient);
     private static readonly double PsgMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_PSG_GAIN", PsgCoefficient);
@@ -128,6 +130,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private double _mainCycleRemainder;
     private double _subCycleRemainder;
     private double _z80CycleRemainder;
+    private ulong _scdMclkCycleProduct;
+    private ulong _scdMclkCycles;
     private double _lastTargetFps = 60.0;
     private double _ymResamplePhase;
     private bool _ymResampleHasCarry;
@@ -146,8 +150,11 @@ public sealed class SegaCdAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_AUDIO_SPLIT"), "1", StringComparison.Ordinal);
     private static readonly bool TraceScdAudioCore =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_AUDIO_CORE"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceScdTimer =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_TIMER"), "1", StringComparison.Ordinal);
     private long _audioTraceLastTicks;
     private long _audioSplitLastTicks;
+    private long _timerTraceLastTicks;
     private static readonly bool TraceCycleBudget =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CYCLES"), "1", StringComparison.Ordinal);
     private bool _cycleBudgetLogged;
@@ -204,6 +211,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
         _pcmLowPass = CreateLowPass("EUTHERDRIVE_SCD_PCM_LP_HZ", 44100, 7973);
         _cdLowPass = CreateLowPass("EUTHERDRIVE_SCD_CD_LP_HZ", 44100, 0);
         _pcmResampler = new SincResampler(PcmSampleRate, 44100.0);
+        _scdMclkCycleProduct = 0;
+        _scdMclkCycles = 0;
     }
 
     public void Reset()
@@ -231,6 +240,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
         int mainCycles = MainCyclesPerFrame;
         int subCycles = SubCyclesPerFrame;
         int z80Cycles = 0;
+        int baseMainCycles = mainCycles;
+        int baseSubCycles = subCycles;
+        int baseZ80Cycles = z80Cycles;
 
         var vdp = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp;
         if (vdp != null)
@@ -240,39 +252,72 @@ public sealed class SegaCdAdapter : IEmulatorCore
             double targetFps = TargetFpsOverride
                 ?? (lines >= 312 ? 50.0 : 59.922);
             _lastTargetFps = targetFps;
-            long frame = vdp?.FrameCounter ?? -1;
-            EutherDrive.Core.MdTracerCore.md_main.g_md_bus?.TickZ80SafeBoot(frame);
-            bool allowZ80 = EutherDrive.Core.MdTracerCore.md_main.ShouldRunZ80(frame);
+            long frameCounter = vdp?.FrameCounter ?? -1;
+            EutherDrive.Core.MdTracerCore.md_main.g_md_bus?.TickZ80SafeBoot(frameCounter);
+            bool allowZ80 = EutherDrive.Core.MdTracerCore.md_main.ShouldRunZ80(frameCounter);
             if (mainCycles <= 0)
                 mainCycles = ComputeCyclesPerFrame(MainClockHz, targetFps, ref _mainCycleRemainder);
             if (subCycles <= 0)
                 subCycles = ComputeCyclesPerFrame(SubClockHz, targetFps, ref _subCycleRemainder);
             z80Cycles = ComputeCyclesPerFrame(Z80ClockHz, targetFps, ref _z80CycleRemainder);
+
+            baseMainCycles = mainCycles;
+            baseSubCycles = subCycles;
+            baseZ80Cycles = z80Cycles;
+
+            if (ScdCpuCycleScale != 1.0)
+            {
+                mainCycles = ScaleCycleCount(mainCycles, ScdCpuCycleScale);
+                subCycles = ScaleCycleCount(subCycles, ScdCpuCycleScale);
+                z80Cycles = ScaleCycleCount(z80Cycles, ScdCpuCycleScale);
+            }
+
             if (TraceCycleBudget && !_cycleBudgetLogged)
             {
                 _cycleBudgetLogged = true;
-                Console.Error.WriteLine($"[SCD-CYCLES] main={mainCycles} sub={subCycles} lines={lines} fps={targetFps:0.###}");
+                Console.Error.WriteLine(
+                    $"[SCD-CYCLES] main={mainCycles} sub={subCycles} z80={z80Cycles} " +
+                    $"baseMain={baseMainCycles} baseSub={baseSubCycles} scale={ScdCpuCycleScale:0.###} " +
+                    $"lines={lines} fps={targetFps:0.###}");
             }
             int mainPerLine = mainCycles / lines;
             int mainRemainder = mainCycles % lines;
-            int subPerLine = subCycles / lines;
-            int subRemainder = subCycles % lines;
+            int baseMainPerLine = baseMainCycles / lines;
+            int baseMainRemainder = baseMainCycles % lines;
             int z80PerLine = z80Cycles / lines;
             int z80Remainder = z80Cycles % lines;
 
             for (int line = 0; line < lines; line++)
             {
                 int mainSlice = mainPerLine + (line < mainRemainder ? 1 : 0);
-                int subSlice = subPerLine + (line < subRemainder ? 1 : 0);
                 int z80Slice = z80PerLine + (line < z80Remainder ? 1 : 0);
+                int baseMainSlice = baseMainPerLine + (line < baseMainRemainder ? 1 : 0);
+
+                ulong genesisMclkElapsed = (ulong)baseMainSlice * 7u;
+                _scdMclkCycleProduct += genesisMclkElapsed * SegaCdMclkHz;
+                ulong scdMclkElapsed = _scdMclkCycleProduct / GenesisMasterClockHz;
+                _scdMclkCycleProduct -= scdMclkElapsed * GenesisMasterClockHz;
+
+                ulong prevScdMclkCycles = _scdMclkCycles;
+                _scdMclkCycles += scdMclkElapsed;
+                uint baseSubSlice = (uint)(_scdMclkCycles / 4u - prevScdMclkCycles / 4u);
+
+                if (scdMclkElapsed > 0)
+                    _memory.Tick((uint)scdMclkElapsed);
+                if (baseSubSlice > 0)
+                    _memory.Pcm.Tick(baseSubSlice);
+
+                int subSlice = (int)baseSubSlice;
+                if (ScdCpuCycleScale != 1.0)
+                    subSlice = ScaleCycleCount(subSlice, ScdCpuCycleScale);
 
             EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
             if (TraceMainPcFrame)
             {
-                if (frame != _lastMainPcFrame)
+                if (frameCounter != _lastMainPcFrame)
                 {
-                    _lastMainPcFrame = frame;
-                    Console.WriteLine($"[SCD-MAIN-FRAME] frame={frame} pc=0x{_mainContext.RegPc:X6} sp=0x{_mainContext.RegAddr[7]:X8} op=0x{_mainContext.Opcode:X4}");
+                    _lastMainPcFrame = frameCounter;
+                    Console.WriteLine($"[SCD-MAIN-FRAME] frame={frameCounter} pc=0x{_mainContext.RegPc:X6} sp=0x{_mainContext.RegAddr[7]:X8} op=0x{_mainContext.Opcode:X4}");
                 }
             }
             if (mainSlice > 0)
@@ -468,12 +513,6 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 _mainContext.InterruptHAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act;
                 _mainContext.InterruptExtAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act;
             }
-            if (subCycles > 0)
-            {
-                uint mclkCycles = (uint)Math.Max(1, subCycles * Math.Max(1, MclkPerSubCycle));
-                _memory.Tick(mclkCycles);
-                _memory.Pcm.Tick((uint)subCycles);
-            }
             // Ensure main CPU context is active before capturing.
             EutherDrive.Core.MdTracerCore.md_m68k.ApplyContext(_mainContext);
             EutherDrive.Core.MdTracerCore.md_m68k.CaptureContext(_mainContext);
@@ -534,15 +573,40 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 // Composite gfx buffer over the VDP output without changing the frame size.
                 if (EnableGfxOverlay)
                 {
-                    int copyW = Math.Min(_frameWidth, _gfxWidth);
-                    int copyH = Math.Min(_frameHeight, _gfxHeight);
+                    int dstX0 = (_frameWidth - _gfxWidth) / 2;
+                    int dstY0 = (_frameHeight - _gfxHeight) / 2;
+                    int srcX0 = 0;
+                    int srcY0 = 0;
+                    if (dstX0 < 0)
+                    {
+                        srcX0 = -dstX0;
+                        dstX0 = 0;
+                    }
+                    if (dstY0 < 0)
+                    {
+                        srcY0 = -dstY0;
+                        dstY0 = 0;
+                    }
+                    int copyW = Math.Min(_frameWidth - dstX0, _gfxWidth - srcX0);
+                    int copyH = Math.Min(_frameHeight - dstY0, _gfxHeight - srcY0);
                     int dstStride = _frameWidth * 4;
                     int srcStride = _gfxWidth * 4;
                     for (int y = 0; y < copyH; y++)
                     {
-                        int srcRow = y * srcStride;
-                        int dstRow = y * dstStride;
-                        Array.Copy(_gfxBuffer, srcRow, _frameBuffer, dstRow, copyW * 4);
+                        int srcRow = (srcY0 + y) * srcStride + srcX0 * 4;
+                        int dstRow = (dstY0 + y) * dstStride + dstX0 * 4;
+                        for (int x = 0; x < copyW; x++)
+                        {
+                            int si = srcRow + x * 4;
+                            byte a = _gfxBuffer[si + 3];
+                            if (a == 0)
+                                continue;
+                            int di = dstRow + x * 4;
+                            _frameBuffer[di + 0] = _gfxBuffer[si + 0];
+                            _frameBuffer[di + 1] = _gfxBuffer[si + 1];
+                            _frameBuffer[di + 2] = _gfxBuffer[si + 2];
+                            _frameBuffer[di + 3] = 0xFF;
+                        }
                     }
                 }
             }
@@ -612,6 +676,36 @@ public sealed class SegaCdAdapter : IEmulatorCore
             }
         }
         if (ProfileScd) _profileAudioTicks += Stopwatch.GetTimestamp();
+
+        if (TraceScdTimer && _memory != null)
+        {
+            long now = Stopwatch.GetTimestamp();
+            if (now - _timerTraceLastTicks >= Stopwatch.Frequency)
+            {
+                _timerTraceLastTicks = now;
+                byte tCounter = _memory.Registers.TimerCounter;
+                byte tInterval = _memory.Registers.TimerInterval;
+                bool tPend = _memory.Registers.TimerInterruptPending;
+                bool tEn = _memory.Registers.TimerInterruptEnabled;
+                bool cddEn = _memory.Registers.CddInterruptEnabled;
+                bool cdcEn = _memory.Registers.CdcInterruptEnabled;
+                bool hostClk = _memory.Registers.CddHostClockOn;
+                byte subLevel = _memory.GetSubInterruptLevel();
+                bool cddPend = _memory.Cdd.InterruptPending;
+                ushort sw = _memory.Registers.StopwatchCounter;
+                _memory.ConsumeSubAckCounts(out long ack1, out long ack2, out long ack3, out long ack4, out long ack5);
+                byte cdd0 = _memory.Cdd.Status.Length > 0 ? _memory.Cdd.Status[0] : (byte)0;
+                byte cdd1 = _memory.Cdd.Status.Length > 1 ? _memory.Cdd.Status[1] : (byte)0;
+                byte cdd2 = _memory.Cdd.Status.Length > 2 ? _memory.Cdd.Status[2] : (byte)0;
+                byte cdd3 = _memory.Cdd.Status.Length > 3 ? _memory.Cdd.Status[3] : (byte)0;
+                Console.Error.WriteLine(
+                    $"[SCD-TIMER] t={tCounter}/{tInterval} sw=0x{sw:X3} pend={(tPend ? 1 : 0)} en={(tEn ? 1 : 0)} " +
+                    $"cddS={cdd0:X2} {cdd1:X2} {cdd2:X2} {cdd3:X2} " +
+                    $"cddEn={(cddEn ? 1 : 0)} cdcEn={(cdcEn ? 1 : 0)} cddPend={(cddPend ? 1 : 0)} " +
+                    $"ack1={ack1} ack2={ack2} ack3={ack3} ack4={ack4} ack5={ack5} " +
+                    $"hostclk={(hostClk ? 1 : 0)} subInt={subLevel}");
+            }
+        }
 
         if (ProfileScd)
         {
@@ -1061,6 +1155,18 @@ public sealed class SegaCdAdapter : IEmulatorCore
             return value;
         }
         return fallback;
+    }
+
+    private static int ScaleCycleCount(int cycles, double scale)
+    {
+        if (scale == 1.0)
+            return cycles;
+        double scaled = cycles * scale;
+        if (scaled <= 0)
+            return 1;
+        if (scaled > int.MaxValue)
+            return int.MaxValue;
+        return (int)Math.Round(scaled);
     }
 
     private short[] MixAudio(short[] cdAudio, short[] pcmAudio, double targetFps)

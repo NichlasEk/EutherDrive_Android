@@ -987,8 +987,10 @@ class Program
     {
         if (ShouldSilenceConsole())
         {
+            bool keepStdErr = IsEnvEnabled("EUTHERDRIVE_SCD_PROFILE") && !IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE");
             Console.SetOut(TextWriter.Null);
-            Console.SetError(TextWriter.Null);
+            if (!keepStdErr)
+                Console.SetError(TextWriter.Null);
             Trace.Listeners.Clear();
             Trace.AutoFlush = false;
         }

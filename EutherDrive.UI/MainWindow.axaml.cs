@@ -180,6 +180,7 @@ public partial class MainWindow : Window
     private static readonly bool TraceUiRender = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_RENDER");
     private static readonly bool TraceUiPresent = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_PRESENT");
     private static readonly bool TraceUiAudio = IsEnvEnabled("EUTHERDRIVE_TRACE_UI_AUDIO");
+    private static readonly bool TraceUiProfile = IsEnvEnabled("EUTHERDRIVE_UI_PROFILE");
     private static readonly bool SkipDuplicateFrames = !IsEnvEnabled("EUTHERDRIVE_DISABLE_SKIP_DUP_FRAMES");
     private static readonly bool TraceSysCycles = IsEnvEnabled("EUTHERDRIVE_TRACE_SYS_CYCLES");
     private static readonly bool Pad2MirrorDefault =
@@ -212,6 +213,8 @@ public partial class MainWindow : Window
     private long _speedLockLastTicks;
     private static readonly bool TraceSpeedLock =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPEEDLOCK"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceSpeedLockErr =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPEEDLOCK_LOG"), "1", StringComparison.Ordinal);
     private long _audioDebugLastTicks;
     private double _audioDebugLastRatio;
     private long _audioDebugLastDeltaCycles;
@@ -4646,9 +4649,14 @@ public partial class MainWindow : Window
     private long _lastCoreFrameId = -1;
     private int _presentTickCounter;
     private int _presentLogInterval = 60;
+    private long _uiProfileRunFrameTicks;
+    private long _uiProfileAudioTicks;
+    private long _uiProfileSubmitTicks;
+    private long _uiProfileRenderTicks;
 
     private unsafe void RenderFrame(IEmulatorCore core)
     {
+        long renderStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
         var src = core.GetFrameBuffer(out var w, out var h, out var srcStride);
         if (src.IsEmpty || srcStride <= 0 || w <= 0 || h <= 0)
         {
@@ -4768,6 +4776,9 @@ public partial class MainWindow : Window
             if (TraceUiPresent)
                 Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
         }
+
+        if (TraceUiProfile)
+            _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
     }
 
     private void ApplyPsxAspectIfNeeded(IEmulatorCore core, int width, int height)
@@ -4888,7 +4899,11 @@ public partial class MainWindow : Window
                 lock (_coreAudioLock)
                 {
                     ApplyInputToCore(core);
+                    long runStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
                     core.RunFrame();
+                    if (TraceUiProfile)
+                        _uiProfileRunFrameTicks += Stopwatch.GetTimestamp() - runStart;
+                    long audioStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
                     GenerateAudioFromSystemCycles(core);
                     if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter || core is PsxAdapter || core is SegaCdAdapter)
                     {
@@ -4914,10 +4929,15 @@ public partial class MainWindow : Window
                             }
                         }
                     }
+                    if (TraceUiProfile)
+                        _uiProfileAudioTicks += Stopwatch.GetTimestamp() - audioStart;
                 }
 
+                long submitStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
                 if (AudioCatchupEnabled && _audioEngine != null && !_audioPullMode)
                     CatchUpAudio(core);
+                if (TraceUiProfile)
+                    _uiProfileSubmitTicks += Stopwatch.GetTimestamp() - submitStart;
 
                 // Framebuffer analyzer for debugging
                 if (core is MdTracerAdapter adapter && adapter.FbAnalyzer.Enabled)
@@ -4948,11 +4968,25 @@ public partial class MainWindow : Window
                 Volatile.Write(ref _emuActualFps, fps);
                 _emuFpsFrames = 0;
                 _emuFpsLastTicks = emuFpsNow;
-                if (TraceSpeedLock)
+                if (TraceSpeedLock || TraceSpeedLockErr)
                 {
                     double liveTarget = GetLiveTargetFps();
-                    Console.WriteLine(
+                    (TraceSpeedLockErr ? Console.Error : Console.Out).WriteLine(
                         $"[SPEEDLOCK] target={liveTarget:0.###} emu={fps:0.###} ticksPerFrame={ticksPerFrame:0.###} lock={(_speedLockEnabled ? 1 : 0)} speed={_speedScale * 100:0.#}");
+                }
+                if (TraceUiProfile)
+                {
+                    double ticksPerSec = Stopwatch.Frequency;
+                    double runMs = (_uiProfileRunFrameTicks / ticksPerSec) * 1000.0;
+                    double audioMs = (_uiProfileAudioTicks / ticksPerSec) * 1000.0;
+                    double submitMs = (_uiProfileSubmitTicks / ticksPerSec) * 1000.0;
+                    double renderMs = (_uiProfileRenderTicks / ticksPerSec) * 1000.0;
+                    Console.WriteLine(
+                        $"[UI-PROFILE] fps={fps:0.###} run_ms={runMs:0.0} audio_ms={audioMs:0.0} submit_ms={submitMs:0.0} render_ms={renderMs:0.0}");
+                    _uiProfileRunFrameTicks = 0;
+                    _uiProfileAudioTicks = 0;
+                    _uiProfileSubmitTicks = 0;
+                    _uiProfileRenderTicks = 0;
                 }
             }
 

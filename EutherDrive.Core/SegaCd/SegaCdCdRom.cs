@@ -65,8 +65,9 @@ internal sealed class CdTrack
     public CdTrackType TrackType { get; set; }
     public CdTime StartTime { get; set; }
     public CdTime EndTime { get; set; }
+    public CdTime? Index00Time { get; set; }
 
-    public CdTime EffectiveStartTime() => StartTime;
+    public CdTime EffectiveStartTime() => Index00Time ?? StartTime;
 }
 
 internal sealed class CdCue
@@ -94,7 +95,7 @@ internal sealed class CdCue
             if (time >= track.StartTime && time < track.EndTime)
                 return track;
         }
-        return _tracks.Count > 0 ? _tracks[_tracks.Count - 1] : null;
+        return null;
     }
 
     public static CdCue FromIsoLength(int sectorCount)
@@ -155,6 +156,22 @@ internal sealed class CdCue
                     }
                 }
             }
+            else if (line.StartsWith("INDEX 00", StringComparison.OrdinalIgnoreCase) && current != null)
+            {
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 3)
+                {
+                    var timeParts = parts[2].Split(':');
+                    if (timeParts.Length == 3
+                        && int.TryParse(timeParts[0], out int mm)
+                        && int.TryParse(timeParts[1], out int ss)
+                        && int.TryParse(timeParts[2], out int ff))
+                    {
+                        var t = new CdTime(mm, ss, ff).AddFrames(150);
+                        current.Index00Time = t;
+                    }
+                }
+            }
         }
 
         // Ensure track start times are monotonic; set missing to previous
@@ -183,6 +200,10 @@ internal sealed class CdCue
 internal sealed class CdRom
 {
     public const int BytesPerSector = 2352;
+    private static readonly bool LogDisc = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_DISC"),
+        "1",
+        StringComparison.Ordinal);
 
     private readonly string _path;
     private readonly int _sectorSize;
@@ -208,7 +229,11 @@ internal sealed class CdRom
     public static CdRom? Open(string path, bool preload = false)
     {
         if (string.IsNullOrWhiteSpace(path))
+        {
+            if (LogDisc)
+                Console.Error.WriteLine("[SCD-DISC] Open: empty path");
             return null;
+        }
 
         string dataPath = path;
         CdCue cue;
@@ -223,7 +248,11 @@ internal sealed class CdRom
         }
 
         if (!File.Exists(dataPath))
+        {
+            if (LogDisc)
+                Console.Error.WriteLine($"[SCD-DISC] Open: data file not found path='{dataPath}' (cue='{path}')");
             return null;
+        }
 
         int sectorSize = GuessSectorSize(dataPath);
         int dataOffset = sectorSize == 2352 ? 16 : 0;
@@ -245,6 +274,13 @@ internal sealed class CdRom
         int sectorCount = GuessSectorCount(dataPath, sectorSize);
         var discEnd = new CdTime(0, 2, 0).AddFrames(sectorCount);
         cue.FinalizeEndTimes(discEnd);
+        if (LogDisc)
+        {
+            Console.Error.WriteLine(
+                $"[SCD-DISC] Open: cue='{path}' data='{dataPath}' preload={(data != null ? 1 : 0)} " +
+                $"sectorSize={sectorSize} offset={dataOffset} sectors={sectorCount} " +
+                $"tracks={cue.Tracks.Count} end={discEnd}");
+        }
 
         return rom;
     }
@@ -349,6 +385,13 @@ internal sealed class CdRom
             }
             return true;
         }
+    }
+
+    public bool ReadSector(int trackNumber, CdTime relativeTime, Span<byte> buffer)
+    {
+        CdTrack track = _cue.Track(trackNumber);
+        CdTime absolute = track.StartTime.AddFrames(relativeTime.ToFrames());
+        return ReadSector(absolute, buffer);
     }
 
     private static int GuessSectorSize(string path)

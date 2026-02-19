@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Globalization;
 
 namespace EutherDrive.Core.SegaCd;
 
@@ -19,6 +21,8 @@ public sealed class SegaCdCdcStub
     private const int BufferRamLen = 16 * 1024;
     private const ushort BufferRamAddressMask = (1 << 14) - 1;
     private const ushort DataTrackHeaderLen = 12;
+    private const int Divider75Hz = 44100 / 75;
+    private const int DecoderInterruptClearCycle = Divider75Hz * 4 / 10;
 
     private readonly byte[] _bufferRam = new byte[BufferRamLen];
     private SegaCdDeviceDestination _destination = SegaCdDeviceDestination.None0;
@@ -49,10 +53,22 @@ public sealed class SegaCdCdcStub
     private bool _decoderInterruptEnabled = true;
     private bool _decoderInterruptPending;
     private bool _scdInterruptFlag;
+    private bool _decoderInterruptLogged;
+    private bool _destLogged;
+    private bool _dbcLogged;
     private static readonly bool LogCdc = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_CDC"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceCdcTimeline = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_TIMELINE"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool TraceCdcDecode = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_DECODE"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly long TraceStartTicks = Stopwatch.GetTimestamp();
 
     public bool EndOfDataTransfer => _endOfDataTransfer;
     public bool DataReady => _dataTransferInProgress;
@@ -87,6 +103,16 @@ public sealed class SegaCdCdcStub
         };
         if (LogCdc)
             Console.WriteLine($"[SCD-CDC] DEST={_destination} BITS=0x{_destinationBits:X2} EOD={_endOfDataTransfer}");
+        if (!_destLogged && _destination != SegaCdDeviceDestination.None0)
+        {
+            _destLogged = true;
+            Console.Error.WriteLine($"[SCD-CDC-DEST] DEST={_destination} BITS=0x{_destinationBits:X2}");
+        }
+        if (TraceCdcTimeline)
+        {
+            Console.Error.WriteLine(
+                $"[SCD-TL CDC] t={TraceStamp()} DEST bits=0x{_destinationBits:X2} dest={_destination} EOD={_endOfDataTransfer}");
+        }
     }
 
     public void SetRegisterAddress(byte addr)
@@ -94,6 +120,8 @@ public sealed class SegaCdCdcStub
         _registerAddress = (byte)(addr & 0x1F);
         if (LogCdc)
             Console.WriteLine($"[SCD-CDC] REGADDR=0x{_registerAddress:X2}");
+        if (TraceCdcTimeline)
+            Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} REGADDR=0x{_registerAddress:X2}");
     }
 
     public void SetDmaAddress(uint address)
@@ -101,6 +129,8 @@ public sealed class SegaCdCdcStub
         _dmaAddress = address & 0x3FFFF;
         if (LogCdc)
             Console.WriteLine($"[SCD-CDC] DMA=0x{_dmaAddress:X6}");
+        if (TraceCdcTimeline)
+            Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} DMA=0x{_dmaAddress:X6}");
     }
 
     public ushort ReadHostData(ScdCpu cpu)
@@ -109,6 +139,8 @@ public sealed class SegaCdCdcStub
             return _hostDataBuffer ?? 0;
 
         ushort hostData = _hostDataBuffer ?? 0;
+        if (TraceCdcTimeline)
+            Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} HOSTRD cpu={cpu} data=0x{hostData:X4}");
         _hostDataBuffer = null;
 
         if (_endOfDataTransfer)
@@ -128,6 +160,8 @@ public sealed class SegaCdCdcStub
         if (!_dataTransferInProgress || !IsHostDataForCpu(cpu))
             return;
 
+        if (TraceCdcTimeline)
+            Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} HOSTWR cpu={cpu}");
         if (_endOfDataTransfer)
         {
             _dataTransferInProgress = false;
@@ -167,7 +201,8 @@ public sealed class SegaCdCdcStub
     public byte ReadRegister()
     {
         byte value;
-        switch (_registerAddress)
+        byte reg = _registerAddress;
+        switch (reg)
         {
             case 0:
                 value = 0xFF;
@@ -188,7 +223,7 @@ public sealed class SegaCdCdcStub
                 value = (byte)((dtei << 7) | (dtei << 6) | (dtei << 5) | (dtei << 4) | dbcHigh);
                 break;
             case >= 4 and <= 7:
-                int idx = _registerAddress - 4;
+                int idx = reg - 4;
                 value = _subheaderDataEnabled ? _subheaderData[idx] : _headerData[idx];
                 break;
             case 8:
@@ -223,15 +258,20 @@ public sealed class SegaCdCdcStub
 
         IncrementRegisterAddress();
         if (LogCdc)
-            Console.WriteLine($"[SCD-CDC] R REG=0x{_registerAddress:X2} -> 0x{value:X2}");
+            Console.WriteLine($"[SCD-CDC] R REG=0x{reg:X2} -> 0x{value:X2}");
+        if (TraceCdcTimeline)
+            Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} R reg=0x{reg:X2} val=0x{value:X2}");
         return value;
     }
 
     public void WriteRegister(byte value)
     {
+        byte reg = _registerAddress;
         if (LogCdc)
-            Console.WriteLine($"[SCD-CDC] W REG=0x{_registerAddress:X2} = 0x{value:X2}");
-        switch (_registerAddress)
+            Console.WriteLine($"[SCD-CDC] W REG=0x{reg:X2} = 0x{value:X2}");
+        if (TraceCdcTimeline)
+            Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} W reg=0x{reg:X2} val=0x{value:X2}");
+        switch (reg)
         {
             case 0:
                 break;
@@ -240,9 +280,19 @@ public sealed class SegaCdCdcStub
                 break;
             case 2:
                 SegaCdBitUtils.SetLsb(ref _dataByteCounter, value);
+                if (!_dbcLogged && _dataByteCounter != 0)
+                {
+                    _dbcLogged = true;
+                    Console.Error.WriteLine($"[SCD-CDC-DBC] DBC=0x{_dataByteCounter:X4}");
+                }
                 break;
             case 3:
                 SegaCdBitUtils.SetMsb(ref _dataByteCounter, (byte)(value & 0x0F));
+                if (!_dbcLogged && _dataByteCounter != 0)
+                {
+                    _dbcLogged = true;
+                    Console.Error.WriteLine($"[SCD-CDC-DBC] DBC=0x{_dataByteCounter:X4}");
+                }
                 break;
             case 4:
                 SegaCdBitUtils.SetLsb(ref _dataAddressCounter, value);
@@ -258,6 +308,7 @@ public sealed class SegaCdCdcStub
                     PopulateHostDataBuffer();
                 if (LogCdc)
                     Console.WriteLine($"[SCD-CDC] DTTRG transfer={_dataTransferInProgress} DOUTEN={_dataOutEnabled}");
+                Console.Error.WriteLine($"[SCD-CDC-DTTRG] DOUTEN={(_dataOutEnabled ? 1 : 0)} DEST={_destination} DBC=0x{_dataByteCounter:X4} DAC=0x{_dataAddressCounter:X4}");
                 break;
             case 7:
                 _transferEndInterruptPending = false;
@@ -357,6 +408,13 @@ public sealed class SegaCdCdcStub
         Array.Copy(sectorBuffer, 12, _headerData, 0, 4);
         Array.Copy(sectorBuffer, 16, _subheaderData, 0, 4);
         SetDecoderInterruptFlag();
+        if (TraceCdcDecode)
+        {
+            Console.Error.WriteLine(
+                $"[SCD-TL CDC] t={TraceStamp()} DECODE hdr={_headerData[0]:X2} {_headerData[1]:X2} {_headerData[2]:X2} {_headerData[3]:X2} " +
+                $"sub={_subheaderData[0]:X2} {_subheaderData[1]:X2} {_subheaderData[2]:X2} {_subheaderData[3]:X2} " +
+                $"decEn={_decoderEnabled} wrEn={_decoderWritesEnabled}");
+        }
 
         if (_decoderWritesEnabled)
         {
@@ -383,6 +441,13 @@ public sealed class SegaCdCdcStub
         _decoderInterruptPending = true;
         if (_decoderInterruptEnabled && (!_transferEndInterruptEnabled || !_transferEndInterruptPending))
             _scdInterruptFlag = true;
+        if (!_decoderInterruptLogged)
+        {
+            _decoderInterruptLogged = true;
+            Console.Error.WriteLine(
+                $"[SCD-CDC-DECI] decEn={(_decoderInterruptEnabled ? 1 : 0)} scdInt={(_scdInterruptFlag ? 1 : 0)} " +
+                $"DOUTEN={(_dataOutEnabled ? 1 : 0)} DEST={_destination} DBC=0x{_dataByteCounter:X4} DAC=0x{_dataAddressCounter:X4}");
+        }
     }
 
     private void SetTransferEndInterruptFlag()
@@ -401,7 +466,7 @@ public sealed class SegaCdCdcStub
             ProgressDma(wordRam, prgRam, prgRamAccessible, pcm);
 
         _cycles44100SinceDecode++;
-        if (_cycles44100SinceDecode == 44100 / 75 * 4 / 10)
+        if (_cycles44100SinceDecode == DecoderInterruptClearCycle)
             _decoderInterruptPending = false;
     }
 
@@ -411,6 +476,13 @@ public sealed class SegaCdCdcStub
             SetDecoderInterruptFlag();
         _decodedLast75HzCycle = false;
         _cycles44100SinceDecode = 0;
+    }
+
+    private static string TraceStamp()
+    {
+        long ticks = Stopwatch.GetTimestamp() - TraceStartTicks;
+        double ms = ticks * 1000.0 / Stopwatch.Frequency;
+        return ms.ToString("0.000", CultureInfo.InvariantCulture);
     }
 
     private void ProgressDma(WordRam wordRam, byte[] prgRam, bool prgRamAccessible, SegaCdPcmStub pcm)
