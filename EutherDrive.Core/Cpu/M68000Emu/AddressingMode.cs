@@ -1,11 +1,5 @@
 namespace EutherDrive.Core.Cpu.M68000Emu;
 
-internal enum IndexSize
-{
-    SignExtendedWord,
-    LongWord,
-}
-
 internal readonly struct AddressingMode
 {
     public readonly AddressingModeKind Kind;

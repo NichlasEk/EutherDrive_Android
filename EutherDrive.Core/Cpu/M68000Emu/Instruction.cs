@@ -64,6 +64,26 @@ internal enum BranchCondition
 
 internal static class BranchConditionExtensions
 {
+    public static readonly BranchCondition[] All =
+    {
+        BranchCondition.True,
+        BranchCondition.False,
+        BranchCondition.Higher,
+        BranchCondition.LowerOrSame,
+        BranchCondition.CarryClear,
+        BranchCondition.CarrySet,
+        BranchCondition.NotEqual,
+        BranchCondition.Equal,
+        BranchCondition.OverflowClear,
+        BranchCondition.OverflowSet,
+        BranchCondition.Plus,
+        BranchCondition.Minus,
+        BranchCondition.GreaterOrEqual,
+        BranchCondition.LessThan,
+        BranchCondition.GreaterThan,
+        BranchCondition.LessOrEqual
+    };
+
     public static bool Check(this BranchCondition condition, ConditionCodes ccr)
     {
         return condition switch

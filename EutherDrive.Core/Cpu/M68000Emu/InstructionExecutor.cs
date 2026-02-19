@@ -233,15 +233,15 @@ internal sealed class InstructionExecutor
         return resolved;
     }
 
-    private ExecuteResult<u16> ReadWordResolved(ResolvedAddress resolved)
+    private ExecuteResult<ushort> ReadWordResolved(ResolvedAddress resolved)
     {
         return resolved.Kind switch
         {
-            ResolvedAddressKind.DataRegister => ExecuteResult<u16>.Ok((ushort)resolved.DataReg.Read(_registers)),
-            ResolvedAddressKind.AddressRegister => ExecuteResult<u16>.Ok((ushort)resolved.AddrReg.Read(_registers)),
+            ResolvedAddressKind.DataRegister => ExecuteResult<ushort>.Ok((ushort)resolved.DataReg.Read(_registers)),
+            ResolvedAddressKind.AddressRegister => ExecuteResult<ushort>.Ok((ushort)resolved.AddrReg.Read(_registers)),
             ResolvedAddressKind.Memory or ResolvedAddressKind.MemoryPostincrement => ReadBusWord(resolved.Address),
-            ResolvedAddressKind.Immediate => ExecuteResult<u16>.Ok((ushort)resolved.Immediate),
-            _ => ExecuteResult<u16>.Ok(0)
+            ResolvedAddressKind.Immediate => ExecuteResult<ushort>.Ok((ushort)resolved.ImmediateValue),
+            _ => ExecuteResult<ushort>.Ok(0)
         };
     }
 
@@ -252,7 +252,7 @@ internal sealed class InstructionExecutor
             ResolvedAddressKind.DataRegister => ExecuteResult<uint>.Ok(resolved.DataReg.Read(_registers)),
             ResolvedAddressKind.AddressRegister => ExecuteResult<uint>.Ok(resolved.AddrReg.Read(_registers)),
             ResolvedAddressKind.Memory or ResolvedAddressKind.MemoryPostincrement => ReadBusLong(resolved.Address),
-            ResolvedAddressKind.Immediate => ExecuteResult<uint>.Ok(resolved.Immediate),
+            ResolvedAddressKind.Immediate => ExecuteResult<uint>.Ok(resolved.ImmediateValue),
             _ => ExecuteResult<uint>.Ok(0)
         };
     }
@@ -311,13 +311,13 @@ internal sealed class InstructionExecutor
         return WriteBusWord(sp + 2, lo);
     }
 
-    private ExecuteResult<u16> PopStackU16()
+    private ExecuteResult<ushort> PopStackU16()
     {
         uint sp = _registers.StackPointer();
         var value = ReadBusWord(sp);
-        if (!value.IsOk) return ExecuteResult<u16>.Err(value.Error!.Value);
+        if (!value.IsOk) return ExecuteResult<ushort>.Err(value.Error!.Value);
         _registers.SetStackPointer(sp + 2);
-        return ExecuteResult<u16>.Ok(value.Value);
+        return ExecuteResult<ushort>.Ok(value.Value);
     }
 
     private ExecuteResult<uint> PopStackU32()
@@ -481,7 +481,7 @@ internal readonly struct ResolvedAddress
     public readonly DataRegister DataReg;
     public readonly AddressRegister AddrReg;
     public readonly uint Address;
-    public readonly uint Immediate;
+    public readonly uint ImmediateValue;
     public readonly uint PostIncrement;
 
     private ResolvedAddress(
@@ -489,14 +489,14 @@ internal readonly struct ResolvedAddress
         DataRegister dataReg,
         AddressRegister addrReg,
         uint address,
-        uint immediate,
+        uint immediateValue,
         uint postIncrement)
     {
         Kind = kind;
         DataReg = dataReg;
         AddrReg = addrReg;
         Address = address;
-        Immediate = immediate;
+        ImmediateValue = immediateValue;
         PostIncrement = postIncrement;
     }
 

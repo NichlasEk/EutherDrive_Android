@@ -9,6 +9,8 @@ internal enum OpSize
 
 internal static class OpSizeExtensions
 {
+    public static readonly OpSize[] All = { OpSize.Byte, OpSize.Word, OpSize.LongWord };
+
     public static uint IncrementStepFor(this OpSize size, AddressRegister register)
     {
         return size switch
