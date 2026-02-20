@@ -708,6 +708,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (!IsSramConfigured)
                 return false;
+            if (!_sramLock)
+                return false;
             return addr >= _sramStart && addr <= _sramEnd;
         }
 
@@ -824,6 +826,12 @@ namespace EutherDrive.Core.MdTracerCore
             _sramDirty = false;
             _sramNoPathLogged = false;
 
+            if (!_sramLock)
+            {
+                _sramLock = ComputeInitialSramMapped(cart);
+                SramLog($"[SRAM-LOCK] init: enabled={_sramLock} configured={IsSramConfigured} start=0x{_sramStart:X6} end=0x{_sramEnd:X6}");
+            }
+
             if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
             {
                 try
@@ -838,6 +846,21 @@ namespace EutherDrive.Core.MdTracerCore
                     Console.WriteLine($"[SRAM] load failed '{path}': {ex.Message}");
                 }
             }
+        }
+
+        private bool ComputeInitialSramMapped(md_cartridge cart)
+        {
+            if (!cart.g_extra_memory_is_sram && !cart.g_extra_memory_is_eeprom)
+                return false;
+
+            uint romLimit = GetCartridgeRomLimit();
+            bool ramStartPastRom = romLimit != 0 && cart.g_extra_memory_start >= romLimit;
+            bool isEeprom = cart.g_extra_memory_is_eeprom;
+
+            string serial = cart.g_serial_number;
+            bool isTriplePlay = serial == "T-172016 " || serial == "T-172026 ";
+
+            return ramStartPastRom || isEeprom || isTriplePlay;
         }
 
         private void SaveSramIfNeeded(string reason)
