@@ -114,6 +114,15 @@ namespace EutherDrive.Core.MdTracerCore
                 Latency = VdpFifoInitialLatency
             };
 
+            // Match jgenesis timing: update sprite cache on FIFO push for VRAM writes.
+            // This avoids rendering glitches when sprite attributes are updated and read back quickly.
+            if ((code & 0x0f) == 1)
+            {
+                int addr0 = address & 0xFFFF;
+                UpdateSpriteCacheByte(addr0, (byte)(word >> 8));
+                UpdateSpriteCacheByte(addr0 ^ 1, (byte)(word & 0xFF));
+            }
+
             if (_vdpFifo.Count >= VdpFifoCapacity)
             {
                 _vdpFifoPending.Enqueue(entry);
