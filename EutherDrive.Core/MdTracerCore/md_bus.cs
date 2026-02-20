@@ -678,9 +678,10 @@ namespace EutherDrive.Core.MdTracerCore
             var cart = md_main.g_md_cartridge;
             if (cart == null || cart.g_file_size <= 0)
                 return 0xFF;
+            uint mapped = cart.MapRomAddress(addr);
             uint limit = GetCartridgeRomLimit();
-            if (addr < limit)
-                return cart.g_file[addr];
+            if (mapped < limit)
+                return cart.g_file[mapped];
             return 0xFF;
         }
 
@@ -1940,6 +1941,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 SramLog($"[SRAM-LOCK-WRITE] addr=0x{in_address:X6} data=0x{in_data:X2} lockBit={in_data & 0x01}");
                 SetSramLock((in_data & 0x01) != 0, "lock");
+                md_main.g_md_cartridge?.WriteMapperRegister(in_address, in_data);
                 return;
             }
 
@@ -1954,6 +1956,7 @@ namespace EutherDrive.Core.MdTracerCore
             if ((in_address & 0xFFFFF0) == 0xA130F0)
             {
                 SramLog($"[SRAM-CTRL-WRITE] addr=0x{in_address:X6} data=0x{in_data:X2}");
+                md_main.g_md_cartridge?.WriteMapperRegister(in_address, in_data);
             }
 
             if (in_address >= 0xE00000)
@@ -2156,6 +2159,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 byte regByte = (byte)(in_data & 0xFF);
                 SetSramLock((regByte & 0x01) != 0, "lock16");
+                md_main.g_md_cartridge?.WriteMapperRegister(in_address | 1, regByte);
                 return;
             }
 

@@ -46,6 +46,8 @@ namespace EutherDrive.Core.MdTracerCore
         public string g_modem_support = string.Empty;
         public int g_smd_header_size;
         public bool g_smd_deinterleaved;
+        public bool g_mapper_is_ssf;
+        public byte[] g_mapper_banks = new byte[8];
 
         public bool load_from_bytes(byte[] data, string sourceName)
         {
@@ -176,6 +178,7 @@ namespace EutherDrive.Core.MdTracerCore
             ParseRegionSupport();
             g_rom_checksum_calc = ComputeRomChecksum();
             g_rom_checksum_match = g_rom_checksum_calc == g_rom_checksum_header;
+            InitMapper();
 
             return true;
         }
@@ -287,6 +290,52 @@ namespace EutherDrive.Core.MdTracerCore
                     g_extra_memory_access = "byte-odd";
                     g_extra_memory_battery = true;
                     break;
+            }
+        }
+
+        private void InitMapper()
+        {
+            g_mapper_is_ssf = ShouldUseSsfMapper();
+            if (g_mapper_banks.Length != 8)
+                g_mapper_banks = new byte[8];
+            for (int i = 0; i < g_mapper_banks.Length; i++)
+                g_mapper_banks[i] = (byte)i;
+        }
+
+        private bool ShouldUseSsfMapper()
+        {
+            string systemRaw = g_system_type_raw;
+            if (!string.IsNullOrEmpty(systemRaw))
+            {
+                if (systemRaw.StartsWith("SEGA SSF", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (systemRaw.StartsWith("SEGA DOA", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            string serial = g_serial_number.Trim();
+            return serial == "T-12056" || serial == "MK-12056" || serial == "T-12043";
+        }
+
+        public uint MapRomAddress(uint address)
+        {
+            if (!g_mapper_is_ssf)
+                return address;
+            int idx = (int)((address >> 19) & 0x07);
+            uint bank = g_mapper_banks[idx];
+            return (bank << 19) | (address & 0x07FFFF);
+        }
+
+        public void WriteMapperRegister(uint address, byte value)
+        {
+            if (!g_mapper_is_ssf)
+                return;
+            if (address == 0x00A130F1)
+                return;
+            if (address >= 0x00A130F3 && address <= 0x00A130FF && (address & 1) == 1)
+            {
+                int idx = (int)((address >> 1) & 7);
+                g_mapper_banks[idx] = value;
             }
         }
 
