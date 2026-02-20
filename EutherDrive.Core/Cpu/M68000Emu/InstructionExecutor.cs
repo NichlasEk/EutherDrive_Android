@@ -2,7 +2,7 @@ using System;
 
 namespace EutherDrive.Core.Cpu.M68000Emu;
 
-internal sealed class InstructionExecutor
+internal sealed partial class InstructionExecutor
 {
     private readonly Registers _registers;
     private readonly IBusInterface _bus;
@@ -65,7 +65,133 @@ internal sealed class InstructionExecutor
         if (_instruction.Value.Kind == InstructionKind.Illegal)
             return ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode));
 
-        throw new NotImplementedException("Instruction execution not yet implemented.");
+        Instruction inst = _instruction.Value;
+        return inst.Kind switch
+        {
+            InstructionKind.Add => inst.Size switch
+            {
+                OpSize.Byte => AddByte(inst.Source, inst.Dest, inst.WithExtend),
+                OpSize.Word => AddWord(inst.Source, inst.Dest, inst.WithExtend),
+                _ => AddLongWord(inst.Source, inst.Dest, inst.WithExtend),
+            },
+            InstructionKind.AddDecimal => Abcd(inst.Source, inst.Dest),
+            InstructionKind.And => inst.Size switch
+            {
+                OpSize.Byte => AndByte(inst.Source, inst.Dest),
+                OpSize.Word => AndWord(inst.Source, inst.Dest),
+                _ => AndLongWord(inst.Source, inst.Dest),
+            },
+            InstructionKind.AndToCcr => AndiToCcr(),
+            InstructionKind.AndToSr => AndiToSr(),
+            InstructionKind.ArithmeticShiftMemory => AsdMemory(inst.ShiftDirection, inst.Dest),
+            InstructionKind.ArithmeticShiftRegister => AsdRegister(inst.Size, inst.ShiftDirection, inst.DataReg, inst.ShiftCount),
+            InstructionKind.BitTest => Btst(inst.Source, inst.Dest),
+            InstructionKind.BitTestAndChange => Bchg(inst.Source, inst.Dest),
+            InstructionKind.BitTestAndClear => Bclr(inst.Source, inst.Dest),
+            InstructionKind.BitTestAndSet => Bset(inst.Source, inst.Dest),
+            InstructionKind.Branch => Branch(inst.BranchCondition, inst.Displacement8),
+            InstructionKind.BranchDecrement => Dbcc(inst.BranchCondition, inst.DataReg),
+            InstructionKind.BranchToSubroutine => Bsr(inst.Displacement8),
+            InstructionKind.CheckRegister => Chk(inst.DataReg, inst.Source),
+            InstructionKind.Clear => inst.Size switch
+            {
+                OpSize.Byte => ClrByte(inst.Dest),
+                OpSize.Word => ClrWord(inst.Dest),
+                _ => ClrLongWord(inst.Dest),
+            },
+            InstructionKind.Compare => inst.Size switch
+            {
+                OpSize.Byte => CmpByte(inst.Source, inst.Dest),
+                OpSize.Word => CmpWord(inst.Source, inst.Dest),
+                _ => CmpLongWord(inst.Source, inst.Dest),
+            },
+            InstructionKind.DivideSigned => Divs(inst.DataReg, inst.Source),
+            InstructionKind.DivideUnsigned => Divu(inst.DataReg, inst.Source),
+            InstructionKind.ExchangeAddress => ExecuteResult<uint>.Ok(ExgAddress(inst.AddrReg, inst.Dest.AddrReg)),
+            InstructionKind.ExchangeData => ExecuteResult<uint>.Ok(ExgData(inst.DataReg, inst.Dest.DataReg)),
+            InstructionKind.ExchangeDataAddress => ExecuteResult<uint>.Ok(ExgDataAddress(inst.DataReg, inst.AddrReg)),
+            InstructionKind.ExclusiveOr => inst.Size switch
+            {
+                OpSize.Byte => EorByte(inst.Source, inst.Dest),
+                OpSize.Word => EorWord(inst.Source, inst.Dest),
+                _ => EorLongWord(inst.Source, inst.Dest),
+            },
+            InstructionKind.ExclusiveOrToCcr => EoriToCcr(),
+            InstructionKind.ExclusiveOrToSr => EoriToSr(),
+            InstructionKind.Extend => ExecuteResult<uint>.Ok(Ext(inst.Size, inst.DataReg)),
+            InstructionKind.Jump => Jmp(inst.Dest),
+            InstructionKind.JumpToSubroutine => Jsr(inst.Dest),
+            InstructionKind.Link => Link(inst.AddrReg),
+            InstructionKind.LoadEffectiveAddress => Lea(inst.Source, inst.AddrReg),
+            InstructionKind.LogicalShiftMemory => LsdMemory(inst.ShiftDirection, inst.Dest),
+            InstructionKind.LogicalShiftRegister => LsdRegister(inst.Size, inst.ShiftDirection, inst.DataReg, inst.ShiftCount),
+            InstructionKind.Move => inst.Size switch
+            {
+                OpSize.Byte => MoveByte(inst.Source, inst.Dest),
+                OpSize.Word => MoveWord(inst.Source, inst.Dest),
+                _ => MoveLongWord(inst.Source, inst.Dest),
+            },
+            InstructionKind.MoveFromSr => MoveFromSr(inst.Dest),
+            InstructionKind.MoveMultiple => Movem(inst.Size, inst.Dest, inst.Direction),
+            InstructionKind.MovePeripheral => Movep(inst.Size, inst.DataReg, inst.AddrReg, inst.Direction),
+            InstructionKind.MoveQuick => ExecuteResult<uint>.Ok(Moveq(unchecked((sbyte)inst.QuickValue), inst.DataReg)),
+            InstructionKind.MoveToCcr => MoveToCcr(inst.Source),
+            InstructionKind.MoveToSr => MoveToSr(inst.Source),
+            InstructionKind.MoveUsp => MoveUsp(inst.UspDirection, inst.AddrReg),
+            InstructionKind.MultiplySigned => Muls(inst.DataReg, inst.Source),
+            InstructionKind.MultiplyUnsigned => Mulu(inst.DataReg, inst.Source),
+            InstructionKind.Negate => inst.Size switch
+            {
+                OpSize.Byte => NegByte(inst.Dest, inst.WithExtend),
+                OpSize.Word => NegWord(inst.Dest, inst.WithExtend),
+                _ => NegLongWord(inst.Dest, inst.WithExtend),
+            },
+            InstructionKind.NegateDecimal => Nbcd(inst.Dest),
+            InstructionKind.NoOp => ExecuteResult<uint>.Ok(Nop()),
+            InstructionKind.Not => inst.Size switch
+            {
+                OpSize.Byte => NotByte(inst.Dest),
+                OpSize.Word => NotWord(inst.Dest),
+                _ => NotLongWord(inst.Dest),
+            },
+            InstructionKind.Or => inst.Size switch
+            {
+                OpSize.Byte => OrByte(inst.Source, inst.Dest),
+                OpSize.Word => OrWord(inst.Source, inst.Dest),
+                _ => OrLongWord(inst.Source, inst.Dest),
+            },
+            InstructionKind.OrToCcr => OriToCcr(),
+            InstructionKind.OrToSr => OriToSr(),
+            InstructionKind.PushEffectiveAddress => Pea(inst.Source),
+            InstructionKind.Reset => ExecuteResult<uint>.Ok(ResetInstruction()),
+            InstructionKind.Return => Ret(inst.RestoreCcr),
+            InstructionKind.ReturnFromException => Rte(),
+            InstructionKind.RotateMemory => RodMemory(inst.ShiftDirection, inst.Dest),
+            InstructionKind.RotateRegister => RodRegister(inst.Size, inst.ShiftDirection, inst.DataReg, inst.ShiftCount),
+            InstructionKind.RotateThruExtendMemory => RoxdMemory(inst.ShiftDirection, inst.Dest),
+            InstructionKind.RotateThruExtendRegister => RoxdRegister(inst.Size, inst.ShiftDirection, inst.DataReg, inst.ShiftCount),
+            InstructionKind.Set => Scc(inst.BranchCondition, inst.Dest),
+            InstructionKind.Subtract => inst.Size switch
+            {
+                OpSize.Byte => SubByte(inst.Source, inst.Dest, inst.WithExtend),
+                OpSize.Word => SubWord(inst.Source, inst.Dest, inst.WithExtend),
+                _ => SubLongWord(inst.Source, inst.Dest, inst.WithExtend),
+            },
+            InstructionKind.SubtractDecimal => Sbcd(inst.Source, inst.Dest),
+            InstructionKind.Swap => ExecuteResult<uint>.Ok(Swap(inst.DataReg)),
+            InstructionKind.Stop => Stop(),
+            InstructionKind.Test => inst.Size switch
+            {
+                OpSize.Byte => TstByte(inst.Source),
+                OpSize.Word => TstWord(inst.Source),
+                _ => TstLongWord(inst.Source),
+            },
+            InstructionKind.TestAndSet => Tas(inst.Dest),
+            InstructionKind.Trap => Trap(inst.TrapVector),
+            InstructionKind.TrapOnOverflow => Trapv(),
+            InstructionKind.Unlink => Unlk(inst.AddrReg),
+            _ => ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode)),
+        };
     }
 
     private ExecuteResult<ushort> ReadBusWord(uint address)

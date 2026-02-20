@@ -294,10 +294,10 @@ internal readonly struct Instruction
         => new(InstructionKind.DivideUnsigned, OpSize.Word, source, default, reg, default, default, default, default, default, default, false, false, 0, 0, 0, 0);
 
     public static Instruction ExchangeAddress(AddressRegister a1, AddressRegister a2)
-        => new(InstructionKind.ExchangeAddress, OpSize.LongWord, default, default, default, a1, default, default, default, default, default, false, false, 0, 0, 0, 0);
+        => new(InstructionKind.ExchangeAddress, OpSize.LongWord, default, AddressingMode.AddressDirect(a2), default, a1, default, default, default, default, default, false, false, 0, 0, 0, 0);
 
     public static Instruction ExchangeData(DataRegister d1, DataRegister d2)
-        => new(InstructionKind.ExchangeData, OpSize.LongWord, default, default, d1, default, default, default, default, default, default, false, false, 0, 0, 0, 0);
+        => new(InstructionKind.ExchangeData, OpSize.LongWord, default, AddressingMode.DataDirect(d2), d1, default, default, default, default, default, default, false, false, 0, 0, 0, 0);
 
     public static Instruction ExchangeDataAddress(DataRegister d, AddressRegister a)
         => new(InstructionKind.ExchangeDataAddress, OpSize.LongWord, default, default, d, a, default, default, default, default, default, false, false, 0, 0, 0, 0);

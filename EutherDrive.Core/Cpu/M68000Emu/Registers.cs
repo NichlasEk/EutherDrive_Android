@@ -1,12 +1,12 @@
 namespace EutherDrive.Core.Cpu.M68000Emu;
 
-internal readonly struct ConditionCodes
+internal struct ConditionCodes
 {
-    public readonly bool Carry;
-    public readonly bool Overflow;
-    public readonly bool Zero;
-    public readonly bool Negative;
-    public readonly bool Extend;
+    public bool Carry;
+    public bool Overflow;
+    public bool Zero;
+    public bool Negative;
+    public bool Extend;
 
     public ConditionCodes(bool carry, bool overflow, bool zero, bool negative, bool extend)
     {
