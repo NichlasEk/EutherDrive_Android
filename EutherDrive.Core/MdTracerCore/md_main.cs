@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using EutherDrive.Core.Cpu.M68000Emu;
+using EutherDrive.Core.SegaCd;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -119,6 +121,17 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool ForceSeega = ReadEnvFlag("EUTHERDRIVE_FORCE_SEEGA");
         private static readonly int ForceSeegaFrame = ParseNonNegativeInt("EUTHERDRIVE_FORCE_SEEGA_FRAME", 20);
         private static readonly uint ForceSeegaPtr = ParseForceSeegaPtr();
+        private static readonly bool TraceSonic2Ram = ReadEnvFlag("EUTHERDRIVE_TRACE_SONIC2_RAM");
+        private static readonly int TraceSonic2RamLimit = ParseNonNegativeInt("EUTHERDRIVE_TRACE_SONIC2_RAM_LIMIT", 512);
+        private static int _traceSonic2RamRemaining = TraceSonic2Ram ? TraceSonic2RamLimit : 0;
+        private static bool _sonic2RamInit;
+        private static readonly byte[] _sonic2RamLast = new byte[0x80];
+        private static readonly bool UseM68kEmuMain =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_USE_M68KEMU"), "0", StringComparison.Ordinal);
+        private static M68000? _m68kEmu;
+        private static IBusInterface? _m68kEmuBus;
+        private static int _m68kWaitCycles;
+        private static int _m68kRefreshCounter;
         // Z80/M68K cycle ratio for NTSC: Z80 ~3.58MHz, M68K ~7.67MHz => ratio ~0.466
         private static readonly double Z80PerM68kRatio = 3.579545 / 7.670000; // More precise ratio
         private static readonly int Z80ContinuousSliceCycles = ParseZ80ContinuousSliceCycles();
@@ -255,6 +268,20 @@ namespace EutherDrive.Core.MdTracerCore
             g_md_music?.YmAdvanceSystemCycles(cycles);
         }
 
+        internal static void AddM68kWaitCycles(int cycles)
+        {
+            if (cycles <= 0)
+                return;
+            if (UseM68kEmuMain)
+            {
+                _m68kWaitCycles += cycles;
+            }
+            else
+            {
+                md_m68k.g_clock += cycles;
+            }
+        }
+
         // Synkroniseringssystem för gemensam tidsbas (inspirerat av andra emulatorer)
         internal class SyncState
         {
@@ -338,8 +365,86 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (cycles <= 0)
                 return;
+            if (UseM68kEmuMain)
+            {
+                RunM68kEmu(cycles);
+                return;
+            }
             g_md_m68k.run(cycles);
             AdvanceSystemCycles(cycles);
+        }
+
+        private static void RunM68kEmu(int cycles)
+        {
+            if (_m68kEmu == null || _m68kEmuBus == null)
+                return;
+
+            md_m68k.g_slice_start_clock_total = md_m68k.g_clock_total;
+            md_m68k.g_slice_clock_len = cycles;
+            md_m68k.g_clock_total += cycles;
+
+            int remaining = cycles;
+            int guard = 0;
+            while (remaining > 0)
+            {
+                if (++guard > 200000)
+                    break;
+
+                if (g_md_vdp != null)
+                {
+                    int dmaWait = g_md_vdp.dma_status_update();
+                    if (dmaWait > 0)
+                    {
+                        int waitStep = Math.Min(remaining, dmaWait);
+                        AddM68kCycles(waitStep);
+                        AdvanceSystemCycles(waitStep);
+                        md_m68k.g_clock_now += waitStep;
+                        remaining -= waitStep;
+                        continue;
+                    }
+                }
+
+                if (_m68kWaitCycles > 0)
+                {
+                    int waitStep = Math.Min(remaining, _m68kWaitCycles);
+                    _m68kWaitCycles -= waitStep;
+                    md_m68k.g_clock_now += waitStep;
+                    AddM68kCycles(waitStep);
+                    AdvanceSystemCycles(waitStep);
+                    remaining -= waitStep;
+                    continue;
+                }
+
+                md_m68k.g_reg_PC = _m68kEmu.Pc;
+                md_m68k.g_opcode = _m68kEmu.NextOpcode;
+
+                uint used = _m68kEmu.ExecuteInstruction(_m68kEmuBus);
+                if (used == 0)
+                    used = 1;
+
+                md_m68k.g_reg_PC = _m68kEmu.Pc;
+                md_m68k.g_opcode = _m68kEmu.NextOpcode;
+
+                AddM68kCycles((int)used);
+                AdvanceSystemCycles(used);
+                md_m68k.g_clock_now += (int)used;
+                remaining -= (int)used;
+
+                // Approximate 68k refresh wait cycles (jgenesis timing.rs)
+                _m68kRefreshCounter += (int)used;
+                if (_m68kRefreshCounter >= 128)
+                {
+                    int regionIdx = (int)((_m68kEmu.Pc >> 21) & 7);
+                    int waitCycles = regionIdx switch
+                    {
+                        0 or 1 or 2 or 3 => 2,
+                        7 => 3,
+                        _ => 0
+                    };
+                    _m68kWaitCycles += waitCycles;
+                    _m68kRefreshCounter %= 128;
+                }
+            }
         }
 
         // --- Kärnkomponenter ---
@@ -374,6 +479,19 @@ namespace EutherDrive.Core.MdTracerCore
 
             // Reset maskinen
             g_md_m68k.reset();
+            if (UseM68kEmuMain)
+            {
+                _m68kEmu ??= M68000.CreateBuilder()
+                    .AllowTasWrites(md_m68k.AllowTasWrites)
+                    .Name("MD-MAIN")
+                    .Build();
+                _m68kEmuBus ??= new SegaCdMainM68kBus(g_md_bus);
+                _m68kEmu.Reset(_m68kEmuBus);
+                _m68kWaitCycles = 0;
+                _m68kRefreshCounter = 0;
+                md_m68k.g_reg_PC = _m68kEmu.Pc;
+                md_m68k.g_opcode = _m68kEmu.NextOpcode;
+            }
             SafeResetZ80();
             g_md_vdp.reset();
             _mbxInjected = false;
@@ -409,6 +527,12 @@ namespace EutherDrive.Core.MdTracerCore
             if (g_hard_reset_req)
             {
                 g_md_m68k.reset();
+                if (UseM68kEmuMain && _m68kEmu != null && _m68kEmuBus != null)
+                {
+                    _m68kEmu.Reset(_m68kEmuBus);
+                    _m68kWaitCycles = 0;
+                    _m68kRefreshCounter = 0;
+                }
                 SafeResetZ80();
                 g_md_vdp.reset();
                 ResetZ80WaitState();
@@ -629,6 +753,8 @@ namespace EutherDrive.Core.MdTracerCore
             g_md_bus?.FlushZ80WinStat(frame);
             g_md_bus?.FlushMbx68kStat(frame);
             g_md_bus?.FlushSram(frame.ToString());
+            if (TraceSonic2Ram)
+                LogSonic2RamChanges(frame);
             if (g_masterSystemMode)
                 g_md_z80?.FlushSmsSram(frame.ToString());
             g_md_z80?.FlushZ80MbxPoll(frame);
@@ -857,6 +983,37 @@ namespace EutherDrive.Core.MdTracerCore
             if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
                 return value;
             return 0;
+        }
+
+        private static void LogSonic2RamChanges(long frame)
+        {
+            if (_traceSonic2RamRemaining <= 0)
+                return;
+
+            const uint baseAddr = 0xFFB000;
+            if (!_sonic2RamInit)
+            {
+                for (int i = 0; i < _sonic2RamLast.Length; i++)
+                    _sonic2RamLast[i] = md_m68k.read8(baseAddr + (uint)i);
+                _sonic2RamInit = true;
+                return;
+            }
+
+            for (int i = 0; i < _sonic2RamLast.Length; i++)
+            {
+                byte cur = md_m68k.read8(baseAddr + (uint)i);
+                if (cur == _sonic2RamLast[i])
+                    continue;
+
+                _sonic2RamLast[i] = cur;
+                Console.WriteLine($"[S2-RAM] frame={frame} addr=0x{baseAddr + (uint)i:X6} val=0x{cur:X2}");
+                if (_traceSonic2RamRemaining != int.MaxValue)
+                {
+                    _traceSonic2RamRemaining--;
+                    if (_traceSonic2RamRemaining <= 0)
+                        return;
+                }
+            }
         }
 
         private static int ParseZ80InterleaveSlices()

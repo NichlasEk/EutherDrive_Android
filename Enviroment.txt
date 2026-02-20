@@ -1,5 +1,7 @@
 EutherDrive environment variables (EUTHERDRIVE_*).
 
+Always use EUTHERDRIVE_TRACE_VERBOSE=1 when logging
+
 General
 - EUTHERDRIVE_TRACE_ENABLE=1: enable MdLog trace output (required; otherwise traces are silent).
 - EUTHERDRIVE_TRACE_DISABLE=1: disable all MdLog trace output (overrides trace flags).

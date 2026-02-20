@@ -165,8 +165,10 @@ namespace EutherDrive.Core.MdTracerCore
 
         private ushort ReadNameTableWord(int baseWord, int offsetWord)
         {
-            // Nametable size is limited to 8KB (0x1000 words); wrap the offset.
-            int wordIndex = baseWord + (offsetWord & 0x0FFF);
+            // Nametable size depends on scroll plane size (regs 16). Wrap by total entries.
+            int entries = g_scroll_xcell * g_scroll_ycell; // power-of-two: 1024..8192
+            int mask = entries - 1;
+            int wordIndex = baseWord + (offsetWord & mask);
             int byteAddr = (wordIndex << 1) & 0xFFFF;
             return vram_read_render(byteAddr);
         }

@@ -471,6 +471,12 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void run(int in_clock)
         {
+            if (UseJgenesisZ80)
+            {
+                RunJgenesis(in_clock);
+                return;
+            }
+
             // Simple debug to see if run is called
             if (TraceZ80Run && _runCount < 5)
             {
@@ -1803,6 +1809,9 @@ NextPc:;
             g_reg_SP = smsContext ? (ushort)0xDFF0 : (ushort)0x0000;
             g_reg_IX = 0xffff;
             g_reg_IY = 0xffff;
+
+            if (UseJgenesisZ80)
+                ResetJgZ80();
 
             g_flag_S = 0;
             g_flag_Z = 1;

@@ -354,7 +354,8 @@ internal sealed partial class InstructionExecutor
                 {
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
-                    uint addr = ext.Value;
+                    // Absolute short is sign-extended (e.g. 0xFFB8 -> 0xFFFF_FFB8).
+                    uint addr = unchecked((uint)(short)ext.Value);
                     resolved = ResolvedAddress.Memory(addr);
                     break;
                 }

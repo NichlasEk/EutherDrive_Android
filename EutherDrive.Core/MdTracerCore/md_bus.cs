@@ -1508,6 +1508,7 @@ namespace EutherDrive.Core.MdTracerCore
             // 0xA00000–0xA0FFFF  | Z80 bus
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
             {
+                md_main.AddM68kWaitCycles(1);
                 // Map M68K address to Z80 address
                 // M68K 0xA00000 (even) -> Z80 0x0000
                 // M68K 0xA00001 (odd)  -> Z80 0x0001
@@ -1648,6 +1649,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
             {
+                md_main.AddM68kWaitCycles(1);
                 // Map M68K address to Z80 address
                 uint z80Addr = in_address & 0x1FFF;
                 if (UseMdTracerCompat)
@@ -1768,6 +1770,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address >= 0xA00000 && in_address <= 0xA0FFFF)
             {
+                md_main.AddM68kWaitCycles(1);
                 // Map M68K address to Z80 address
                 uint z80Addr = in_address & 0x1FFF;
                 if (UseMdTracerCompat)
@@ -3127,6 +3130,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (md_main.g_md_z80 == null)
                 return false;
+            md_main.AddM68kWaitCycles(1);
 
             // Map M68K address to Z80 address:
             // M68K 0xA01B80 (even) -> Z80 0x1B80

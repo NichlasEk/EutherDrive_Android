@@ -67,6 +67,7 @@ namespace EutherDrive.Core.MdTracerCore
                     write_dma_src_addr(g_dma_src_addr);
                     break;
             }
+            FlushPendingVdpWrites();
         }
 
         public int dma_status_update()

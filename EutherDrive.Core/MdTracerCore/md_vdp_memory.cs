@@ -93,6 +93,10 @@ namespace EutherDrive.Core.MdTracerCore
 
         private readonly List<VdpFifoEntry> _vdpFifo = new List<VdpFifoEntry>(VdpFifoCapacity);
         private readonly Queue<VdpFifoEntry> _vdpFifoPending = new Queue<VdpFifoEntry>(8);
+        private readonly Queue<(uint Addr, ushort Data)> _pendingVdpWrites = new Queue<(uint, ushort)>(64);
+        private bool _flushingPendingVdpWrites;
+
+        private const int PendingVdpWriteLimit = 256;
 
         private struct VdpFifoEntry
         {
@@ -101,6 +105,36 @@ namespace EutherDrive.Core.MdTracerCore
             public byte Code;
             public byte AutoInc;
             public int Latency;
+        }
+
+        private bool ShouldBufferVdpWrite()
+        {
+            // Match jgenesis behavior: buffer VDP port writes while memory-to-VRAM DMA is active.
+            return !_flushingPendingVdpWrites && g_dma_mode == 1 && g_dma_leng > 0;
+        }
+
+        private void EnqueuePendingVdpWrite(uint addr, ushort data)
+        {
+            if (_pendingVdpWrites.Count >= PendingVdpWriteLimit)
+            {
+                if (MdTracerCore.MdLog.Enabled)
+                    MdTracerCore.MdLog.WriteLine($"[VDP] pending write overflow (drop) addr=0x{addr:X6} data=0x{data:X4}");
+                return;
+            }
+            _pendingVdpWrites.Enqueue((addr, data));
+        }
+
+        private void FlushPendingVdpWrites()
+        {
+            if (_pendingVdpWrites.Count == 0)
+                return;
+            _flushingPendingVdpWrites = true;
+            while (_pendingVdpWrites.Count > 0)
+            {
+                var (addr, data) = _pendingVdpWrites.Dequeue();
+                write16(addr, data);
+            }
+            _flushingPendingVdpWrites = false;
         }
 
         private void EnqueueVdpFifo(ushort word, byte code, ushort address, byte autoinc)
@@ -581,6 +615,11 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address <= 0xc00003)
             {
+                if (ShouldBufferVdpWrite())
+                {
+                    EnqueuePendingVdpWrite(in_address, in_data);
+                    return;
+                }
                 ApplyDataPortAccessSlotDelay(md_m68k.g_opcode);
                 _mdDataWritesThisFrame++;
                 RecordDataPortWriteCode(g_vdp_reg_code);
@@ -596,7 +635,7 @@ namespace EutherDrive.Core.MdTracerCore
                         return;
                     }
                     // Default: add wait cycles to simulate bus stall instead of dropping writes
-                    md_m68k.g_clock += 12;
+                    md_main.AddM68kWaitCycles(12);
                 }
 
                 // Comprehensive VDP data-port write tracing
@@ -623,6 +662,8 @@ namespace EutherDrive.Core.MdTracerCore
                     byte code = (byte)g_vdp_reg_code;
                     byte autoinc = (byte)g_vdp_reg_15_autoinc;
                     g_vdp_reg_dest_address = (ushort)((addr + autoinc) & 0xffff);
+                    if (_vdpFifo.Count >= VdpFifoCapacity)
+                        md_main.AddM68kWaitCycles(4);
                     EnqueueVdpFifo(in_data, code, addr, autoinc);
                     return;
                 }
@@ -678,6 +719,11 @@ namespace EutherDrive.Core.MdTracerCore
             }
             else if (in_address <= 0xc00007)
             {
+                if (ShouldBufferVdpWrite())
+                {
+                    EnqueuePendingVdpWrite(in_address, in_data);
+                    return;
+                }
                 _mdCtrlWritesThisFrame++;
                 if (MdTracerCore.MdLog.Enabled && !_mdCtrlPortLogged)
                 {

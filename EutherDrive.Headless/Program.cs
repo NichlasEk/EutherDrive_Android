@@ -68,6 +68,7 @@ class Program
             Console.WriteLine($"[HEADLESS] env {name}={value}");
     }
 
+
     static int Main(string[] args)
     {
         ConfigureConsoleLogging();

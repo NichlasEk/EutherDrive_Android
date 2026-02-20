@@ -479,7 +479,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (waitCycles <= 0)
                 waitCycles = 1;
 
-            md_m68k.g_clock += waitCycles;
+            md_main.AddM68kWaitCycles(waitCycles);
             return false;
         }
 

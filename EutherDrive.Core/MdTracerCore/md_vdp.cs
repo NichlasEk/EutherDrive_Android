@@ -197,6 +197,8 @@ private static readonly bool SpriteLinkSequential =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPRITE_OVERFLOW_FRAME"), "1", StringComparison.Ordinal);
         private static readonly bool TraceNameTableRowDump =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NAMETABLE_ROW_DUMP"), "1", StringComparison.Ordinal);
+        private static readonly int TraceNameTableRowDumpScanline =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_NAMETABLE_ROW_DUMP_SCANLINE", -1);
         private static readonly bool TracePatternTileDump =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PATTERN_TILE_DUMP"), "1", StringComparison.Ordinal);
         private static readonly bool TraceDmaStatus =
@@ -835,20 +837,29 @@ private static readonly bool SpriteLinkSequential =
             if (!TraceNameTableRowDump)
                 return;
 
-            if (g_scanline != 0 && g_scanline != 112)
-                return;
+            int sampleLine = g_scanline;
+            if (TraceNameTableRowDumpScanline >= 0)
+            {
+                // Dump once per frame using the requested scanline.
+                sampleLine = TraceNameTableRowDumpScanline;
+            }
+            else
+            {
+                if (g_scanline != 0 && g_scanline != 112)
+                    return;
+            }
 
-            if (_lastNameTableDumpFrame == _frameCounter && _lastNameTableDumpScanline == g_scanline)
+            if (_lastNameTableDumpFrame == _frameCounter && _lastNameTableDumpScanline == sampleLine)
                 return;
 
             _lastNameTableDumpFrame = _frameCounter;
-            _lastNameTableDumpScanline = g_scanline;
+            _lastNameTableDumpScanline = sampleLine;
 
             bool h40 = IsH40Mode();
             int mask = h40 ? 0xFE00 : 0xFC00;
             int planeWidthTiles = g_scroll_xcell;
             int rowStrideWords = planeWidthTiles;
-            int rowIndex = (g_scanline >> GetCellHeightShift());
+            int rowIndex = (sampleLine >> GetCellHeightShift());
 
             int baseA = g_vdp_reg_2_scrolla & mask;
             int baseB = g_vdp_reg_4_scrollb & mask;
@@ -857,27 +868,27 @@ private static readonly bool SpriteLinkSequential =
             int hscrollBase = g_vdp_reg_13_hscroll & 0xFC00;
 
             Console.WriteLine(
-                $"[NT-REG] frame={_frameCounter} scanline={g_scanline} " +
+                $"[NT-REG] frame={_frameCounter} scanline={sampleLine} " +
                 $"reg02=0x{g_vdp_reg[2]:X2} reg04=0x{g_vdp_reg[4]:X2} reg03=0x{g_vdp_reg[3]:X2} reg05=0x{g_vdp_reg[5]:X2} " +
                 $"reg0B=0x{g_vdp_reg[11]:X2} reg0C=0x{g_vdp_reg[12]:X2} reg0D=0x{g_vdp_reg[13]:X2} " +
                 $"reg0F=0x{g_vdp_reg[15]:X2} reg10=0x{g_vdp_reg[16]:X2} " +
                 $"H40={(h40 ? 1 : 0)} widthTiles={planeWidthTiles} row={rowIndex}");
 
             Console.WriteLine(
-                $"[NT-BASE] frame={_frameCounter} scanline={g_scanline} " +
+                $"[NT-BASE] frame={_frameCounter} scanline={sampleLine} " +
                 $"A=0x{baseA:X4} B=0x{baseB:X4} W=0x{baseW:X4} S=0x{baseS:X4} HS=0x{hscrollBase:X4}");
 
             if (TraceDumpTileEnabled)
                 DumpTilePattern("ENV", 0, _traceDumpTileIndex & 0x7FF);
 
             Console.WriteLine(
-                $"[VSRAM] frame={_frameCounter} scanline={g_scanline} mode={(g_vdp_reg_11_2_vscroll != 0 ? 1 : 0)} " +
+                $"[VSRAM] frame={_frameCounter} scanline={sampleLine} mode={(g_vdp_reg_11_2_vscroll != 0 ? 1 : 0)} " +
                 $"A0=0x{g_vsram[0]:X4} B0=0x{g_vsram[1]:X4} A1=0x{g_vsram[2]:X4} B1=0x{g_vsram[3]:X4}");
 
             DumpNameTableRow("A", baseA, rowIndex, rowStrideWords, planeWidthTiles);
             DumpNameTableRow("B", baseB, rowIndex, rowStrideWords, planeWidthTiles);
 
-            DumpHScrollSample(hscrollBase);
+            DumpHScrollSampleForLine(hscrollBase, sampleLine);
         }
 
         private void DumpNameTableRow(string label, int baseAddr, int rowIndex, int rowStrideWords, int widthTiles)
@@ -949,6 +960,23 @@ private static readonly bool SpriteLinkSequential =
         {
             int hscrollMode = g_vdp_reg_11_1_hscroll;
             int line = GetHScrollLine(g_scanline);
+            int addr = hscrollBase;
+            switch (hscrollMode)
+            {
+                case 2: addr += (line & 0xfff8) << 2; break;
+                case 3: addr += line << 2; break;
+            }
+            int wordAddr = addr >> 1;
+            ushort a0 = ReadVramWordRaw((wordAddr << 1) & 0xFFFF);
+            ushort b0 = ReadVramWordRaw(((wordAddr + 1) << 1) & 0xFFFF);
+            Console.WriteLine(
+                $"[HSCROLL-SAMPLE] mode={hscrollMode} line={line} base=0x{hscrollBase:X4} addr=0x{addr:X4} " +
+                $"A=0x{a0:X4} B=0x{b0:X4}");
+        }
+
+        private void DumpHScrollSampleForLine(int hscrollBase, int line)
+        {
+            int hscrollMode = g_vdp_reg_11_1_hscroll;
             int addr = hscrollBase;
             switch (hscrollMode)
             {
