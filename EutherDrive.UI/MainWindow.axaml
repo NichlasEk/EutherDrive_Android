@@ -184,6 +184,7 @@
         <TextBlock Text="Sega CD" FontWeight="Bold"/>
         <CheckBox Name="SegaCdRamCartCheck" Content="Enable RAM cartridge" Checked="OnSegaCdRamCartToggle" Unchecked="OnSegaCdRamCartToggle"/>
         <CheckBox Name="SegaCdLoadCdToRamCheck" Content="Load CD-ROM into RAM at startup" Checked="OnSegaCdLoadCdToRamToggle" Unchecked="OnSegaCdLoadCdToRamToggle"/>
+        <CheckBox Name="SegaCdForceNoDiscCheck" Content="Force no disc (BIOS only)" Checked="OnSegaCdForceNoDiscToggle" Unchecked="OnSegaCdForceNoDiscToggle"/>
         <TextBlock Name="SegaCdOptionsInfo" Opacity="0.7" FontSize="11" TextWrapping="Wrap" Text="Applies per Sega CD disc."/>
         <Separator/>
         <TextBlock Text="PSX BIOS" FontWeight="Bold"/>

@@ -205,6 +205,11 @@ namespace EutherDrive.Core.MdTracerCore
             if (bus?.OverrideBus != null && bus.OverrideBus.TryWrite8(addr, in_data))
                 return;
             mem[addr] = in_data;
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
+                && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
+            {
+                Console.WriteLine($"[RAM-FF] W8 addr=0x{logical:X6} val=0x{in_data:X2}");
+            }
             RecordMemoryAccess(addr, 1, true, in_data);
         }
 
@@ -224,6 +229,11 @@ namespace EutherDrive.Core.MdTracerCore
             uint addr1 = NormalizeAddr(in_address + 1);
             mem[addr]  = (byte)(in_data >> 8);
             mem[addr1] = (byte)(in_data & 0x00FF);
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
+                && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
+            {
+                Console.WriteLine($"[RAM-FF] W16 addr=0x{logical:X6} val=0x{in_data:X4}");
+            }
             RecordMemoryAccess(addr, 2, true, in_data);
         }
 
@@ -248,6 +258,11 @@ namespace EutherDrive.Core.MdTracerCore
             mem[addr1] = (byte)((in_data >> 16) & 0x00FF);
             mem[addr2] = (byte)((in_data >> 8) & 0x00FF);
             mem[addr3] = (byte)(in_data & 0x00FF);
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
+                && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
+            {
+                Console.WriteLine($"[RAM-FF] W32 addr=0x{logical:X6} val=0x{in_data:X8}");
+            }
             RecordMemoryAccess(addr, 4, true, in_data);
         }
     }

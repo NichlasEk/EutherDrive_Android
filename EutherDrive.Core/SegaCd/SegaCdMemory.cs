@@ -535,8 +535,8 @@ public sealed class SegaCdMemory
         if (cpu == ScdCpu.Main && !(Registers.SubCpuBusReq || Registers.SubCpuReset))
         {
             if (LogMainRegs)
-                Console.WriteLine($"[SCD-PRG] Main write blocked (no BUSREQ/RESET) addr=0x{address:X6} val=0x{value:X2}");
-            return;
+                Console.WriteLine($"[SCD-PRG] Main write without BUSREQ/RESET addr=0x{address:X6} val=0x{value:X2}");
+            // Allow main writes even if sub CPU is running; some BIOS builds expect this.
         }
 
         uint boundary = (uint)Registers.PrgRamWriteProtect * 0x200;

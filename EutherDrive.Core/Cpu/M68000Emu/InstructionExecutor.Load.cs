@@ -202,9 +202,6 @@ internal sealed partial class InstructionExecutor
             {
                 if (size == OpSize.Word)
                 {
-                    if (postincRegister.HasValue)
-                        postincRegister.Value.WriteLong(_registers, unchecked(address + 2));
-
                     var value = ReadBusWord(address);
                     if (!value.IsOk) return ExecuteResult<uint>.Err(value.Error!.Value);
                     uint signExtended = (uint)(short)value.Value;
@@ -216,9 +213,6 @@ internal sealed partial class InstructionExecutor
                 }
                 else if (size == OpSize.LongWord)
                 {
-                    if (postincRegister.HasValue)
-                        postincRegister.Value.WriteLong(_registers, unchecked(address + 2));
-
                     var value = ReadBusLong(address);
                     if (!value.IsOk) return ExecuteResult<uint>.Err(value.Error!.Value);
 

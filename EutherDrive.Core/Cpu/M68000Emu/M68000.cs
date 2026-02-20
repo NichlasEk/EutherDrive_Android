@@ -56,8 +56,8 @@ public sealed class M68000
         _regs.Frozen = false;
         _regs.AddressError = false;
 
-        _regs.Ssp = bus.ReadLong(0x000000);
-        _regs.Pc = bus.ReadLong(0x000004);
+        _regs.Ssp = bus.ReadLong(0x000000) & 0x00FF_FFFF;
+        _regs.Pc = bus.ReadLong(0x000004) & 0x00FF_FFFF;
         _regs.Prefetch = bus.ReadWord(_regs.Pc);
     }
 

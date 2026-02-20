@@ -86,7 +86,7 @@ internal sealed partial class InstructionExecutor
         if (!next.IsOk)
             return ExecuteResult<uint>.Err(next.Error!.Value);
         _registers.Prefetch = next.Value;
-        _registers.Pc += 2;
+        _registers.Pc = (_registers.Pc + 2) & 0x00FF_FFFF;
 
         Instruction inst = _instruction.Value;
         return inst.Kind switch
@@ -253,7 +253,7 @@ internal sealed partial class InstructionExecutor
         var next = ReadBusWord(_registers.Pc + 2);
         if (!next.IsOk) return ExecuteResult<ushort>.Err(next.Error!.Value);
         _registers.Prefetch = next.Value;
-        _registers.Pc += 2;
+        _registers.Pc = (_registers.Pc + 2) & 0x00FF_FFFF;
         return ExecuteResult<ushort>.Ok(operand);
     }
 
@@ -460,6 +460,13 @@ internal sealed partial class InstructionExecutor
         ushort lo = (ushort)(value & 0xFFFF);
         uint sp = _registers.StackPointer() - 4;
         _registers.SetStackPointer(sp);
+        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_STACK") == "1")
+        {
+            if ((value & 0x00FF_FFFF) < 0x000100 || (value & 0x00FF_FFFF) >= 0x00FF0000)
+            {
+                Console.WriteLine($"[M68K-STK] cpu={_name} push value=0x{value:X8} sp=0x{sp:X8}");
+            }
+        }
         var r0 = WriteBusWord(sp, hi);
         if (!r0.IsOk) return r0;
         return WriteBusWord(sp + 2, lo);
@@ -480,12 +487,27 @@ internal sealed partial class InstructionExecutor
         var value = ReadBusLong(sp);
         if (!value.IsOk) return ExecuteResult<uint>.Err(value.Error!.Value);
         _registers.SetStackPointer(sp + 4);
+        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_STACK") == "1")
+        {
+            if ((value.Value & 0x00FF_FFFF) < 0x000100 || (value.Value & 0x00FF_FFFF) >= 0x00FF0000)
+            {
+                Console.WriteLine($"[M68K-STK] cpu={_name} pop value=0x{value.Value:X8} sp=0x{sp:X8}");
+            }
+        }
         return ExecuteResult<uint>.Ok(value.Value);
     }
 
     private ExecuteResult<object> JumpToAddress(uint address)
     {
-        _registers.Pc = address - 2;
+        uint masked = address & 0x00FF_FFFF;
+        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_JUMP") == "1")
+        {
+            if (masked < 0x000100 || masked >= 0x00FF0000 || (address & 0xFF00_0000) != 0)
+            {
+                Console.WriteLine($"[M68K-JUMP] cpu={_name} from=0x{_registers.Pc:X8} addr=0x{address:X8} masked=0x{masked:X8}");
+            }
+        }
+        _registers.Pc = (masked - 2) & 0x00FF_FFFF;
         if ((address & 1) != 0)
             return ExecuteResult<object>.Err(M68kException.AddressError(address, BusOpType.Jump));
         var _ = FetchOperand();

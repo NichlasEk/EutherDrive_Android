@@ -105,6 +105,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private int _lastFbLogH = -1;
     private int _lastFbLogStride = -1;
     private int _lastFbLogSrcLen = -1;
+    private int _frameStatsRemaining = 4;
     private long _profileFrames;
     private long _profileTotalTicks;
     private long _profileCpuTicks;
@@ -178,6 +179,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
     public ConsoleRegion RegionHint { get; private set; } = ConsoleRegion.Auto;
     public bool EnableRamCartridge { get; set; } = true;
     public bool LoadCdIntoRam { get; set; }
+    public bool ForceNoDisc { get; set; }
 
     public void LoadRom(string path)
     {
@@ -193,7 +195,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
         _memory.SetDisc(CdRom.Open(path, LoadCdIntoRam));
         _ymResamplePhase = 0;
         _ymResampleHasCarry = false;
-        bool forceNoDisc = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_FORCE_NO_DISC"), "1", StringComparison.Ordinal);
+        bool forceNoDisc = ForceNoDisc
+            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_FORCE_NO_DISC"), "1", StringComparison.Ordinal);
         if (forceNoDisc)
             _memory.SetDisc(null);
         if (TraceCycleBudget)
@@ -674,6 +677,28 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     _lastFbLogStride = stride;
                     _lastFbLogSrcLen = src.Length;
                     Console.WriteLine($"[SCD-FRAME] vdp w={frameW} h={frameH} stride={stride} srcLen={src.Length}");
+                }
+                if (_frameStatsRemaining > 0 && src.Length >= 4)
+                {
+                    _frameStatsRemaining--;
+                    int sampleCount = Math.Min(src.Length / 4, 1024);
+                    int nonZero = 0;
+                    int rgbNonZero = 0;
+                    for (int i = 0; i < sampleCount; i++)
+                    {
+                        int siSample = i * 4;
+                        byte r0 = src[siSample + 0];
+                        byte g0 = src[siSample + 1];
+                        byte b0 = src[siSample + 2];
+                        byte a0 = src[siSample + 3];
+                        if (r0 != 0 || g0 != 0 || b0 != 0)
+                            rgbNonZero++;
+                        if (r0 != 0 || g0 != 0 || b0 != 0 || a0 != 0)
+                            nonZero++;
+                    }
+                    Console.WriteLine(
+                        $"[SCD-FRAME] sample0={src[0]:X2} {src[1]:X2} {src[2]:X2} {src[3]:X2} " +
+                        $"sampleNonZero={nonZero}/{sampleCount} sampleRgbNonZero={rgbNonZero}/{sampleCount}");
                 }
             }
             int pixels = Math.Min(frameW * frameH, src.Length / 4);
