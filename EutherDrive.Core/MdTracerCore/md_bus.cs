@@ -150,6 +150,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _ymWriteLogRemaining = 64;
         private int _busVdpLogRemaining = TraceBusVdpLimit;
         private int _romReadPcRemaining = TraceRomReadPcLimit;
+        private ushort _openBus;
         private static readonly bool TraceZ80Win =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80WIN"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80RegDecode =
@@ -685,6 +686,36 @@ namespace EutherDrive.Core.MdTracerCore
             return 0xFF;
         }
 
+        private byte ReadOpenBusByte()
+        {
+            return (byte)((_openBus >> 8) & 0xFF);
+        }
+
+        private ushort ReadOpenBusWord()
+        {
+            return _openBus;
+        }
+
+        private uint ReadOpenBusLong()
+        {
+            return (uint)((_openBus << 16) | _openBus);
+        }
+
+        private void SetOpenBusFromByte(byte value)
+        {
+            _openBus = (ushort)((_openBus & 0x00FF) | (value << 8));
+        }
+
+        private void SetOpenBusFromWord(ushort value)
+        {
+            _openBus = value;
+        }
+
+        private void SetOpenBusFromLong(uint value)
+        {
+            _openBus = (ushort)((value >> 16) & 0xFFFF);
+        }
+
         private static ushort ReadCartridgeWord(uint addr)
         {
             byte hi = ReadCartridgeByte(addr);
@@ -1097,6 +1128,7 @@ namespace EutherDrive.Core.MdTracerCore
             _z80SafeBootStartFrame = 0;
             _z80SafeBootLastUploadFrame = -1;
             _z80SafeBootResetReleaseFrame = -1;
+            _openBus = 0xFFFF;
 
             if (Z80SafeBootEnabled)
                 StartZ80SafeBoot();
@@ -1474,6 +1506,7 @@ namespace EutherDrive.Core.MdTracerCore
                 LogBusWatch(in_address, 1, write: false, value: val);
                 LogZ80BusAckRead8(in_address, val);
                 LogZ80BusAckReadDetail(in_address, val, 1);
+                SetOpenBusFromByte(val);
                 return val;
             }
 
@@ -1482,6 +1515,7 @@ namespace EutherDrive.Core.MdTracerCore
                 ushort val = BuildResetReadValue();
                 LogBusWatch(in_address, 2, write: false, value: val);
                 LogZ80RegRead(in_address, val);
+                SetOpenBusFromWord(val);
                 return (byte)(val & 0x01);
             }
 
@@ -1489,11 +1523,16 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 byte val = _sramLock ? (byte)0x01 : (byte)0x00;
                 SramLog($"[SRAM-LOCK-READ] addr=0x{in_address:X6} val=0x{val:X2} configured={IsSramConfigured}");
+                SetOpenBusFromByte(val);
                 return val;
             }
 
             if (IsSramAddress(in_address))
-                return ReadSramByte(in_address);
+            {
+                byte val = ReadSramByte(in_address);
+                SetOpenBusFromByte(val);
+                return val;
+            }
 
             // Log any access to 0xA130F0-0xA130FF range (SRAM control area)
             if ((in_address & 0xFFFFF0) == 0xA130F0)
@@ -1516,6 +1555,7 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                 }
                 LogBusWatch(in_address, 1, write: false, value: val);
+                SetOpenBusFromByte(val);
                 return val;
             }
 
@@ -1525,6 +1565,7 @@ namespace EutherDrive.Core.MdTracerCore
                 byte val = md_m68k.read8(in_address);
                 LogBusWatch(in_address, 1, write: false, value: val);
                 LogRamRange(in_address, 1, write: false, value: val);
+                SetOpenBusFromByte(val);
                 return val;
             }
 
@@ -1533,6 +1574,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 byte val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read8(in_address) : (byte)0xFF;
                 LogBusWatch(in_address, 1, write: false, value: val);
+                SetOpenBusFromByte(val);
                 
                 // Special logging for PC around 0x000788 (DMA setup code)
                 if (g_reg_PC >= 0x000780 && g_reg_PC <= 0x000790)
@@ -1548,6 +1590,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 byte val = md_main.g_md_io != null ? md_main.g_md_io.read8(in_address) : (byte)0xFF;
                 LogBusWatch(in_address, 1, write: false, value: val);
+                SetOpenBusFromByte(val);
                 return val;
             }
 
@@ -1558,6 +1601,7 @@ namespace EutherDrive.Core.MdTracerCore
                     ? md_main.g_md_music.YmRead(in_address)
                     : (byte)0xFF;
                 LogBusWatch(in_address, 1, write: false, value: val);
+                SetOpenBusFromByte(val);
                 return val;
             }
 
@@ -1566,6 +1610,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 byte val = md_main.g_md_control != null ? md_main.g_md_control.read8(in_address) : (byte)0xFF;
                 LogBusWatch(in_address, 1, write: false, value: val);
+                SetOpenBusFromByte(val);
                 return val;
             }
 
@@ -1602,7 +1647,9 @@ namespace EutherDrive.Core.MdTracerCore
                     MaybeLogZ80WinRangeRead(in_address, 0xFF, 1, blocked: true);
                     RecordZ80WinReadAccess(in_address, 1, 0xFF, blocked: true);
                     LogBusWatch(in_address, 1, write: false, value: 0xFF);
-                    return 0xFF;
+                    byte open = ReadOpenBusByte();
+                    SetOpenBusFromByte(open);
+                    return open;
                 }
                 byte val = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
                 LogZ80MailboxRead("8", z80Addr, val);
@@ -1615,13 +1662,16 @@ namespace EutherDrive.Core.MdTracerCore
                 MaybeLogZ80WinRangeRead(in_address, val, 1, blocked: false);
                 RecordZ80WinReadAccess(in_address, 1, val, blocked: false);
                 LogBusWatch(in_address, 1, write: false, value: val);
+                SetOpenBusFromByte(val);
                 return val;
             }
 
             // Okänt område → "open bus"
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal))
                 Console.WriteLine($"[BUS] read8 open bus addr=0x{in_address:X6}");
-            return 0xFF;
+            byte openBus = ReadOpenBusByte();
+            SetOpenBusFromByte(openBus);
+            return openBus;
         }
 
         public ushort read16(uint in_address)
@@ -1637,6 +1687,7 @@ namespace EutherDrive.Core.MdTracerCore
                 LogBusWatch(in_address, 2, write: false, value: val);
                 LogZ80BusAckRead(in_address, val);
                 LogZ80BusAckReadDetail(in_address, val, 2);
+                SetOpenBusFromWord(val);
                 return val;
             }
 
@@ -1645,17 +1696,24 @@ namespace EutherDrive.Core.MdTracerCore
                 ushort val = BuildResetReadValue();
                 LogBusWatch(in_address, 2, write: false, value: val);
                 LogZ80RegRead(in_address, val);
+                SetOpenBusFromWord(val);
                 return val;
             }
 
             if (IsSramLockReg(in_address) || IsSramLockReg(in_address + 1))
-                return _sramLock ? (ushort)0x0101 : (ushort)0x0000;
+            {
+                ushort val = _sramLock ? (ushort)0x0101 : (ushort)0x0000;
+                SetOpenBusFromWord(val);
+                return val;
+            }
 
             if (IsSramAddress(in_address))
             {
                 byte hi = ReadSramByte(in_address);
                 byte lo = ReadSramByte(in_address + 1);
-                return (ushort)((hi << 8) | lo);
+                ushort val = (ushort)((hi << 8) | lo);
+                SetOpenBusFromWord(val);
+                return val;
             }
 
             if (IsCartridgeRomAddress(in_address))
@@ -1672,6 +1730,7 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                 }
                 LogBusWatch(in_address, 2, write: false, value: val);
+                SetOpenBusFromWord(val);
                 return val;
             }
 
@@ -1680,6 +1739,7 @@ namespace EutherDrive.Core.MdTracerCore
                 ushort val = md_m68k.read16(in_address);
                 LogBusWatch(in_address, 2, write: false, value: val);
                 LogRamRange(in_address, 2, write: false, value: val);
+                SetOpenBusFromWord(val);
                 return val;
             }
 
@@ -1687,6 +1747,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 ushort val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read16(in_address) : (ushort)0xFFFF;
                 LogBusWatch(in_address, 2, write: false, value: val);
+                SetOpenBusFromWord(val);
                 
                 // Special logging for PC around 0x000788 (DMA setup code)
                 if (g_reg_PC >= 0x000780 && g_reg_PC <= 0x000790)
@@ -1701,6 +1762,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 ushort val = md_main.g_md_io != null ? md_main.g_md_io.read16(in_address) : (ushort)0xFFFF;
                 LogBusWatch(in_address, 2, write: false, value: val);
+                SetOpenBusFromWord(val);
                 return val;
             }
 
@@ -1708,6 +1770,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 ushort val = md_main.g_md_control != null ? md_main.g_md_control.read16(in_address) : (ushort)0xFFFF;
                 LogBusWatch(in_address, 2, write: false, value: val);
+                SetOpenBusFromWord(val);
                 return val;
             }
 
@@ -1730,7 +1793,9 @@ namespace EutherDrive.Core.MdTracerCore
                     MaybeLogZ80WinRangeRead(in_address, 0xFFFF, 2, blocked: true);
                     RecordZ80WinReadAccess(in_address, 2, 0xFFFF, blocked: true);
                     LogBusWatch(in_address, 2, write: false, value: 0xFFFF);
-                    return 0xFFFF;
+                    ushort open = ReadOpenBusWord();
+                    SetOpenBusFromWord(open);
+                    return open;
                 }
                 if (MirrorZ80WindowReads && !IsZ80Mailbox(in_address) && !IsZ80Mailbox(in_address + 1))
                 {
@@ -1738,24 +1803,28 @@ namespace EutherDrive.Core.MdTracerCore
                     byte mbxVal8 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(byteAddr & 0x1FFF) : (byte)0xFF;
                     ushort mbxMirrorWord = (ushort)((mbxVal8 << 8) | mbxVal8);
                     LogZ80MailboxRead("16", in_address, mbxMirrorWord);
-                    MaybeLogZ80WinRangeRead(in_address, mbxMirrorWord, 2, blocked: false);
-                    RecordZ80WinReadAccess(in_address, 2, mbxMirrorWord, blocked: false);
-                    LogBusWatch(in_address, 2, write: false, value: mbxMirrorWord);
-                    return mbxMirrorWord;
-                }
-                byte hi = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
-                byte lo = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 1) & 0x1FFF) : (byte)0xFF;
-                ushort word = (ushort)((hi << 8) | lo);
-                LogZ80MailboxRead("16", in_address, word);
-                MaybeLogZ80WinRangeRead(in_address, word, 2, blocked: false);
-                RecordZ80WinReadAccess(in_address, 2, word, blocked: false);
-                LogBusWatch(in_address, 2, write: false, value: word);
-                return word;
+                MaybeLogZ80WinRangeRead(in_address, mbxMirrorWord, 2, blocked: false);
+                RecordZ80WinReadAccess(in_address, 2, mbxMirrorWord, blocked: false);
+                LogBusWatch(in_address, 2, write: false, value: mbxMirrorWord);
+                SetOpenBusFromWord(mbxMirrorWord);
+                return mbxMirrorWord;
             }
+            byte hi = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
+            byte lo = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 1) & 0x1FFF) : (byte)0xFF;
+            ushort word = (ushort)((hi << 8) | lo);
+            LogZ80MailboxRead("16", in_address, word);
+            MaybeLogZ80WinRangeRead(in_address, word, 2, blocked: false);
+            RecordZ80WinReadAccess(in_address, 2, word, blocked: false);
+            LogBusWatch(in_address, 2, write: false, value: word);
+            SetOpenBusFromWord(word);
+            return word;
+        }
 
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal))
                 Console.WriteLine($"[BUS] read16 open bus addr=0x{in_address:X6}");
-            return 0xFFFF;
+            ushort openBus = ReadOpenBusWord();
+            SetOpenBusFromWord(openBus);
+            return openBus;
         }
 
         public uint read32(uint in_address)
@@ -1771,6 +1840,7 @@ namespace EutherDrive.Core.MdTracerCore
                 uint val = (uint)((word << 16) | word);
                 LogBusWatch(in_address, 4, write: false, value: val);
                 LogZ80BusAckRead(in_address, word);
+                SetOpenBusFromLong(val);
                 return val;
             }
 
@@ -1780,12 +1850,17 @@ namespace EutherDrive.Core.MdTracerCore
                 uint val = (uint)((word << 16) | word);
                 LogBusWatch(in_address, 4, write: false, value: val);
                 LogZ80RegRead(in_address, val);
+                SetOpenBusFromLong(val);
                 return val;
             }
 
             if (IsSramLockReg(in_address) || IsSramLockReg(in_address + 1) ||
                 IsSramLockReg(in_address + 2) || IsSramLockReg(in_address + 3))
-                return _sramLock ? 0x0101_0101u : 0x0000_0000u;
+            {
+                uint val = _sramLock ? 0x0101_0101u : 0x0000_0000u;
+                SetOpenBusFromLong(val);
+                return val;
+            }
 
             if (IsSramAddress(in_address))
             {
@@ -1793,13 +1868,16 @@ namespace EutherDrive.Core.MdTracerCore
                 byte b1 = ReadSramByte(in_address + 1);
                 byte b2 = ReadSramByte(in_address + 2);
                 byte b3 = ReadSramByte(in_address + 3);
-                return (uint)((b0 << 24) | (b1 << 16) | (b2 << 8) | b3);
+                uint val = (uint)((b0 << 24) | (b1 << 16) | (b2 << 8) | b3);
+                SetOpenBusFromLong(val);
+                return val;
             }
 
             if (IsCartridgeRomAddress(in_address))
             {
                 uint val = ReadCartridgeLong(in_address);
                 LogBusWatch(in_address, 4, write: false, value: val);
+                SetOpenBusFromLong(val);
                 return val;
             }
 
@@ -1808,6 +1886,7 @@ namespace EutherDrive.Core.MdTracerCore
                 uint val = md_m68k.read32(in_address);
                 LogBusWatch(in_address, 4, write: false, value: val);
                 LogRamRange(in_address, 4, write: false, value: val);
+                SetOpenBusFromLong(val);
                 return val;
             }
 
@@ -1815,6 +1894,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 uint val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read32(in_address) : 0xFFFF_FFFFu;
                 LogBusWatch(in_address, 4, write: false, value: val);
+                SetOpenBusFromLong(val);
                 return val;
             }
 
@@ -1822,6 +1902,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 uint val = md_main.g_md_io != null ? md_main.g_md_io.read32(in_address) : 0xFFFF_FFFF;
                 LogBusWatch(in_address, 4, write: false, value: val);
+                SetOpenBusFromLong(val);
                 return val;
             }
 
@@ -1829,6 +1910,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 uint val = md_main.g_md_control != null ? md_main.g_md_control.read32(in_address) : 0xFFFF_FFFF;
                 LogBusWatch(in_address, 4, write: false, value: val);
+                SetOpenBusFromLong(val);
                 return val;
             }
 
@@ -1851,7 +1933,9 @@ namespace EutherDrive.Core.MdTracerCore
                     MaybeLogZ80WinRangeRead(in_address, 0xFFFF_FFFFu, 4, blocked: true);
                     RecordZ80WinReadAccess(in_address, 4, 0xFFFF_FFFFu, blocked: true);
                     LogBusWatch(in_address, 4, write: false, value: 0xFFFF_FFFFu);
-                    return 0xFFFF_FFFFu;
+                    uint open = ReadOpenBusLong();
+                    SetOpenBusFromLong(open);
+                    return open;
                 }
                 if (MirrorZ80WindowReads &&
                     !IsZ80Mailbox(in_address) &&
@@ -1863,27 +1947,31 @@ namespace EutherDrive.Core.MdTracerCore
                     byte hi0 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(baseAddr & 0x1FFF) : (byte)0xFF;
                     byte hi1 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((baseAddr + 2) & 0x1FFF) : (byte)0xFF;
                     uint mirrorVal = (uint)(((hi0 << 8) | hi0) << 16 | ((hi1 << 8) | hi1));
-                    LogZ80MailboxRead("32", in_address, mirrorVal);
-                    MaybeLogZ80WinRangeRead(in_address, mirrorVal, 4, blocked: false);
-                    RecordZ80WinReadAccess(in_address, 4, mirrorVal, blocked: false);
-                    LogBusWatch(in_address, 4, write: false, value: mirrorVal);
-                    return mirrorVal;
-                }
+                LogZ80MailboxRead("32", in_address, mirrorVal);
+                MaybeLogZ80WinRangeRead(in_address, mirrorVal, 4, blocked: false);
+                RecordZ80WinReadAccess(in_address, 4, mirrorVal, blocked: false);
+                LogBusWatch(in_address, 4, write: false, value: mirrorVal);
+                SetOpenBusFromLong(mirrorVal);
+                return mirrorVal;
+            }
                 byte b0 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(z80Addr) : (byte)0xFF;
                 byte b1 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 1) & 0x1FFF) : (byte)0xFF;
                 byte b2 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 2) & 0x1FFF) : (byte)0xFF;
                 byte b3 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8((z80Addr + 3) & 0x1FFF) : (byte)0xFF;
                 uint val = (uint)((b0 << 24) | (b1 << 16) | (b2 << 8) | b3);
-                LogZ80MailboxRead("32", in_address, val);
-                MaybeLogZ80WinRangeRead(in_address, val, 4, blocked: false);
-                RecordZ80WinReadAccess(in_address, 4, val, blocked: false);
-                LogBusWatch(in_address, 4, write: false, value: val);
-                return val;
-            }
+            LogZ80MailboxRead("32", in_address, val);
+            MaybeLogZ80WinRangeRead(in_address, val, 4, blocked: false);
+            RecordZ80WinReadAccess(in_address, 4, val, blocked: false);
+            LogBusWatch(in_address, 4, write: false, value: val);
+            SetOpenBusFromLong(val);
+            return val;
+        }
 
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal))
                 Console.WriteLine($"[BUS] read32 open bus addr=0x{in_address:X6}");
-            return 0xFFFF_FFFF;
+            uint openBus = ReadOpenBusLong();
+            SetOpenBusFromLong(openBus);
+            return openBus;
         }
 
         // ------------------------------------------------------------
@@ -3481,17 +3569,18 @@ namespace EutherDrive.Core.MdTracerCore
         // BUSACK semantics: bit0 == 1 when Z80 is running, bit0 == 0 when bus granted to 68k.
         private byte BuildBusAckRead8()
         {
-            // Sega CD BIOS expects Z80 bus granted; return 0 in Sega CD mode.
-            if (md_main.g_md_bus?.OverrideBus is EutherDrive.Core.SegaCd.SegaCdMainBusOverride)
-                return 0x00;
-            bool busAck = !_z80BusGranted && !_z80Reset;
-            return (byte)(busAck ? 0x01 : 0x00);
+            return (byte)(BuildBusAckRead16() >> 8);
         }
 
         private ushort BuildBusAckRead16()
         {
-            byte status = BuildBusAckRead8();
-            return (ushort)(status << 8);
+            // Sega CD BIOS expects Z80 bus granted; return 0 in Sega CD mode.
+            if (md_main.g_md_bus?.OverrideBus is EutherDrive.Core.SegaCd.SegaCdMainBusOverride)
+                return (ushort)(_openBus & 0xFEFE);
+            bool busAck = !_z80BusGranted && !_z80Reset;
+            byte status = (byte)(busAck ? 0x01 : 0x00);
+            ushort busAckWord = (ushort)((status << 8) | status);
+            return (ushort)(busAckWord | (_openBus & 0xFEFE));
         }
 
         private ushort BuildResetReadValue()
