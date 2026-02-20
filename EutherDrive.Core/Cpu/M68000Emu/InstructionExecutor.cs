@@ -308,9 +308,9 @@ internal sealed partial class InstructionExecutor
                 }
             case AddressingModeKind.PcRelativeDisplacement:
                 {
-                    uint pc = _registers.Pc;
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
+                    uint pc = _registers.Pc;
                     short disp = (short)ext.Value;
                     uint addr = pc + (uint)disp;
                     resolved = ResolvedAddress.Memory(addr);
@@ -318,9 +318,9 @@ internal sealed partial class InstructionExecutor
                 }
             case AddressingModeKind.PcRelativeIndexed:
                 {
-                    uint pc = _registers.Pc;
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
+                    uint pc = _registers.Pc;
                     var (idxReg, idxSize) = Indexing.ParseIndex(ext.Value);
                     uint index = idxReg.Read(_registers, idxSize);
                     sbyte disp = (sbyte)ext.Value;

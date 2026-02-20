@@ -52,6 +52,15 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool TraceOp4A38 =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OP4A38"), "1", StringComparison.Ordinal)
             && TraceConsoleEnabled;
+        private static readonly bool TraceM68kInt =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_M68K_INT"), "1", StringComparison.Ordinal)
+            && TraceConsoleEnabled;
+        private static readonly bool TraceM68kIntPending =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_M68K_INT_PENDING"), "1", StringComparison.Ordinal)
+            && TraceConsoleEnabled;
+        private static readonly int TraceM68kIntLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_M68K_INT_LIMIT", 64);
+        private static int _traceM68kIntRemaining = TraceM68kInt ? TraceM68kIntLimit : 0;
+        private static int _traceM68kIntPendingRemaining = TraceM68kIntPending ? TraceM68kIntLimit : 0;
         private static readonly Stopwatch _stallStopwatch = Stopwatch.StartNew();
         private const long StallThreshold = 2000;
         private static long _stallLastReportMs;
@@ -476,6 +485,17 @@ namespace EutherDrive.Core.MdTracerCore
             uint spBefore = g_reg_addr[7].l;
             uint pcBefore = g_reg_PC;
 
+            bool vintPending = g_interrupt_V_req;
+            bool vintEnabled = md_main.g_md_vdp.g_vdp_reg_1_5_vinterrupt == 1;
+            bool canVint = vintPending && (g_status_interrupt_mask < 6) && vintEnabled && !g_interrupt_H_act;
+            if (TraceM68kIntPending && vintPending && !canVint && _traceM68kIntPendingRemaining > 0)
+            {
+                _traceM68kIntPendingRemaining--;
+                Console.WriteLine(
+                    $"[m68k int] VINT pending BLOCKED pc=0x{pcBefore:X6} sr=0x{g_reg_SR:X4} " +
+                    $"mask={g_status_interrupt_mask} vdpVint={vintEnabled} hintAct={(g_interrupt_H_act ? 1 : 0)}");
+            }
+
             if (g_interrupt_H_req && (g_status_interrupt_mask < 4)
                 && (md_main.g_md_vdp.g_vdp_reg_0_4_hinterrupt == 1))
             {
@@ -491,6 +511,11 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     _intLogRemaining--;
                     MdLog.WriteLine($"[m68k int] HINT vec=0x0070 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
+                }
+                if (TraceM68kInt && _traceM68kIntRemaining > 0)
+                {
+                    _traceM68kIntRemaining--;
+                    Console.WriteLine($"[m68k int] HINT vec=0x0070 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
                 }
                 stack_push32(g_reg_PC);
                 // md_main.g_form_code_trace.CPU_Trace_push(...HINT...);
@@ -526,6 +551,11 @@ namespace EutherDrive.Core.MdTracerCore
                     _intLogRemaining--;
                     MdLog.WriteLine($"[m68k int] VINT vec=0x0078 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
                 }
+                if (TraceM68kInt && _traceM68kIntRemaining > 0)
+                {
+                    _traceM68kIntRemaining--;
+                    Console.WriteLine($"[m68k int] VINT vec=0x0078 start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
+                }
                 stack_push32(g_reg_PC);
                 // md_main.g_form_code_trace.CPU_Trace_push(...VINT...);
                 TracePush("VINT", 0x0078, w_start_address, g_reg_PC, g_reg_addr[7].l);
@@ -557,6 +587,11 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     _intLogRemaining--;
                     MdLog.WriteLine($"[m68k int] EXT vec=0x{g_interrupt_EXT_vector:X4} start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
+                }
+                if (TraceM68kInt && _traceM68kIntRemaining > 0)
+                {
+                    _traceM68kIntRemaining--;
+                    Console.WriteLine($"[m68k int] EXT vec=0x{g_interrupt_EXT_vector:X4} start=0x{w_start_address:X6} pc=0x{g_reg_PC:X6} sr=0x{oldSr:X4} sp=0x{g_reg_addr[7].l:X8}");
                 }
                 stack_push32(g_reg_PC);
                 // md_main.g_form_code_trace.CPU_Trace_push(...EXT...);
