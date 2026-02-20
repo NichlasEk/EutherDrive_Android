@@ -4,6 +4,12 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        private static readonly bool TracePcRelAddr =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_REL_ADDR"), "1", StringComparison.Ordinal);
+        private static readonly int TracePcRelAddrLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_PC_REL_ADDR_LIMIT", 128);
+        private static int _tracePcRelAddrRemaining = TracePcRelAddr ? TracePcRelAddrLimit : 0;
+
         private uint g_analyze_address;
         private UNION_UINT g_work_data;
         private UNION_UINT g_work_data2;
@@ -82,6 +88,11 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         ushort w_ext = read16(g_reg_PC);
                         g_analyze_address = (uint)(g_reg_PC + (short)w_ext);
+                        if (TracePcRelAddr && _tracePcRelAddrRemaining > 0)
+                        {
+                            _tracePcRelAddrRemaining--;
+                            Console.WriteLine($"[PCREL] pc=0x{g_reg_PC:X6} ext=0x{w_ext:X4} addr=0x{g_analyze_address:X6}");
+                        }
                         g_reg_PC += 2;
                         if (in_size == 2) g_clock += 12; else g_clock += 8;
                     }
@@ -102,6 +113,14 @@ namespace EutherDrive.Core.MdTracerCore
                         if ((w_ext & 0x0800) == 0) w_ind = get_int_cast(w_ind, 1);
                         sbyte w_ext_disp = (sbyte)(w_ext & 0x00ff);
                         g_analyze_address = (uint)(g_reg_PC + (int)w_ind + w_ext_disp);
+                        if (TracePcRelAddr && _tracePcRelAddrRemaining > 0)
+                        {
+                            _tracePcRelAddrRemaining--;
+                            string idxKind = ((w_ext & 0x8000) == 0) ? "D" : "A";
+                            Console.WriteLine(
+                                $"[PCRELX] pc=0x{g_reg_PC:X6} ext=0x{w_ext:X4} idx={idxKind}{w_ext_reg} " +
+                                $"index=0x{w_ind:X8} disp=0x{(byte)w_ext_disp:X2} addr=0x{g_analyze_address:X6}");
+                        }
                         g_reg_PC += 2;
                         if (in_size == 2) g_clock += 14; else g_clock += 10;
                     }

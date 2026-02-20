@@ -479,6 +479,9 @@ private static readonly bool SpriteLinkSequential =
         internal byte InterlaceField => g_vdp_interlace_field;
         internal ushort GetSmsHvCounter() => get_vdp_hvcounter();
 
+        private long _fifoMclkPhase;
+        private ushort _fifoLastPixel;
+
         internal byte LatchSmsVCounter()
         {
             _smsHvLatch = get_vdp_hvcounter();
@@ -509,6 +512,8 @@ private static readonly bool SpriteLinkSequential =
         {
 
             g_scanline = in_vline;
+            _fifoMclkPhase = 0;
+            _fifoLastPixel = 0;
             if (ForceHBlank)
                 g_vdp_status_2_hbrank = 1;
 
@@ -582,6 +587,95 @@ private static readonly bool SpriteLinkSequential =
             // Detta säkerställer att varje frame-växling kan toggla fältet exakt en gång,
             // även när rendering_frame() anropas två gånger (vid scanline 224 och via run(0)).
             _interlaceFieldAdvanced = false;
+        }
+
+        internal void ProcessVdpFifoForM68kCycles(int m68kCycles)
+        {
+            if (!UseVdpFifo || m68kCycles <= 0)
+                return;
+
+            bool isH40 = IsH40Mode();
+            bool blank = _vblankActive || g_vdp_reg_1_6_display == 0 || g_scanline >= g_display_ysize;
+            var blankRefresh = isH40 ? H40BlankRefreshSlots : H32BlankRefreshSlots;
+
+            long addMclk = (long)m68kCycles * M68kToMclkDivider;
+            long startMclk = _fifoMclkPhase;
+            long endMclk = startMclk + addMclk;
+
+            while (endMclk > 0)
+            {
+                long segmentEnd = endMclk;
+                if (segmentEnd > MclkCyclesPerScanline)
+                    segmentEnd = MclkCyclesPerScanline;
+
+                long slotStart = (startMclk * AccessSlotsTableSize) / MclkCyclesPerScanline;
+                long slotEnd = (segmentEnd * AccessSlotsTableSize) / MclkCyclesPerScanline;
+                if (slotEnd < slotStart)
+                    slotEnd += AccessSlotsTableSize;
+
+                for (long slot = slotStart; slot < slotEnd; slot++)
+                {
+                    int slotIdx = (int)(slot & 0xFF);
+                    bool inBlankRefresh = blank && blankRefresh[slotIdx];
+                    if (!inBlankRefresh)
+                    {
+                        if (g_dma_mode != 0 && g_dma_leng > 0 && _vdpFifo.Count == 0)
+                        {
+                            switch (g_dma_mode)
+                            {
+                                case 1:
+                                    DmaStepMemory();
+                                    break;
+                                case 2:
+                                    DmaStepFill();
+                                    break;
+                                case 3:
+                                    DmaStepCopy();
+                                    break;
+                            }
+                            write_dma_leng();
+                            if (g_dma_leng <= 0)
+                                FinishDmaTransfer(g_dma_mode);
+                        }
+                    }
+
+                    bool slotAllowed = IsSlotAllowed(slotIdx, blank, isH40);
+                    if (slotAllowed)
+                    {
+                        if (_vdpFifo.Count == 0)
+                        {
+                            if (_vdpFifoPending.Count > 0)
+                                _vdpFifo.Add(_vdpFifoPending.Dequeue());
+                        }
+
+                        if (_vdpFifo.Count != 0)
+                        {
+                            var front = _vdpFifo[0];
+                            if (front.Latency == 0)
+                            {
+                                ApplyVdpFifoWrite(front);
+                                PopFifoEntry();
+                            }
+                        }
+                    }
+
+                    if (!inBlankRefresh)
+                        DecrementFifoLatencyAll();
+                }
+
+                _fifoLastPixel = 0;
+                if (segmentEnd == MclkCyclesPerScanline)
+                {
+                    startMclk = 0;
+                    endMclk -= MclkCyclesPerScanline;
+                    _fifoLastPixel = 0;
+                }
+                else
+                {
+                    _fifoMclkPhase = segmentEnd;
+                    break;
+                }
+            }
         }
 
         private void set_hvcounter()
@@ -2144,25 +2238,22 @@ private static readonly bool SpriteLinkSequential =
             ResetVramWriteCounters();
             Array.Clear(_mdDataWriteCodeCounts, 0, _mdDataWriteCodeCounts.Length);
 
-            if (g_vdp_status_7_vinterrupt == 0)
+            g_vdp_status_7_vinterrupt = 1;
+            md_m68k.g_interrupt_V_req = true;
+            // Z80 needs VBlank interrupt for sound drivers in both MD and SMS mode
+            if (md_main.g_masterSystemMode)
             {
-                g_vdp_status_7_vinterrupt = 1;
-                md_m68k.g_interrupt_V_req = true;
-                // Z80 needs VBlank interrupt for sound drivers in both MD and SMS mode
-                if (md_main.g_masterSystemMode)
-                {
-                    UpdateSmsIrqLine();
-                }
-                else
-                {
-                    md_main.g_md_z80?.irq_request(true, "VDP", 0);
-                    if (Z80VblankIrqPulseCycles > 0)
-                        md_main.g_md_z80?.ArmIrqAutoClear("VDP", Z80VblankIrqPulseCycles);
-                }
-                _z80VblankIntActive = true;
-                if (TraceVint)
-                    Console.WriteLine($"[VINT] TriggerVBlank frame={_frameCounter} scanline={g_scanline} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field}");
+                UpdateSmsIrqLine();
             }
+            else
+            {
+                md_main.g_md_z80?.irq_request(true, "VDP", 0);
+                if (Z80VblankIrqPulseCycles > 0)
+                    md_main.g_md_z80?.ArmIrqAutoClear("VDP", Z80VblankIrqPulseCycles);
+            }
+            _z80VblankIntActive = true;
+            if (TraceVint)
+                Console.WriteLine($"[VINT] TriggerVBlank frame={_frameCounter} scanline={g_scanline} interlace={g_vdp_interlace_mode} field={g_vdp_interlace_field}");
             LogTriggerVBlank();
             LogVBlankEdge(1);
         }
@@ -2543,7 +2634,6 @@ private static readonly bool SpriteLinkSequential =
             {
                 g_vdp_status_3_vbrank = 0;
                 g_vdp_status_7_vinterrupt = 0;
-                md_m68k.g_interrupt_V_req = false;
                 // Clear Z80 INT for sound drivers in MD mode
                 md_main.g_md_z80?.irq_request(false, "VDP", 0);
                 _z80VblankIntActive = false;

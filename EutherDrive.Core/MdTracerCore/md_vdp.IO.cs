@@ -21,14 +21,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (port == 0x04)
             {
-                ushort status = get_vdp_status();
+                ushort status = ReadStatusWord(md_m68k.g_opcode);
                 g_vdp_status_7_vinterrupt = 0; // ack on status read
-                md_m68k.g_interrupt_V_req = false;
                 return status;
             }
 
             if (port == 0x08)
-                return get_vdp_hvcounter();
+                return get_vdp_hvcounter(md_m68k.g_opcode);
 
             return 0xFFFF;
         }

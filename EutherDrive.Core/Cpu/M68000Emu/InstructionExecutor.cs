@@ -17,6 +17,10 @@ internal sealed partial class InstructionExecutor
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX"), "1", StringComparison.Ordinal);
     private static readonly uint? TracePcMin = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MIN");
     private static readonly uint? TracePcMax = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MAX");
+    private static readonly bool TracePcIndexed =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_INDEXED"), "1", StringComparison.Ordinal);
+    private static readonly int TracePcIndexedLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_PC_INDEXED_LIMIT", 64);
+    private static int _tracePcIndexedRemaining = TracePcIndexed ? TracePcIndexedLimit : 0;
 
     private const uint AddressErrorVector = 3;
     private const uint IllegalOpcodeVector = 4;
@@ -308,16 +312,24 @@ internal sealed partial class InstructionExecutor
                 }
             case AddressingModeKind.PcRelativeDisplacement:
                 {
+                    uint pcBefore = _registers.Pc;
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
                     uint pc = _registers.Pc;
                     short disp = (short)ext.Value;
                     uint addr = pc + (uint)disp;
+                    if (TracePcIndexed && _tracePcIndexedRemaining > 0)
+                    {
+                        _tracePcIndexedRemaining--;
+                        Console.WriteLine(
+                            $"[M68K-PCREL] pcBefore=0x{pcBefore:X8} pcAfter=0x{pc:X8} ext=0x{ext.Value:X4} disp=0x{disp:X4} addr=0x{addr:X8}");
+                    }
                     resolved = ResolvedAddress.Memory(addr);
                     break;
                 }
             case AddressingModeKind.PcRelativeIndexed:
                 {
+                    uint pcBefore = _registers.Pc;
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
                     uint pc = _registers.Pc;
@@ -325,6 +337,16 @@ internal sealed partial class InstructionExecutor
                     uint index = idxReg.Read(_registers, idxSize);
                     sbyte disp = (sbyte)ext.Value;
                     uint addr = pc + index + (uint)disp;
+                    if (TracePcIndexed && _tracePcIndexedRemaining > 0)
+                    {
+                        _tracePcIndexedRemaining--;
+                        string idxKind = idxReg.IsAddress ? "A" : "D";
+                        int idxNum = idxReg.IsAddress ? idxReg.AddrReg.Index : idxReg.DataReg.Index;
+                        Console.WriteLine(
+                            $"[M68K-PCIDX] pcBefore=0x{pcBefore:X8} pcAfter=0x{pc:X8} ext=0x{ext.Value:X4} " +
+                            $"idx={idxKind}{idxNum} size={(idxSize == IndexSize.LongWord ? "L" : "W")} " +
+                            $"index=0x{index:X8} disp=0x{(byte)disp:X2} addr=0x{addr:X8}");
+                    }
                     resolved = ResolvedAddress.Memory(addr);
                     break;
                 }
@@ -624,6 +646,19 @@ internal sealed partial class InstructionExecutor
         if (uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint value))
             return value;
         return null;
+    }
+
+    private static int ParseTraceLimit(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        raw = raw.Trim();
+        if (!int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value))
+            return fallback;
+        if (value <= 0)
+            return int.MaxValue;
+        return value;
     }
 
     private ExecuteResult<object> HandleTrap(uint vector, uint pc)

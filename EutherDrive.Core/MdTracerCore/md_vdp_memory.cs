@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Globalization;
 
 namespace EutherDrive.Core.MdTracerCore
@@ -55,10 +56,17 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE"), "1", StringComparison.Ordinal);
         private static readonly bool DisableDmaWriteGate =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE_DISABLE"), "1", StringComparison.Ordinal);
+        private static readonly bool StrictVdpDmaWriteGate =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_WRITE_GATE_STRICT"), "1", StringComparison.Ordinal);
         private static readonly bool StrictVdpAccess =
             ReadEnvDefaultOn("EUTHERDRIVE_VDP_STRICT");
         private static readonly bool DmaIgnoreEnable =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VDP_DMA_IGNORE_ENABLE"), "1", StringComparison.Ordinal);
+        private static readonly bool UseVdpFifo =
+            ReadEnvDefaultOn("EUTHERDRIVE_VDP_FIFO");
+
+        private const int VdpFifoCapacity = 4;
+        private const int VdpFifoInitialLatency = 3;
 
         private byte[]   g_vram = Array.Empty<byte>();
         private ushort[] g_cram = Array.Empty<ushort>();
@@ -82,6 +90,178 @@ namespace EutherDrive.Core.MdTracerCore
         private int _cramPcRemaining = TraceCramWritesPcLimit;
         private int _patternPcRemaining = TracePatternWritesPcLimit;
         private int _vsramLogRemaining = TraceVsramWritesLimit;
+
+        private readonly List<VdpFifoEntry> _vdpFifo = new List<VdpFifoEntry>(VdpFifoCapacity);
+        private readonly Queue<VdpFifoEntry> _vdpFifoPending = new Queue<VdpFifoEntry>(8);
+
+        private struct VdpFifoEntry
+        {
+            public ushort Word;
+            public ushort Address;
+            public byte Code;
+            public byte AutoInc;
+            public int Latency;
+        }
+
+        private void EnqueueVdpFifo(ushort word, byte code, ushort address, byte autoinc)
+        {
+            var entry = new VdpFifoEntry
+            {
+                Word = word,
+                Address = address,
+                Code = code,
+                AutoInc = autoinc,
+                Latency = VdpFifoInitialLatency
+            };
+
+            if (_vdpFifo.Count >= VdpFifoCapacity)
+            {
+                _vdpFifoPending.Enqueue(entry);
+                return;
+            }
+
+            _vdpFifo.Add(entry);
+        }
+
+        private void TryFlushVdpFifo(bool slotAllowed)
+        {
+            if (!UseVdpFifo)
+                return;
+
+            if (_vdpFifo.Count == 0)
+                return;
+
+            var front = _vdpFifo[0];
+            if (front.Latency > 0)
+            {
+                front.Latency--;
+                _vdpFifo[0] = front;
+                return;
+            }
+
+            if (!slotAllowed)
+                return;
+
+            _vdpFifo.RemoveAt(0);
+            ApplyVdpFifoWrite(front);
+            if (_vdpFifoPending.Count > 0 && _vdpFifo.Count < VdpFifoCapacity)
+            {
+                _vdpFifo.Add(_vdpFifoPending.Dequeue());
+            }
+        }
+
+        private void DecrementFifoLatencyAll()
+        {
+            if (_vdpFifo.Count == 0)
+                return;
+            for (int i = 0; i < _vdpFifo.Count; i++)
+            {
+                var entry = _vdpFifo[i];
+                if (entry.Latency > 0)
+                {
+                    entry.Latency--;
+                    _vdpFifo[i] = entry;
+                }
+            }
+        }
+
+        private void PopFifoEntry()
+        {
+            if (_vdpFifo.Count == 0)
+                return;
+
+            _vdpFifo.RemoveAt(0);
+            if (_vdpFifoPending.Count > 0 && _vdpFifo.Count < VdpFifoCapacity)
+                _vdpFifo.Add(_vdpFifoPending.Dequeue());
+        }
+
+        private void ApplyVdpFifoWrite(VdpFifoEntry entry)
+        {
+            int code = entry.Code & 0x0f;
+            int writeAddr = entry.Address;
+            switch (code)
+            {
+                case 1:
+                    vram_write_w(writeAddr, entry.Word);
+                    pattern_chk(writeAddr, (byte)(entry.Word >> 8));
+                    pattern_chk(writeAddr ^ 1, (byte)(entry.Word & 0xff));
+                    this.RecordVramWriteForTracking(writeAddr, entry.Word);
+                    this.TrackScrollRegionWrite(writeAddr & 0xFFFF);
+                    this.LogVramWrite("FIFO", writeAddr & 0xFFFF, entry.Word, entry.AutoInc, entry.Code);
+                    break;
+                case 3:
+                    _mdCramWritesThisFrame++;
+                    cram_set((writeAddr >> 1) & 0x3f, entry.Word);
+                    break;
+                case 5:
+                    if (writeAddr < 80)
+                    {
+                        g_vsram[writeAddr >> 1] = entry.Word;
+                    }
+                    break;
+            }
+        }
+
+        private void ProcessVdpFifoForScanline()
+        {
+            if (!UseVdpFifo)
+                return;
+
+            if (_vdpFifo.Count == 0 && _vdpFifoPending.Count == 0)
+                return;
+
+            bool isH40 = IsH40Mode();
+            bool blank = _vblankActive || g_vdp_reg_1_6_display == 0 || g_scanline >= g_display_ysize;
+            var blankRefresh = isH40 ? H40BlankRefreshSlots : H32BlankRefreshSlots;
+
+            for (int slotIdx = 0; slotIdx < AccessSlotsTableSize; slotIdx++)
+            {
+                if (_vdpFifo.Count == 0)
+                {
+                    if (_vdpFifoPending.Count == 0)
+                        break;
+                    _vdpFifo.Add(_vdpFifoPending.Dequeue());
+                }
+
+                bool inBlankRefresh = blankRefresh[slotIdx];
+                if (!inBlankRefresh)
+                {
+                    if (g_dma_mode != 0 && g_dma_leng > 0 && _vdpFifo.Count == 0)
+                    {
+                        switch (g_dma_mode)
+                        {
+                            case 1:
+                                DmaStepMemory();
+                                break;
+                            case 2:
+                                DmaStepFill();
+                                break;
+                            case 3:
+                                DmaStepCopy();
+                                break;
+                        }
+                        write_dma_leng();
+                        if (g_dma_leng <= 0)
+                            FinishDmaTransfer(g_dma_mode);
+                    }
+                    DecrementFifoLatencyAll();
+                }
+
+                bool slotAllowed = IsSlotAllowed(slotIdx, blank, isH40);
+                if (!slotAllowed)
+                    continue;
+
+                if (_vdpFifo.Count == 0)
+                    continue;
+
+                var front = _vdpFifo[0];
+                if (front.Latency > 0)
+                    continue;
+
+                ApplyVdpFifoWrite(front);
+                PopFifoEntry();
+            }
+        }
 
         // Centraliserad felhantering (strict by default; disable with EUTHERDRIVE_VDP_STRICT=0).
         private static void Error(string where)
@@ -177,6 +357,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address <= 0xc00003)
             {
+                ApplyDataPortAccessSlotDelay(md_m68k.g_opcode);
                 g_command_select = false;
                 switch (g_vdp_reg_code)
                 {
@@ -198,7 +379,7 @@ namespace EutherDrive.Core.MdTracerCore
             else if (in_address <= 0xc00007)
             {
                 g_command_select = false;
-                w_out = get_vdp_status();
+                w_out = ReadStatusWord(md_m68k.g_opcode);
                 md_m68k.RecordVdpStatusRead(w_out);
                 ushort postStatus = (ushort)(w_out & ~VDP_STATUS_VBLANK_MASK);
                 LogStatusRead(w_out, postStatus);
@@ -224,7 +405,7 @@ namespace EutherDrive.Core.MdTracerCore
                         _statusLoopCount++;
                         if (_statusLoopCount == TraceStatusLoopThreshold)
                         {
-                            ushort hv = get_vdp_hvcounter();
+                    ushort hv = get_vdp_hvcounter(md_m68k.g_opcode);
                             Console.WriteLine(
                                 $"[VDP-STATUS-LOOP] frame={_frameCounter} pc=0x{pc:X6} count={_statusLoopCount} " +
                                 $"status=0x{w_out:X4} hv=0x{hv:X4}");
@@ -234,7 +415,6 @@ namespace EutherDrive.Core.MdTracerCore
                 g_vdp_status_7_vinterrupt = 0; // ack on status read
                 g_vdp_status_6_sprite = 0;
                 g_vdp_status_5_collision = 0;
-                md_m68k.g_interrupt_V_req = false;
                 if (md_main.g_masterSystemMode)
                     md_main.g_md_z80?.irq_request(false, "VDP", 0);
             }
@@ -392,16 +572,22 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (in_address <= 0xc00003)
             {
+                ApplyDataPortAccessSlotDelay(md_m68k.g_opcode);
                 _mdDataWritesThisFrame++;
                 RecordDataPortWriteCode(g_vdp_reg_code);
 
                 bool dmaActive = g_vdp_status_1_dma != 0 || g_dma_mode != 0 || g_dma_leng > 0;
                 if (GateCpuWritesDuringDma && !DisableDmaWriteGate && dmaActive)
                 {
-                    _mdDataWritesDroppedThisFrame++;
-                    if ((g_vdp_reg_code & 0x0f) == 1)
-                        _mdVramWritesDroppedThisFrame++;
-                    return;
+                    if (StrictVdpDmaWriteGate)
+                    {
+                        _mdDataWritesDroppedThisFrame++;
+                        if ((g_vdp_reg_code & 0x0f) == 1)
+                            _mdVramWritesDroppedThisFrame++;
+                        return;
+                    }
+                    // Default: add wait cycles to simulate bus stall instead of dropping writes
+                    md_m68k.g_clock += 12;
                 }
 
                 // Comprehensive VDP data-port write tracing
@@ -419,6 +605,16 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     g_dma_fill_req = false;
                     dma_run_fill_req(in_data);
+                    return;
+                }
+
+                if (UseVdpFifo)
+                {
+                    ushort addr = g_vdp_reg_dest_address;
+                    byte code = (byte)g_vdp_reg_code;
+                    byte autoinc = (byte)g_vdp_reg_15_autoinc;
+                    g_vdp_reg_dest_address = (ushort)((addr + autoinc) & 0xffff);
+                    EnqueueVdpFifo(in_data, code, addr, autoinc);
                     return;
                 }
 

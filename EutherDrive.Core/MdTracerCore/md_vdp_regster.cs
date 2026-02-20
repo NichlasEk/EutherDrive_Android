@@ -310,11 +310,65 @@ namespace EutherDrive.Core.MdTracerCore
 
         private ushort get_vdp_status() => build_vdp_status_word();
 
+        private const int MclkCyclesPerScanline = 3420;
+        private const int M68kToMclkDivider = 7;
+        private const int AccessSlotsTableSize = 256;
+
+        private static readonly bool[] H32AccessSlots = BuildSlotTable(new[]
+        {
+            5, 13, 21, 37, 45, 53, 69, 77, 85, 101, 109, 117, 132, 133, 147, 161
+        });
+
+        private static readonly bool[] H40AccessSlots = BuildSlotTable(new[]
+        {
+            6, 14, 22, 38, 46, 54, 70, 78, 86, 102, 110, 118, 134, 142, 150, 165, 166, 190
+        });
+
+        private static readonly bool[] H32BlankRefreshSlots = BuildSlotTable(new[]
+        {
+            1, 33, 65, 97, 129
+        });
+
+        private static readonly bool[] H40BlankRefreshSlots = BuildSlotTable(new[]
+        {
+            26, 58, 90, 122, 154, 204
+        });
+
+        private ushort ReadStatusWordTimed(ushort m68kOpcode)
+        {
+            var timing = GetTimedHv(m68kOpcode);
+            bool hblankFlag = !IsHblankFlagClearRange(timing.InternalH, timing.IsH40);
+            bool displayEnabled = g_vdp_reg_1_6_display != 0;
+            bool passedVint = timing.PassedVint;
+            bool vintFlag = md_m68k.g_interrupt_V_req || passedVint;
+
+            ushort w_out = 0;
+            byte dmaActive = (byte)((g_dma_mode != 0 || g_dma_leng > 0) ? 1 : 0);
+            g_vdp_status_1_dma = dmaActive;
+
+            w_out = g_vdp_status_9_empl;
+            w_out = (ushort)((w_out << 1) | g_vdp_status_8_full);
+            w_out = (ushort)((w_out << 1) | (vintFlag ? 1 : 0));
+            w_out = (ushort)((w_out << 1) | g_vdp_status_6_sprite);
+            w_out = (ushort)((w_out << 1) | g_vdp_status_5_collision);
+            w_out = (ushort)((w_out << 1) | g_vdp_status_4_frame);
+            w_out = (ushort)((w_out << 1) | ((timing.VBlankFlag || !displayEnabled) ? 1 : 0));
+            w_out = (ushort)((w_out << 1) | (hblankFlag ? 1 : 0));
+            w_out = (ushort)((w_out << 1) | g_vdp_status_1_dma);
+            w_out = (ushort)((w_out << 1) | g_vdp_status_0_tvmode);
+            return w_out;
+        }
+
         internal ushort PeekVdpStatus() => build_vdp_status_word();
 
-        internal ushort ReadStatusWord() => get_vdp_status();
+        internal ushort ReadStatusWord(ushort m68kOpcode) => ReadStatusWordTimed(m68kOpcode);
 
         private ushort get_vdp_hvcounter()
+        {
+            return get_vdp_hvcounter(md_m68k.g_opcode);
+        }
+
+        private ushort get_vdp_hvcounter(ushort m68kOpcode)
         {
             ushort w_out = g_vdp_c00008_hvcounter;
             if (!g_vdp_c00008_hvcounter_latched)
@@ -335,62 +389,317 @@ namespace EutherDrive.Core.MdTracerCore
                     // Approximate hardware behavior: V counter advances slightly before line end.
                     if (hCounterSms >= 230)
                         line = (line + 1) % g_vertical_line_max;
-                    int vCounter;
+                    int vCounterSms;
                     if (!mode224)
                     {
                         if (!pal)
                         {
-                            vCounter = (line <= 0xDA) ? line : (line - 6);
+                            vCounterSms = (line <= 0xDA) ? line : (line - 6);
                         }
                         else
                         {
-                            vCounter = (line <= 0xF2) ? line : (line - 57);
+                            vCounterSms = (line <= 0xF2) ? line : (line - 57);
                         }
                     }
                     else
                     {
                         if (!pal)
                         {
-                            vCounter = (line <= 0xEA) ? line : (line - 6);
+                            vCounterSms = (line <= 0xEA) ? line : (line - 6);
                         }
                         else
                         {
                             if (line <= 0xFF)
-                                vCounter = line;
+                                vCounterSms = line;
                             else if (line <= 0x102)
-                                vCounter = line - 0x100;
+                                vCounterSms = line - 0x100;
                             else
-                                vCounter = line - 57;
+                                vCounterSms = line - 57;
                         }
                     }
 
-                    w_out = (ushort)(((vCounter & 0xFF) << 8) | (hCounterSms & 0xFF));
+                    w_out = (ushort)(((vCounterSms & 0xFF) << 8) | (hCounterSms & 0xFF));
                     g_vdp_c00008_hvcounter = w_out;
                     return w_out;
                 }
 
-                int hCounter = (g_display_xsize
-                    * (md_m68k.g_clock_total - md_m68k.g_clock_now)
-                    / md_main.VDL_LINE_RENDER_MC68_CLOCK) & 0xff;
-                if (g_vdp_interlace_mode == 0)
-                {
-                    w_out = (ushort)((GetInterlaceLine(g_scanline) << 8) + hCounter);
-                }
-                else if (g_vdp_interlace_mode == 2)
-                {
-                    // Interlace mode 2 v-counter mapping: emulate the hardware's "double resolution" pattern.
-                    int vCounter = ((g_scanline & 0x7F) << 1) | ((g_scanline & 0x80) >> 7);
-                    w_out = (ushort)((vCounter << 8) | hCounter);
-                }
-                else
-                {
-                    w_out = (ushort)
-                    (((GetInterlaceLine(g_scanline) << 7) & 0xff00)
-                    + hCounter);
-                }
+                var timing = GetTimedHv(m68kOpcode);
+                byte hCounter = (byte)((timing.HvCounter) & 0xFF);
+                byte vCounter = (byte)((timing.HvCounter >> 8) & 0xFF);
+                w_out = (ushort)((vCounter << 8) | hCounter);
                 g_vdp_c00008_hvcounter = w_out;
             }
             return w_out;
+        }
+
+        private static bool[] BuildSlotTable(int[] indices)
+        {
+            var table = new bool[AccessSlotsTableSize];
+            foreach (int idx in indices)
+            {
+                if (idx >= 0 && idx < table.Length)
+                    table[idx] = true;
+            }
+            return table;
+        }
+
+        private bool ApplyDataPortAccessSlotDelay(ushort opcode)
+        {
+            if (md_main.g_masterSystemMode)
+                return true;
+
+            bool isH40 = IsH40Mode();
+            long scanlineMclkRaw = GetScanlineMclkRaw();
+            if (scanlineMclkRaw >= MclkCyclesPerScanline)
+                scanlineMclkRaw %= MclkCyclesPerScanline;
+
+            ushort pixel = isH40
+                ? ScanlineMclkToPixelH40(scanlineMclkRaw)
+                : ScanlineMclkToPixelH32(scanlineMclkRaw);
+            int slotIdx = (pixel >> 1) & 0xFF;
+
+            bool blank = _vblankActive || g_vdp_reg_1_6_display == 0;
+            bool allowed = IsSlotAllowed(slotIdx, blank, isH40);
+            if (allowed)
+                return true;
+
+            int nextSlot = FindNextAllowedSlot(slotIdx, blank, isH40);
+            if (nextSlot < 0)
+                return true;
+
+            int deltaSlots = nextSlot >= slotIdx
+                ? (nextSlot - slotIdx)
+                : (AccessSlotsTableSize - slotIdx + nextSlot);
+            if (deltaSlots == 0)
+                return true;
+
+            int mclkPerPixel = isH40 ? 8 : 10;
+            long waitMclk = deltaSlots * 2L * mclkPerPixel;
+            int waitCycles = (int)Math.Ceiling(waitMclk / (double)M68kToMclkDivider);
+            if (waitCycles <= 0)
+                waitCycles = 1;
+
+            md_m68k.g_clock += waitCycles;
+            return false;
+        }
+
+        private static bool IsSlotAllowed(int slotIdx, bool blank, bool isH40)
+        {
+            var accessSlots = isH40 ? H40AccessSlots : H32AccessSlots;
+            var blankRefresh = isH40 ? H40BlankRefreshSlots : H32BlankRefreshSlots;
+            if (slotIdx < 0 || slotIdx >= accessSlots.Length)
+                return true;
+            if (blank)
+                return !blankRefresh[slotIdx];
+            return accessSlots[slotIdx];
+        }
+
+        private static int FindNextAllowedSlot(int startIdx, bool blank, bool isH40)
+        {
+            for (int i = 1; i < AccessSlotsTableSize; i++)
+            {
+                int idx = (startIdx + i) & 0xFF;
+                if (IsSlotAllowed(idx, blank, isH40))
+                    return idx;
+            }
+            return -1;
+        }
+
+        private struct TimedHv
+        {
+            public ushort HvCounter;
+            public ushort InternalH;
+            public byte VCounter;
+            public bool VBlankFlag;
+            public bool PassedVint;
+            public bool IsH40;
+        }
+
+        private TimedHv GetTimedHv(ushort m68kOpcode)
+        {
+            bool isH40 = IsH40Mode();
+            long scanlineMclkRaw = GetScanlineMclkRaw();
+            long readAdjustment = StatusReadMclkAdjustment(m68kOpcode);
+            long scanlineMclkAdj = scanlineMclkRaw + readAdjustment;
+            if (scanlineMclkRaw >= MclkCyclesPerScanline)
+                scanlineMclkRaw %= MclkCyclesPerScanline;
+            if (scanlineMclkAdj >= MclkCyclesPerScanline)
+                scanlineMclkAdj %= MclkCyclesPerScanline;
+
+            ComputeHv(scanlineMclkAdj, isH40, out ushort hvCounter, out ushort internalH, out byte vCounter, out bool vblankFlag);
+
+            bool passedVint = PassedVint(scanlineMclkRaw, scanlineMclkAdj, isH40, vCounter);
+
+            return new TimedHv
+            {
+                HvCounter = hvCounter,
+                InternalH = internalH,
+                VCounter = vCounter,
+                VBlankFlag = vblankFlag,
+                PassedVint = passedVint,
+                IsH40 = isH40
+            };
+        }
+
+        private long GetScanlineMclkRaw()
+        {
+            int sliceLen = md_m68k.g_slice_clock_len;
+            if (sliceLen <= 0)
+                sliceLen = md_main.VDL_LINE_RENDER_MC68_CLOCK;
+            int cyclesIntoSlice = md_m68k.g_clock_now - md_m68k.g_slice_start_clock_total;
+            if (cyclesIntoSlice < 0) cyclesIntoSlice = 0;
+            if (cyclesIntoSlice > sliceLen) cyclesIntoSlice = sliceLen;
+            return (long)cyclesIntoSlice * M68kToMclkDivider;
+        }
+
+        private static long StatusReadMclkAdjustment(ushort opcode)
+        {
+            int? moveCycles = md_m68k.TryEstimateMoveCycles();
+            if (moveCycles.HasValue)
+            {
+                int cycles = Math.Max(4, moveCycles.Value);
+                return (long)(cycles - 4) * M68kToMclkDivider;
+            }
+
+            var info = md_m68k.g_opcode_info != null ? md_m68k.g_opcode_info[opcode] : null;
+            if (info?.opname_org != null)
+            {
+                if (info.opname_org.StartsWith("BTST", StringComparison.OrdinalIgnoreCase) ||
+                    info.opname_org.StartsWith("CMP", StringComparison.OrdinalIgnoreCase))
+                {
+                    return 8L * M68kToMclkDivider;
+                }
+            }
+
+            return 8L * M68kToMclkDivider;
+        }
+
+        private void ComputeHv(long scanlineMclk, bool isH40, out ushort hvCounter, out ushort internalH, out byte vCounter, out bool vblankFlag)
+        {
+            int scanline = g_scanline;
+            long hInterruptMclk = isH40 ? (0x14A * 8L) : (0x10A * 10L);
+            bool inHblank = scanlineMclk >= hInterruptMclk;
+            int scanlinesPerFrame = GetScanlinesPerFrame();
+            int scanlineForCounter = inHblank
+                ? (scanline == scanlinesPerFrame - 1 ? 0 : scanline + 1)
+                : scanline;
+
+            vCounter = ComputeVCounter(scanlineForCounter, out vblankFlag);
+
+            ushort pixel = isH40
+                ? ScanlineMclkToPixelH40(scanlineMclk)
+                : ScanlineMclkToPixelH32(scanlineMclk);
+            internalH = isH40 ? PixelToInternalHH40(pixel) : PixelToInternalHH32(pixel);
+
+            byte hCounter = (byte)((internalH >> 1) & 0xFF);
+            hvCounter = (ushort)((vCounter << 8) | hCounter);
+        }
+
+        private bool PassedVint(long scanlineMclkRaw, long scanlineMclkAdj, bool isH40, byte vCounter)
+        {
+            int activeScanlines = GetActiveScanlines();
+            if (vCounter != (byte)activeScanlines)
+                return false;
+            long vintMclk = isH40 ? (0x002 * 8L) : (0x001 * 10L);
+            return scanlineMclkAdj >= vintMclk && (scanlineMclkRaw < vintMclk || scanlineMclkRaw > scanlineMclkAdj);
+        }
+
+        private int GetActiveScanlines()
+        {
+            bool pal = IsPalTiming();
+            if (!pal)
+                return 224;
+            return g_display_ysize > 0 ? g_display_ysize : 224;
+        }
+
+        private int GetScanlinesPerFrame()
+        {
+            bool pal = IsPalTiming();
+            bool interlaced = g_vdp_interlace_mode != 0;
+            bool interlacedOdd = g_vdp_interlace_field != 0;
+            if (!pal)
+                return 262 + (interlacedOdd ? 1 : 0);
+            return 312 + (!interlaced || interlacedOdd ? 1 : 0);
+        }
+
+        private byte ComputeVCounter(int scanline, out bool vblankFlag)
+        {
+            bool pal = IsPalTiming();
+            bool interlaced = g_vdp_interlace_mode != 0;
+            bool interlacedDouble = g_vdp_interlace_mode == 2;
+            int activeScanlines = GetActiveScanlines();
+
+            if (!interlaced)
+            {
+                int threshold = pal
+                    ? (g_display_ysize <= 224 ? 0x102 : 0x10A)
+                    : 0xEA;
+                int scanlinesPerFrame = pal ? 313 : 262;
+                int counter = scanline <= threshold
+                    ? scanline
+                    : (scanline - scanlinesPerFrame) & 0x1FF;
+                vblankFlag = counter >= activeScanlines && counter != 0x1FF;
+                return (byte)counter;
+            }
+            else
+            {
+                int threshold = pal
+                    ? (g_display_ysize <= 224 ? 0x101 : 0x109)
+                    : 0xEA;
+                int scanlinesPerFrame = GetScanlinesPerFrame();
+                int internalCounter = scanline <= threshold
+                    ? scanline
+                    : (scanline - scanlinesPerFrame) & 0x1FF;
+                vblankFlag = internalCounter >= activeScanlines && internalCounter != 0x1FF;
+                int externalCounter = interlacedDouble
+                    ? ((internalCounter << 1) & 0xFE) | ((internalCounter >> 7) & 1)
+                    : (internalCounter & 0xFE) | ((internalCounter >> 8) & 1);
+                return (byte)externalCounter;
+            }
+        }
+
+        private bool IsPalTiming() => g_vertical_line_max >= 312;
+
+        private static ushort ScanlineMclkToPixelH32(long scanlineMclk) => (ushort)(scanlineMclk / 10);
+
+        private static ushort PixelToInternalHH32(ushort pixel) => pixel <= 0x127 ? pixel : (ushort)(pixel + (0x1D2 - 0x128));
+
+        private static ushort ScanlineMclkToPixelH40(long scanlineMclk)
+        {
+            const long jumpDiff = 0x1C9 - 0x16D;
+            long hsyncStartMclk = (0x1CC - jumpDiff) * 8;
+            if (scanlineMclk < hsyncStartMclk)
+                return (ushort)(scanlineMclk / 8);
+
+            long hsyncEndMclk = hsyncStartMclk + 2 * (8 + 7 * 10 + 2 * 9 + 7 * 10);
+            if (scanlineMclk >= hsyncStartMclk && scanlineMclk < hsyncEndMclk)
+            {
+                long hsyncMclk = scanlineMclk - hsyncStartMclk;
+                long pattern = hsyncMclk % (8 + 7 * 10 + 2 * 9 + 7 * 10);
+                int patternPixel = pattern switch
+                {
+                    >= 0 and <= 7 => 0,
+                    >= 8 and <= 77 => 1 + (int)((pattern - 8) / 10),
+                    >= 78 and <= 95 => 8 + (int)((pattern - 78) / 9),
+                    >= 96 and <= 165 => 10 + (int)((pattern - 96) / 10),
+                    _ => 0
+                };
+                return hsyncMclk < 166
+                    ? (ushort)(0x1CC - jumpDiff + patternPixel)
+                    : (ushort)(0x1CC - jumpDiff + 17 + patternPixel);
+            }
+
+            long postHsyncMclk = scanlineMclk - hsyncEndMclk;
+            return (ushort)(0x1CC - jumpDiff + 34 + postHsyncMclk / 8);
+        }
+
+        private static ushort PixelToInternalHH40(ushort pixel) => pixel <= 0x16C ? pixel : (ushort)(pixel + (0x1C9 - 0x16D));
+
+        private static bool IsHblankFlagClearRange(ushort internalH, bool isH40)
+        {
+            return isH40
+                ? (internalH >= 0x00B && internalH < 0x166)
+                : (internalH >= 0x00A && internalH < 0x126);
         }
 
         private void set_vdp_register(uint in_num, byte in_data)

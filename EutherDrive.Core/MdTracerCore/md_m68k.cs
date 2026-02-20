@@ -8,6 +8,8 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        internal static int g_slice_start_clock_total;
+        internal static int g_slice_clock_len;
         private static readonly bool TraceConsoleEnabled =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CONSOLE"), "0", StringComparison.Ordinal)
             && !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
@@ -269,6 +271,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void run(int in_clock)
         {
+            g_slice_start_clock_total = g_clock_total;
+            g_slice_clock_len = in_clock;
             g_clock_total += in_clock;
             md_main.AddM68kCycles(in_clock);
             int iter = 0;

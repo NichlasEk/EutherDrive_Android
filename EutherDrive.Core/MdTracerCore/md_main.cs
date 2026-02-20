@@ -251,6 +251,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (cycles <= 0)
                 return;
             _systemCycles += cycles;
+            g_md_vdp?.ProcessVdpFifoForM68kCycles((int)Math.Min(cycles, int.MaxValue));
             g_md_music?.YmAdvanceSystemCycles(cycles);
         }
 
@@ -331,6 +332,14 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 Console.WriteLine($"[MASTER-CYCLES-DEBUG] +{cycles} = {SystemCycles}");
             }
+        }
+
+        private static void RunM68kWithVdp(int cycles)
+        {
+            if (cycles <= 0)
+                return;
+            g_md_m68k.run(cycles);
+            AdvanceSystemCycles(cycles);
         }
 
         // --- Kärnkomponenter ---
@@ -498,9 +507,8 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         int m68kSlice = Math.Min(sliceM68kCycles, totalM68kCycles - m68kDone);
 
-                        // Run M68K slice
-                        g_md_m68k.run(m68kSlice);
-                        AdvanceSystemCycles(m68kSlice);
+                        // Run M68K slice with VDP FIFO/DMA timing
+                        RunM68kWithVdp(m68kSlice);
                         m68kDone += m68kSlice;
 
                         // Add Z80 budget proportional to M68K cycles executed
@@ -562,18 +570,12 @@ namespace EutherDrive.Core.MdTracerCore
                                 g_md_z80.EndSystemCycleSlice();
                             }
                             if (m68kCycles > 0)
-                            {
-                                g_md_m68k.run(m68kCycles);
-                                AdvanceSystemCycles(m68kCycles);
-                            }
+                                RunM68kWithVdp(m68kCycles);
                         }
                          else
                         {
                             if (m68kCycles > 0)
-                            {
-                                g_md_m68k.run(m68kCycles);
-                                AdvanceSystemCycles(m68kCycles);
-                            }
+                                RunM68kWithVdp(m68kCycles);
                             if (allowZ80 && z80Cycles > 0)
                             {
                                 g_md_z80.BeginSystemCycleSlice();
@@ -593,8 +595,7 @@ namespace EutherDrive.Core.MdTracerCore
                         g_md_z80.run(z80LineBudget);
                         g_md_z80.EndSystemCycleSlice();
                     }
-                    g_md_m68k.run(VDL_LINE_RENDER_MC68_CLOCK);
-                    AdvanceSystemCycles(VDL_LINE_RENDER_MC68_CLOCK);
+                    RunM68kWithVdp(VDL_LINE_RENDER_MC68_CLOCK);
                     if (allowZ80 && z80RunPerLine && !Z80RunBeforeM68k)
                     {
                         g_md_z80.BeginSystemCycleSlice();

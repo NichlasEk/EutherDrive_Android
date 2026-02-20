@@ -54,6 +54,35 @@ namespace EutherDrive.Core.MdTracerCore
             { 12, 12, 22, 22, 22, 26, 28, 26, 30 }
         };
 
+        internal static int? TryEstimateMoveCycles()
+        {
+            var info = g_opcode_info != null ? g_opcode_info[g_opcode] : null;
+            if (info?.opname_org == null || !info.opname_org.StartsWith("MOVE", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            int w_size;
+            switch (g_op)
+            {
+                case 1:
+                    w_size = 0; // byte
+                    break;
+                case 3:
+                    w_size = 1; // word
+                    break;
+                default:
+                    w_size = 2; // long
+                    break;
+            }
+
+            int w_src = (g_op3 < 7) ? g_op3 : 7 + g_op4;
+            int w_dest = (g_op2 < 7) ? g_op2 : 7 + g_op1;
+
+            if (w_size == 2)
+                return MOVE_CLOCK_L[w_src, w_dest];
+
+            return MOVE_CLOCK[w_src, w_dest];
+        }
+
         // ==========================================================
         // SR/CCR pack/unpack (ANVÄNDER globals: g_reg_SR, g_status_CCR)
         // ==========================================================
