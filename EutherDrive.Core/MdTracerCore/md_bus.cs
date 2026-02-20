@@ -1575,7 +1575,18 @@ namespace EutherDrive.Core.MdTracerCore
             // 0xC00000–0xDFFFFF  | VDP space
             if (in_address >= 0xC00000 && in_address <= 0xDFFFFF)
             {
-                byte val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read8(in_address) : (byte)0xFF;
+                byte val;
+                uint vdpPort = in_address & 0x1F;
+                if (vdpPort == 0x04 || vdpPort == 0x05 || vdpPort == 0x06 || vdpPort == 0x07)
+                {
+                    ushort status = md_main.g_md_vdp != null ? md_main.g_md_vdp.read16(0xC00004) : (ushort)0xFFFF;
+                    status = (ushort)(status | (_openBus & 0xFC00));
+                    val = (in_address & 1) == 0 ? (byte)(status >> 8) : (byte)status;
+                }
+                else
+                {
+                    val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read8(in_address) : (byte)0xFF;
+                }
                 LogBusWatch(in_address, 1, write: false, value: val);
                 SetOpenBusFromByte(val);
                 
@@ -1749,6 +1760,8 @@ namespace EutherDrive.Core.MdTracerCore
             if (in_address >= 0xC00000 && in_address <= 0xDFFFFF)
             {
                 ushort val = md_main.g_md_vdp != null ? md_main.g_md_vdp.read16(in_address) : (ushort)0xFFFF;
+                if ((in_address & 0x1F) >= 0x04 && (in_address & 0x1F) <= 0x07)
+                    val = (ushort)(val | (_openBus & 0xFC00));
                 LogBusWatch(in_address, 2, write: false, value: val);
                 SetOpenBusFromWord(val);
                 

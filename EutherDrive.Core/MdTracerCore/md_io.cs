@@ -78,8 +78,6 @@ namespace EutherDrive.Core.MdTracerCore
             switch (addr)
             {
                 case 0xA10000:
-                    result = 0x00;
-                    break;
                 case 0xA10001:
                     result = ReadIoVersion();
                     break;
@@ -99,6 +97,14 @@ namespace EutherDrive.Core.MdTracerCore
                 case 0xA1000B:
                     result = (byte)(_pad2Th ? 0x40 : 0x00);
                     break;
+                case 0xA1000E:
+                case 0xA1000F:
+                case 0xA10014:
+                case 0xA10015:
+                case 0xA1001A:
+                case 0xA1001B:
+                    result = 0xFF;
+                    break;
                 default:
                     result = 0x00;
                     break;
@@ -114,40 +120,9 @@ namespace EutherDrive.Core.MdTracerCore
 
         public ushort read16(uint in_address)
         {
-            // Big-endian 16-bit read via två 8-bit (om du vill hålla det enkelt)
             uint addr = in_address & 0xFFFFFF;
-            ushort result;
-            bool direct = true;
-            switch (addr)
-            {
-                case 0xA10002:
-                case 0xA10003:
-                    result = (ushort)(0xFF00 | ReadPadData(_pad1, _pad1Th, ref _pad1Handshake, _pad1Type));
-                    break;
-                case 0xA10004:
-                case 0xA10005:
-                    result = (ushort)(0xFF00 | ReadPadData(_pad2MirrorEnabled ? _pad1 : _pad2, _pad2Th, ref _pad2Handshake, _pad2Type));
-                    break;
-                case 0xA10008:
-                case 0xA10009:
-                    result = (ushort)(0xFF00 | (_pad1Th ? 0x40 : 0x00));
-                    break;
-                case 0xA1000A:
-                case 0xA1000B:
-                    result = (ushort)(0xFF00 | (_pad2Th ? 0x40 : 0x00));
-                    break;
-                default:
-                {
-                    byte hi = read8(in_address);
-                    byte lo = read8(in_address + 1);
-                    result = (ushort)((hi << 8) | lo);
-                    direct = false;
-                    break;
-                }
-            }
-
-            if (direct)
-                MaybeLogIoRead(addr, result, 16);
+            ushort result = read8(in_address);
+            MaybeLogIoRead(addr, result, 16);
             if (TracePadIo)
                 MaybeLogPadIoRead(addr, result, 16);
             if (_padUiTraceEnabled)
