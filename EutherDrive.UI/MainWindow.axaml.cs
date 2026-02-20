@@ -1845,7 +1845,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            _segaCdRamCartEnabled = false;
+            _segaCdRamCartEnabled = true;
             _segaCdLoadCdToRam = false;
         }
     }

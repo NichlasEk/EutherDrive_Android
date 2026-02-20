@@ -78,6 +78,7 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_MAINREG"),
         "1",
         StringComparison.Ordinal);
+    private readonly bool _logA12001Pc;
     private static readonly bool LogMainRegReads = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_MAINREG_READ"),
         "1",
@@ -91,6 +92,7 @@ public sealed class SegaCdMemory
     public const int PrgRamLen = 512 * 1024;
     public const int BackupRamLen = 8 * 1024;
     public const int RamCartLen = 128 * 1024;
+    private const int BackupRamFooterLen = 64;
     private const byte RamCartSizeByte = 0x04;
     private static readonly uint TimerDivider = ReadDivider("EUTHERDRIVE_SCD_TIMER_DIVIDER", 1536);
 
@@ -107,6 +109,7 @@ public sealed class SegaCdMemory
 
     private readonly BufferedWrite[] _bufferedSubWrites = new BufferedWrite[32];
     private int _bufferedSubWriteCount;
+    public Func<uint>? MainPcProvider { get; set; }
 
     private enum BufferedWriteKind
     {
@@ -137,18 +140,56 @@ public sealed class SegaCdMemory
     public SegaCdGraphicsCoprocessor Graphics { get; } = new();
     private readonly SegaCdCdController _cdController;
 
-    public bool EnableRamCartridge { get; set; } = false;
+    public bool EnableRamCartridge { get; set; } = true;
+
+    private static readonly byte[] BackupRamFooter =
+    {
+        // $1FC0-$1FCF
+        0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x00, 0x00, 0x00, 0x00, 0x40,
+        // $1FD0-$1FDF
+        0x00, 0x7D, 0x00, 0x7D, 0x00, 0x7D, 0x00, 0x7D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // $1FE0-$1FEF
+        0x53, 0x45, 0x47, 0x41, 0x5F, 0x43, 0x44, 0x5F, 0x52, 0x4F, 0x4D, 0x00, 0x01, 0x00, 0x00, 0x00,
+        // $1FF0-$1FFF
+        0x52, 0x41, 0x4D, 0x5F, 0x43, 0x41, 0x52, 0x54, 0x52, 0x49, 0x44, 0x47, 0x45, 0x5F, 0x5F, 0x5F
+    };
+
+    private static readonly byte[] RamCartFooter =
+    {
+        // $1FFC0-$1FFCF
+        0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x5F, 0x00, 0x00, 0x00, 0x00, 0x40,
+        // $1FFD0-$1FFDF
+        0x07, 0xFD, 0x07, 0xFD, 0x07, 0xFD, 0x07, 0xFD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // $1FFE0-$1FFEF
+        0x53, 0x45, 0x47, 0x41, 0x5F, 0x43, 0x44, 0x5F, 0x52, 0x4F, 0x4D, 0x00, 0x01, 0x00, 0x00, 0x00,
+        // $1FFF0-$1FFFF
+        0x52, 0x41, 0x4D, 0x5F, 0x43, 0x41, 0x52, 0x54, 0x52, 0x49, 0x44, 0x47, 0x45, 0x5F, 0x5F, 0x5F
+    };
 
     public SegaCdMemory(byte[] bios)
     {
         if (bios.Length != BiosLen)
             throw new InvalidOperationException($"BIOS must be {BiosLen} bytes.");
         _bios = bios;
+        InitializeBackupRam(_backupRam, BackupRamFooter);
+        InitializeBackupRam(_ramCart, RamCartFooter);
+        _logA12001Pc = string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_A12001_PC"),
+            "1",
+            StringComparison.Ordinal);
         Cdc = new SegaCdCdcStub();
         Cdd = new SegaCdCddStub();
         Cdd.SetModel(ParseCdModel(bios));
         Pcm = new SegaCdPcmStub();
         _cdController = new SegaCdCdController(Cdd, Cdc);
+    }
+
+    private static void InitializeBackupRam(byte[] buffer, byte[] footer)
+    {
+        Array.Clear(buffer, 0, buffer.Length);
+        if (footer.Length != BackupRamFooterLen || buffer.Length < BackupRamFooterLen)
+            return;
+        Buffer.BlockCopy(footer, 0, buffer, buffer.Length - BackupRamFooterLen, BackupRamFooterLen);
     }
 
     private static SegaCdCddStub.CdModel ParseCdModel(byte[] bios)
@@ -369,7 +410,8 @@ public sealed class SegaCdMemory
 
         if (address <= 0x7FFFFF)
         {
-            return EnableRamCartridge ? ReadRamCartByte(address | 1) : (ushort)0xFFFF;
+            // RAM cartridge is mapped to odd addresses only; return the byte value as a word.
+            return ReadRamCartByte(address | 1);
         }
 
         if (address >= 0xA12000 && address <= 0xA1202F)
@@ -614,6 +656,11 @@ public sealed class SegaCdMemory
                 if (LogMainRegs)
                 {
                     Console.WriteLine($"[SCD-MAINREG] 0xA12001 <= 0x{value:X2} BUSREQ={Registers.SubCpuBusReq} RESET={Registers.SubCpuReset}");
+                }
+                if (_logA12001Pc)
+                {
+                    uint pc = MainPcProvider?.Invoke() ?? 0;
+                    Console.WriteLine($"[SCD-A12001-PC] pc=0x{pc:X6} val=0x{value:X2} BUSREQ={(Registers.SubCpuBusReq ? 1 : 0)} RESET={(Registers.SubCpuReset ? 1 : 0)}");
                 }
                 break;
             case 0xA12002:

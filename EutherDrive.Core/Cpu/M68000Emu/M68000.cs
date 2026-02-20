@@ -42,6 +42,7 @@ public sealed class M68000
     }
 
     public uint Pc => _regs.Pc;
+    public uint Ssp => _regs.Ssp;
     public ushort NextOpcode => _regs.Prefetch;
     public bool AddressError => _regs.AddressError;
     public bool LastInstructionWasMulOrDiv => _regs.LastInstructionWasMulDiv;

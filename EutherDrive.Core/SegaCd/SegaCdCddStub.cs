@@ -120,6 +120,14 @@ public sealed class SegaCdCddStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDD_STATE"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceCddSeek = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDD_SEEK"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool MotorStoppedToReadingToc = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_CDD_MOTORSTOP_TOC"),
+        "1",
+        StringComparison.Ordinal);
     private static readonly long TraceStartTicks = Stopwatch.GetTimestamp();
 
     public byte[] Status => _status;
@@ -356,6 +364,11 @@ public sealed class SegaCdCddStub
             Console.WriteLine($"[SCD-CDD-IRQ] pending=1 state={_state} time={CurrentTime()}");
         if (TraceCddState)
             Console.Error.WriteLine($"[SCD-CDD-STATE] t={TraceStamp()} state={_state} time={CurrentTime()}");
+        if (TraceCddSeek && _state == State.Seeking)
+        {
+            Console.Error.WriteLine(
+                $"[SCD-CDD-SEEK] t={TraceStamp()} cur={_seekCurrent} target={_seekTarget} clocks={_seekClocks} next={_seekNextStatus}");
+        }
 
         if (_audioSampleIdx != 0)
             _audioSampleIdx = 0;
@@ -379,8 +392,11 @@ public sealed class SegaCdCddStub
                     }
                     else
                     {
-                        _state = State.PreparingToPlay;
-                        _seekClocks = PlayDelayClocks;
+                        // BIOS can get stuck waiting for play; enter Playing immediately and
+                        // prime the CDC with the first sector.
+                        _state = State.Playing;
+                        _loadedAudioSector = false;
+                        HandlePlaying(_stateTime, changeState: true, cdc);
                     }
                 }
                 else
@@ -427,6 +443,8 @@ public sealed class SegaCdCddStub
                     _loadedAudioSector = false;
                     if (TraceCddState)
                         Console.Error.WriteLine($"[SCD-CDD-STATE] t={TraceStamp()} -> Playing time={_stateTime}");
+                    // Prime CDC with the first sector immediately so header data is available.
+                    HandlePlaying(_stateTime, changeState: true, cdc);
                 }
                 else
                 {
@@ -440,7 +458,14 @@ public sealed class SegaCdCddStub
                 break;
             case State.MotorStopped:
                 if (_disc == null)
+                {
                     _state = State.NoDisc;
+                }
+                else if (MotorStoppedToReadingToc)
+                {
+                    // Match jgenesis: transition to ReadingToc one clock after motor stop
+                    _state = State.ReadingToc;
+                }
                 break;
             case State.TrayOpening:
                 _state = State.TrayOpen;
@@ -482,8 +507,8 @@ public sealed class SegaCdCddStub
             return;
         }
 
-        CdTime relativeTime = time.SaturatingSub(track.StartTime);
-        _disc.ReadSector(track.Number, relativeTime, _sectorBuffer);
+        // Read by absolute time so pregap handling (if any) is consistent with cue timing.
+        _disc.ReadSector(time, _sectorBuffer);
         cdc.DecodeBlock(_sectorBuffer);
         _loadedAudioSector = track.TrackType == CdTrackType.Audio;
 

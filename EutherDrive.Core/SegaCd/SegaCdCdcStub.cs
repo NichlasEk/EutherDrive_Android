@@ -68,6 +68,18 @@ public sealed class SegaCdCdcStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_DECODE"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool CompatCdcForceWrrq = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_CDC_COMPAT_FORCE_WRRQ"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool CompatCdcAutoDest = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_DEST"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool CompatCdcAutoXfer = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_XFER"),
+        "1",
+        StringComparison.Ordinal);
     private static readonly long TraceStartTicks = Stopwatch.GetTimestamp();
 
     public bool EndOfDataTransfer => _endOfDataTransfer;
@@ -369,6 +381,8 @@ public sealed class SegaCdCdcStub
     {
         _decoderEnabled = value.Bit(7);
         _decoderWritesEnabled = value.Bit(2);
+        if (CompatCdcForceWrrq && _decoderEnabled && !_decoderWritesEnabled && _dataOutEnabled)
+            _decoderWritesEnabled = true;
         if (!_decoderEnabled)
             _decoderInterruptPending = false;
         if (!_decoderEnabled || !_decoderWritesEnabled)
@@ -433,6 +447,22 @@ public sealed class SegaCdCdcStub
                 _blockPointer = (ushort)((_blockPointer + DataTrackHeaderLen) & BufferRamAddressMask);
                 _decodedFirstWrittenBlock = true;
             }
+        }
+
+        if (CompatCdcAutoDest && _dataOutEnabled && _destination == SegaCdDeviceDestination.None0)
+        {
+            _destination = SegaCdDeviceDestination.SubCpuRegister;
+            _destinationBits = 0b011;
+        }
+
+        if (CompatCdcAutoXfer && _dataOutEnabled && IsHostData() && !_dataTransferInProgress)
+        {
+            if (_dataByteCounter == 0)
+                _dataByteCounter = 0xFFFF;
+            _dataAddressCounter = _blockPointer;
+            _dataTransferInProgress = true;
+            _endOfDataTransfer = false;
+            PopulateHostDataBuffer();
         }
     }
 

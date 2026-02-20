@@ -1,3 +1,5 @@
+using System;
+
 namespace EutherDrive.Core.Cpu.M68000Emu;
 
 internal struct ConditionCodes
@@ -138,6 +140,8 @@ internal readonly struct DataRegister
 internal readonly struct AddressRegister
 {
     private readonly byte _index;
+    private static readonly bool TraceA0 =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_A0"), "1", StringComparison.Ordinal);
 
     public AddressRegister(byte index)
     {
@@ -182,6 +186,8 @@ internal readonly struct AddressRegister
                 regs.Usp = value;
             return;
         }
+        if (_index == 0 && TraceA0 && regs.Address[_index] != value)
+            Console.WriteLine($"[M68K-A0] pc=0x{regs.Pc:X8} op=0x{regs.Prefetch:X4} value=0x{value:X8}");
         regs.Address[_index] = value;
     }
 }

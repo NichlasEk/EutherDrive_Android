@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using EutherDrive.Core.Cpu.M68000Emu;
 using EutherDrive.Core.MdTracerCore;
 
 namespace EutherDrive.Core.SegaCd;
@@ -30,6 +31,12 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private EutherDrive.Core.MdTracerCore.md_m68k.MdM68kContext? _subContext;
     private EutherDrive.Core.MdTracerCore.md_bus? _mainBus;
     private EutherDrive.Core.MdTracerCore.md_bus? _subBus;
+    private readonly M68000 _mainCpu = M68000.CreateBuilder().Name("SCD-MAIN").Build();
+    private readonly M68000 _subCpu = M68000.CreateBuilder().Name("SCD-SUB").Build();
+    private IBusInterface? _mainCpuBus;
+    private IBusInterface? _subCpuBus;
+    private bool _useM68kEmu = UseM68kEmu;
+    private bool _subCpuNeedsReset;
     private int _subInitLogRemaining = 8;
     private int _subVectorLogRemaining = 16;
     private int _subPcLogRemaining = 32;
@@ -64,6 +71,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
             StringComparison.Ordinal);
     private static readonly bool TraceMainDebug =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAIN_DEBUG"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceReset =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_RESET"),
             "1",
             StringComparison.Ordinal);
     private static readonly bool TraceSubWait =
@@ -123,6 +134,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private static readonly double CdMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_CD_GAIN", CdCoefficient);
     private static readonly double PsgMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_PSG_GAIN", PsgCoefficient);
     private static readonly double YmMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_YM_GAIN", 1.0);
+    private static readonly bool UseM68kEmu = ReadEnvFlag("EUTHERDRIVE_SCD_USE_M68KEMU", true);
     private readonly bool _psgDisabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_PSG"), "1", StringComparison.Ordinal);
     private bool _ymEnabled =
@@ -164,7 +176,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
     public SegaCdDiscInfo? DiscInfo => _discInfo;
     public ConsoleRegion RegionHint { get; private set; } = ConsoleRegion.Auto;
-    public bool EnableRamCartridge { get; set; }
+    public bool EnableRamCartridge { get; set; } = true;
     public bool LoadCdIntoRam { get; set; }
 
     public void LoadRom(string path)
@@ -201,8 +213,33 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
         uint initialSp = ReadMainVector(_memory, 0);
         uint initialPc = ReadMainVector(_memory, 4);
-        _mainContext = CreateResetContext(initialPc, initialSp);
-        _subContext = CreateResetContext(0, 0);
+        if (TraceReset)
+        {
+            uint busError = ReadMainVector(_memory, 8);
+            uint addrError = ReadMainVector(_memory, 12);
+            uint illegal = ReadMainVector(_memory, 16);
+            Console.WriteLine(
+                $"[SCD-RESET] vectors: SSP=0x{initialSp:X8} PC=0x{initialPc:X8} " +
+                $"BUSERR=0x{busError:X8} ADDRERR=0x{addrError:X8} ILL=0x{illegal:X8}");
+        }
+        if (_useM68kEmu && _mainBus != null)
+        {
+            _mainCpuBus = new SegaCdMainM68kBus(_mainBus);
+            _subCpuBus = new SegaCdSubM68kBus(_memory);
+            _mainCpu.Reset(_mainCpuBus);
+            _subCpuNeedsReset = true;
+            if (TraceReset)
+                Console.WriteLine($"[SCD-RESET] main CPU: SSP=0x{_mainCpu.Ssp:X8} PC=0x{_mainCpu.Pc:X8} op=0x{_mainCpu.NextOpcode:X4}");
+            _mainContext = null;
+            _subContext = null;
+            _memory.MainPcProvider = () => _mainCpu.Pc;
+        }
+        else
+        {
+            _mainContext = CreateResetContext(initialPc, initialSp);
+            _subContext = CreateResetContext(0, 0);
+            _memory.MainPcProvider = () => _mainContext.RegPc;
+        }
 
         // TODO: Instantiate Sega CD emulator core once ported.
         // For now, just clear framebuffer.
@@ -231,8 +268,18 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
     public void RunFrame()
     {
-        if (_memory == null || _mainContext == null || _subContext == null || _mainBus == null || _subBus == null)
+        if (_memory == null || _mainBus == null)
             return;
+        if (_useM68kEmu)
+        {
+            if (_mainCpuBus == null || _subCpuBus == null)
+                return;
+        }
+        else
+        {
+            if (_mainContext == null || _subContext == null || _subBus == null)
+                return;
+        }
 
         long frameStart = ProfileScd ? Stopwatch.GetTimestamp() : 0;
 
@@ -247,7 +294,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
         var vdp = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp;
         if (vdp != null)
         {
-            EutherDrive.Core.MdTracerCore.md_m68k.ApplyContext(_mainContext);
+            if (!_useM68kEmu)
+                EutherDrive.Core.MdTracerCore.md_m68k.ApplyContext(_mainContext!);
             int lines = vdp.g_vertical_line_max > 0 ? vdp.g_vertical_line_max : 262;
             double targetFps = TargetFpsOverride
                 ?? (lines >= 312 ? 50.0 : 59.922);
@@ -311,211 +359,301 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 if (ScdCpuCycleScale != 1.0)
                     subSlice = ScaleCycleCount(subSlice, ScdCpuCycleScale);
 
-            EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
-            if (TraceMainPcFrame)
-            {
-                if (frameCounter != _lastMainPcFrame)
-                {
-                    _lastMainPcFrame = frameCounter;
-                    Console.WriteLine($"[SCD-MAIN-FRAME] frame={frameCounter} pc=0x{_mainContext.RegPc:X6} sp=0x{_mainContext.RegAddr[7]:X8} op=0x{_mainContext.Opcode:X4}");
-                }
-            }
-            if (mainSlice > 0)
-            {
-                if (ProfileScd) _profileCpuTicks -= Stopwatch.GetTimestamp();
-                _cpuRunner.RunSome(_mainContext, mainSlice);
-                if (ProfileScd) _profileCpuTicks += Stopwatch.GetTimestamp();
-            }
-
-            if (z80Slice > 0 && allowZ80 && _mainBus != null)
-            {
-                bool busReq = _mainBus.Z80BusGranted;
-                bool reset = _mainBus.Z80Reset;
-                if (!busReq && !reset)
-                    EutherDrive.Core.MdTracerCore.md_main.g_md_z80?.run(z80Slice);
-            }
-            if (TraceMainPc && _mainPcLogRemaining > 0)
-            {
-                _mainPcLogRemaining--;
-                Console.WriteLine($"[SCD-MAIN] pc=0x{_mainContext.RegPc:X6} sp=0x{_mainContext.RegAddr[7]:X8} op=0x{_mainContext.Opcode:X4}");
-            }
-            if (TraceMainDebug && _mainDecompLogRemaining > 0 && _mainContext.RegPc >= 0x00090E && _mainContext.RegPc <= 0x00098C)
-            {
-                _mainDecompLogRemaining--;
-                Console.WriteLine(
-                    $"[SCD-MAIN-DECOMP] pc=0x{_mainContext.RegPc:X6} op=0x{_mainContext.Opcode:X4} " +
-                    $"A0=0x{_mainContext.RegAddr[0]:X8} A1=0x{_mainContext.RegAddr[1]:X8} " +
-                    $"D0=0x{_mainContext.RegData[0]:X8} D1=0x{_mainContext.RegData[1]:X8} D2=0x{_mainContext.RegData[2]:X8} D3=0x{_mainContext.RegData[3]:X8}");
-            }
-
-            bool subReset = _memory.SubCpuReset;
-            if (subReset && !_lastSubReset)
-                _subContext = CreateResetContext(0, 0);
-            _lastSubReset = subReset;
-
-            if (!_memory.SubCpuHalt && !_memory.SubCpuReset)
-            {
-                    // Preserve main CPU interrupt state while running the sub CPU.
-                    bool mainVReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req;
-                    bool mainHReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req;
-                    bool mainExtReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req;
-                    bool mainVAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act;
-                    bool mainHAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act;
-                    bool mainExtAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act;
-
-                    if (!EnsureSubContextInitialized(_memory))
-                    {
-                        if (TraceSubDebug && _subInitLogRemaining > 0)
-                        {
-                            _subInitLogRemaining--;
-                            Console.WriteLine("[SCD-SUB] Skipping sub CPU: reset vectors not initialized yet.");
-                        }
-                    }
-                    else
-                    {
-                        byte subLevel = _memory.GetSubInterruptLevel();
-                        if (subLevel != 0)
-                        {
-                            // Route sub CPU interrupts through EXT vector with dynamic level/vector.
-                            EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_level = subLevel;
-                            EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_vector = (uint)(0x0060 + (subLevel * 4));
-                            EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_ack = _memory.AcknowledgeSubInterrupt;
-                        }
-                        _subContext.InterruptExtReq = subLevel != 0;
-                        EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _subBus;
-                    if (subSlice > 0)
-                    {
-                        if (ProfileScd) _profileCpuTicks -= Stopwatch.GetTimestamp();
-                        _cpuRunner.RunSome(_subContext, subSlice);
-                        if (ProfileScd) _profileCpuTicks += Stopwatch.GetTimestamp();
-                    }
-                    uint subPc = _subContext.RegPc;
-                    if (subPc >= 0x0002C0 && subPc <= 0x000320)
-                    {
-                        _subPcSawChecksumRegion = true;
-                    }
-                    else if (_subPcSawChecksumRegion && !_subPcLoggedExit)
-                    {
-                        _subPcLoggedExit = true;
-                        if (TraceSubMilestones)
-                            Console.WriteLine($"[SCD-SUB] left checksum region pc=0x{subPc:X6}");
-                        if (TraceSubPcAfterExit)
-                            _subPcAfterExitRemaining = 16;
-                    }
-                    if (!_subIrqHandlerLogged && subPc >= 0x0005F2 && subPc <= 0x000610)
-                    {
-                        _subIrqHandlerLogged = true;
-                        if (TraceSubMilestones)
-                            Console.WriteLine($"[SCD-SUB] entered IRQ handler pc=0x{subPc:X6}");
-                    }
-                    if (TraceSubPcAfterExit && _subPcAfterExitRemaining > 0)
-                    {
-                        _subPcAfterExitRemaining--;
-                        Console.WriteLine($"[SCD-SUB] post-exit pc=0x{subPc:X6} op=0x{_subContext.Opcode:X4}");
-                    }
-                    if (TraceSubWait && subPc >= 0x0005E0 && subPc <= 0x0005F0)
-                    {
-                        long subWaitFrame = vdp?.FrameCounter ?? -1;
-                        if (subWaitFrame != _lastSubWaitFrame)
-                        {
-                            _lastSubWaitFrame = subWaitFrame;
-                            byte prgFlag = _memory.ReadSubByte(0x0005EA4);
-                            byte subFlag = _memory.ReadSubByte(0xFF800F);
-                            byte mainFlag = _memory.ReadSubByte(0xFF800E);
-                            Console.WriteLine(
-                                $"[SCD-SUBWAIT] frame={subWaitFrame} pc=0x{subPc:X6} prg[0x005EA4]=0x{prgFlag:X2} " +
-                                $"mainFlag=0x{mainFlag:X2} subFlag=0x{subFlag:X2}");
-                        }
-                    }
-                    if (_subContext.StatusInterruptMask != _subLastIntMask)
-                    {
-                        _subLastIntMask = _subContext.StatusInterruptMask;
-                        if (TraceSubIntMask)
-                            Console.WriteLine($"[SCD-SUB] int-mask={_subLastIntMask}");
-                    }
-                    if (TraceSubDebug && _subPcLogRemaining > 0)
-                    {
-                        _subPcLogRemaining--;
-                        Console.WriteLine($"[SCD-SUB] pc=0x{_subContext.RegPc:X6} sp=0x{_subContext.RegAddr[7]:X8} op=0x{_subContext.Opcode:X4}");
-                    }
-                        if (TraceSubDebug && _subDumpRemaining > 0 && _subContext.RegPc >= 0x0002E0 && _subContext.RegPc <= 0x0002E2)
-                        {
-                            _subDumpRemaining--;
-                            uint baseAddr = 0x0002D0;
-                            Span<byte> bytes = stackalloc byte[64];
-                            for (int i = 0; i < bytes.Length; i++)
-                                bytes[i] = _memory.ReadSubByte(baseAddr + (uint)i);
-                            ushort w18e = _memory.ReadSubWord(0x00018E);
-                            ushort w18c = _memory.ReadSubWord(0x00018C);
-                            string hex = BitConverter.ToString(bytes.ToArray()).Replace("-", " ");
-                            Console.WriteLine(
-                                $"[SCD-SUB] dump @0x{baseAddr:X6}: {hex} " +
-                                $"W[0x018C]=0x{w18c:X4} W[0x018E]=0x{w18e:X4} " +
-                                $"D0=0x{_subContext.RegData[0]:X8} D1=0x{_subContext.RegData[1]:X8} D2=0x{_subContext.RegData[2]:X8} " +
-                                $"A0=0x{_subContext.RegAddr[0]:X8} A1=0x{_subContext.RegAddr[1]:X8}");
-                            if (!_subChecksumComputed)
-                            {
-                                _subChecksumComputed = true;
-                                uint start = _subContext.RegAddr[0] & 0xFFFFF;
-                                uint count = (uint)((_subContext.RegData[2] & 0xFFFF) + 1);
-                                uint end = start + (count * 2);
-                                ushort sumBe = 0;
-                                ushort sumLe = 0;
-                                uint zeroWords = 0;
-                                for (uint addr = start; addr < end; addr += 2)
-                                {
-                                    ushort subWord = _memory.ReadSubWord(addr);
-                                    sumBe = (ushort)(sumBe + subWord);
-                                    ushort swapped = (ushort)((subWord << 8) | (subWord >> 8));
-                                    sumLe = (ushort)(sumLe + swapped);
-                                    if (subWord == 0)
-                                        zeroWords++;
-                                }
-                                ushort expected = _memory.ReadSubWord(0x00018E);
-                                Console.WriteLine(
-                                    $"[SCD-CHK] start=0x{start:X6} count={count} end=0x{(end - 1):X6} sumBE=0x{sumBe:X4} sumLE=0x{sumLe:X4} expected=0x{expected:X4} zeroWords={zeroWords}");
-                            }
-                        }
-                        if (TraceSubDebug && _subChecksumLogRemaining > 0 && _subContext.RegPc >= 0x0002EA && _subContext.RegPc <= 0x0002F2)
-                        {
-                            _subChecksumLogRemaining--;
-                            ushort expected = _memory.ReadSubWord(0x00018E);
-                            Console.WriteLine(
-                                $"[SCD-SUB] chk pc=0x{_subContext.RegPc:X6} D0=0x{_subContext.RegData[0] & 0xFFFF:X4} D1=0x{_subContext.RegData[1] & 0xFFFF:X4} exp=0x{expected:X4}");
-                        }
-                        _memory.FlushBufferedSubWrites();
-                    }
-
-                    // Restore main CPU interrupt state after sub CPU run.
-                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req = mainVReq;
-                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req = mainHReq;
-                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req = mainExtReq;
-                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act = mainVAct;
-                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act = mainHAct;
-                    EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act = mainExtAct;
-                }
-                else
-                {
-                    _memory.EmulateSubCpuHandshake();
-                }
-
                 EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
 
                 if (ProfileScd) _profileVdpTicks -= Stopwatch.GetTimestamp();
                 vdp.run(line);
                 if (ProfileScd) _profileVdpTicks += Stopwatch.GetTimestamp();
 
-                // Capture VDP-driven interrupt requests into the main CPU context.
-                _mainContext.InterruptVReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req;
-                _mainContext.InterruptHReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req;
-                _mainContext.InterruptExtReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req;
-                _mainContext.InterruptVAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act;
-                _mainContext.InterruptHAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act;
-                _mainContext.InterruptExtAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act;
+                if (!_useM68kEmu)
+                {
+                    // Capture VDP-driven interrupt requests into the main CPU context before executing.
+                    _mainContext!.InterruptVReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req;
+                    _mainContext.InterruptHReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req;
+                    _mainContext.InterruptExtReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req;
+                    _mainContext.InterruptVAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act;
+                    _mainContext.InterruptHAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act;
+                    _mainContext.InterruptExtAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act;
+                }
+
+                if (TraceMainPcFrame)
+                {
+                    if (frameCounter != _lastMainPcFrame)
+                    {
+                        _lastMainPcFrame = frameCounter;
+                        if (_useM68kEmu)
+                        {
+                            Console.WriteLine($"[SCD-MAIN-FRAME] frame={frameCounter} pc=0x{_mainCpu.Pc:X6} op=0x{_mainCpu.NextOpcode:X4}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[SCD-MAIN-FRAME] frame={frameCounter} pc=0x{_mainContext!.RegPc:X6} sp=0x{_mainContext.RegAddr[7]:X8} op=0x{_mainContext.Opcode:X4}");
+                        }
+                    }
+                }
+
+                if (mainSlice > 0)
+                {
+                    if (ProfileScd) _profileCpuTicks -= Stopwatch.GetTimestamp();
+                    if (_useM68kEmu)
+                    {
+                        int remaining = mainSlice;
+                        while (remaining > 0)
+                        {
+                            uint cycles = _mainCpu.ExecuteInstruction(_mainCpuBus!);
+                            remaining -= (int)cycles;
+                        }
+                    }
+                    else
+                    {
+                        _cpuRunner.RunSome(_mainContext!, mainSlice);
+                    }
+                    if (ProfileScd) _profileCpuTicks += Stopwatch.GetTimestamp();
+                }
+
+                if (z80Slice > 0 && allowZ80 && _mainBus != null)
+                {
+                    bool busReq = _mainBus.Z80BusGranted;
+                    bool reset = _mainBus.Z80Reset;
+                    if (!busReq && !reset)
+                        EutherDrive.Core.MdTracerCore.md_main.g_md_z80?.run(z80Slice);
+                }
+
+                if (TraceMainPc && _mainPcLogRemaining > 0)
+                {
+                    _mainPcLogRemaining--;
+                    if (_useM68kEmu)
+                    {
+                        Console.WriteLine($"[SCD-MAIN] pc=0x{_mainCpu.Pc:X6} op=0x{_mainCpu.NextOpcode:X4}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[SCD-MAIN] pc=0x{_mainContext!.RegPc:X6} sp=0x{_mainContext.RegAddr[7]:X8} op=0x{_mainContext.Opcode:X4}");
+                    }
+                }
+
+                if (!_useM68kEmu && TraceMainDebug && _mainDecompLogRemaining > 0 && _mainContext!.RegPc >= 0x00090E && _mainContext.RegPc <= 0x00098C)
+                {
+                    _mainDecompLogRemaining--;
+                    Console.WriteLine(
+                        $"[SCD-MAIN-DECOMP] pc=0x{_mainContext.RegPc:X6} op=0x{_mainContext.Opcode:X4} " +
+                        $"A0=0x{_mainContext.RegAddr[0]:X8} A1=0x{_mainContext.RegAddr[1]:X8} " +
+                        $"D0=0x{_mainContext.RegData[0]:X8} D1=0x{_mainContext.RegData[1]:X8} D2=0x{_mainContext.RegData[2]:X8} D3=0x{_mainContext.RegData[3]:X8}");
+                }
+
+                bool subReset = _memory.SubCpuReset;
+                if (_useM68kEmu)
+                {
+                    if (subReset && !_lastSubReset)
+                        _subCpuNeedsReset = true;
+                    _lastSubReset = subReset;
+
+                    if (!_memory.SubCpuHalt && !_memory.SubCpuReset)
+                    {
+                        if (!EnsureSubVectorsReady(_memory))
+                        {
+                            if (TraceSubDebug && _subInitLogRemaining > 0)
+                            {
+                                _subInitLogRemaining--;
+                                Console.WriteLine("[SCD-SUB] Skipping sub CPU: reset vectors not initialized yet.");
+                            }
+                        }
+                        else
+                        {
+                            if (_subCpuNeedsReset)
+                            {
+                                _subCpu.Reset(_subCpuBus!);
+                                _subCpuNeedsReset = false;
+                            }
+
+                            if (subSlice > 0)
+                            {
+                                if (ProfileScd) _profileCpuTicks -= Stopwatch.GetTimestamp();
+                                int remaining = subSlice;
+                                while (remaining > 0)
+                                {
+                                    uint cycles = _subCpu.ExecuteInstruction(_subCpuBus!);
+                                    remaining -= (int)cycles;
+                                }
+                                if (ProfileScd) _profileCpuTicks += Stopwatch.GetTimestamp();
+                            }
+
+                            uint subPc = _subCpu.Pc;
+                            if (TraceSubDebug && _subPcLogRemaining > 0)
+                            {
+                                _subPcLogRemaining--;
+                                Console.WriteLine($"[SCD-SUB] pc=0x{subPc:X6} op=0x{_subCpu.NextOpcode:X4}");
+                            }
+                            _memory.FlushBufferedSubWrites();
+                        }
+                    }
+                    else
+                    {
+                        _memory.EmulateSubCpuHandshake();
+                    }
+                }
+                else
+                {
+                    if (subReset && !_lastSubReset)
+                        _subContext = CreateResetContext(0, 0);
+                    _lastSubReset = subReset;
+
+                    if (!_memory.SubCpuHalt && !_memory.SubCpuReset)
+                    {
+                        // Preserve main CPU interrupt state while running the sub CPU.
+                        bool mainVReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req;
+                        bool mainHReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req;
+                        bool mainExtReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req;
+                        bool mainVAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act;
+                        bool mainHAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act;
+                        bool mainExtAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act;
+
+                        if (!EnsureSubContextInitialized(_memory))
+                        {
+                            if (TraceSubDebug && _subInitLogRemaining > 0)
+                            {
+                                _subInitLogRemaining--;
+                                Console.WriteLine("[SCD-SUB] Skipping sub CPU: reset vectors not initialized yet.");
+                            }
+                        }
+                        else
+                        {
+                            byte subLevel = _memory.GetSubInterruptLevel();
+                            if (subLevel != 0)
+                            {
+                                // Route sub CPU interrupts through EXT vector with dynamic level/vector.
+                                EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_level = subLevel;
+                                EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_vector = (uint)(0x0060 + (subLevel * 4));
+                                EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_ack = _memory.AcknowledgeSubInterrupt;
+                            }
+                            _subContext.InterruptExtReq = subLevel != 0;
+                            EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _subBus;
+                            if (subSlice > 0)
+                            {
+                                if (ProfileScd) _profileCpuTicks -= Stopwatch.GetTimestamp();
+                                _cpuRunner.RunSome(_subContext, subSlice);
+                                if (ProfileScd) _profileCpuTicks += Stopwatch.GetTimestamp();
+                            }
+                            uint subPc = _subContext.RegPc;
+                            if (subPc >= 0x0002C0 && subPc <= 0x000320)
+                            {
+                                _subPcSawChecksumRegion = true;
+                            }
+                            else if (_subPcSawChecksumRegion && !_subPcLoggedExit)
+                            {
+                                _subPcLoggedExit = true;
+                                if (TraceSubMilestones)
+                                    Console.WriteLine($"[SCD-SUB] left checksum region pc=0x{subPc:X6}");
+                                if (TraceSubPcAfterExit)
+                                    _subPcAfterExitRemaining = 16;
+                            }
+                            if (!_subIrqHandlerLogged && subPc >= 0x0005F2 && subPc <= 0x000610)
+                            {
+                                _subIrqHandlerLogged = true;
+                                if (TraceSubMilestones)
+                                    Console.WriteLine($"[SCD-SUB] entered IRQ handler pc=0x{subPc:X6}");
+                            }
+                            if (TraceSubPcAfterExit && _subPcAfterExitRemaining > 0)
+                            {
+                                _subPcAfterExitRemaining--;
+                                Console.WriteLine($"[SCD-SUB] post-exit pc=0x{subPc:X6} op=0x{_subContext.Opcode:X4}");
+                            }
+                            if (TraceSubWait && subPc >= 0x0005E0 && subPc <= 0x0005F0)
+                            {
+                                long subWaitFrame = vdp?.FrameCounter ?? -1;
+                                if (subWaitFrame != _lastSubWaitFrame)
+                                {
+                                    _lastSubWaitFrame = subWaitFrame;
+                                    byte prgFlag = _memory.ReadSubByte(0x0005EA4);
+                                    byte subFlag = _memory.ReadSubByte(0xFF800F);
+                                    byte mainFlag = _memory.ReadSubByte(0xFF800E);
+                                    Console.WriteLine(
+                                        $"[SCD-SUBWAIT] frame={subWaitFrame} pc=0x{subPc:X6} prg[0x005EA4]=0x{prgFlag:X2} " +
+                                        $"mainFlag=0x{mainFlag:X2} subFlag=0x{subFlag:X2}");
+                                }
+                            }
+                            if (_subContext.StatusInterruptMask != _subLastIntMask)
+                            {
+                                _subLastIntMask = _subContext.StatusInterruptMask;
+                                if (TraceSubIntMask)
+                                    Console.WriteLine($"[SCD-SUB] int-mask={_subLastIntMask}");
+                            }
+                            if (TraceSubDebug && _subPcLogRemaining > 0)
+                            {
+                                _subPcLogRemaining--;
+                                Console.WriteLine($"[SCD-SUB] pc=0x{_subContext.RegPc:X6} sp=0x{_subContext.RegAddr[7]:X8} op=0x{_subContext.Opcode:X4}");
+                            }
+                            if (TraceSubDebug && _subDumpRemaining > 0 && _subContext.RegPc >= 0x0002E0 && _subContext.RegPc <= 0x0002E2)
+                            {
+                                _subDumpRemaining--;
+                                uint baseAddr = 0x0002D0;
+                                Span<byte> bytes = stackalloc byte[64];
+                                for (int i = 0; i < bytes.Length; i++)
+                                    bytes[i] = _memory.ReadSubByte(baseAddr + (uint)i);
+                                ushort w18e = _memory.ReadSubWord(0x00018E);
+                                ushort w18c = _memory.ReadSubWord(0x00018C);
+                                string hex = BitConverter.ToString(bytes.ToArray()).Replace("-", " ");
+                                Console.WriteLine(
+                                    $"[SCD-SUB] dump @0x{baseAddr:X6}: {hex} " +
+                                    $"W[0x018C]=0x{w18c:X4} W[0x018E]=0x{w18e:X4} " +
+                                    $"D0=0x{_subContext.RegData[0]:X8} D1=0x{_subContext.RegData[1]:X8} D2=0x{_subContext.RegData[2]:X8} " +
+                                    $"A0=0x{_subContext.RegAddr[0]:X8} A1=0x{_subContext.RegAddr[1]:X8}");
+                                if (!_subChecksumComputed)
+                                {
+                                    _subChecksumComputed = true;
+                                    uint start = _subContext.RegAddr[0] & 0xFFFFF;
+                                    uint count = (uint)((_subContext.RegData[2] & 0xFFFF) + 1);
+                                    uint end = start + (count * 2);
+                                    ushort sumBe = 0;
+                                    ushort sumLe = 0;
+                                    uint zeroWords = 0;
+                                    for (uint addr = start; addr < end; addr += 2)
+                                    {
+                                        ushort subWord = _memory.ReadSubWord(addr);
+                                        sumBe = (ushort)(sumBe + subWord);
+                                        ushort swapped = (ushort)((subWord << 8) | (subWord >> 8));
+                                        sumLe = (ushort)(sumLe + swapped);
+                                        if (subWord == 0)
+                                            zeroWords++;
+                                    }
+                                    ushort expected = _memory.ReadSubWord(0x00018E);
+                                    Console.WriteLine(
+                                        $"[SCD-CHK] start=0x{start:X6} count={count} end=0x{(end - 1):X6} sumBE=0x{sumBe:X4} sumLE=0x{sumLe:X4} expected=0x{expected:X4} zeroWords={zeroWords}");
+                                }
+                            }
+                            if (TraceSubDebug && _subChecksumLogRemaining > 0 && _subContext.RegPc >= 0x0002EA && _subContext.RegPc <= 0x0002F2)
+                            {
+                                _subChecksumLogRemaining--;
+                                ushort expected = _memory.ReadSubWord(0x00018E);
+                                Console.WriteLine(
+                                    $"[SCD-SUB] chk pc=0x{_subContext.RegPc:X6} D0=0x{_subContext.RegData[0] & 0xFFFF:X4} D1=0x{_subContext.RegData[1] & 0xFFFF:X4} exp=0x{expected:X4}");
+                            }
+                            _memory.FlushBufferedSubWrites();
+                        }
+
+                        // Restore main CPU interrupt state after sub CPU run.
+                        EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req = mainVReq;
+                        EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req = mainHReq;
+                        EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req = mainExtReq;
+                        EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act = mainVAct;
+                        EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act = mainHAct;
+                        EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act = mainExtAct;
+                    }
+                    else
+                    {
+                        _memory.EmulateSubCpuHandshake();
+                    }
+                }
+
+                EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
             }
-            // Ensure main CPU context is active before capturing.
-            EutherDrive.Core.MdTracerCore.md_m68k.ApplyContext(_mainContext);
-            EutherDrive.Core.MdTracerCore.md_m68k.CaptureContext(_mainContext);
+
+            if (!_useM68kEmu)
+            {
+                // Ensure main CPU context is active before capturing.
+                EutherDrive.Core.MdTracerCore.md_m68k.ApplyContext(_mainContext!);
+                EutherDrive.Core.MdTracerCore.md_m68k.CaptureContext(_mainContext!);
+            }
 
             int frameW = vdp.FrameWidth > 0 ? vdp.FrameWidth : DefaultW;
             int frameH = vdp.FrameHeight > 0 ? vdp.FrameHeight : DefaultH;
@@ -735,6 +873,20 @@ public sealed class SegaCdAdapter : IEmulatorCore
         {
             return value;
         }
+        return fallback;
+    }
+
+    private static bool ReadEnvFlag(string key, bool fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (string.Equals(raw, "1", StringComparison.Ordinal))
+            return true;
+        if (string.Equals(raw, "0", StringComparison.Ordinal))
+            return false;
+        if (bool.TryParse(raw, out bool parsed))
+            return parsed;
         return fallback;
     }
 
@@ -1399,5 +1551,17 @@ public sealed class SegaCdAdapter : IEmulatorCore
         if (TraceSubDebug)
             Console.WriteLine($"[SCD-SUB] Initialized sub CPU sp=0x{subSp:X8} pc=0x{subPc:X8}");
         return true;
+    }
+
+    private bool EnsureSubVectorsReady(SegaCdMemory memory)
+    {
+        uint subSp = ReadSubVector(memory, 0);
+        uint subPc = ReadSubVector(memory, 4);
+        if (TraceSubDebug && _subVectorLogRemaining > 0)
+        {
+            _subVectorLogRemaining--;
+            Console.WriteLine($"[SCD-SUB] vectors sp=0x{subSp:X8} pc=0x{subPc:X8}");
+        }
+        return subSp != 0 && subPc != 0;
     }
 }

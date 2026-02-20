@@ -71,6 +71,10 @@ class Program
     static int Main(string[] args)
     {
         ConfigureConsoleLogging();
+        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DEBUG_SCD") == "1")
+        {
+            EnableScdDebugLogging();
+        }
 
         // Check for special test modes
         if (args.Length >= 1 && args[0] == "--test-interlace2")
@@ -1064,5 +1068,30 @@ class Program
             return (int)(sampleRate * (ms / 1000.0));
         }
         return (int)(sampleRate * 0.10);
+    }
+
+    private static void EnableScdDebugLogging()
+    {
+        // Enable verbose Sega CD logging for headless debug runs.
+        SetEnv("EUTHERDRIVE_SCD_LOG_CDD", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_CDDCMD", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_CDDSTATUS", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_CDC", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_SUBINT", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_SUBREAD", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_SUBREG", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_SUBBUS", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_MAINREG", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_MAINREG_READ", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_MAINREG_PROBE", "1");
+        SetEnv("EUTHERDRIVE_SCD_LOG_A12001_PC", "1");
+        SetEnv("EUTHERDRIVE_SCD_TRACE_TIMER", "1");
+        SetEnv("EUTHERDRIVE_TRACE_VERBOSE", "1");
+    }
+
+    private static void SetEnv(string key, string value)
+    {
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
+            Environment.SetEnvironmentVariable(key, value);
     }
 }

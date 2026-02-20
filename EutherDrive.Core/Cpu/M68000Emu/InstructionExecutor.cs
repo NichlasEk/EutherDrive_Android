@@ -11,6 +11,12 @@ internal sealed partial class InstructionExecutor
 
     private ushort _opcode;
     private Instruction? _instruction;
+    private uint _tracePc;
+
+    private static readonly bool TraceExceptions =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX"), "1", StringComparison.Ordinal);
+    private static readonly uint? TracePcMin = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MIN");
+    private static readonly uint? TracePcMax = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MAX");
 
     private const uint AddressErrorVector = 3;
     private const uint IllegalOpcodeVector = 4;
@@ -59,11 +65,28 @@ internal sealed partial class InstructionExecutor
 
     private ExecuteResult<uint> DoExecute()
     {
+        uint pcBefore = _registers.Pc;
+        _tracePc = pcBefore;
         _opcode = _registers.Prefetch;
         _instruction = InstructionTable.Decode(_opcode);
 
         if (_instruction.Value.Kind == InstructionKind.Illegal)
             return ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode));
+
+        if (ShouldTracePc(pcBefore))
+        {
+            Instruction traceInst = _instruction.Value;
+            Console.WriteLine(
+                $"[M68K-PC] cpu={_name} pc=0x{pcBefore:X8} op=0x{_opcode:X4} inst={traceInst.Kind} size={traceInst.Size} " +
+                $"src={FormatMode(traceInst.Source)} dst={FormatMode(traceInst.Dest)} " +
+                $"A0=0x{_registers.Address[0]:X8} A2=0x{_registers.Address[2]:X8} D0=0x{_registers.Data[0]:X8}");
+        }
+
+        var next = ReadBusWord(_registers.Pc + 2);
+        if (!next.IsOk)
+            return ExecuteResult<uint>.Err(next.Error!.Value);
+        _registers.Prefetch = next.Value;
+        _registers.Pc += 2;
 
         Instruction inst = _instruction.Value;
         return inst.Kind switch
@@ -309,7 +332,7 @@ internal sealed partial class InstructionExecutor
                 {
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
-                    uint addr = (uint)(short)ext.Value;
+                    uint addr = ext.Value;
                     resolved = ResolvedAddress.Memory(addr);
                     break;
                 }
@@ -320,6 +343,8 @@ internal sealed partial class InstructionExecutor
                     var lo = FetchOperand();
                     if (!lo.IsOk) return ExecuteResult<ResolvedAddress>.Err(lo.Error!.Value);
                     uint addr = ((uint)hi.Value << 16) | lo.Value;
+                    if (ShouldTracePc(_tracePc))
+                        Console.WriteLine($"[M68K-ABS] pc=0x{_tracePc:X8} hi=0x{hi.Value:X4} lo=0x{lo.Value:X4} addr=0x{addr:X8}");
                     resolved = ResolvedAddress.Memory(addr);
                     break;
                 }
@@ -373,7 +398,7 @@ internal sealed partial class InstructionExecutor
 
     private ExecuteResult<uint> ReadLongResolved(ResolvedAddress resolved)
     {
-        return resolved.Kind switch
+        var result = resolved.Kind switch
         {
             ResolvedAddressKind.DataRegister => ExecuteResult<uint>.Ok(resolved.DataReg.Read(_registers)),
             ResolvedAddressKind.AddressRegister => ExecuteResult<uint>.Ok(resolved.AddrReg.Read(_registers)),
@@ -381,6 +406,9 @@ internal sealed partial class InstructionExecutor
             ResolvedAddressKind.Immediate => ExecuteResult<uint>.Ok(resolved.ImmediateValue),
             _ => ExecuteResult<uint>.Ok(0)
         };
+        if (ShouldTracePc(_tracePc) && result.IsOk && resolved.Kind is ResolvedAddressKind.Memory or ResolvedAddressKind.MemoryPostincrement)
+            Console.WriteLine($"[M68K-RL] pc=0x{_tracePc:X8} addr=0x{resolved.Address:X8} value=0x{result.Value:X8}");
+        return result;
     }
 
     private ExecuteResult<object> WriteWordResolved(ResolvedAddress resolved, ushort value)
@@ -486,6 +514,20 @@ internal sealed partial class InstructionExecutor
 
     private uint HandleException(M68kException ex)
     {
+        if (TraceExceptions)
+        {
+            string detail = ex.Kind == M68kExceptionKind.AddressError
+                ? $" addr=0x{ex.Address:X8} op={ex.BusOp} A0=0x{_registers.Address[0]:X8} SP=0x{_registers.StackPointer():X8}"
+                : string.Empty;
+            string instKind = _instruction.HasValue ? _instruction.Value.Kind.ToString() : "unknown";
+            string modeInfo = string.Empty;
+            if (_instruction.HasValue)
+            {
+                Instruction inst = _instruction.Value;
+                modeInfo = $" size={inst.Size} src={FormatMode(inst.Source)} dst={FormatMode(inst.Dest)}";
+            }
+            Console.WriteLine($"[M68K-EX] cpu={_name} kind={ex.Kind} pc=0x{_registers.Pc:X8} op=0x{_opcode:X4} inst={instKind}{modeInfo}{detail}");
+        }
         switch (ex.Kind)
         {
             case M68kExceptionKind.AddressError:
@@ -519,6 +561,47 @@ internal sealed partial class InstructionExecutor
             default:
                 return 50;
         }
+    }
+
+    private static string FormatMode(AddressingMode mode)
+    {
+        return mode.Kind switch
+        {
+            AddressingModeKind.DataDirect => $"D{mode.DataReg.Index}",
+            AddressingModeKind.AddressDirect => $"A{mode.AddrReg.Index}",
+            AddressingModeKind.AddressIndirect => $"(A{mode.AddrReg.Index})",
+            AddressingModeKind.AddressIndirectPostincrement => $"(A{mode.AddrReg.Index})+",
+            AddressingModeKind.AddressIndirectPredecrement => $"- (A{mode.AddrReg.Index})",
+            AddressingModeKind.AddressIndirectDisplacement => $"(d16,A{mode.AddrReg.Index})",
+            AddressingModeKind.AddressIndirectIndexed => $"(d8,An,Xn)A{mode.AddrReg.Index}",
+            AddressingModeKind.PcRelativeDisplacement => "(d16,PC)",
+            AddressingModeKind.PcRelativeIndexed => "(d8,PC,Xn)",
+            AddressingModeKind.AbsoluteShort => "(abs.w)",
+            AddressingModeKind.AbsoluteLong => "(abs.l)",
+            AddressingModeKind.Immediate => "#imm",
+            AddressingModeKind.Quick => "#q",
+            _ => mode.Kind.ToString()
+        };
+    }
+
+    private static bool ShouldTracePc(uint pc)
+    {
+        if (!TracePcMin.HasValue || !TracePcMax.HasValue)
+            return false;
+        return pc >= TracePcMin.Value && pc <= TracePcMax.Value;
+    }
+
+    private static uint? ReadHexEnv(string name)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            raw = raw[2..];
+        if (uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint value))
+            return value;
+        return null;
     }
 
     private ExecuteResult<object> HandleTrap(uint vector, uint pc)
