@@ -660,6 +660,46 @@ namespace EutherDrive.Core.MdTracerCore
             return addr;
         }
 
+        private static bool IsCartridgeRomAddress(uint addr)
+        {
+            return addr <= 0x009F_FFFF || (addr >= 0x00A1_2000 && addr <= 0x00A1_53FF);
+        }
+
+        private static uint GetCartridgeRomLimit()
+        {
+            var cart = md_main.g_md_cartridge;
+            if (cart == null || cart.g_file_size <= 0)
+                return 0;
+            return (uint)cart.g_file_size;
+        }
+
+        private static byte ReadCartridgeByte(uint addr)
+        {
+            var cart = md_main.g_md_cartridge;
+            if (cart == null || cart.g_file_size <= 0)
+                return 0xFF;
+            uint limit = GetCartridgeRomLimit();
+            if (addr < limit)
+                return cart.g_file[addr];
+            return 0xFF;
+        }
+
+        private static ushort ReadCartridgeWord(uint addr)
+        {
+            byte hi = ReadCartridgeByte(addr);
+            byte lo = ReadCartridgeByte(addr + 1);
+            return (ushort)((hi << 8) | lo);
+        }
+
+        private static uint ReadCartridgeLong(uint addr)
+        {
+            uint b3 = ReadCartridgeByte(addr);
+            uint b2 = ReadCartridgeByte(addr + 1);
+            uint b1 = ReadCartridgeByte(addr + 2);
+            uint b0 = ReadCartridgeByte(addr + 3);
+            return (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
+        }
+
         private static bool IsSramLockReg(uint addr) => (addr & 0x00FF_FFFF) == 0x00A1_30F1;
 
         private bool IsSramConfigured => _sram != null && _sramEnd >= _sramStart;
@@ -1437,10 +1477,10 @@ namespace EutherDrive.Core.MdTracerCore
                 SramLog($"[SRAM-CTRL-READ] addr=0x{in_address:X6} val=0xFF");
             }
 
-            // 0x000000–0x3FFFFF  | ROM / cart
-            if (in_address <= 0x3FFFFF)
+            // 0x000000–0x9FFFFF (+ 0xA12000–0xA153FF) | ROM / cart
+            if (IsCartridgeRomAddress(in_address))
             {
-                byte val = md_m68k.read8(in_address);
+                byte val = ReadCartridgeByte(in_address);
                 if (TraceRomReadPc && _romReadPcRemaining > 0)
                 {
                     uint pc = md_m68k.g_reg_PC;
@@ -1594,9 +1634,9 @@ namespace EutherDrive.Core.MdTracerCore
                 return (ushort)((hi << 8) | lo);
             }
 
-            if (in_address <= 0x3FFFFF)
+            if (IsCartridgeRomAddress(in_address))
             {
-                ushort val = md_m68k.read16(in_address);
+                ushort val = ReadCartridgeWord(in_address);
                 if (TraceRomReadPc && _romReadPcRemaining > 0)
                 {
                     uint pc = md_m68k.g_reg_PC;
@@ -1732,9 +1772,9 @@ namespace EutherDrive.Core.MdTracerCore
                 return (uint)((b0 << 24) | (b1 << 16) | (b2 << 8) | b3);
             }
 
-            if (in_address <= 0x3FFFFF)
+            if (IsCartridgeRomAddress(in_address))
             {
-                uint val = md_m68k.read32(in_address);
+                uint val = ReadCartridgeLong(in_address);
                 LogBusWatch(in_address, 4, write: false, value: val);
                 return val;
             }

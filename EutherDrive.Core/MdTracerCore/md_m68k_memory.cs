@@ -81,9 +81,6 @@ namespace EutherDrive.Core.MdTracerCore
             var cart = md_main.g_md_cartridge;
             if (cart == null)
                 return 0;
-            uint romEnd = cart.g_rom_end;
-            if (romEnd != 0)
-                return romEnd + 1;
             int size = cart.g_file_size;
             if (size <= 0)
                 return 0;
@@ -130,6 +127,14 @@ namespace EutherDrive.Core.MdTracerCore
             var bus = md_main.g_md_bus;
             if (bus?.OverrideBus != null && bus.OverrideBus.TryRead8(addr, out byte overrideValue))
                 return overrideValue;
+            uint logical = in_address & 0x00FF_FFFF;
+            var cart = md_main.g_md_cartridge;
+            if (cart != null && cart.g_file_size > 0)
+            {
+                uint romLimit = GetRomLimit();
+                if (logical < romLimit && !IsCartRamAddress(logical))
+                    return cart.g_file[logical];
+            }
             byte value = mem[addr];
             if (addr == 0x00FFB154 && ForceB154ReadValue.HasValue)
             {
@@ -158,6 +163,20 @@ namespace EutherDrive.Core.MdTracerCore
                 return overrideValue;
 
             uint addr1 = NormalizeAddr(in_address + 1);
+            uint logical = in_address & 0x00FF_FFFF;
+            var cart = md_main.g_md_cartridge;
+            if (cart != null && cart.g_file_size > 0)
+            {
+                uint romLimit = GetRomLimit();
+                if (logical + 1 < romLimit && !IsCartRamAddress(logical))
+                {
+                    byte hiCart = cart.g_file[logical];
+                    byte loCart = cart.g_file[logical + 1];
+                    ushort romValue = (ushort)((hiCart << 8) | loCart);
+                    RecordMemoryAccess(addr, 2, false, romValue);
+                    return romValue;
+                }
+            }
             byte hi = mem[addr];
             byte lo = mem[addr1];
             ushort value = (ushort)((hi << 8) | lo);
@@ -178,6 +197,23 @@ namespace EutherDrive.Core.MdTracerCore
             uint addr1 = NormalizeAddr(in_address + 1);
             uint addr2 = NormalizeAddr(in_address + 2);
             uint addr3 = NormalizeAddr(in_address + 3);
+
+            uint logical = in_address & 0x00FF_FFFF;
+            var cart = md_main.g_md_cartridge;
+            if (cart != null && cart.g_file_size > 0)
+            {
+                uint romLimit = GetRomLimit();
+                if (logical + 3 < romLimit && !IsCartRamAddress(logical))
+                {
+                    uint b3c = cart.g_file[logical];
+                    uint b2c = cart.g_file[logical + 1];
+                    uint b1c = cart.g_file[logical + 2];
+                    uint b0c = cart.g_file[logical + 3];
+                    uint romValue = (b3c << 24) | (b2c << 16) | (b1c << 8) | b0c;
+                    RecordMemoryAccess(addr, 4, false, romValue);
+                    return romValue;
+                }
+            }
 
             uint b3 = mem[addr];
             uint b2 = mem[addr1];
