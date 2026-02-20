@@ -89,10 +89,24 @@ internal sealed class MdTracerStateSerializer
             }
             catch (Exception ex)
             {
+                if (IsLenientSavestateLoad())
+                {
+                    Console.WriteLine($"[Savestate] WARNING: component '{component.Id}' load failed: {ex.Message}");
+                    continue;
+                }
                 throw new InvalidOperationException(
                     $"Savestate component '{component.Id}' load failed: {ex.Message}", ex);
             }
         }
+    }
+
+    private static bool IsLenientSavestateLoad()
+    {
+        string? value = Environment.GetEnvironmentVariable("EUTHERDRIVE_SAVESTATE_LENIENT");
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+        return value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class MdMainStateComponent : IStatefulComponent

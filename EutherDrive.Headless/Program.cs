@@ -5,16 +5,21 @@
 
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
+using System.IO.Compression;
 using EutherDrive.Core;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.Savestates;
 using EutherDrive.Audio;
+using EutherDrive.Core.Cpu.M68000Emu;
 
 namespace EutherDrive.Headless;
 
@@ -110,6 +115,13 @@ class Program
             return RunFromSavestate(romPathArg, statePathArg, framesArg);
         }
 
+        if (args.Length >= 2 && args[0] == "--m68k-tests")
+        {
+            string path = args[1];
+            bool logEach = args.Length > 2 && args[2] == "--log";
+            return M68kTestCli.Run(path, logEach);
+        }
+
         if (args.Length < 1)
         {
             Console.Error.WriteLine("Usage: EutherDrive.Headless <rom_path> [frames]");
@@ -117,7 +129,8 @@ class Program
             Console.Error.WriteLine($"  frames:   Number of frames to run (default: {DefaultFrames})");
             Console.Error.WriteLine("  --test-interlace2: Run interlace mode 2 pattern test");
             Console.Error.WriteLine("  --load-savestate: Load savestate and run frames");
-            return 1;
+        Console.Error.WriteLine("  --m68k-tests <path> [--log]: Run 68000 JSON tests (ProcessorTests)");
+        return 1;
         }
 
         string romPath = args[0];
@@ -1094,5 +1107,250 @@ class Program
     {
         if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
             Environment.SetEnvironmentVariable(key, value);
+    }
+}
+
+internal sealed class M68kTestBus : IBusInterface
+{
+    private readonly byte[] _mem = new byte[0x0100_0000];
+
+    public void Clear()
+    {
+        Array.Clear(_mem, 0, _mem.Length);
+    }
+
+    public void WriteByte(uint address, byte value)
+    {
+        _mem[address & 0x00FF_FFFF] = value;
+    }
+
+    public byte ReadByte(uint address)
+    {
+        return _mem[address & 0x00FF_FFFF];
+    }
+
+    public ushort ReadWord(uint address)
+    {
+        uint a = address & 0x00FF_FFFF;
+        return (ushort)((_mem[a] << 8) | _mem[(a + 1) & 0x00FF_FFFF]);
+    }
+
+    public uint ReadLong(uint address)
+    {
+        uint a = address & 0x00FF_FFFF;
+        return (uint)(_mem[a] << 24)
+            | (uint)(_mem[(a + 1) & 0x00FF_FFFF] << 16)
+            | (uint)(_mem[(a + 2) & 0x00FF_FFFF] << 8)
+            | _mem[(a + 3) & 0x00FF_FFFF];
+    }
+
+    public void WriteWord(uint address, ushort value)
+    {
+        uint a = address & 0x00FF_FFFF;
+        _mem[a] = (byte)(value >> 8);
+        _mem[(a + 1) & 0x00FF_FFFF] = (byte)(value & 0xFF);
+    }
+
+    public void WriteLong(uint address, uint value)
+    {
+        uint a = address & 0x00FF_FFFF;
+        _mem[a] = (byte)(value >> 24);
+        _mem[(a + 1) & 0x00FF_FFFF] = (byte)((value >> 16) & 0xFF);
+        _mem[(a + 2) & 0x00FF_FFFF] = (byte)((value >> 8) & 0xFF);
+        _mem[(a + 3) & 0x00FF_FFFF] = (byte)(value & 0xFF);
+    }
+
+    public byte InterruptLevel() => 0;
+    public void AcknowledgeInterrupt(byte level) { }
+    public bool Reset() => false;
+    public bool Halt() => false;
+    public BusSignals Signals => new(false);
+    public ushort CurrentOpcode => 0;
+}
+
+internal sealed class M68kTestRunner
+{
+    private readonly M68000 _cpu = M68000.CreateBuilder().AllowTasWrites(true).Name("M68K-TEST").Build();
+    private readonly M68kTestBus _bus = new();
+
+    public int RunPath(string path, bool logEach)
+    {
+        if (File.Exists(path))
+            return RunFile(path, logEach);
+        if (Directory.Exists(path))
+            return RunDirectory(path, logEach);
+        Console.Error.WriteLine($"[M68K-TEST] path not found: {path}");
+        return 1;
+    }
+
+    private int RunDirectory(string dir, bool logEach)
+    {
+        var files = Directory.EnumerateFiles(dir, "*.json*", SearchOption.AllDirectories)
+            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (files.Length == 0)
+        {
+            Console.Error.WriteLine($"[M68K-TEST] no json/json.gz files in {dir}");
+            return 1;
+        }
+
+        int total = 0;
+        int failed = 0;
+        foreach (var file in files)
+        {
+            var (t, f) = RunFileInternal(file, logEach);
+            total += t;
+            failed += f;
+        }
+        Console.WriteLine($"[M68K-TEST] done: failed {failed} / {total}");
+        return failed == 0 ? 0 : 2;
+    }
+
+    private int RunFile(string file, bool logEach)
+    {
+        var (total, failed) = RunFileInternal(file, logEach);
+        Console.WriteLine($"[M68K-TEST] {Path.GetFileName(file)} failed {failed} / {total}");
+        return failed == 0 ? 0 : 2;
+    }
+
+    private (int Total, int Failed) RunFileInternal(string file, bool logEach)
+    {
+        var tests = LoadTests(file);
+        int total = tests.Count;
+        int failed = 0;
+        for (int i = 0; i < tests.Count; i++)
+        {
+            if (!RunSingle(tests[i], logEach))
+                failed++;
+        }
+        return (total, failed);
+    }
+
+    private bool RunSingle(M68kTest test, bool logEach)
+    {
+        _bus.Clear();
+        foreach (var entry in test.Initial.Ram)
+        {
+            if (entry.Length < 2)
+                continue;
+            _bus.WriteByte(entry[0], (byte)entry[1]);
+        }
+
+        ushort prefetch = test.Initial.Prefetch.Length > 0 ? test.Initial.Prefetch[0] : (ushort)0;
+        var state = new M68000.M68000State(
+            test.Initial.Data, test.Initial.Address, test.Initial.Usp, test.Initial.Ssp, test.Initial.Sr, test.Initial.Pc, prefetch);
+        _cpu.SetState(state);
+
+        for (int i = 0; i < test.Length; i++)
+            _cpu.ExecuteInstruction(_bus);
+
+        var finalState = _cpu.GetState();
+        bool ok = CompareState(test, _bus, finalState, out string diff);
+        if (!ok && logEach)
+            Console.WriteLine($"[M68K-TEST][FAIL] {test.Name}\n{diff}");
+        return ok;
+    }
+
+    private static bool CompareState(M68kTest test, M68kTestBus bus, M68000.M68000State actual, out string diff)
+    {
+        var sb = new StringBuilder();
+        bool ok = true;
+
+        void Check(string name, uint a, uint e)
+        {
+            if (a != e)
+            {
+                ok = false;
+                sb.AppendLine($"  {name}: actual=0x{a:X8} expected=0x{e:X8}");
+            }
+        }
+
+        for (int i = 0; i < 8; i++)
+            Check($"d{i}", actual.Data[i], test.Final.Data[i]);
+        for (int i = 0; i < 7; i++)
+            Check($"a{i}", actual.Address[i], test.Final.Address[i]);
+        Check("usp", actual.Usp, test.Final.Usp);
+        Check("ssp", actual.Ssp, test.Final.Ssp);
+        Check("pc", actual.Pc, test.Final.Pc);
+        Check("sr", actual.Sr, test.Final.Sr);
+
+        foreach (var entry in test.Final.Ram)
+        {
+            if (entry.Length < 2)
+                continue;
+            uint addr = entry[0];
+            byte expected = (byte)entry[1];
+            byte actualByte = bus.ReadByte(addr);
+            if (actualByte != expected)
+            {
+                ok = false;
+                sb.AppendLine($"  mem[0x{addr:X8}]: actual=0x{actualByte:X2} expected=0x{expected:X2}");
+            }
+        }
+
+        diff = sb.ToString();
+        return ok;
+    }
+
+    private List<M68kTest> LoadTests(string file)
+    {
+        using Stream stream = OpenTestStream(file);
+        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        var tests = JsonSerializer.Deserialize<List<M68kTest>>(stream, options);
+        return tests ?? new List<M68kTest>();
+    }
+
+    private static Stream OpenTestStream(string file)
+    {
+        var fs = File.OpenRead(file);
+        if (file.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
+            return new GZipStream(fs, CompressionMode.Decompress);
+        return fs;
+    }
+}
+
+internal sealed class M68kTest
+{
+    [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
+    [JsonPropertyName("initial")] public M68kState Initial { get; set; } = new();
+    [JsonPropertyName("final")] public M68kState Final { get; set; } = new();
+    [JsonPropertyName("length")] public int Length { get; set; }
+}
+
+internal sealed class M68kState
+{
+    [JsonPropertyName("d0")] public uint D0 { get; set; }
+    [JsonPropertyName("d1")] public uint D1 { get; set; }
+    [JsonPropertyName("d2")] public uint D2 { get; set; }
+    [JsonPropertyName("d3")] public uint D3 { get; set; }
+    [JsonPropertyName("d4")] public uint D4 { get; set; }
+    [JsonPropertyName("d5")] public uint D5 { get; set; }
+    [JsonPropertyName("d6")] public uint D6 { get; set; }
+    [JsonPropertyName("d7")] public uint D7 { get; set; }
+    [JsonPropertyName("a0")] public uint A0 { get; set; }
+    [JsonPropertyName("a1")] public uint A1 { get; set; }
+    [JsonPropertyName("a2")] public uint A2 { get; set; }
+    [JsonPropertyName("a3")] public uint A3 { get; set; }
+    [JsonPropertyName("a4")] public uint A4 { get; set; }
+    [JsonPropertyName("a5")] public uint A5 { get; set; }
+    [JsonPropertyName("a6")] public uint A6 { get; set; }
+    [JsonPropertyName("usp")] public uint Usp { get; set; }
+    [JsonPropertyName("ssp")] public uint Ssp { get; set; }
+    [JsonPropertyName("sr")] public ushort Sr { get; set; }
+    [JsonPropertyName("pc")] public uint Pc { get; set; }
+    [JsonPropertyName("prefetch")] public ushort[] Prefetch { get; set; } = Array.Empty<ushort>();
+    [JsonPropertyName("ram")] public uint[][] Ram { get; set; } = Array.Empty<uint[]>();
+
+    [JsonIgnore] public uint[] Data => new[] { D0, D1, D2, D3, D4, D5, D6, D7 };
+    [JsonIgnore] public uint[] Address => new[] { A0, A1, A2, A3, A4, A5, A6 };
+
+}
+
+internal static class M68kTestCli
+{
+    public static int Run(string path, bool logEach)
+    {
+        var runner = new M68kTestRunner();
+        return runner.RunPath(path, logEach);
     }
 }

@@ -47,6 +47,53 @@ public sealed class M68000
     public bool AddressError => _regs.AddressError;
     public bool LastInstructionWasMulOrDiv => _regs.LastInstructionWasMulDiv;
 
+    public readonly struct M68000State
+    {
+        public readonly uint[] Data;
+        public readonly uint[] Address;
+        public readonly uint Usp;
+        public readonly uint Ssp;
+        public readonly ushort Sr;
+        public readonly uint Pc;
+        public readonly ushort Prefetch;
+
+        public M68000State(uint[] data, uint[] address, uint usp, uint ssp, ushort sr, uint pc, ushort prefetch)
+        {
+            Data = data;
+            Address = address;
+            Usp = usp;
+            Ssp = ssp;
+            Sr = sr;
+            Pc = pc;
+            Prefetch = prefetch;
+        }
+    }
+
+    public M68000State GetState()
+    {
+        uint[] data = new uint[8];
+        uint[] address = new uint[7];
+        Array.Copy(_regs.Data, data, data.Length);
+        Array.Copy(_regs.Address, address, address.Length);
+        return new M68000State(data, address, _regs.Usp, _regs.Ssp, _regs.StatusRegister(), _regs.Pc, _regs.Prefetch);
+    }
+
+    public void SetState(M68000State state)
+    {
+        if (state.Data.Length >= 8)
+            Array.Copy(state.Data, _regs.Data, 8);
+        if (state.Address.Length >= 7)
+            Array.Copy(state.Address, _regs.Address, 7);
+        _regs.Usp = state.Usp;
+        _regs.Ssp = state.Ssp;
+        _regs.SetStatusRegister(state.Sr);
+        _regs.Pc = state.Pc;
+        _regs.Prefetch = state.Prefetch;
+        _regs.AddressError = false;
+        _regs.Stopped = false;
+        _regs.Frozen = false;
+    }
+
     public void Reset(IBusInterface bus)
     {
         _regs.SupervisorMode = true;

@@ -16,6 +16,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private Z80? _jgZ80;
+        [NonSerialized]
         private JgBusAdapter? _jgBus;
 
         private sealed class JgBusAdapter : IBusInterface
@@ -81,8 +82,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (_jgZ80 == null)
             {
                 _jgZ80 = new Z80();
-                _jgBus = new JgBusAdapter(this);
             }
+            if (_jgBus == null)
+                _jgBus = new JgBusAdapter(this);
         }
 
         private bool ConsumeNmiLine()
