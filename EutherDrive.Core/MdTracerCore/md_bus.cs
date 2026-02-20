@@ -407,15 +407,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return _z80BusGranted && !_z80Reset;
             if (IgnoreZ80BusReq)
                 return true;
-            if (_z80BusGranted || _z80Reset)
-                return true;
-            for (int i = 0; i < size; i++)
-            {
-                uint target = addr + (uint)i;
-                if (IsZ80MailboxAccess(target) || IsZ80BankReg(target))
-                    return true;
-            }
-            return false;
+            return _z80BusGranted && !_z80Reset;
         }
 
         private static int ParseTraceLimit(string name, int fallback)
@@ -699,6 +691,17 @@ namespace EutherDrive.Core.MdTracerCore
         private uint ReadOpenBusLong()
         {
             return (uint)((_openBus << 16) | _openBus);
+        }
+
+        private ushort ReadOpenBusWordForZ80()
+        {
+            return (ushort)(_openBus & 0xFF00);
+        }
+
+        private uint ReadOpenBusLongForZ80()
+        {
+            uint word = (uint)(_openBus & 0xFF00);
+            return (word << 16) | word;
         }
 
         private void SetOpenBusFromByte(byte value)
@@ -1793,7 +1796,7 @@ namespace EutherDrive.Core.MdTracerCore
                     MaybeLogZ80WinRangeRead(in_address, 0xFFFF, 2, blocked: true);
                     RecordZ80WinReadAccess(in_address, 2, 0xFFFF, blocked: true);
                     LogBusWatch(in_address, 2, write: false, value: 0xFFFF);
-                    ushort open = ReadOpenBusWord();
+                    ushort open = ReadOpenBusWordForZ80();
                     SetOpenBusFromWord(open);
                     return open;
                 }
@@ -1933,7 +1936,7 @@ namespace EutherDrive.Core.MdTracerCore
                     MaybeLogZ80WinRangeRead(in_address, 0xFFFF_FFFFu, 4, blocked: true);
                     RecordZ80WinReadAccess(in_address, 4, 0xFFFF_FFFFu, blocked: true);
                     LogBusWatch(in_address, 4, write: false, value: 0xFFFF_FFFFu);
-                    uint open = ReadOpenBusLong();
+                    uint open = ReadOpenBusLongForZ80();
                     SetOpenBusFromLong(open);
                     return open;
                 }
