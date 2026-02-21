@@ -403,11 +403,22 @@ namespace EutherDrive.Core.MdTracerCore
         private static bool IsZ80BankReg(uint addr) => (addr & 0xFFFFFE) == 0xA06000;
         private bool CanAccessZ80BusRange(uint addr, int size)
         {
-            if (OtherEmuMode)
-                return _z80BusGranted && !_z80Reset;
             if (IgnoreZ80BusReq)
                 return true;
-            return _z80BusGranted && !_z80Reset;
+            
+            // Many games (like Sonic 3) hold the Z80 in reset instead of requesting the bus
+            // when they want to upload the audio driver to Z80 RAM.
+            if (_z80BusGranted || _z80Reset)
+                return true;
+
+            // Optional allowance for mailboxes if needed, but the primary fix is above
+            for (int i = 0; i < size; i++)
+            {
+                uint target = addr + (uint)i;
+                if (IsZ80MailboxAccess(target) || IsZ80BankReg(target))
+                    return true;
+            }
+            return false;
         }
 
         private static int ParseTraceLimit(string name, int fallback)
