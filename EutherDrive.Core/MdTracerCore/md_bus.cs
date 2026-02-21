@@ -405,6 +405,10 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (IgnoreZ80BusReq)
                 return true;
+
+            // Ensure BUSREQ latch is applied before checking access so
+            // 68k writes don't get blocked immediately after BUSREQ asserts.
+            ApplyZ80BusReqLatch();
             
             // Many games (like Sonic 3) hold the Z80 in reset instead of requesting the bus
             // when they want to upload the audio driver to Z80 RAM.
