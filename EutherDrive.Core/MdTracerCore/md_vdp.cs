@@ -418,6 +418,8 @@ private static readonly bool SpriteLinkSequential =
                 ForceHBlank = g_vdp_interlace_mode == 2;
             if (!ForceDirectVramReadSpritesEnvSet)
                 ForceDirectVramReadSprites = g_vdp_interlace_mode == 2;
+            // Sprite Y mask depends on interlace mode (mode 2 uses 10-bit Y).
+            g_sprite_vmask = g_vdp_interlace_mode == 2 ? 0x3FF : 0x1FF;
         }
 
          private void EnsureFrameBuffer()
