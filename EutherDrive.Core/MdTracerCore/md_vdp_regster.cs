@@ -352,7 +352,10 @@ namespace EutherDrive.Core.MdTracerCore
             w_out = (ushort)((w_out << 1) | g_vdp_status_6_sprite);
             w_out = (ushort)((w_out << 1) | g_vdp_status_5_collision);
             w_out = (ushort)((w_out << 1) | g_vdp_status_4_frame);
-            w_out = (ushort)((w_out << 1) | ((timing.VBlankFlag || !displayEnabled) ? 1 : 0));
+            // Keep VBlank status stable across the whole blanking interval from VDP line state.
+            // Timing-derived flag can transiently disagree around IRQ edges and stall polling loops.
+            bool vblankFlag = g_vdp_status_3_vbrank != 0 || timing.VBlankFlag;
+            w_out = (ushort)((w_out << 1) | ((vblankFlag || !displayEnabled) ? 1 : 0));
             w_out = (ushort)((w_out << 1) | (hblankFlag ? 1 : 0));
             w_out = (ushort)((w_out << 1) | g_vdp_status_1_dma);
             w_out = (ushort)((w_out << 1) | g_vdp_status_0_tvmode);

@@ -48,6 +48,7 @@ namespace EutherDrive.Core.MdTracerCore
                 g_line_snap[i].sprite_bottom = new int[MAX_SPRITE];
                 g_line_snap[i].sprite_xcell_size = new int[MAX_SPRITE];
                 g_line_snap[i].sprite_ycell_size = new int[MAX_SPRITE];
+                g_line_snap[i].sprite_y_in_sprite = new int[MAX_SPRITE];
                 g_line_snap[i].sprite_priority = new uint[MAX_SPRITE];
                 g_line_snap[i].sprite_palette = new uint[MAX_SPRITE];
                 g_line_snap[i].sprite_reverse = new uint[MAX_SPRITE];
@@ -84,6 +85,7 @@ namespace EutherDrive.Core.MdTracerCore
                 g_snap_line_snap[i].sprite_bottom = new int[MAX_SPRITE];
                 g_snap_line_snap[i].sprite_xcell_size = new int[MAX_SPRITE];
                 g_snap_line_snap[i].sprite_ycell_size = new int[MAX_SPRITE];
+                g_snap_line_snap[i].sprite_y_in_sprite = new int[MAX_SPRITE];
                 g_snap_line_snap[i].sprite_priority = new uint[MAX_SPRITE];
                 g_snap_line_snap[i].sprite_palette = new uint[MAX_SPRITE];
                 g_snap_line_snap[i].sprite_reverse = new uint[MAX_SPRITE];

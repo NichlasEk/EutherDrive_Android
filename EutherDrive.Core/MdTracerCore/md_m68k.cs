@@ -80,8 +80,31 @@ namespace EutherDrive.Core.MdTracerCore
         private static long _countA10005;
         private static long _countA04000;
         private static ushort _lastVdpStatusRead;
+        private static readonly bool TraceLastOpsOnIllegal =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_LAST_OPS"), "1", StringComparison.Ordinal);
+        private static readonly int TraceLastOpsBufferSize =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_LAST_OPS_LIMIT", 128);
+        private struct RecentOpEntry
+        {
+            public uint Pc;
+            public ushort Op;
+            public ushort Sr;
+            public uint A7;
+            public uint D0;
+            public uint A0;
+        }
+        private static readonly RecentOpEntry[] _recentOps =
+            new RecentOpEntry[Math.Max(1, TraceLastOpsBufferSize)];
+        private static int _recentOpsIndex;
+        private static int _recentOpsCount;
+        private static bool _recentOpsDumpedForCurrentFault;
         private static readonly bool TracePcSample =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_SAMPLE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceM68kStream =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_M68K_STREAM"), "1", StringComparison.Ordinal);
+        private static readonly int TraceM68kStreamLimit =
+            ParseWatchLimit("EUTHERDRIVE_TRACE_M68K_STREAM_LIMIT");
+        private static int _traceM68kStreamRemaining = TraceM68kStreamLimit;
         private static readonly Stopwatch _pcSampleStopwatch = Stopwatch.StartNew();
         private static long _pcSampleLastMs;
         private static bool _pcWatchEnabled =
@@ -322,6 +345,14 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     _lastSpObserved = spNow;
                     g_opcode = read16(g_reg_PC);
+                    if (TraceM68kStream && _traceM68kStreamRemaining > 0)
+                    {
+                        _traceM68kStreamRemaining--;
+                        Console.WriteLine(
+                            $"[ED-M68K] pc=0x{g_reg_PC:X6} op=0x{g_opcode:X4} sr=0x{g_reg_SR:X4} " +
+                            $"d0=0x{g_reg_data[0].l:X8} d1=0x{g_reg_data[1].l:X8} d4=0x{g_reg_data[4].l:X8} d5=0x{g_reg_data[5].l:X8} " +
+                            $"a0=0x{g_reg_addr[0].l:X8} a7=0x{g_reg_addr[7].l:X8}");
+                    }
                     g_op  = (byte)(g_opcode >> 12);
                     g_op1 = (byte)((g_opcode >> 9) & 0x07);
                     g_op2 = (byte)((g_opcode >> 6) & 0x07);
@@ -331,6 +362,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _lastSpBeforeOp = spBefore;
                     _lastPcBeforeOp = pcBefore;
                     _lastOpBeforeOp = g_opcode;
+                    RecordRecentOp(pcBefore, g_opcode);
 
                     MaybeLogPcSample(g_reg_PC, g_opcode);
 
@@ -627,6 +659,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void HandleIllegalOpcode(ushort opcode)
         {
+            DumpRecentOpsOnIllegal();
             uint vector;
             string kind;
             switch ((opcode >> 12) & 0xF)
@@ -648,6 +681,43 @@ namespace EutherDrive.Core.MdTracerCore
             RaiseException(kind, vector);
             if (g_clock == 0)
                 g_clock = 34;
+        }
+
+        private static void RecordRecentOp(uint pc, ushort op)
+        {
+            if (!TraceLastOpsOnIllegal)
+                return;
+
+            _recentOps[_recentOpsIndex] = new RecentOpEntry
+            {
+                Pc = pc,
+                Op = op,
+                Sr = g_reg_SR,
+                A7 = g_reg_addr[7].l,
+                D0 = g_reg_data[0].l,
+                A0 = g_reg_addr[0].l,
+            };
+
+            _recentOpsIndex = (_recentOpsIndex + 1) % _recentOps.Length;
+            if (_recentOpsCount < _recentOps.Length)
+                _recentOpsCount++;
+        }
+
+        private static void DumpRecentOpsOnIllegal()
+        {
+            if (!TraceLastOpsOnIllegal || _recentOpsDumpedForCurrentFault || _recentOpsCount == 0)
+                return;
+
+            _recentOpsDumpedForCurrentFault = true;
+            Console.WriteLine($"[m68k] recent ops before illegal (count={_recentOpsCount}):");
+            int start = (_recentOpsIndex - _recentOpsCount + _recentOps.Length) % _recentOps.Length;
+            for (int i = 0; i < _recentOpsCount; i++)
+            {
+                int idx = (start + i) % _recentOps.Length;
+                RecentOpEntry e = _recentOps[idx];
+                Console.WriteLine(
+                    $"[m68k] recent[{i:D3}] pc=0x{e.Pc:X6} op=0x{e.Op:X4} sr=0x{e.Sr:X4} a7=0x{e.A7:X8} d0=0x{e.D0:X8} a0=0x{e.A0:X8}");
+            }
         }
 
         private void RaiseException(string kind, uint vectorAddress)

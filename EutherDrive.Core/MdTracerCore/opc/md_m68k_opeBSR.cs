@@ -9,17 +9,6 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock += 20;
             uint w_pc = g_reg_PC;
             g_reg_PC += 2;
-            if (FixBranchBaseAfterExtension)
-            {
-                short disp = (short)md_main.g_md_bus.read16(g_reg_PC);
-                g_reg_PC += 2;
-                uint w_start_address_fixed = (uint)(g_reg_PC + disp);
-                stack_push32(g_reg_PC);
-                md_main.g_form_code_trace.CPU_Trace_push(Form_Code_Trace.STACK_LIST_TYPE.BSR, w_pc, w_start_address_fixed, g_reg_PC, g_reg_addr[7].l);
-                g_reg_PC = w_start_address_fixed;
-                return;
-            }
-
             uint w_start_address = (uint)(g_reg_PC + (short)md_main.g_md_bus.read16(g_reg_PC));
             stack_push32(g_reg_PC + 2);
             md_main.g_form_code_trace.CPU_Trace_push(Form_Code_Trace.STACK_LIST_TYPE.BSR, w_pc, w_start_address, g_reg_PC + 2, g_reg_addr[7].l);

@@ -115,6 +115,21 @@ class Program
             return RunFromSavestate(romPathArg, statePathArg, framesArg);
         }
 
+        if (args.Length >= 1 && args[0] == "--load-raw-state")
+        {
+            if (args.Length < 3)
+            {
+                Console.Error.WriteLine("Usage: EutherDrive.Headless --load-raw-state <rom_path> <raw_state_path> [frames]");
+                return 1;
+            }
+            string romPathArg = args[1];
+            string rawStatePathArg = args[2];
+            int framesArg = args.Length > 3 && int.TryParse(args[3], out int framesParsed)
+                ? framesParsed
+                : DefaultFrames;
+            return RunFromRawState(romPathArg, rawStatePathArg, framesArg);
+        }
+
         if (args.Length >= 2 && args[0] == "--m68k-tests")
         {
             string path = args[1];
@@ -129,6 +144,7 @@ class Program
             Console.Error.WriteLine($"  frames:   Number of frames to run (default: {DefaultFrames})");
             Console.Error.WriteLine("  --test-interlace2: Run interlace mode 2 pattern test");
             Console.Error.WriteLine("  --load-savestate: Load savestate and run frames");
+            Console.Error.WriteLine("  --load-raw-state: Load raw MdTracer state and run frames");
         Console.Error.WriteLine("  --m68k-tests <path> [--log]: Run 68000 JSON tests (ProcessorTests)");
         return 1;
         }
@@ -900,6 +916,65 @@ class Program
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[HEADLESS-ERROR] {ex.Message}");
+            Console.Error.WriteLine(ex.StackTrace);
+            return 1;
+        }
+    }
+
+    private static int RunFromRawState(string romPath, string rawStatePath, int framesToRun)
+    {
+        if (!File.Exists(romPath))
+        {
+            Console.Error.WriteLine($"Error: ROM file not found: {romPath}");
+            return 1;
+        }
+
+        if (!File.Exists(rawStatePath))
+        {
+            Console.Error.WriteLine($"Error: raw state file not found: {rawStatePath}");
+            return 1;
+        }
+
+        Console.WriteLine($"[HEADLESS] Loading ROM: {romPath}");
+        Console.WriteLine($"[HEADLESS] Loading raw state: {rawStatePath}");
+        Console.WriteLine($"[HEADLESS] Running {framesToRun} frames from raw state");
+
+        try
+        {
+            string dumpDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_DIR")
+                ?? Path.GetDirectoryName(romPath)
+                ?? ".";
+            Directory.CreateDirectory(dumpDir);
+
+            var adapter = new MdTracerAdapter();
+            adapter.LoadRom(romPath);
+
+            using (var fs = new FileStream(rawStatePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var reader = new BinaryReader(fs))
+            {
+                adapter.LoadState(reader);
+            }
+
+            for (int frame = 0; frame < framesToRun; frame++)
+            {
+                adapter.StepFrame();
+                Console.WriteLine($"[HEADLESS] Frame {frame} completed");
+                if (frame == 0 || frame == 5 || frame == 10)
+                {
+                    string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                    adapter.DumpFrameBufferToPpm(ppmPath);
+                    Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                }
+            }
+
+            string outPath = Path.Combine(dumpDir, "headless_output.ppm");
+            adapter.DumpFrameBufferToPpm(outPath);
+            Console.WriteLine($"[HEADLESS] Framebuffer dumped to {outPath}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HEADLESS-ERROR] {ex.GetType().Name}: {ex.Message}");
             Console.Error.WriteLine(ex.StackTrace);
             return 1;
         }

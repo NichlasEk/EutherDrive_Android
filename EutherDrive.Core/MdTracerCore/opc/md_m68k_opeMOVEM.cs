@@ -72,55 +72,20 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
             LogMovemPredec(w_mask, wdata, 2);
-            if (FixMovemPredec && ShouldFixMovemPredec(g_reg_PC))
+            for (int bit = 0; bit < 16; bit++)
             {
-                int totalRegs = 0;
-                for (int bit = 0; bit < 16; bit++)
-                {
-                    if ((w_mask & (1u << bit)) != 0)
-                        totalRegs++;
-                }
-                uint finalAddr = wdata - (uint)(totalRegs * 2);
+                if ((w_mask & (1u << bit)) == 0)
+                    continue;
 
-                for (int bit = 15; bit >= 0; bit--)
-                {
-                    if ((w_mask & (1u << bit)) == 0)
-                        continue;
+                int regCode = 15 - bit; // MOVEM predecrement uses reversed register mask mapping
+                int regIndex = regCode >= 8 ? (regCode - 8) : regCode;
+                ushort value = regCode >= 8
+                    ? (ushort)g_reg_addr[regIndex].l
+                    : (ushort)g_reg_data[regIndex].l;
 
-                    int regIndex = bit >= 8 ? (bit - 8) : bit;
-                    ushort value;
-                    if (bit >= 8)
-                    {
-                        value = (ushort)(regIndex == g_op4 ? finalAddr : g_reg_addr[regIndex].l);
-                    }
-                    else
-                    {
-                        value = (ushort)g_reg_data[regIndex].l;
-                    }
-
-                    wdata -= 2;
-                    md_main.g_md_bus.write16(wdata, value);
-                    g_clock += 5;
-                }
-            }
-            else
-            {
-                if ((w_mask & 0x0001) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[7].w); g_clock += 5;};
-                if ((w_mask & 0x0002) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[6].w); g_clock += 5;};
-                if ((w_mask & 0x0004) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[5].w); g_clock += 5;};
-                if ((w_mask & 0x0008) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[4].w); g_clock += 5;};
-                if ((w_mask & 0x0010) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[3].w); g_clock += 5;};
-                if ((w_mask & 0x0020) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[2].w); g_clock += 5;};
-                if ((w_mask & 0x0040) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[1].w); g_clock += 5;};
-                if ((w_mask & 0x0080) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_addr[0].w); g_clock += 5;};
-                if ((w_mask & 0x0100) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[7].w); g_clock += 5;};
-                if ((w_mask & 0x0200) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[6].w); g_clock += 5;};
-                if ((w_mask & 0x0400) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[5].w); g_clock += 5;};
-                if ((w_mask & 0x0800) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[4].w); g_clock += 5;};
-                if ((w_mask & 0x1000) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[3].w); g_clock += 5;};
-                if ((w_mask & 0x2000) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[2].w); g_clock += 5;};
-                if ((w_mask & 0x4000) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[1].w); g_clock += 5;};
-                if ((w_mask & 0x8000) != 0) { wdata -= 2; md_main.g_md_bus.write16(wdata, g_reg_data[0].w); g_clock += 5;};
+                wdata -= 2;
+                md_main.g_md_bus.write16(wdata, value);
+                g_clock += 5;
             }
             g_reg_addr[g_op4].l = wdata;
         }
@@ -207,55 +172,20 @@ namespace EutherDrive.Core.MdTracerCore
             g_clock += 8;
             uint wdata = g_reg_addr[g_op4].l;
             LogMovemPredec(w_mask, wdata, 4);
-            if (FixMovemPredec && ShouldFixMovemPredec(g_reg_PC))
+            for (int bit = 0; bit < 16; bit++)
             {
-                int totalRegs = 0;
-                for (int bit = 0; bit < 16; bit++)
-                {
-                    if ((w_mask & (1u << bit)) != 0)
-                        totalRegs++;
-                }
-                uint finalAddr = wdata - (uint)(totalRegs * 4);
+                if ((w_mask & (1u << bit)) == 0)
+                    continue;
 
-                for (int bit = 15; bit >= 0; bit--)
-                {
-                    if ((w_mask & (1u << bit)) == 0)
-                        continue;
+                int regCode = 15 - bit; // MOVEM predecrement uses reversed register mask mapping
+                int regIndex = regCode >= 8 ? (regCode - 8) : regCode;
+                uint value = regCode >= 8
+                    ? g_reg_addr[regIndex].l
+                    : g_reg_data[regIndex].l;
 
-                    int regIndex = bit >= 8 ? (bit - 8) : bit;
-                    uint value;
-                    if (bit >= 8)
-                    {
-                        value = regIndex == g_op4 ? finalAddr : g_reg_addr[regIndex].l;
-                    }
-                    else
-                    {
-                        value = g_reg_data[regIndex].l;
-                    }
-
-                    wdata -= 4;
-                    md_main.g_md_bus.write32(wdata, value);
-                    g_clock += 10;
-                }
-            }
-            else
-            {
-                if ((w_mask & 0x0001) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[7].l); g_clock += 10;};
-                if ((w_mask & 0x0002) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[6].l); g_clock += 10;};
-                if ((w_mask & 0x0004) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[5].l); g_clock += 10;};
-                if ((w_mask & 0x0008) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[4].l); g_clock += 10;};
-                if ((w_mask & 0x0010) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[3].l); g_clock += 10;};
-                if ((w_mask & 0x0020) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[2].l); g_clock += 10;};
-                if ((w_mask & 0x0040) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[1].l); g_clock += 10;};
-                if ((w_mask & 0x0080) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_addr[0].l); g_clock += 10;};
-                if ((w_mask & 0x0100) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[7].l); g_clock += 10;};
-                if ((w_mask & 0x0200) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[6].l); g_clock += 10;};
-                if ((w_mask & 0x0400) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[5].l); g_clock += 10;};
-                if ((w_mask & 0x0800) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[4].l); g_clock += 10;};
-                if ((w_mask & 0x1000) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[3].l); g_clock += 10;};
-                if ((w_mask & 0x2000) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[2].l); g_clock += 10;};
-                if ((w_mask & 0x4000) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[1].l); g_clock += 10;};
-                if ((w_mask & 0x8000) != 0) { wdata -= 4; md_main.g_md_bus.write32(wdata, g_reg_data[0].l); g_clock += 10;};
+                wdata -= 4;
+                md_main.g_md_bus.write32(wdata, value);
+                g_clock += 10;
             }
             g_reg_addr[g_op4].l = wdata;
         }

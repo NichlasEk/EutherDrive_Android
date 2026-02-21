@@ -29,6 +29,7 @@ namespace EutherDrive.Core.MdTracerCore
             public int window_x_st;
             public int window_x_ed;
             public int sprite_rendrere_num;
+            public bool sprite_overflow;
 
             public int[] vscrollA;
             public int[] vscrollB;
@@ -40,6 +41,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             public int[] sprite_xcell_size;
             public int[] sprite_ycell_size;
+            public int[] sprite_y_in_sprite;
 
             public uint[] sprite_priority;
             public uint[] sprite_palette;

@@ -8,7 +8,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_clock += 8;
             g_reg_PC += 2;
-            int w_bit = g_reg_data[g_op1].b0;
+            int w_bit = (int)g_reg_data[g_op1].l;
             w_bit = w_bit & 0x1f;
             g_work_data.l = adressing_func_read(0, g_op4, 2);
             g_status_Z = ((g_work_data.l & BITHIT[w_bit]) == 0);
@@ -19,7 +19,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_clock += 9;
             g_reg_PC += 2;
-            int w_bit = g_reg_data[g_op1].b0;
+            int w_bit = (int)g_reg_data[g_op1].l;
             w_bit = w_bit & 0x07;
             adressing_func_address(g_op3, g_op4, 0);
             g_work_data.b0 = (byte)adressing_func_read(g_op3, g_op4, 0);

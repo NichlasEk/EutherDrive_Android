@@ -12,7 +12,7 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private static readonly bool TraceDmaDetail =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DMA_DETAIL"), "1", StringComparison.Ordinal);
-        internal const ushort VDP_STATUS_VBLANK_MASK = 0x0080;
+        internal const ushort VDP_STATUS_VBLANK_MASK = 0x0008;
          private static readonly bool TraceMdVdp =
              string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MD_VDP"), "1", StringComparison.Ordinal);
          private static readonly bool DebugNtChk =
@@ -1171,8 +1171,10 @@ private static readonly bool SpriteLinkSequential =
             }
 
             int tileHeightShift = GetCellHeightShift();
-            int blankLines = 128 << (g_vdp_interlace_mode == 2 ? 1 : 0);
-            int screenLineLimit = blankLines + (g_display_ycell << tileHeightShift);
+            int cellHeight = 1 << tileHeightShift;
+            int spriteDisplayTop = (g_vdp_interlace_mode == 2) ? 0x100 : 0x080;
+            int spriteDisplayMask = (g_vdp_interlace_mode == 2) ? 0x3FF : 0x1FF;
+            int yMask = g_sprite_vmask;
             int spritesRemaining = g_max_sprite_num;
             int spriteIndex = 0;
 
@@ -1182,18 +1184,19 @@ private static readonly bool SpriteLinkSequential =
                 ushort w_val1 = SpriteCacheReadWord(addr);
                 ushort w_val2 = SpriteCacheReadWord(addr + 2);
 
-                int spriteY = w_val1 & g_sprite_vmask;
+                int spriteY = w_val1 & yMask;
                 int heightTiles = ((w_val2 >> 8) & 0x0003) + 1;
                 int widthTiles = ((w_val2 >> 10) & 0x0003) + 1;
 
-                int startLine = Math.Max(blankLines, spriteY);
-                int endLineExclusive = Math.Min(screenLineLimit, spriteY + (heightTiles << tileHeightShift));
+                int spriteTop = spriteY;
+                int spriteBottom = spriteTop + (heightTiles * cellHeight);
 
-                for (int line = startLine; line < endLineExclusive; line++)
+                for (int rowIndex = 0; rowIndex < lineCount; rowIndex++)
                 {
-                    int rowIndex = line - blankLines;
-                    if ((uint)rowIndex >= (uint)g_sprite_row_cache.Length)
+                    int spriteScanline = (spriteDisplayTop + rowIndex) & spriteDisplayMask;
+                    if (spriteScanline < spriteTop || spriteScanline >= spriteBottom)
                         continue;
+
                     ref SpriteRowCacheRow row = ref g_sprite_row_cache[rowIndex];
                     row.TotalSprites++;
                     row.TotalCells += widthTiles;
@@ -1204,7 +1207,7 @@ private static readonly bool SpriteLinkSequential =
 
                     int slot = row.Count++;
                     row.SpriteIndices[slot] = (byte)spriteIndex;
-                    row.YInSprite[slot] = (byte)(line - spriteY);
+                    row.YInSprite[slot] = (byte)((spriteScanline - spriteTop) & 0x1F);
                     row.Width[slot] = (byte)widthTiles;
                     row.Height[slot] = (byte)heightTiles;
                 }

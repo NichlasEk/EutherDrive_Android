@@ -9,32 +9,34 @@ internal readonly record struct RomNormalizationResult(byte[] Data, int HeaderSi
 internal static class md_rom_utils
 {
     private const int SmdBlockSize = 0x4000;
+    private const int CopierHeaderSize = 512;
     private const int RegionHeaderOffset = 0x1F0;
     private const int RegionHeaderLength = 0x10;
 
     public static RomNormalizationResult NormalizeMegaDriveRom(byte[] data)
     {
-        int headerSize = DetectSmdHeaderSize(data);
-        byte[] withoutHeader = headerSize > 0 ? CopyRange(data, headerSize, data.Length - headerSize) : data;
+        int headerSize = 0;
+        byte[] normalized = data;
 
-        bool hasSignature = HasMegaDriveSignature(withoutHeader);
-        byte[] normalized = withoutHeader;
-        bool deinterleaved = false;
-
-        if (!hasSignature)
+        if (ShouldRemoveCopierHeader(normalized))
         {
-            var deinterleavedData = DeinterleaveSmd(withoutHeader);
-            if (HasMegaDriveSignature(deinterleavedData))
-            {
-                normalized = deinterleavedData;
-                hasSignature = true;
-                deinterleaved = true;
-            }
+            headerSize = CopierHeaderSize;
+            normalized = CopyRange(normalized, CopierHeaderSize, normalized.Length - CopierHeaderSize);
         }
 
-        if (headerSize == 0 && !deinterleaved)
-            return new RomNormalizationResult(data, 0, false, hasSignature);
+        bool deinterleaved = false;
+        if (ShouldDeinterleave(normalized))
+        {
+            normalized = DeinterleaveSmd(normalized);
+            deinterleaved = true;
+        }
 
+        if (HasSwappedMegaDriveSignature(normalized))
+        {
+            normalized = ByteSwapWords(normalized);
+        }
+
+        bool hasSignature = HasMegaDriveSignature(normalized);
         return new RomNormalizationResult(normalized, headerSize, deinterleaved, hasSignature);
     }
 
@@ -81,48 +83,81 @@ internal static class md_rom_utils
         return null;
     }
 
-    private static int DetectSmdHeaderSize(byte[] data)
+    private static bool ShouldRemoveCopierHeader(byte[] data)
     {
-        if (data.Length > SmdBlockSize && data.Length % SmdBlockSize == 512)
-            return 512;
-        return 0;
+        if ((data.Length & 0x3FF) != 0x200)
+            return false;
+
+        if (data.Length < 0x2282)
+            return false;
+
+        bool tmssAt300 = MatchesAscii4(data, 0x300, "SEGA") || MatchesAscii4(data, 0x300, "ESAG");
+        bool interleavedTmss = MatchesAscii2(data, 0x0280, "EA") && MatchesAscii2(data, 0x2280, "SG");
+        return tmssAt300 || interleavedTmss;
+    }
+
+    private static bool ShouldDeinterleave(byte[] data)
+    {
+        if (data.Length < 0x2082)
+            return false;
+
+        if ((data.Length % SmdBlockSize) != 0)
+            return false;
+
+        if (MatchesAscii4(data, 0x100, "SEGA") || MatchesAscii4(data, 0x100, "ESAG"))
+            return false;
+
+        return MatchesAscii2(data, 0x0080, "EA") && MatchesAscii2(data, 0x2080, "SG");
     }
 
     private static byte[] DeinterleaveSmd(byte[] data)
     {
         var result = new byte[data.Length];
-        for (int blockStart = 0; blockStart < data.Length;)
+        for (int blockStart = 0; blockStart < data.Length; blockStart += SmdBlockSize)
         {
-            int remaining = data.Length - blockStart;
-            int chunkSize = Math.Min(SmdBlockSize, remaining);
-            if (chunkSize < 2)
+            for (int i = 0; i < 0x2000; i++)
             {
-                result[blockStart] = data[blockStart];
-                blockStart++;
-                continue;
+                result[blockStart + 2 * i] = data[blockStart + 0x2000 + i];
+                result[blockStart + 2 * i + 1] = data[blockStart + i];
             }
-
-            int half = chunkSize / 2;
-            for (int i = 0; i < half; i++)
-            {
-                int dstEven = blockStart + 2 * i;
-                int srcEven = blockStart + i;
-                int srcOdd = blockStart + half + i;
-                if (dstEven < data.Length)
-                    result[dstEven] = data[srcOdd];
-                if (dstEven + 1 < blockStart + chunkSize)
-                    result[dstEven + 1] = data[srcEven];
-            }
-
-            if ((chunkSize & 1) != 0)
-            {
-                result[blockStart + chunkSize - 1] = data[blockStart + chunkSize - 1];
-            }
-
-            blockStart += chunkSize;
         }
 
         return result;
+    }
+
+    private static bool HasSwappedMegaDriveSignature(byte[] data)
+    {
+        return MatchesAscii4(data, 0x100, "ESAG");
+    }
+
+    private static byte[] ByteSwapWords(byte[] data)
+    {
+        byte[] swapped = (byte[])data.Clone();
+        for (int i = 0; i + 1 < swapped.Length; i += 2)
+        {
+            byte tmp = swapped[i];
+            swapped[i] = swapped[i + 1];
+            swapped[i + 1] = tmp;
+        }
+
+        return swapped;
+    }
+
+    private static bool MatchesAscii2(byte[] data, int offset, string value)
+    {
+        if (offset < 0 || offset + 1 >= data.Length || value.Length != 2)
+            return false;
+        return data[offset] == (byte)value[0] && data[offset + 1] == (byte)value[1];
+    }
+
+    private static bool MatchesAscii4(byte[] data, int offset, string value)
+    {
+        if (offset < 0 || offset + 3 >= data.Length || value.Length != 4)
+            return false;
+        return data[offset] == (byte)value[0]
+            && data[offset + 1] == (byte)value[1]
+            && data[offset + 2] == (byte)value[2]
+            && data[offset + 3] == (byte)value[3];
     }
 
     private static byte[] CopyRange(byte[] data, int start, int length)

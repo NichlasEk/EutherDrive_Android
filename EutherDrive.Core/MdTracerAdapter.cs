@@ -1250,6 +1250,53 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         md_main.g_md_vdp?.TriggerSmsDump();
     }
 
+    public string CaptureDebugSnapshot(string? directory = null)
+    {
+        string dir = string.IsNullOrWhiteSpace(directory)
+            ? Path.Combine(Environment.CurrentDirectory, "logs", "snapshots")
+            : directory;
+        Directory.CreateDirectory(dir);
+
+        string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
+        string prefix = $"mdsnap_{stamp}";
+
+        string ppmPath = Path.Combine(dir, $"{prefix}_screen.ppm");
+        DumpFrameBufferToPpm(ppmPath);
+
+        byte[]? mem = md_m68k.g_memory;
+        if (mem != null && mem.Length >= 0x1000000)
+        {
+            const int workRamStart = 0xFF0000;
+            const int workRamLength = 0x10000;
+            var workRam = new byte[workRamLength];
+            Buffer.BlockCopy(mem, workRamStart, workRam, 0, workRamLength);
+            File.WriteAllBytes(Path.Combine(dir, $"{prefix}_ram_ff0000.bin"), workRam);
+        }
+
+        md_main.g_md_vdp?.DumpMdMemorySnapshot(dir, prefix);
+        ForceDumpZ80("debug snapshot", extra: true, dumpPath: Path.Combine(dir, $"{prefix}_z80_ram.txt"));
+        string rawStatePath = Path.Combine(dir, $"{prefix}_state_raw.bin");
+        using (var fs = new FileStream(rawStatePath, FileMode.Create, FileAccess.Write, FileShare.Read))
+        using (var writer = new BinaryWriter(fs, Encoding.UTF8, leaveOpen: false))
+        {
+            SaveState(writer);
+            writer.Flush();
+        }
+
+        string metaPath = Path.Combine(dir, $"{prefix}_meta.txt");
+        using (var writer = new StreamWriter(metaPath, false, Encoding.UTF8))
+        {
+            writer.WriteLine($"stamp={stamp}");
+            writer.WriteLine($"frame={(md_main.g_md_vdp?.FrameCounter ?? -1)}");
+            writer.WriteLine($"pc=0x{md_m68k.g_reg_PC:X6}");
+            writer.WriteLine($"rom={md_main.g_md_cartridge?.g_file_path ?? string.Empty}");
+            writer.WriteLine($"screen={Path.GetFileName(ppmPath)}");
+            writer.WriteLine($"raw_state={Path.GetFileName(rawStatePath)}");
+        }
+
+        return Path.Combine(dir, prefix);
+    }
+
     public static string? GetPadUiText()
     {
         return MdTracerCore.md_io.PadUiText;

@@ -74,8 +74,8 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     break;
                 case 7:
-                    // Absolute short is sign-extended, then masked to 24-bit address.
-                    g_analyze_address = (uint)(short)read16(g_reg_PC) & 0x00FF_FFFF;
+                    // Absolute short is sign-extended to 32 bits. Masking to 24 bits is handled by the bus.
+                    g_analyze_address = (uint)(int)(short)read16(g_reg_PC);
                     g_reg_PC += 2;
                     if (in_size == 2) g_clock += 12; else g_clock += 8;
                     break;
@@ -118,7 +118,7 @@ namespace EutherDrive.Core.MdTracerCore
                             _tracePcRelAddrRemaining--;
                             string idxKind = ((w_ext & 0x8000) == 0) ? "D" : "A";
                             Console.WriteLine(
-                                $"[PCRELX] pc=0x{g_reg_PC:X6} ext=0x{w_ext:X4} idx={idxKind}{w_ext_reg} " +
+                                $"[PCRELX] pc=0x{g_reg_PC:X6} base=0x{g_reg_PC:X6} ext=0x{w_ext:X4} idx={idxKind}{w_ext_reg} " +
                                 $"index=0x{w_ind:X8} disp=0x{(byte)w_ext_disp:X2} addr=0x{g_analyze_address:X6}");
                         }
                         g_reg_PC += 2;

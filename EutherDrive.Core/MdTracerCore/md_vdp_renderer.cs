@@ -78,6 +78,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int g_max_sprite_cell;
         private int g_sprite_vmask;
         private bool[] g_sprite_line_mask = Array.Empty<bool>();
+        private bool _spriteMaskAllowedFromPrevOverflow;
         private uint[] g_game_field_even = Array.Empty<uint>();
         private uint[] g_game_field_odd = Array.Empty<uint>();
 

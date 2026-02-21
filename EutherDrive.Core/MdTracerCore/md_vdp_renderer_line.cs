@@ -578,11 +578,10 @@ namespace EutherDrive.Core.MdTracerCore
             // --- Sprites ---
             if (!DisableSprites)
             {
-                bool allowSpriteMasking = false;
+                bool allowSpriteMasking = _spriteMaskAllowedFromPrevOverflow;
                 for (int w_sp = 0; w_sp < g_line_snap[g_scanline].sprite_rendrere_num; w_sp++)
                 {
                     int  w_left       = g_line_snap[g_scanline].sprite_left[w_sp];
-                    int  w_top        = g_line_snap[g_scanline].sprite_top[w_sp];
                     int  w_xcell_size = g_line_snap[g_scanline].sprite_xcell_size[w_sp];
                     int  w_ycell_size = g_line_snap[g_scanline].sprite_ycell_size[w_sp];
                     uint w_priority   = g_line_snap[g_scanline].sprite_priority[w_sp];
@@ -602,11 +601,7 @@ namespace EutherDrive.Core.MdTracerCore
                     }
 
                     int cellHeight = GetCellHeightPixels();
-                    // I interlace mode 2, använd full linje (scanline*2 + field) för korrekt sprite-rad.
-                    int lineY = (g_vdp_interlace_mode == 2)
-                        ? ((g_scanline << 1) | g_vdp_interlace_field)
-                        : g_scanline;
-                    int w_y     = lineY - w_top;
+                    int w_y     = g_line_snap[g_scanline].sprite_y_in_sprite[w_sp];
                     int w_ycell = w_y >> cellShift;
                     int w_cy    = w_y & (cellHeight - 1);
                     int w_posx  = w_left;
@@ -631,13 +626,16 @@ namespace EutherDrive.Core.MdTracerCore
                             {
                                 bool canDrawSprite = IgnoreSpritePriority || g_game_primap[w_posx] <= w_priority;
                                 bool maskedBySprite = !DisableSpriteLineMask && g_sprite_line_mask[w_posx];
-                                if (canDrawSprite && !maskedBySprite)
+                                if (!maskedBySprite)
                                 {
                                     uint w_pic_w;
                                     int x_in_tile = w_cx;
                                     int y_in_tile = w_cy;
 
-                                    bool useDirectSprite = ForceDirectVramReadSprites || w_reverse != 0;
+                                    // Use direct VRAM fetch for sprite pixels.
+                                    // Sprite flip/index semantics are easier to keep correct here than through
+                                    // reverse-page cache indirection, and avoids cache desync artifacts.
+                                    bool useDirectSprite = true;
                                     if (useDirectSprite)
                                     {
                                         x_in_tile = ((w_reverse & 0x01) != 0) ? (7 - w_cx) : w_cx;
@@ -669,44 +667,44 @@ namespace EutherDrive.Core.MdTracerCore
 
                                     if (w_pic != 0)
                                     {
-                                        uint w_color = (uint)(w_palette + w_pic);
-                                        if (g_vdp_reg_12_3_shadow == 0)
+                                        if (canDrawSprite)
                                         {
-                                            g_game_cmap[w_posx]   = w_color;
-                                            g_game_primap[w_posx] = w_priority;
+                                            uint w_color = (uint)(w_palette + w_pic);
+                                            if (g_vdp_reg_12_3_shadow == 0)
+                                            {
+                                                g_game_cmap[w_posx]   = w_color;
+                                                g_game_primap[w_posx] = w_priority;
+                                            }
+                                            else if (w_color == 0x3e)
+                                            {
+                                                // Palette 3, color 14: Transparent, makes underlying pixel HIGHLIGHT
+                                                uint w_map = g_game_shadowmap[w_posx];
+                                                if (w_map < 2) g_game_shadowmap[w_posx] = (uint)(w_map + 1);
+                                            }
+                                            else if (w_color == 0x3f)
+                                            {
+                                                // Palette 3, color 15: Transparent, makes underlying pixel SHADOW
+                                                uint w_map = g_game_shadowmap[w_posx];
+                                                if (w_map > 0) g_game_shadowmap[w_posx] = (uint)(w_map - 1);
+                                            }
+                                            else if ((w_color & 0x0f) == 0x0e)
+                                            {
+                                                // Colors 0x0E, 0x1E, 0x2E: ALWAYS NORMAL (no shadow inheritance)
+                                                g_game_cmap[w_posx]     = w_color;
+                                                g_game_primap[w_posx]   = w_priority;
+                                                g_game_shadowmap[w_posx] |= w_priority;
+                                            }
+                                            else
+                                            {
+                                                g_game_cmap[w_posx]   = w_color;
+                                                g_game_primap[w_posx] = w_priority;
+                                                g_game_shadowmap[w_posx] |= w_priority;
+                                            }
                                         }
-                                        else if (w_color == 0x3e)
-                                        {
-                                            // Palette 3, color 14: Transparent, makes underlying pixel HIGHLIGHT
-                                            uint w_map = g_game_shadowmap[w_posx];
-                                            if (w_map < 2) g_game_shadowmap[w_posx] = (uint)(w_map + 1);
-                                            // Don't set g_sprite_line_mask - this sprite is transparent
-                                        }
-                                        else if (w_color == 0x3f)
-                                        {
-                                            // Palette 3, color 15: Transparent, makes underlying pixel SHADOW
-                                            uint w_map = g_game_shadowmap[w_posx];
-                                            if (w_map > 0) g_game_shadowmap[w_posx] = (uint)(w_map - 1);
-                                            // Don't set g_sprite_line_mask - this sprite is transparent
-                                        }
-                                        else if ((w_color & 0x0f) == 0x0e)
-                                        {
-                                            // Colors 0x0E, 0x1E, 0x2E: ALWAYS NORMAL (no shadow inheritance)
-                                            g_game_cmap[w_posx]     = w_color;
-                                            g_game_primap[w_posx]   = w_priority;
-                                            g_game_shadowmap[w_posx] |= w_priority;
-                                        }
-                                        else
-                                        {
-                                            g_game_cmap[w_posx]   = w_color;
-                                            g_game_primap[w_posx] = w_priority;
-                                            g_game_shadowmap[w_posx] |= w_priority;
-                                        }
-                                        // Only set sprite line mask for non-transparent sprites
-                                        if (w_color != 0x3e && w_color != 0x3f)
-                                        {
-                                            g_sprite_line_mask[w_posx] = true;
-                                        }
+
+                                        // Sprite-sprite priority resolution is independent of plane priority.
+                                        // Any non-transparent sprite pixel masks lower-priority sprites at this X.
+                                        g_sprite_line_mask[w_posx] = true;
                                     }
                                 }
                             }
@@ -715,6 +713,7 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                 }
             }
+            _spriteMaskAllowedFromPrevOverflow = g_line_snap[g_scanline].sprite_overflow;
 
             // --- Window ---
             {

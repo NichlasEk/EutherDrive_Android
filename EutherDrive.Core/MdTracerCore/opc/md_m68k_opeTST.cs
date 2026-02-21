@@ -4,8 +4,11 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        private static int _tstF62aLogRemaining = 128;
+
         private void analyse_TST_b()
         {
+            uint pcBefore = g_reg_PC;
             g_clock += 4;
             g_reg_PC += 2;
             adressing_func_address(g_op3, g_op4, 0);
@@ -16,6 +19,13 @@ namespace EutherDrive.Core.MdTracerCore
             g_status_Z = ((g_work_data.l & w_mask) == 0) ? true: false;
             g_status_V = false;
             g_status_C = false;
+            if (pcBefore == 0x0003D2 && _tstF62aLogRemaining > 0)
+            {
+                _tstF62aLogRemaining--;
+                Console.WriteLine(
+                    $"[S2-TST] pc=0x{pcBefore:X6} addr=0x{g_analyze_address:X6} val=0x{(g_work_data.l & 0xFF):X2} " +
+                    $"N={(g_status_N ? 1 : 0)} Z={(g_status_Z ? 1 : 0)}");
+            }
         }
         private void analyse_TST_w()
         {

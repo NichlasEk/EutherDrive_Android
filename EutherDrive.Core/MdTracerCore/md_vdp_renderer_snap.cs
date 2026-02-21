@@ -102,6 +102,7 @@ namespace EutherDrive.Core.MdTracerCore
                 g_snap_line_snap[y].window_x_st          = g_line_snap[y].window_x_st;
                 g_snap_line_snap[y].window_x_ed          = g_line_snap[y].window_x_ed;
                 g_snap_line_snap[y].sprite_rendrere_num  = g_line_snap[y].sprite_rendrere_num;
+                g_snap_line_snap[y].sprite_overflow       = g_line_snap[y].sprite_overflow;
 
                 // vscroll (storlek = VSRAM_DATASIZE)
                 Array.Copy(g_line_snap[y].vscrollA, g_snap_line_snap[y].vscrollA, g_line_snap[y].vscrollA.Length);
@@ -118,6 +119,7 @@ namespace EutherDrive.Core.MdTracerCore
                 Array.Copy(g_line_snap[y].sprite_bottom,    g_snap_line_snap[y].sprite_bottom,    count);
                 Array.Copy(g_line_snap[y].sprite_xcell_size,g_snap_line_snap[y].sprite_xcell_size,count);
                 Array.Copy(g_line_snap[y].sprite_ycell_size,g_snap_line_snap[y].sprite_ycell_size,count);
+                Array.Copy(g_line_snap[y].sprite_y_in_sprite,g_snap_line_snap[y].sprite_y_in_sprite,count);
                 Array.Copy(g_line_snap[y].sprite_priority,  g_snap_line_snap[y].sprite_priority,  count);
                 Array.Copy(g_line_snap[y].sprite_palette,   g_snap_line_snap[y].sprite_palette,   count);
                 Array.Copy(g_line_snap[y].sprite_reverse,   g_snap_line_snap[y].sprite_reverse,   count);
@@ -133,6 +135,7 @@ namespace EutherDrive.Core.MdTracerCore
                     Array.Clear(g_snap_line_snap[y].sprite_bottom,     count, tail);
                     Array.Clear(g_snap_line_snap[y].sprite_xcell_size, count, tail);
                     Array.Clear(g_snap_line_snap[y].sprite_ycell_size, count, tail);
+                    Array.Clear(g_snap_line_snap[y].sprite_y_in_sprite,count, tail);
                     Array.Clear(g_snap_line_snap[y].sprite_priority,   count, tail);
                     Array.Clear(g_snap_line_snap[y].sprite_palette,    count, tail);
                     Array.Clear(g_snap_line_snap[y].sprite_reverse,    count, tail);
@@ -398,9 +401,10 @@ namespace EutherDrive.Core.MdTracerCore
                     int w_now_link = row.SpriteIndices[i];
                     int w_addr = w_now_link << 3;
                     ushort w_val1 = SpriteCacheReadWord(w_addr);
-                    int baseAddr = GetSpriteTableBase();
-                    ushort w_val3 = ReadVramWordAligned(baseAddr + w_addr + 4);
-                    ushort w_val4 = ReadVramWordAligned(baseAddr + w_addr + 6);
+                    // Keep SAT entry coherent by reading all words from the same cache snapshot.
+                    // Mixing cached word1 with live-VRAM word3/4 can produce transient sprite tile/position glitches.
+                    ushort w_val3 = SpriteCacheReadWord(w_addr + 4);
+                    ushort w_val4 = SpriteCacheReadWord(w_addr + 6);
 
                     int w_top_x      = w_val4 & 0x01ff;
                     int w_top_y      = w_val1 & g_sprite_vmask;
@@ -419,6 +423,7 @@ namespace EutherDrive.Core.MdTracerCore
                     g_line_snap[g_scanline].sprite_bottom[w_sprite_cnt]     = w_bottom;
                     g_line_snap[g_scanline].sprite_xcell_size[w_sprite_cnt] = w_xcell_size;
                     g_line_snap[g_scanline].sprite_ycell_size[w_sprite_cnt] = w_ycell_size;
+                    g_line_snap[g_scanline].sprite_y_in_sprite[w_sprite_cnt] = row.YInSprite[i];
                     g_line_snap[g_scanline].sprite_priority[w_sprite_cnt]   = (uint)((w_val3 >> 15) & 0x0001);
                     g_line_snap[g_scanline].sprite_palette[w_sprite_cnt]    = (uint)(((w_val3 >> 13) & 0x0003) << 4);
                     g_line_snap[g_scanline].sprite_reverse[w_sprite_cnt]    = (uint)((w_val3 >> 11) & 0x0003);
@@ -466,6 +471,8 @@ namespace EutherDrive.Core.MdTracerCore
                         $"sprites={w_sprite_cnt} lineSprites={w_line_sprite_cnt} cells={w_line_cell_cnt} overflow={overflowLine}" +
                         $"{(spriteLog!.Length > 0 ? spriteLog.ToString() : string.Empty)}");
                 }
+
+                g_line_snap[g_scanline].sprite_overflow = row.Overflow;
             }
         }
     }

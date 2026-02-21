@@ -4,6 +4,7 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        private static int _trace303bRemaining = 64;
         private void analyse_MOVE_b()
         {
             int w_size = 0;
@@ -67,6 +68,8 @@ namespace EutherDrive.Core.MdTracerCore
             int w_src = (g_op3 < 7) ? g_op3 : 7 + g_op4;
             int w_dest= (g_op2 < 7) ? g_op2 : 7 + g_op1;
             int w_clock = 0;
+            uint pcBefore = (uint)(g_reg_PC);
+            uint srcAddr = 0;
             switch(g_op)
             {
                 case 1:
@@ -84,9 +87,17 @@ namespace EutherDrive.Core.MdTracerCore
             } 
             g_reg_PC += 2; 
             adressing_func_address(g_op3, g_op4, w_size); 
+            srcAddr = g_analyze_address;
             g_work_data.l = (uint)adressing_func_read(g_op3, g_op4, w_size); 
             adressing_func_address(g_op2, g_op1, w_size); 
             adressing_func_write(g_op2, g_op1, w_size, g_work_data.l); 
+            if (g_opcode == 0x303B && _trace303bRemaining > 0)
+            {
+                _trace303bRemaining--;
+                Console.WriteLine(
+                    $"[OP303B] pc=0x{pcBefore:X6} src=0x{srcAddr:X6} val=0x{(g_work_data.l & 0xFFFF):X4} " +
+                    $"D0=0x{g_reg_data[0].l:X8} A0=0x{g_reg_addr[0].l:X8}");
+            }
             g_clock = w_clock;
             uint w_mask = MASKBIT[w_size];
             uint w_most = MOSTBIT[w_size];
