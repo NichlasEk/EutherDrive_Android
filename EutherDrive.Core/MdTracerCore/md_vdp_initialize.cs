@@ -55,8 +55,9 @@ namespace EutherDrive.Core.MdTracerCore
                 g_line_snap[i].sprite_char = new uint[MAX_SPRITE];
             }
 
-            g_sprite_row_cache = new SpriteRowCacheRow[DISPLAY_YSIZE];
-            for (int i = 0; i < DISPLAY_YSIZE; i++)
+            // Allocate enough rows for interlace mode 2 (double field: 448 lines).
+            g_sprite_row_cache = new SpriteRowCacheRow[DISPLAY_YSIZE * 2];
+            for (int i = 0; i < g_sprite_row_cache.Length; i++)
             {
                 g_sprite_row_cache[i] = new SpriteRowCacheRow
                 {
