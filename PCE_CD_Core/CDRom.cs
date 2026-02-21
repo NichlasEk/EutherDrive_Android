@@ -129,6 +129,12 @@ namespace ePceCD
 
         }
 
+        public void RebindAfterDeserialize(BUS bus)
+        {
+            Bus = bus;
+            _ADPCM.BindCdRom(this);
+        }
+
         public bool IRQPending()
         {
             return (EnabledIrqs & ActiveIrqs) != 0;

@@ -27,9 +27,12 @@ namespace ePceCD
         private bool m_LFO_Enabled, m_LFO_Active;
         private int m_LFO_Shift;
         private PSG_Channel[] m_Channels = new PSG_Channel[8];
+        [NonSerialized]
         private PSG_Channel m_Selected;
+        private int m_SelectedIndex;
         private static int[] m_NoiseBuffer = new int[0x8000];
         private static float[] m_VolumeTable = new float[92];
+        [NonSerialized]
         private CDRom m_CDRom;
 
         public bool MixADPCM, MixFADE;
@@ -72,8 +75,21 @@ namespace ePceCD
             {
                 m_Channels[i] = new PSG_Channel();
             }
-            m_Selected = m_Channels[0];
+            m_SelectedIndex = 0;
+            m_Selected = m_Channels[m_SelectedIndex];
             m_CDRom = cdrom;
+        }
+
+        public void BindCdRom(CDRom cdrom)
+        {
+            m_CDRom = cdrom;
+        }
+
+        public void RebindSelectedChannel()
+        {
+            if (m_SelectedIndex < 0 || m_SelectedIndex >= m_Channels.Length)
+                m_SelectedIndex = 0;
+            m_Selected = m_Channels[m_SelectedIndex];
         }
 
         private short SoftClip(int sample)
@@ -162,7 +178,8 @@ namespace ePceCD
             switch (address)
             {
                 case 0x800:
-                    m_Selected = m_Channels[data & 0x07];
+                    m_SelectedIndex = data & 0x07;
+                    m_Selected = m_Channels[m_SelectedIndex];
                     break;
                 case 0x801:
                     m_Left_Volume = (data >> 4);
@@ -242,6 +259,13 @@ namespace ePceCD
             }
 
             m_RealLFOFrequency = 3584160.0f / m_SampleRate / ((m_Channels[1].m_Frequency + 1) * m_LFO_Frequency);
+        }
+
+        public void RebindSelectedChannel()
+        {
+            if (m_SelectedIndex < 0 || m_SelectedIndex >= m_Channels.Length)
+                m_SelectedIndex = 0;
+            m_Selected = m_Channels[m_SelectedIndex];
         }
     }
 }
