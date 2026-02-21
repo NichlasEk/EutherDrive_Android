@@ -535,6 +535,8 @@ public partial class MainWindow : Window
         string ext = Path.GetExtension(path).ToLowerInvariant();
         if (ext is ".smc" or ".sfc")
             return true;
+        if (ext is ".sms" or ".sg" or ".gg")
+            return false;
         if (ext is ".nes")
             return false;
         if (ext is ".md" or ".gen" or ".smd" or ".bin")
@@ -843,6 +845,12 @@ public partial class MainWindow : Window
 
     private void HandleKeyDown(object? sender, KeyEventArgs e)
     {
+        if (e.Key == Key.F9 && e.KeyModifiers == KeyModifiers.None)
+        {
+            TriggerDebugSnapshotHotkey();
+            e.Handled = true;
+            return;
+        }
         if (e.Key == Key.F9 && e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             if (_core is MdTracerAdapter adapter)
@@ -867,6 +875,16 @@ public partial class MainWindow : Window
         lock (_keysDown)
             _keysDown.Add(e.Key);
         e.Handled = true;
+    }
+
+    private void TriggerDebugSnapshotHotkey()
+    {
+        if (_core is not MdTracerAdapter adapter)
+            return;
+
+        string dumpDir = Path.Combine(Environment.CurrentDirectory, "logs", "snapshots");
+        string snapshotBase = adapter.CaptureDebugSnapshot(dumpDir);
+        Console.WriteLine($"[SNAPSHOT] {snapshotBase}");
     }
 
     private void HandleKeyUp(object? sender, KeyEventArgs e)
@@ -3496,12 +3514,13 @@ public partial class MainWindow : Window
             "F6: Save Slot 2",
             "F7: Save Slot 3",
             "F8: Load Slot 1",
-            "F9: Load Slot 2",
+            "F9: Debug snapshot",
             "F10: Load Slot 3"));
 
         root.Children.Add(BuildControlsSection("UI",
             "F1: Fullscreen",
-            "Ctrl+F9: SMS VRAM/NT dump"));
+            "Ctrl+F9: SMS VRAM/NT dump",
+            "Snapshot includes screen + RAM + VRAM/CRAM/VSRAM"));
 
         var dialog = new Window
         {
