@@ -137,6 +137,7 @@ namespace ePceCD
         private byte[] m_Ram;
         private bool m_WriteProtect;
         private string savefile;
+        private bool _dirty;
 
         public SaveMemoryBank(string filename)
         {
@@ -169,9 +170,7 @@ namespace ePceCD
 
         public void Dispose()
         {
-            FileStream file = new FileStream(savefile, FileMode.OpenOrCreate, FileAccess.Write);
-            file.Write(m_Ram, 0, m_Ram.Length);
-            file.Close();
+            Flush();
         }
 
         public void WriteProtect(bool protect)
@@ -182,15 +181,39 @@ namespace ePceCD
         public override void WriteAt(int address, byte data)
         {
             if (address < 0x800 && !m_WriteProtect)
-                m_Ram[address] = data;
+            {
+                if (m_Ram[address] != data)
+                {
+                    m_Ram[address] = data;
+                    _dirty = true;
+                    Flush();
+                }
+            }
         }
 
         public override byte ReadAt(int address)
         {
-            if (address < 0x800 && !m_WriteProtect)
+            if (address < 0x800)
                 return m_Ram[address];
 
             return 0xFF;
+        }
+
+        private void Flush()
+        {
+            if (!_dirty)
+                return;
+            try
+            {
+                using FileStream file = new FileStream(savefile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
+                file.Write(m_Ram, 0, m_Ram.Length);
+                file.Flush();
+                _dirty = false;
+            }
+            catch
+            {
+                // Ignore save failures to avoid crashing during emulation.
+            }
         }
     }
 

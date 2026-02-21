@@ -334,7 +334,7 @@ namespace ePceCD
             if (FileTrack != null)
                 return;
             FileTrack = track;
-            if (_bramInitialized)
+            if (_bramInitialized || Bus.BRAM != null)
                 return;
 
             string savefile = Path.GetFileNameWithoutExtension(track.FileName);

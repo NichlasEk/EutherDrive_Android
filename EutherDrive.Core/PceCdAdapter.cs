@@ -51,6 +51,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
             {
                 Console.WriteLine("[PCE] BIOS not found in ./bios (expected System Card).");
             }
+            AttachCdSaveRam(path);
             _bus.LoadCue(path);
         }
         else
@@ -62,6 +63,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
 
             bool swap = swapOverride ?? false;
             _bus.LoadRom(path, swap);
+            AttachHuCardSaveRam(path);
         }
 
         Reset();
@@ -239,6 +241,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
 
     public void Dispose()
     {
+        _bus.BRAM?.Dispose();
         _bus.PPU.Dispose();
     }
 
@@ -358,6 +361,48 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         {
             return false;
         }
+    }
+
+    private void AttachHuCardSaveRam(string path)
+    {
+        try
+        {
+            _bus.BRAM?.Dispose();
+            string saveDir = GetSaveDirectory();
+            Directory.CreateDirectory(saveDir);
+            string name = Path.GetFileNameWithoutExtension(path);
+            string savePath = Path.Combine(saveDir, name);
+            _bus.AttachBram(new SaveMemoryBank(savePath));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PCE] Failed to init save RAM: {ex.Message}");
+        }
+    }
+
+    private void AttachCdSaveRam(string cuePath)
+    {
+        try
+        {
+            _bus.BRAM?.Dispose();
+            string saveDir = GetSaveDirectory();
+            Directory.CreateDirectory(saveDir);
+            string name = Path.GetFileNameWithoutExtension(cuePath);
+            string savePath = Path.Combine(saveDir, name);
+            _bus.AttachBram(new SaveMemoryBank(savePath));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PCE] Failed to init CD save RAM: {ex.Message}");
+        }
+    }
+
+    private static string GetSaveDirectory()
+    {
+        string? overrideDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SAVE_DIR");
+        if (!string.IsNullOrWhiteSpace(overrideDir))
+            return overrideDir;
+        return Path.Combine(Directory.GetCurrentDirectory(), "saves", "pce");
     }
 
     private static int ScorePceEntry(byte[] data, int offset)

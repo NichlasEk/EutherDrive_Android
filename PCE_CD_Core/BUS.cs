@@ -371,6 +371,13 @@ namespace ePceCD
             m_BankList[0xF7] = BRAM;
         }
 
+        public void AttachBram(SaveMemoryBank bram)
+        {
+            BRAM = bram;
+            if (m_BankList != null && m_BankList.Length > 0xF7)
+                m_BankList[0xF7] = BRAM;
+        }
+
         public void LoadRom(string fileName, bool swap)
         {
             int i;
