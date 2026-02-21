@@ -7,6 +7,7 @@ namespace ePceCD
     {
         private const uint RAM_SIZE = 0x10000; // 64KB ADPCM RAM
         private byte[] _ram = new byte[RAM_SIZE];
+        [NonSerialized]
         private CDRom _cdRom;
 
         // 寄存器状态
@@ -36,6 +37,17 @@ namespace ePceCD
         {
             _cdRom = cdRom;
             ResetDecoderState();
+        }
+
+        public ADPCM()
+        {
+            _cdRom = null!;
+            ResetDecoderState();
+        }
+
+        public void BindCdRom(CDRom cdRom)
+        {
+            _cdRom = cdRom;
         }
 
         private void ResetDecoderState()
@@ -197,7 +209,7 @@ namespace ePceCD
         {
             Console.WriteLine("ADPCM DMA Transfer Started");
 
-            if (_cdRom.dataBuffer == null && _cdRom.dataBuffer.Length == 0)
+            if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Length == 0)
             {
                 _dmaControl &= (byte)(~0x01 & 0xFF);
                 return;

@@ -14,6 +14,10 @@ namespace ePceCD
     [Serializable]
     public class PPU : IDisposable // HuC6270A
     {
+        private static readonly bool TraceVdcRegs =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_LOG"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVdcRegsLimit = 200;
+        private int _traceVdcRegsCount;
         [Serializable]
         private struct SpriteAttribute
         {
@@ -70,6 +74,41 @@ namespace ePceCD
         private ushort m_VDC_DESR;
         private ushort m_VDC_LENR;
         private ushort m_VDC_VSAR;
+        private int m_VDC_VDS;
+
+        private int GetEffectiveVdw()
+        {
+            int vdw = m_VDC_VDW;
+            if (vdw <= 0)
+                vdw = 240;
+            if (vdw < 200)
+                vdw = 240;
+            if (vdw > 262)
+                vdw = 262;
+            return vdw;
+        }
+
+        private void LogVdcRegs(string tag)
+        {
+            if (!TraceVdcRegs)
+                return;
+            if (_traceVdcRegsCount++ >= TraceVdcRegsLimit)
+                return;
+            Console.WriteLine($"[PCE-VDC] {tag} reg=0x{m_VDC_Reg:X2} HDR={m_VDC_HDR} VDS={m_VDC_VDS} VDW={m_VDC_VDW} line={m_RenderLine}");
+        }
+
+        private int GetEffectiveVds(int vdw)
+        {
+            int vds = m_VDC_VDS;
+            if (vds < 0) vds = 0;
+            if (vds > 261) vds = 261;
+            int maxStart = 262 - vdw;
+            if (vds > maxStart)
+                vds = maxStart;
+            if (vds < 0)
+                vds = 0;
+            return vds;
+        }
 
         public int m_VDC_HDR;
         public int m_VDC_VDW;
@@ -140,6 +179,39 @@ namespace ePceCD
             m_VDC_BSY = false;
         }
 
+        public PPU()
+        {
+            host = null!;
+
+            m_VRAM = new ushort[0x10000];
+            m_SAT = new SpriteAttribute[0x40];
+            m_VCE = new ushort[0x200];
+            m_VCE_Index = 0;
+
+            _screenBuf = new int[1024 * 1024];
+            _screenBufPtr = Marshal.AllocHGlobal(1024 * 1024 * sizeof(int));
+
+            for (int i = 0; i < 512; i++)
+            {
+                int b = ((i) & 0x7) * 0x49 >> 1;
+                int r = ((i >> 3) & 0x7) * 0x49 >> 1;
+                int g = ((i >> 6) & 0x7) * 0x49 >> 1;
+                PALETTE[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+            }
+
+            for (int i = 0; i < 0x40; i++)
+                m_SAT[i] = new SpriteAttribute();
+
+            m_RenderLine = 0;
+            m_DoSAT_DMA = false;
+            m_WaitingIRQ = false;
+
+            m_VCE_DotClock = DotClock.MHZ_5;
+            m_VDC_Increment = 1;
+
+            m_VDC_BSY = false;
+        }
+
         public void Dispose()
         {
             Marshal.FreeHGlobal(_screenBufPtr);
@@ -160,18 +232,21 @@ namespace ePceCD
 
         public unsafe void tick()
         {
-            if (m_RenderLine + 1 > m_VDC_VDW)
+            int vdw = GetEffectiveVdw();
+            int vds = 14;
+            int vde = Math.Min(261, vds + vdw - 1);
+            if (m_RenderLine + 1 > vde + 1)
             {
                 HandleDMA();
             }
-            else if (m_RenderLine >= 14 || m_RenderLine <= 256)
+            else if (m_RenderLine >= Math.Max(14, vds) && m_RenderLine <= Math.Min(256, vde))
             {
                 DrawScanLine();
             }
 
             m_RenderLine++;
 
-            if (m_RenderLine + 1 == m_VDC_VDW)
+            if (m_RenderLine + 1 == vde + 1)
             {
                 m_DoSAT_DMA = m_DoSAT_DMA | m_VDC_SATB_ENA;
                 if (m_VDC_VBKIRQ)
@@ -195,7 +270,7 @@ namespace ePceCD
                 //ConvertColor();
                 Marshal.Copy(_screenBufPtr, _screenBuf, 0, _screenBuf.Length);
                 FrameReady = true;
-                host.RenderFrame(_screenBuf, SCREEN_WIDTH, m_VDC_VDW);
+                host.RenderFrame(_screenBuf, SCREEN_WIDTH, vdw);
             }
         }
 
@@ -249,10 +324,42 @@ namespace ePceCD
             }
         }
 
+        public void RebuildSatFromVram()
+        {
+            for (int i = 0; i < 64; i++)
+            {
+                int g = m_VDC_VSAR + i * 4;
+                m_SAT[i].m_Y = m_VRAM[g++] - 64;
+                m_SAT[i].m_X = m_VRAM[g++] - 32;
+                m_SAT[i].m_Pattern = (m_VRAM[g] & 0x07FE) << 5;
+                m_SAT[i].m_CGPage = (m_VRAM[g++] & 0x0001) != 0;
+                m_SAT[i].m_Palette = ((m_VRAM[g] & 0xF) << 4) | ((i == 0) ? 0x4100 : 0x2100);
+                m_SAT[i].m_Priority = (m_VRAM[g] & 0x80) != 0;
+                m_SAT[i].m_Width = ((m_VRAM[g] & 0x100) != 0) ? 2 : 1;
+                m_SAT[i].m_Height = (((m_VRAM[g] & 0x3000) >> 12) + 1) << 4;
+                m_SAT[i].m_HorizontalFlip = (m_VRAM[g] & 0x0800) != 0;
+                m_SAT[i].m_VerticalFlip = (m_VRAM[g++] & 0x8000) != 0;
+            }
+        }
+
+        public void AfterStateLoad()
+        {
+            FrameReady = false;
+            m_RenderLine = 0;
+            // Force a SAT refresh on next DMA step to stabilize sprites.
+            m_DoSAT_DMA = true;
+        }
+
         private unsafe void DrawScanLine()
         {
+            int vdw = GetEffectiveVdw();
+            int vds = 14;
+            int visibleLine = m_RenderLine - vds;
+            if (visibleLine < 0 || visibleLine >= vdw)
+                return;
+
             int i;
-            int* ScanLinePtr = (int*)_screenBufPtr.ToPointer() + SCREEN_WIDTH * m_RenderLine;
+            int* ScanLinePtr = (int*)_screenBufPtr.ToPointer() + SCREEN_WIDTH * visibleLine;
 
             for (i = 0; i < SCREEN_WIDTH; i++) ScanLinePtr[i] = 0;
 
@@ -264,7 +371,7 @@ namespace ePceCD
                 for (i = 0, BufferUsage = 0; i < 64 && BufferUsage < 17; i++)
                 {
                     int y = m_SAT[i].m_Y;
-                    if (m_RenderLine < y || m_RenderLine >= y + m_SAT[i].m_Height) continue;
+                    if (visibleLine < y || visibleLine >= y + m_SAT[i].m_Height) continue;
                     BufferUsage += m_SAT[i].m_Width;
                     SprBuffer[BufferIndexes++] = m_SAT[i];
                 }
@@ -281,9 +388,9 @@ namespace ePceCD
                 {
                     int SprOffY;
                     if (SprBuffer[i].m_VerticalFlip)
-                        SprOffY = SprBuffer[i].m_Height - 1 - m_RenderLine + SprBuffer[i].m_Y;
+                        SprOffY = SprBuffer[i].m_Height - 1 - visibleLine + SprBuffer[i].m_Y;
                     else
-                        SprOffY = m_RenderLine - SprBuffer[i].m_Y;
+                        SprOffY = visibleLine - SprBuffer[i].m_Y;
                     int tile = SprBuffer[i].m_Pattern + ((SprOffY & 0xFFF0) << 3) + (SprOffY & 0xF);
                     int x = SprBuffer[i].m_X;
                     int* spx = ScanLinePtr;
@@ -317,9 +424,9 @@ namespace ePceCD
             {
                 int RealBYR = (m_VDC_BYR - m_VDC_BYR_Offset) & 0x3FF;
                 int BATMask = (m_VDC_BAT_Width - 1);
-                int BATLine = (((RealBYR + m_RenderLine) >> 3) & (m_VDC_BAT_Height - 1)) * m_VDC_BAT_Width;
+                int BATLine = (((RealBYR + visibleLine) >> 3) & (m_VDC_BAT_Height - 1)) * m_VDC_BAT_Width;
                 int BATAddress = (m_VDC_BXR >> 3) & BATMask;
-                int YOverFlow = (RealBYR + m_RenderLine) & 0x7;
+                int YOverFlow = (RealBYR + visibleLine) & 0x7;
                 int* tileMap = ScanLinePtr;
                 tileMap -= m_VDC_BXR & 7;
                 for (i = 0; i < m_VDC_HDR + 2; i++)
@@ -467,6 +574,11 @@ namespace ePceCD
                     m_VDC_HDR = data & 0x7F;
                     SCREEN_WIDTH = (m_VDC_HDR + 1) * 8;
                     if (SCREEN_WIDTH == 336) SCREEN_WIDTH = 352;
+                    LogVdcRegs("LSB-HDR");
+                    break;
+                case 0x0C:
+                    m_VDC_VDS = (m_VDC_VDS & 0x100) | data;
+                    LogVdcRegs("LSB-VDS");
                     break;
                 case 0x0D: m_VDC_VDW = (m_VDC_VDW & 0x100) | data; break;
                 case 0x0F:
@@ -521,6 +633,10 @@ namespace ePceCD
                     break;
                 case 0x0B:
                     //m_VDC_HDE = (data & 0x7F);
+                    break;
+                case 0x0C:
+                    m_VDC_VDS = ((data << 8) & 0x100) | (m_VDC_VDS & 0xFF);
+                    LogVdcRegs("MSB-VDS");
                     break;
                 case 0x0D: m_VDC_VDW = ((data << 8) & 0x100) | (m_VDC_VDW & 0xFF); break;
                 case 0x10: m_VDC_DSR = (ushort)((m_VDC_DSR & 0xFF) | (data << 8)); break;

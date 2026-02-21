@@ -46,26 +46,25 @@ namespace ePceCD
         public APU(IAudioHandler audio, CDRom cdrom)
         {
             host = audio;
+            Init(cdrom);
+        }
 
+        public APU()
+        {
+            Init(null);
+        }
+
+        private void Init(CDRom? cdrom)
+        {
             MixADPCM = true;
             MixFADE = true;
 
-            // 初始化噪声缓冲区
-            //int noiseRegister = 0x100;
-            //for (int i = 0; i < m_NoiseBuffer.Length; i++)
-            //{
-            //    int bit0 = noiseRegister & 0x01;
-            //    int bit1 = (noiseRegister & 0x02) >> 1;
-            //    noiseRegister = (noiseRegister >> 1) | ((bit0 ^ bit1) << 14);
-            //    m_NoiseBuffer[i] = (bit0 == 1) ? -12 : 12;
-            //}
             uint lfsr = 0x1FFF;
             for (int i = 0; i < m_NoiseBuffer.Length; i++)
             {
                 m_NoiseBuffer[i] = (short)((lfsr & 1) * short.MaxValue);
                 lfsr = (uint)((lfsr >> 1) ^ (-(lfsr & 1) & 0x12000));
             }
-            // 初始化音量表
             for (int i = 0; i < 92; i++)
             {
                 m_VolumeTable[i] = 1024.0f * (float)Math.Pow(10.0, (91 - i) * -0.075);
@@ -77,7 +76,7 @@ namespace ePceCD
             }
             m_SelectedIndex = 0;
             m_Selected = m_Channels[m_SelectedIndex];
-            m_CDRom = cdrom;
+            m_CDRom = cdrom!;
         }
 
         public void BindCdRom(CDRom cdrom)
@@ -261,11 +260,5 @@ namespace ePceCD
             m_RealLFOFrequency = 3584160.0f / m_SampleRate / ((m_Channels[1].m_Frequency + 1) * m_LFO_Frequency);
         }
 
-        public void RebindSelectedChannel()
-        {
-            if (m_SelectedIndex < 0 || m_SelectedIndex >= m_Channels.Length)
-                m_SelectedIndex = 0;
-            m_Selected = m_Channels[m_SelectedIndex];
-        }
     }
 }

@@ -202,19 +202,16 @@ internal static class StateBinarySerializer
         }
 
         object? current = field.GetValue(target);
-        if (current == null || !isReadonly)
-        {
-            object created = Activator.CreateInstance(type)!;
-            ReadInto(reader, created);
-            if (!isReadonly)
-                field.SetValue(target, created);
-            else if (current != null)
-                ReadInto(reader, current);
-        }
-        else
+        if (current != null)
         {
             ReadInto(reader, current);
+            return;
         }
+
+        object created = Activator.CreateInstance(type)!;
+        ReadInto(reader, created);
+        if (!isReadonly)
+            field.SetValue(target, created);
     }
 
     private static void WritePrimitive(BinaryWriter writer, Type type, object? value)

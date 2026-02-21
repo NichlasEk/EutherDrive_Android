@@ -706,25 +706,30 @@ private static readonly bool SpriteLinkSequential =
             }
         }
 
-        private static void DrawCrosshairArgb(int cx, int cy, byte r, byte g, byte b)
+        private void DrawCrosshairArgb(int cx, int cy, byte r, byte g, byte b)
         {
             uint c = 0xFF000000u | ((uint)r << 16) | ((uint)g << 8) | b;
             DrawRectArgb(cx - 4, cy - 1, 9, 3, c);
             DrawRectArgb(cx - 1, cy - 4, 3, 9, c);
         }
 
-        private static void DrawRectArgb(int x0, int y0, int w, int h, uint argb)
+        private void DrawRectArgb(int x0, int y0, int w, int h, uint argb)
         {
-            int x1 = Math.Min(Width, x0 + w);
-            int y1 = Math.Min(Height, y0 + h);
+            if (g_game_screen == null || g_game_screen.Length == 0)
+                return;
+
+            int width = FrameWidth;
+            int height = FrameHeight;
+            int x1 = Math.Min(width, x0 + w);
+            int y1 = Math.Min(height, y0 + h);
             x0 = Math.Max(0, x0);
             y0 = Math.Max(0, y0);
 
             for (int y = y0; y < y1; y++)
             {
-                int row = y * Width;
+                int row = y * width;
                 for (int x = x0; x < x1; x++)
-                    _frame[row + x] = argb;
+                    g_game_screen[row + x] = argb;
             }
         }
 

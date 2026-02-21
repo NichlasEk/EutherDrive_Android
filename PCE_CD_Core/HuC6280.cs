@@ -335,8 +335,11 @@ namespace ePceCD
         public int m_Clock;
         private int m_AdvanceClock;
         private byte[] m_MPR = new byte[8];
+        [NonSerialized]
         private MemoryBank[] m_Bank = new MemoryBank[8];
+        [NonSerialized]
         private MemoryBank m_IOPage;
+        [NonSerialized]
         private MemoryBank m_ZeroPage;
 
         [NonSerialized]
@@ -345,6 +348,19 @@ namespace ePceCD
         public HuC6280(BUS bus)
         {
             BUS = bus;
+        }
+
+        public HuC6280()
+        {
+            BUS = null!;
+        }
+
+        public void RebindBanks()
+        {
+            m_IOPage = GetBank(0xFF);
+            m_ZeroPage = GetBank(0xF8);
+            for (int i = 0; i < m_Bank.Length; i++)
+                m_Bank[i] = GetBank(m_MPR[i]);
         }
 
         public void Reset()

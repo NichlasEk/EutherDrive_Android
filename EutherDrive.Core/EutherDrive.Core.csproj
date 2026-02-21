@@ -28,6 +28,7 @@
     <Compile Remove="MdTracerCore/MdBusBridge.cs" />
     <Compile Remove="MdTracerCore/md_m68k_missing_globals.cs" />
     <Compile Remove="MdTracerCore/md_vdp.IO.cs" />
+    <Compile Remove="MdTracerCore/VdpHeadless.cs" />
 
 </ItemGroup>
 

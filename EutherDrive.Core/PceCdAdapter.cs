@@ -1,10 +1,11 @@
 using System;
 using System.IO;
+using EutherDrive.Core.Savestates;
 using ePceCD;
 
 namespace EutherDrive.Core;
 
-public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler, IDisposable
+public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler, IDisposable, ISavestateCapable
 {
     private const int DefaultWidth = 256;
     private const int DefaultHeight = 240;
@@ -19,6 +20,13 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
     private int _frameStride = DefaultWidth * 4;
     private bool _frameReady;
     private float _masterVolumeScale = 1.0f;
+    private readonly object _stateLock = new();
+    private long _frameCounter;
+    private RomIdentity? _romIdentity;
+    private string? _romPath;
+
+    public RomIdentity? RomIdentity => _romIdentity;
+    public long? FrameCounter => _frameCounter;
 
     public PceCdAdapter()
     {
@@ -30,6 +38,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             return;
 
+        _romPath = path;
         string ext = Path.GetExtension(path).ToLowerInvariant();
         if (ext == ".cue")
         {
@@ -51,6 +60,15 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         }
 
         Reset();
+        try
+        {
+            byte[] data = File.ReadAllBytes(path);
+            _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(data));
+        }
+        catch
+        {
+            _romIdentity = null;
+        }
     }
 
     public void Reset()
@@ -58,6 +76,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         _bus.Reset();
         _frameReady = false;
         _bus.PPU.FrameReady = false;
+        _frameCounter = 0;
     }
 
     public void RunFrame()
@@ -83,6 +102,10 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         {
             EnsureFrameBuffer();
             Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
+        }
+        else
+        {
+            _frameCounter++;
         }
     }
 
@@ -131,6 +154,50 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         if (percent < 0) percent = 0;
         else if (percent > 100) percent = 100;
         _masterVolumeScale = percent / 100f;
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        if (writer == null)
+            throw new ArgumentNullException(nameof(writer));
+
+        lock (_stateLock)
+        {
+            const int version = 1;
+            writer.Write(version);
+            writer.Write(_frameCounter);
+            writer.Write(_masterVolumeScale);
+            _bus.ReadySerializable();
+            try
+            {
+                StateBinarySerializer.WriteInto(writer, _bus);
+            }
+            finally
+            {
+                _bus.RestoreSerializable();
+            }
+        }
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        if (reader == null)
+            throw new ArgumentNullException(nameof(reader));
+
+        lock (_stateLock)
+        {
+            int version = reader.ReadInt32();
+            if (version != 1)
+                throw new InvalidDataException($"Unsupported PCE CD savestate version: {version}.");
+
+            _frameCounter = reader.ReadInt64();
+            _masterVolumeScale = reader.ReadSingle();
+            StateBinarySerializer.ReadInto(reader, _bus);
+            _bus.DeSerializable(this, this);
+            _bus.PPU.RebuildSatFromVram();
+            _frameReady = false;
+            _bus.PPU.AfterStateLoad();
+        }
     }
 
     public void RenderFrame(int[] pixels, int width, int height)

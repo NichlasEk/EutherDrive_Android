@@ -7,8 +7,13 @@ namespace ePceCD
     [Serializable]
     public class BUS : MemoryBank, IDisposable
     {
-        private MemoryBank[] m_BankList;
-        private MemoryBank nullMemory;
+        [NonSerialized]
+        private MemoryBank[] m_BankList = Array.Empty<MemoryBank>();
+        [NonSerialized]
+        private MemoryBank nullMemory = new MemoryBank();
+        [NonSerialized]
+        private MemoryBank? _serializedBankSelf;
+        private byte[][]? _romPages;
         public RamBank[] memory;
         public SaveMemoryBank BRAM;
 
@@ -38,8 +43,6 @@ namespace ePceCD
 
         public BUS(IRenderHandler render, IAudioHandler audio)
         {
-            nullMemory = new MemoryBank();
-
             memory = new RamBank[33];
             for (int i = 0; i < memory.Length; i++)
                 memory[i] = new RamBank();
@@ -51,6 +54,31 @@ namespace ePceCD
             JoyPort = new Controller();
             APU = new APU(audio, CDRom);
 
+            InitBankList();
+
+            m_TimerOverflow = 0x10000 << 10;
+            m_OverFlowCycles = 0;
+        }
+
+        public void ReadySerializable()
+        {
+            if (m_BankList == null || m_BankList.Length <= 0xFF)
+                return;
+            _serializedBankSelf = m_BankList[0xFF];
+            m_BankList[0xFF] = nullMemory;
+        }
+
+        public void RestoreSerializable()
+        {
+            if (_serializedBankSelf == null || m_BankList == null || m_BankList.Length <= 0xFF)
+                return;
+            m_BankList[0xFF] = _serializedBankSelf;
+            _serializedBankSelf = null;
+        }
+
+        private void InitBankList()
+        {
+            nullMemory = new MemoryBank();
             m_BankList = new MemoryBank[0x100];
 
             for (int i = 0; i < 0x100; i++)
@@ -70,24 +98,32 @@ namespace ePceCD
 
             m_BankList[0xFF] = this;
 
-            m_TimerOverflow = 0x10000 << 10;
-            m_OverFlowCycles = 0;
+            if (_romPages != null && _romPages.Length > 0)
+                MapRomPages(_romPages);
         }
 
-        public void ReadySerializable()
+        private void RebuildBankList()
         {
-
+            if (m_BankList == null || m_BankList.Length != 0x100)
+                InitBankList();
+            else
+                MapRomPages(_romPages);
         }
 
         public void DeSerializable(IRenderHandler render, IAudioHandler audio)
         {
-            CDRom.Bus = this;
+            RebuildBankList();
+            CDRom.RebindAfterDeserialize(this);
             CPU.BUS = this;
 
             PPU.host = render;
             PPU._screenBufPtr = Marshal.AllocHGlobal(1024 * 1024 * sizeof(int));
 
             APU.host = audio;
+            APU.BindCdRom(CDRom);
+            APU.RebindSelectedChannel();
+            FixBankMirrors();
+            CPU.RebindBanks();
 
             if (CDfile != "")
             {
@@ -100,6 +136,40 @@ namespace ePceCD
 
                 CDRom.currentTrack.File = new FileStream(CDRom.currentTrack.FileName, FileMode.Open, FileAccess.Read);
             }
+        }
+
+        private void FixBankMirrors()
+        {
+            if (m_BankList == null || m_BankList.Length < 0x100)
+                return;
+
+            var ram0 = m_BankList[0xF8] as RamBank;
+            if (ram0 != null)
+            {
+                m_BankList[0xF9] = ram0;
+                m_BankList[0xFA] = ram0;
+                m_BankList[0xFB] = ram0;
+                if (memory != null && memory.Length > 0)
+                    memory[0] = ram0;
+            }
+
+            if (memory != null)
+            {
+                for (int i = 0; i < 8 && (0x80 + i) < m_BankList.Length && (i + 1) < memory.Length; i++)
+                {
+                    if (m_BankList[0x80 + i] is RamBank bank)
+                        memory[i + 1] = bank;
+                }
+
+                for (int i = 0; i < 24 && (0x68 + i) < m_BankList.Length && (i + 9) < memory.Length; i++)
+                {
+                    if (m_BankList[0x68 + i] is RamBank bank)
+                        memory[i + 9] = bank;
+                }
+            }
+
+            if (BRAM != null)
+                m_BankList[0xF7] = BRAM;
         }
 
         public void Dispose()
@@ -295,6 +365,19 @@ namespace ePceCD
                     BitSwap(page[i]);
 
             file.Close();
+
+            _romPages = page;
+            MapRomPages(page);
+        }
+
+        private void MapRomPages(byte[][]? page)
+        {
+            if (page == null || page.Length == 0)
+                return;
+
+            int i;
+            if (m_BankList == null || m_BankList.Length != 0x100)
+                InitBankList();
 
             // Super System Card ram only active when there is enough space
             if (page.Length <= 0x68)
