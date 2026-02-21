@@ -16,6 +16,10 @@ public sealed class PsxAdapter : IEmulatorCore
         private bool _is24Bit;
         private ushort _vramXStart;
         private ushort _vramYStart;
+        private ushort _displayX1;
+        private ushort _displayX2;
+        private ushort _displayY1;
+        private ushort _displayY2;
 
         public PsxHostWindow(PsxAdapter owner) => _owner = owner;
 
@@ -33,8 +37,8 @@ public sealed class PsxAdapter : IEmulatorCore
 
         public void SetHorizontalRange(ushort displayX1, ushort displayX2)
         {
-            _ = displayX1;
-            _ = displayX2;
+            _displayX1 = displayX1;
+            _displayX2 = displayX2;
         }
 
         public void SetVRAMStart(ushort displayVRAMXStart, ushort displayVRAMYStart)
@@ -45,11 +49,37 @@ public sealed class PsxAdapter : IEmulatorCore
 
         public void SetVerticalRange(ushort displayY1, ushort displayY2)
         {
-            _ = displayY1;
-            _ = displayY2;
+            _displayY1 = displayY1;
+            _displayY2 = displayY2;
         }
 
         public void Play(byte[] samples) => _owner.PushAudio(samples);
+
+        public bool TryGetVerticalPixelRange(out int y1, out int y2)
+        {
+            y1 = 0;
+            y2 = 0;
+            if (_displayY2 <= _displayY1)
+                return false;
+
+            int timing = (_displayY2 > 300 || _displayY1 > 300) ? 314 : 263;
+            double scale = _displayHeight / (double)timing;
+            int py1 = (int)Math.Round(_displayY1 * scale);
+            int py2 = (int)Math.Round(_displayY2 * scale);
+
+            if (py2 <= py1)
+                return false;
+            if (py1 < 0) py1 = 0;
+            if (py2 > _displayHeight) py2 = _displayHeight;
+
+            int range = py2 - py1;
+            if (range >= _displayHeight - 2)
+                return false;
+
+            y1 = py1;
+            y2 = py2;
+            return true;
+        }
     }
 
     private ProjectPSX.ProjectPSX? _core;
@@ -64,6 +94,7 @@ public sealed class PsxAdapter : IEmulatorCore
     private int _audioQueuedCount;
     private short[] _audioReadBuffer = Array.Empty<short>();
     private float _masterVolumeScale = 1.0f;
+    private long _frameCounter;
 
     public void LoadRom(string path)
     {
@@ -87,6 +118,7 @@ public sealed class PsxAdapter : IEmulatorCore
     public void RunFrame()
     {
         _core?.RunFrame();
+        _frameCounter++;
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -185,11 +217,34 @@ public sealed class PsxAdapter : IEmulatorCore
         int baseY = vramY;
         int vramWidth = 1024;
         int vramHeight = 512;
+        int rangeY1 = 0;
+        int rangeY2 = height;
+        if (_host != null && _host.TryGetVerticalPixelRange(out int stableY1, out int stableY2))
+        {
+            if (stableY2 > stableY1)
+            {
+                rangeY1 = stableY1;
+                rangeY2 = stableY2;
+            }
+        }
 
         for (int y = 0; y < height; y++)
         {
             int dstRow = y * stride;
-            int srcY = baseY + y;
+            if (y < rangeY1 || y >= rangeY2)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int o = dstRow + (x << 2);
+                    _frameBuffer[o + 0] = 0;
+                    _frameBuffer[o + 1] = 0;
+                    _frameBuffer[o + 2] = 0;
+                    _frameBuffer[o + 3] = 0xFF;
+                }
+                continue;
+            }
+
+            int srcY = baseY + (y - rangeY1);
             if ((uint)srcY >= (uint)vramHeight)
             {
                 for (int x = 0; x < width; x++)
