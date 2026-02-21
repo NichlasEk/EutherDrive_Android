@@ -142,7 +142,7 @@ namespace ePceCD
             return (short)sample;
         }
 
-        public void MixCD(short[] Buffer, int len)
+        public void MixCD(short[] Buffer, int len, int offset = 0)
         {
             if (!CdPlaying) return;
 
@@ -197,11 +197,11 @@ namespace ePceCD
                         sampleR = (short)((CDSBuffer[i + 3] << 8) | CDSBuffer[i + 2]);
                     }
 
-                    int mixedR = (int)(Buffer[samplesMixed] * _psgMix + sampleR * _cdMix);
-                    int mixedL = (int)(Buffer[samplesMixed + 1] * _psgMix + sampleL * _cdMix);
+                    int mixedR = (int)(Buffer[offset + samplesMixed] * _psgMix + sampleR * _cdMix);
+                    int mixedL = (int)(Buffer[offset + samplesMixed + 1] * _psgMix + sampleL * _cdMix);
 
-                    Buffer[samplesMixed++] = SoftClip(mixedR);
-                    Buffer[samplesMixed++] = SoftClip(mixedL);
+                    Buffer[offset + samplesMixed++] = SoftClip(mixedR);
+                    Buffer[offset + samplesMixed++] = SoftClip(mixedL);
                     _cdSectorOffsetBytes += 4;
                 }
 

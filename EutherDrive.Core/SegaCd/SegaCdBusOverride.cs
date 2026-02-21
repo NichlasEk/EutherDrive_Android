@@ -13,6 +13,7 @@ internal sealed class SegaCdMainBusOverride : IM68kBusOverride
 
     private static bool Handles(uint address)
     {
+        // Sega CD main CPU owns 0x000000-0x7FFFFF (BIOS/PRG/Word RAM/RAM cart) plus main regs.
         return address <= 0x007FFFFF || (address >= 0x00A12000 && address <= 0x00A1202F);
     }
 

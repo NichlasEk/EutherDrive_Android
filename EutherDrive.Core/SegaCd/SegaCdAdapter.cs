@@ -85,6 +85,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SUBINT_MASK"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool ForcePrgChecksum =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_FORCE_PRG_CHECKSUM"),
+            "1",
+            StringComparison.Ordinal);
     private static readonly bool TraceFrameBuffer =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_FRAMEBUFFER"),
             "1",
@@ -622,6 +626,12 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                     ushort expected = _memory.ReadSubWord(0x00018E);
                                     Console.WriteLine(
                                         $"[SCD-CHK] start=0x{start:X6} count={count} end=0x{(end - 1):X6} sumBE=0x{sumBe:X4} sumLE=0x{sumLe:X4} expected=0x{expected:X4} zeroWords={zeroWords}");
+                                    if (ForcePrgChecksum && sumBe != expected)
+                                    {
+                                        _memory.WriteSubWord(0x00018E, sumBe);
+                                        Console.WriteLine(
+                                            $"[SCD-CHK] Forcing PRG checksum from 0x{expected:X4} to 0x{sumBe:X4}");
+                                    }
                                 }
                             }
                             if (TraceSubDebug && _subChecksumLogRemaining > 0 && _subContext.RegPc >= 0x0002EA && _subContext.RegPc <= 0x0002F2)

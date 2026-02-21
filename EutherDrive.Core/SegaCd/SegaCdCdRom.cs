@@ -8,6 +8,7 @@ namespace EutherDrive.Core.SegaCd;
 internal readonly struct CdTime : IComparable<CdTime>
 {
     public static readonly CdTime Zero = new(0, 0, 0);
+    public static readonly CdTime TwoSeconds = new(0, 2, 0);
 
     public readonly int Minutes;
     public readonly int Seconds;
@@ -37,11 +38,15 @@ internal readonly struct CdTime : IComparable<CdTime>
 
     public CdTime AddFrames(int frames) => FromFrames(ToFrames() + frames);
 
+    public CdTime Add(CdTime other) => FromFrames(ToFrames() + other.ToFrames());
+
     public CdTime SaturatingSub(CdTime other)
     {
         int diff = ToFrames() - other.ToFrames();
         return diff <= 0 ? Zero : FromFrames(diff);
     }
+
+    public CdTime Sub(CdTime other) => SaturatingSub(other);
 
     public int CompareTo(CdTime other) => ToFrames().CompareTo(other.ToFrames());
 
@@ -65,21 +70,22 @@ internal sealed class CdTrack
     public CdTrackType TrackType { get; set; }
     public CdTime StartTime { get; set; }
     public CdTime EndTime { get; set; }
-    public CdTime? Index00Time { get; set; }
+    public CdTime PregapLen { get; set; }
+    public CdTime PauseLen { get; set; }
+    public CdTime PostgapLen { get; set; }
+    public CdTime FileTime { get; set; }
     public int FileIndex { get; set; } = -1;
 
-    public CdTime EffectiveStartTime() => Index00Time ?? StartTime;
+    public CdTime EffectiveStartTime() => StartTime.Add(PregapLen).Add(PauseLen);
 }
 
 internal sealed class CdCue
 {
     private readonly List<CdTrack> _tracks = new();
     private readonly List<string> _files = new();
-    private int[] _fileStartFrames = Array.Empty<int>();
 
     public IReadOnlyList<CdTrack> Tracks => _tracks;
     public IReadOnlyList<string> Files => _files;
-    public IReadOnlyList<int> FileStartFrames => _fileStartFrames;
 
     public CdTrack LastTrack => _tracks.Count == 0 ? new CdTrack() : _tracks[_tracks.Count - 1];
 
@@ -99,12 +105,12 @@ internal sealed class CdCue
             return null;
 
         CdTrack first = _tracks[0];
-        if (time < first.EffectiveStartTime())
+        if (time < first.StartTime)
             return first;
 
         foreach (var track in _tracks)
         {
-            CdTime start = track.EffectiveStartTime();
+            CdTime start = track.StartTime;
             if (time >= start && time < track.EndTime)
                 return track;
         }
@@ -114,14 +120,19 @@ internal sealed class CdCue
     public static CdCue FromIsoLength(int sectorCount)
     {
         var cue = new CdCue();
-        var start = new CdTime(0, 2, 0);
-        var end = start.AddFrames(sectorCount);
+        var dataLen = CdTime.FromFrames(sectorCount);
+        var end = CdTime.Zero.Add(CdTime.TwoSeconds).Add(dataLen).Add(CdTime.TwoSeconds);
         cue._tracks.Add(new CdTrack
         {
             Number = 1,
             TrackType = CdTrackType.Data,
-            StartTime = start,
-            EndTime = end
+            StartTime = CdTime.Zero,
+            EndTime = end,
+            PregapLen = CdTime.TwoSeconds,
+            PauseLen = CdTime.Zero,
+            PostgapLen = CdTime.TwoSeconds,
+            FileTime = CdTime.Zero,
+            FileIndex = 0
         });
         return cue;
     }
@@ -132,8 +143,9 @@ internal sealed class CdCue
         if (!File.Exists(cuePath))
             return cue;
 
-        CdTrack? current = null;
-        int currentFileIndex = -1;
+        var parsedFiles = new List<ParsedFile>();
+        ParsedFile? currentFile = null;
+        ParsedTrack? currentTrack = null;
         foreach (var rawLine in File.ReadLines(cuePath))
         {
             string line = rawLine.Trim();
@@ -142,6 +154,17 @@ internal sealed class CdCue
 
             if (line.StartsWith("FILE", StringComparison.OrdinalIgnoreCase))
             {
+                if (currentTrack != null)
+                {
+                    currentFile ??= new ParsedFile(string.Empty);
+                    currentFile.Tracks.Add(currentTrack);
+                    currentTrack = null;
+                }
+                if (currentFile != null)
+                {
+                    parsedFiles.Add(currentFile);
+                    currentFile = null;
+                }
                 int firstQuote = line.IndexOf('"');
                 if (firstQuote >= 0)
                 {
@@ -151,25 +174,28 @@ internal sealed class CdCue
                         string fileName = line.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
                         string fullPath = ResolveCueFilePath(cuePath, fileName);
                         cue._files.Add(fullPath);
-                        currentFileIndex = cue._files.Count - 1;
+                        currentFile = new ParsedFile(fullPath);
                     }
                 }
             }
             else if (line.StartsWith("TRACK", StringComparison.OrdinalIgnoreCase))
             {
+                if (currentTrack != null)
+                {
+                    currentFile ??= new ParsedFile(string.Empty);
+                    currentFile.Tracks.Add(currentTrack);
+                }
                 var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length >= 3 && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int num))
                 {
-                    current = new CdTrack
+                    currentTrack = new ParsedTrack
                     {
                         Number = num,
                         TrackType = parts[2].StartsWith("AUDIO", StringComparison.OrdinalIgnoreCase) ? CdTrackType.Audio : CdTrackType.Data
                     };
-                    current.FileIndex = currentFileIndex;
-                    cue._tracks.Add(current);
                 }
             }
-            else if (line.StartsWith("INDEX 01", StringComparison.OrdinalIgnoreCase) && current != null)
+            else if (line.StartsWith("INDEX 01", StringComparison.OrdinalIgnoreCase) && currentTrack != null)
             {
                 var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length >= 3)
@@ -180,11 +206,11 @@ internal sealed class CdCue
                         && int.TryParse(timeParts[1], out int ss)
                         && int.TryParse(timeParts[2], out int ff))
                     {
-                        current.StartTime = new CdTime(mm, ss, ff);
+                        currentTrack.TrackStart = new CdTime(mm, ss, ff);
                     }
                 }
             }
-            else if (line.StartsWith("INDEX 00", StringComparison.OrdinalIgnoreCase) && current != null)
+            else if (line.StartsWith("INDEX 00", StringComparison.OrdinalIgnoreCase) && currentTrack != null)
             {
                 var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length >= 3)
@@ -195,24 +221,36 @@ internal sealed class CdCue
                         && int.TryParse(timeParts[1], out int ss)
                         && int.TryParse(timeParts[2], out int ff))
                     {
-                        current.Index00Time = new CdTime(mm, ss, ff);
+                        currentTrack.PauseStart = new CdTime(mm, ss, ff);
+                    }
+                }
+            }
+            else if (line.StartsWith("PREGAP", StringComparison.OrdinalIgnoreCase) && currentTrack != null)
+            {
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2)
+                {
+                    var timeParts = parts[1].Split(':');
+                    if (timeParts.Length == 3
+                        && int.TryParse(timeParts[0], out int mm)
+                        && int.TryParse(timeParts[1], out int ss)
+                        && int.TryParse(timeParts[2], out int ff))
+                    {
+                        currentTrack.PregapLen = new CdTime(mm, ss, ff);
                     }
                 }
             }
         }
 
-        cue._fileStartFrames = ApplyCueFileOffsets(cuePath, cue._files, cue._tracks);
-
-        // Ensure track start times are monotonic; set missing to previous
-        CdTime last = new CdTime(0, 2, 0);
-        foreach (var track in cue._tracks)
+        if (currentTrack != null)
         {
-            if (track.StartTime.ToFrames() == 0)
-                track.StartTime = last;
-            if (track.StartTime < last)
-                track.StartTime = last;
-            last = track.StartTime;
+            currentFile ??= new ParsedFile(string.Empty);
+            currentFile.Tracks.Add(currentTrack);
         }
+        if (currentFile != null)
+            parsedFiles.Add(currentFile);
+
+        BuildTracksFromParsedFiles(cue, parsedFiles);
 
         return cue;
     }
@@ -240,43 +278,86 @@ internal sealed class CdCue
         return (int)(length / sectorSize);
     }
 
-    private static int[] ApplyCueFileOffsets(string cuePath, List<string> files, List<CdTrack> tracks)
+    private static void BuildTracksFromParsedFiles(CdCue cue, List<ParsedFile> files)
     {
-        if (files.Count == 0 || tracks.Count == 0)
-            return Array.Empty<int>();
+        if (files.Count == 0)
+            return;
 
-        var fileStartFramesAbs = new int[files.Count];
-        int acc = 0;
-        for (int i = 0; i < files.Count; i++)
+        int absoluteStartFrames = 0;
+        for (int fileIndex = 0; fileIndex < files.Count; fileIndex++)
         {
-            fileStartFramesAbs[i] = acc + 150;
-            string path = files[i];
-            int sectorSize = GuessSectorSize(path);
-            int sectorCount = GuessSectorCount(path, sectorSize);
-            acc += sectorCount;
-        }
+            ParsedFile file = files[fileIndex];
+            if (string.IsNullOrWhiteSpace(file.Path))
+                continue;
+            if (!File.Exists(file.Path))
+                continue;
 
-        foreach (var track in tracks)
-        {
-            int fileIdx = track.FileIndex;
-            int fileStartAbs = fileIdx >= 0 && fileIdx < fileStartFramesAbs.Length ? fileStartFramesAbs[fileIdx] : 150;
-            int startFrames = fileStartAbs + track.StartTime.ToFrames();
-            track.StartTime = CdTime.FromFrames(startFrames);
-            if (track.Index00Time.HasValue)
+            int sectorSize = GuessSectorSize(file.Path);
+            int sectorCount = GuessSectorCount(file.Path, sectorSize);
+            CdTime fileLen = CdTime.FromFrames(sectorCount);
+
+            for (int i = 0; i < file.Tracks.Count; i++)
             {
-                int indexFrames = fileStartAbs + track.Index00Time.Value.ToFrames();
-                track.Index00Time = CdTime.FromFrames(indexFrames);
+                ParsedTrack track = file.Tracks[i];
+                CdTime trackStart = track.TrackStart ?? CdTime.Zero;
+                CdTime pauseStart = track.PauseStart ?? trackStart;
+                CdTime pauseLen = trackStart.Sub(pauseStart);
+                CdTime pregapLen = track.TrackType == CdTrackType.Data ? CdTime.TwoSeconds : (track.PregapLen ?? CdTime.Zero);
+
+                CdTime dataEndTime;
+                if (i + 1 < file.Tracks.Count)
+                {
+                    ParsedTrack next = file.Tracks[i + 1];
+                    dataEndTime = next.PauseStart ?? next.TrackStart ?? trackStart;
+                }
+                else
+                {
+                    dataEndTime = fileLen;
+                }
+                if (dataEndTime < trackStart)
+                    dataEndTime = trackStart;
+
+                CdTime dataLen = dataEndTime.Sub(trackStart);
+                CdTime postgapLen = track.TrackType == CdTrackType.Data ? CdTime.TwoSeconds : CdTime.Zero;
+                CdTime paddedLen = pregapLen.Add(pauseLen).Add(dataLen).Add(postgapLen);
+
+                CdTime startTime = CdTime.FromFrames(absoluteStartFrames);
+                CdTime endTime = startTime.Add(paddedLen);
+
+                cue._tracks.Add(new CdTrack
+                {
+                    Number = track.Number,
+                    TrackType = track.TrackType,
+                    StartTime = startTime,
+                    EndTime = endTime,
+                    PregapLen = pregapLen,
+                    PauseLen = pauseLen,
+                    PostgapLen = postgapLen,
+                    FileTime = pauseStart,
+                    FileIndex = fileIndex
+                });
+
+                absoluteStartFrames = endTime.ToFrames();
             }
         }
 
-        return fileStartFramesAbs;
+        if (cue._tracks.Count == 0)
+            return;
+
+        CdTrack last = cue._tracks[^1];
+        if (last.PostgapLen.ToFrames() == 0)
+        {
+            last.PostgapLen = CdTime.TwoSeconds;
+            last.EndTime = last.EndTime.Add(CdTime.TwoSeconds);
+            cue._tracks[^1] = last;
+        }
     }
 
     public void FinalizeEndTimes(CdTime discEnd)
     {
         for (int i = 0; i < _tracks.Count; i++)
         {
-            _tracks[i].EndTime = i + 1 < _tracks.Count ? _tracks[i + 1].EffectiveStartTime() : discEnd;
+            _tracks[i].EndTime = i + 1 < _tracks.Count ? _tracks[i + 1].StartTime : discEnd;
         }
     }
 }
@@ -343,7 +424,7 @@ internal sealed class CdRom
         }
 
         var files = new List<FileEntry>();
-        if (cue.Files.Count > 0 && cue.FileStartFrames.Count == cue.Files.Count)
+        if (cue.Files.Count > 0)
         {
             for (int i = 0; i < cue.Files.Count; i++)
             {
@@ -370,7 +451,7 @@ internal sealed class CdRom
                     }
                 }
 
-                files.Add(new FileEntry(filePath, sectorSize, sectorCount, cue.FileStartFrames[i], data));
+                files.Add(new FileEntry(filePath, sectorSize, sectorCount, 0, data));
             }
         }
         else
@@ -397,14 +478,14 @@ internal sealed class CdRom
                 }
             }
 
-            files.Add(new FileEntry(dataPath, sectorSize, sectorCount, 150, data));
+            files.Add(new FileEntry(dataPath, sectorSize, sectorCount, 0, data));
         }
 
         var rom = new CdRom(files, cue);
         int totalSectors = 0;
         foreach (var file in files)
             totalSectors += file.SectorCount;
-        var discEnd = new CdTime(0, 2, 0).AddFrames(totalSectors);
+        var discEnd = CdTime.TwoSeconds.AddFrames(totalSectors);
         cue.FinalizeEndTimes(discEnd);
         if (LogDisc)
         {
@@ -418,23 +499,50 @@ internal sealed class CdRom
 
     public bool ReadSector(CdTime time, Span<byte> buffer)
     {
-        int absoluteFrames = time.ToFrames();
-        if (absoluteFrames < 150)
+        CdTrack? track = _cue.FindTrackByTime(time);
+        if (track == null)
         {
-            if (TryWriteFakePregap(time, buffer))
-                return true;
             buffer.Fill(0);
             return false;
         }
 
-        if (!TryResolveFile(time, out FileEntry entry, out int lbaInFile))
+        CdTime relative = time.Sub(track.StartTime);
+        return ReadSector(track.Number, relative, buffer);
+    }
+
+    public bool ReadSector(int trackNumber, CdTime relativeTime, Span<byte> buffer)
+    {
+        CdTrack track = _cue.Track(trackNumber);
+        CdTime trackLen = track.EndTime.Sub(track.StartTime);
+        CdTime dataEnd = trackLen.Sub(track.PostgapLen);
+
+        if (relativeTime < track.PregapLen || relativeTime >= dataEnd)
         {
-            if (TryWriteFakePregap(time, buffer))
-                return true;
+            if (track.TrackType == CdTrackType.Data)
+                WriteFakeDataPregap(relativeTime, buffer);
+            else
+                buffer.Fill(0);
+            return true;
+        }
+
+        int relativeFrames = relativeTime.Sub(track.PregapLen).ToFrames();
+        int sectorNumber = relativeFrames;
+
+        if (track.FileIndex < 0 || track.FileIndex >= _files.Count)
+        {
             buffer.Fill(0);
             return false;
         }
 
+        FileEntry entry = _files[track.FileIndex];
+        int fileStartSector = track.FileTime.ToFrames();
+        int lbaInFile = fileStartSector + sectorNumber;
+        int absoluteFrames = track.StartTime.AddFrames(relativeTime.ToFrames()).ToFrames();
+        return ReadSectorFromFile(entry, lbaInFile, buffer, absoluteFrames);
+    }
+
+    private bool ReadSectorFromFile(FileEntry entry, int lbaInFile, Span<byte> buffer, int absoluteFrames)
+    {
         long offset = (long)lbaInFile * entry.SectorSize;
         lock (_lock)
         {
@@ -463,9 +571,8 @@ internal sealed class CdRom
                 buffer[11] = 0x00;
 
                 // Header (BCD MSF) + mode
-                int msfFrames = absoluteFrames;
-                int minutes = msfFrames / (60 * 75);
-                int rem = msfFrames % (60 * 75);
+                int minutes = absoluteFrames / (60 * 75);
+                int rem = absoluteFrames % (60 * 75);
                 int seconds = rem / 75;
                 int frames = rem % 75;
 
@@ -499,9 +606,8 @@ internal sealed class CdRom
             buffer[11] = 0x00;
 
             // Header (BCD MSF) + mode
-            int msfFrames2 = absoluteFrames;
-            int minutes2 = msfFrames2 / (60 * 75);
-            int rem2 = msfFrames2 % (60 * 75);
+            int minutes2 = absoluteFrames / (60 * 75);
+            int rem2 = absoluteFrames % (60 * 75);
             int seconds2 = rem2 / 75;
             int frames2 = rem2 % 75;
 
@@ -522,15 +628,8 @@ internal sealed class CdRom
         }
     }
 
-    private bool TryWriteFakePregap(CdTime time, Span<byte> buffer)
+    private static void WriteFakeDataPregap(CdTime time, Span<byte> buffer)
     {
-        CdTrack? track = _cue.FindTrackByTime(time);
-        if (track == null || track.TrackType != CdTrackType.Data)
-            return false;
-
-        if (time >= track.StartTime)
-            return false;
-
         buffer.Fill(0);
         // Sync (12 bytes) - match jgenesis pregap filler.
         buffer[0] = 0x00;
@@ -542,34 +641,6 @@ internal sealed class CdRom
         buffer[13] = ToBcd(time.Seconds);
         buffer[14] = ToBcd(time.Frames);
         buffer[15] = 0x01; // Mode 1
-        return true;
-    }
-
-    public bool ReadSector(int trackNumber, CdTime relativeTime, Span<byte> buffer)
-    {
-        CdTrack track = _cue.Track(trackNumber);
-        CdTime absolute = track.StartTime.AddFrames(relativeTime.ToFrames());
-        return ReadSector(absolute, buffer);
-    }
-
-    private bool TryResolveFile(CdTime time, out FileEntry entry, out int lbaInFile)
-    {
-        int absoluteFrames = time.ToFrames();
-        foreach (var file in _files)
-        {
-            int start = file.StartFrameAbs;
-            int end = start + file.SectorCount;
-            if (absoluteFrames >= start && absoluteFrames < end)
-            {
-                entry = file;
-                lbaInFile = absoluteFrames - start;
-                return true;
-            }
-        }
-
-        entry = default;
-        lbaInFile = 0;
-        return false;
     }
 
     private static int GuessSectorSize(string path)
@@ -631,5 +702,25 @@ internal sealed class CdRom
         int tens = value / 10;
         int ones = value % 10;
         return (byte)((tens << 4) | ones);
+    }
+}
+
+internal sealed class ParsedTrack
+{
+    public int Number { get; set; }
+    public CdTrackType TrackType { get; set; }
+    public CdTime? TrackStart { get; set; }
+    public CdTime? PauseStart { get; set; }
+    public CdTime? PregapLen { get; set; }
+}
+
+internal sealed class ParsedFile
+{
+    public string Path { get; }
+    public List<ParsedTrack> Tracks { get; } = new();
+
+    public ParsedFile(string path)
+    {
+        Path = path;
     }
 }

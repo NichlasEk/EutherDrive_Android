@@ -125,7 +125,7 @@ namespace ePceCD
             }
 
             //m_CDRom.MixCD((short*)stream.ToPointer(), len / 2);
-            m_CDRom.MixCD(buffer, len / 2);
+            m_CDRom.MixCD(buffer, len, offset);
         }
 
         private int GetChannelSample(PSG_Channel channel)

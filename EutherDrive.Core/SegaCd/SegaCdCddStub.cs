@@ -507,8 +507,9 @@ public sealed class SegaCdCddStub
             return;
         }
 
-        // Read by absolute time so pregap handling (if any) is consistent with cue timing.
-        _disc.ReadSector(time, _sectorBuffer);
+        // Read by track-relative time (matches jgenesis timing model).
+        CdTime relative = time.SaturatingSub(track.StartTime);
+        _disc.ReadSector(track.Number, relative, _sectorBuffer);
         cdc.DecodeBlock(_sectorBuffer);
         _loadedAudioSector = track.TrackType == CdTrackType.Audio;
 
