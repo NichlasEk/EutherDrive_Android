@@ -55,7 +55,12 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         }
         else
         {
-            bool swap = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SWAP") == "1";
+            bool? swapOverride = null;
+            string? swapEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SWAP");
+            if (!string.IsNullOrWhiteSpace(swapEnv))
+                swapOverride = swapEnv == "1" || swapEnv.Equals("true", StringComparison.OrdinalIgnoreCase);
+
+            bool swap = swapOverride ?? false;
             _bus.LoadRom(path, swap);
         }
 
@@ -300,5 +305,138 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         }
 
         return null;
+    }
+
+    private static bool ShouldBitSwapPce(string path)
+    {
+        try
+        {
+            byte[] data = File.ReadAllBytes(path);
+            if (data.Length < 0x2000)
+                return false;
+
+            int headerOffset = (data.Length % 0x2000) == 0x200 ? 0x200 : 0;
+
+            int plainScore = ScorePceEntry(data, headerOffset);
+            byte[] swapped = BitSwapCopy(data);
+            int swapScore = ScorePceEntry(swapped, headerOffset);
+
+            int plainAscii = ScoreAsciiSequences(data);
+            int swapAscii = ScoreAsciiSequences(swapped);
+
+            int asciiThreshold = Math.Max(500, plainAscii / 20);
+            bool asciiSwap = swapAscii > plainAscii + asciiThreshold;
+            bool asciiPlain = plainAscii > swapAscii + Math.Max(500, swapAscii / 20);
+            bool closeScores = Math.Abs(plainScore - swapScore) <= 2;
+            string decision = "plain";
+
+            if (plainScore > swapScore)
+            {
+                decision = "plain";
+                Console.WriteLine($"[PCE] Bit-swap detect: path='{path}', len=0x{data.Length:X}, header=0x{headerOffset:X}, plainScore={plainScore}, swapScore={swapScore}, plainAscii={plainAscii}, swapAscii={swapAscii}, choice={decision}");
+                return false;
+            }
+            if (swapScore > plainScore)
+            {
+                decision = "swap";
+                Console.WriteLine($"[PCE] Bit-swap detect: path='{path}', len=0x{data.Length:X}, header=0x{headerOffset:X}, plainScore={plainScore}, swapScore={swapScore}, plainAscii={plainAscii}, swapAscii={swapAscii}, choice={decision}");
+                return true;
+            }
+
+            decision = "plain";
+            if (plainScore == 0 && swapScore == 0 && asciiSwap)
+                decision = "swap";
+            else if (asciiPlain && closeScores)
+                decision = "plain";
+
+            Console.WriteLine($"[PCE] Bit-swap detect: path='{path}', len=0x{data.Length:X}, header=0x{headerOffset:X}, plainScore={plainScore}, swapScore={swapScore}, plainAscii={plainAscii}, swapAscii={swapAscii}, choice={decision}");
+            if (decision == "swap")
+                return true;
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int ScorePceEntry(byte[] data, int offset)
+    {
+        if (offset < 0 || data.Length < offset + 0x2000)
+            return 0;
+        int vec = data[offset + 0x1FFC] | (data[offset + 0x1FFD] << 8);
+        if (vec < 0xE000 || vec > 0xFFFF)
+            return 0;
+
+        int entryIndex = offset + (vec & 0x1FFF);
+        if (entryIndex < 0 || entryIndex >= data.Length)
+            return 0;
+
+        byte op0 = data[entryIndex];
+        int score = 1;
+
+        if (op0 is 0x78 or 0xD8 or 0xA9 or 0xA2 or 0xA0 or 0x20 or 0x4C or 0xEA or 0x9A)
+            score += 2;
+
+        if (entryIndex + 1 < data.Length)
+        {
+            byte op1 = data[entryIndex + 1];
+            if (op1 is 0xD8 or 0xA2 or 0xA9 or 0xA0 or 0x9A or 0x20 or 0x4C)
+                score += 1;
+        }
+
+        int maxCheck = Math.Min(16, data.Length - entryIndex);
+        for (int i = 0; i < maxCheck; i++)
+        {
+            byte op = data[entryIndex + i];
+            if (op is 0x78 or 0xD8 or 0x58 or 0x18 or 0x38 or 0x9A or 0xA9 or 0xA2 or 0xA0 or 0x20 or 0x4C or 0xEA or 0xAD or 0xAE or 0xAC or 0xBD or 0xB9)
+                score += 1;
+        }
+
+        return score;
+    }
+
+    private static byte[] BitSwapCopy(byte[] data)
+    {
+        byte[] result = new byte[data.Length];
+        for (int i = 0; i < data.Length; i++)
+        {
+            byte b = data[i];
+            result[i] = (byte)(
+                ((b & 0x80) >> 7) |
+                ((b & 0x40) >> 5) |
+                ((b & 0x20) >> 3) |
+                ((b & 0x10) >> 1) |
+                ((b & 0x08) << 1) |
+                ((b & 0x04) << 3) |
+                ((b & 0x02) << 5) |
+                ((b & 0x01) << 7));
+        }
+        return result;
+    }
+
+    private static int ScoreAsciiSequences(byte[] data)
+    {
+        int score = 0;
+        int run = 0;
+        for (int i = 0; i < data.Length; i++)
+        {
+            byte b = data[i];
+            if (b >= 0x20 && b <= 0x7E)
+            {
+                run++;
+            }
+            else
+            {
+                if (run >= 4)
+                    score += run;
+                run = 0;
+            }
+        }
+
+        if (run >= 4)
+            score += run;
+
+        return score;
     }
 }

@@ -110,6 +110,7 @@ namespace ePceCD
                 MapRomPages(_romPages);
         }
 
+
         public void DeSerializable(IRenderHandler render, IAudioHandler audio)
         {
             RebuildBankList();
@@ -181,6 +182,9 @@ namespace ePceCD
         {
             m_FiredTIMER = false;
             m_TimerCounting = false;
+            m_EnableIRQ1 = true;
+            m_EnableIRQ2 = true;
+            m_EnableTIMER = true;
 
             PPU.Reset();
             m_DeadClocks = 0;
@@ -279,6 +283,8 @@ namespace ePceCD
 
         private byte ReadIRQCtrl(int address)
         {
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_IRQ") == "1")
+                Console.WriteLine($"[PCE-IRQ] READ addr=0x{address:X}");
             switch (address)
             {
                 case 2: // Enables
@@ -300,16 +306,21 @@ namespace ePceCD
 
         private void WriteIRQCtrl(int address, byte data)
         {
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_IRQ") == "1")
+                Console.WriteLine($"[PCE-IRQ] WRITE addr=0x{address:X} data=0x{data:X2}");
             switch (address)
             {
                 case 2: // Enables
                     m_EnableIRQ2 = (data & 1) == 0;
                     m_EnableIRQ1 = (data & 2) == 0;
                     m_EnableTIMER = (data & 4) == 0;
-
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_IRQ") == "1")
+                        Console.WriteLine($"[PCE-IRQ] CTRL=0x{data:X2} IRQ1={(m_EnableIRQ1 ? 1 : 0)} IRQ2={(m_EnableIRQ2 ? 1 : 0)} TIMER={(m_EnableTIMER ? 1 : 0)}");
                     break;
                 case 3: // Pendings (ack timer)
                     m_FiredTIMER = false;
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_IRQ") == "1")
+                        Console.WriteLine("[PCE-IRQ] TIMER ack");
                     break;
             }
         }
@@ -429,6 +440,17 @@ namespace ePceCD
             {
                 for (i = 0; i < page.Length; i++)
                     m_BankList[i] = new RomBank(page[i]);
+
+                // Mirror remaining banks for standard HuCard ROMs.
+                if (page.Length > 0)
+                {
+                    int mirrorEnd = Math.Min(0x80, 0x100);
+                    for (i = page.Length; i < mirrorEnd; i++)
+                    {
+                        if (ReferenceEquals(m_BankList[i], nullMemory))
+                            m_BankList[i] = m_BankList[i % page.Length];
+                    }
+                }
             }
 
             for (i = 0; i < 0x100; i++)

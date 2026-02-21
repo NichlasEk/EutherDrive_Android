@@ -130,6 +130,8 @@ namespace ePceCD
         private bool m_VDC_SprOvIRQ;
         private bool m_VDC_Spr0Col;
         private int m_VDC_Increment;
+        private int m_VdcStatusLogCount;
+        private bool m_VdcStatusSuppressed;
 
         // VCE REGISTERS
         //private bool m_VCE_BW;
@@ -253,6 +255,11 @@ namespace ePceCD
                 {
                     m_VDC_VD = true;
                     m_WaitingIRQ = true;
+                    if (TraceVdcRegs && !m_VdcStatusSuppressed && m_VdcStatusLogCount < 20)
+                    {
+                        Console.WriteLine($"[PCE-VDC] VBK line={m_RenderLine} VDS={m_VDC_VDS} VDW={m_VDC_VDW} RCR={m_VDC_RCR} CR={(m_VDC_EnableBackground ? 1 : 0)}:{(m_VDC_EnableSprites ? 1 : 0)}");
+                        m_VdcStatusLogCount++;
+                    }
                 }
             }
             else if (m_RenderLine + 0x3F == m_VDC_RCR)
@@ -261,6 +268,11 @@ namespace ePceCD
                 {
                     m_VDC_RR = true;
                     m_WaitingIRQ = true;
+                    if (TraceVdcRegs && !m_VdcStatusSuppressed && m_VdcStatusLogCount < 20)
+                    {
+                        Console.WriteLine($"[PCE-VDC] RCR line={m_RenderLine} RCR={m_VDC_RCR}");
+                        m_VdcStatusLogCount++;
+                    }
                 }
             }
 
@@ -542,6 +554,8 @@ namespace ePceCD
                     m_VDC_RCRIRQ = (data & 0x04) != 0;
                     m_VDC_SprOvIRQ = (data & 0x02) != 0;
                     m_VDC_Spr0Col = (data & 0x01) != 0;
+                    if (TraceVdcRegs)
+                        Console.WriteLine($"[PCE-VDC] LSB-CR data=0x{data:X2} BG={(m_VDC_EnableBackground ? 1 : 0)} SPR={(m_VDC_EnableSprites ? 1 : 0)} VBKIRQ={(m_VDC_VBKIRQ ? 1 : 0)}");
                     break;
                 case 0x06: m_VDC_RCR = (m_VDC_RCR & 0x0300) | data; break;
                 case 0x07: m_VDC_BXR = (m_VDC_BXR & 0x0300) | data; break;
@@ -662,6 +676,19 @@ namespace ePceCD
                         (m_VDC_RR ? 0x04 : 0) |
                         (m_VDC_OR ? 0x02 : 0) |
                         (m_VDC_CR ? 0x01 : 0));
+                    if (TraceVdcRegs && !m_VdcStatusSuppressed)
+                    {
+                        if (m_VdcStatusLogCount < 50)
+                        {
+                            Console.WriteLine($"[PCE-VDC] STATUS line={m_RenderLine} status=0x{status:X2} VDS={m_VDC_VDS} VDW={m_VDC_VDW} RCR={m_VDC_RCR}");
+                            m_VdcStatusLogCount++;
+                        }
+                        else
+                        {
+                            Console.WriteLine("[PCE-VDC] STATUS logging suppressed.");
+                            m_VdcStatusSuppressed = true;
+                        }
+                    }
                     m_VDC_VD = false;
                     m_VDC_DV = false;
                     m_VDC_DS = false;

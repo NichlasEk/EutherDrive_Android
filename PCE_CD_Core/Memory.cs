@@ -7,6 +7,9 @@ namespace ePceCD
     public class MemoryBank
     {
         protected int m_MemoryPage;
+        protected const int MaxUnknownLogs = 20;
+        private static int s_UnknownMemLogCount;
+        private static bool s_UnknownMemSuppressed;
 
         public void SetMemoryPage(int page)
         {
@@ -15,13 +18,31 @@ namespace ePceCD
 
         virtual public byte ReadAt(int address)
         {
-            Console.WriteLine("Unknown memory access at address {0:x}-{1:x}", m_MemoryPage, address);
+            if (s_UnknownMemLogCount < MaxUnknownLogs)
+            {
+                Console.WriteLine("Unknown memory access at address {0:x}-{1:x}", m_MemoryPage, address);
+                s_UnknownMemLogCount++;
+            }
+            else if (!s_UnknownMemSuppressed)
+            {
+                Console.WriteLine("Unknown memory access logging suppressed.");
+                s_UnknownMemSuppressed = true;
+            }
             return 0xFF;
         }
 
         virtual public void WriteAt(int address, byte data)
         {
-            Console.WriteLine("Unknown memory access at address {0:x}-{1:x} -> {2:x}", m_MemoryPage, address, data);
+            if (s_UnknownMemLogCount < MaxUnknownLogs)
+            {
+                Console.WriteLine("Unknown memory access at address {0:x}-{1:x} -> {2:x}", m_MemoryPage, address, data);
+                s_UnknownMemLogCount++;
+            }
+            else if (!s_UnknownMemSuppressed)
+            {
+                Console.WriteLine("Unknown memory access logging suppressed.");
+                s_UnknownMemSuppressed = true;
+            }
         }
     }
 
@@ -50,6 +71,8 @@ namespace ePceCD
     public class RomBank : MemoryBank
     {
         private byte[] m_Rom;
+        private static int s_UnknownRomLogCount;
+        private static bool s_UnknownRomSuppressed;
 
         public RomBank(byte[] page)
         {
@@ -64,7 +87,16 @@ namespace ePceCD
 
         public override void WriteAt(int address, byte data)
         {
-            Console.WriteLine("Unknown rom access at address {0:x}-{1:x} -> {2:x}", m_MemoryPage, address, data);
+            if (s_UnknownRomLogCount < MaxUnknownLogs)
+            {
+                Console.WriteLine("Unknown rom access at address {0:x}-{1:x} -> {2:x}", m_MemoryPage, address, data);
+                s_UnknownRomLogCount++;
+            }
+            else if (!s_UnknownRomSuppressed)
+            {
+                Console.WriteLine("Unknown rom access logging suppressed.");
+                s_UnknownRomSuppressed = true;
+            }
         }
     }
 

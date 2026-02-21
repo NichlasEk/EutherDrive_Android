@@ -6,6 +6,7 @@ namespace ePceCD
     [Serializable]
     public class HuC6280
     {
+        private int _traceOpCount;
         public enum InstructionOpcode : byte
         {
             INS_BRK,            // 00
@@ -391,6 +392,8 @@ namespace ePceCD
             m_ZeroPage = GetBank(0xF8);
 
             m_PC = Read16((ushort)IRQVector.VECTOR_RESET);
+            byte op0 = Read8(m_PC);
+            Console.WriteLine($"[PCE] Reset: MPR7=0x{m_MPR[7]:X2}, PC=0x{m_PC:X4}, op0=0x{op0:X2}");
         }
 
         public bool IRQ2Waiting()
@@ -703,6 +706,9 @@ namespace ePceCD
             if ((op & 0x04) != 0) { m_MPR[2] = m_A; m_Bank[2] = bank; }
             if ((op & 0x02) != 0) { m_MPR[1] = m_A; m_Bank[1] = bank; }
             if ((op & 0x01) != 0) { m_MPR[0] = m_A; m_Bank[0] = bank; }
+
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_MPR") == "1")
+                Console.WriteLine($"[PCE] TAM op=0x{op:X2} A=0x{m_A:X2} -> MPR=[{m_MPR[0]:X2} {m_MPR[1]:X2} {m_MPR[2]:X2} {m_MPR[3]:X2} {m_MPR[4]:X2} {m_MPR[5]:X2} {m_MPR[6]:X2} {m_MPR[7]:X2}]");
         }
         private void TMA(byte op)
         {
@@ -903,6 +909,13 @@ namespace ePceCD
         {
             CurrentPC = m_PC;
             byte op = ReadImmediate8();
+
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_PC") == "1")
+            {
+                _traceOpCount++;
+                if ((_traceOpCount % 20000) == 0)
+                    Console.WriteLine($"[PCE] PC=0x{CurrentPC:X4} op=0x{op:X2} A=0x{m_A:X2} X=0x{m_X:X2} Y=0x{m_Y:X2} MPR7=0x{m_MPR[7]:X2}");
+            }
 
             m_AdvanceClock += InstructionTiming[op];
 

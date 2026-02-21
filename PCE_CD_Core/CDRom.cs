@@ -281,7 +281,7 @@ namespace ePceCD
 
         private void ParseFileCommand(string[] parts, string baseDir)
         {
-            string filename = string.Join(" ", parts.Skip(1).TakeWhile(p => p != "BINARY")).Trim('"');
+            string filename = string.Join(" ", parts.Skip(1).TakeWhile(p => p != "BINARY" && p != "WAVE")).Trim('"');
             string filePath = Path.Combine(baseDir, filename);
             currentTrack = new CDTrack { File = new FileStream(filePath, FileMode.Open, FileAccess.Read) };
             currentTrack.FileName = filePath;
