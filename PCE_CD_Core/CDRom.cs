@@ -67,6 +67,7 @@ namespace ePceCD
             public byte Adr;      // 子通道Q ADR类型
         }
         public CDTrack currentTrack, FileTrack;
+        private bool _bramInitialized;
 
         public enum CdRomIrqSource
         {
@@ -282,16 +283,12 @@ namespace ePceCD
         private void ParseFileCommand(string[] parts, string baseDir)
         {
             string filename = string.Join(" ", parts.Skip(1).TakeWhile(p => p != "BINARY" && p != "WAVE")).Trim('"');
+            string fileType = parts.LastOrDefault() ?? string.Empty;
             string filePath = Path.Combine(baseDir, filename);
             currentTrack = new CDTrack { File = new FileStream(filePath, FileMode.Open, FileAccess.Read) };
             currentTrack.FileName = filePath;
-            FileTrack = currentTrack;
-            Console.WriteLine($"CDROM {filePath} BINARY LOADED");
-            string savefile = Path.GetFileNameWithoutExtension(filePath);
-
-            string saveDir = GetSaveDirectory();
-            Directory.CreateDirectory(saveDir);
-            Bus.BRAM = new SaveMemoryBank(Path.Combine(saveDir, savefile));
+            string typeLabel = fileType.Equals("WAVE", StringComparison.OrdinalIgnoreCase) ? "WAVE" : "BINARY";
+            Console.WriteLine($"CDROM {filePath} {typeLabel} LOADED");
         }
 
         private static string GetSaveDirectory()
@@ -319,15 +316,32 @@ namespace ePceCD
                     track.Type = TrackType.MODE1;
                     track.Control = 0x00;
                     track.Adr = 0x01;
+                    EnsureDataTrack(track);
                     break;
                 case "MODE1/2352":
                     track.Type = TrackType.MODE1_2352;
                     track.Control = 0x00;
                     track.Adr = 0x01;
+                    EnsureDataTrack(track);
                     break;
             }
             tracks.Add(track);
             currentTrack = track;
+        }
+
+        private void EnsureDataTrack(CDTrack track)
+        {
+            if (FileTrack != null)
+                return;
+            FileTrack = track;
+            if (_bramInitialized)
+                return;
+
+            string savefile = Path.GetFileNameWithoutExtension(track.FileName);
+            string saveDir = GetSaveDirectory();
+            Directory.CreateDirectory(saveDir);
+            Bus.BRAM = new SaveMemoryBank(Path.Combine(saveDir, savefile));
+            _bramInitialized = true;
         }
 
         private void ParseIndexCommand(string[] parts)
@@ -355,22 +369,39 @@ namespace ePceCD
         private void CalculateTrackMSF()
         {
             long fileOffset = 0;
+            long discSectorCursor = 0;
             string lastFile = string.Empty;
             foreach (var track in tracks)
             {
                 if (!string.Equals(track.FileName, lastFile, StringComparison.OrdinalIgnoreCase))
                     fileOffset = 0;
                 lastFile = track.FileName ?? string.Empty;
-                long baseOffset = GetFileDataOffset(track.FileName);
 
-                track.SectorStart = MSFToLBA(track.StartPos.MSF_M, track.StartPos.MSF_S, track.StartPos.MSF_F);
+                long baseOffset = GetFileDataOffset(track.FileName);
+                int sectorSize = GetTrackSectorSize(track);
+                long trackStartLba = MSFToLBA(track.StartPos.MSF_M, track.StartPos.MSF_S, track.StartPos.MSF_F);
+
+                track.SectorStart = discSectorCursor + trackStartLba;
                 track.OffsetStart = baseOffset + fileOffset;
 
                 var nextTrack = tracks.FirstOrDefault(t => t.Number == track.Number + 1);
-                track.SectorEnd = nextTrack?.SectorStart ?? (track.File.Length / SECTOR_SIZE);
+                long sectorLength;
+                if (nextTrack != null && string.Equals(nextTrack.FileName, track.FileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    long nextStartLba = MSFToLBA(nextTrack.StartPos.MSF_M, nextTrack.StartPos.MSF_S, nextTrack.StartPos.MSF_F);
+                    sectorLength = Math.Max(0, nextStartLba - trackStartLba);
+                }
+                else
+                {
+                    long availableBytes = Math.Max(0, track.File.Length - baseOffset - fileOffset);
+                    sectorLength = availableBytes / sectorSize;
+                }
 
-                track.OffsetEnd = track.OffsetStart + (track.SectorEnd - track.SectorStart) * SECTOR_SIZE;
-                fileOffset = track.OffsetEnd - baseOffset;
+                track.SectorEnd = track.SectorStart + sectorLength;
+                track.OffsetEnd = track.OffsetStart + sectorLength * sectorSize;
+
+                fileOffset += sectorLength * sectorSize;
+                discSectorCursor = track.SectorEnd;
 
                 track.EndPos = new PosMSF
                 {
@@ -651,15 +682,20 @@ namespace ePceCD
                 var track = tracks.FirstOrDefault(t => t.SectorStart <= currentSector && t.SectorEnd > currentSector) ?? currentTrack;
                 if (track.File == null)
                     break;
+                int sectorSize = GetTrackSectorSize(track);
+                int dataOffset = GetTrackDataOffset(track);
                 long relSector = currentSector - track.SectorStart;
-                long fileOffset = track.OffsetStart + relSector * SECTOR_SIZE;
+                long fileOffset = track.OffsetStart + relSector * sectorSize;
                 track.File.Seek(fileOffset, SeekOrigin.Begin);
-                track.File.Read(sectorBuffer, 0, SECTOR_SIZE);
+                track.File.Read(sectorBuffer, 0, sectorSize);
                 switch (track.Type)
                 {
                     case TrackType.MODE1:
+                        Array.Copy(sectorBuffer, dataOffset, data, datasize, MODE1_DATA_SIZE);
+                        datasize += MODE1_DATA_SIZE;
+                        break;
                     case TrackType.MODE1_2352:
-                        Array.Copy(sectorBuffer, DATA_SECTOR_OFFSET, data, datasize, MODE1_DATA_SIZE);
+                        Array.Copy(sectorBuffer, dataOffset, data, datasize, MODE1_DATA_SIZE);
                         datasize += MODE1_DATA_SIZE;
                         break;
                     default:
@@ -696,7 +732,7 @@ namespace ePceCD
                     break;
 
                 case 0x01:
-                    calcLBA = FileTrack.File.Length / SECTOR_SIZE;
+                    calcLBA = FileTrack.File.Length / GetTrackSectorSize(FileTrack);
                     minutes = (int)(calcLBA / (60 * 75));
                     seconds = (int)((calcLBA / 75) % 60);
                     frames = (int)(calcLBA % 75);
@@ -778,6 +814,16 @@ namespace ePceCD
             SetPhase(ScsiPhase.DataIn);
 
             CdPlaying = Playing;
+        }
+
+        private static int GetTrackSectorSize(CDTrack track)
+        {
+            return track.Type == TrackType.MODE1 ? MODE1_DATA_SIZE : SECTOR_SIZE;
+        }
+
+        private static int GetTrackDataOffset(CDTrack track)
+        {
+            return track.Type == TrackType.MODE1_2352 ? DATA_SECTOR_OFFSET : 0;
         }
 
         private int AudioGetPos()

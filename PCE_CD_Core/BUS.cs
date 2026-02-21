@@ -33,6 +33,8 @@ namespace ePceCD
         private bool m_TimerCounting;
 
         private byte m_BusCap;
+        private int _irqTraceCount;
+        private bool _irqTraceSuppressed;
 
         private int m_OverFlowCycles;
         private int m_DeadClocks;
@@ -307,7 +309,7 @@ namespace ePceCD
         private void WriteIRQCtrl(int address, byte data)
         {
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_IRQ") == "1")
-                Console.WriteLine($"[PCE-IRQ] WRITE addr=0x{address:X} data=0x{data:X2}");
+                TraceIrq($"WRITE addr=0x{address:X} data=0x{data:X2}");
             switch (address)
             {
                 case 2: // Enables
@@ -315,13 +317,29 @@ namespace ePceCD
                     m_EnableIRQ1 = (data & 2) == 0;
                     m_EnableTIMER = (data & 4) == 0;
                     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_IRQ") == "1")
-                        Console.WriteLine($"[PCE-IRQ] CTRL=0x{data:X2} IRQ1={(m_EnableIRQ1 ? 1 : 0)} IRQ2={(m_EnableIRQ2 ? 1 : 0)} TIMER={(m_EnableTIMER ? 1 : 0)}");
+                        TraceIrq($"CTRL=0x{data:X2} IRQ1={(m_EnableIRQ1 ? 1 : 0)} IRQ2={(m_EnableIRQ2 ? 1 : 0)} TIMER={(m_EnableTIMER ? 1 : 0)}");
                     break;
                 case 3: // Pendings (ack timer)
                     m_FiredTIMER = false;
                     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_IRQ") == "1")
-                        Console.WriteLine("[PCE-IRQ] TIMER ack");
+                        TraceIrq("TIMER ack");
                     break;
+            }
+        }
+
+        private void TraceIrq(string message)
+        {
+            if (_irqTraceSuppressed)
+                return;
+            if (_irqTraceCount < 50)
+            {
+                Console.WriteLine($"[PCE-IRQ] {message}");
+                _irqTraceCount++;
+            }
+            else
+            {
+                Console.WriteLine("[PCE-IRQ] logging suppressed.");
+                _irqTraceSuppressed = true;
             }
         }
 
