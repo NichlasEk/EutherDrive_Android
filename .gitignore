@@ -12,6 +12,7 @@ eutherdrive_last_rom.txt
 eutherdrive_region.txt
 eutherdrive_settings.json
 eutherdrive_settings.toml
+memcard.mcr
 savestates/
 roms/
 logs/
