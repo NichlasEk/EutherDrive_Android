@@ -9,6 +9,8 @@ namespace Ryu64.MIPS
         private delegate void MemoryEvent();
         private static readonly bool StrictDataTlb =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_LOOSE_DATA_TLB"), "1", StringComparison.Ordinal);
+        private static readonly bool AllowDirectLowPhysicalWindow =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_STRICT_LOWSEG"), "1", StringComparison.Ordinal);
         private static readonly bool TraceN64Io =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_IO"), "1", StringComparison.Ordinal);
 
@@ -968,6 +970,14 @@ namespace Ryu64.MIPS
             // kseg0: 0x8000_0000..0x9FFF_FFFF (direct-mapped, cached)
             // kseg1: 0xA000_0000..0xBFFF_FFFF (direct-mapped, uncached)
             // Others use TLB translation.
+            //
+            // Bring-up compatibility:
+            // Some N64 boot/runtime paths occasionally hit low (physical-looking) addresses
+            // before full TLB state is established. Allow that window to pass through unless
+            // strict mode is explicitly requested.
+            if (AllowDirectLowPhysicalWindow && virtualAddress < 0x20000000u)
+                return virtualAddress;
+
             uint segment = virtualAddress & 0xE0000000u;
             if (segment == 0x80000000u || segment == 0xA0000000u)
                 return virtualAddress & 0x1FFFFFFFu;

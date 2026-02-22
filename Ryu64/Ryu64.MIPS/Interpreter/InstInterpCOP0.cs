@@ -7,6 +7,44 @@ namespace Ryu64.MIPS
         private static readonly bool TraceCop0 =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_COP0"), "1", StringComparison.Ordinal);
 
+        private static ulong NormalizeCop0WriteValue(int reg, ulong rawValue)
+        {
+            uint value = (uint)rawValue;
+            switch (reg)
+            {
+                case Registers.COP0.INDEX_REG:
+                    // INDEX: P bit + low index bits are meaningful.
+                    return value & 0x8000003Fu;
+                case Registers.COP0.RANDOM_REG:
+                    // RANDOM is hardware-managed.
+                    return Registers.COP0.Reg[Registers.COP0.RANDOM_REG];
+                case Registers.COP0.ENTRYLO0_REG:
+                case Registers.COP0.ENTRYLO1_REG:
+                    return value & 0x3FFFFFFFu;
+                case Registers.COP0.PAGEMASK_REG:
+                    return value & 0x01FFE000u;
+                case Registers.COP0.WIRED_REG:
+                    return value & 0x3Fu;
+                case Registers.COP0.ENTRYHI_REG:
+                    // Keep VPN2 + ASID fields.
+                    return value & 0xFFFFE0FFu;
+                default:
+                    return value;
+            }
+        }
+
+        private static void WriteCop0Register(int reg, ulong rawValue)
+        {
+            ulong value = NormalizeCop0WriteValue(reg, rawValue);
+            Registers.COP0.Reg[reg] = value;
+
+            if (reg == Registers.COP0.WIRED_REG)
+            {
+                // VR4300: RANDOM is reset when WIRED changes.
+                Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = 0x1Fu;
+            }
+        }
+
         private static ulong SignExtend32To64(uint value)
         {
             return unchecked((ulong)(long)(int)value);
@@ -30,7 +68,7 @@ namespace Ryu64.MIPS
         public static void MTC0(OpcodeTable.OpcodeDesc Desc)
         {
             ulong value = (uint)Registers.R4300.Reg[Desc.op2];
-            Registers.COP0.Reg[Desc.op3] = value;
+            WriteCop0Register(Desc.op3, value);
             if (TraceCop0 && IsTrackedCop0Register(Desc.op3))
             {
                 Common.Logger.PrintInfoLine(
@@ -50,7 +88,7 @@ namespace Ryu64.MIPS
             // VR4300 CP0 register interface is effectively 32-bit for architectural fields used here.
             // Keep upper bits clear to avoid corrupting exception/status state with guest garbage.
             ulong value = (uint)Registers.R4300.Reg[Desc.op2];
-            Registers.COP0.Reg[Desc.op3] = value;
+            WriteCop0Register(Desc.op3, value);
             if (TraceCop0 && IsTrackedCop0Register(Desc.op3))
             {
                 Common.Logger.PrintInfoLine(
@@ -69,7 +107,7 @@ namespace Ryu64.MIPS
         public static void CTC0(OpcodeTable.OpcodeDesc Desc)
         {
             ulong value = (uint)Registers.R4300.Reg[Desc.op2];
-            Registers.COP0.Reg[Desc.op3] = value;
+            WriteCop0Register(Desc.op3, value);
             if (TraceCop0 && IsTrackedCop0Register(Desc.op3))
             {
                 Common.Logger.PrintInfoLine(

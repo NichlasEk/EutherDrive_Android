@@ -24,6 +24,7 @@ namespace ePceCD
             public int m_X;
             public int m_Y;
             public int m_Pattern;
+            public int m_Mode1Offset;
             //TODO: add CG support, ex: YS I & II
             public bool m_CGPage;
 
@@ -75,6 +76,20 @@ namespace ePceCD
         private ushort m_VDC_LENR;
         private ushort m_VDC_VSAR;
         private int m_VDC_VDS;
+        private int m_VDC_MWR;
+
+        private static readonly int[] ScreenSizeX = { 32, 64, 128, 128, 32, 64, 128, 128 };
+        private static readonly int[] ScreenSizeY = { 32, 32, 32, 32, 64, 64, 64, 64 };
+        private static readonly int[] ScreenSizeXPixels = { 32 * 8, 64 * 8, 128 * 8, 128 * 8, 32 * 8, 64 * 8, 128 * 8, 128 * 8 };
+        private static readonly int[] ScreenSizeYPixels = { 32 * 8, 32 * 8, 32 * 8, 32 * 8, 64 * 8, 64 * 8, 64 * 8, 64 * 8 };
+        private static readonly int[] ScreenSizeXPixelsMask = {
+            (32 * 8) - 1, (64 * 8) - 1, (128 * 8) - 1, (128 * 8) - 1,
+            (32 * 8) - 1, (64 * 8) - 1, (128 * 8) - 1, (128 * 8) - 1
+        };
+        private static readonly int[] ScreenSizeYPixelsMask = {
+            (32 * 8) - 1, (32 * 8) - 1, (32 * 8) - 1, (32 * 8) - 1,
+            (64 * 8) - 1, (64 * 8) - 1, (64 * 8) - 1, (64 * 8) - 1
+        };
 
         private int GetEffectiveVdw()
         {
@@ -235,6 +250,9 @@ namespace ePceCD
             }
 
             m_WaitingIRQ = false;
+            m_BgCounterY = 0;
+            m_BgOffsetY = 0;
+            m_LatchedBxr = 0;
         }
 
         public unsafe void tick()
@@ -301,16 +319,35 @@ namespace ePceCD
                 Parallel.For(0, 64, i =>
                 {
                     int g = m_VDC_VSAR + i * 4;
-                    m_SAT[i].m_Y = m_VRAM[g++] - 64;
-                    m_SAT[i].m_X = m_VRAM[g++] - 32;
-                    m_SAT[i].m_Pattern = (m_VRAM[g] & 0x07FE) << 5;
-                    m_SAT[i].m_CGPage = (m_VRAM[g++] & 0x0001) != 0;
-                    m_SAT[i].m_Palette = ((m_VRAM[g] & 0xF) << 4) | ((i == 0) ? 0x4100 : 0x2100);
-                    m_SAT[i].m_Priority = (m_VRAM[g] & 0x80) != 0;
-                    m_SAT[i].m_Width = ((m_VRAM[g] & 0x100) != 0) ? 2 : 1;
-                    m_SAT[i].m_Height = (((m_VRAM[g] & 0x3000) >> 12) + 1) << 4;
-                    m_SAT[i].m_HorizontalFlip = (m_VRAM[g] & 0x0800) != 0;
-                    m_SAT[i].m_VerticalFlip = (m_VRAM[g++] & 0x8000) != 0;
+                    int sat0 = m_VRAM[g++];
+                    int sat1 = m_VRAM[g++];
+                    int sat2 = m_VRAM[g++];
+                    int sat3 = m_VRAM[g++];
+                    int cgy = (sat3 >> 12) & 0x03;
+                    int cgx = (sat3 >> 8) & 0x01;
+                    bool mode1 = ((m_VDC_MWR >> 2) & 0x03) == 1;
+                    int mode1Offset = mode1 ? (sat2 & 1) << 5 : 0;
+                    int width = (cgx == 0) ? 1 : 2;
+                    int height = (cgy == 0) ? 16 : (cgy == 1 ? 32 : 64);
+                    int pattern = (sat2 >> 1) & 0x3FF;
+                    if (width == 2) pattern &= 0xFFFE;
+                    switch (cgy)
+                    {
+                        case 1: pattern &= 0xFFFD; break;
+                        case 2:
+                        case 3: pattern &= 0xFFF9; break;
+                    }
+                    m_SAT[i].m_Y = (sat0 & 0x3FF) - 64;
+                    m_SAT[i].m_X = (sat1 & 0x3FF) - 32;
+                    m_SAT[i].m_Pattern = pattern << 6;
+                    m_SAT[i].m_Mode1Offset = mode1Offset;
+                    m_SAT[i].m_CGPage = (sat2 & 0x0001) != 0;
+                    m_SAT[i].m_Palette = ((sat3 & 0xF) << 4) | ((i == 0) ? 0x4100 : 0x2100);
+                    m_SAT[i].m_Priority = (sat3 & 0x80) != 0;
+                    m_SAT[i].m_Width = width;
+                    m_SAT[i].m_Height = height;
+                    m_SAT[i].m_HorizontalFlip = (sat3 & 0x0800) != 0;
+                    m_SAT[i].m_VerticalFlip = (sat3 & 0x8000) != 0;
                 });
 
                 if (m_VDC_SATBDMA_IRQ)
@@ -351,16 +388,35 @@ namespace ePceCD
             for (int i = 0; i < 64; i++)
             {
                 int g = m_VDC_VSAR + i * 4;
-                m_SAT[i].m_Y = m_VRAM[g++] - 64;
-                m_SAT[i].m_X = m_VRAM[g++] - 32;
-                m_SAT[i].m_Pattern = (m_VRAM[g] & 0x07FE) << 5;
-                m_SAT[i].m_CGPage = (m_VRAM[g++] & 0x0001) != 0;
-                m_SAT[i].m_Palette = ((m_VRAM[g] & 0xF) << 4) | ((i == 0) ? 0x4100 : 0x2100);
-                m_SAT[i].m_Priority = (m_VRAM[g] & 0x80) != 0;
-                m_SAT[i].m_Width = ((m_VRAM[g] & 0x100) != 0) ? 2 : 1;
-                m_SAT[i].m_Height = (((m_VRAM[g] & 0x3000) >> 12) + 1) << 4;
-                m_SAT[i].m_HorizontalFlip = (m_VRAM[g] & 0x0800) != 0;
-                m_SAT[i].m_VerticalFlip = (m_VRAM[g++] & 0x8000) != 0;
+                int sat0 = m_VRAM[g++];
+                int sat1 = m_VRAM[g++];
+                int sat2 = m_VRAM[g++];
+                int sat3 = m_VRAM[g++];
+                int cgy = (sat3 >> 12) & 0x03;
+                int cgx = (sat3 >> 8) & 0x01;
+                bool mode1 = ((m_VDC_MWR >> 2) & 0x03) == 1;
+                int mode1Offset = mode1 ? (sat2 & 1) << 5 : 0;
+                int width = (cgx == 0) ? 1 : 2;
+                int height = (cgy == 0) ? 16 : (cgy == 1 ? 32 : 64);
+                int pattern = (sat2 >> 1) & 0x3FF;
+                if (width == 2) pattern &= 0xFFFE;
+                switch (cgy)
+                {
+                    case 1: pattern &= 0xFFFD; break;
+                    case 2:
+                    case 3: pattern &= 0xFFF9; break;
+                }
+                m_SAT[i].m_Y = (sat0 & 0x3FF) - 64;
+                m_SAT[i].m_X = (sat1 & 0x3FF) - 32;
+                m_SAT[i].m_Pattern = pattern << 6;
+                m_SAT[i].m_Mode1Offset = mode1Offset;
+                m_SAT[i].m_CGPage = (sat2 & 0x0001) != 0;
+                m_SAT[i].m_Palette = ((sat3 & 0xF) << 4) | ((i == 0) ? 0x4100 : 0x2100);
+                m_SAT[i].m_Priority = (sat3 & 0x80) != 0;
+                m_SAT[i].m_Width = width;
+                m_SAT[i].m_Height = height;
+                m_SAT[i].m_HorizontalFlip = (sat3 & 0x0800) != 0;
+                m_SAT[i].m_VerticalFlip = (sat3 & 0x8000) != 0;
             }
         }
 
@@ -413,7 +469,10 @@ namespace ePceCD
                         SprOffY = SprBuffer[i].m_Height - 1 - visibleLine + SprBuffer[i].m_Y;
                     else
                         SprOffY = visibleLine - SprBuffer[i].m_Y;
-                    int tile = SprBuffer[i].m_Pattern + ((SprOffY & 0xFFF0) << 3) + (SprOffY & 0xF);
+                    int tileY = SprOffY >> 4;
+                    int tileLineOffset = tileY * 128;
+                    int offsetY = SprOffY & 0xF;
+                    int tile = SprBuffer[i].m_Pattern + tileLineOffset + offsetY + SprBuffer[i].m_Mode1Offset;
                     int x = SprBuffer[i].m_X;
                     int* spx = ScanLinePtr;
                     spx += x;
@@ -423,18 +482,18 @@ namespace ePceCD
                         switch (SprBuffer[i].m_Width)
                         {
                             case 1:
-                                DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, SprBuffer[i].m_HorizontalFlip);
+                                DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, SprBuffer[i].m_HorizontalFlip, SprBuffer[i].m_Mode1Offset != 0);
                                 break;
                             case 2:
                                 if (SprBuffer[i].m_HorizontalFlip)
                                 {
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, true);
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, true);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, true, SprBuffer[i].m_Mode1Offset != 0);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, true, SprBuffer[i].m_Mode1Offset != 0);
                                 }
                                 else
                                 {
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, false);
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, false);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, false, SprBuffer[i].m_Mode1Offset != 0);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, false, SprBuffer[i].m_Mode1Offset != 0);
                                 }
                                 break;
                         }
@@ -451,18 +510,23 @@ namespace ePceCD
                 m_BgOffsetY = m_BgCounterY;
                 m_LatchedBxr = m_VDC_BXR;
 
-                int RealBYR = m_BgOffsetY & 0x3FF;
-                int BATMask = (m_VDC_BAT_Width - 1);
-                int BATLine = ((RealBYR >> 3) & (m_VDC_BAT_Height - 1)) * m_VDC_BAT_Width;
-                int BATAddress = (m_LatchedBxr >> 3) & BATMask;
-                int YOverFlow = RealBYR & 0x7;
+                int screenReg = (m_VDC_MWR >> 4) & 0x07;
+                int screenSizeX = ScreenSizeX[screenReg];
+                int bgY = m_BgOffsetY & ScreenSizeYPixelsMask[screenReg];
+                int tileY = bgY & 7;
+                int batOffset = (bgY >> 3) * screenSizeX;
+                int tileColMask = screenSizeX - 1;
+                int batCol = (m_LatchedBxr >> 3) & tileColMask;
                 int* tileMap = ScanLinePtr;
                 tileMap -= m_LatchedBxr & 7;
                 for (i = 0; i < m_VDC_HDR + 2; i++)
                 {
-                    int tile = m_VRAM[BATAddress | BATLine];
-                    DrawBGTile(ScanLinePtr, ref tileMap, (tile & 0xF000) >> 8, (tile & 0xFFF) << 4 | YOverFlow);
-                    BATAddress = (BATAddress + 1) & BATMask;
+                    int batEntry = m_VRAM[batOffset + batCol];
+                    int tileIndex = batEntry & 0x07FF;
+                    int palette = ((batEntry >> 12) & 0x0F) << 4;
+                    int tileAddr = (tileIndex << 4) | tileY;
+                    DrawBGTile(ScanLinePtr, ref tileMap, palette, tileAddr);
+                    batCol = (batCol + 1) & tileColMask;
                 }
             }
 
@@ -493,12 +557,12 @@ namespace ePceCD
             }
         }
 
-        public unsafe void DrawSPRTile(int* ScanLinePtr, ref int* px, int palette, int tile, bool priority, bool flip)
+        public unsafe void DrawSPRTile(int* ScanLinePtr, ref int* px, int palette, int tile, bool priority, bool flip, bool mode1)
         {
             int p0 = m_VRAM[tile];
             int p1 = m_VRAM[tile + 16];
-            int p2 = m_VRAM[tile + 32];
-            int p3 = m_VRAM[tile + 48];
+            int p2 = mode1 ? 0 : m_VRAM[tile + 32];
+            int p3 = mode1 ? 0 : m_VRAM[tile + 48];
             int color = 0;
 
             if (priority) palette |= 0x1000;
@@ -596,6 +660,7 @@ namespace ePceCD
                     m_BgCounterY = m_VDC_BYR;
                     break;
                 case 0x09:
+                    m_VDC_MWR = (m_VDC_MWR & 0xFF00) | data;
                     switch (data & 0x30)
                     {
                         case 0x00:
