@@ -15,7 +15,7 @@
         public static void BEQ(OpcodeTable.OpcodeDesc Desc)
         {
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if ((long)Registers.R4300.Reg[Desc.op1] == (long)Registers.R4300.Reg[Desc.op2])
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
@@ -25,7 +25,7 @@
             Registers.R4300.PC += 4;
             if ((long)Registers.R4300.Reg[Desc.op1] == (long)Registers.R4300.Reg[Desc.op2])
             {
-                R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+                R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
             }
             else Registers.R4300.PC += 4;
@@ -34,7 +34,7 @@
         public static void BGEZ(OpcodeTable.OpcodeDesc Desc)
         {
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if ((long)Registers.R4300.Reg[Desc.op1] >= 0)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
@@ -44,7 +44,7 @@
             uint link = Registers.R4300.PC + 8;
             Registers.R4300.PC += 4;
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if ((long)Registers.R4300.Reg[Desc.op1] >= 0)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
@@ -54,7 +54,7 @@
             Registers.R4300.PC += 4;
             if ((long)Registers.R4300.Reg[Desc.op1] >= 0)
             {
-                R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+                R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
             }
             else
@@ -70,7 +70,7 @@
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
             if ((long)Registers.R4300.Reg[Desc.op1] >= 0)
             {
-                R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+                R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
             }
             else
@@ -82,7 +82,7 @@
         public static void BGTZ(OpcodeTable.OpcodeDesc Desc)
         {
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if ((long)Registers.R4300.Reg[Desc.op1] > 0)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
@@ -90,7 +90,7 @@
         public static void BLEZ(OpcodeTable.OpcodeDesc Desc)
         {
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if ((long)Registers.R4300.Reg[Desc.op1] <= 0)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
@@ -100,7 +100,7 @@
             Registers.R4300.PC += 4;
             if ((long)Registers.R4300.Reg[Desc.op1] <= 0)
             {
-                R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+                R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
             }
             else Registers.R4300.PC += 4;
@@ -109,7 +109,7 @@
         public static void BLTZ(OpcodeTable.OpcodeDesc Desc)
         {
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if ((long)Registers.R4300.Reg[Desc.op1] < 0)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
@@ -119,7 +119,7 @@
             uint link = Registers.R4300.PC + 8;
             Registers.R4300.PC += 4;
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if ((long)Registers.R4300.Reg[Desc.op1] < 0)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
@@ -129,7 +129,7 @@
             Registers.R4300.PC += 4;
             if ((long)Registers.R4300.Reg[Desc.op1] < 0)
             {
-                R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+                R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
             }
             else
@@ -145,7 +145,7 @@
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
             if ((long)Registers.R4300.Reg[Desc.op1] < 0)
             {
-                R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+                R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
             }
             else
@@ -157,7 +157,7 @@
         public static void BNE(OpcodeTable.OpcodeDesc Desc)
         {
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if ((long)Registers.R4300.Reg[Desc.op1] != (long)Registers.R4300.Reg[Desc.op2])
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
@@ -167,7 +167,7 @@
             Registers.R4300.PC += 4;
             if ((long)Registers.R4300.Reg[Desc.op1] != (long)Registers.R4300.Reg[Desc.op2])
             {
-                R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+                R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
             }
             else Registers.R4300.PC += 4;
@@ -177,7 +177,7 @@
         {
             uint branchPc = Registers.R4300.PC;
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             Registers.R4300.PC = (branchPc & 0xF0000000) | (Desc.Target << 2);
         }
 
@@ -187,25 +187,25 @@
             uint link = branchPc + 8;
             Registers.R4300.PC += 4;
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             Registers.R4300.PC = (branchPc & 0xF0000000) | (Desc.Target << 2);
         }
 
         public static void JR(OpcodeTable.OpcodeDesc Desc)
         {
-            uint target = (uint)(Registers.R4300.Reg[Desc.op1] & 0xFFFFFFFC);
+            uint target = (uint)Registers.R4300.Reg[Desc.op1];
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             Registers.R4300.PC = target;
         }
 
         public static void JALR(OpcodeTable.OpcodeDesc Desc)
         {
             uint link = Registers.R4300.PC + 8;
-            uint target = (uint)(Registers.R4300.Reg[Desc.op1] & 0xFFFFFFFC);
+            uint target = (uint)Registers.R4300.Reg[Desc.op1];
             Registers.R4300.PC += 4;
             Registers.R4300.Reg[Desc.op3] = SignExtendPcToReg(link);
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             Registers.R4300.PC = target;
         }
     }

@@ -6,6 +6,9 @@ namespace Ryu64.MIPS
 {
     public class TLB
     {
+        private static readonly bool DisableTlb =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_TLB"), "1", StringComparison.Ordinal);
+
         public struct TLBEntry
         {
             public uint PFN0;
@@ -31,14 +34,19 @@ namespace Ryu64.MIPS
             return TranslateAddress(Address, false);
         }
 
-        public static uint TranslateAddress(uint Address, bool throwOnMiss)
+        public static uint TranslateAddress(uint Address, bool throwOnMiss, bool isStore = false)
         {
+            if (DisableTlb)
+                return Address;
+
             uint currentAsid = (uint)Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG] & 0xFF;
 
             foreach (TLBEntry Entry in TLBEntries)
             {
-                uint mask = (uint)((Entry.PageMask << 12) | 0x0FFF);
-                uint vpn2Mask = ~((uint)(Entry.PageMask << 13) | 0x1FFFu);
+                // Pair mask (both even+odd pages): low bits set up to pair size - 1.
+                // For 4K pages this becomes 0x1FFF (8K pair), while each page offset mask is 0x0FFF.
+                uint pairMask = (uint)((Entry.PageMask << 13) | 0x1FFFu);
+                uint vpn2Mask = ~pairMask;
                 uint entryVpn2 = (Entry.VPN2 << 13) & vpn2Mask;
                 uint addrVpn2 = Address & vpn2Mask;
 
@@ -49,19 +57,20 @@ namespace Ryu64.MIPS
                 if (!global && Entry.ASID != currentAsid)
                     continue;
 
-                uint pageSize = mask + 1;
-                bool oddPage = (Address & pageSize) != 0;
+                uint pageOffsetMask = pairMask >> 1;
+                uint oddPageBit = pageOffsetMask + 1;
+                bool oddPage = (Address & oddPageBit) != 0;
                 uint valid = oddPage ? Entry.Valid1 : Entry.Valid0;
 
                 if (valid == 0)
                     continue;
 
                 uint pfn = oddPage ? Entry.PFN1 : Entry.PFN0;
-                return (pfn << 12) | (Address & mask);
+                return (pfn << 12) | (Address & pageOffsetMask);
             }
 
             if (throwOnMiss)
-                throw new Common.Exceptions.TLBMissException(Address);
+                throw new Common.Exceptions.TLBMissException(Address, isStore);
 
             return Address;
         }
@@ -118,23 +127,26 @@ namespace Ryu64.MIPS
 
         public static void ProbeTLB()
         {
+            uint probeEntryHi = (uint)Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG];
+            uint probeAsid = probeEntryHi & 0xFF;
             bool FoundEntry = false;
             for (uint i = 0; i < TLBEntries.Length; ++i)
             {
                 TLBEntry Entry = TLBEntries[i];
 
-                if ((Entry.Valid0 | Entry.Valid1) == 0) continue;
+                uint vpn2Mask = ~((uint)(Entry.PageMask << 13) | 0x1FFFu);
+                uint entryVpn2 = (Entry.VPN2 << 13) & vpn2Mask;
+                uint probeVpn2 = probeEntryHi & vpn2Mask;
+                if (entryVpn2 != probeVpn2)
+                    continue;
 
-                uint EntryHi = (uint)Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG];
-                uint VPN2 = (EntryHi & 0xFFFFE000) >> 13;
-                uint ASID = EntryHi & 0xFF;
+                bool global = (Entry.Global0 & Entry.Global1) != 0;
+                if (!global && Entry.ASID != probeAsid)
+                    continue;
 
-                if (Entry.VPN2 == VPN2 && Entry.ASID == ASID)
-                {
-                    FoundEntry = true;
-                    Registers.COP0.Reg[Registers.COP0.INDEX_REG] = i & 0x1F;
-                    break;
-                }
+                FoundEntry = true;
+                Registers.COP0.Reg[Registers.COP0.INDEX_REG] = i & 0x1F;
+                break;
             }
 
             if (!FoundEntry)

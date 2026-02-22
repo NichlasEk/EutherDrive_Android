@@ -85,7 +85,7 @@ namespace Ryu64.MIPS
         public static void BC1F(OpcodeTable.OpcodeDesc Desc)
         {
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if (!ReadCop1Condition())
                 Registers.R4300.PC += BranchAdjust(Desc.Imm);
         }
@@ -93,7 +93,7 @@ namespace Ryu64.MIPS
         public static void BC1T(OpcodeTable.OpcodeDesc Desc)
         {
             Registers.R4300.PC += 4;
-            R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+            R4300.ExecuteDelaySlot();
             if (ReadCop1Condition())
                 Registers.R4300.PC += BranchAdjust(Desc.Imm);
         }
@@ -103,7 +103,7 @@ namespace Ryu64.MIPS
             Registers.R4300.PC += 4;
             if (!ReadCop1Condition())
             {
-                R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+                R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjust(Desc.Imm);
             }
             else
@@ -117,7 +117,7 @@ namespace Ryu64.MIPS
             Registers.R4300.PC += 4;
             if (ReadCop1Condition())
             {
-                R4300.InterpretOpcode(R4300.memory.ReadUInt32(Registers.R4300.PC));
+                R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjust(Desc.Imm);
             }
             else

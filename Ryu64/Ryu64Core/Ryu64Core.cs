@@ -7,23 +7,23 @@ namespace Ryu64Core
 {
     public class Ryu64Core
     {
-        private const uint ViStatusReg = 0x04400000;
-        private const uint ViOriginReg = 0x04400004;
-        private const uint ViWidthReg = 0x04400008;
-        private const uint ViVStartReg = 0x04400028;
+        private const uint ViStatusReg = 0xA4400000;
+        private const uint ViOriginReg = 0xA4400004;
+        private const uint ViWidthReg = 0xA4400008;
+        private const uint ViVStartReg = 0xA4400028;
         private const int RdramSizeBytes = 8 * 1024 * 1024;
 
-        private const uint AiDramAddrReg = 0x04500000;
-        private const uint AiLenReg = 0x04500004;
-        private const uint AiDacRateReg = 0x04500010;
-        private const uint MiIntrReg = 0x04300008;
-        private const uint MiIntrMaskReg = 0x0430000C;
-        private const uint PiStatusReg = 0x04600010;
-        private const uint SiDramAddrReg = 0x04800000;
-        private const uint SiPifAddrRd64bReg = 0x04800004;
-        private const uint SiPifAddrWr64bReg = 0x04800010;
-        private const uint SiStatusReg = 0x04800018;
-        private const uint PifRamStatusByte = 0x1FC007FF;
+        private const uint AiDramAddrReg = 0xA4500000;
+        private const uint AiLenReg = 0xA4500004;
+        private const uint AiDacRateReg = 0xA4500010;
+        private const uint MiIntrReg = 0xA4300008;
+        private const uint MiIntrMaskReg = 0xA430000C;
+        private const uint PiStatusReg = 0xA4600010;
+        private const uint SiDramAddrReg = 0xA4800000;
+        private const uint SiPifAddrRd64bReg = 0xA4800004;
+        private const uint SiPifAddrWr64bReg = 0xA4800010;
+        private const uint SiStatusReg = 0xA4800018;
+        private const uint PifRamStatusByte = 0xBFC007FF;
 
         private Z64 rom;
         private bool isRunning = false;
@@ -66,20 +66,23 @@ namespace Ryu64Core
                     uint siRd64 = R4300.memory.ReadUInt32(SiPifAddrRd64bReg);
                     uint siWr64 = R4300.memory.ReadUInt32(SiPifAddrWr64bReg);
                     uint pifCtrl = R4300.memory.ReadUInt8(PifRamStatusByte);
-                    uint piDram = R4300.memory.ReadUInt32(0x04600000);
-                    uint piCart = R4300.memory.ReadUInt32(0x04600004);
-                    uint piRdLen = R4300.memory.ReadUInt32(0x04600008);
-                    uint piWrLen = R4300.memory.ReadUInt32(0x0460000C);
+                    uint piDram = R4300.memory.ReadUInt32(0xA4600000);
+                    uint piCart = R4300.memory.ReadUInt32(0xA4600004);
+                    uint piRdLen = R4300.memory.ReadUInt32(0xA4600008);
+                    uint piWrLen = R4300.memory.ReadUInt32(0xA460000C);
                     uint op = 0;
                     try { op = R4300.memory.ReadUInt32(pc); } catch { }
                     ulong cop0Status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
                     ulong cop0Cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
                     ulong cop0BadVaddr = Registers.COP0.Reg[Registers.COP0.BADVADDR_REG];
-                    ulong t6 = Registers.R4300.Reg[14];
-                    ulong t7 = Registers.R4300.Reg[15];
-                    ulong t8 = Registers.R4300.Reg[24];
-                    ulong t9 = Registers.R4300.Reg[25];
-                    return $"pc=0x{pc:x8} op=0x{op:x8} cycles={cycles} unk={unknown} viStatus=0x{viStatus:x8} viOrigin=0x{viOrigin:x8} viWidth={viWidth} aiLen=0x{aiLen:x} miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} piStatus=0x{piStatus:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} piRdLen=0x{piRdLen:x8} piWrLen=0x{piWrLen:x8} siStatus=0x{siStatus:x8} siDram=0x{siDram:x8} siRd=0x{siRd64:x8} siWr=0x{siWr64:x8} pifCtl=0x{pifCtrl:x2} cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} badv=0x{cop0BadVaddr:x8} t6=0x{t6:x16} t7=0x{t7:x16} t8=0x{t8:x16} t9=0x{t9:x16}";
+                ulong t6 = Registers.R4300.Reg[14];
+                ulong t7 = Registers.R4300.Reg[15];
+                ulong t8 = Registers.R4300.Reg[24];
+                ulong t9 = Registers.R4300.Reg[25];
+                ulong t0 = Registers.R4300.Reg[8];
+                ulong t1 = Registers.R4300.Reg[9];
+                ulong ra = Registers.R4300.Reg[31];
+                    return $"pc=0x{pc:x8} op=0x{op:x8} cycles={cycles} unk={unknown} viStatus=0x{viStatus:x8} viOrigin=0x{viOrigin:x8} viWidth={viWidth} aiLen=0x{aiLen:x} miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} piStatus=0x{piStatus:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} piRdLen=0x{piRdLen:x8} piWrLen=0x{piWrLen:x8} siStatus=0x{siStatus:x8} siDram=0x{siDram:x8} siRd=0x{siRd64:x8} siWr=0x{siWr64:x8} pifCtl=0x{pifCtrl:x2} cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} badv=0x{cop0BadVaddr:x8} t0=0x{t0:x16} t1=0x{t1:x16} t6=0x{t6:x16} t7=0x{t7:x16} t8=0x{t8:x16} t9=0x{t9:x16} ra=0x{ra:x16}";
                 }
                 catch (Exception ex)
                 {

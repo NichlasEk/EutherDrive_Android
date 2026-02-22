@@ -47,7 +47,9 @@ namespace Ryu64.MIPS
 
         public static void DMTC0(OpcodeTable.OpcodeDesc Desc)
         {
-            ulong value = Registers.R4300.Reg[Desc.op2];
+            // VR4300 CP0 register interface is effectively 32-bit for architectural fields used here.
+            // Keep upper bits clear to avoid corrupting exception/status state with guest garbage.
+            ulong value = (uint)Registers.R4300.Reg[Desc.op2];
             Registers.COP0.Reg[Desc.op3] = value;
             if (TraceCop0 && IsTrackedCop0Register(Desc.op3))
             {
@@ -98,25 +100,12 @@ namespace Ryu64.MIPS
                     $"[COP0] ERET pc=0x{Registers.R4300.PC:x8} status=0x{status:x16} epc=0x{epc:x16} errorEpc=0x{errorEpc:x16}");
             }
 
-            if ((status & (StatusExlBit | StatusErlBit)) == 0)
-            {
-                Common.Logger.PrintWarningLine(
-                    $"ERET with EXL/ERL clear at pc=0x{Registers.R4300.PC:x8} (status=0x{status:x16}); treated as NOP.");
-                Registers.R4300.PC += 4;
-                return;
-            }
-
+            // VR4300 ERET semantics:
+            // - If ERL is set, return to ErrorEPC and clear ERL.
+            // - Otherwise, return to EPC and clear EXL.
             if ((status & StatusErlBit) != 0)
             {
-                uint target = (uint)errorEpc & 0xFFFFFFFCu;
-                if (target == 0 && epc != 0)
-                {
-                    target = (uint)epc & 0xFFFFFFFCu;
-                    Common.Logger.PrintWarningLine(
-                        $"ERET ERL path had ErrorEPC=0, falling back to EPC=0x{target:x8} (status=0x{status:x16}).");
-                }
-
-                Registers.R4300.PC = target;
+                Registers.R4300.PC = (uint)errorEpc & 0xFFFFFFFCu;
                 Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status & ~StatusErlBit;
             }
             else

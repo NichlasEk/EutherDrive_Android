@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Threading;
 
 namespace Ryu64.MIPS
@@ -22,17 +23,49 @@ namespace Ryu64.MIPS
             public uint Pc;
             public uint Op;
         }
-        private static readonly RecentInst[] _recentInst = new RecentInst[32];
+        private const int RecentInstHistorySize = 512;
+        private const int RecentInstHistoryMask = RecentInstHistorySize - 1;
+        private static readonly RecentInst[] _recentInst = new RecentInst[RecentInstHistorySize];
         private static int _recentInstPos = 0;
         private static ulong _stuckPcLogCount = 0;
         private static readonly bool TraceBootWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_BOOT_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceBootWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_BOOT_WINDOW_LIMIT", 4000);
         private static int _traceBootWindowCount = 0;
+        private static readonly bool TraceEretWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_ERET_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceEretWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_ERET_WINDOW_LIMIT", 200);
+        private static int _traceEretWindowCount = 0;
+        private static readonly bool TraceRefillWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_REFILL_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceRefillWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_REFILL_WINDOW_LIMIT", 400);
+        private static int _traceRefillWindowCount = 0;
         private const ulong StatusExlBit = 1UL << 1;
+        private const ulong StatusErlBit = 1UL << 2;
+        private const ulong StatusIeBit = 1UL << 0;
         private const ulong StatusBevBit = 1UL << 22;
+        private const ulong StatusImMask = 0x0000FF00UL;
+        private const ulong CauseBdBit = 1UL << 31;
         private const ulong CauseExcCodeMask = 0x7CUL;
+        private const ulong CauseIpMask = 0x0000FF00UL;
+        private const ulong CauseIp2Bit = 1UL << 10;
         private const ulong CauseExcCodeTlbLoad = 2UL << 2;
+        private const ulong CauseExcCodeTlbStore = 3UL << 2;
+        private const ulong CauseExcCodeAddressErrorLoad = 4UL << 2;
+        private const ulong CauseExcCodeAddressErrorStore = 5UL << 2;
+        private const ulong CauseExcCodeInterrupt = 0UL << 2;
+        private const ulong CauseExcCodeRi = 10UL << 2;
+        private static readonly bool UnknownOpcodeAsNop =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_UNKNOWN_AS_NOP"), "1", StringComparison.Ordinal);
+        // Default to strict VR4300 behavior: when BEV is set, use ROM exception vectors (BFC0...).
+        // Set EUTHERDRIVE_N64_STRICT_BEV_VECTORS=0 to force legacy RAM-vector behavior.
+        private static readonly bool UseRamVectorsWhenBevSet =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_STRICT_BEV_VECTORS"), "0", StringComparison.Ordinal);
+        private static bool _executingDelaySlot;
+        private static uint _delaySlotBranchPc;
+        private static bool _loggedPifTailEntry;
+        private static bool _loggedFirstBfcEntry;
+        private static ulong _tlbRefillLogCount;
 
         private static int ParseTraceLimit(string name, int fallback)
         {
@@ -60,21 +93,151 @@ namespace Ryu64.MIPS
             }
         }
 
-        private static void RaiseTlbRefillException(uint badAddress, uint faultingPc)
+        private static void RaiseTlbRefillException(uint badAddress, uint faultingPc, bool isStore)
         {
+            _tlbRefillLogCount++;
             ulong status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
             ulong cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
             ulong entryHi = Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG];
+            ulong context = Registers.COP0.Reg[Registers.COP0.CONTEXT_REG];
+            bool exlAlreadySet = (status & StatusExlBit) != 0;
+            bool bevSet = (status & StatusBevBit) != 0;
+            bool inDelaySlot = _executingDelaySlot;
+
+            if (_tlbRefillLogCount <= 32 || (_tlbRefillLogCount % 256) == 0)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"TLB refill exception (count={_tlbRefillLogCount}) " +
+                    $"faultPc=0x{faultingPc:x8} badv=0x{badAddress:x8} " +
+                    $"status=0x{status:x8} cause=0x{cause:x8} exl={exlAlreadySet} bev={bevSet} delay={inDelaySlot} store={isStore}");
+                if (_tlbRefillLogCount <= 4)
+                {
+                    StringBuilder sb = new StringBuilder();
+                    sb.Append("Recent PCs before TLB refill:");
+                    for (int i = 0; i < 20; i++)
+                    {
+                        int idx = (_recentInstPos - 1 - i) & RecentInstHistoryMask;
+                        RecentInst rec = _recentInst[idx];
+                        sb.Append($" [{i}]pc=0x{rec.Pc:x8}/op=0x{rec.Op:x8}");
+                    }
+                    Common.Logger.PrintWarningLine(sb.ToString());
+
+                    try
+                    {
+                        uint v0 = memory.ReadUInt32(0x803359B0u);
+                        uint v1 = memory.ReadUInt32(0x803359B4u);
+                        uint v2 = memory.ReadUInt32(0x803359B8u);
+                        uint v3 = memory.ReadUInt32(0x803359BCu);
+                        Common.Logger.PrintWarningLine(
+                            $"Refill globals @803359b0: [0]=0x{v0:x8} [1]=0x{v1:x8} [2]=0x{v2:x8} [3]=0x{v3:x8}");
+                    }
+                    catch
+                    {
+                        // Best-effort diagnostics only.
+                    }
+                }
+            }
 
             Registers.COP0.Reg[Registers.COP0.BADVADDR_REG] = badAddress;
             Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG] = (badAddress & 0xFFFFE000u) | (entryHi & 0xFFu);
-            Registers.COP0.Reg[Registers.COP0.EPC_REG] = faultingPc & 0xFFFFFFFCu;
-            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] = (cause & ~CauseExcCodeMask) | CauseExcCodeTlbLoad;
+            Registers.COP0.Reg[Registers.COP0.CONTEXT_REG] = (context & 0xFF80000FUL) | (((ulong)badAddress >> 9) & 0x007FFFF0UL);
+            if (!exlAlreadySet)
+                Registers.COP0.Reg[Registers.COP0.EPC_REG] = (inDelaySlot ? _delaySlotBranchPc : faultingPc) & 0xFFFFFFFCu;
+            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] =
+                (cause & ~(CauseExcCodeMask | CauseBdBit))
+                | (isStore ? CauseExcCodeTlbStore : CauseExcCodeTlbLoad)
+                | (inDelaySlot ? CauseBdBit : 0);
             Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status | StatusExlBit;
 
-            Registers.R4300.PC = (status & StatusBevBit) != 0
-                ? 0xBFC00200u
-                : 0x80000000u;
+            if (bevSet)
+            {
+                if (UseRamVectorsWhenBevSet)
+                {
+                    Registers.COP0.Reg[Registers.COP0.STATUS_REG] &= ~StatusBevBit;
+                    Registers.R4300.PC = exlAlreadySet ? 0x80000180u : 0x80000000u;
+                }
+                else
+                {
+                    Registers.R4300.PC = exlAlreadySet ? 0xBFC00380u : 0xBFC00200u;
+                }
+            }
+            else
+            {
+                Registers.R4300.PC = exlAlreadySet ? 0x80000180u : 0x80000000u;
+            }
+        }
+
+        private static void RaiseCpuException(ulong exceptionCode, uint faultingPc)
+        {
+            ulong status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
+            ulong cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
+            bool exlAlreadySet = (status & StatusExlBit) != 0;
+            bool bevSet = (status & StatusBevBit) != 0;
+            bool inDelaySlot = _executingDelaySlot;
+
+            if (!exlAlreadySet)
+                Registers.COP0.Reg[Registers.COP0.EPC_REG] = (inDelaySlot ? _delaySlotBranchPc : faultingPc) & 0xFFFFFFFCu;
+            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] =
+                (cause & ~(CauseExcCodeMask | CauseBdBit))
+                | exceptionCode
+                | (inDelaySlot ? CauseBdBit : 0);
+            Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status | StatusExlBit;
+            if (bevSet && UseRamVectorsWhenBevSet)
+            {
+                Registers.COP0.Reg[Registers.COP0.STATUS_REG] &= ~StatusBevBit;
+                Registers.R4300.PC = 0x80000180u;
+            }
+            else
+            {
+                Registers.R4300.PC = bevSet ? 0xBFC00380u : 0x80000180u;
+            }
+        }
+
+        private static void RaiseAddressErrorException(uint badAddress, bool isStore, uint faultingPc)
+        {
+            Registers.COP0.Reg[Registers.COP0.BADVADDR_REG] = badAddress;
+            RaiseCpuException(isStore ? CauseExcCodeAddressErrorStore : CauseExcCodeAddressErrorLoad, faultingPc);
+        }
+
+        private static bool ServiceInterrupts(uint pc)
+        {
+            // N64 RCP interrupts are routed through MI and appear on CP0 IP2.
+            ulong cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
+            uint miIntr = memory.ReadUInt32(0xA4300008u);
+            uint miMask = memory.ReadUInt32(0xA430000Cu);
+            bool rcpPending = (miIntr & miMask & 0x3Fu) != 0;
+
+            ulong pendingIp = rcpPending ? CauseIp2Bit : 0UL;
+            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] = (cause & ~CauseIpMask) | pendingIp;
+
+            ulong status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
+            bool canTake = (status & (StatusExlBit | StatusErlBit)) == 0
+                && (status & StatusIeBit) != 0
+                && ((status & StatusImMask & pendingIp) != 0);
+
+            if (!canTake)
+                return false;
+
+            RaiseCpuException(CauseExcCodeInterrupt, pc);
+            return true;
+        }
+
+        public static void ExecuteDelaySlot()
+        {
+            uint delayPc = Registers.R4300.PC;
+            bool prevInDelay = _executingDelaySlot;
+            uint prevBranchPc = _delaySlotBranchPc;
+            _executingDelaySlot = true;
+            _delaySlotBranchPc = delayPc - 4;
+            try
+            {
+                InterpretOpcode(memory.ReadUInt32(delayPc));
+            }
+            finally
+            {
+                _executingDelaySlot = prevInDelay;
+                _delaySlotBranchPc = prevBranchPc;
+            }
         }
 
         private static string FormatTopUnknownSummary(Dictionary<uint, long> source, string prefix, int topN)
@@ -147,8 +310,11 @@ namespace Ryu64.MIPS
 
         private static uint GetCICSeed()
         {
-            uint CRC        = CRC32(0x10000040, 0xFC0);
-            uint Aleck64CRC = CRC32(0x10000040, 0xBC0);
+            // Use kseg1 alias for cart ROM reads during early boot.
+            // Data-side TLB may not be initialized yet.
+            const uint cartBootBaseKseg1 = 0xB0000040u;
+            uint CRC        = CRC32(cartBootBaseKseg1, 0xFC0);
+            uint Aleck64CRC = CRC32(cartBootBaseKseg1, 0xBC0);
 
             if (Aleck64CRC == CRC_NUS_5101) return CIC_SEED_NUS_5101;
             switch (CRC)
@@ -272,7 +438,7 @@ namespace Ryu64.MIPS
             Registers.R4300.PC      = 0xA4000040;
 
             memory.FastMemoryCopy(0xA4000000, 0xB0000000, 0x1000); // Load the 4 KiB IPL3 boot code into SP memory.
-            memory.WriteUInt8(0x1FC007FF, GetInitialPifControlByte(cicSeed));
+            memory.WriteUInt8(0xBFC007FF, GetInitialPifControlByte(cicSeed)); // kseg1 alias of PIF RAM control byte.
 
             COP0.PowerOnCOP0();
             COP1.PowerOnCOP1();
@@ -285,6 +451,11 @@ namespace Ryu64.MIPS
                 UnknownOpcodeByValue.Clear();
             }
             _stuckPcLogCount = 0;
+            _loggedPifTailEntry = false;
+            _loggedFirstBfcEntry = false;
+            _tlbRefillLogCount = 0;
+            _traceEretWindowCount = 0;
+            _traceRefillWindowCount = 0;
 
             OpcodeTable.Init();
 
@@ -299,13 +470,13 @@ namespace Ryu64.MIPS
                     while (R4300_ON)
                     {
                         uint pc = Registers.R4300.PC;
+                        if (ServiceInterrupts(pc))
+                            continue;
+
                         if ((pc & 0x3) != 0)
                         {
-                            uint alignedPc = pc & 0xFFFFFFFCu;
-                            Common.Logger.PrintWarningLine(
-                                $"Misaligned PC detected: 0x{pc:x8}, aligning to 0x{alignedPc:x8}.");
-                            Registers.R4300.PC = alignedPc;
-                            pc = alignedPc;
+                            RaiseAddressErrorException(pc, isStore: false, pc);
+                            continue;
                         }
                         if (pc == lastPc)
                         {
@@ -324,57 +495,161 @@ namespace Ryu64.MIPS
                             lastPc = pc;
                         }
 
-                        uint fetchAddress = pc;
-                        if ((pc & 0xE0000000u) < 0x80000000u)
-                        {
-                            uint translated = TLB.TranslateAddress(pc, throwOnMiss: true) & 0x1FFFFFFFu;
-                            fetchAddress = 0xA0000000u | translated;
-                        }
-
-                        uint Opcode = memory.ReadUInt32(fetchAddress);
-                        _recentInst[_recentInstPos] = new RecentInst { Pc = pc, Op = Opcode };
-                        _recentInstPos = (_recentInstPos + 1) & 31;
-                        if (TraceBootWindow
-                            && _traceBootWindowCount < TraceBootWindowLimit
-                            && pc >= 0x80000000
-                            && pc <= 0x80000200)
-                        {
-                            _traceBootWindowCount++;
-                            Console.WriteLine(
-                                $"[N64BOOT] #{_traceBootWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
-                                $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
-                                $"piStatus=0x{memory.ReadUInt32(0x04600010):x8} piWrLen=0x{memory.ReadUInt32(0x0460000C):x8} " +
-                                $"t0=0x{Registers.R4300.Reg[8]:x16} t1=0x{Registers.R4300.Reg[9]:x16} " +
-                                $"t8=0x{Registers.R4300.Reg[24]:x16} t9=0x{Registers.R4300.Reg[25]:x16} " +
-                                $"ra=0x{Registers.R4300.Reg[31]:x16}");
-                        }
                         try
                         {
+                            if (!_loggedFirstBfcEntry && pc >= 0xBFC00000u && pc <= 0xBFC00810u)
+                            {
+                                _loggedFirstBfcEntry = true;
+                                StringBuilder firstBfc = new StringBuilder();
+                                firstBfc.Append($"First entry into BFC region at pc=0x{pc:x8}. Recent PCs:");
+                                for (int i = 0; i < 48; i++)
+                                {
+                                    int idx = (_recentInstPos - 1 - i) & RecentInstHistoryMask;
+                                    RecentInst rec = _recentInst[idx];
+                                    firstBfc.Append($" [{i}]pc=0x{rec.Pc:x8}/op=0x{rec.Op:x8}");
+                                }
+                                Common.Logger.PrintWarningLine(firstBfc.ToString());
+                            }
+
+                            if (!_loggedPifTailEntry && pc >= 0xBFC007B0u && pc <= 0xBFC00810u)
+                            {
+                                _loggedPifTailEntry = true;
+                                const int pifEntryHistoryCount = 24;
+                                StringBuilder pifEntry = new StringBuilder();
+                                pifEntry.Append($"Entered PIF tail execution window at pc=0x{pc:x8}. Recent PCs:");
+                                for (int i = 0; i < pifEntryHistoryCount; i++)
+                                {
+                                    int idx = (_recentInstPos - 1 - i) & RecentInstHistoryMask;
+                                    RecentInst rec = _recentInst[idx];
+                                    pifEntry.Append($" [{i}]pc=0x{rec.Pc:x8}/op=0x{rec.Op:x8}");
+                                }
+
+                                int discontinuities = 0;
+                                uint prevPcInHistory = 0;
+                                bool havePrevPc = false;
+                                for (int i = 0; i < RecentInstHistorySize - 1; i++)
+                                {
+                                    int idx = (_recentInstPos - 1 - i) & RecentInstHistoryMask;
+                                    RecentInst rec = _recentInst[idx];
+                                    if (havePrevPc && rec.Pc != (prevPcInHistory - 4u))
+                                    {
+                                        discontinuities++;
+                                        pifEntry.Append(
+                                            $" | jump#{discontinuities}: newer=0x{prevPcInHistory:x8} older=0x{rec.Pc:x8}");
+                                        if (discontinuities >= 8)
+                                            break;
+                                    }
+
+                                    prevPcInHistory = rec.Pc;
+                                    havePrevPc = true;
+                                }
+                                Common.Logger.PrintWarningLine(pifEntry.ToString());
+                            }
+
+                            uint fetchAddress = pc;
+                            uint segment = pc & 0xE0000000u;
+                            // TLB-translate all virtual segments except direct-mapped kseg0/kseg1.
+                            if (segment != 0x80000000u && segment != 0xA0000000u)
+                            {
+                                uint translated = TLB.TranslateAddress(pc, throwOnMiss: true) & 0x1FFFFFFFu;
+                                fetchAddress = 0xA0000000u | translated;
+                            }
+
+                            uint Opcode = memory.ReadUInt32(fetchAddress);
+                            _recentInst[_recentInstPos] = new RecentInst { Pc = pc, Op = Opcode };
+                            _recentInstPos = (_recentInstPos + 1) & RecentInstHistoryMask;
+                            if (TraceBootWindow
+                                && _traceBootWindowCount < TraceBootWindowLimit
+                                && pc >= 0x80000000
+                                && pc <= 0x80000200)
+                            {
+                                _traceBootWindowCount++;
+                                Console.WriteLine(
+                                    $"[N64BOOT] #{_traceBootWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"piStatus=0x{memory.ReadUInt32(0x04600010):x8} piWrLen=0x{memory.ReadUInt32(0x0460000C):x8} " +
+                                    $"t0=0x{Registers.R4300.Reg[8]:x16} t1=0x{Registers.R4300.Reg[9]:x16} " +
+                                    $"t8=0x{Registers.R4300.Reg[24]:x16} t9=0x{Registers.R4300.Reg[25]:x16} " +
+                                    $"ra=0x{Registers.R4300.Reg[31]:x16}");
+                            }
+
+                            if (TraceEretWindow
+                                && _traceEretWindowCount < TraceEretWindowLimit
+                                && pc >= 0x80327de0
+                                && pc <= 0x80327ec0)
+                            {
+                                _traceEretWindowCount++;
+                                ulong k0 = Registers.R4300.Reg[26];
+                                ulong k1 = Registers.R4300.Reg[27];
+                                uint k0a = (uint)k0;
+                                uint m118 = 0;
+                                uint m11c = 0;
+                                try
+                                {
+                                    m118 = memory.ReadUInt32(k0a + 0x118u);
+                                    m11c = memory.ReadUInt32(k0a + 0x11Cu);
+                                }
+                                catch
+                                {
+                                    // Best-effort trace; ignore side read failures.
+                                }
+
+                                Console.WriteLine(
+                                    $"[N64ERET] #{_traceEretWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"k0=0x{k0:x16} k1=0x{k1:x16} m118=0x{m118:x8} m11c=0x{m11c:x8} " +
+                                    $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} " +
+                                    $"cop0Epc=0x{Registers.COP0.Reg[Registers.COP0.EPC_REG]:x8}");
+                            }
+
+                            if (TraceRefillWindow
+                                && _traceRefillWindowCount < TraceRefillWindowLimit
+                                && pc >= 0x80327660
+                                && pc <= 0x80327720)
+                            {
+                                _traceRefillWindowCount++;
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong t4 = Registers.R4300.Reg[12];
+                                ulong k0 = Registers.R4300.Reg[26];
+                                ulong k1 = Registers.R4300.Reg[27];
+                                Console.WriteLine(
+                                    $"[N64REFILL] #{_traceRefillWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} t4=0x{t4:x16} " +
+                                    $"k0=0x{k0:x16} k1=0x{k1:x16} " +
+                                    $"status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} " +
+                                    $"cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8} " +
+                                    $"epc=0x{Registers.COP0.Reg[Registers.COP0.EPC_REG]:x8} " +
+                                    $"badv=0x{Registers.COP0.Reg[Registers.COP0.BADVADDR_REG]:x8} " +
+                                    $"entryHi=0x{Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG]:x8} " +
+                                    $"context=0x{Registers.COP0.Reg[Registers.COP0.CONTEXT_REG]:x8}");
+                            }
+
                             InterpretOpcode(Opcode);
-                        }
-                        catch (Common.Exceptions.TLBMissException tlbMiss)
-                        {
-                            RaiseTlbRefillException(tlbMiss.Address, pc);
-                            continue;
                         }
                         catch (NotImplementedException ex)
                         {
-                            // Keep emulator alive by treating unknown instructions as NOPs.
-                            // This is imperfect but allows wider ROM coverage during bring-up.
+                            uint opcode = _recentInst[(_recentInstPos - 1) & RecentInstHistoryMask].Op;
                             UnknownOpcodeCount++;
-                            TrackUnknownOpcode(pc, Opcode);
+                            TrackUnknownOpcode(pc, opcode);
                             if (UnknownOpcodeCount <= 32 || (UnknownOpcodeCount % 256) == 0)
                             {
                                 Common.Logger.PrintWarningLine(
-                                    $"Unknown opcode treated as NOP (count={UnknownOpcodeCount}) " +
-                                    $"pc=0x{pc:x8} op=0x{Opcode:x8}: {ex.Message}");
-                                string recent = "";
-                                for (int h = 0; h < 20; h++)
+                                    $"Unknown opcode encountered (count={UnknownOpcodeCount}) " +
+                                    $"pc=0x{pc:x8} op=0x{opcode:x8}: {ex.Message}");
+                                if (UnknownOpcodeCount <= 16)
                                 {
-                                    int idx = (_recentInstPos - 1 - h) & 31;
-                                    recent += $"[{h}]pc=0x{_recentInst[idx].Pc:x8}/op=0x{_recentInst[idx].Op:x8} ";
+                                    StringBuilder sb = new StringBuilder();
+                                    sb.Append("Recent PCs before unknown:");
+                                    for (int i = 0; i < 20; i++)
+                                    {
+                                        int idx = (_recentInstPos - 1 - i) & RecentInstHistoryMask;
+                                        RecentInst rec = _recentInst[idx];
+                                        sb.Append($" [{i}]pc=0x{rec.Pc:x8}/op=0x{rec.Op:x8}");
+                                    }
+                                    Common.Logger.PrintWarningLine(sb.ToString());
                                 }
-                                Common.Logger.PrintWarningLine($"Recent PCs before unknown: {recent.TrimEnd()}");
                             }
                             if ((UnknownOpcodeCount % 1024) == 0)
                             {
@@ -390,10 +665,27 @@ namespace Ryu64.MIPS
                                 Common.Logger.PrintWarningLine($"Unknown opcode hot ops: {topOp}");
                             }
 
-                            Registers.R4300.PC = pc + 4;
-                            CycleCounter += 1;
-                            Count += 1;
-                            Registers.COP0.Reg[Registers.COP0.COUNT_REG] = Count >> 1;
+                            if (UnknownOpcodeAsNop)
+                            {
+                                Registers.R4300.PC = pc + 4;
+                                CycleCounter += 1;
+                                Count += 1;
+                                Registers.COP0.Reg[Registers.COP0.COUNT_REG] = Count >> 1;
+                            }
+                            else
+                            {
+                                RaiseCpuException(CauseExcCodeRi, pc);
+                            }
+                            continue;
+                        }
+                        catch (Common.Exceptions.TLBMissException tlbMiss)
+                        {
+                            RaiseTlbRefillException(tlbMiss.Address, pc, tlbMiss.IsStore);
+                            continue;
+                        }
+                        catch (Common.Exceptions.AddressErrorException addrErr)
+                        {
+                            RaiseAddressErrorException(addrErr.Address, addrErr.IsStore, pc);
                             continue;
                         }
 

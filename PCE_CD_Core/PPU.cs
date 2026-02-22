@@ -115,6 +115,9 @@ namespace ePceCD
 
         private int m_VDC_BAT_Width;
         private int m_VDC_BAT_Height;
+        private int m_LatchedBxr;
+        private int m_BgCounterY;
+        private int m_BgOffsetY;
 
         private bool m_VDC_DMA_Enable;
         private bool m_VDC_SATBDMA_IRQ;
@@ -441,13 +444,20 @@ namespace ePceCD
 
             if (m_VDC_EnableBackground)
             {
-                int RealBYR = (m_VDC_BYR - m_VDC_BYR_Offset) & 0x3FF;
+                if (visibleLine == 0)
+                    m_BgCounterY = m_VDC_BYR;
+                else
+                    m_BgCounterY = (m_BgCounterY + 1) & 0x3FF;
+                m_BgOffsetY = m_BgCounterY;
+                m_LatchedBxr = m_VDC_BXR;
+
+                int RealBYR = m_BgOffsetY & 0x3FF;
                 int BATMask = (m_VDC_BAT_Width - 1);
-                int BATLine = (((RealBYR + visibleLine) >> 3) & (m_VDC_BAT_Height - 1)) * m_VDC_BAT_Width;
-                int BATAddress = (m_VDC_BXR >> 3) & BATMask;
-                int YOverFlow = (RealBYR + visibleLine) & 0x7;
+                int BATLine = ((RealBYR >> 3) & (m_VDC_BAT_Height - 1)) * m_VDC_BAT_Width;
+                int BATAddress = (m_LatchedBxr >> 3) & BATMask;
+                int YOverFlow = RealBYR & 0x7;
                 int* tileMap = ScanLinePtr;
-                tileMap -= m_VDC_BXR & 7;
+                tileMap -= m_LatchedBxr & 7;
                 for (i = 0; i < m_VDC_HDR + 2; i++)
                 {
                     int tile = m_VRAM[BATAddress | BATLine];
@@ -485,10 +495,10 @@ namespace ePceCD
 
         public unsafe void DrawSPRTile(int* ScanLinePtr, ref int* px, int palette, int tile, bool priority, bool flip)
         {
-            int p1 = m_VRAM[tile];
-            int p2 = m_VRAM[tile + 16] << 1;
-            int p3 = m_VRAM[tile + 32] << 2;
-            int p4 = m_VRAM[tile + 48] << 3;
+            int p0 = m_VRAM[tile];
+            int p1 = m_VRAM[tile + 16];
+            int p2 = m_VRAM[tile + 32];
+            int p3 = m_VRAM[tile + 48];
             int color = 0;
 
             if (priority) palette |= 0x1000;
@@ -497,7 +507,11 @@ namespace ePceCD
                 for (int x = 0; x < 16; x++, px++)
                 {
                     if (px < ScanLinePtr) continue;
-                    color = ((p1 >> x) & 1) | ((p2 >> x) & 2) | ((p3 >> x) & 4) | ((p4 >> x) & 8);
+                    color =
+                        ((p0 >> x) & 1) |
+                        (((p1 >> x) & 1) << 1) |
+                        (((p2 >> x) & 1) << 2) |
+                        (((p3 >> x) & 1) << 3);
                     if (color == 0) continue;
                     *px = palette | color;
                 }
@@ -505,7 +519,11 @@ namespace ePceCD
                 for (int x = 15; x >= 0; x--, px++)
                 {
                     if (px < ScanLinePtr) continue;
-                    color = ((p1 >> x) & 1) | ((p2 >> x) & 2) | ((p3 >> x) & 4) | ((p4 >> x) & 8);
+                    color =
+                        ((p0 >> x) & 1) |
+                        (((p1 >> x) & 1) << 1) |
+                        (((p2 >> x) & 1) << 2) |
+                        (((p3 >> x) & 1) << 3);
                     if (color == 0) continue;
                     *px = palette | color;
                 }
@@ -513,17 +531,23 @@ namespace ePceCD
 
         public unsafe void DrawBGTile(int* ScanLinePtr, ref int* px, int palette, int tile)
         {
-            int p1 = m_VRAM[tile];
-            int p2 = p1 >> 7;
-            int p3 = m_VRAM[tile + 8] << 2;
-            int p4 = p3 >> 7;
+            int word0 = m_VRAM[tile];
+            int word1 = m_VRAM[tile + 8];
+            int p0 = word0 & 0xFF;
+            int p1 = (word0 >> 8) & 0xFF;
+            int p2 = word1 & 0xFF;
+            int p3 = (word1 >> 8) & 0xFF;
             int color = 0;
 
             for (int x = 7; x >= 0; x--, px++)
             {
                 if (px < ScanLinePtr) continue;
                 if ((*px & 0x1000) != 0) continue;
-                color = ((p1 >> x) & 1) | ((p2 >> x) & 2) | ((p3 >> x) & 4) | ((p4 >> x) & 8);
+                color =
+                    ((p0 >> x) & 1) |
+                    (((p1 >> x) & 1) << 1) |
+                    (((p2 >> x) & 1) << 2) |
+                    (((p3 >> x) & 1) << 3);
                 if (color != 0) *px = palette | color;
             }
         }
@@ -569,6 +593,7 @@ namespace ePceCD
                 case 0x08:
                     m_VDC_BYR_Offset = (m_RenderLine + 1 >= m_VDC_VDW || !m_VDC_EnableBackground) ? 0 : (m_RenderLine - 1);
                     m_VDC_BYR = (m_VDC_BYR & 0x0100) | data;
+                    m_BgCounterY = m_VDC_BYR;
                     break;
                 case 0x09:
                     switch (data & 0x30)
@@ -648,6 +673,7 @@ namespace ePceCD
                 case 0x08:
                     m_VDC_BYR_Offset = (m_RenderLine + 1 >= m_VDC_VDW || !m_VDC_EnableBackground) ? 0 : (m_RenderLine - 1);
                     m_VDC_BYR = (m_VDC_BYR & 0xFF) | ((data << 8) & 0x0100);
+                    m_BgCounterY = m_VDC_BYR;
                     break;
                 case 0x0A:
                     //m_VDC_HDS = data & 0x7F;

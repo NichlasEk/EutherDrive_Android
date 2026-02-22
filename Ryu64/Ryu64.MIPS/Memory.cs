@@ -7,6 +7,10 @@ namespace Ryu64.MIPS
     public class Memory
     {
         private delegate void MemoryEvent();
+        private static readonly bool StrictDataTlb =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_LOOSE_DATA_TLB"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceN64Io =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_IO"), "1", StringComparison.Ordinal);
 
         public readonly byte[] SP_DMEM_RW         = new byte[0x1000];
         public readonly byte[] SP_IMEM_RW         = new byte[0x1000];
@@ -71,6 +75,7 @@ namespace Ryu64.MIPS
         public readonly byte[] SI_PIF_ADDR_WR64B_REG_RW = new byte[4];
         public readonly byte[] SI_STATUS_REG_R          = new byte[4];
         public readonly byte[] SI_STATUS_REG_W          = new byte[4];
+        private readonly byte[] SI_MIRROR_RAM           = new byte[0x20000];
 
         public readonly byte[] RI_SELECT_REG_RW = new byte[4];
 
@@ -199,39 +204,40 @@ namespace Ryu64.MIPS
             // Setup Environment
 
             // MI Registers
-            WriteUInt32(0x04300004, 0x02020102); // MI_VERSION_REG (Same value as Pj64 1.4)
+            WriteUInt32Physical(0x04300004, 0x02020102); // MI_VERSION_REG (Same value as Pj64 1.4)
 
             // VI Registers
-            WriteUInt32(0x0440000C, 1023); // VI_INTR_REG
+            WriteUInt32Physical(0x0440000C, 1023); // VI_INTR_REG
 
             // PI Registers
-            uint BSD_DOM1_CONFIG = ReadUInt32(0x10000000);
+            uint BSD_DOM1_CONFIG = ReadUInt32Physical(0x10000000);
 
-            WriteUInt32(0x04600014, (BSD_DOM1_CONFIG      ) & 0xFF); // PI_BSD_DOM1_LAT_REG
-            WriteUInt32(0x04600018, (BSD_DOM1_CONFIG >> 8 ) & 0xFF); // PI_BSD_DOM1_PWD_REG
-            WriteUInt32(0x0460001C, (BSD_DOM1_CONFIG >> 16) & 0x0F); // PI_BSD_DOM1_PGS_REG
-            WriteUInt32(0x04600020, (BSD_DOM1_CONFIG >> 20) & 0x03); // PI_BSD_DOM1_RLS_REG
+            WriteUInt32Physical(0x04600014, (BSD_DOM1_CONFIG      ) & 0xFF); // PI_BSD_DOM1_LAT_REG
+            WriteUInt32Physical(0x04600018, (BSD_DOM1_CONFIG >> 8 ) & 0xFF); // PI_BSD_DOM1_PWD_REG
+            WriteUInt32Physical(0x0460001C, (BSD_DOM1_CONFIG >> 16) & 0x0F); // PI_BSD_DOM1_PGS_REG
+            WriteUInt32Physical(0x04600020, (BSD_DOM1_CONFIG >> 20) & 0x03); // PI_BSD_DOM1_RLS_REG
             // Keep DOM2 initialized to sane defaults (same profile as DOM1 during bring-up).
-            WriteUInt32(0x04600024, (BSD_DOM1_CONFIG      ) & 0xFF); // PI_BSD_DOM2_LAT_REG
-            WriteUInt32(0x04600028, (BSD_DOM1_CONFIG >> 8 ) & 0xFF); // PI_BSD_DOM2_PWD_REG
-            WriteUInt32(0x0460002C, (BSD_DOM1_CONFIG >> 16) & 0x0F); // PI_BSD_DOM2_PGS_REG
-            WriteUInt32(0x04600030, (BSD_DOM1_CONFIG >> 20) & 0x03); // PI_BSD_DOM2_RLS_REG
+            WriteUInt32Physical(0x04600024, (BSD_DOM1_CONFIG      ) & 0xFF); // PI_BSD_DOM2_LAT_REG
+            WriteUInt32Physical(0x04600028, (BSD_DOM1_CONFIG >> 8 ) & 0xFF); // PI_BSD_DOM2_PWD_REG
+            WriteUInt32Physical(0x0460002C, (BSD_DOM1_CONFIG >> 16) & 0x0F); // PI_BSD_DOM2_PGS_REG
+            WriteUInt32Physical(0x04600030, (BSD_DOM1_CONFIG >> 20) & 0x03); // PI_BSD_DOM2_RLS_REG
 
             SP_STATUS_REG_R[3] = 0x1;
 
             // RI Registers
-            WriteUInt32(0x0470000C, 0b1110); // RI_SELECT_REG
+            WriteUInt32Physical(0x0470000C, 0b1110); // RI_SELECT_REG
 
-            // Copy the Boot Code to SP_DMEM
-            FastMemoryCopy(0x04000040, 0x10000040, 0xFC0);
+            // Copy the boot code to SP_DMEM using physical addresses.
+            // This must bypass data-side TLB translation during early boot.
+            DmaCopyPhysical(0x04000040, 0x10000040, 0xFC0);
 
             // Required by CIC x105
-            WriteUInt32(0x40001000, 0x3C0DBFC0);
-            WriteUInt32(0x40001004, 0x8DA807FC);
-            WriteUInt32(0x40001008, 0x25AD07C0);
-            WriteUInt32(0x40001010, 0x5500FFFC);
-            WriteUInt32(0x40001018, 0x8DA80024);
-            WriteUInt32(0x4000101C, 0x3C0BB000);
+            WriteUInt32Physical(0x40001000, 0x3C0DBFC0);
+            WriteUInt32Physical(0x40001004, 0x8DA807FC);
+            WriteUInt32Physical(0x40001008, 0x25AD07C0);
+            WriteUInt32Physical(0x40001010, 0x5500FFFC);
+            WriteUInt32Physical(0x40001018, 0x8DA80024);
+            WriteUInt32Physical(0x4000101C, 0x3C0BB000);
         }
 
         public void Tick(uint cpuCycles)
@@ -257,9 +263,14 @@ namespace Ryu64.MIPS
 
         public void PI_WR_LEN_WRITE_EVENT()
         {
-            uint WriteLength = ReadUInt32(0x0460000C) & 0x00FFFFFF; // PI_WR_LEN_REG
-            uint CartAddr    = ReadUInt32(0x04600004) & 0x1FFFFFFE; // PI_CART_ADDR_REG
-            uint DramAddr    = ReadUInt32(0x04600000) & 0x00FFFFFE; // PI_DRAM_ADDR_REG
+            uint WriteLength = ReadUInt32Physical(0x0460000C) & 0x00FFFFFF; // PI_WR_LEN_REG
+            uint CartAddr    = ReadUInt32Physical(0x04600004) & 0x1FFFFFFE; // PI_CART_ADDR_REG
+            uint DramAddr    = ReadUInt32Physical(0x04600000) & 0x00FFFFFE; // PI_DRAM_ADDR_REG
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] PI_WR_LEN write len=0x{WriteLength:x6} cart=0x{CartAddr:x8} dram=0x{DramAddr:x8} pc=0x{Registers.R4300.PC:x8}");
+            }
 
             _piDmaBusy = true;
             PI_STATUS_REG_R[3] |= 0b0001; // Set DMA Busy
@@ -278,9 +289,14 @@ namespace Ryu64.MIPS
             // Bring-up compatibility path:
             // Some boot paths may poke PI_RD_LEN while expecting cart->RDRAM transfer semantics.
             // Mirror PI_WR_LEN behavior so IPL can progress instead of stalling before VI init.
-            uint ReadLength = ReadUInt32(0x04600008) & 0x00FFFFFF; // PI_RD_LEN_REG
-            uint CartAddr   = ReadUInt32(0x04600004) & 0x1FFFFFFE; // PI_CART_ADDR_REG
-            uint DramAddr   = ReadUInt32(0x04600000) & 0x00FFFFFE; // PI_DRAM_ADDR_REG
+            uint ReadLength = ReadUInt32Physical(0x04600008) & 0x00FFFFFF; // PI_RD_LEN_REG
+            uint CartAddr   = ReadUInt32Physical(0x04600004) & 0x1FFFFFFE; // PI_CART_ADDR_REG
+            uint DramAddr   = ReadUInt32Physical(0x04600000) & 0x00FFFFFE; // PI_DRAM_ADDR_REG
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] PI_RD_LEN write len=0x{ReadLength:x6} cart=0x{CartAddr:x8} dram=0x{DramAddr:x8} pc=0x{Registers.R4300.PC:x8}");
+            }
 
             _piDmaBusy = true;
             PI_STATUS_REG_R[3] |= 0b0001; // Set DMA Busy
@@ -331,6 +347,11 @@ namespace Ryu64.MIPS
         {
             uint value = ReadBigEndianWord(PI_STATUS_REG_W);
             uint piStatus = ReadBigEndianWord(PI_STATUS_REG_R);
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] PI_STATUS write value=0x{value:x8} old=0x{piStatus:x8} pc=0x{Registers.R4300.PC:x8}");
+            }
 
             // PI status write behavior (bring-up subset):
             // bit0: reset/clear DMA+IO busy, bit1: clear PI interrupt.
@@ -347,12 +368,16 @@ namespace Ryu64.MIPS
             }
 
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine($"[N64IO] PI_STATUS new=0x{piStatus:x8}");
+            }
         }
 
         public void SI_PIF_ADDR_RD64B_WRITE_EVENT()
         {
             // PIF RAM -> RDRAM (64 bytes)
-            uint dramAddr = ReadUInt32(0x04800000) & 0x00FFFFF8;
+            uint dramAddr = ReadUInt32Physical(0x04800000) & 0x00FFFFF8;
             uint dramKseg1 = PhysicalToKseg1(dramAddr);
             const int size = 64;
 
@@ -368,7 +393,7 @@ namespace Ryu64.MIPS
         public void SI_PIF_ADDR_WR64B_WRITE_EVENT()
         {
             // RDRAM -> PIF RAM (64 bytes)
-            uint dramAddr = ReadUInt32(0x04800000) & 0x00FFFFF8;
+            uint dramAddr = ReadUInt32Physical(0x04800000) & 0x00FFFFF8;
             uint dramKseg1 = PhysicalToKseg1(dramAddr);
             const int size = 64;
 
@@ -403,6 +428,11 @@ namespace Ryu64.MIPS
             // pairs of bits clear/set individual masks.
             uint value = ReadBigEndianWord(MI_INTR_MASK_REG_W);
             uint mask = ReadBigEndianWord(MI_INTR_MASK_REG_R) & 0x3Fu;
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] MI_INTR_MASK write value=0x{value:x8} oldMask=0x{mask:x8} pc=0x{Registers.R4300.PC:x8}");
+            }
 
             ApplyMiMaskPair(ref mask, value, 0, 1, 0); // SP
             ApplyMiMaskPair(ref mask, value, 2, 3, 1); // SI
@@ -412,6 +442,10 @@ namespace Ryu64.MIPS
             ApplyMiMaskPair(ref mask, value, 10, 11, 5); // DP
 
             WriteBigEndianWord(MI_INTR_MASK_REG_R, mask);
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine($"[N64IO] MI_INTR_MASK new=0x{mask:x8}");
+            }
         }
 
         private static uint ReadBigEndianWord(byte[] arr)
@@ -672,6 +706,14 @@ namespace Ryu64.MIPS
                 return true;
             }
 
+            // Bring-up fallback: allow unknown SI alias offsets to behave as RAM-like mirrors
+            // instead of OpenBus to avoid lockups in early exception/controller loops.
+            if (index <= 0x0481FFFF)
+            {
+                entry = new MemEntry(0x04800000, 0x0481FFFF, SI_MIRROR_RAM, SI_MIRROR_RAM, "SI_MIRROR_RAM");
+                return true;
+            }
+
             return false;
         }
 
@@ -679,7 +721,7 @@ namespace Ryu64.MIPS
         {
             get
             {
-                uint nonCachedIndex = ToPhysicalAddress(index);
+                uint nonCachedIndex = ToPhysicalAddress(index, isWrite: false);
                 MemEntry Entry = GetEntry(nonCachedIndex);
 
                 if (Entry.ReadArray == null)
@@ -694,7 +736,7 @@ namespace Ryu64.MIPS
             }
             set
             {
-                uint nonCachedIndex = ToPhysicalAddress(index);
+                uint nonCachedIndex = ToPhysicalAddress(index, isWrite: true);
                 MemEntry Entry = GetEntry(nonCachedIndex);
 
                 if (Entry.WriteArray == null)
@@ -712,7 +754,7 @@ namespace Ryu64.MIPS
         {
             get
             {
-                uint nonCachedIndex = ToPhysicalAddress(index);
+                uint nonCachedIndex = ToPhysicalAddress(index, isWrite: false);
                 byte[] result = new byte[size];
                 MemEntry Entry = GetEntry(nonCachedIndex);
 
@@ -727,7 +769,7 @@ namespace Ryu64.MIPS
             }
             set
             {
-                uint nonCachedIndex = ToPhysicalAddress(index);
+                uint nonCachedIndex = ToPhysicalAddress(index, isWrite: true);
                 MemEntry Entry = GetEntry(nonCachedIndex);
 
                 if (Entry.WriteArray == null)
@@ -920,7 +962,7 @@ namespace Ryu64.MIPS
             return (int)(logicalOffset % (uint)array.Length);
         }
 
-        private static uint ToPhysicalAddress(uint virtualAddress)
+        private static uint ToPhysicalAddress(uint virtualAddress, bool isWrite = false)
         {
             // VR4300 virtual address segments:
             // kseg0: 0x8000_0000..0x9FFF_FFFF (direct-mapped, cached)
@@ -930,12 +972,22 @@ namespace Ryu64.MIPS
             if (segment == 0x80000000u || segment == 0xA0000000u)
                 return virtualAddress & 0x1FFFFFFFu;
 
-            return TLB.TranslateAddress(virtualAddress) & 0x1FFFFFFFu;
+            return TLB.TranslateAddress(virtualAddress, throwOnMiss: StrictDataTlb, isStore: isWrite) & 0x1FFFFFFFu;
         }
 
         private static uint PhysicalToKseg1(uint physicalAddress)
         {
             return 0xA0000000u | (physicalAddress & 0x1FFFFFFFu);
+        }
+
+        private uint ReadUInt32Physical(uint physicalAddress)
+        {
+            return ReadUInt32(PhysicalToKseg1(physicalAddress));
+        }
+
+        private void WriteUInt32Physical(uint physicalAddress, uint value)
+        {
+            WriteUInt32(PhysicalToKseg1(physicalAddress), value);
         }
 
         private void DmaCopyPhysical(uint destPhysical, uint sourcePhysical, int size)
@@ -971,14 +1023,14 @@ namespace Ryu64.MIPS
 
         private void InvokeMappedReadEvent(uint index)
         {
-            uint physical = ToPhysicalAddress(index);
+            uint physical = ToPhysicalAddress(index, isWrite: false);
             MemEntry entry = GetEntry(physical);
             entry.ReadEvent?.Invoke();
         }
 
         private void InvokeMappedWriteEvent(uint index)
         {
-            uint physical = ToPhysicalAddress(index);
+            uint physical = ToPhysicalAddress(index, isWrite: true);
             MemEntry entry = GetEntry(physical);
             entry.WriteEvent?.Invoke();
         }

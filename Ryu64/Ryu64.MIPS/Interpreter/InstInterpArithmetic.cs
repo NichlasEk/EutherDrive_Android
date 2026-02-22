@@ -17,6 +17,40 @@
             return (uint)Registers.R4300.Reg[reg];
         }
 
+        private static void SetLoHiFrom32(uint lo, uint hi)
+        {
+            Registers.R4300.LO = SignExtend32(lo);
+            Registers.R4300.HI = SignExtend32(hi);
+        }
+
+        private static void MultiplyUnsigned64(ulong a, ulong b, out ulong hi, out ulong lo)
+        {
+            ulong aLo = (uint)a;
+            ulong aHi = a >> 32;
+            ulong bLo = (uint)b;
+            ulong bHi = b >> 32;
+
+            ulong p0 = aLo * bLo;
+            ulong p1 = aHi * bLo;
+            ulong p2 = aLo * bHi;
+            ulong p3 = aHi * bHi;
+
+            lo = p0;
+            hi = p3 + (p1 >> 32) + (p2 >> 32);
+
+            ulong add = p1 << 32;
+            ulong prev = lo;
+            lo += add;
+            if (lo < prev)
+                hi++;
+
+            add = p2 << 32;
+            prev = lo;
+            lo += add;
+            if (lo < prev)
+                hi++;
+        }
+
         public static void ADD(OpcodeTable.OpcodeDesc Desc)
         {
             // TODO: Correctly check for Overflow and Underflow
@@ -69,19 +103,19 @@
 
         public static void AND(OpcodeTable.OpcodeDesc Desc)
         {
-            SetReg32(Desc.op3, Reg32(Desc.op1) & Reg32(Desc.op2));
+            Registers.R4300.Reg[Desc.op3] = Registers.R4300.Reg[Desc.op1] & Registers.R4300.Reg[Desc.op2];
             Registers.R4300.PC += 4;
         }
 
         public static void NOR(OpcodeTable.OpcodeDesc Desc)
         {
-            SetReg32(Desc.op3, ~(Reg32(Desc.op1) | Reg32(Desc.op2)));
+            Registers.R4300.Reg[Desc.op3] = ~(Registers.R4300.Reg[Desc.op1] | Registers.R4300.Reg[Desc.op2]);
             Registers.R4300.PC += 4;
         }
 
         public static void ANDI(OpcodeTable.OpcodeDesc Desc)
         {
-            SetReg32(Desc.op2, Reg32(Desc.op1) & Desc.Imm);
+            Registers.R4300.Reg[Desc.op2] = Registers.R4300.Reg[Desc.op1] & Desc.Imm;
             Registers.R4300.PC += 4;
         }
 
@@ -111,13 +145,13 @@
 
         public static void XOR(OpcodeTable.OpcodeDesc Desc)
         {
-            SetReg32(Desc.op3, Reg32(Desc.op1) ^ Reg32(Desc.op2));
+            Registers.R4300.Reg[Desc.op3] = Registers.R4300.Reg[Desc.op1] ^ Registers.R4300.Reg[Desc.op2];
             Registers.R4300.PC += 4;
         }
 
         public static void XORI(OpcodeTable.OpcodeDesc Desc)
         {
-            SetReg32(Desc.op2, Reg32(Desc.op1) ^ Desc.Imm);
+            Registers.R4300.Reg[Desc.op2] = Registers.R4300.Reg[Desc.op1] ^ Desc.Imm;
             Registers.R4300.PC += 4;
         }
 
@@ -141,13 +175,13 @@
 
         public static void OR(OpcodeTable.OpcodeDesc Desc)
         {
-            SetReg32(Desc.op3, Reg32(Desc.op1) | Reg32(Desc.op2));
+            Registers.R4300.Reg[Desc.op3] = Registers.R4300.Reg[Desc.op1] | Registers.R4300.Reg[Desc.op2];
             Registers.R4300.PC += 4;
         }
 
         public static void ORI(OpcodeTable.OpcodeDesc Desc)
         {
-            SetReg32(Desc.op2, Reg32(Desc.op1) | Desc.Imm);
+            Registers.R4300.Reg[Desc.op2] = Registers.R4300.Reg[Desc.op1] | Desc.Imm;
             Registers.R4300.PC += 4;
         }
 
@@ -166,24 +200,22 @@
         public static void MULT(OpcodeTable.OpcodeDesc Desc)
         {
             ulong Res = (ulong)((int)Registers.R4300.Reg[Desc.op1] * (int)Registers.R4300.Reg[Desc.op2]);
-            Registers.R4300.LO = (uint)(Res & 0x00000000FFFFFFFF);
-            Registers.R4300.HI = (uint)(Res >> 32);
+            SetLoHiFrom32((uint)(Res & 0x00000000FFFFFFFF), (uint)(Res >> 32));
             Registers.R4300.PC += 4;
         }
 
         public static void MULTU(OpcodeTable.OpcodeDesc Desc)
         {
             ulong Res = (uint)Registers.R4300.Reg[Desc.op1] * (uint)Registers.R4300.Reg[Desc.op2];
-            Registers.R4300.LO = (uint)(Res & 0x00000000FFFFFFFF);
-            Registers.R4300.HI = (uint)(Res >> 32);
+            SetLoHiFrom32((uint)(Res & 0x00000000FFFFFFFF), (uint)(Res >> 32));
             Registers.R4300.PC += 4;
         }
 
         public static void DMULTU(OpcodeTable.OpcodeDesc Desc)
         {
-            ulong Res = Registers.R4300.Reg[Desc.op1] * Registers.R4300.Reg[Desc.op2];
-            Registers.R4300.LO = (uint)(Res & 0x00000000FFFFFFFF);
-            Registers.R4300.HI = (uint)(Res >> 32);
+            MultiplyUnsigned64(Registers.R4300.Reg[Desc.op1], Registers.R4300.Reg[Desc.op2], out ulong hi, out ulong lo);
+            Registers.R4300.HI = hi;
+            Registers.R4300.LO = lo;
             Registers.R4300.PC += 4;
         }
 
@@ -193,8 +225,7 @@
             if (divisor != 0)
             {
                 int dividend = (int)(uint)Registers.R4300.Reg[Desc.op1];
-                Registers.R4300.LO = (uint)(dividend / divisor);
-                Registers.R4300.HI = (uint)(dividend % divisor);
+                SetLoHiFrom32((uint)(dividend / divisor), (uint)(dividend % divisor));
             }
 
             Registers.R4300.PC += 4;
@@ -206,8 +237,7 @@
             if (divisor != 0)
             {
                 uint dividend = (uint)Registers.R4300.Reg[Desc.op1];
-                Registers.R4300.LO = dividend / divisor;
-                Registers.R4300.HI = dividend % divisor;
+                SetLoHiFrom32(dividend / divisor, dividend % divisor);
             }
 
             Registers.R4300.PC += 4;

@@ -132,8 +132,8 @@ namespace ePceCD
 
         private void InitMixes()
         {
-            _psgMix = GetEnvMix("EUTHERDRIVE_PCE_PSG_MIX", 0.8f);
-            _cdMix = GetEnvMix("EUTHERDRIVE_PCE_CD_MIX", 0.2f);
+            _psgMix = GetEnvMix("EUTHERDRIVE_PCE_PSG_MIX", 1.0f);
+            _cdMix = GetEnvMix("EUTHERDRIVE_PCE_CD_MIX", 0.25f);
             _cdAudioEndianOverride = GetEnvEndianOverride();
         }
 
