@@ -175,12 +175,15 @@ class Program
             string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
             bool useSnes = string.Equals(coreOverride, "snes", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsSnesRomPath(romPath));
+            bool useN64 = string.Equals(coreOverride, "n64", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsN64RomPath(romPath));
             bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "scd", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useSnes = false;
+                useN64 = false;
                 useSegaCd = false;
             }
 
@@ -261,6 +264,59 @@ class Program
                 return 0;
             }
 
+            if (useN64)
+            {
+                Console.WriteLine("[HEADLESS] Using N64 core");
+                var n64 = new N64Adapter();
+                n64.LoadRom(romPath);
+
+                HeadlessAudioSink? n64AudioSink = null;
+                bool enableN64Audio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
+                if (enableN64Audio)
+                    n64AudioSink = new HeadlessAudioSink();
+
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> fb0 = n64.GetFrameBuffer(out int w0, out int h0, out int s0);
+                var stats0 = GetFrameStats(fb0, w0, h0, s0);
+                Console.WriteLine($"[HEADLESS] N64 fb_has_content={stats0.HasContent} nonzero_pixels={stats0.NonZeroPixels} first_nonzero=({stats0.FirstX},{stats0.FirstY})");
+                DumpBgraToPpm(fb0, w0, h0, s0, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    n64.RunFrame();
+
+                    if (n64AudioSink != null)
+                    {
+                        var audio = n64.GetAudioBuffer(out int rate, out int channels);
+                        if (frame == 0)
+                            n64AudioSink.Start(rate, channels);
+                        if (!audio.IsEmpty)
+                            n64AudioSink.Submit(audio);
+                    }
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                    {
+                        ReadOnlySpan<byte> fb = n64.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                        DumpBgraToPpm(fb, w, h, s, ppmPath);
+                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                    }
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> fbOut = n64.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] N64 fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                n64AudioSink?.Dispose();
+                // Stop R4300 thread before exit to avoid background runaway logs after frame loop.
+                n64.Reset();
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
             if (useSegaCd)
             {
                 Console.WriteLine("[HEADLESS] Using Sega CD core");
@@ -298,6 +354,24 @@ class Program
                     string prgPath = Path.Combine(dumpDir, "headless_prg_ram.bin");
                     scd.DumpPrgRam(prgPath);
                     Console.WriteLine($"[HEADLESS] Dumped PRG RAM to {prgPath}");
+                }
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_CDC") == "1")
+                {
+                    string cdcPath = Path.Combine(dumpDir, "headless_cdc_ram.bin");
+                    scd.DumpCdcRam(cdcPath);
+                    Console.WriteLine($"[HEADLESS] Dumped CDC RAM to {cdcPath}");
+                }
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_VDP_REGS") == "1")
+                {
+                    string vdpPath = Path.Combine(dumpDir, "headless_vdp_regs.txt");
+                    scd.DumpVdpRegisters(vdpPath);
+                    Console.WriteLine($"[HEADLESS] Dumped VDP registers to {vdpPath}");
+                }
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_SCD_REGS") == "1")
+                {
+                    string scdPath = Path.Combine(dumpDir, "headless_scd_regs.txt");
+                    scd.DumpScdRegisters(scdPath);
+                    Console.WriteLine($"[HEADLESS] Dumped Sega CD registers to {scdPath}");
                 }
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
@@ -440,10 +514,24 @@ class Program
                  Console.WriteLine($"[HEADLESS] Warm-up complete");
              }
 
-             // Dump frame 0 before running (after warm-up)
+            // Dump frame 0 before running (after warm-up)
              Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
              adapter.FrameBufferHasContent();
              adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+              var dumpFrames = new HashSet<int>();
+              string? dumpFramesRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+              if (!string.IsNullOrWhiteSpace(dumpFramesRaw))
+              {
+                  foreach (string part in dumpFramesRaw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                  {
+                      if (int.TryParse(part.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int frameIndex))
+                          dumpFrames.Add(frameIndex);
+                  }
+              }
+              int? dumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+              if (dumpFrameSingle.HasValue)
+                  dumpFrames.Add(dumpFrameSingle.Value);
 
               for (int frame = 0; frame < framesToRun; frame++)
               {
@@ -517,7 +605,7 @@ class Program
                   Console.WriteLine($"[HEADLESS] Frame {frame}: display={displayOn} fb_has_content={hasContent}");
 
                 // Dump framebuffer at interesting points
-                if (frame == 0 || frame == 5 || frame == 10)
+                if (frame == 0 || frame == 5 || frame == 10 || dumpFrames.Contains(frame))
                 {
                     string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
                     adapter.DumpFrameBufferToPpm(ppmPath);
@@ -606,6 +694,12 @@ class Program
             }
         }
         return false;
+    }
+
+    private static bool IsN64RomPath(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".z64" or ".n64" or ".v64";
     }
 
     private static void DumpSnesFrame(SnesAdapter snes, string path, bool logStats)

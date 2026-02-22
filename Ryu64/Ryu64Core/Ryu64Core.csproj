@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Ryu64Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Ryu64.Common/Ryu64.Common.csproj" />
+    <ProjectReference Include="../Ryu64.Formats/Ryu64.Formats.csproj" />
+    <ProjectReference Include="../Ryu64.MIPS/Ryu64.MIPS.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -83,7 +83,8 @@ internal sealed partial class InstructionExecutor
             Console.WriteLine(
                 $"[M68K-PC] cpu={_name} pc=0x{pcBefore:X8} op=0x{_opcode:X4} inst={traceInst.Kind} size={traceInst.Size} " +
                 $"src={FormatMode(traceInst.Source)} dst={FormatMode(traceInst.Dest)} " +
-                $"A0=0x{_registers.Address[0]:X8} A2=0x{_registers.Address[2]:X8} D0=0x{_registers.Data[0]:X8}");
+                $"A0=0x{_registers.Address[0]:X8} A2=0x{_registers.Address[2]:X8} A4=0x{_registers.Address[4]:X8} A5=0x{_registers.Address[5]:X8} " +
+                $"D0=0x{_registers.Data[0]:X8} D1=0x{_registers.Data[1]:X8} D5=0x{_registers.Data[5]:X8}");
         }
 
         var next = ReadBusWord(_registers.Pc + 2);
@@ -315,14 +316,14 @@ internal sealed partial class InstructionExecutor
                     uint pcBefore = _registers.Pc;
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
-                    uint pc = _registers.Pc;
                     short disp = (short)ext.Value;
-                    uint addr = pc + (uint)disp;
+                    // PC-relative bases on the extension word address (PC before FetchOperand)
+                    uint addr = pcBefore + (uint)disp;
                     if (TracePcIndexed && _tracePcIndexedRemaining > 0)
                     {
                         _tracePcIndexedRemaining--;
                         Console.WriteLine(
-                            $"[M68K-PCREL] pcBefore=0x{pcBefore:X8} pcAfter=0x{pc:X8} ext=0x{ext.Value:X4} disp=0x{disp:X4} addr=0x{addr:X8}");
+                            $"[M68K-PCREL] pcBefore=0x{pcBefore:X8} pcAfter=0x{_registers.Pc:X8} ext=0x{ext.Value:X4} disp=0x{disp:X4} addr=0x{addr:X8}");
                     }
                     resolved = ResolvedAddress.Memory(addr);
                     break;
@@ -332,18 +333,18 @@ internal sealed partial class InstructionExecutor
                     uint pcBefore = _registers.Pc;
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
-                    uint pc = _registers.Pc;
                     var (idxReg, idxSize) = Indexing.ParseIndex(ext.Value);
                     uint index = idxReg.Read(_registers, idxSize);
                     sbyte disp = (sbyte)ext.Value;
-                    uint addr = pc + index + (uint)disp;
+                    // PC-relative bases on the extension word address (PC before FetchOperand)
+                    uint addr = pcBefore + index + (uint)disp;
                     if (TracePcIndexed && _tracePcIndexedRemaining > 0)
                     {
                         _tracePcIndexedRemaining--;
                         string idxKind = idxReg.IsAddress ? "A" : "D";
                         int idxNum = idxReg.IsAddress ? idxReg.AddrReg.Index : idxReg.DataReg.Index;
                         Console.WriteLine(
-                            $"[M68K-PCIDX] pcBefore=0x{pcBefore:X8} pcAfter=0x{pc:X8} ext=0x{ext.Value:X4} " +
+                            $"[M68K-PCIDX] pcBefore=0x{pcBefore:X8} pcAfter=0x{_registers.Pc:X8} ext=0x{ext.Value:X4} " +
                             $"idx={idxKind}{idxNum} size={(idxSize == IndexSize.LongWord ? "L" : "W")} " +
                             $"index=0x{index:X8} disp=0x{(byte)disp:X2} addr=0x{addr:X8}");
                     }

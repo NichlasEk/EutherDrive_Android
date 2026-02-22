@@ -287,8 +287,15 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_WRITE_COUNTER"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRamRangeFirstWritePerFrame =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_FIRST_WRITE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRamRangePc =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_PC"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRamRangePcFocus6fb =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_PC_FOCUS_6FB"), "1", StringComparison.Ordinal);
+        private static readonly int TraceRamRangePcLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_RAM_RANGE_PC_LIMIT", 512);
         private static uint _traceRamRangeStart;
         private static uint _traceRamRangeEnd;
+        private int _ramRangePcRemaining = TraceRamRangePcLimit;
         private static readonly bool TraceZ80Mbx =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80MBX"), "1", StringComparison.Ordinal);
         private static readonly bool TraceMbxSrc =
@@ -498,9 +505,40 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void LogRamRange(uint addr, int size, bool write, uint value)
         {
-            if (!TraceRamRangeEnabled || _ramRangeRemaining <= 0)
+            if (!TraceRamRangeEnabled)
                 return;
             if (addr < _traceRamRangeStart || addr > _traceRamRangeEnd)
+                return;
+            if (TraceRamRangePc && write && _ramRangePcRemaining > 0)
+            {
+                uint pc = md_m68k.g_reg_PC;
+                bool inCopyLoop;
+                if (TraceRamRangePcFocus6fb)
+                {
+                    inCopyLoop = pc >= 0x06FB44 && pc <= 0x06FB56;
+                }
+                else
+                {
+                    inCopyLoop =
+                        (pc >= 0x06F8E8 && pc <= 0x06F8F2) || // backref copy loop
+                        (pc >= 0x06F8AA && pc <= 0x06F8B2) || // single-byte backref path
+                        (pc >= 0x06F91E && pc <= 0x06F926) || // literal output path
+                        (pc >= 0x06FB44 && pc <= 0x06FB56);   // 6FA74 path: copy/literal output
+                }
+                if (inCopyLoop)
+                {
+                    if (_ramRangePcRemaining != int.MaxValue)
+                        _ramRangePcRemaining--;
+                    string fmtPc = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
+                    Console.WriteLine(
+                        $"[RAM-RANGE-PC] pc=0x{pc:X6} addr=0x{addr:X6} size={size} val=0x{value.ToString(fmtPc)} " +
+                        $"A0=0x{md_m68k.g_reg_addr[0].l:X8} A1=0x{md_m68k.g_reg_addr[1].l:X8} A2=0x{md_m68k.g_reg_addr[2].l:X8} " +
+                        $"A3=0x{md_m68k.g_reg_addr[3].l:X8} A4=0x{md_m68k.g_reg_addr[4].l:X8} A5=0x{md_m68k.g_reg_addr[5].l:X8} " +
+                        $"D0=0x{md_m68k.g_reg_data[0].l:X8} D1=0x{md_m68k.g_reg_data[1].l:X8} D2=0x{md_m68k.g_reg_data[2].l:X8} " +
+                        $"D3=0x{md_m68k.g_reg_data[3].l:X8} D4=0x{md_m68k.g_reg_data[4].l:X8} D5=0x{md_m68k.g_reg_data[5].l:X8} D6=0x{md_m68k.g_reg_data[6].l:X8}");
+                }
+            }
+            if (_ramRangeRemaining <= 0)
                 return;
             if (TraceRamRangeWriteCounter || TraceRamRangeFirstWritePerFrame)
             {
@@ -546,6 +584,13 @@ namespace EutherDrive.Core.MdTracerCore
             char rw = write ? 'W' : 'R';
             string fmt = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
             Console.WriteLine($"[RAM-RANGE] {rw}{size} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{value.ToString(fmt)}");
+
+            // RAM-RANGE-PC handled above to avoid being throttled by RAM-RANGE limits.
+        }
+
+        internal void LogRamRangeDirect(uint addr, int size, bool write, uint value)
+        {
+            LogRamRange(addr, size, write, value);
         }
 
         private static bool TryParseAddrRange(string? raw, out uint start, out uint end)

@@ -451,6 +451,10 @@ public partial class MainWindow : Window
                 {
                     UpdatePsxRomInfo(_romPath);
                 }
+                else if (_core is N64Adapter n64)
+                {
+                    UpdateN64RomInfo(_romPath, n64);
+                }
                 else if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
                 {
                     UpdateSegaCdRomInfo(segaCd, _romPath);
@@ -488,6 +492,8 @@ public partial class MainWindow : Window
             return new PsxAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsPceRom(path))
             return new PceCdAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && IsN64Rom(path))
+            return new N64Adapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
             return new SnesAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsNesRom(path))
@@ -528,6 +534,12 @@ public partial class MainWindow : Window
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
         return ext is ".pce" or ".cue";
+    }
+
+    private static bool IsN64Rom(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".z64" or ".n64" or ".v64";
     }
 
     private static bool IsSnesRom(string path)
@@ -1245,6 +1257,10 @@ public partial class MainWindow : Window
                         {
                             UpdatePsxRomInfo(_romPath);
                         }
+                        else if (_core is N64Adapter n64)
+                        {
+                            UpdateN64RomInfo(_romPath, n64);
+                        }
                         else if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
                         {
                             UpdateSegaCdRomInfo(segaCd, _romPath);
@@ -1347,6 +1363,9 @@ public partial class MainWindow : Window
 
     private static void LogException(Exception ex, string context)
     {
+        if (IsIgnorableBackgroundException(ex))
+            return;
+
         Console.WriteLine($"[UI-ERROR] {context}: {ex.Message}");
         Console.WriteLine(ex.ToString());
         if (ex.InnerException != null)
@@ -1354,6 +1373,29 @@ public partial class MainWindow : Window
             Console.WriteLine($"[UI-ERROR] {context} inner: {ex.InnerException.Message}");
             Console.WriteLine(ex.InnerException.ToString());
         }
+    }
+
+    private static bool IsIgnorableBackgroundException(Exception ex)
+    {
+        if (ContainsDbusServiceUnknown(ex))
+            return true;
+
+        if (ex is AggregateException agg)
+        {
+            foreach (var inner in agg.Flatten().InnerExceptions)
+            {
+                if (ContainsDbusServiceUnknown(inner))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsDbusServiceUnknown(Exception ex)
+    {
+        return ex.ToString().IndexOf("org.freedesktop.DBus.Error.ServiceUnknown", StringComparison.OrdinalIgnoreCase) >= 0
+            || ex.GetType().FullName?.IndexOf("Tmds.DBus.Protocol.DBusException", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private void AddRecentRom(string? path, bool save = true, bool updateCombo = true)
@@ -1633,6 +1675,8 @@ public partial class MainWindow : Window
             nes.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is PsxAdapter psx)
             psx.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is N64Adapter n64)
+            n64.SetMasterVolumePercent(_masterVolumePercent);
     }
 
     private void ApplyAudioMixToCore()
@@ -1815,6 +1859,24 @@ public partial class MainWindow : Window
 
         var info = TryBuildPsxRomInfo(romPath);
         RomInfoText.Text = info ?? "PSX ROM loaded.";
+        UpdateRomRegionHint(ConsoleRegion.Auto);
+        _romRegionKey = null;
+        _romSegaCdKey = null;
+        _segaCdRamCartEnabled = false;
+        _segaCdLoadCdToRam = false;
+        _segaCdForceNoDisc = false;
+        UpdateSegaCdOptionsUi();
+    }
+
+    private void UpdateN64RomInfo(string romPath, N64Adapter adapter)
+    {
+        if (RomInfoText == null)
+            return;
+
+        string name = Path.GetFileName(romPath);
+        var frame = adapter.GetFrameBuffer(out int width, out int height, out _);
+        string video = frame.IsEmpty ? "video pending" : $"{width}x{height}";
+        RomInfoText.Text = $"N64: {name} | {video}";
         UpdateRomRegionHint(ConsoleRegion.Auto);
         _romRegionKey = null;
         _romSegaCdKey = null;
@@ -4972,7 +5034,7 @@ public partial class MainWindow : Window
                         _uiProfileRunFrameTicks += Stopwatch.GetTimestamp() - runStart;
                     long audioStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
                     GenerateAudioFromSystemCycles(core);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter || core is PsxAdapter || core is SegaCdAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -5132,7 +5194,7 @@ public partial class MainWindow : Window
     {
         if (_core is MdTracerAdapter adapter)
             return adapter.GetAudioBufferForFrames(frames, out _, out _);
-        if (_core is SnesAdapter || _core is PceCdAdapter || _core is SegaCdAdapter)
+        if (_core is SnesAdapter || _core is PceCdAdapter || _core is N64Adapter || _core is SegaCdAdapter)
             return DequeueSnesAudio(frames);
         return ReadOnlySpan<short>.Empty;
     }

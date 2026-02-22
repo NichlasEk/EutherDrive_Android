@@ -132,6 +132,8 @@ namespace ePceCD
         private int m_VDC_Increment;
         private int m_VdcStatusLogCount;
         private bool m_VdcStatusSuppressed;
+        private int m_VdcDmaLogCount;
+        private bool m_VdcDmaSuppressed;
 
         // VCE REGISTERS
         //private bool m_VCE_BW;
@@ -326,6 +328,11 @@ namespace ePceCD
                     if (--m_VDC_LENR == 0)
                     {
                         m_VDC_DMA_Enable = false;
+                        if (TraceVdcRegs && !m_VdcDmaSuppressed && m_VdcDmaLogCount < 50)
+                        {
+                            Console.WriteLine($"[PCE-VDC] VRAMDMA done line={m_RenderLine}");
+                            m_VdcDmaLogCount++;
+                        }
                         if (m_VDC_VRAMDMA_IRQ)
                         {
                             m_VDC_DV = true;
@@ -658,6 +665,19 @@ namespace ePceCD
                 case 0x12:
                     m_VDC_LENR = (ushort)((m_VDC_LENR & 0xFF) | (data << 8));
                     m_VDC_DMA_Enable = true;
+                    if (TraceVdcRegs && !m_VdcDmaSuppressed)
+                    {
+                        if (m_VdcDmaLogCount < 50)
+                        {
+                            Console.WriteLine($"[PCE-VDC] VRAMDMA start DSR=0x{m_VDC_DSR:X4} DESR=0x{m_VDC_DESR:X4} LEN=0x{m_VDC_LENR:X4} line={m_RenderLine}");
+                            m_VdcDmaLogCount++;
+                        }
+                        else
+                        {
+                            Console.WriteLine("[PCE-VDC] VRAMDMA logging suppressed.");
+                            m_VdcDmaSuppressed = true;
+                        }
+                    }
                     break;
                 case 0x13: m_VDC_VSAR = (ushort)((m_VDC_VSAR & 0xFF) | (data << 8)); m_DoSAT_DMA = true; break;
             }

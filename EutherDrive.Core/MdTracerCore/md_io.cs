@@ -11,6 +11,8 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private bool _pad1Th = true;
         private bool _pad2Th = true;
+        private byte _pad1Ctrl;
+        private byte _pad2Ctrl;
 
         private PadHandshake _pad1Handshake;
         private PadHandshake _pad2Handshake;
@@ -91,11 +93,11 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
                 case 0xA10008:
                 case 0xA10009:
-                    result = (byte)(_pad1Th ? 0x40 : 0x00);
+                    result = _pad1Ctrl;
                     break;
                 case 0xA1000A:
                 case 0xA1000B:
-                    result = (byte)(_pad2Th ? 0x40 : 0x00);
+                    result = _pad2Ctrl;
                     break;
                 case 0xA1000E:
                 case 0xA1000F:
@@ -147,14 +149,18 @@ namespace EutherDrive.Core.MdTracerCore
             switch (addr)
             {
                 case 0xA10003:
-                case 0xA10008:
-                case 0xA10009:
                     _pad1Th = (in_val & 0x40) != 0;
                     break;
+                case 0xA10008:
+                case 0xA10009:
+                    _pad1Ctrl = in_val;
+                    break;
                 case 0xA10005:
+                    _pad2Th = (in_val & 0x40) != 0;
+                    break;
                 case 0xA1000A:
                 case 0xA1000B:
-                    _pad2Th = (in_val & 0x40) != 0;
+                    _pad2Ctrl = in_val;
                     break;
                 default:
                     break;

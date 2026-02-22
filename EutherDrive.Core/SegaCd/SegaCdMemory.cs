@@ -30,6 +30,10 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_SUBCOMM"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool LogSubCdc = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_SUBCDC"),
+        "1",
+        StringComparison.Ordinal);
     private static readonly bool LogCommFlags = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_COMMFLAGS"),
         "1",
@@ -672,9 +676,18 @@ public sealed class SegaCdMemory
                 if (LogMainRegs)
                     Console.WriteLine($"[SCD-WORDRAM] main ctl=0x{value:X2} {WordRam.GetDebugState()}");
                 break;
+            case 0xA12004:
+                Cdc.SetDeviceDestination((byte)(value & 0x07));
+                break;
+            case 0xA12005:
+                Cdc.SetRegisterAddress((byte)(value & 0x1F));
+                break;
             case 0xA12006:
             case 0xA12007:
-                Registers.HInterruptVector = (ushort)((value << 8) | value);
+                if (address == 0xA12007)
+                    Cdc.WriteRegister(value);
+                else
+                    Registers.HInterruptVector = (ushort)((value << 8) | value);
                 break;
             case 0xA12008:
             case 0xA12009:
@@ -705,6 +718,7 @@ public sealed class SegaCdMemory
         {
             case 0xA12000:
             case 0xA12002:
+            case 0xA12004:
                 WriteMainRegisterByte(address, (byte)(value >> 8));
                 WriteMainRegisterByte(address | 1, (byte)value);
                 break;
@@ -963,6 +977,10 @@ public sealed class SegaCdMemory
             _subCdcRegDataLogged = true;
             Console.Error.WriteLine($"[SCD-SUB-CDC] W 0x0007 = 0x{value:X2}");
         }
+        if (LogSubCdc && reg is 0x0004 or 0x0005 or 0x0007 or 0x0008 or 0x0009 or 0x000A or 0x000B)
+        {
+            Console.WriteLine($"[SCD-SUB-CDC] W 0x{reg:X4} = 0x{value:X2}");
+        }
         if (LogSubRegs
             && reg is 0x0004 or 0x0005 or 0x0007 or 0x0030 or 0x0031 or 0x0033 or 0x0034 or 0x0035 or 0x0037
                 or >= 0x0042 and <= 0x004B)
@@ -1109,6 +1127,7 @@ public sealed class SegaCdMemory
                 WriteSubRegisterByte(reg | 1, (byte)value);
                 break;
             case 0x0002:
+                WriteSubRegisterByte(reg, (byte)(value >> 8));
                 WriteSubRegisterByte(reg | 1, (byte)value);
                 break;
             case 0x0004:

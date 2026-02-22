@@ -6,10 +6,12 @@ namespace EutherDrive.Core.SegaCd;
 internal sealed class SegaCdMainM68kBus : IBusInterface
 {
     private readonly md_bus _bus;
+    private readonly SegaCdMemory? _memory;
 
-    public SegaCdMainM68kBus(md_bus bus)
+    public SegaCdMainM68kBus(md_bus bus, SegaCdMemory? memory = null)
     {
         _bus = bus;
+        _memory = memory;
     }
 
     public byte ReadByte(uint address) => _bus.read8(address);
@@ -29,6 +31,8 @@ internal sealed class SegaCdMainM68kBus : IBusInterface
             return 4;
         if (md_m68k.g_interrupt_V_req && vintEnabled)
             return 6;
+        if (_memory != null && _memory.Registers.SoftwareInterruptEnabled && _memory.Registers.SoftwareInterruptPending)
+            return 2;
         if (md_m68k.g_interrupt_EXT_req)
             return md_m68k.g_interrupt_EXT_level;
         return 0;
@@ -47,6 +51,12 @@ internal sealed class SegaCdMainM68kBus : IBusInterface
         {
             md_m68k.g_interrupt_V_req = false;
             md_m68k.g_interrupt_V_act = true;
+            return;
+        }
+
+        if (level == 2 && _memory != null)
+        {
+            _memory.Registers.SoftwareInterruptPending = false;
             return;
         }
 

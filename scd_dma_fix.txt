@@ -1,0 +1,19 @@
+[HEADLESS] Loading ROM: /home/nichlas/roms/SegaCD/Sonic CD (USA)/Sonic CD (USA).cue
+[HEADLESS] Running 10 frames
+[HEADLESS] Using Sega CD core
+[VDP-INTERLACE] Parsed InterlaceOutputPolicy: DoubleField (raw='')
+[VRAM-CLEAR] frame=0 reason=ResetState()
+[HEADLESS] Framebuffer BEFORE running:
+[HEADLESS] SegaCD fb_has_content=False nonzero_pixels=0 first_nonzero=(−1,−1)
+[HEADLESS] Frame 0: fb_has_content=False nonzero_pixels=0 first_nonzero=(−1,−1)
+[HEADLESS] Dumped frame 0 to /home/nichlas/EutherDrive/logs/headless_frame0.ppm
+[PSG-HIT] address=0xC00011 data=0x9F PC=0x000000
+[PSG-HIT] address=0xC00011 data=0xBF PC=0x000000
+[PSG-HIT] address=0xC00011 data=0xDF PC=0x000000
+[PSG-HIT] address=0xC00011 data=0xFF PC=0x000000
+[VDP-PORT-WRITE] addr=0x00C00000 val=0x00 PC=0x000000
+[HEADLESS] Frame 5: fb_has_content=False nonzero_pixels=0 first_nonzero=(−1,−1)
+[HEADLESS] Dumped frame 5 to /home/nichlas/EutherDrive/logs/headless_frame5.ppm
+[HEADLESS] Framebuffer AFTER running:
+[HEADLESS] SegaCD fb_has_content=False nonzero_pixels=0 first_nonzero=(−1,−1)
+[HEADLESS] Completed 10 frames

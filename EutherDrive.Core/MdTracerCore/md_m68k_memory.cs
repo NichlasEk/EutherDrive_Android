@@ -241,6 +241,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (bus?.OverrideBus != null && bus.OverrideBus.TryWrite8(addr, in_data))
                 return;
             mem[addr] = in_data;
+            md_main.g_md_bus?.LogRamRangeDirect(logical, 1, write: true, in_data);
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
                 && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
             {
@@ -265,6 +266,7 @@ namespace EutherDrive.Core.MdTracerCore
             uint addr1 = NormalizeAddr(in_address + 1);
             mem[addr]  = (byte)(in_data >> 8);
             mem[addr1] = (byte)(in_data & 0x00FF);
+            md_main.g_md_bus?.LogRamRangeDirect(logical, 2, write: true, in_data);
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
                 && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
             {
@@ -294,6 +296,7 @@ namespace EutherDrive.Core.MdTracerCore
             mem[addr1] = (byte)((in_data >> 16) & 0x00FF);
             mem[addr2] = (byte)((in_data >> 8) & 0x00FF);
             mem[addr3] = (byte)(in_data & 0x00FF);
+            md_main.g_md_bus?.LogRamRangeDirect(logical, 4, write: true, in_data);
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
                 && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
             {

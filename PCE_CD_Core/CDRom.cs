@@ -65,6 +65,9 @@ namespace ePceCD
             public PosMSF EndPos;
             public byte Control;  // 子通道Q控制字段
             public byte Adr;      // 子通道Q ADR类型
+            public bool IsWave;
+            public bool AudioBigEndian;
+            public bool AudioEndianDetected;
         }
         public CDTrack currentTrack, FileTrack;
         private bool _bramInitialized;
@@ -110,7 +113,7 @@ namespace ePceCD
         public AUDIOFADE _AUDIOFADE = new AUDIOFADE();
         private float _psgMix;
         private float _cdMix;
-        private bool _cdAudioBigEndian;
+        private bool? _cdAudioEndianOverride;
 
         [NonSerialized]
         public BUS Bus;
@@ -131,7 +134,7 @@ namespace ePceCD
         {
             _psgMix = GetEnvMix("EUTHERDRIVE_PCE_PSG_MIX", 0.8f);
             _cdMix = GetEnvMix("EUTHERDRIVE_PCE_CD_MIX", 0.2f);
-            _cdAudioBigEndian = GetEnvEndian();
+            _cdAudioEndianOverride = GetEnvEndianOverride();
         }
 
         public void RebindAfterDeserialize(BUS bus)
@@ -197,7 +200,10 @@ namespace ePceCD
                     int i = _cdSectorOffsetBytes;
                     short sampleL;
                     short sampleR;
-                    if (track.Type == TrackType.AUDIO && _cdAudioBigEndian)
+                    bool bigEndian = track.AudioBigEndian;
+                    if (_cdAudioEndianOverride.HasValue)
+                        bigEndian = _cdAudioEndianOverride.Value;
+                    if (track.Type == TrackType.AUDIO && bigEndian)
                     {
                         sampleL = (short)((CDSBuffer[i] << 8) | CDSBuffer[i + 1]);
                         sampleR = (short)((CDSBuffer[i + 2] << 8) | CDSBuffer[i + 3]);
@@ -236,13 +242,19 @@ namespace ePceCD
             return value;
         }
 
-        private static bool GetEnvEndian()
+        private static bool? GetEnvEndianOverride()
         {
             string raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CD_ENDIAN");
             if (string.IsNullOrWhiteSpace(raw))
-                return false;
+                return null;
             raw = raw.Trim().ToLowerInvariant();
-            return raw != "little";
+            if (raw == "auto")
+                return null;
+            if (raw == "little" || raw == "le")
+                return false;
+            if (raw == "big" || raw == "be")
+                return true;
+            return null;
         }
 
         private int MSFToLBA(int m, int s, int f) => m * 60 * 75 + s * 75 + f;
@@ -277,8 +289,11 @@ namespace ePceCD
                 }
             }
             CalculateTrackMSF();
+            DetectAudioEndianness();
             Console.WriteLine($"Loaded {tracks.Count} tracks");
         }
+
+        private bool _currentFileIsWave;
 
         private void ParseFileCommand(string[] parts, string baseDir)
         {
@@ -288,6 +303,7 @@ namespace ePceCD
             currentTrack = new CDTrack { File = new FileStream(filePath, FileMode.Open, FileAccess.Read) };
             currentTrack.FileName = filePath;
             string typeLabel = fileType.Equals("WAVE", StringComparison.OrdinalIgnoreCase) ? "WAVE" : "BINARY";
+            _currentFileIsWave = typeLabel == "WAVE";
             Console.WriteLine($"CDROM {filePath} {typeLabel} LOADED");
         }
 
@@ -304,6 +320,7 @@ namespace ePceCD
             var track = new CDTrack { File = currentTrack.File };
             track.FileName = track.File.Name;
             track.Number = int.Parse(parts[1]);
+            track.IsWave = _currentFileIsWave;
 
             switch (parts[2])
             {
@@ -373,7 +390,8 @@ namespace ePceCD
             string lastFile = string.Empty;
             foreach (var track in tracks)
             {
-                if (!string.Equals(track.FileName, lastFile, StringComparison.OrdinalIgnoreCase))
+                bool sameFile = string.Equals(track.FileName, lastFile, StringComparison.OrdinalIgnoreCase);
+                if (!sameFile)
                     fileOffset = 0;
                 lastFile = track.FileName ?? string.Empty;
 
@@ -381,7 +399,7 @@ namespace ePceCD
                 int sectorSize = GetTrackSectorSize(track);
                 long trackStartLba = MSFToLBA(track.StartPos.MSF_M, track.StartPos.MSF_S, track.StartPos.MSF_F);
 
-                track.SectorStart = discSectorCursor + trackStartLba;
+                track.SectorStart = sameFile ? trackStartLba : (discSectorCursor + trackStartLba);
                 track.OffsetStart = baseOffset + fileOffset;
 
                 var nextTrack = tracks.FirstOrDefault(t => t.Number == track.Number + 1);
@@ -447,6 +465,94 @@ namespace ePceCD
             return 0;
         }
         #endregion
+
+        private void DetectAudioEndianness()
+        {
+            foreach (var track in tracks)
+            {
+                if (track.Type != TrackType.AUDIO || track.File == null)
+                    continue;
+                if (_cdAudioEndianOverride.HasValue)
+                {
+                    track.AudioBigEndian = _cdAudioEndianOverride.Value;
+                    track.AudioEndianDetected = true;
+                    continue;
+                }
+                if (track.IsWave)
+                {
+                    track.AudioBigEndian = false;
+                    track.AudioEndianDetected = true;
+                    continue;
+                }
+                track.AudioBigEndian = DetectAudioBigEndian(track);
+                track.AudioEndianDetected = true;
+            }
+        }
+
+        private bool DetectAudioBigEndian(CDTrack track)
+        {
+            try
+            {
+                if (track.File == null)
+                    return false;
+                long oldPos = track.File.Position;
+                byte[] buf = new byte[SECTOR_SIZE];
+                long diffLeTotal = 0;
+                long diffBeTotal = 0;
+                int samples = 0;
+                int maxSectors = 64;
+
+                for (int sector = 0; sector < maxSectors; sector++)
+                {
+                    long offset = Math.Max(0, track.OffsetStart + (long)sector * SECTOR_SIZE);
+                    if (offset + SECTOR_SIZE > track.File.Length)
+                        break;
+                    track.File.Seek(offset, SeekOrigin.Begin);
+                    int read = track.File.Read(buf, 0, buf.Length);
+                    if (read < 4)
+                        break;
+
+                    long diffLe = 0;
+                    long diffBe = 0;
+                    short prevLe = (short)((buf[1] << 8) | buf[0]);
+                    short prevBe = (short)((buf[0] << 8) | buf[1]);
+                    int limit = read & ~1;
+                    for (int i = 2; i < limit; i += 2)
+                    {
+                        short sLe = (short)((buf[i + 1] << 8) | buf[i]);
+                        short sBe = (short)((buf[i] << 8) | buf[i + 1]);
+                        diffLe += Math.Abs(sLe - prevLe);
+                        diffBe += Math.Abs(sBe - prevBe);
+                        prevLe = sLe;
+                        prevBe = sBe;
+                    }
+
+                    if (diffLe == 0 && diffBe == 0)
+                        continue; // silent sector, skip
+
+                    diffLeTotal += diffLe;
+                    diffBeTotal += diffBe;
+                    samples++;
+                    if (samples >= 8)
+                        break;
+                }
+
+                track.File.Seek(oldPos, SeekOrigin.Begin);
+
+                if (samples == 0)
+                    return true; // default to big-endian if all sampled sectors are silent
+
+                if (diffBeTotal < diffLeTotal * 0.95)
+                    return true;
+                if (diffLeTotal < diffBeTotal * 0.95)
+                    return false;
+                return true;
+            }
+            catch
+            {
+                return true;
+            }
+        }
 
         #region SCSI核心逻辑
         private void SetPhase(ScsiPhase phase)

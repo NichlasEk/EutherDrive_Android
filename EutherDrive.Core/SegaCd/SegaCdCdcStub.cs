@@ -89,6 +89,13 @@ public sealed class SegaCdCdcStub
     public byte RegisterAddress => _registerAddress;
     public uint DmaAddress => _dmaAddress;
 
+    public byte[] GetBufferRamSnapshot()
+    {
+        byte[] copy = new byte[_bufferRam.Length];
+        Buffer.BlockCopy(_bufferRam, 0, copy, 0, _bufferRam.Length);
+        return copy;
+    }
+
     public void Reset()
     {
         // Reset only IFCTRL/CTRL0/CTRL1 and interrupt flags (jgenesis behavior).
@@ -138,7 +145,7 @@ public sealed class SegaCdCdcStub
 
     public void SetDmaAddress(uint address)
     {
-        _dmaAddress = address & 0x3FFFF;
+        _dmaAddress = address;
         if (LogCdc)
             Console.WriteLine($"[SCD-CDC] DMA=0x{_dmaAddress:X6}");
         if (TraceCdcTimeline)

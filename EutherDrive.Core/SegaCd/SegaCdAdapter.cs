@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using EutherDrive.Core.Cpu.M68000Emu;
 using EutherDrive.Core.MdTracerCore;
 
@@ -39,7 +41,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private bool _subCpuNeedsReset;
     private int _subInitLogRemaining = 8;
     private int _subVectorLogRemaining = 16;
-    private int _subPcLogRemaining = 32;
+    private int _subPcLogRemaining = 500000;
     private int _subDumpRemaining = 4;
     private int _subChecksumLogRemaining = 16;
     private bool _subChecksumComputed;
@@ -73,6 +75,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAIN_DEBUG"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool TraceMainRamJump =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAIN_RAM_JUMP"),
+            "1",
+            StringComparison.Ordinal);
     private static readonly bool TraceReset =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_RESET"),
             "1",
@@ -103,6 +109,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
             StringComparison.Ordinal);
     private int _mainPcLogRemaining = 32;
     private long _lastMainPcFrame = -1;
+    private bool _mainRamJumpLogged;
+    private uint _lastMainPc;
+    private ushort _lastMainOp;
     private int _mainDecompLogRemaining = 64;
     private long _lastSubWaitFrame = -1;
     private int _lastFbLogW = -1;
@@ -174,6 +183,12 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private long _timerTraceLastTicks;
     private static readonly bool TraceCycleBudget =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CYCLES"), "1", StringComparison.Ordinal);
+    private static readonly bool DumpBootSector =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_DUMP_BOOT_SECTOR"), "1", StringComparison.Ordinal);
+    private static readonly string BootSectorDumpPath =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_DUMP_BOOT_SECTOR_PATH") ?? "/tmp/ed_scd_boot_sector.bin";
+    private static readonly string? BootSectorComparePath =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_BOOT_SECTOR_COMPARE");
     private bool _cycleBudgetLogged;
     private BiquadLowPass? _pcmLowPass;
     private BiquadLowPass? _cdLowPass;
@@ -196,7 +211,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
         _bios = SegaCdBios.Load(RegionHint == ConsoleRegion.Auto ? ConsoleRegion.US : RegionHint);
         _memory = new SegaCdMemory(_bios);
         _memory.EnableRamCartridge = EnableRamCartridge;
-        _memory.SetDisc(CdRom.Open(path, LoadCdIntoRam));
+        var disc = CdRom.Open(path, LoadCdIntoRam);
+        _memory.SetDisc(disc);
+        TryDumpBootSector(disc, path);
         _ymResamplePhase = 0;
         _ymResampleHasCarry = false;
         bool forceNoDisc = ForceNoDisc
@@ -217,6 +234,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
         if (EutherDrive.Core.MdTracerCore.md_main.g_md_vdp != null)
             EutherDrive.Core.MdTracerCore.md_main.g_md_vdp.reset();
+        if (EutherDrive.Core.MdTracerCore.md_main.g_md_music != null)
+            EutherDrive.Core.MdTracerCore.md_main.g_md_music.reset();
 
         uint initialSp = ReadMainVector(_memory, 0);
         uint initialPc = ReadMainVector(_memory, 4);
@@ -231,7 +250,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
         }
         if (_useM68kEmu && _mainBus != null)
         {
-            _mainCpuBus = new SegaCdMainM68kBus(_mainBus);
+            _mainCpuBus = new SegaCdMainM68kBus(_mainBus, _memory);
             _subCpuBus = new SegaCdSubM68kBus(_memory);
             _mainCpu.Reset(_mainCpuBus);
             _subCpuNeedsReset = true;
@@ -271,6 +290,182 @@ public sealed class SegaCdAdapter : IEmulatorCore
             return;
         byte[] snapshot = _memory.GetPrgRamSnapshot();
         File.WriteAllBytes(path, snapshot);
+    }
+
+    public void DumpCdcRam(string path)
+    {
+        if (_memory == null)
+            return;
+        byte[] snapshot = _memory.Cdc.GetBufferRamSnapshot();
+        File.WriteAllBytes(path, snapshot);
+    }
+
+    public void DumpVdpRegisters(string path)
+    {
+        var vdp = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+        byte[] regs = vdp.GetRegisterSnapshot();
+        if (regs.Length == 0)
+            return;
+
+        var sb = new StringBuilder();
+
+        sb.AppendLine("Register #0");
+        sb.AppendLine($"  Horizontal interrupt enabled: {BoolStr(vdp.g_vdp_reg_0_4_hinterrupt != 0)}");
+        sb.AppendLine($"  HV counter latched: {BoolStr(vdp.g_vdp_reg_0_1_hvcounter != 0)}");
+
+        byte reg1 = regs.Length > 1 ? regs[1] : (byte)0;
+        bool mode4 = (reg1 & 0x04) == 0;
+        string vsize = vdp.g_vdp_reg_1_3_cellmode != 0 ? "V30 (240px)" : "V28 (224px)";
+        string vramSize = vdp.g_vdp_reg_1_7_vram128 != 0 ? "128 KB" : "64 KB";
+        sb.AppendLine("Register #1");
+        sb.AppendLine($"  Display enabled: {BoolStr(vdp.g_vdp_reg_1_6_display != 0)}");
+        sb.AppendLine($"  Vertical interrupt enabled: {BoolStr(vdp.g_vdp_reg_1_5_vinterrupt != 0)}");
+        sb.AppendLine($"  DMA enabled: {BoolStr(vdp.g_vdp_reg_1_4_dma != 0)}");
+        sb.AppendLine($"  Vertical resolution: {vsize}");
+        sb.AppendLine($"  Mode: {(mode4 ? "4" : "5")}");
+        sb.AppendLine($"  VRAM size: {vramSize}");
+
+        sb.AppendLine("Register #2");
+        sb.AppendLine($"  Plane A nametable address: ${vdp.g_vdp_reg_2_scrolla:X4}");
+
+        sb.AppendLine("Register #3");
+        sb.AppendLine($"  Window nametable address: ${vdp.g_vdp_reg_3_windows:X4}");
+
+        sb.AppendLine("Register #4");
+        sb.AppendLine($"  Plane B nametable address: ${vdp.g_vdp_reg_4_scrollb:X4}");
+
+        sb.AppendLine("Register #5");
+        sb.AppendLine($"  Sprite attribute table address: ${vdp.g_vdp_reg_5_sprite:X4}");
+
+        byte reg7 = regs.Length > 7 ? regs[7] : vdp.g_vdp_reg_7_backcolor;
+        sb.AppendLine("Register #7");
+        sb.AppendLine($"  Backdrop palette: {(reg7 >> 4) & 0x03}");
+        sb.AppendLine($"  Backdrop color index: {reg7 & 0x0F}");
+
+        sb.AppendLine("Register #10");
+        sb.AppendLine($"  Horizontal interrupt interval: {vdp.g_vdp_reg_10_hint}");
+
+        string vscrollMode = vdp.g_vdp_reg_11_2_vscroll != 0 ? "Per 2 cell" : "Full screen";
+        string hscrollMode = vdp.g_vdp_reg_11_1_hscroll switch
+        {
+            0 => "Full screen",
+            1 => "Per cell",
+            2 => "Per line",
+            _ => "Prohibited"
+        };
+        sb.AppendLine("Register #11");
+        sb.AppendLine($"  Vertical scroll mode: {vscrollMode}");
+        sb.AppendLine($"  Horizontal scroll mode: {hscrollMode}");
+
+        string hsize = (vdp.g_vdp_reg_12_7_cellmode1 != 0 || vdp.g_vdp_reg_12_0_cellmode2 != 0)
+            ? "H40 (320px)"
+            : "H32 (256px)";
+        string interlace = vdp.g_vdp_interlace_mode switch
+        {
+            0 => "Progressive",
+            1 => "Single-screen interlaced",
+            2 => "Double-screen interlaced",
+            _ => "Progressive"
+        };
+        sb.AppendLine("Register #12");
+        sb.AppendLine($"  Horizontal resolution: {hsize}");
+        sb.AppendLine($"  Shadow/highlight enabled: {BoolStr(vdp.g_vdp_reg_12_3_shadow != 0)}");
+        sb.AppendLine($"  Screen mode: {interlace}");
+
+        sb.AppendLine("Register #13");
+        sb.AppendLine($"  H scroll table address: ${vdp.g_vdp_reg_13_hscroll:X4}");
+
+        sb.AppendLine("Register #15");
+        sb.AppendLine($"  Data port auto-increment: 0x{vdp.g_vdp_reg_15_autoinc:X}");
+
+        string vplane = ScrollSizeToString(vdp.g_vdp_reg_16_5_scrollV);
+        string hplane = ScrollSizeToString(vdp.g_vdp_reg_16_1_scrollH);
+        sb.AppendLine("Register #16");
+        sb.AppendLine($"  Vertical plane size: {vplane}");
+        sb.AppendLine($"  Horizontal plane size: {hplane}");
+
+        byte reg17 = regs.Length > 17 ? regs[17] : (byte)0;
+        string winHMode = (reg17 & 0x80) != 0 ? "Center to right" : "Left to center";
+        sb.AppendLine("Register #17");
+        sb.AppendLine($"  Window horizontal mode: {winHMode}");
+        sb.AppendLine($"  Window X: {reg17 & 0x1F}");
+
+        byte reg18 = regs.Length > 18 ? regs[18] : (byte)0;
+        string winVMode = (reg18 & 0x80) != 0 ? "Center to bottom" : "Top to center";
+        sb.AppendLine("Register #18");
+        sb.AppendLine($"  Window vertical mode: {winVMode}");
+        sb.AppendLine($"  Window Y: {reg18 & 0x1F}");
+
+        ushort dmaLen = (ushort)((vdp.g_vdp_reg_20_dma_counter_high << 8) | vdp.g_vdp_reg_19_dma_counter_low);
+        sb.AppendLine("Registers #19-20");
+        sb.AppendLine($"  DMA length: {dmaLen}");
+
+        uint dmaSource = (uint)(vdp.g_vdp_reg_21_dma_source_low
+            | (vdp.g_vdp_reg_22_dma_source_mid << 8)
+            | ((vdp.g_vdp_reg_23_5_dma_high & 0x7F) << 16));
+        string dmaMode = vdp.g_vdp_reg_23_dma_mode switch
+        {
+            2 => "VRAM fill",
+            3 => "VRAM-to-VRAM copy",
+            _ => "Memory to VRAM"
+        };
+        sb.AppendLine("Registers #21-23");
+        sb.AppendLine($"  DMA source address: ${dmaSource:X6}");
+        sb.AppendLine($"  DMA mode: {dmaMode}");
+
+        File.WriteAllText(path, sb.ToString());
+    }
+
+    public void DumpScdRegisters(string path)
+    {
+        if (_memory == null)
+            return;
+        var r = _memory.Registers;
+        var sb = new StringBuilder();
+        sb.AppendLine($"SubCpuBusReq: {r.SubCpuBusReq}");
+        sb.AppendLine($"SubCpuReset: {r.SubCpuReset}");
+        sb.AppendLine($"SoftwareInterruptPending: {r.SoftwareInterruptPending}");
+        sb.AppendLine($"SoftwareInterruptEnabled: {r.SoftwareInterruptEnabled}");
+        sb.AppendLine($"LedGreen: {r.LedGreen}");
+        sb.AppendLine($"LedRed: {r.LedRed}");
+        sb.AppendLine($"PrgRamWriteProtect: 0x{r.PrgRamWriteProtect:X2}");
+        sb.AppendLine($"PrgRamBank: 0x{r.PrgRamBank:X2}");
+        sb.AppendLine($"HInterruptVector: 0x{r.HInterruptVector:X4}");
+        sb.AppendLine($"StopwatchCounter: 0x{r.StopwatchCounter:X3}");
+        sb.AppendLine($"SubCpuCommunicationFlags: 0x{r.SubCpuCommunicationFlags:X2}");
+        sb.AppendLine($"MainCpuCommunicationFlags: 0x{r.MainCpuCommunicationFlags:X2}");
+        for (int i = 0; i < r.CommunicationCommands.Length; i++)
+            sb.AppendLine($"CommunicationCommand[{i}]: 0x{r.CommunicationCommands[i]:X4}");
+        for (int i = 0; i < r.CommunicationStatuses.Length; i++)
+            sb.AppendLine($"CommunicationStatus[{i}]: 0x{r.CommunicationStatuses[i]:X4}");
+        sb.AppendLine($"TimerCounter: 0x{r.TimerCounter:X2}");
+        sb.AppendLine($"TimerInterval: 0x{r.TimerInterval:X2}");
+        sb.AppendLine($"TimerInterruptPending: {r.TimerInterruptPending}");
+        sb.AppendLine($"SubcodeInterruptEnabled: {r.SubcodeInterruptEnabled}");
+        sb.AppendLine($"CdcInterruptEnabled: {r.CdcInterruptEnabled}");
+        sb.AppendLine($"CddInterruptEnabled: {r.CddInterruptEnabled}");
+        sb.AppendLine($"TimerInterruptEnabled: {r.TimerInterruptEnabled}");
+        sb.AppendLine($"GraphicsInterruptEnabled: {r.GraphicsInterruptEnabled}");
+        sb.AppendLine($"CddHostClockOn: {r.CddHostClockOn}");
+        for (int i = 0; i < r.CddCommand.Length; i++)
+            sb.AppendLine($"CddCommand[{i}]: 0x{r.CddCommand[i]:X2}");
+        File.WriteAllText(path, sb.ToString());
+    }
+
+    private static string BoolStr(bool value) => value ? "true" : "false";
+
+    private static string ScrollSizeToString(int bits)
+    {
+        return (bits & 0x03) switch
+        {
+            0x00 => "32 tiles",
+            0x01 => "64 tiles",
+            0x02 => "Prohibited",
+            0x03 => "128 tiles",
+            _ => "32 tiles"
+        };
     }
 
     public void RunFrame()
@@ -407,6 +602,27 @@ public sealed class SegaCdAdapter : IEmulatorCore
                         int remaining = mainSlice;
                         while (remaining > 0)
                         {
+                            int dmaWait = vdp.dma_status_update();
+                            if (dmaWait > 0)
+                            {
+                                int waitStep = Math.Min(remaining, dmaWait);
+                                remaining -= waitStep;
+                                continue;
+                            }
+
+                            if (TraceMainRamJump && !_mainRamJumpLogged)
+                            {
+                                uint pc = _mainCpu.Pc;
+                                if (pc >= 0xFF0000)
+                                {
+                                    _mainRamJumpLogged = true;
+                                    Console.WriteLine(
+                                        $"[SCD-MAIN-RAMJUMP] pc=0x{pc:X6} op=0x{_mainCpu.NextOpcode:X4} " +
+                                        $"prev_pc=0x{_lastMainPc:X6} prev_op=0x{_lastMainOp:X4}");
+                                }
+                                _lastMainPc = pc;
+                                _lastMainOp = _mainCpu.NextOpcode;
+                            }
                             uint cycles = _mainCpu.ExecuteInstruction(_mainCpuBus!);
                             remaining -= (int)cycles;
                         }
@@ -490,6 +706,52 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             {
                                 _subPcLogRemaining--;
                                 Console.WriteLine($"[SCD-SUB] pc=0x{subPc:X6} op=0x{_subCpu.NextOpcode:X4}");
+                            }
+
+                            if (_subDumpRemaining > 0 && subPc >= 0x0002E0 && subPc <= 0x0002E2)
+                            {
+                                _subDumpRemaining--;
+                                var subState = _subCpu.GetState();
+                                uint baseAddr = 0x0002D0;
+                                Span<byte> bytes = stackalloc byte[64];
+                                for (int i = 0; i < bytes.Length; i++)
+                                    bytes[i] = _memory.ReadSubByte(baseAddr + (uint)i);
+                                ushort w18e = _memory.ReadSubWord(0x00018E);
+                                ushort w18c = _memory.ReadSubWord(0x00018C);
+                                string hex = BitConverter.ToString(bytes.ToArray()).Replace("-", " ");
+                                Console.WriteLine(
+                                    $"[SCD-SUB] dump @0x{baseAddr:X6}: {hex} " +
+                                    $"W[0x018C]=0x{w18c:X4} W[0x018E]=0x{w18e:X4} " +
+                                    $"D0=0x{subState.Data[0]:X8} D1=0x{subState.Data[1]:X8} D2=0x{subState.Data[2]:X8} " +
+                                    $"A0=0x{subState.Address[0]:X8} A1=0x{subState.Address[1]:X8}");
+                                if (!_subChecksumComputed)
+                                {
+                                    _subChecksumComputed = true;
+                                    uint start = subState.Address[0] & 0xFFFFF;
+                                    uint count = (uint)((subState.Data[2] & 0xFFFF) + 1);
+                                    uint end = start + (count * 2);
+                                    ushort sumBe = 0;
+                                    ushort sumLe = 0;
+                                    uint zeroWords = 0;
+                                    for (uint addr = start; addr < end; addr += 2)
+                                    {
+                                        ushort subWord = _memory.ReadSubWord(addr);
+                                        sumBe = (ushort)(sumBe + subWord);
+                                        ushort swapped = (ushort)((subWord << 8) | (subWord >> 8));
+                                        sumLe = (ushort)(sumLe + swapped);
+                                        if (subWord == 0)
+                                            zeroWords++;
+                                    }
+                                    ushort expected = _memory.ReadSubWord(0x00018E);
+                                    Console.WriteLine(
+                                        $"[SCD-CHK] start=0x{start:X6} count={count} end=0x{(end - 1):X6} sumBE=0x{sumBe:X4} sumLE=0x{sumLe:X4} expected=0x{expected:X4} zeroWords={zeroWords}");
+                                    if (ForcePrgChecksum && sumBe != expected)
+                                    {
+                                        _memory.WriteSubWord(0x00018E, sumBe);
+                                        Console.WriteLine(
+                                            $"[SCD-CHK] Forcing PRG checksum from 0x{expected:X4} to 0x{sumBe:X4}");
+                                    }
+                                }
                             }
                             _memory.FlushBufferedSubWrites();
                         }
@@ -1431,6 +1693,122 @@ public sealed class SegaCdAdapter : IEmulatorCore
             if (s > max) max = s;
         }
         return $"samples={buffer.Length} nonzero={nonZero} min={min} max={max}";
+    }
+
+    private static void TryDumpBootSector(CdRom? disc, string romPath)
+    {
+        if (disc == null)
+            return;
+        if (!DumpBootSector && string.IsNullOrWhiteSpace(BootSectorComparePath))
+            return;
+
+        CdTrack? dataTrack = null;
+        foreach (var track in disc.Cue.Tracks)
+        {
+            if (track.TrackType == CdTrackType.Data)
+            {
+                dataTrack = track;
+                break;
+            }
+        }
+
+        if (dataTrack == null)
+        {
+            Console.Error.WriteLine($"[SCD-BOOT] No data track found for '{romPath}'.");
+            return;
+        }
+
+        CdTime relative = dataTrack.PregapLen.Add(dataTrack.PauseLen);
+        byte[] sector = new byte[CdRom.BytesPerSector];
+        bool ok = disc.ReadSector(dataTrack.Number, relative, sector);
+        if (!ok)
+        {
+            Console.Error.WriteLine($"[SCD-BOOT] Failed to read boot sector (track {dataTrack.Number}) for '{romPath}'.");
+            return;
+        }
+
+        string fullHash = Convert.ToHexString(SHA1.HashData(sector));
+        string userHash = Convert.ToHexString(SHA1.HashData(sector.AsSpan(16, 2048)));
+        int sigWithSpaces = FindAscii(sector.AsSpan(16, 2048), "SEGA DISC SYSTEM");
+        int sigNoSpaces = FindAscii(sector.AsSpan(16, 2048), "SEGADISCSYSTEM");
+        string preview = AsciiPreview(sector.AsSpan(16, 64));
+
+        Console.Error.WriteLine(
+            $"[SCD-BOOT] track={dataTrack.Number} start={dataTrack.StartTime} pregap={dataTrack.PregapLen} pause={dataTrack.PauseLen} " +
+            $"hash2352={fullHash} hash2048={userHash} sig_space={sigWithSpaces} sig_nospace={sigNoSpaces} preview='{preview}'");
+
+        if (DumpBootSector)
+        {
+            try
+            {
+                File.WriteAllBytes(BootSectorDumpPath, sector);
+                Console.Error.WriteLine($"[SCD-BOOT] Wrote boot sector to '{BootSectorDumpPath}'.");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[SCD-BOOT] Failed to write boot sector to '{BootSectorDumpPath}': {ex.Message}");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(BootSectorComparePath) && File.Exists(BootSectorComparePath))
+        {
+            try
+            {
+                byte[] other = File.ReadAllBytes(BootSectorComparePath);
+                string otherHash = Convert.ToHexString(SHA1.HashData(other));
+                int diff = FindFirstDiff(sector, other);
+                Console.Error.WriteLine(
+                    $"[SCD-BOOT] Compare '{BootSectorComparePath}': len={other.Length} hash={otherHash} first_diff={diff}");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[SCD-BOOT] Failed to compare boot sector '{BootSectorComparePath}': {ex.Message}");
+            }
+        }
+    }
+
+    private static int FindFirstDiff(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+    {
+        int min = Math.Min(a.Length, b.Length);
+        for (int i = 0; i < min; i++)
+        {
+            if (a[i] != b[i])
+                return i;
+        }
+        return a.Length == b.Length ? -1 : min;
+    }
+
+    private static int FindAscii(ReadOnlySpan<byte> data, string needle)
+    {
+        if (string.IsNullOrEmpty(needle))
+            return -1;
+        byte[] pattern = Encoding.ASCII.GetBytes(needle);
+        for (int i = 0; i <= data.Length - pattern.Length; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < pattern.Length; j++)
+            {
+                if (data[i + j] != pattern[j])
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+                return i;
+        }
+        return -1;
+    }
+
+    private static string AsciiPreview(ReadOnlySpan<byte> data)
+    {
+        var sb = new StringBuilder(data.Length);
+        for (int i = 0; i < data.Length; i++)
+        {
+            byte b = data[i];
+            sb.Append(b >= 0x20 && b <= 0x7E ? (char)b : '.');
+        }
+        return sb.ToString();
     }
 
     private void TraceCoreAudio(string label, short[] buffer, int length)

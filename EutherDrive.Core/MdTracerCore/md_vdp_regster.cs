@@ -21,6 +21,15 @@ namespace EutherDrive.Core.MdTracerCore
                 return fallback;
             return value < 0 ? fallback : value;
         }
+
+        public byte[] GetRegisterSnapshot()
+        {
+            if (g_vdp_reg == null || g_vdp_reg.Length == 0)
+                return Array.Empty<byte>();
+            byte[] copy = new byte[g_vdp_reg.Length];
+            Buffer.BlockCopy(g_vdp_reg, 0, copy, 0, copy.Length);
+            return copy;
+        }
         // Småhjälp för "headless" varningar
         private static void Warn(string msg)
         {
@@ -292,7 +301,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
             ushort w_out = 0;
             // Align DMA active with actual DMA state (jgenesis-style control_port.dma_active).
-            byte dmaActive = (byte)((g_dma_mode != 0 || g_dma_leng > 0) ? 1 : 0);
+            // DMA active should reflect an active DMA transfer, not just a nonzero length register.
+            byte dmaActive = (byte)(g_dma_mode != 0 ? 1 : 0);
             g_vdp_status_1_dma = dmaActive;
 
             w_out = g_vdp_status_9_empl;
@@ -343,7 +353,8 @@ namespace EutherDrive.Core.MdTracerCore
             bool vintFlag = md_m68k.g_interrupt_V_req || passedVint;
 
             ushort w_out = 0;
-            byte dmaActive = (byte)((g_dma_mode != 0 || g_dma_leng > 0) ? 1 : 0);
+            // DMA active should reflect an active DMA transfer, not just a nonzero length register.
+            byte dmaActive = (byte)(g_dma_mode != 0 ? 1 : 0);
             g_vdp_status_1_dma = dmaActive;
 
             w_out = g_vdp_status_9_empl;

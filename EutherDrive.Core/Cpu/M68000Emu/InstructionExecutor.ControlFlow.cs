@@ -169,7 +169,8 @@ internal sealed partial class InstructionExecutor
         if (!disp.IsOk) return ExecuteResult<uint>.Err(disp.Error!.Value);
         if (condition.Check(_registers.Ccr))
         {
-            uint basePc = disp.Value.FetchedExtension ? _registers.Pc : pc;
+            // Branch displacement is relative to PC after opcode fetch (extension word address)
+            uint basePc = pc;
             uint address = unchecked(basePc + (uint)disp.Value.Displacement);
             var jump = JumpToAddress(address);
             if (!jump.IsOk) return ExecuteResult<uint>.Err(jump.Error!.Value);
@@ -188,7 +189,8 @@ internal sealed partial class InstructionExecutor
         var r0 = PushStackU32(_registers.Pc);
         if (!r0.IsOk) return ExecuteResult<uint>.Err(r0.Error!.Value);
 
-        uint basePc = disp.Value.FetchedExtension ? _registers.Pc : pc;
+        // Branch displacement is relative to PC after opcode fetch (extension word address)
+        uint basePc = pc;
         uint address = unchecked(basePc + (uint)disp.Value.Displacement);
         var jump = JumpToAddress(address);
         if (!jump.IsOk) return ExecuteResult<uint>.Err(jump.Error!.Value);
@@ -197,6 +199,7 @@ internal sealed partial class InstructionExecutor
 
     private ExecuteResult<uint> Dbcc(BranchCondition condition, DataRegister register)
     {
+        uint pcBefore = _registers.Pc;
         var displacement = FetchOperand();
         if (!displacement.IsOk) return ExecuteResult<uint>.Err(displacement.Error!.Value);
         short disp = (short)displacement.Value;
@@ -208,7 +211,8 @@ internal sealed partial class InstructionExecutor
 
             if (value != 0)
             {
-                uint address = unchecked(_registers.Pc + (uint)disp);
+                // DBcc displacement is relative to the extension word address (PC before FetchOperand)
+                uint address = unchecked(pcBefore + (uint)disp);
                 var jump = JumpToAddress(address);
                 if (!jump.IsOk) return ExecuteResult<uint>.Err(jump.Error!.Value);
                 return ExecuteResult<uint>.Ok(10);
