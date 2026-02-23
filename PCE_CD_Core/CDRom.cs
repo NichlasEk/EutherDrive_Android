@@ -307,6 +307,9 @@ namespace ePceCD
             if (!File.Exists(subPath) && FileTrack?.FileName != null)
                 subPath = Path.ChangeExtension(FileTrack.FileName, ".sub");
 
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                Console.WriteLine($"CDROM SUB probe {subPath}");
+
             if (!File.Exists(subPath))
                 return;
 
