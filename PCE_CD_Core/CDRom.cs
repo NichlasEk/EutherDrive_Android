@@ -1197,6 +1197,7 @@ namespace ePceCD
                 case 0x02:
                     EnabledIrqs = (byte)(value & 0x7F);
                     Signals[(int)ScsiSignal.Ack] = (value & 0x80) != 0;
+                    ProcessACK();
                     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
                         Console.WriteLine($"CD-ROM: IRQCTRL write value=0x{value:X2} enabled=0x{EnabledIrqs:X2} ack={(Signals[(int)ScsiSignal.Ack] ? 1 : 0)}");
                     break;
