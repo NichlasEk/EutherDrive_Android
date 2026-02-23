@@ -26,6 +26,8 @@ namespace ePceCD
         private byte messageByte;
         private int currentSector = -1;
         private int lastDataSector = -1;
+        private FileStream _subFile;
+        private long _subSectors;
 
         // CD 播放
         private int AudioSS, AudioES, AudioCS;
@@ -291,7 +293,35 @@ namespace ePceCD
             }
             CalculateTrackMSF();
             DetectAudioEndianness();
+            TryLoadSub(cuePath);
             Console.WriteLine($"Loaded {tracks.Count} tracks");
+        }
+
+        private void TryLoadSub(string cuePath)
+        {
+            _subFile?.Dispose();
+            _subFile = null;
+            _subSectors = 0;
+
+            string subPath = Path.ChangeExtension(cuePath, ".sub");
+            if (!File.Exists(subPath) && FileTrack?.FileName != null)
+                subPath = Path.ChangeExtension(FileTrack.FileName, ".sub");
+
+            if (!File.Exists(subPath))
+                return;
+
+            try
+            {
+                _subFile = new FileStream(subPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (_subFile.Length % 96 == 0)
+                    _subSectors = _subFile.Length / 96;
+                Console.WriteLine($"CDROM {subPath} SUB LOADED");
+            }
+            catch
+            {
+                _subFile = null;
+                _subSectors = 0;
+            }
         }
 
         private bool _currentFileIsWave;
@@ -934,18 +964,40 @@ namespace ePceCD
             Console.WriteLine($"CD-ROM: SubChannelQ Track {track.Number} Sector {currentSector}");
 
             byte[] qData = new byte[10];
-            int relLba = (int)(currentSector - track.SectorStart);
-            qData[0] = (byte)(Playing ? 0 : 1);
-            qData[1] = (byte)((track.Type == TrackType.AUDIO) ? 0x01 : 0x41);
-            qData[2] = ToBCD(track.Number); // Track
-            qData[3] = ToBCD(1); // Index
-            qData[4] = ToBCD(relLba / (60 * 75));
-            qData[5] = ToBCD((relLba / 75) % 60);
-            qData[6] = ToBCD(relLba % 75);
-            int absLba = currentSector + 150;
-            qData[7] = ToBCD(absLba / (60 * 75));
-            qData[8] = ToBCD((absLba / 75) % 60);
-            qData[9] = ToBCD(absLba % 75);
+            bool usedSub = false;
+            if (_subFile != null && _subSectors > 0 && currentSector >= 0 && currentSector < _subSectors)
+            {
+                byte[] sub = new byte[96];
+                _subFile.Seek(currentSector * 96, SeekOrigin.Begin);
+                int read = _subFile.Read(sub, 0, sub.Length);
+                if (read == 96)
+                {
+                    bool any = false;
+                    for (int i = 12; i < 22; i++)
+                        any |= sub[i] != 0x00 && sub[i] != 0xFF;
+                    if (any)
+                    {
+                        Array.Copy(sub, 12, qData, 0, 10);
+                        usedSub = true;
+                    }
+                }
+            }
+
+            if (!usedSub)
+            {
+                int relLba = (int)(currentSector - track.SectorStart);
+                qData[0] = (byte)(Playing ? 0 : 1);
+                qData[1] = (byte)((track.Type == TrackType.AUDIO) ? 0x01 : 0x41);
+                qData[2] = ToBCD(track.Number); // Track
+                qData[3] = ToBCD(1); // Index
+                qData[4] = ToBCD(relLba / (60 * 75));
+                qData[5] = ToBCD((relLba / 75) % 60);
+                qData[6] = ToBCD(relLba % 75);
+                int absLba = currentSector + 150;
+                qData[7] = ToBCD(absLba / (60 * 75));
+                qData[8] = ToBCD((absLba / 75) % 60);
+                qData[9] = ToBCD(absLba % 75);
+            }
 
             PrepareResponse(qData);
 
