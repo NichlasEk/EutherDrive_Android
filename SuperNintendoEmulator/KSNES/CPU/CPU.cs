@@ -358,12 +358,26 @@ public class CPU : ICPU
     private void PushByte(int value) 
     {
         _snes.Write(_br[SP], value);
-        _br[SP]--;
+        if (_e)
+        {
+            _br[SP] = (ushort) (0x0100 | ((_br[SP] - 1) & 0xff));
+        }
+        else
+        {
+            _br[SP]--;
+        }
     }
 
     private int PullByte() 
     {
-        _br[SP]++;
+        if (_e)
+        {
+            _br[SP] = (ushort) (0x0100 | ((_br[SP] + 1) & 0xff));
+        }
+        else
+        {
+            _br[SP]++;
+        }
         return _snes.Read(_br[SP]);
     }
 

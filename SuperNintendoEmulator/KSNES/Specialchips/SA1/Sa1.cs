@@ -40,7 +40,7 @@ internal sealed class Sa1
         _rom = rom;
         if (bwram.Length == 0)
         {
-            bwram = new byte[64 * 1024];
+            bwram = new byte[256 * 1024];
         }
         _bwram = bwram;
         _cpu = new CPU.CPU();
@@ -65,7 +65,7 @@ internal sealed class Sa1
 
     public void SetBwram(byte[] bwram)
     {
-        _bwram = bwram.Length == 0 ? new byte[64 * 1024] : bwram;
+        _bwram = bwram.Length == 0 ? new byte[256 * 1024] : bwram;
     }
 
     public void Tick(ulong snesCycles)

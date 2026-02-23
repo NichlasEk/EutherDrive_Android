@@ -25,6 +25,7 @@ namespace ePceCD
         public int dataOffset;
         private byte messageByte;
         private int currentSector = -1;
+        private int lastDataSector = -1;
 
         // CD 播放
         private int AudioSS, AudioES, AudioCS;
@@ -728,6 +729,8 @@ namespace ePceCD
                         HandleReadToc();
                         break;
                     case ScsiCommand.ReadSubCodeQ:
+                        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                            Console.WriteLine("CD-ROM: ReadSubCodeQ");
                         HandleSubChannelQ();
                         break;
                     case ScsiCommand.AudioStartPos:
@@ -780,6 +783,8 @@ namespace ePceCD
             byte[] sectorBuffer = new byte[SECTOR_SIZE];
 
             Console.WriteLine($"CD-ROM: ReadSector {currentSector} to {SectorsToRead + currentSector - 1}");
+            bool logFirstRead = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_READ_DUMP") == "1";
+            bool dumped = false;
             long datasize = 0;
             currentTrack = tracks.FirstOrDefault(t => currentSector >= t.SectorStart && currentSector + SectorsToRead <= t.SectorEnd);
             if (currentTrack == null)
@@ -791,12 +796,21 @@ namespace ePceCD
                 var track = tracks.FirstOrDefault(t => t.SectorStart <= currentSector && t.SectorEnd > currentSector) ?? currentTrack;
                 if (track.File == null)
                     break;
+                lastDataSector = currentSector;
                 int sectorSize = GetTrackSectorSize(track);
                 int dataOffset = GetTrackDataOffset(track);
                 long relSector = currentSector - track.SectorStart;
                 long fileOffset = track.OffsetStart + relSector * sectorSize;
                 track.File.Seek(fileOffset, SeekOrigin.Begin);
                 track.File.Read(sectorBuffer, 0, sectorSize);
+                if (logFirstRead && !dumped)
+                {
+                    int headCount = Math.Min(32, sectorSize);
+                    byte[] head = new byte[headCount];
+                    Array.Copy(sectorBuffer, 0, head, 0, headCount);
+                    Console.WriteLine($"CD-ROM: READ6 head={BitConverter.ToString(head)} dataOff={dataOffset}");
+                    dumped = true;
+                }
                 switch (track.Type)
                 {
                     case TrackType.MODE1:
@@ -904,7 +918,7 @@ namespace ePceCD
             bool Playing = CdPlaying;
             CdPlaying = false;
 
-            currentSector = AudioCS;
+            currentSector = CdPlaying ? AudioCS : (lastDataSector >= 0 ? lastDataSector : AudioCS);
 
             var track = tracks.FirstOrDefault(t => t.SectorStart <= currentSector && t.SectorEnd > currentSector);
             if (track == null)
@@ -917,7 +931,7 @@ namespace ePceCD
 
             byte[] qData = new byte[10];
             int relLba = (int)(currentSector - track.SectorStart);
-            qData[0] = (byte)(Playing ? 0 : 3);
+            qData[0] = (byte)(Playing ? 0 : 1);
             qData[1] = (byte)((track.Type == TrackType.AUDIO) ? 0x01 : 0x41);
             qData[2] = ToBCD(track.Number); // Track
             qData[3] = ToBCD(1); // Index

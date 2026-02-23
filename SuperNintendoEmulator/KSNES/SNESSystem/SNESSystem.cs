@@ -471,7 +471,6 @@ public class SNESSystem : ISNESSystem
                 if (XPos == 0)
                 {
                     _inIrq = true;
-                    CPU.IrqWanted = true;
                 }
             }
             else
@@ -479,19 +478,15 @@ public class SNESSystem : ISNESSystem
                 if (XPos == _hTimer * 4)
                 {
                     _inIrq = true;
-                    CPU.IrqWanted = true;
                 }
             }
         }
         else if (XPos == _hTimer * 4 && _hIrqEnabled && !_vIrqEnabled)
         {
             _inIrq = true;
-            CPU.IrqWanted = true;
         }
-        if (ROM.IrqWanted)
-        {
-            CPU.IrqWanted = true;
-        }
+        
+        CPU.IrqWanted = _inIrq || ROM.IrqWanted;
         if (XPos == 1024)
         {
             _inHblank = true;
