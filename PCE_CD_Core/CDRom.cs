@@ -841,7 +841,7 @@ namespace ePceCD
                     break;
 
                 case 0x01:
-                    calcLBA = FileTrack.File.Length / GetTrackSectorSize(FileTrack);
+                    calcLBA = tracks.Count > 0 ? tracks[^1].SectorEnd + 150 : 150;
                     minutes = (int)(calcLBA / (60 * 75));
                     seconds = (int)((calcLBA / 75) % 60);
                     frames = (int)(calcLBA % 75);
