@@ -400,7 +400,8 @@ namespace ePceCD
                 long trackStartLba = MSFToLBA(track.StartPos.MSF_M, track.StartPos.MSF_S, track.StartPos.MSF_F);
 
                 track.SectorStart = sameFile ? trackStartLba : (discSectorCursor + trackStartLba);
-                track.OffsetStart = baseOffset + fileOffset;
+                long fileStartLba = sameFile ? 0 : trackStartLba;
+                track.OffsetStart = baseOffset + fileOffset + (fileStartLba * sectorSize);
 
                 var nextTrack = tracks.FirstOrDefault(t => t.Number == track.Number + 1);
                 long sectorLength;
@@ -412,7 +413,9 @@ namespace ePceCD
                 else
                 {
                     long availableBytes = Math.Max(0, track.File.Length - baseOffset - fileOffset);
-                    sectorLength = availableBytes / sectorSize;
+                    sectorLength = (availableBytes / sectorSize) - fileStartLba;
+                    if (sectorLength < 0)
+                        sectorLength = 0;
                 }
 
                 track.SectorEnd = track.SectorStart + sectorLength;
