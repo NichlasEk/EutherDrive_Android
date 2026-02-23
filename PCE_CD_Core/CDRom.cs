@@ -853,6 +853,23 @@ namespace ePceCD
                     break;
 
                 case 0x02:
+                    if (trackNumber == 0)
+                        trackNumber = 1;
+
+                    if (trackNumber > tracks.Count())
+                    {
+                        long leadOutLba = tracks.Count > 0 ? tracks[^1].SectorEnd + 150 : 150;
+                        minutes = (int)(leadOutLba / (60 * 75));
+                        seconds = (int)((leadOutLba / 75) % 60);
+                        frames = (int)(leadOutLba % 75);
+                        toc[pos++] = ToBCD(minutes);
+                        toc[pos++] = ToBCD(seconds);
+                        toc[pos++] = ToBCD(frames);
+                        toc[pos++] = 0x00;
+                        Console.WriteLine($"CD-ROM: ReadTOC LeadOut {minutes}:{seconds}:{frames}");
+                        break;
+                    }
+
                     currentTrack = tracks.FirstOrDefault(t => t.Number == trackNumber);
                     if (currentTrack == null)
                     {
@@ -864,13 +881,10 @@ namespace ePceCD
                     minutes = (int)(calcLBA / (60 * 75));
                     seconds = (int)((calcLBA / 75) % 60);
                     frames = (int)(calcLBA % 75);
-                    toc[pos++] = ToBCD(minutes); // 分钟
-                    toc[pos++] = ToBCD(seconds); // 秒
-                    toc[pos++] = ToBCD(frames); // 帧
-                    if (trackNumber > tracks.Count() || currentTrack.Type == TrackType.AUDIO)
-                        toc[pos++] = 0;
-                    else
-                        toc[pos++] = 4;
+                    toc[pos++] = ToBCD(minutes);
+                    toc[pos++] = ToBCD(seconds);
+                    toc[pos++] = ToBCD(frames);
+                    toc[pos++] = currentTrack.Type == TrackType.AUDIO ? (byte)0x00 : (byte)0x04;
 
                     Console.WriteLine($"CD-ROM: ReadTOC Track {trackNumber} StartPos {currentTrack.SectorStart}");
                     break;

@@ -1266,62 +1266,67 @@ public class CPU : ICPU
     private void Brk(int adr, int adrh)
     {
         int pushPc = (_br[PC] + 1) & 0xffff;
-        PushByte(_r[K]);
+        if (!_e) PushByte(_r[K]);
         PushWord(pushPc);
         PushByte(GetP());
         CyclesLeft++;
         _i = true;
         _d = false;
         _r[K] = 0;
-        _br[PC] = (ushort) (_snes.Read(0xffe6) | (_snes.Read(0xffe7) << 8));
+        int vector = _e ? 0xfffe : 0xffe6;
+        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
     }
 
     private void Cop(int adr, int adrh) 
     {
-        PushByte(_r[K]);
+        if (!_e) PushByte(_r[K]);
         PushWord(_br[PC]);
         PushByte(GetP());
         CyclesLeft++;
         _i = true;
         _d = false;
         _r[K] = 0;
-        _br[PC] = (ushort) (_snes.Read(0xffe4) | (_snes.Read(0xffe5) << 8));
+        int vector = _e ? 0xfff4 : 0xffe4;
+        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
     }
 
     private void Abo(int adr, int adrh)
     {
-        PushByte(_r[K]);
+        if (!_e) PushByte(_r[K]);
         PushWord(_br[PC]);
         PushByte(GetP());
         CyclesLeft++;
         _i = true;
         _d = false;
         _r[K] = 0;
-        _br[PC] = (ushort) (_snes.Read(0xffe8) | (_snes.Read(0xffe9) << 8));
+        int vector = _e ? 0xfff8 : 0xffe8;
+        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
     }
 
     private void Nmi(int adr, int adrh)
     {
-        PushByte(_r[K]);
+        if (!_e) PushByte(_r[K]);
         PushWord(_br[PC]);
         PushByte(GetP());
         CyclesLeft++;
         _i = true;
         _d = false;
         _r[K] = 0;
-        _br[PC] = (ushort) (_snes.Read(0xffea) | (_snes.Read(0xffeb) << 8));
+        int vector = _e ? 0xfffa : 0xffea;
+        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
     }
 
     private void Irq(int adr, int adrh) 
     {
-        PushByte(_r[K]);
+        if (!_e) PushByte(_r[K]);
         PushWord(_br[PC]);
         PushByte(GetP());
         CyclesLeft++;
         _i = true;
         _d = false;
         _r[K] = 0;
-        _br[PC] = (ushort) (_snes.Read(0xffee) | (_snes.Read(0xffef) << 8));
+        int vector = _e ? 0xfffe : 0xffee;
+        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
     }
 
     private void Rti(int adr, int adrh) 
@@ -1329,7 +1334,7 @@ public class CPU : ICPU
         SetP((byte) PullByte());
         CyclesLeft++;
         int pullPc = PullWord();
-        _r[K] = (byte) PullByte();
+        if (!_e) _r[K] = (byte) PullByte();
         _br[PC] = (ushort) pullPc;
     }
 
