@@ -610,7 +610,6 @@ namespace ePceCD
                 case ScsiPhase.DataIn:
                     Signals[(int)ScsiSignal.Bsy] = true;
                     Signals[(int)ScsiSignal.Io] = true;
-                    ActiveIrqs |= (byte)CdRomIrqSource.DataTransferReady;
                     if (dataBuffer != null && dataBuffer.Length > 0)
                         Signals[(int)ScsiSignal.Req] = true;
                     break;
@@ -628,18 +627,37 @@ namespace ePceCD
                     Signals[(int)ScsiSignal.Cd] = true;
                     Signals[(int)ScsiSignal.Msg] = true;
                     Signals[(int)ScsiSignal.Req] = true;
-                    ActiveIrqs &= (byte)CdRomIrqSource.DataTransferReady;
-                    ActiveIrqs |= (byte)CdRomIrqSource.DataTransferDone;
                     break;
 
                 case ScsiPhase.BusFree:
                     Signals[(int)ScsiSignal.Bsy] = false;
                     Signals[(int)ScsiSignal.Req] = false;
-                    ActiveIrqs &= (byte)CdRomIrqSource.DataTransferDone;
                     break;
             }
+            UpdateScsiIrqs();
         }
 
+        private void UpdateScsiIrqs()
+        {
+            bool active = Signals[(int)ScsiSignal.Bsy] && Signals[(int)ScsiSignal.Io] && Signals[(int)ScsiSignal.Req];
+            if (active)
+            {
+                if (Signals[(int)ScsiSignal.Cd])
+                {
+                    ActiveIrqs = (byte)((ActiveIrqs | (byte)CdRomIrqSource.DataTransferDone) &
+                        unchecked((byte)~(byte)CdRomIrqSource.DataTransferReady));
+                }
+                else
+                {
+                    ActiveIrqs = (byte)((ActiveIrqs | (byte)CdRomIrqSource.DataTransferReady) &
+                        unchecked((byte)~(byte)CdRomIrqSource.DataTransferDone));
+                }
+            }
+            else
+            {
+                ActiveIrqs &= unchecked((byte)~((byte)CdRomIrqSource.DataTransferReady | (byte)CdRomIrqSource.DataTransferDone));
+            }
+        }
         private void PrepareResponse(byte[] data)
         {
             dataBuffer?.Dispose();
@@ -716,8 +734,6 @@ namespace ePceCD
             {
                 if (_ScsiPhase == ScsiPhase.DataIn)
                 {
-                    ActiveIrqs &= (byte)CdRomIrqSource.DataTransferReady;
-                    ActiveIrqs |= (byte)CdRomIrqSource.DataTransferDone;
                     SendStatus(0);
                 }
                 else
