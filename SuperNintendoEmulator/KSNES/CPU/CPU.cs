@@ -1498,11 +1498,6 @@ public class CPU : ICPU
         {
             _br[PC] -= 3;
         }
-        if (_x)
-        {
-            _br[X] &= 0xff;
-            _br[Y] &= 0xff;
-        }
     }
 
     private void Mvp(int adr, int adrh) 
@@ -1515,11 +1510,6 @@ public class CPU : ICPU
         if (_br[A] != 0xffff)
         {
             _br[PC] -= 3;
-        }
-        if (_x)
-        {
-            _br[X] &= 0xff;
-            _br[Y] &= 0xff;
         }
     }
 
@@ -1732,6 +1722,10 @@ public class CPU : ICPU
     private void Txs(int adr, int adrh) 
     {
         _br[SP] = _br[X];
+        if (_e)
+        {
+            _br[SP] = (ushort) (0x0100 | (_br[SP] & 0xff));
+        }
     }
 
     private void Txy(int adr, int adrh)

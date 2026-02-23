@@ -74,8 +74,8 @@ internal sealed class Sa1
             return;
 
         ulong delta = snesCycles - _lastSnesCycles;
-        _lastSnesCycles = snesCycles;
         ulong sa1Cycles = delta / 2;
+        _lastSnesCycles += sa1Cycles * 2;
 
         ulong spentWait = Math.Min(sa1Cycles, _bwramWaitCycles);
         ulong cpuCycles = sa1Cycles - spentWait;
