@@ -326,18 +326,18 @@ namespace ePceCD
             {
                 case "AUDIO":
                     track.Type = TrackType.AUDIO;
-                    track.Control = 0x40;
+                    track.Control = 0x00;
                     track.Adr = 0x01;
                     break;
                 case "MODE1/2048":
                     track.Type = TrackType.MODE1;
-                    track.Control = 0x00;
+                    track.Control = 0x40;
                     track.Adr = 0x01;
                     EnsureDataTrack(track);
                     break;
                 case "MODE1/2352":
                     track.Type = TrackType.MODE1_2352;
-                    track.Control = 0x00;
+                    track.Control = 0x40;
                     track.Adr = 0x01;
                     EnsureDataTrack(track);
                     break;
@@ -903,16 +903,13 @@ namespace ePceCD
 
             byte[] qData = new byte[10];
             int relLba = (int)(currentSector - track.SectorStart);
-            qData[0] = (byte)((Playing) ? 0 : 3);
-            // 轨道信息
-            qData[1] = (byte)(track.Adr | track.Control);
-            qData[2] = FromBCD((byte)track.Number); // Index
-            qData[3] = 1;
-            // 相对时间
+            qData[0] = (byte)(Playing ? 0 : 3);
+            qData[1] = (byte)((track.Type == TrackType.AUDIO) ? 0x01 : 0x41);
+            qData[2] = ToBCD(track.Number); // Track
+            qData[3] = ToBCD(1); // Index
             qData[4] = ToBCD(relLba / (60 * 75));
             qData[5] = ToBCD((relLba / 75) % 60);
             qData[6] = ToBCD(relLba % 75);
-            // 绝对时间
             int absLba = currentSector + 150;
             qData[7] = ToBCD(absLba / (60 * 75));
             qData[8] = ToBCD((absLba / 75) % 60);

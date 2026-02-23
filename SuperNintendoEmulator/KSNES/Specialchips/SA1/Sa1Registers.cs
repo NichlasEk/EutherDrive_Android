@@ -259,8 +259,16 @@ internal sealed class Sa1Registers
             0x230D => ReadVdpHigh(),
             _ => 0
         };
-        if (Sa1Trace.IsEnabled && (address & 0xFFFF) == 0x2301)
-            Sa1Trace.Log("SA1", 0, -1, address & 0xFFFFFF, "R", value, "REG-CFR", null);
+        if (Sa1Trace.IsEnabled)
+        {
+            uint addr = address & 0xFFFF;
+            string name = addr switch {
+                0x2301 => "CFR", 0x2302 => "HCRL", 0x2303 => "HCRH",
+                0x2304 => "VCRL", 0x2305 => "VCRH", 0x230B => "OF", 0x230C => "VDPL", 0x230D => "VDPH",
+                >= 0x2306 and <= 0x230A => "MR", _ => "REG"
+            };
+            Sa1Trace.Log("SA1", 0, -1, address & 0xFFFFFF, "R", value, $"REG-{name}", null);
+        }
         return value;
     }
 
@@ -794,7 +802,6 @@ internal sealed class Sa1Registers
             {
                 (short quotient, ushort remainder) = Divide(ArithmeticParamA, ArithmeticParamB);
                 ArithmeticResult = (ushort)quotient | ((ulong)remainder << 16);
-                ArithmeticParamA = 0;
                 break;
             }
             case ArithmeticOp.MultiplyAccumulate:
@@ -806,7 +813,6 @@ internal sealed class Sa1Registers
                 break;
             }
         }
-        ArithmeticParamB = 0;
     }
 
     private static long Multiply(ushort a, ushort b)
@@ -822,7 +828,7 @@ internal sealed class Sa1Registers
         }
 
         int dividend = (short)a;
-        int divisor = b;
+        int divisor = (short)b;
         int quotient = dividend / divisor;
         int remainder = dividend % divisor;
         return ((short)quotient, (ushort)remainder);
