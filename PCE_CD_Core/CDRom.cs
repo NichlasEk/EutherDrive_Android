@@ -23,6 +23,7 @@ namespace ePceCD
         public MemoryStream dataBuffer;
 
         public int dataOffset;
+        private int _readLogCount;
         private byte messageByte;
         private int currentSector = -1;
         private int lastDataSector = -1;
@@ -640,6 +641,7 @@ namespace ePceCD
         private void PrepareResponse(byte[] data)
         {
             dataBuffer?.Dispose();
+            _readLogCount = 0;
             if (_ScsiPhase == ScsiPhase.Status)
             {
                 dataBuffer = new MemoryStream(data, 0, 1, writable: false, publiclyVisible: true);
@@ -654,6 +656,8 @@ namespace ePceCD
 
         private void SendStatus(byte status)
         {
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                Console.WriteLine($"CD-ROM: SendStatus 0x{status:X2} phase={_ScsiPhase} dataOffset={dataOffset} dataLen={(dataBuffer != null ? dataBuffer.Length : 0)}");
             PrepareResponse(new byte[] { status });
             SetPhase(ScsiPhase.Status);
 
@@ -671,6 +675,8 @@ namespace ePceCD
         {
             if (_ScsiPhase != ScsiPhase.Status) return;
 
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                Console.WriteLine("CD-ROM: FinishCommand -> MessageIn");
             SetPhase(ScsiPhase.MessageIn);
             messageByte = 0x00;
             PrepareResponse(new byte[] { messageByte });
@@ -679,6 +685,8 @@ namespace ePceCD
             busFreeTimer.Elapsed += (s, e) =>
             {
 
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                    Console.WriteLine("CD-ROM: FinishCommand -> BusFree");
                 SetPhase(ScsiPhase.BusFree);
                 busFreeTimer.Dispose();
             };
@@ -694,6 +702,12 @@ namespace ePceCD
             int value = dataBuffer.ReadByte();
             if (value == -1)
                 return 0x00;
+
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1" && _readLogCount < 4)
+            {
+                Console.WriteLine($"CD-ROM: ReadData byte=0x{value:X2} pos={dataBuffer.Position}/{dataBuffer.Length} phase={_ScsiPhase}");
+                _readLogCount++;
+            }
 
             dataOffset++;
             if (dataOffset >= dataBuffer.Length)
@@ -869,7 +883,13 @@ namespace ePceCD
 
             PrepareResponse(data);
 
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                Console.WriteLine($"CD-ROM: READ6 prepared {data.Length} bytes");
+
             SetPhase(ScsiPhase.DataIn);
+
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                Console.WriteLine($"CD-ROM: DATAIN req={Signals[(int)ScsiSignal.Req]} io={Signals[(int)ScsiSignal.Io]} cd={Signals[(int)ScsiSignal.Cd]} bsy={Signals[(int)ScsiSignal.Bsy]}");
         }
 
         private void HandleReadToc()
