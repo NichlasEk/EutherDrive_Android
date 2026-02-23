@@ -611,6 +611,8 @@ namespace ePceCD
                     Signals[(int)ScsiSignal.Bsy] = true;
                     Signals[(int)ScsiSignal.Io] = true;
                     ActiveIrqs |= (byte)CdRomIrqSource.DataTransferReady;
+                    if (dataBuffer != null && dataBuffer.Length > 0)
+                        Signals[(int)ScsiSignal.Req] = true;
                     break;
 
                 case ScsiPhase.Status:
@@ -1115,6 +1117,8 @@ namespace ePceCD
 
                 case 0x02:
                     ret = (byte)(EnabledIrqs | (Signals[(int)ScsiSignal.Ack] ? 0x80 : 0));
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                        Console.WriteLine($"CD-ROM: IRQCTRL read value=0x{ret:X2} enabled=0x{EnabledIrqs:X2} ack={(Signals[(int)ScsiSignal.Ack] ? 1 : 0)}");
                     break;
 
                 case 0x03:
@@ -1183,8 +1187,10 @@ namespace ePceCD
                     break;
 
                 case 0x02:
-                    EnabledIrqs = value;
+                    EnabledIrqs = (byte)(value & 0x7F);
                     Signals[(int)ScsiSignal.Ack] = (value & 0x80) != 0;
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                        Console.WriteLine($"CD-ROM: IRQCTRL write value=0x{value:X2} enabled=0x{EnabledIrqs:X2} ack={(Signals[(int)ScsiSignal.Ack] ? 1 : 0)}");
                     break;
 
                 case 0x4:
