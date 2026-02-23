@@ -546,6 +546,7 @@ namespace Ryu64.MIPS
         {
             // Minimal Joybus handling for bring-up:
             // enough to satisfy common controller probe/read loops.
+            byte pifControl = PIFRAM[63];
             int i = 0;
             while (i < 63)
             {
@@ -605,6 +606,11 @@ namespace Ryu64.MIPS
 
                 i = rxIndex + rxLen;
             }
+
+            // Firmware expects PIF command/control bits to be consumed/acknowledged.
+            // Leaving these latched can trap execution in PIF polling loops.
+            if (pifControl != 0)
+                PIFRAM[63] = 0x00;
         }
 
         struct MemEntry
@@ -972,11 +978,19 @@ namespace Ryu64.MIPS
             // Others use TLB translation.
             //
             // Bring-up compatibility:
-            // Some N64 boot/runtime paths occasionally hit low (physical-looking) addresses
-            // before full TLB state is established. Allow that window to pass through unless
-            // strict mode is explicitly requested.
+            // Some early boot code accesses low physical-looking addresses before TLB state
+            // is fully established. Keep this pass-through strictly to early IPL windows,
+            // otherwise user-space/kuseg code can bypass TLB and execute garbage.
             if (AllowDirectLowPhysicalWindow && virtualAddress < 0x20000000u)
-                return virtualAddress;
+            {
+                uint pc = Registers.R4300.PC;
+                bool earlyBootPc =
+                    (pc >= 0xA4000000u && pc <= 0xA4001FFFu) ||
+                    (pc >= 0x80000000u && pc <= 0x80001FFFu) ||
+                    (pc >= 0xBFC00000u && pc <= 0xBFC00FFFu);
+                if (earlyBootPc && virtualAddress < 0x05000000u)
+                    return virtualAddress;
+            }
 
             uint segment = virtualAddress & 0xE0000000u;
             if (segment == 0x80000000u || segment == 0xA0000000u)

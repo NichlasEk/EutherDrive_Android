@@ -75,7 +75,7 @@ namespace ePceCD
         private ushort m_VDC_DESR;
         private ushort m_VDC_LENR;
         private ushort m_VDC_VSAR;
-        private int m_VDC_VDS;
+        private int m_VDC_VSR;
         private int m_VDC_MWR;
 
         private static readonly int[] ScreenSizeX = { 32, 64, 128, 128, 32, 64, 128, 128 };
@@ -93,11 +93,9 @@ namespace ePceCD
 
         private int GetEffectiveVdw()
         {
-            int vdw = m_VDC_VDW;
+            int vdw = m_VDC_VDW + 1;
             if (vdw <= 0)
-                vdw = 240;
-            if (vdw < 200)
-                vdw = 240;
+                vdw = 1;
             if (vdw > 262)
                 vdw = 262;
             return vdw;
@@ -109,12 +107,12 @@ namespace ePceCD
                 return;
             if (_traceVdcRegsCount++ >= TraceVdcRegsLimit)
                 return;
-            Console.WriteLine($"[PCE-VDC] {tag} reg=0x{m_VDC_Reg:X2} HDR={m_VDC_HDR} VDS={m_VDC_VDS} VDW={m_VDC_VDW} line={m_RenderLine}");
+            Console.WriteLine($"[PCE-VDC] {tag} reg=0x{m_VDC_Reg:X2} HDR={m_VDC_HDR} VSR=0x{m_VDC_VSR:X4} VDW={m_VDC_VDW} line={m_RenderLine}");
         }
 
         private int GetEffectiveVds(int vdw)
         {
-            int vds = m_VDC_VDS;
+            int vds = (m_VDC_VSR >> 8) & 0xFF;
             if (vds < 0) vds = 0;
             if (vds > 261) vds = 261;
             int maxStart = 262 - vdw;
@@ -127,6 +125,8 @@ namespace ePceCD
 
         public int m_VDC_HDR;
         public int m_VDC_VDW;
+        private int m_LatchedVDS;
+        private int m_LatchedVDW;
 
         private int m_VDC_BAT_Width;
         private int m_VDC_BAT_Height;
@@ -199,6 +199,8 @@ namespace ePceCD
             m_VDC_Increment = 1;
 
             m_VDC_BSY = false;
+            m_LatchedVDS = 14;
+            m_LatchedVDW = 240;
         }
 
         public PPU()
@@ -232,6 +234,8 @@ namespace ePceCD
             m_VDC_Increment = 1;
 
             m_VDC_BSY = false;
+            m_LatchedVDS = 14;
+            m_LatchedVDW = 240;
         }
 
         public void Dispose()
@@ -257,8 +261,13 @@ namespace ePceCD
 
         public unsafe void tick()
         {
-            int vdw = GetEffectiveVdw();
-            int vds = 14;
+            if (m_RenderLine == 0)
+            {
+                m_LatchedVDS = GetEffectiveVds(GetEffectiveVdw());
+                m_LatchedVDW = GetEffectiveVdw();
+            }
+            int vdw = m_LatchedVDW;
+            int vds = Math.Max(14, m_LatchedVDS + 2);
             int vde = Math.Min(261, vds + vdw - 1);
             if (m_RenderLine + 1 > vde + 1)
             {
@@ -280,21 +289,25 @@ namespace ePceCD
                     m_WaitingIRQ = true;
                     if (TraceVdcRegs && !m_VdcStatusSuppressed && m_VdcStatusLogCount < 20)
                     {
-                        Console.WriteLine($"[PCE-VDC] VBK line={m_RenderLine} VDS={m_VDC_VDS} VDW={m_VDC_VDW} RCR={m_VDC_RCR} CR={(m_VDC_EnableBackground ? 1 : 0)}:{(m_VDC_EnableSprites ? 1 : 0)}");
+                        Console.WriteLine($"[PCE-VDC] VBK line={m_RenderLine} VSR=0x{m_VDC_VSR:X4} VDW={m_VDC_VDW} RCR={m_VDC_RCR} CR={(m_VDC_EnableBackground ? 1 : 0)}:{(m_VDC_EnableSprites ? 1 : 0)}");
                         m_VdcStatusLogCount++;
                     }
                 }
             }
-            else if (m_RenderLine + 0x3F == m_VDC_RCR)
+            else
             {
-                if (m_VDC_RCRIRQ)
+                int rasterLine = m_RenderLine - vds;
+                if (rasterLine >= 0 && rasterLine < vdw && (m_VDC_RCR - 64) == rasterLine)
                 {
-                    m_VDC_RR = true;
-                    m_WaitingIRQ = true;
-                    if (TraceVdcRegs && !m_VdcStatusSuppressed && m_VdcStatusLogCount < 20)
+                    if (m_VDC_RCRIRQ)
                     {
-                        Console.WriteLine($"[PCE-VDC] RCR line={m_RenderLine} RCR={m_VDC_RCR}");
-                        m_VdcStatusLogCount++;
+                        m_VDC_RR = true;
+                        m_WaitingIRQ = true;
+                        if (TraceVdcRegs && !m_VdcStatusSuppressed && m_VdcStatusLogCount < 20)
+                        {
+                            Console.WriteLine($"[PCE-VDC] RCR line={m_RenderLine} RCR={m_VDC_RCR}");
+                            m_VdcStatusLogCount++;
+                        }
                     }
                 }
             }
@@ -430,8 +443,8 @@ namespace ePceCD
 
         private unsafe void DrawScanLine()
         {
-            int vdw = GetEffectiveVdw();
-            int vds = 14;
+            int vdw = m_LatchedVDW;
+            int vds = Math.Max(14, m_LatchedVDS + 2);
             int visibleLine = m_RenderLine - vds;
             if (visibleLine < 0 || visibleLine >= vdw)
                 return;
@@ -505,8 +518,6 @@ namespace ePceCD
             {
                 if (visibleLine == 0)
                     m_BgCounterY = m_VDC_BYR;
-                else
-                    m_BgCounterY = (m_BgCounterY + 1) & 0x3FF;
                 m_BgOffsetY = m_BgCounterY;
                 m_LatchedBxr = m_VDC_BXR;
 
@@ -515,19 +526,44 @@ namespace ePceCD
                 int bgY = m_BgOffsetY & ScreenSizeYPixelsMask[screenReg];
                 int tileY = bgY & 7;
                 int batOffset = (bgY >> 3) * screenSizeX;
-                int tileColMask = screenSizeX - 1;
-                int batCol = (m_LatchedBxr >> 3) & tileColMask;
-                int* tileMap = ScanLinePtr;
-                tileMap -= m_LatchedBxr & 7;
-                for (i = 0; i < m_VDC_HDR + 2; i++)
+                int prevTileCol = -1;
+                int palette = 0;
+                int byte1 = 0, byte2 = 0, byte3 = 0, byte4 = 0;
+
+                for (i = 0; i < SCREEN_WIDTH; i++)
                 {
-                    int batEntry = m_VRAM[batOffset + batCol];
-                    int tileIndex = batEntry & 0x07FF;
-                    int palette = ((batEntry >> 12) & 0x0F) << 4;
-                    int tileAddr = (tileIndex << 4) | tileY;
-                    DrawBGTile(ScanLinePtr, ref tileMap, palette, tileAddr);
-                    batCol = (batCol + 1) & tileColMask;
+                    int bgX = (m_LatchedBxr + i) & ScreenSizeXPixelsMask[screenReg];
+                    int tileCol = bgX >> 3;
+                    if (tileCol != prevTileCol)
+                    {
+                        int batEntry = m_VRAM[batOffset + tileCol];
+                        int tileIndex = batEntry & 0x07FF;
+                        palette = ((batEntry >> 12) & 0x0F) << 4;
+                        int tileData = tileIndex << 4;
+                        int lineStartA = tileData + tileY;
+                        int lineStartB = lineStartA + 8;
+                        byte1 = m_VRAM[lineStartA] & 0xFF;
+                        byte2 = (m_VRAM[lineStartA] >> 8) & 0xFF;
+                        byte3 = m_VRAM[lineStartB] & 0xFF;
+                        byte4 = (m_VRAM[lineStartB] >> 8) & 0xFF;
+                        prevTileCol = tileCol;
+                    }
+                    int tileX = 7 - (bgX & 7);
+                    int bgColor =
+                        ((byte1 >> tileX) & 1) |
+                        (((byte2 >> tileX) & 1) << 1) |
+                        (((byte3 >> tileX) & 1) << 2) |
+                        (((byte4 >> tileX) & 1) << 3);
+                    if (bgColor == 0)
+                        continue;
+                    int* dst = ScanLinePtr + i;
+                    if ((*dst & 0x1000) != 0)
+                        continue;
+                    *dst = palette | bgColor;
                 }
+
+                // Advance BG counter after rendering this scanline (Geargrafx-style).
+                m_BgCounterY = (m_BgCounterY + 1) & 0x3FF;
             }
 
             //colorindex to ARGB8888
@@ -688,8 +724,8 @@ namespace ePceCD
                     LogVdcRegs("LSB-HDR");
                     break;
                 case 0x0C:
-                    m_VDC_VDS = (m_VDC_VDS & 0x100) | data;
-                    LogVdcRegs("LSB-VDS");
+                    m_VDC_VSR = (m_VDC_VSR & 0xFF00) | data;
+                    LogVdcRegs("LSB-VSR");
                     break;
                 case 0x0D: m_VDC_VDW = (m_VDC_VDW & 0x100) | data; break;
                 case 0x0F:
@@ -747,8 +783,8 @@ namespace ePceCD
                     //m_VDC_HDE = (data & 0x7F);
                     break;
                 case 0x0C:
-                    m_VDC_VDS = ((data << 8) & 0x100) | (m_VDC_VDS & 0xFF);
-                    LogVdcRegs("MSB-VDS");
+                    m_VDC_VSR = ((data << 8) & 0xFF00) | (m_VDC_VSR & 0x00FF);
+                    LogVdcRegs("MSB-VSR");
                     break;
                 case 0x0D: m_VDC_VDW = ((data << 8) & 0x100) | (m_VDC_VDW & 0xFF); break;
                 case 0x10: m_VDC_DSR = (ushort)((m_VDC_DSR & 0xFF) | (data << 8)); break;
@@ -791,7 +827,7 @@ namespace ePceCD
                     {
                         if (m_VdcStatusLogCount < 50)
                         {
-                            Console.WriteLine($"[PCE-VDC] STATUS line={m_RenderLine} status=0x{status:X2} VDS={m_VDC_VDS} VDW={m_VDC_VDW} RCR={m_VDC_RCR}");
+                            Console.WriteLine($"[PCE-VDC] STATUS line={m_RenderLine} status=0x{status:X2} VSR=0x{m_VDC_VSR:X4} VDW={m_VDC_VDW} RCR={m_VDC_RCR}");
                             m_VdcStatusLogCount++;
                         }
                         else
