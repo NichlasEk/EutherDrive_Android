@@ -779,18 +779,22 @@ namespace ePceCD
         private void HandleRead6()
         {
             currentSector = CMDBuffer[3] | (CMDBuffer[2] << 8) | ((CMDBuffer[1] & 0x1F) << 16);
-            byte SectorsToRead = CMDBuffer[4];
+            int sectorsToRead = CMDBuffer[4];
+            if (sectorsToRead == 0)
+                sectorsToRead = 256;
             byte[] sectorBuffer = new byte[SECTOR_SIZE];
 
-            Console.WriteLine($"CD-ROM: ReadSector {currentSector} to {SectorsToRead + currentSector - 1}");
+            Console.WriteLine($"CD-ROM: ReadSector {currentSector} to {sectorsToRead + currentSector - 1}");
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                Console.WriteLine($"CD-ROM: READ6 lba={currentSector} count={sectorsToRead} cmd={BitConverter.ToString(CMDBuffer, 0, CMDLength > 0 ? CMDLength : 6)}");
             bool logFirstRead = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_READ_DUMP") == "1";
             bool dumped = false;
             long datasize = 0;
-            currentTrack = tracks.FirstOrDefault(t => currentSector >= t.SectorStart && currentSector + SectorsToRead <= t.SectorEnd);
+            currentTrack = tracks.FirstOrDefault(t => currentSector >= t.SectorStart && currentSector + sectorsToRead <= t.SectorEnd);
             if (currentTrack == null)
                 currentTrack = FileTrack;
             int ssize = (currentTrack.Type == TrackType.AUDIO) ? SECTOR_SIZE : MODE1_DATA_SIZE;
-            byte[] data = new byte[ssize * SectorsToRead];
+            byte[] data = new byte[ssize * sectorsToRead];
             do
             {
                 var track = tracks.FirstOrDefault(t => t.SectorStart <= currentSector && t.SectorEnd > currentSector) ?? currentTrack;
@@ -827,8 +831,8 @@ namespace ePceCD
                         break;
                 }
                 currentSector++;
-                SectorsToRead--;
-            } while (SectorsToRead > 0);
+                sectorsToRead--;
+            } while (sectorsToRead > 0);
 
             PrepareResponse(data);
 

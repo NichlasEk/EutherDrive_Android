@@ -92,6 +92,19 @@ internal sealed class Sa1
             TraceState("RESET-RELEASE");
         }
 
+        if (_registers.Sa1Wait)
+        {
+            bool irqPending = (_registers.Sa1IrqFromSnesEnabled && _registers.Sa1IrqFromSnes)
+                              || (_registers.TimerIrqEnabled && _timer.IrqPending)
+                              || (_registers.DmaIrqEnabled && _registers.Sa1DmaIrq);
+            bool nmiPending = _registers.Sa1NmiEnabled && _registers.Sa1Nmi;
+            
+            if (irqPending || nmiPending)
+            {
+                _registers.Sa1Wait = false;
+            }
+        }
+
         if (_registers.Sa1Reset != _lastSa1Reset)
         {
             _lastSa1Reset = _registers.Sa1Reset;
