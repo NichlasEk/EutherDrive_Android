@@ -680,24 +680,38 @@ namespace ePceCD
                 Console.WriteLine($"CD-ROM: SendStatus 0x{status:X2} phase={_ScsiPhase} dataOffset={dataOffset} dataLen={(dataBuffer != null ? dataBuffer.Length : 0)}");
             PrepareResponse(new byte[] { status });
             SetPhase(ScsiPhase.Status);
+
+            System.Timers.Timer endTimer = new System.Timers.Timer(100);
+            endTimer.Elapsed += (s, e) =>
+            {
+                FinishCommand();
+                endTimer.Dispose();
+            };
+            endTimer.AutoReset = false;
+            endTimer.Start();
         }
 
         private void FinishCommand()
         {
-            if (_ScsiPhase == ScsiPhase.Status)
+            if (_ScsiPhase != ScsiPhase.Status) return;
+
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                Console.WriteLine("CD-ROM: FinishCommand -> MessageIn");
+            SetPhase(ScsiPhase.MessageIn);
+            messageByte = 0x00;
+            PrepareResponse(new byte[] { messageByte });
+
+            System.Timers.Timer busFreeTimer = new System.Timers.Timer(100);
+            busFreeTimer.Elapsed += (s, e) =>
             {
-                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
-                    Console.WriteLine("CD-ROM: FinishCommand -> MessageIn");
-                SetPhase(ScsiPhase.MessageIn);
-                messageByte = 0x00;
-                PrepareResponse(new byte[] { messageByte });
-            }
-            else if (_ScsiPhase == ScsiPhase.MessageIn)
-            {
+
                 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
                     Console.WriteLine("CD-ROM: FinishCommand -> BusFree");
                 SetPhase(ScsiPhase.BusFree);
-            }
+                busFreeTimer.Dispose();
+            };
+            busFreeTimer.AutoReset = false;
+            busFreeTimer.Start();
         }
 
         public byte ReadDataPort()
@@ -1138,12 +1152,6 @@ namespace ePceCD
 
                 case 0x08:
                     ret = ReadDataPort();
-                    if (_ScsiPhase == ScsiPhase.DataIn && Signals[(int)ScsiSignal.Req] && Signals[(int)ScsiSignal.Io] && !Signals[(int)ScsiSignal.Cd])
-                    {
-                        Signals[(int)ScsiSignal.Ack] = true;
-                        ProcessACK();
-                        Signals[(int)ScsiSignal.Ack] = false;
-                    }
                     break;
 
                 case 0x09:
