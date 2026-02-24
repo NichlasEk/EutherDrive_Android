@@ -133,6 +133,9 @@ namespace ePceCD
         private int m_LatchedBxr;
         private int m_BgCounterY;
         private int m_BgOffsetY;
+        private bool m_LatchedEnableBackground;
+        private bool m_LatchedEnableSprites;
+        private int m_LatchedMWR;
 
         private bool m_VDC_DMA_Enable;
         private bool m_VDC_SATBDMA_IRQ;
@@ -450,11 +453,20 @@ namespace ePceCD
                 return;
 
             int i;
+            m_LatchedEnableBackground = m_VDC_EnableBackground;
+            m_LatchedEnableSprites = m_VDC_EnableSprites;
+            m_LatchedMWR = m_VDC_MWR;
+            m_LatchedBxr = m_VDC_BXR;
+            if (visibleLine == 0)
+                m_BgCounterY = m_VDC_BYR;
+            else
+                m_BgCounterY = (m_BgCounterY + 1) & 0x3FF;
+            m_BgOffsetY = m_BgCounterY;
             int* ScanLinePtr = (int*)_screenBufPtr.ToPointer() + SCREEN_WIDTH * visibleLine;
 
-            for (i = 0; i < SCREEN_WIDTH; i++) ScanLinePtr[i] = 0;
+            for (i = 0; i < SCREEN_WIDTH; i++) ScanLinePtr[i] = 0x100;
 
-            if (m_VDC_EnableSprites)
+            if (m_LatchedEnableSprites)
             {
                 int BufferIndexes = 0;
                 int BufferUsage;
@@ -514,14 +526,9 @@ namespace ePceCD
                 }
             }
 
-            if (m_VDC_EnableBackground)
+            if (m_LatchedEnableBackground)
             {
-                if (visibleLine == 0)
-                    m_BgCounterY = m_VDC_BYR;
-                m_BgOffsetY = m_BgCounterY;
-                m_LatchedBxr = m_VDC_BXR;
-
-                int screenReg = (m_VDC_MWR >> 4) & 0x07;
+                int screenReg = (m_LatchedMWR >> 4) & 0x07;
                 int screenSizeX = ScreenSizeX[screenReg];
                 int bgY = m_BgOffsetY & ScreenSizeYPixelsMask[screenReg];
                 int tileY = bgY & 7;
@@ -554,16 +561,14 @@ namespace ePceCD
                         (((byte2 >> tileX) & 1) << 1) |
                         (((byte3 >> tileX) & 1) << 2) |
                         (((byte4 >> tileX) & 1) << 3);
-                    if (bgColor == 0)
-                        continue;
                     int* dst = ScanLinePtr + i;
                     if ((*dst & 0x1000) != 0)
+                        continue;
+                    if (bgColor == 0 && (*dst & 0x6000) != 0)
                         continue;
                     *dst = palette | bgColor;
                 }
 
-                // Advance BG counter after rendering this scanline (Geargrafx-style).
-                m_BgCounterY = (m_BgCounterY + 1) & 0x3FF;
             }
 
             //colorindex to ARGB8888
@@ -648,7 +653,8 @@ namespace ePceCD
                     (((p1 >> x) & 1) << 1) |
                     (((p2 >> x) & 1) << 2) |
                     (((p3 >> x) & 1) << 3);
-                if (color != 0) *px = palette | color;
+                if (color == 0 && (*px & 0x6000) != 0) continue;
+                *px = palette | color;
             }
         }
 
