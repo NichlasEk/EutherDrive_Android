@@ -24,6 +24,8 @@ namespace ePceCD
 
         public int dataOffset;
         private int _readLogCount;
+        private int _readSumCount;
+        private int _cdRegLogCount;
         private byte messageByte;
         private int currentSector = -1;
         private int lastDataSector = -1;
@@ -64,6 +66,9 @@ namespace ePceCD
             public long OffsetEnd;
             public bool IsLeadIn;
             public long LeadInSectorStart;
+            public bool HasIndex0;
+            public bool HasPregap;
+            public long PregapLength;
             public PosMSF LeadIn;
             public PosMSF StartPos;
             public PosMSF EndPos;
@@ -293,9 +298,26 @@ namespace ePceCD
                 }
             }
             CalculateTrackMSF();
+            // Default to Geargrafx-style CUE calc; allow opt-out with EUTHERDRIVE_PCE_CUE_GEARGRAFX=0
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CUE_GEARGRAFX") != "0")
+                CalculateTrackMSF_Geargrafx();
             DetectAudioEndianness();
             TryLoadSub(cuePath);
             Console.WriteLine($"Loaded {tracks.Count} tracks");
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_TOC_DUMP") == "1")
+                DumpToc();
+        }
+
+        private void DumpToc()
+        {
+            Console.WriteLine("[PCE-TOC] ---");
+            foreach (var track in tracks)
+            {
+                string leadIn = track.IsLeadIn ? track.LeadInSectorStart.ToString() : "-";
+                Console.WriteLine(
+                    $"[PCE-TOC] Track {track.Number:00} {track.Type} Start {track.SectorStart} End {track.SectorEnd} " +
+                    $"LeadIn {leadIn} Offset 0x{track.OffsetStart:X}");
+            }
         }
 
         private void TryLoadSub(string cuePath)
@@ -404,6 +426,7 @@ namespace ePceCD
                 case "00":
                     currentTrack.LeadIn = new PosMSF { MSF_M = msf[0], MSF_S = msf[1], MSF_F = msf[2] };
                     currentTrack.LeadInSectorStart = MSFToLBA(msf[0], msf[1], msf[2]);
+                    currentTrack.HasIndex0 = true;
                     break;
                 case "01":
                     currentTrack.StartPos = new PosMSF { MSF_M = msf[0], MSF_S = msf[1], MSF_F = msf[2] };
@@ -415,7 +438,8 @@ namespace ePceCD
         private void HandlePregap(string msf)
         {
             var pregap = msf.Split(':').Select(int.Parse).ToArray();
-            currentTrack.SectorEnd = MSFToLBA(pregap[0], pregap[1], pregap[2]);
+            currentTrack.PregapLength = MSFToLBA(pregap[0], pregap[1], pregap[2]);
+            currentTrack.HasPregap = true;
         }
 
         private void CalculateTrackMSF()
@@ -459,6 +483,94 @@ namespace ePceCD
                 fileOffset += sectorLength * sectorSize;
                 discSectorCursor = track.SectorEnd;
 
+                track.EndPos = new PosMSF
+                {
+                    MSF_M = (int)(track.SectorEnd / (60 * 75)),
+                    MSF_S = (int)((track.SectorEnd / 75) % 60),
+                    MSF_F = (int)(track.SectorEnd % 75)
+                };
+            }
+        }
+
+        private void CalculateTrackMSF_Geargrafx()
+        {
+            if (tracks.Count == 0)
+                return;
+
+            long discSectorCursor = 0;
+            int index = 0;
+
+            while (index < tracks.Count)
+            {
+                string fileName = tracks[index].FileName ?? string.Empty;
+                int fileStartIndex = index;
+                long baseOffset = GetFileDataOffset(fileName);
+                long fileOffset = 0;
+                long totalPregap = 0;
+
+                while (index < tracks.Count && string.Equals(tracks[index].FileName, fileName, StringComparison.OrdinalIgnoreCase))
+                    index++;
+
+                for (int i = fileStartIndex; i < index; i++)
+                {
+                    var track = tracks[i];
+                    int sectorSize = GetTrackSectorSize(track);
+                    long index1Lba = MSFToLBA(track.StartPos.MSF_M, track.StartPos.MSF_S, track.StartPos.MSF_F);
+
+                    if (track.HasPregap)
+                        totalPregap += track.PregapLength;
+
+                    track.SectorStart = index1Lba + totalPregap + discSectorCursor;
+
+                    if (track.HasPregap)
+                    {
+                        track.IsLeadIn = true;
+                        track.LeadInSectorStart = track.SectorStart - track.PregapLength;
+                    }
+                    else if (track.HasIndex0)
+                    {
+                        track.IsLeadIn = true;
+                        track.LeadInSectorStart = track.LeadInSectorStart + discSectorCursor;
+                    }
+
+                    if (i != fileStartIndex)
+                    {
+                        var prev = tracks[i - 1];
+                        long prevEnd = track.IsLeadIn ? (track.LeadInSectorStart - 1) : (track.SectorStart - 1);
+                        if (prevEnd < prev.SectorStart)
+                            prevEnd = prev.SectorStart;
+                        prev.SectorEnd = prevEnd;
+                        long prevSectors = prev.SectorEnd - prev.SectorStart + 1;
+                        fileOffset = prev.OffsetStart + prevSectors * GetTrackSectorSize(prev);
+                        prev.OffsetEnd = prev.OffsetStart + prevSectors * GetTrackSectorSize(prev);
+                        tracks[i - 1] = prev;
+                    }
+
+                    track.OffsetStart = baseOffset + fileOffset;
+                    if (track.IsLeadIn && !track.HasPregap)
+                        track.OffsetStart += (track.SectorStart - track.LeadInSectorStart) * sectorSize;
+
+                    tracks[i] = track;
+                }
+
+                var last = tracks[index - 1];
+                int lastSectorSize = GetTrackSectorSize(last);
+                long availableBytes = Math.Max(0, last.File.Length - last.OffsetStart);
+                long sectorCount = availableBytes / lastSectorSize;
+                if (availableBytes % lastSectorSize != 0)
+                    sectorCount++;
+                if (sectorCount < 0)
+                    sectorCount = 0;
+
+                last.SectorEnd = last.SectorStart + sectorCount - 1;
+                last.OffsetEnd = last.OffsetStart + sectorCount * lastSectorSize;
+                tracks[index - 1] = last;
+
+                discSectorCursor = last.SectorEnd + 1;
+            }
+
+            foreach (var track in tracks)
+            {
                 track.EndPos = new PosMSF
                 {
                     MSF_M = (int)(track.SectorEnd / (60 * 75)),
@@ -635,6 +747,17 @@ namespace ePceCD
                     break;
             }
             UpdateScsiIrqs();
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_PHASE_LOG") == "1")
+                LogPhase(phase);
+        }
+
+        private int _phaseLogCount = 0;
+        private void LogPhase(ScsiPhase phase)
+        {
+            if (_phaseLogCount >= 64)
+                return;
+            _phaseLogCount++;
+            Console.WriteLine($"CD-ROM: Phase {phase} bsy={Signals[(int)ScsiSignal.Bsy]} req={Signals[(int)ScsiSignal.Req]} cd={Signals[(int)ScsiSignal.Cd]} io={Signals[(int)ScsiSignal.Io]} msg={Signals[(int)ScsiSignal.Msg]}");
         }
 
         private void UpdateScsiIrqs()
@@ -657,6 +780,17 @@ namespace ePceCD
             {
                 ActiveIrqs &= unchecked((byte)~((byte)CdRomIrqSource.DataTransferReady | (byte)CdRomIrqSource.DataTransferDone));
             }
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_IRQ_LOG") == "1")
+                LogIrq();
+        }
+
+        private int _irqLogCount = 0;
+        private void LogIrq()
+        {
+            if (_irqLogCount >= 200)
+                return;
+            _irqLogCount++;
+            Console.WriteLine($"CD-ROM: IRQ state active=0x{ActiveIrqs:X2} enabled=0x{EnabledIrqs:X2} phase={_ScsiPhase}");
         }
         private void PrepareResponse(byte[] data)
         {
@@ -681,7 +815,7 @@ namespace ePceCD
             PrepareResponse(new byte[] { status });
             SetPhase(ScsiPhase.Status);
 
-            System.Timers.Timer endTimer = new System.Timers.Timer(100);
+            System.Timers.Timer endTimer = new System.Timers.Timer(GetScsiDelayMs());
             endTimer.Elapsed += (s, e) =>
             {
                 FinishCommand();
@@ -701,7 +835,7 @@ namespace ePceCD
             messageByte = 0x00;
             PrepareResponse(new byte[] { messageByte });
 
-            System.Timers.Timer busFreeTimer = new System.Timers.Timer(100);
+            System.Timers.Timer busFreeTimer = new System.Timers.Timer(GetScsiDelayMs());
             busFreeTimer.Elapsed += (s, e) =>
             {
 
@@ -712,6 +846,11 @@ namespace ePceCD
             };
             busFreeTimer.AutoReset = false;
             busFreeTimer.Start();
+        }
+
+        private static double GetScsiDelayMs()
+        {
+            return Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_FAST") == "1" ? 1 : 100;
         }
 
         public byte ReadDataPort()
@@ -730,11 +869,24 @@ namespace ePceCD
             }
 
             dataOffset++;
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_REQ_PER_BYTE") == "1" &&
+                (_ScsiPhase == ScsiPhase.DataIn || _ScsiPhase == ScsiPhase.MessageIn))
+            {
+                // Pulse REQ for each byte: drop after read, re-assert if more data remains
+                Signals[(int)ScsiSignal.Req] = false;
+                if (dataOffset < dataBuffer.Length)
+                    Signals[(int)ScsiSignal.Req] = true;
+            }
             if (dataOffset >= dataBuffer.Length)
             {
                 if (_ScsiPhase == ScsiPhase.DataIn)
                 {
                     SendStatus(0);
+                }
+                else if (_ScsiPhase == ScsiPhase.MessageIn &&
+                         Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_MSGIN_EOF") == "1")
+                {
+                    SetPhase(ScsiPhase.BusFree);
                 }
                 else
                 {
@@ -777,6 +929,8 @@ namespace ePceCD
         private void ProcessCommand()
         {
             var cmd = (ScsiCommand)CMDBuffer[0];
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CMD_LOG") == "1")
+                LogCommand();
             try
             {
                 switch (cmd)
@@ -823,6 +977,18 @@ namespace ePceCD
             }
         }
 
+        private int _cmdLogCount = 0;
+        private void LogCommand()
+        {
+            if (_cmdLogCount >= 100)
+                return;
+            _cmdLogCount++;
+            int len = CMDLength > 0 ? CMDLength : 6;
+            byte[] buf = new byte[len];
+            Array.Copy(CMDBuffer, buf, len);
+            Console.WriteLine($"CD-ROM: CMD {buf[0]:X2} len={len} buf={BitConverter.ToString(buf)}");
+        }
+
         private void HandleTestUnitReady()
         {
             Console.WriteLine($"CD-ROM: TestUnitReady");
@@ -848,6 +1014,7 @@ namespace ePceCD
             if (sectorsToRead == 0)
                 sectorsToRead = 256;
             byte[] sectorBuffer = new byte[SECTOR_SIZE];
+            bool strict = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_READ6_STRICT") == "1";
 
             Console.WriteLine($"CD-ROM: ReadSector {currentSector} to {sectorsToRead + currentSector - 1}");
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
@@ -862,16 +1029,44 @@ namespace ePceCD
             byte[] data = new byte[ssize * sectorsToRead];
             do
             {
-                var track = tracks.FirstOrDefault(t => t.SectorStart <= currentSector && t.SectorEnd > currentSector) ?? currentTrack;
+                var track = tracks.FirstOrDefault(t =>
+                {
+                    long start = t.SectorStart;
+                    if (strict && t.IsLeadIn)
+                        start = t.LeadInSectorStart;
+                    return start <= currentSector && t.SectorEnd > currentSector;
+                }) ?? currentTrack;
                 if (track.File == null)
                     break;
                 lastDataSector = currentSector;
+                if (strict && currentSector >= track.SectorEnd)
+                {
+                    SendStatus(0x02);
+                    SetPhase(ScsiPhase.Status);
+                    return;
+                }
                 int sectorSize = GetTrackSectorSize(track);
                 int dataOffset = GetTrackDataOffset(track);
                 long relSector = currentSector - track.SectorStart;
                 long fileOffset = track.OffsetStart + relSector * sectorSize;
+                if (strict && (fileOffset < 0 || fileOffset + sectorSize > track.File.Length))
+                {
+                    SendStatus(0x02);
+                    SetPhase(ScsiPhase.Status);
+                    return;
+                }
                 track.File.Seek(fileOffset, SeekOrigin.Begin);
                 track.File.Read(sectorBuffer, 0, sectorSize);
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_READ_SUM") == "1" && _readSumCount < 4)
+                {
+                    int sumLen = track.Type == TrackType.AUDIO ? sectorSize : MODE1_DATA_SIZE;
+                    int sumOff = track.Type == TrackType.AUDIO ? 0 : dataOffset;
+                    uint sum = 0;
+                    for (int i = 0; i < sumLen; i++)
+                        sum = unchecked(sum + sectorBuffer[sumOff + i]);
+                    Console.WriteLine($"CD-ROM: READ6 sum lba={currentSector} track={track.Number} len={sumLen} sum=0x{sum:X8}");
+                    _readSumCount++;
+                }
                 if (logFirstRead && !dumped)
                 {
                     int headCount = Math.Min(32, sectorSize);
@@ -914,10 +1109,64 @@ namespace ePceCD
         {
             byte format = CMDBuffer[1]; // 参数
             byte trackNumber = FromBCD(CMDBuffer[2]); // 曲目号
-            byte[] toc = new byte[4];
+            bool toc8 = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_TOC_8B") == "1";
+            byte[] toc = new byte[toc8 ? 8 : 4];
             int pos = 0;
-            int minutes, seconds, frames;
+            int minutes = 0, seconds = 0, frames = 0;
             long calcLBA;
+            bool respectMsf = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_TOC_MSF") == "1";
+            bool msf = true;
+            if (respectMsf)
+                msf = (CMDBuffer[1] & 0x02) != 0;
+
+            void WriteAddr(long lba, bool includeCtrlAdr)
+            {
+                if (msf)
+                {
+                    long addr = lba + 150;
+                    minutes = (int)(addr / (60 * 75));
+                    seconds = (int)((addr / 75) % 60);
+                    frames = (int)(addr % 75);
+                    toc[pos++] = ToBCD(minutes);
+                    toc[pos++] = ToBCD(seconds);
+                    toc[pos++] = ToBCD(frames);
+                }
+                else
+                {
+                    toc[pos++] = (byte)((lba >> 16) & 0xFF);
+                    toc[pos++] = (byte)((lba >> 8) & 0xFF);
+                    toc[pos++] = (byte)(lba & 0xFF);
+                }
+
+                if (includeCtrlAdr)
+                {
+                    // NOTE: Enabling this flag caused some discs to fall back to the BIOS CD player menu
+                    // (i.e., BIOS didn't detect a data track). Keep behind flag for now.
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_TOC_CTRLADR") == "1")
+                        toc[pos++] = (byte)(currentTrack.Control | currentTrack.Adr);
+                    else
+                        toc[pos++] = currentTrack.Type == TrackType.AUDIO ? (byte)0x00 : (byte)0x04;
+
+                    if (toc8)
+                    {
+                        toc[pos++] = ToBCD(currentTrack.Number);
+                        toc[pos++] = 0x00;
+                        toc[pos++] = 0x00;
+                        toc[pos++] = 0x00;
+                    }
+                }
+                else
+                {
+                    toc[pos++] = 0x00;
+                    if (toc8)
+                    {
+                        toc[pos++] = 0x00;
+                        toc[pos++] = 0x00;
+                        toc[pos++] = 0x00;
+                        toc[pos++] = 0x00;
+                    }
+                }
+            }
 
             switch (format)
             {
@@ -930,15 +1179,10 @@ namespace ePceCD
                     break;
 
                 case 0x01:
-                    calcLBA = tracks.Count > 0 ? tracks[^1].SectorEnd + 150 : 150;
-                    minutes = (int)(calcLBA / (60 * 75));
-                    seconds = (int)((calcLBA / 75) % 60);
-                    frames = (int)(calcLBA % 75);
-                    toc[pos++] = ToBCD(minutes); // 分钟
-                    toc[pos++] = ToBCD(seconds); // 秒
-                    toc[pos++] = ToBCD(frames); // 帧
-                    toc[pos++] = 0x00;
-                    Console.WriteLine($"CD-ROM: ReadTOC TotalTime {minutes}:{seconds}:{frames}");
+                    calcLBA = tracks.Count > 0 ? tracks[^1].SectorEnd + 1 : 0;
+                    WriteAddr(calcLBA, includeCtrlAdr: false);
+                    if (msf)
+                        Console.WriteLine($"CD-ROM: ReadTOC TotalTime {minutes}:{seconds}:{frames}");
                     break;
 
                 case 0x02:
@@ -947,15 +1191,10 @@ namespace ePceCD
 
                     if (trackNumber > tracks.Count())
                     {
-                        long leadOutLba = tracks.Count > 0 ? tracks[^1].SectorEnd + 150 : 150;
-                        minutes = (int)(leadOutLba / (60 * 75));
-                        seconds = (int)((leadOutLba / 75) % 60);
-                        frames = (int)(leadOutLba % 75);
-                        toc[pos++] = ToBCD(minutes);
-                        toc[pos++] = ToBCD(seconds);
-                        toc[pos++] = ToBCD(frames);
-                        toc[pos++] = 0x00;
-                        Console.WriteLine($"CD-ROM: ReadTOC LeadOut {minutes}:{seconds}:{frames}");
+                        long leadOutLba = tracks.Count > 0 ? tracks[^1].SectorEnd + 1 : 0;
+                        WriteAddr(leadOutLba, includeCtrlAdr: false);
+                        if (msf)
+                            Console.WriteLine($"CD-ROM: ReadTOC LeadOut {minutes}:{seconds}:{frames}");
                         break;
                     }
 
@@ -966,15 +1205,8 @@ namespace ePceCD
                         currentTrack = FileTrack;
                         return;
                     }
-                    calcLBA = currentTrack.SectorStart + 150;
-                    minutes = (int)(calcLBA / (60 * 75));
-                    seconds = (int)((calcLBA / 75) % 60);
-                    frames = (int)(calcLBA % 75);
-                    toc[pos++] = ToBCD(minutes);
-                    toc[pos++] = ToBCD(seconds);
-                    toc[pos++] = ToBCD(frames);
-                    toc[pos++] = currentTrack.Type == TrackType.AUDIO ? (byte)0x00 : (byte)0x04;
-
+                    calcLBA = currentTrack.SectorStart;
+                    WriteAddr(calcLBA, includeCtrlAdr: true);
                     Console.WriteLine($"CD-ROM: ReadTOC Track {trackNumber} StartPos {currentTrack.SectorStart}");
                     break;
 
@@ -1026,18 +1258,74 @@ namespace ePceCD
 
             if (!usedSub)
             {
-                int relLba = (int)(currentSector - track.SectorStart);
-                qData[0] = (byte)(Playing ? 0 : 1);
-                qData[1] = (byte)((track.Type == TrackType.AUDIO) ? 0x01 : 0x41);
-                qData[2] = ToBCD(track.Number); // Track
-                qData[3] = ToBCD(1); // Index
-                qData[4] = ToBCD(relLba / (60 * 75));
-                qData[5] = ToBCD((relLba / 75) % 60);
-                qData[6] = ToBCD(relLba % 75);
+                bool fixQ = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SUBQ_FIXED") == "1";
+                bool negRel = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SUBQ_NEG") == "1";
                 int absLba = currentSector + 150;
-                qData[7] = ToBCD(absLba / (60 * 75));
-                qData[8] = ToBCD((absLba / 75) % 60);
-                qData[9] = ToBCD(absLba % 75);
+                int relLba;
+                int index = 1;
+                bool relIsNeg = false;
+
+                if (fixQ && track.IsLeadIn && currentSector < track.SectorStart)
+                {
+                    index = 0;
+                    if (negRel)
+                    {
+                        relIsNeg = true;
+                        relLba = (int)(track.SectorStart - currentSector);
+                    }
+                    else
+                    {
+                        relLba = (int)(currentSector - track.LeadInSectorStart);
+                    }
+                }
+                else
+                {
+                    relLba = (int)(currentSector - track.SectorStart);
+                }
+
+                if (relLba < 0)
+                    relLba = 0;
+
+                byte controlAdr = (byte)((track.Type == TrackType.AUDIO) ? 0x01 : 0x41);
+
+                if (fixQ)
+                {
+                    qData[0] = controlAdr;
+                    qData[1] = ToBCD(track.Number);
+                    qData[2] = ToBCD(index);
+                    if (relIsNeg)
+                    {
+                        int rmin = relLba / (60 * 75);
+                        int rsec = (relLba / 75) % 60;
+                        int rfrm = relLba % 75;
+                        qData[3] = (byte)(ToBCD(rmin) | 0x80);
+                        qData[4] = ToBCD(rsec);
+                        qData[5] = ToBCD(rfrm);
+                    }
+                    else
+                    {
+                        qData[3] = ToBCD(relLba / (60 * 75));
+                        qData[4] = ToBCD((relLba / 75) % 60);
+                        qData[5] = ToBCD(relLba % 75);
+                    }
+                    qData[6] = 0x00;
+                    qData[7] = ToBCD(absLba / (60 * 75));
+                    qData[8] = ToBCD((absLba / 75) % 60);
+                    qData[9] = ToBCD(absLba % 75);
+                }
+                else
+                {
+                    qData[0] = (byte)(Playing ? 0 : 1);
+                    qData[1] = controlAdr;
+                    qData[2] = ToBCD(track.Number); // Track
+                    qData[3] = ToBCD(1); // Index
+                    qData[4] = ToBCD(relLba / (60 * 75));
+                    qData[5] = ToBCD((relLba / 75) % 60);
+                    qData[6] = ToBCD(relLba % 75);
+                    qData[7] = ToBCD(absLba / (60 * 75));
+                    qData[8] = ToBCD((absLba / 75) % 60);
+                    qData[9] = ToBCD(absLba % 75);
+                }
             }
 
             PrepareResponse(qData);
@@ -1124,7 +1412,20 @@ namespace ePceCD
             {
                 case 0x00:
                     ret = ScsiStatus();
-                    ProcessACK();
+                    // NOTE: ACK write-only mode caused BIOS "Just a moment" hang (no progress). Keep behind flag.
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ACK_WRITEONLY") == "1")
+                    {
+                        // ACK handled on IRQCTRL writes only
+                    }
+                    else if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ACK_STRICT") == "1")
+                    {
+                        if (Signals[(int)ScsiSignal.Ack])
+                            ProcessACK();
+                    }
+                    else
+                    {
+                        ProcessACK();
+                    }
                     break;
 
                 case 0x01:
@@ -1181,6 +1482,11 @@ namespace ePceCD
                     Console.WriteLine("CD-ROM READ  ACCESS [ 0x{0:X} << 0x{1:X2} ]  |  CPU <0x{2:X}>", address, ret, HuC6280.CurrentPC);
                     break;
             }
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CDREG_LOG") == "1" && _cdRegLogCount < 200)
+            {
+                _cdRegLogCount++;
+                Console.WriteLine($"CD-ROM: RD reg=0x{(address & 0xFF):X2} val=0x{ret:X2} PC=0x{HuC6280.CurrentPC:X4}");
+            }
             //Console.WriteLine("CD-ROM READ  ACCESS [ 0x{0:X} << 0x{1:X2} ]  |  CPU <0x{2:X}>", address, ret, HuC6280.CurrentPC);
             return ret;
         }
@@ -1188,6 +1494,11 @@ namespace ePceCD
         public void WriteAt(int address, byte value)
         {
             //Console.WriteLine($"CD-ROM WRITE ACCESS [ 0x{address:X} >> 0x{value:X2} ]");
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CDREG_LOG") == "1" && _cdRegLogCount < 200)
+            {
+                _cdRegLogCount++;
+                Console.WriteLine($"CD-ROM: WR reg=0x{(address & 0xFF):X2} val=0x{value:X2} PC=0x{HuC6280.CurrentPC:X4}");
+            }
             switch (address & 0xF)
             {
                 case 0x00: // 状态/控制寄存器 处理硬件复位或其他控制信号
@@ -1205,7 +1516,15 @@ namespace ePceCD
                 case 0x02:
                     EnabledIrqs = (byte)(value & 0x7F);
                     Signals[(int)ScsiSignal.Ack] = (value & 0x80) != 0;
-                    ProcessACK();
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ACK_WRITEONLY") == "1")
+                    {
+                        if ((value & 0x80) != 0)
+                            ProcessACK();
+                    }
+                    else
+                    {
+                        ProcessACK();
+                    }
                     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
                         Console.WriteLine($"CD-ROM: IRQCTRL write value=0x{value:X2} enabled=0x{EnabledIrqs:X2} ack={(Signals[(int)ScsiSignal.Ack] ? 1 : 0)}");
                     break;
