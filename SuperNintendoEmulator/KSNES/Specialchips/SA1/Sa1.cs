@@ -44,6 +44,7 @@ internal sealed class Sa1
         }
         _bwram = bwram;
         _cpu = new CPU.CPU();
+        _cpu.StartInNativeMode = true;
         _timer = new Sa1Timer(isPal);
         _system = new Sa1System(this, _cpu);
         _cpu.SetSystem(_system);
@@ -141,13 +142,16 @@ internal sealed class Sa1
         for (ulong i = 0; i < sa1Cycles; i++)
         {
             _timer.Tick();
+            if (_timer.IrqPending)
+                _registers.SnesIrqFromTimer = true;
         }
     }
 
     public bool SnesIrq()
     {
         return (_registers.SnesIrqFromSa1Enabled && _registers.SnesIrqFromSa1)
-               || (_registers.SnesIrqFromDmaEnabled && _registers.CharacterConversionIrq);
+               || (_registers.SnesIrqFromTimerEnabled && _registers.SnesIrqFromTimer)
+               || (_registers.SnesIrqFromDmaEnabled && (_registers.CharacterConversionIrq || _registers.Sa1DmaIrq));
     }
 
     public void Reset()
@@ -222,11 +226,7 @@ internal sealed class Sa1
             return;
         uint offset = bwramAddr & 0xFFFF;
         uint adr16 = address & 0xFFFF;
-        if (offset != BwramWatchOffset
-            && adr16 != 0x604C && adr16 != 0x604D
-            && adr16 != 0x604E && adr16 != 0x604F
-            && (offset & 0xFFFF) != 0x004C
-            && (offset & 0xFFFF) != 0x004D)
+        if (offset != 0x72A4 && offset != 0x604C && adr16 != 0x604C && adr16 != 0x604D && adr16 != 0x604E && adr16 != 0x604F && offset != 0x004C && offset != 0x004D)
             return;
         Console.WriteLine($"[BW-RAM-WATCH] src={source} rw={rw} addr=0x{address:X6} bwram=0x{bwramAddr:X6} val=0x{value:X2} pc=0x{pc:X6}");
     }

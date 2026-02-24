@@ -133,6 +133,8 @@ public class CPU : ICPU
 
     public int CyclesLeft { get; set; }
 
+    public bool StartInNativeMode { get; set; }
+
     [NonSerialized]
     private ISNESSystem _snes;
 
@@ -187,7 +189,7 @@ public class CPU : ICPU
         _i = true;
         _z = false;
         _c = false;
-        _e = true;
+        _e = !StartInNativeMode;
         IrqWanted = false;
         NmiWanted = false;
         _aboWanted = false;

@@ -176,11 +176,13 @@ internal sealed class Sa1Registers
     public byte MessageToSa1;
 
     public bool SnesIrqFromSa1;
+    public bool SnesIrqFromTimer;
     public InterruptVectorSource SnesIrqVectorSource = InterruptVectorSource.Rom;
     public InterruptVectorSource SnesNmiVectorSource = InterruptVectorSource.Rom;
     public byte MessageToSnes;
 
     public bool SnesIrqFromSa1Enabled;
+    public bool SnesIrqFromTimerEnabled;
     public bool SnesIrqFromDmaEnabled;
 
     public bool Sa1IrqFromSnesEnabled;
@@ -224,7 +226,7 @@ internal sealed class Sa1Registers
     public bool ArithmeticOverflow;
 
     public uint VarlenBitStartAddress;
-    public uint VarlenBitData;
+    public ulong VarlenBitData;
     public byte VarlenBitsRemaining;
 
     public DmaState DmaState = DmaState.Idle;
@@ -394,9 +396,8 @@ internal sealed class Sa1Registers
     private byte ReadSfr()
     {
         return (byte)((SnesIrqFromSa1 ? 0x80 : 0)
-            | (SnesIrqVectorSource.ToBit() ? 0x40 : 0)
-            | (CharacterConversionIrq ? 0x20 : 0)
-            | (SnesNmiVectorSource.ToBit() ? 0x10 : 0)
+            | (SnesIrqFromTimer ? 0x40 : 0)
+            | ((CharacterConversionIrq || Sa1DmaIrq) ? 0x20 : 0)
             | (MessageToSnes & 0x0F));
     }
 
@@ -440,6 +441,7 @@ internal sealed class Sa1Registers
     private void WriteSie(byte value)
     {
         SnesIrqFromSa1Enabled = value.Bit(7);
+        SnesIrqFromTimerEnabled = value.Bit(6);
         SnesIrqFromDmaEnabled = value.Bit(5);
     }
 
@@ -447,8 +449,13 @@ internal sealed class Sa1Registers
     {
         if (value.Bit(7))
             SnesIrqFromSa1 = false;
+        if (value.Bit(6))
+            SnesIrqFromTimer = false;
         if (value.Bit(5))
+        {
             CharacterConversionIrq = false;
+            Sa1DmaIrq = false;
+        }
         if (TraceSa1Regs && value.Bit(7))
             LogReg("[SA1-REGS] SIC cleared SNES IRQ");
     }
@@ -690,13 +697,19 @@ internal sealed class Sa1Registers
     }
 
     private void WriteMaLow(byte value) => Sa1Utils.SetLsb(ref ArithmeticParamA, value);
-    private void WriteMaHigh(byte value) => Sa1Utils.SetMsb(ref ArithmeticParamA, value);
+    private void WriteMaHigh(byte value)
+    {
+        Sa1Utils.SetMsb(ref ArithmeticParamA, value);
+        if (ArithmeticOp == ArithmeticOp.MultiplyAccumulate)
+            PerformArithmeticOp();
+    }
 
     private void WriteMbLow(byte value) => Sa1Utils.SetLsb(ref ArithmeticParamB, value);
     private void WriteMbHigh(byte value)
     {
         Sa1Utils.SetMsb(ref ArithmeticParamB, value);
-        PerformArithmeticOp();
+        if (ArithmeticOp != ArithmeticOp.MultiplyAccumulate)
+            PerformArithmeticOp();
     }
 
     private void WriteVbd(byte value, Sa1Mmc mmc, byte[] rom)
@@ -708,14 +721,14 @@ internal sealed class Sa1Registers
         VarlenBitData >>= shift;
         VarlenBitsRemaining -= (byte)shift;
 
-        if (VarlenBitsRemaining < 16)
+        if (VarlenBitsRemaining <= 16)
         {
             uint romAddr = mmc.MapRomAddress(VarlenBitStartAddress) ?? 0;
             byte lsb = romAddr < rom.Length ? rom[romAddr] : (byte)0;
             byte msb = romAddr + 1 < rom.Length ? rom[romAddr + 1] : (byte)0;
             ushort word = (ushort)(lsb | (msb << 8));
 
-            VarlenBitData |= (uint)word << VarlenBitsRemaining;
+            VarlenBitData |= (ulong)word << VarlenBitsRemaining;
             VarlenBitStartAddress = (VarlenBitStartAddress + 2) & 0xFFFFFF;
             VarlenBitsRemaining += 16;
         }
@@ -955,7 +968,11 @@ internal sealed class Sa1Registers
         }
 
         rowsCopied = (rowsCopied + 1) & 0x07;
-        bufferIdx = rowsCopied == 0 ? 1 - bufferIdx : bufferIdx;
+        if (rowsCopied == 0)
+        {
+            bufferIdx = 1 - bufferIdx;
+            CharacterConversionIrq = true;
+        }
         _ccdmaRowsCopied = (byte)rowsCopied;
         _ccdmaBufferIdx = (byte)bufferIdx;
         DmaState = DmaState.CharacterConversion2;
@@ -1013,6 +1030,8 @@ internal sealed class Sa1Registers
         _ccdmaBufferIdx = (byte)bufferIdx;
         _ccdmaBytesRemaining = (byte)CcdmaColorDepth.TileSize();
         _ccdmaNextTileNumber++;
+        
+        CharacterConversionIrq = true;
     }
 
     private uint CcdmaSourceAddrMask()
