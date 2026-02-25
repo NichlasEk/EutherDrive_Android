@@ -620,7 +620,11 @@ public class SNESSystem : ISNESSystem
         if (!_dmaFromB[i] && !_dmaNotifyActive[i])
         {
             uint sourceAddress = (uint)((_dmaAadrBank[i] << 16) | _dmaAadr[i]);
-            if (sourceAddress >= 0x400000 && sourceAddress < 0x500000 && ROM is KSNES.ROM.ROM rom)
+            bool isBwRamBank = sourceAddress >= 0x400000 && sourceAddress < 0x600000;
+            bool isBwRamWindow = ((sourceAddress >> 16) <= 0x3F || ((sourceAddress >> 16) >= 0x80 && (sourceAddress >> 16) <= 0xBF)) 
+                                 && (sourceAddress & 0xFFFF) >= 0x6000 && (sourceAddress & 0xFFFF) < 0x8000;
+
+            if ((isBwRamBank || isBwRamWindow) && ROM is KSNES.ROM.ROM rom)
             {
                 rom.NotifyDmaStart(sourceAddress);
                 _dmaNotifyActive[i] = true;

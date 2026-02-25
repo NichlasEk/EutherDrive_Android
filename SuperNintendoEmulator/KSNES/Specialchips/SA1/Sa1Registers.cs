@@ -198,7 +198,7 @@ internal sealed class Sa1Registers
 
     public bool SnesBwramWritesEnabled;
     public bool Sa1BwramWritesEnabled;
-    public uint BwramWriteProtectionSize = 1 << 23;
+    public uint BwramWriteProtectionSize;
 
     public bool[] SnesIramWritesEnabled = new bool[8];
     public bool[] Sa1IramWritesEnabled = new bool[8];
@@ -212,6 +212,7 @@ internal sealed class Sa1Registers
 
     public CharacterConversionColorBits CcdmaColorDepth = CharacterConversionColorBits.Eight;
     public byte VirtualVramWidthTiles = 1;
+    public bool CharacterConversionIrqEnabled;
 
     public uint DmaSourceAddress;
     public uint DmaDestinationAddress;
@@ -398,6 +399,7 @@ internal sealed class Sa1Registers
         return (byte)((SnesIrqFromSa1 ? 0x80 : 0)
             | (SnesIrqFromTimer ? 0x40 : 0)
             | ((CharacterConversionIrq || Sa1DmaIrq) ? 0x20 : 0)
+            | (SnesNmiVectorSource.ToBit() ? 0x10 : 0)
             | (MessageToSnes & 0x0F));
     }
 
@@ -535,6 +537,7 @@ internal sealed class Sa1Registers
             SnesIrqFromSa1 = true;
         SnesIrqVectorSource = InterruptVectorSourceExtensions.FromBit(value.Bit(6));
         SnesNmiVectorSource = InterruptVectorSourceExtensions.FromBit(value.Bit(4));
+
         MessageToSnes = (byte)(value & 0x0F);
         if (TraceSa1Regs)
             LogReg($"[SA1-REGS] SCNT=0x{value:X2} snes_irq={(SnesIrqFromSa1 ? 1 : 0)} msg=0x{MessageToSnes:X2}");
@@ -552,7 +555,8 @@ internal sealed class Sa1Registers
 
     private void WriteBwpa(byte value)
     {
-        BwramWriteProtectionSize = (uint)(1 << (8 + (value & 0x0F)));
+        byte sizeCode = (byte)(value & 0x0F);
+        BwramWriteProtectionSize = sizeCode == 0 ? 0 : (uint)(0x100 << (sizeCode - 1));
     }
 
     private void WriteSiwp(byte value)
@@ -583,9 +587,8 @@ internal sealed class Sa1Registers
     {
         CcdmaColorDepth = CharacterConversionColorBitsExtensions.FromByte(value);
         VirtualVramWidthTiles = (byte)Math.Min(32, 1 << ((value >> 2) & 0x07));
+        CharacterConversionIrqEnabled = value.Bit(7);
 
-        if (value.Bit(7) && IsCharacterConversion())
-            DmaState = DmaState.Idle;
         if (Sa1Trace.IsEnabled)
             Sa1Trace.Log("SA1", 0, -1, 0x2231, "W", value, "REG-CDMA", null);
     }
@@ -768,7 +771,7 @@ internal sealed class Sa1Registers
         timer.WriteTmc(0x00);
         WriteSbwe(0x00);
         WriteCbwe(0x00);
-        WriteBwpa(0xFF);
+        WriteBwpa(0x00);
         WriteSiwp(0x00);
         WriteCiwp(0x00);
         WriteDcnt(0x00);
@@ -820,7 +823,8 @@ internal sealed class Sa1Registers
             case ArithmeticOp.MultiplyAccumulate:
             {
                 long product = Multiply(ArithmeticParamA, ArithmeticParamB);
-                long sum = ((long)ArithmeticResult << 24 >> 24) + product;
+                long currentResult = (long)(ArithmeticResult << 24) >> 24;
+                long sum = currentResult + product;
                 ArithmeticResult = (ulong)sum & Mask;
                 ArithmeticOverflow = sum < Min || sum > Max;
                 break;
@@ -879,7 +883,11 @@ internal sealed class Sa1Registers
 
     public void NotifySnesDmaStart(uint sourceAddress)
     {
-        if (DmaState == DmaState.CharacterConversion1Active && sourceAddress >= 0x400000 && sourceAddress < 0x500000)
+        bool isBwRamBank = sourceAddress >= 0x400000 && sourceAddress < 0x600000;
+        bool isBwRamWindow = ((sourceAddress >> 16) <= 0x3F || ((sourceAddress >> 16) >= 0x80 && (sourceAddress >> 16) <= 0xBF)) 
+                             && (sourceAddress & 0xFFFF) >= 0x6000 && (sourceAddress & 0xFFFF) < 0x8000;
+
+        if (DmaState == DmaState.CharacterConversion1Active && (isBwRamBank || isBwRamWindow))
         {
             CcdmaTransferInProgress = true;
         }
@@ -892,6 +900,13 @@ internal sealed class Sa1Registers
 
     private void ProgressNormalDma(Sa1Mmc mmc, byte[] rom, byte[] iram, byte[] bwram)
     {
+        if (DmaTerminalCounter == 0)
+        {
+            DmaState = DmaState.Idle;
+            Sa1DmaIrq = true;
+            return;
+        }
+
         byte sourceByte;
         switch (DmaSource)
         {

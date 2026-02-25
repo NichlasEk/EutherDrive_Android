@@ -34,13 +34,17 @@ internal sealed class Sa1
     private bool _inReset = true;
     private bool _lastSa1Reset;
     private bool _lastSa1Wait;
+    private bool _lastSa1Nmi;
 
     public Sa1(byte[] rom, byte[] bwram, bool isPal)
     {
         _rom = rom;
-        if (bwram.Length == 0)
+        if (bwram.Length < 256 * 1024)
         {
-            bwram = new byte[256 * 1024];
+            byte[] newBwram = new byte[256 * 1024];
+            if (bwram.Length > 0)
+                Buffer.BlockCopy(bwram, 0, newBwram, 0, bwram.Length);
+            bwram = newBwram;
         }
         _bwram = bwram;
         _cpu = new CPU.CPU();
@@ -124,7 +128,14 @@ internal sealed class Sa1
                 _cpu.IrqWanted = (_registers.Sa1IrqFromSnesEnabled && _registers.Sa1IrqFromSnes)
                                  || (_registers.TimerIrqEnabled && _timer.IrqPending)
                                  || (_registers.DmaIrqEnabled && _registers.Sa1DmaIrq);
-                _cpu.NmiWanted = _registers.Sa1NmiEnabled && _registers.Sa1Nmi;
+
+                bool currentNmi = _registers.Sa1NmiEnabled && _registers.Sa1Nmi;
+                if (currentNmi && !_lastSa1Nmi)
+                {
+                    _cpu.NmiWanted = true;
+                }
+                _lastSa1Nmi = currentNmi;
+
                 _cpu.Cycle();
             }
             _bwramWaitCycles += _system.BwramWaitCycles;
@@ -151,7 +162,7 @@ internal sealed class Sa1
     {
         return (_registers.SnesIrqFromSa1Enabled && _registers.SnesIrqFromSa1)
                || (_registers.SnesIrqFromTimerEnabled && _registers.SnesIrqFromTimer)
-               || (_registers.SnesIrqFromDmaEnabled && (_registers.CharacterConversionIrq || _registers.Sa1DmaIrq));
+               || (_registers.SnesIrqFromDmaEnabled && ((_registers.CharacterConversionIrqEnabled && _registers.CharacterConversionIrq) || _registers.Sa1DmaIrq));
     }
 
     public void Reset()
@@ -162,6 +173,7 @@ internal sealed class Sa1
         _inReset = true;
         _lastSa1Reset = _registers.Sa1Reset;
         _lastSa1Wait = _registers.Sa1Wait;
+        _lastSa1Nmi = false;
     }
 
     public void NotifyDmaStart(uint sourceAddress)
@@ -257,7 +269,7 @@ internal sealed class Sa1
                 region = "BW-RAM-WIN";
                 resolved = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
                 return true;
-            case (>= 0x40 and <= 0x4F, _):
+            case (>= 0x40 and <= 0x5F, _):
                 region = _registers.CcdmaTransferInProgress ? "CCDMA" : "BW-RAM";
                 resolved = address & (uint)(_bwram.Length - 1);
                 return true;
@@ -298,13 +310,14 @@ internal sealed class Sa1
                 {
                     InterruptVectorSource nmiSource = _registers.SnesNmiVectorSource;
                     InterruptVectorSource irqSource = _registers.SnesIrqVectorSource;
-                    if (bank == 0x00 && offset == 0xFFEA && nmiSource == InterruptVectorSource.IoPorts)
+                    bool isVectorBank = bank == 0x00 || bank == 0x80;
+                    if (isVectorBank && offset == 0xFFEA && nmiSource == InterruptVectorSource.IoPorts)
                         return _registers.SnesNmiVector.Lsb();
-                    if (bank == 0x00 && offset == 0xFFEB && nmiSource == InterruptVectorSource.IoPorts)
+                    if (isVectorBank && offset == 0xFFEB && nmiSource == InterruptVectorSource.IoPorts)
                         return _registers.SnesNmiVector.Msb();
-                    if (bank == 0x00 && offset == 0xFFEE && irqSource == InterruptVectorSource.IoPorts)
+                    if (isVectorBank && offset == 0xFFEE && irqSource == InterruptVectorSource.IoPorts)
                         return _registers.SnesIrqVector.Lsb();
-                    if (bank == 0x00 && offset == 0xFFEF && irqSource == InterruptVectorSource.IoPorts)
+                    if (isVectorBank && offset == 0xFFEF && irqSource == InterruptVectorSource.IoPorts)
                         return _registers.SnesIrqVector.Msb();
 
                     uint? romAddr = _mmc.MapRomAddress(address);
@@ -328,7 +341,7 @@ internal sealed class Sa1
                     TraceBwramWatch("SNES", "R", address, bwramAddr, value, -1);
                     return value;
                 }
-            case (>= 0x40 and <= 0x4F, _):
+            case (>= 0x40 and <= 0x5F, _):
                 if (_registers.CcdmaTransferInProgress)
                     return _registers.NextCcdmaByte(_iram, _bwram);
                 else
@@ -368,16 +381,28 @@ internal sealed class Sa1
                 {
                     uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
+                    {
                         _bwram[(int)bwramAddr] = value;
-                    TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
+                        TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
+                    }
+                    else
+                    {
+                        TraceBwramWatch("SNES", "W(BLOCKED)", address, bwramAddr, value, -1);
+                    }
                     break;
                 }
-            case (>= 0x40 and <= 0x4F, _):
+            case (>= 0x40 and <= 0x5F, _):
                 {
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
+                    {
                         _bwram[(int)bwramAddr] = value;
-                    TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
+                        TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
+                    }
+                    else
+                    {
+                        TraceBwramWatch("SNES", "W(BLOCKED)", address, bwramAddr, value, -1);
+                    }
                     break;
                 }
         }
@@ -457,7 +482,7 @@ internal sealed class Sa1
                 bwramWait = true;
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
-                    uint bwramAddr = ((_mmc.Sa1BwramBaseAddr & 0x3E000) | (address & 0x01FFF)) & (uint)(_bwram.Length - 1);
+                    uint bwramAddr = (_mmc.Sa1BwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
                     byte value = _bwram[(int)bwramAddr];
                     TraceSa1("R", address, value, "BW-RAM-WIN", bwramAddr);
                     TraceBwramWatch("SA1", "R", address, bwramAddr, value, _cpu.ProgramCounter24);
@@ -469,7 +494,7 @@ internal sealed class Sa1
                     TraceSa1("R", address, value, "BW-RAM-BITMAP", bitmapAddr);
                     return value;
                 }
-            case (>= 0x40 and <= 0x4F, _):
+            case (>= 0x40 and <= 0x5F, _):
                 bwramWait = true;
                 {
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
@@ -524,7 +549,7 @@ internal sealed class Sa1
                 bwramWait = true;
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
-                    uint bwramAddr = ((_mmc.Sa1BwramBaseAddr & 0x3E000) | (address & 0x01FFF)) & (uint)(_bwram.Length - 1);
+                    uint bwramAddr = (_mmc.Sa1BwramBaseAddr | (address & 0x01FFF)) & (uint)(_bwram.Length - 1);
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
                         _bwram[(int)bwramAddr] = value;
                     TraceSa1("W", address, value, "BW-RAM-WIN", bwramAddr);
@@ -537,7 +562,7 @@ internal sealed class Sa1
                 }
                 handled = true;
                 break;
-            case (>= 0x40 and <= 0x4F, _):
+            case (>= 0x40 and <= 0x5F, _):
                 bwramWait = true;
                 {
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
