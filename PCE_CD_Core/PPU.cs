@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
@@ -441,6 +442,64 @@ namespace ePceCD
             // Keep serialized scanline/DMA timing as-is.
             // Forcing line 0 + SAT DMA here made HuCard savestates resume at the wrong point.
             FrameReady = false;
+        }
+
+        public void DumpDebugSnapshot(string directory, string prefix)
+        {
+            if (string.IsNullOrWhiteSpace(directory))
+                throw new ArgumentException("Directory cannot be empty.", nameof(directory));
+            if (string.IsNullOrWhiteSpace(prefix))
+                throw new ArgumentException("Prefix cannot be empty.", nameof(prefix));
+
+            Directory.CreateDirectory(directory);
+
+            var vramBytes = new byte[m_VRAM.Length * sizeof(ushort)];
+            Buffer.BlockCopy(m_VRAM, 0, vramBytes, 0, vramBytes.Length);
+            File.WriteAllBytes(Path.Combine(directory, $"{prefix}_vram.bin"), vramBytes);
+
+            var vceBytes = new byte[m_VCE.Length * sizeof(ushort)];
+            Buffer.BlockCopy(m_VCE, 0, vceBytes, 0, vceBytes.Length);
+            File.WriteAllBytes(Path.Combine(directory, $"{prefix}_vce.bin"), vceBytes);
+
+            using (var writer = new StreamWriter(Path.Combine(directory, $"{prefix}_ppu.txt")))
+            {
+                writer.WriteLine($"render_line={m_RenderLine}");
+                writer.WriteLine($"frame_ready={FrameReady}");
+                writer.WriteLine($"dot_clock={m_VCE_DotClock}");
+                writer.WriteLine($"screen_width={SCREEN_WIDTH}");
+                writer.WriteLine($"cycles_per_line={CYCLES_PER_LINE}");
+                writer.WriteLine($"reg_vsr=0x{m_VDC_VSR:X4}");
+                writer.WriteLine($"reg_vdw=0x{m_VDC_VDW:X4}");
+                writer.WriteLine($"reg_hdr=0x{m_VDC_HDR:X4}");
+                writer.WriteLine($"reg_bxr=0x{m_VDC_BXR:X4}");
+                writer.WriteLine($"reg_byr=0x{m_VDC_BYR:X4}");
+                writer.WriteLine($"reg_rcr=0x{m_VDC_RCR:X4}");
+                writer.WriteLine($"reg_mawr=0x{m_VDC_MAWR:X4}");
+                writer.WriteLine($"reg_marr=0x{m_VDC_MARR:X4}");
+                writer.WriteLine($"reg_vsar=0x{m_VDC_VSAR:X4}");
+                writer.WriteLine($"enable_bg={m_VDC_EnableBackground}");
+                writer.WriteLine($"enable_spr={m_VDC_EnableSprites}");
+                writer.WriteLine($"do_sat_dma={m_DoSAT_DMA}");
+                writer.WriteLine($"waiting_irq={m_WaitingIRQ}");
+            }
+
+            using (var writer = new StreamWriter(Path.Combine(directory, $"{prefix}_sprites.txt")))
+            {
+                writer.WriteLine("idx x y pattern mode1 cgpage hflip vflip w h prio pal");
+                for (int i = 0; i < m_SAT.Length; i++)
+                {
+                    var s = m_SAT[i];
+                    writer.WriteLine(
+                        $"{i:D2} {s.m_X:D4} {s.m_Y:D4} 0x{s.m_Pattern:X4} {s.m_Mode1Offset:D2} {(s.m_CGPage ? 1 : 0)} {(s.m_HorizontalFlip ? 1 : 0)} {(s.m_VerticalFlip ? 1 : 0)} {s.m_Width:D1} {s.m_Height:D1} {(s.m_Priority ? 1 : 0)} {s.m_Palette:D2}");
+                }
+            }
+
+            var satWords = new ushort[0x100];
+            for (int i = 0; i < satWords.Length; i++)
+                satWords[i] = m_VRAM[0x7F00 + i];
+            var satBytes = new byte[satWords.Length * sizeof(ushort)];
+            Buffer.BlockCopy(satWords, 0, satBytes, 0, satBytes.Length);
+            File.WriteAllBytes(Path.Combine(directory, $"{prefix}_sat_raw.bin"), satBytes);
         }
 
         private unsafe void DrawScanLine()

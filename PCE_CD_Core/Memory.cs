@@ -66,6 +66,13 @@ namespace ePceCD
         {
             m_Ram[address] = data;
         }
+
+        public byte[] GetSnapshot()
+        {
+            var copy = new byte[m_Ram.Length];
+            Buffer.BlockCopy(m_Ram, 0, copy, 0, m_Ram.Length);
+            return copy;
+        }
     }
 
     [Serializable]
@@ -215,6 +222,13 @@ namespace ePceCD
             {
                 // Ignore save failures to avoid crashing during emulation.
             }
+        }
+
+        public byte[] GetSnapshot()
+        {
+            var copy = new byte[m_Ram.Length];
+            Buffer.BlockCopy(m_Ram, 0, copy, 0, m_Ram.Length);
+            return copy;
         }
     }
 

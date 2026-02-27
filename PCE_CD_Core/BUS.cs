@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace ePceCD
 {
@@ -289,6 +290,53 @@ namespace ePceCD
                     }
                     break;
             }
+        }
+
+        public void DumpDebugSnapshot(string directory, string prefix)
+        {
+            if (string.IsNullOrWhiteSpace(directory))
+                throw new ArgumentException("Directory cannot be empty.", nameof(directory));
+            if (string.IsNullOrWhiteSpace(prefix))
+                throw new ArgumentException("Prefix cannot be empty.", nameof(prefix));
+
+            Directory.CreateDirectory(directory);
+
+            for (int i = 0; i < memory.Length; i++)
+            {
+                if (memory[i] is not RamBank ram)
+                    continue;
+
+                string path = Path.Combine(directory, $"{prefix}_ram_bank_{i:D2}.bin");
+                File.WriteAllBytes(path, ram.GetSnapshot());
+            }
+
+            if (BRAM != null)
+            {
+                File.WriteAllBytes(
+                    Path.Combine(directory, $"{prefix}_bram.bin"),
+                    BRAM.GetSnapshot());
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"rom={RomName}");
+            sb.AppendLine($"cd={CDfile}");
+            sb.AppendLine($"game_id={GameID}");
+            sb.AppendLine($"cpu_clock={CPU.m_Clock}");
+            sb.AppendLine($"irq_timer={m_FiredTIMER}");
+            sb.AppendLine($"irq1_enabled={m_EnableIRQ1}");
+            sb.AppendLine($"irq2_enabled={m_EnableIRQ2}");
+            sb.AppendLine($"timer_enabled={m_EnableTIMER}");
+            sb.AppendLine($"timer_counting={m_TimerCounting}");
+            sb.AppendLine($"timer_value={m_TimerValue}");
+            sb.AppendLine($"timer_overflow={m_TimerOverflow}");
+            sb.AppendLine($"overflow_cycles={m_OverFlowCycles}");
+            sb.AppendLine($"dead_clocks={m_DeadClocks}");
+            sb.AppendLine("mpr_map:");
+            for (int i = 0; i < 8; i++)
+                sb.AppendLine($"  mpr{i}=0x{CPU.PeekMpr(i):X2}");
+            File.WriteAllText(Path.Combine(directory, $"{prefix}_bus.txt"), sb.ToString());
+
+            PPU.DumpDebugSnapshot(directory, prefix);
         }
 
         private byte ReadIRQCtrl(int address)

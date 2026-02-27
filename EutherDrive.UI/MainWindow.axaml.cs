@@ -891,12 +891,16 @@ public partial class MainWindow : Window
 
     private void TriggerDebugSnapshotHotkey()
     {
-        if (_core is not MdTracerAdapter adapter)
-            return;
-
         string dumpDir = Path.Combine(Environment.CurrentDirectory, "logs", "snapshots");
-        string snapshotBase = adapter.CaptureDebugSnapshot(dumpDir);
-        Console.WriteLine($"[SNAPSHOT] {snapshotBase}");
+        string? snapshotBase = null;
+
+        if (_core is MdTracerAdapter md)
+            snapshotBase = md.CaptureDebugSnapshot(dumpDir);
+        else if (_core is PceCdAdapter pce)
+            snapshotBase = pce.CaptureDebugSnapshot(dumpDir);
+
+        if (!string.IsNullOrWhiteSpace(snapshotBase))
+            Console.WriteLine($"[SNAPSHOT] {snapshotBase}");
     }
 
     private void HandleKeyUp(object? sender, KeyEventArgs e)

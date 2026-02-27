@@ -1,5 +1,7 @@
 using System;
+using System.Globalization;
 using System.IO;
+using System.Text;
 using EutherDrive.Core.Savestates;
 using ePceCD;
 
@@ -250,6 +252,43 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         // Unused. Audio is pulled explicitly via GetSamples().
     }
 
+    public string CaptureDebugSnapshot(string? directory = null)
+    {
+        lock (_stateLock)
+        {
+            string dir = string.IsNullOrWhiteSpace(directory)
+                ? Path.Combine(Environment.CurrentDirectory, "logs", "snapshots")
+                : directory;
+            Directory.CreateDirectory(dir);
+
+            string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
+            string prefix = $"pcesnap_{stamp}";
+            string basePath = Path.Combine(dir, prefix);
+
+            EnsureFrameBuffer();
+            DumpFrameBufferToPpm(Path.Combine(dir, $"{prefix}_screen.ppm"));
+
+            _bus.DumpDebugSnapshot(dir, prefix);
+
+            using (var fs = new FileStream(Path.Combine(dir, $"{prefix}_state_raw.bin"), FileMode.Create, FileAccess.Write, FileShare.Read))
+            using (var writer = new BinaryWriter(fs, Encoding.UTF8, leaveOpen: false))
+            {
+                SaveState(writer);
+                writer.Flush();
+            }
+
+            using (var writer = new StreamWriter(Path.Combine(dir, $"{prefix}_meta.txt"), false, Encoding.UTF8))
+            {
+                writer.WriteLine($"stamp={stamp}");
+                writer.WriteLine($"frame={_frameCounter}");
+                writer.WriteLine($"rom={_romPath ?? string.Empty}");
+                writer.WriteLine($"identity={_romIdentity?.HashHex ?? string.Empty}");
+            }
+
+            return basePath;
+        }
+    }
+
     public double GetTargetFps() => DefaultFps;
 
     public void Dispose()
@@ -290,6 +329,32 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
             if (v > short.MaxValue) v = short.MaxValue;
             else if (v < short.MinValue) v = short.MinValue;
             buffer[i] = (short)v;
+        }
+    }
+
+    private void DumpFrameBufferToPpm(string path)
+    {
+        int width = _frameWidth > 0 ? _frameWidth : DefaultWidth;
+        int height = _frameHeight > 0 ? _frameHeight : DefaultHeight;
+        int stride = _frameStride > 0 ? _frameStride : width * 4;
+
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+        using var bw = new BinaryWriter(fs, Encoding.ASCII, leaveOpen: false);
+        bw.Write(Encoding.ASCII.GetBytes($"P6\n{width} {height}\n255\n"));
+
+        for (int y = 0; y < height; y++)
+        {
+            int row = y * stride;
+            for (int x = 0; x < width; x++)
+            {
+                int o = row + x * 4;
+                byte b = _frameBuffer[o + 0];
+                byte g = _frameBuffer[o + 1];
+                byte r = _frameBuffer[o + 2];
+                bw.Write(r);
+                bw.Write(g);
+                bw.Write(b);
+            }
         }
     }
 

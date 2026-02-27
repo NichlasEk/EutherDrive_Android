@@ -356,6 +356,13 @@ namespace ePceCD
             BUS = null!;
         }
 
+        public byte PeekMpr(int index)
+        {
+            if ((uint)index >= 8u)
+                return 0;
+            return m_MPR[index];
+        }
+
         public void RebindBanks()
         {
             m_IOPage = GetBank(0xFF);
