@@ -41,10 +41,11 @@ namespace ePceCD
         private byte messageByte;
         private int currentSector = -1;
         private int lastDataSector = -1;
+        [NonSerialized]
         private FileStream _subFile;
         private long _subSectors;
         [NonSerialized]
-        private readonly List<System.Timers.Timer> _scsiTimers = new List<System.Timers.Timer>();
+        private List<System.Timers.Timer> _scsiTimers = new List<System.Timers.Timer>();
 
         // CD 播放
         private int AudioSS, AudioES, AudioCS;
@@ -161,12 +162,20 @@ namespace ePceCD
         {
             _ADPCM = new ADPCM(this);
             Bus = bus;
+            EnsureRuntimeState();
             InitMixes();
         }
 
         public CDRom()
         {
+            EnsureRuntimeState();
             InitMixes();
+        }
+
+        private void EnsureRuntimeState()
+        {
+            _scsiTimers ??= new List<System.Timers.Timer>();
+            _subFile = null;
         }
 
         private void InitMixes()
@@ -179,7 +188,40 @@ namespace ePceCD
         public void RebindAfterDeserialize(BUS bus)
         {
             Bus = bus;
+            EnsureRuntimeState();
             _ADPCM.BindCdRom(this);
+        }
+
+        public void RestoreExternalFilesAfterDeserialize()
+        {
+            // Track files are restored by BUS.DeSerializable(); restore optional .sub sidecar here.
+            _subFile?.Dispose();
+            _subFile = null;
+
+            string? baseFile = FileTrack?.FileName ?? currentTrack?.FileName ?? tracks.FirstOrDefault()?.FileName;
+            if (string.IsNullOrWhiteSpace(baseFile))
+            {
+                _subSectors = 0;
+                return;
+            }
+
+            string subPath = Path.ChangeExtension(baseFile, ".sub");
+            if (!File.Exists(subPath))
+            {
+                _subSectors = 0;
+                return;
+            }
+
+            try
+            {
+                _subFile = new FileStream(subPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                _subSectors = (_subFile.Length % 96 == 0) ? (_subFile.Length / 96) : 0;
+            }
+            catch
+            {
+                _subFile = null;
+                _subSectors = 0;
+            }
         }
 
         public bool IRQPending()

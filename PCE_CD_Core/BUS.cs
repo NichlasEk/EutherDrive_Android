@@ -132,12 +132,17 @@ namespace ePceCD
             {
                 foreach (CDRom.CDTrack track in CDRom.tracks)
                 {
-                    track.File = new FileStream(track.FileName, FileMode.Open, FileAccess.Read);
+                    if (!string.IsNullOrWhiteSpace(track.FileName))
+                        track.File = new FileStream(track.FileName, FileMode.Open, FileAccess.Read, FileShare.Read);
                 }
 
-                CDRom.FileTrack.File = new FileStream(CDRom.FileTrack.FileName, FileMode.Open, FileAccess.Read);
+                if (CDRom.FileTrack != null && !string.IsNullOrWhiteSpace(CDRom.FileTrack.FileName))
+                    CDRom.FileTrack.File = new FileStream(CDRom.FileTrack.FileName, FileMode.Open, FileAccess.Read, FileShare.Read);
 
-                CDRom.currentTrack.File = new FileStream(CDRom.currentTrack.FileName, FileMode.Open, FileAccess.Read);
+                if (CDRom.currentTrack != null && !string.IsNullOrWhiteSpace(CDRom.currentTrack.FileName))
+                    CDRom.currentTrack.File = new FileStream(CDRom.currentTrack.FileName, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+                CDRom.RestoreExternalFilesAfterDeserialize();
             }
         }
 
