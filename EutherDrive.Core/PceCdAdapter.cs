@@ -91,8 +91,13 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         _frameReady = false;
         _bus.PPU.FrameReady = false;
 
+        int maxTicksPerFrame = MaxTicksPerFrame;
+        string? headlessTicksEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_HEADLESS_MAX_TICKS");
+        if (!string.IsNullOrWhiteSpace(headlessTicksEnv) && int.TryParse(headlessTicksEnv, out int ticksOverride) && ticksOverride > 0)
+            maxTicksPerFrame = ticksOverride;
+
         int safety = 0;
-        while (!_frameReady && safety < MaxTicksPerFrame)
+        while (!_frameReady && safety < maxTicksPerFrame)
         {
             int cycles = _bus.tick();
             _bus.CPU.m_Clock += cycles;

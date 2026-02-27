@@ -26,11 +26,25 @@ namespace ePceCD
         private int _readLogCount;
         private int _readSumCount;
         private int _cdRegLogCount;
+        private int _cdRegLogLimit;
+        private int _lastRead6ExpectedBytes;
+        private int _lastRead6ConsumedBytes;
+        private byte _scsiDataLatch;
+        private int _statusPollCount;
+        private int _progressToken;
+        private int _lastStatusProgressToken;
+        private byte _lastStatusValue;
+        private int _msgInE9dfPolls;
+        private ScsiCommand _lastCmd;
+        private int _lastCmdLen;
+        private byte[] _lastCmdBuf = new byte[16];
         private byte messageByte;
         private int currentSector = -1;
         private int lastDataSector = -1;
         private FileStream _subFile;
         private long _subSectors;
+        [NonSerialized]
+        private readonly List<System.Timers.Timer> _scsiTimers = new List<System.Timers.Timer>();
 
         // CD 播放
         private int AudioSS, AudioES, AudioCS;
@@ -80,6 +94,22 @@ namespace ePceCD
         }
         public CDTrack currentTrack, FileTrack;
         private bool _bramInitialized;
+
+        private struct CdRegAccess
+        {
+            public bool IsWrite;
+            public byte Reg;
+            public byte Val;
+            public ushort Pc;
+            public ScsiPhase Phase;
+        }
+
+        private const int CdRegRingSize = 64;
+        private readonly CdRegAccess[] _cdRegRing = new CdRegAccess[CdRegRingSize];
+        private int _cdRegRingPos;
+        private int _stallDumpCount;
+        private bool _eb5eBusFreeDumped;
+        private bool _busFreeEntryDumped;
 
         public enum CdRomIrqSource
         {
@@ -154,7 +184,8 @@ namespace ePceCD
 
         public bool IRQPending()
         {
-            return (EnabledIrqs & ActiveIrqs) != 0;
+            // Nitro CD_Check_IRQ only considers IRQ request bits 2..6 (mask 0x7C).
+            return (EnabledIrqs & ActiveIrqs & 0x7C) != 0;
         }
 
         private short SoftClip(int sample)
@@ -185,6 +216,10 @@ namespace ePceCD
                             break;
                         case CDLOOPMODE.IRQ:
                             ActiveIrqs |= (byte)CdRomIrqSource.Stop;
+                            // Surface the newly latched STOP IRQ immediately.
+                            UpdateScsiIrqs();
+                            if (TraceVerboseEnabled())
+                                Console.WriteLine($"CD-ROM: STOP IRQ latched active=0x{ActiveIrqs:X2} enabled=0x{EnabledIrqs:X2} pending={(IRQPending() ? 1 : 0)}");
                             CdPlaying = false;
                             return;
                     }
@@ -548,7 +583,26 @@ namespace ePceCD
 
                     track.OffsetStart = baseOffset + fileOffset;
                     if (track.IsLeadIn && !track.HasPregap)
-                        track.OffsetStart += (track.SectorStart - track.LeadInSectorStart) * sectorSize;
+                    {
+                        long leadInDeltaSectors = track.SectorStart - track.LeadInSectorStart;
+                        long offsetSectors = leadInDeltaSectors;
+
+                        // Some split-bin dumps include less INDEX00 than the MSF delta suggests.
+                        // Infer real file-start offset from file length when this is the first track in a file.
+                        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_INDEX00_FILE_OFFSET_FIX") == "1" &&
+                            i == fileStartIndex && i + 1 < tracks.Count &&
+                            !string.Equals(tracks[i + 1].FileName, track.FileName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            long nextIndex1Lba = MSFToLBA(tracks[i + 1].StartPos.MSF_M, tracks[i + 1].StartPos.MSF_S, tracks[i + 1].StartPos.MSF_F);
+                            long cueTrackSectors = Math.Max(0, nextIndex1Lba - index1Lba);
+                            long fileTrackSectors = track.File.Length / sectorSize;
+                            long extraSectorsInFile = fileTrackSectors - cueTrackSectors;
+                            if (extraSectorsInFile >= 0 && extraSectorsInFile <= leadInDeltaSectors)
+                                offsetSectors = extraSectorsInFile;
+                        }
+
+                        track.OffsetStart += offsetSectors * sectorSize;
+                    }
 
                     tracks[i] = track;
                 }
@@ -567,6 +621,37 @@ namespace ePceCD
                 tracks[index - 1] = last;
 
                 discSectorCursor = last.SectorEnd + 1;
+            }
+
+            // Post-pass: for split-bin tracks with INDEX00 in a separate file, align file offset
+            // to the actual extra sectors present in that file (instead of assuming full lead-in).
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_INDEX00_FILE_OFFSET_FIX") == "1")
+            {
+                for (int i = 0; i < tracks.Count - 1; i++)
+                {
+                    var track = tracks[i];
+                    var next = tracks[i + 1];
+                    if (!track.IsLeadIn)
+                        continue;
+                    if (string.Equals(track.FileName, next.FileName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (track.File == null)
+                        continue;
+
+                    int sectorSize = GetTrackSectorSize(track);
+                    long fileSectors = track.File.Length / sectorSize;
+                    long logicalSectors = Math.Max(0, next.SectorStart - track.SectorStart);
+                    long leadInDelta = Math.Max(0, track.SectorStart - track.LeadInSectorStart);
+                    long extraSectors = fileSectors - logicalSectors;
+                    if (extraSectors < 0 || extraSectors > leadInDelta)
+                        continue;
+
+                    long baseOffset = GetFileDataOffset(track.FileName);
+                    track.OffsetStart = baseOffset + extraSectors * sectorSize;
+                    long sectorCount = Math.Max(0, track.SectorEnd - track.SectorStart + 1);
+                    track.OffsetEnd = track.OffsetStart + sectorCount * sectorSize;
+                    tracks[i] = track;
+                }
             }
 
             foreach (var track in tracks)
@@ -707,8 +792,11 @@ namespace ePceCD
         #region SCSI核心逻辑
         private void SetPhase(ScsiPhase phase)
         {
+            ScsiPhase previousPhase = _ScsiPhase;
             _ScsiPhase = phase;
+            bool ackLevel = Signals[(int)ScsiSignal.Ack];
             Array.Clear(Signals, 0, 9);
+            Signals[(int)ScsiSignal.Ack] = ackLevel;
             switch (phase)
             {
                 case ScsiPhase.CMD:
@@ -743,9 +831,25 @@ namespace ePceCD
 
                 case ScsiPhase.BusFree:
                     Signals[(int)ScsiSignal.Bsy] = false;
+                    // BusFree is an idle state; REQ must remain low.
                     Signals[(int)ScsiSignal.Req] = false;
                     break;
             }
+            if (phase == ScsiPhase.BusFree && previousPhase == ScsiPhase.MessageIn && dataBuffer != null)
+            {
+                dataBuffer.Dispose();
+                dataBuffer = null;
+                dataOffset = 0;
+            }
+            if (!_busFreeEntryDumped &&
+                phase == ScsiPhase.BusFree &&
+                Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1")
+            {
+                _busFreeEntryDumped = true;
+                Console.WriteLine("CD-ROM: BusFree entry snapshot");
+                DumpCdRegRing();
+            }
+            MarkProgress();
             UpdateScsiIrqs();
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_PHASE_LOG") == "1")
                 LogPhase(phase);
@@ -760,26 +864,114 @@ namespace ePceCD
             Console.WriteLine($"CD-ROM: Phase {phase} bsy={Signals[(int)ScsiSignal.Bsy]} req={Signals[(int)ScsiSignal.Req]} cd={Signals[(int)ScsiSignal.Cd]} io={Signals[(int)ScsiSignal.Io]} msg={Signals[(int)ScsiSignal.Msg]}");
         }
 
-        private void UpdateScsiIrqs()
+        private bool TraceVerboseEnabled()
         {
-            bool active = Signals[(int)ScsiSignal.Bsy] && Signals[(int)ScsiSignal.Io] && Signals[(int)ScsiSignal.Req];
-            if (active)
+            return Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1";
+        }
+
+        private int GetCdRegLogLimit()
+        {
+            if (_cdRegLogLimit > 0)
+                return _cdRegLogLimit;
+
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CDREG_LOG_LIMIT");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int limit) && limit > 0)
             {
-                if (Signals[(int)ScsiSignal.Cd])
-                {
-                    ActiveIrqs = (byte)((ActiveIrqs | (byte)CdRomIrqSource.DataTransferDone) &
-                        unchecked((byte)~(byte)CdRomIrqSource.DataTransferReady));
-                }
-                else
-                {
-                    ActiveIrqs = (byte)((ActiveIrqs | (byte)CdRomIrqSource.DataTransferReady) &
-                        unchecked((byte)~(byte)CdRomIrqSource.DataTransferDone));
-                }
+                _cdRegLogLimit = limit;
+                return _cdRegLogLimit;
+            }
+
+            _cdRegLogLimit = 200;
+            return _cdRegLogLimit;
+        }
+
+        private void MarkProgress()
+        {
+            _progressToken++;
+            _statusPollCount = 0;
+            _lastStatusProgressToken = _progressToken;
+        }
+
+        private void MaybeLogStatusStall(byte statusValue)
+        {
+            bool verbose = TraceVerboseEnabled();
+
+            if (_progressToken == _lastStatusProgressToken && statusValue == _lastStatusValue)
+            {
+                _statusPollCount++;
             }
             else
             {
-                ActiveIrqs &= unchecked((byte)~((byte)CdRomIrqSource.DataTransferReady | (byte)CdRomIrqSource.DataTransferDone));
+                _statusPollCount = 1;
+                _lastStatusValue = statusValue;
+                _lastStatusProgressToken = _progressToken;
             }
+
+            if (verbose && _statusPollCount == 2048)
+            {
+                string lastCmdHex = _lastCmdLen > 0
+                    ? BitConverter.ToString(_lastCmdBuf, 0, _lastCmdLen)
+                    : "n/a";
+                string bufState = dataBuffer == null
+                    ? "null"
+                    : $"{dataBuffer.Position}/{dataBuffer.Length}";
+                Console.WriteLine($"CD-ROM: STATUS STALL val=0x{statusValue:X2} phase={_ScsiPhase} pc=0x{HuC6280.CurrentPC:X4} cmd=0x{(byte)_lastCmd:X2} cmdbuf={lastCmdHex} buf={bufState} req={Signals[(int)ScsiSignal.Req]} ack={Signals[(int)ScsiSignal.Ack]} bsy={Signals[(int)ScsiSignal.Bsy]} cd={Signals[(int)ScsiSignal.Cd]} io={Signals[(int)ScsiSignal.Io]} msg={Signals[(int)ScsiSignal.Msg]} irqA=0x{ActiveIrqs:X2} irqE=0x{EnabledIrqs:X2}");
+                if (_stallDumpCount < 2)
+                {
+                    _stallDumpCount++;
+                    DumpCdRegRing();
+                }
+            }
+
+        }
+
+        private void RecordCdRegAccess(bool isWrite, int reg, byte val)
+        {
+            // Keep the ring useful during BIOS poll loops by collapsing repeated
+            // status reads at the same PC/phase.
+            if (!isWrite && (reg & 0xFF) == 0x00)
+            {
+                int prevIdx = (_cdRegRingPos - 1 + CdRegRingSize) % CdRegRingSize;
+                CdRegAccess prev = _cdRegRing[prevIdx];
+                if (!prev.IsWrite &&
+                    prev.Reg == 0x00 &&
+                    prev.Val == val &&
+                    prev.Pc == (ushort)HuC6280.CurrentPC &&
+                    prev.Phase == _ScsiPhase)
+                {
+                    return;
+                }
+            }
+
+            _cdRegRing[_cdRegRingPos] = new CdRegAccess
+            {
+                IsWrite = isWrite,
+                Reg = (byte)(reg & 0xFF),
+                Val = val,
+                Pc = (ushort)HuC6280.CurrentPC,
+                Phase = _ScsiPhase
+            };
+            _cdRegRingPos = (_cdRegRingPos + 1) % CdRegRingSize;
+        }
+
+        private void DumpCdRegRing()
+        {
+            Console.WriteLine("CD-ROM: REG RING (newest last)");
+            for (int i = 0; i < CdRegRingSize; i++)
+            {
+                int idx = (_cdRegRingPos + i) % CdRegRingSize;
+                CdRegAccess entry = _cdRegRing[idx];
+                if (entry.Pc == 0 && entry.Reg == 0 && entry.Val == 0 && entry.Phase == 0 && !entry.IsWrite)
+                    continue;
+                string rw = entry.IsWrite ? "WR" : "RD";
+                Console.WriteLine($"  {rw} reg=0x{entry.Reg:X2} val=0x{entry.Val:X2} pc=0x{entry.Pc:X4} phase={entry.Phase}");
+            }
+        }
+
+        private void UpdateScsiIrqs()
+        {
+            // NitroGrafx behavior: transfer IRQ bits are not phase-derived.
+            // They are explicitly set/cleared by command handlers and ACK transitions.
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_IRQ_LOG") == "1")
                 LogIrq();
         }
@@ -796,15 +988,8 @@ namespace ePceCD
         {
             dataBuffer?.Dispose();
             _readLogCount = 0;
-            if (_ScsiPhase == ScsiPhase.Status)
-            {
-                dataBuffer = new MemoryStream(data, 0, 1, writable: false, publiclyVisible: true);
-                dataBuffer.WriteByte(data.Length > 0 ? data[0] : (byte)0);
-            }
-            else
-            {
-                dataBuffer = new MemoryStream(data, 0, data.Length, writable: false, publiclyVisible: true);
-            }
+            MarkProgress();
+            dataBuffer = new MemoryStream(data, 0, data.Length, writable: false, publiclyVisible: true);
             dataOffset = 0;
         }
 
@@ -814,54 +999,108 @@ namespace ePceCD
                 Console.WriteLine($"CD-ROM: SendStatus 0x{status:X2} phase={_ScsiPhase} dataOffset={dataOffset} dataLen={(dataBuffer != null ? dataBuffer.Length : 0)}");
             PrepareResponse(new byte[] { status });
             SetPhase(ScsiPhase.Status);
-
-            System.Timers.Timer endTimer = new System.Timers.Timer(GetScsiDelayMs());
-            endTimer.Elapsed += (s, e) =>
-            {
-                FinishCommand();
-                endTimer.Dispose();
-            };
-            endTimer.AutoReset = false;
-            endTimer.Start();
         }
 
         private void FinishCommand()
         {
             if (_ScsiPhase != ScsiPhase.Status) return;
 
+            // Experimental compatibility path:
+            // Some BIOS command paths (notably 0xDE GetInfo/TOC) appear to expect
+            // immediate BusFree after STATUS without a separate MessageIn byte.
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SKIP_MSGIN_FOR_DE") == "1" &&
+                _lastCmd == ScsiCommand.ReadToc)
+            {
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                    Console.WriteLine("CD-ROM: FinishCommand -> BusFree (skip MessageIn for 0xDE)");
+                ActiveIrqs &= unchecked((byte)~(byte)CdRomIrqSource.DataTransferDone);
+                SetPhase(ScsiPhase.BusFree);
+                dataBuffer?.Dispose();
+                dataBuffer = null;
+                dataOffset = 0;
+                return;
+            }
+
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
                 Console.WriteLine("CD-ROM: FinishCommand -> MessageIn");
             SetPhase(ScsiPhase.MessageIn);
             messageByte = 0x00;
             PrepareResponse(new byte[] { messageByte });
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_DATA_LOG") == "1")
+                Console.WriteLine($"CD-ROM: MSGIN byte=0x{messageByte:X2} pc=0x{HuC6280.CurrentPC:X4}");
 
-            System.Timers.Timer busFreeTimer = new System.Timers.Timer(GetScsiDelayMs());
-            busFreeTimer.Elapsed += (s, e) =>
+            // Some BIOS loops pulse ACK once to leave STATUS and then only drop ACK low.
+            // If ACK is already high when entering MessageIn, coalesce MessageIn ACK handling
+            // so the controller can return to BusFree without requiring a second rising edge.
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_MSGIN_ACK_COALESCE") == "1" &&
+                Signals[(int)ScsiSignal.Ack])
             {
-
                 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
-                    Console.WriteLine("CD-ROM: FinishCommand -> BusFree");
+                    Console.WriteLine("CD-ROM: FinishCommand -> BusFree (coalesced MessageIn ACK)");
+                ActiveIrqs &= unchecked((byte)~(byte)CdRomIrqSource.DataTransferDone);
                 SetPhase(ScsiPhase.BusFree);
-                busFreeTimer.Dispose();
+                dataBuffer?.Dispose();
+                dataBuffer = null;
+                dataOffset = 0;
+            }
+        }
+
+        private void StartScsiTimer(Action callback)
+        {
+            System.Timers.Timer timer = new System.Timers.Timer(GetScsiDelayMs());
+            lock (_scsiTimers)
+            {
+                _scsiTimers.Add(timer);
+            }
+            timer.AutoReset = false;
+            timer.Elapsed += (s, e) =>
+            {
+                try
+                {
+                    callback();
+                }
+                finally
+                {
+                    lock (_scsiTimers)
+                    {
+                        _scsiTimers.Remove(timer);
+                    }
+                    timer.Dispose();
+                }
             };
-            busFreeTimer.AutoReset = false;
-            busFreeTimer.Start();
+            timer.Start();
         }
 
         private static double GetScsiDelayMs()
         {
-            return Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_FAST") == "1" ? 1 : 100;
+            string? custom = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_DELAY_MS");
+            if (!string.IsNullOrWhiteSpace(custom) && double.TryParse(custom, out double ms) && ms >= 0)
+                return ms;
+            // Default to fast/near-immediate handshakes. Slow timing was causing boot-sensitive titles to stall.
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_FAST") == "0")
+                return 100;
+            return 1;
         }
 
         public byte ReadDataPort()
         {
             if (dataBuffer == null || dataBuffer.Position >= dataBuffer.Length)
+            {
+                // Nitro behavior: status/message phase advances on ACK, not on data-port underflow.
+                if (_ScsiPhase == ScsiPhase.DataIn)
+                    SendStatus(0);
                 return 0x00;
+            }
 
             int value = dataBuffer.ReadByte();
             if (value == -1)
                 return 0x00;
 
+            MarkProgress();
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_DATA_LOG") == "1")
+            {
+                Console.WriteLine($"CD-ROM: RD DATA val=0x{value:X2} pos={dataBuffer.Position}/{dataBuffer.Length} phase={_ScsiPhase} pc=0x{HuC6280.CurrentPC:X4}");
+            }
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1" && _readLogCount < 4)
             {
                 Console.WriteLine($"CD-ROM: ReadData byte=0x{value:X2} pos={dataBuffer.Position}/{dataBuffer.Length} phase={_ScsiPhase}");
@@ -869,28 +1108,27 @@ namespace ePceCD
             }
 
             dataOffset++;
+            if (_ScsiPhase == ScsiPhase.DataIn && _lastCmd == ScsiCommand.Read)
+                _lastRead6ConsumedBytes++;
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_REQ_PER_BYTE") == "1" &&
-                (_ScsiPhase == ScsiPhase.DataIn || _ScsiPhase == ScsiPhase.MessageIn))
+                _ScsiPhase == ScsiPhase.DataIn)
             {
                 // Pulse REQ for each byte: drop after read, re-assert if more data remains
                 Signals[(int)ScsiSignal.Req] = false;
                 if (dataOffset < dataBuffer.Length)
                     Signals[(int)ScsiSignal.Req] = true;
+                UpdateScsiIrqs();
             }
             if (dataOffset >= dataBuffer.Length)
             {
                 if (_ScsiPhase == ScsiPhase.DataIn)
                 {
+                    ActiveIrqs &= unchecked((byte)~(byte)CdRomIrqSource.DataTransferReady);
+                    // Latch transfer-done on DataIn completion; cleared on MessageIn ACK.
+                    ActiveIrqs |= (byte)CdRomIrqSource.DataTransferDone;
+                    if (TraceVerboseEnabled() && _lastCmd == ScsiCommand.Read && _lastRead6ExpectedBytes > 0)
+                        Console.WriteLine($"CD-ROM: READ6 consume {_lastRead6ConsumedBytes}/{_lastRead6ExpectedBytes} bytes before STATUS");
                     SendStatus(0);
-                }
-                else if (_ScsiPhase == ScsiPhase.MessageIn &&
-                         Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_MSGIN_EOF") == "1")
-                {
-                    SetPhase(ScsiPhase.BusFree);
-                }
-                else
-                {
-                    FinishCommand();
                 }
             }
 
@@ -899,36 +1137,32 @@ namespace ePceCD
 
         public void WriteDataPort(byte value)
         {
-            if (_ScsiPhase == ScsiPhase.CMD)
-            {
-                CMDBuffer[CMDBufferIndex++] = value;
-                if (CMDBufferIndex == 1)
-                    CMDLength = ScsiCMDLength((ScsiCommand)value);
-
-                if (CMDBufferIndex >= CMDLength)
-                {
-                    ProcessCommand();
-                    CMDBufferIndex = 0;
-                }
-            }
+            // Nitro CD01_W behavior: accept bus data only when IO=0, then consume on ACK.
+            if (Signals[(int)ScsiSignal.Io])
+                return;
+            _scsiDataLatch = value;
         }
 
         private int ScsiCMDLength(ScsiCommand cmd)
         {
-            switch (cmd)
-            {
-                case ScsiCommand.TestUnitReady: return 6;
-                case ScsiCommand.RequestSense: return 10;
-                case ScsiCommand.Read: return 6;
-                case ScsiCommand.ReadToc: return 10;
-                case ScsiCommand.ReadSubCodeQ: return 10;
-                default: return 10;
-            }
+            // Match NitroGrafx framing:
+            // commands below 0x20 are 6-byte CDBs, others are 10-byte CDBs.
+            return (byte)cmd < 0x20 ? 6 : 10;
         }
 
         private void ProcessCommand()
         {
             var cmd = (ScsiCommand)CMDBuffer[0];
+            _lastCmd = cmd;
+            if (cmd != ScsiCommand.Read)
+            {
+                _lastRead6ExpectedBytes = 0;
+                _lastRead6ConsumedBytes = 0;
+            }
+            _lastCmdLen = CMDLength > 0 ? CMDLength : 6;
+            Array.Clear(_lastCmdBuf, 0, _lastCmdBuf.Length);
+            Array.Copy(CMDBuffer, _lastCmdBuf, _lastCmdLen);
+            MarkProgress();
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CMD_LOG") == "1")
                 LogCommand();
             try
@@ -1057,7 +1291,8 @@ namespace ePceCD
                 }
                 track.File.Seek(fileOffset, SeekOrigin.Begin);
                 track.File.Read(sectorBuffer, 0, sectorSize);
-                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_READ_SUM") == "1" && _readSumCount < 4)
+                bool logReadSum = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_READ_SUM") == "1" || TraceVerboseEnabled();
+                if (logReadSum && _readSumCount < 8)
                 {
                     int sumLen = track.Type == TrackType.AUDIO ? sectorSize : MODE1_DATA_SIZE;
                     int sumOff = track.Type == TrackType.AUDIO ? 0 : dataOffset;
@@ -1095,6 +1330,9 @@ namespace ePceCD
             } while (sectorsToRead > 0);
 
             PrepareResponse(data);
+            _lastRead6ExpectedBytes = data.Length;
+            _lastRead6ConsumedBytes = 0;
+            ActiveIrqs |= (byte)CdRomIrqSource.DataTransferReady;
 
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
                 Console.WriteLine($"CD-ROM: READ6 prepared {data.Length} bytes");
@@ -1110,6 +1348,10 @@ namespace ePceCD
             byte format = CMDBuffer[1]; // 参数
             byte trackNumber = FromBCD(CMDBuffer[2]); // 曲目号
             bool toc8 = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_TOC_8B") == "1";
+            bool preferFirstDataTrack = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_TOC_FIRST_DATA") == "1";
+            int firstTrackNum = tracks.Count > 0 ? tracks[0].Number : 1;
+            int firstDataTrackNum = tracks.FirstOrDefault(t => t.Type != TrackType.AUDIO)?.Number ?? firstTrackNum;
+            int reportedFirstTrackNum = preferFirstDataTrack ? firstDataTrackNum : firstTrackNum;
             byte[] toc = new byte[toc8 ? 8 : 4];
             int pos = 0;
             int minutes = 0, seconds = 0, frames = 0;
@@ -1171,7 +1413,9 @@ namespace ePceCD
             switch (format)
             {
                 case 0x00:
-                    toc[pos++] = 0x01;
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                        Console.WriteLine($"CD-ROM: ReadTOC first/last first={firstTrackNum} firstData={firstDataTrackNum} reported={reportedFirstTrackNum}");
+                    toc[pos++] = ToBCD(reportedFirstTrackNum);
                     toc[pos++] = ToBCD(tracks.Count);
                     toc[pos++] = 0x00;
                     toc[pos++] = 0x00;
@@ -1187,7 +1431,7 @@ namespace ePceCD
 
                 case 0x02:
                     if (trackNumber == 0)
-                        trackNumber = 1;
+                        trackNumber = (byte)reportedFirstTrackNum;
 
                     if (trackNumber > tracks.Count())
                     {
@@ -1206,6 +1450,12 @@ namespace ePceCD
                         return;
                     }
                     calcLBA = currentTrack.SectorStart;
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                    {
+                        byte tocMode = currentTrack.Type == TrackType.AUDIO ? (byte)0x00 : (byte)0x04;
+                        Console.WriteLine(
+                            $"CD-ROM: ReadTOC trackInfo req={trackNumber} type={currentTrack.Type} ctrl=0x{currentTrack.Control:X2} adr=0x{currentTrack.Adr:X2} modeByte=0x{tocMode:X2}");
+                    }
                     WriteAddr(calcLBA, includeCtrlAdr: true);
                     Console.WriteLine($"CD-ROM: ReadTOC Track {trackNumber} StartPos {currentTrack.SectorStart}");
                     break;
@@ -1394,6 +1644,8 @@ namespace ePceCD
             AudioES = AudioGetPos();
             CdPlaying = true;
             Console.WriteLine($"CD-ROM: AudioEndPos [{AudioES}] Mode {CMDBuffer[1]:X1}");
+            if (TraceVerboseEnabled())
+                Console.WriteLine($"CD-ROM: AudioEndPos IRQ pre active=0x{ActiveIrqs:X2} enabled=0x{EnabledIrqs:X2}");
             switch (CMDBuffer[1])
             {
                 case 0: CdPlaying = false; break;
@@ -1412,24 +1664,70 @@ namespace ePceCD
             {
                 case 0x00:
                     ret = ScsiStatus();
-                    // NOTE: ACK write-only mode caused BIOS "Just a moment" hang (no progress). Keep behind flag.
-                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ACK_WRITEONLY") == "1")
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_MSGIN_E9DF_WATCHDOG") == "1" &&
+                        _ScsiPhase == ScsiPhase.MessageIn &&
+                        HuC6280.CurrentPC == 0xE9DF &&
+                        (ret == 0xF8 || ret == 0xB8))
                     {
-                        // ACK handled on IRQCTRL writes only
+                        _msgInE9dfPolls++;
+                        if (_msgInE9dfPolls >= 256)
+                        {
+                            if (ret == 0xF8)
+                            {
+                                // Compatibility watchdog: some BIOS paths can stop ACKing in MessageIn.
+                                // Drop REQ and let status read as B8 to avoid permanent 0xF8 spin.
+                                Signals[(int)ScsiSignal.Req] = false;
+                                ret = ScsiStatus();
+                                if (TraceVerboseEnabled())
+                                    Console.WriteLine("CD-ROM: MessageIn watchdog deasserted REQ at PC=0xE9DF");
+                            }
+                            else if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_MSGIN_E9DF_FORCE_BUSFREE") == "1")
+                            {
+                                // Optional second-stage watchdog: if BIOS still spins on B8, force
+                                // MessageIn completion to BusFree.
+                                ActiveIrqs &= unchecked((byte)~(byte)CdRomIrqSource.DataTransferDone);
+                                SetPhase(ScsiPhase.BusFree);
+                                dataBuffer?.Dispose();
+                                dataBuffer = null;
+                                dataOffset = 0;
+                                ret = ScsiStatus();
+                                if (TraceVerboseEnabled())
+                                    Console.WriteLine("CD-ROM: MessageIn watchdog forced BusFree at PC=0xE9DF");
+                            }
+                            _msgInE9dfPolls = 0;
+                        }
                     }
-                    else if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ACK_STRICT") == "1")
+                    else if (_ScsiPhase != ScsiPhase.MessageIn || HuC6280.CurrentPC != 0xE9DF)
                     {
-                        if (Signals[(int)ScsiSignal.Ack])
-                            ProcessACK();
+                        _msgInE9dfPolls = 0;
                     }
-                    else
+                    if (!_eb5eBusFreeDumped &&
+                        _ScsiPhase == ScsiPhase.BusFree &&
+                        HuC6280.CurrentPC == 0xEB5E)
                     {
-                        ProcessACK();
+                        _eb5eBusFreeDumped = true;
+                        Console.WriteLine("CD-ROM: EB5E first BusFree poll snapshot");
+                        DumpCdRegRing();
                     }
+                    MaybeLogStatusStall(ret);
+                    // ACK is host-driven via IRQCTRL writes (reg 0x02).
+                    // Do not synthesize ACK transitions on status polls.
                     break;
 
                 case 0x01:
-                    ret = ReadDataPort();
+                    // Nitro CD01_R returns the current SCSI data latch value.
+                    // It should not advance the transfer pointer.
+                    if (dataBuffer != null && dataBuffer.Length > 0)
+                    {
+                        long oldPos = dataBuffer.Position;
+                        int peek = dataBuffer.ReadByte();
+                        dataBuffer.Position = oldPos;
+                        ret = peek >= 0 ? (byte)peek : (byte)0x00;
+                    }
+                    else
+                    {
+                        ret = 0x00;
+                    }
                     break;
 
                 case 0x02:
@@ -1439,8 +1737,13 @@ namespace ePceCD
                     break;
 
                 case 0x03:
+                    // NitroGrafx CD03_R:
+                    // - reading locks BRAM access
+                    // - returns current IRQ request bits
+                    // - toggles bit1 (L/R status bit) for next read
                     bramLocked = true;
-                    ret = (byte)(ActiveIrqs | 0x10 | 0x02); //ActiveIrqs | 0x10 | (ReadRightChannel ? 0 : 0x02)
+                    ret = ActiveIrqs;
+                    ActiveIrqs ^= 0x02;
                     break;
 
                 case 0x04:
@@ -1448,11 +1751,19 @@ namespace ePceCD
                     break;
 
                 case 0x07:
-                    ret = (byte)(bramLocked ? 0 : 0x80);
+                    // NitroGrafx CD07_R:
+                    // clear Sub-Q ready latch and return 0.
+                    ActiveIrqs = (byte)(ActiveIrqs & ~0x10);
+                    ret = 0x00;
                     break;
 
                 case 0x08:
-                    ret = ReadDataPort();
+                    // NitroGrafx behavior: 0x1808 acts as SCSI data port only in data phase.
+                    // Outside data phase it returns 0.
+                    if (_ScsiPhase == ScsiPhase.DataIn)
+                        ret = ReadDataPort();
+                    else
+                        ret = 0x00;
                     break;
 
                 case 0x09:
@@ -1482,7 +1793,8 @@ namespace ePceCD
                     Console.WriteLine("CD-ROM READ  ACCESS [ 0x{0:X} << 0x{1:X2} ]  |  CPU <0x{2:X}>", address, ret, HuC6280.CurrentPC);
                     break;
             }
-            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CDREG_LOG") == "1" && _cdRegLogCount < 200)
+            RecordCdRegAccess(isWrite: false, reg: address & 0xFF, val: ret);
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CDREG_LOG") == "1" && _cdRegLogCount < GetCdRegLogLimit())
             {
                 _cdRegLogCount++;
                 Console.WriteLine($"CD-ROM: RD reg=0x{(address & 0xFF):X2} val=0x{ret:X2} PC=0x{HuC6280.CurrentPC:X4}");
@@ -1494,7 +1806,8 @@ namespace ePceCD
         public void WriteAt(int address, byte value)
         {
             //Console.WriteLine($"CD-ROM WRITE ACCESS [ 0x{address:X} >> 0x{value:X2} ]");
-            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CDREG_LOG") == "1" && _cdRegLogCount < 200)
+            RecordCdRegAccess(isWrite: true, reg: address & 0xFF, val: value);
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CDREG_LOG") == "1" && _cdRegLogCount < GetCdRegLogLimit())
             {
                 _cdRegLogCount++;
                 Console.WriteLine($"CD-ROM: WR reg=0x{(address & 0xFF):X2} val=0x{value:X2} PC=0x{HuC6280.CurrentPC:X4}");
@@ -1502,9 +1815,18 @@ namespace ePceCD
             switch (address & 0xF)
             {
                 case 0x00: // 状态/控制寄存器 处理硬件复位或其他控制信号
-                    if ((value & 0x80) != 0 && _ScsiPhase != ScsiPhase.DataIn)
+                    // NitroGrafx CD00_W behavior:
+                    // - 0x60 forces bus free (drops SCSI signal state)
+                    // - 0x81 from bus free enters command phase
+                    if (value == 0x60)
                     {
-                        ResetController();
+                        SetPhase(ScsiPhase.BusFree);
+                        break;
+                    }
+
+                    if (value == 0x81 && _ScsiPhase == ScsiPhase.BusFree)
+                    {
+                        CMDBufferIndex = 0;
                         SetPhase(ScsiPhase.CMD);
                     }
                     break;
@@ -1514,17 +1836,19 @@ namespace ePceCD
                     break;
 
                 case 0x02:
+                    bool oldAck = Signals[(int)ScsiSignal.Ack];
+                    bool newAck = (value & 0x80) != 0;
+                    // Nitro CD02_W stores the full low 7-bit mask on every write.
                     EnabledIrqs = (byte)(value & 0x7F);
-                    Signals[(int)ScsiSignal.Ack] = (value & 0x80) != 0;
-                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ACK_WRITEONLY") == "1")
-                    {
-                        if ((value & 0x80) != 0)
-                            ProcessACK();
-                    }
-                    else
-                    {
+                    Signals[(int)ScsiSignal.Ack] = newAck;
+                    bool ackRisingEdge = !oldAck && newAck;
+                    bool ackFallingEdge = oldAck && !newAck;
+                    if (ackRisingEdge)
                         ProcessACK();
-                    }
+                    else if (ackFallingEdge &&
+                             _ScsiPhase == ScsiPhase.MessageIn &&
+                             Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_MSGIN_ACK_FALLING") == "1")
+                        ProcessACK();
                     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
                         Console.WriteLine($"CD-ROM: IRQCTRL write value=0x{value:X2} enabled=0x{EnabledIrqs:X2} ack={(Signals[(int)ScsiSignal.Ack] ? 1 : 0)}");
                     break;
@@ -1536,6 +1860,7 @@ namespace ePceCD
                         ActiveIrqs = 0;
                         bramLocked = false;
                         EnabledIrqs &= 0x8F;
+                        ResetController();
                     }
                     break;
 
@@ -1567,8 +1892,12 @@ namespace ePceCD
         private void ResetController()
         {
             CMDBufferIndex = 0;
+            _scsiDataLatch = 0;
             dataBuffer?.Dispose();
             dataBuffer = null;
+            // Hardware reset must drop host ACK; preserving ACK across phase changes is only
+            // correct during normal command flow, not controller reset.
+            Signals[(int)ScsiSignal.Ack] = false;
             SetPhase(ScsiPhase.BusFree);
             currentSector = -1;
             //Console.WriteLine("CD-ROM Controller Reset");
@@ -1576,23 +1905,59 @@ namespace ePceCD
 
         private void ProcessACK()
         {
-            if (Signals[(int)ScsiSignal.Req] && Signals[(int)ScsiSignal.Ack])
+            // NitroGrafx-style ACK dispatcher:
+            // ACK pulse advances the current SCSI phase state machine.
+            switch (_ScsiPhase)
             {
-                Signals[(int)ScsiSignal.Req] = false;
-                return;
-            }
-            if (Signals[(int)ScsiSignal.Ack]) return;
+                case ScsiPhase.BusFree:
+                    Signals[(int)ScsiSignal.Req] = false;
+                    break;
 
-            Signals[(int)ScsiSignal.Req] = true;
+                case ScsiPhase.CMD:
+                    // Nitro behavior: command byte is latched by 0x1801 write and consumed on ACK.
+                    CMDBuffer[CMDBufferIndex++] = _scsiDataLatch;
+                    if (CMDBufferIndex == 1)
+                        CMDLength = ScsiCMDLength((ScsiCommand)_scsiDataLatch);
+                    if (CMDBufferIndex >= CMDLength)
+                    {
+                        ProcessCommand();
+                        CMDBufferIndex = 0;
+                    }
+                    else
+                    {
+                        Signals[(int)ScsiSignal.Req] = true;
+                    }
+                    break;
+
+                case ScsiPhase.DataIn:
+                    // Nitro behavior: ACK clocks SCSI data while in DataIn.
+                    // Allow opt-out for experiments.
+                    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ACK_CLOCKS_DATA") != "0")
+                        _ = ReadDataPort();
+                    break;
+
+                case ScsiPhase.Status:
+                    FinishCommand();
+                    break;
+
+                case ScsiPhase.MessageIn:
+                    // Nitro sendMessage: clear DataTransferDone and drop to BusFree on ACK.
+                    ActiveIrqs &= unchecked((byte)~(byte)CdRomIrqSource.DataTransferDone);
+                    SetPhase(ScsiPhase.BusFree);
+                    break;
+            }
+
+            UpdateScsiIrqs();
         }
 
         private byte ScsiStatus()
         {
             byte status = 0;
+            bool reqVisible = Signals[(int)ScsiSignal.Req] && !Signals[(int)ScsiSignal.Ack];
             if (Signals[(int)ScsiSignal.Io]) status |= 0x08;
             if (Signals[(int)ScsiSignal.Cd]) status |= 0x10;
             if (Signals[(int)ScsiSignal.Msg]) status |= 0x20;
-            if (Signals[(int)ScsiSignal.Req]) status |= 0x40;
+            if (reqVisible) status |= 0x40;
             if (Signals[(int)ScsiSignal.Bsy]) status |= 0x80;
             return status;
         }

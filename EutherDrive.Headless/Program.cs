@@ -180,11 +180,15 @@ class Program
             bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "scd", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
+            bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase);
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useSnes = false;
                 useN64 = false;
                 useSegaCd = false;
+                usePce = false;
             }
 
             if (useSnes)
@@ -253,6 +257,10 @@ class Program
                     if (frame == 0 || frame == 5 || frame == 10)
                     {
                         DumpSnesFrame(snes, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"), traceSnesFrames);
+                    }
+                    if (snes.System.CPU is KSNES.CPU.CPU cpu)
+                    {
+                        Console.WriteLine($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}");
                     }
                 }
 
@@ -373,6 +381,88 @@ class Program
                     scd.DumpScdRegisters(scdPath);
                     Console.WriteLine($"[HEADLESS] Dumped Sega CD registers to {scdPath}");
                 }
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (usePce)
+            {
+                Console.WriteLine("[HEADLESS] Using PCE CD core");
+                var pce = new PceCdAdapter();
+                pce.LoadRom(romPath);
+
+                bool autoRun = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN") == "1";
+                int autoRunDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_DELAY_FRAMES") ?? 90;
+                int autoRunPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_PULSE_FRAMES") ?? 3;
+                int autoRunPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_PERIOD_FRAMES") ?? 90;
+                int autoRunPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_PULSE_COUNT") ?? 8;
+                bool autoRunLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_LOG") == "1";
+
+                if (autoRun)
+                {
+                    Console.WriteLine(
+                        $"[HEADLESS] PCE auto-run enabled delay={autoRunDelayFrames} pulse={autoRunPulseFrames} period={autoRunPeriodFrames} count={autoRunPulseCount}");
+                }
+
+                static bool ShouldPressStart(int frame, int delay, int pulse, int period, int count)
+                {
+                    if (frame < delay || pulse <= 0 || period <= 0 || count <= 0)
+                        return false;
+                    int rel = frame - delay;
+                    int window = rel / period;
+                    if (window < 0 || window >= count)
+                        return false;
+                    int slot = rel % period;
+                    return slot < pulse;
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> fb0 = pce.GetFrameBuffer(out int w0, out int h0, out int s0);
+                var stats0 = GetFrameStats(fb0, w0, h0, s0);
+                Console.WriteLine($"[HEADLESS] PCE fb_has_content={stats0.HasContent} nonzero_pixels={stats0.NonZeroPixels} first_nonzero=({stats0.FirstX},{stats0.FirstY})");
+                DumpBgraToPpm(fb0, w0, h0, s0, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                bool lastStartPressed = false;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    bool startPressed = autoRun &&
+                        ShouldPressStart(frame, autoRunDelayFrames, autoRunPulseFrames, autoRunPeriodFrames, autoRunPulseCount);
+                    pce.SetInputState(
+                        up: false,
+                        down: false,
+                        left: false,
+                        right: false,
+                        a: false,
+                        b: false,
+                        c: false,
+                        start: startPressed,
+                        x: false,
+                        y: false,
+                        z: false,
+                        mode: false,
+                        padType: PadType.SixButton);
+                    if (autoRunLog && startPressed != lastStartPressed)
+                        Console.WriteLine($"[HEADLESS] PCE auto-run start={(startPressed ? 1 : 0)} frame={frame}");
+                    lastStartPressed = startPressed;
+
+                    pce.RunFrame();
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                    {
+                        ReadOnlySpan<byte> fb = pce.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                        DumpBgraToPpm(fb, w, h, s, ppmPath);
+                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                    }
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> fbOut = pce.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] PCE fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

@@ -62,6 +62,12 @@ namespace ePceCD
         {
             switch (addr & 0x0F)
             {
+                case 0x08: // 地址端口低8位
+                    return (byte)(_addressPort & 0x00FF);
+
+                case 0x09: // 地址端口高8位
+                    return (byte)((_addressPort >> 8) & 0x00FF);
+
                 case 0x0A: // 读取数据端口
                     return ReadBuffer();
 
@@ -290,7 +296,7 @@ namespace ePceCD
                 }
                 else
                 {
-                    _cdRom.ActiveIrqs &= (byte)CDRom.CdRomIrqSource.Stop;
+                    _cdRom.ActiveIrqs &= unchecked((byte)~(byte)CDRom.CdRomIrqSource.Stop);
                 }
             }
         }
@@ -307,7 +313,7 @@ namespace ePceCD
                 }
                 else
                 {
-                    _cdRom.ActiveIrqs &= (byte)CDRom.CdRomIrqSource.Adpcm;
+                    _cdRom.ActiveIrqs &= unchecked((byte)~(byte)CDRom.CdRomIrqSource.Adpcm);
                 }
             }
         }
