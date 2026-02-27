@@ -438,10 +438,9 @@ namespace ePceCD
 
         public void AfterStateLoad()
         {
+            // Keep serialized scanline/DMA timing as-is.
+            // Forcing line 0 + SAT DMA here made HuCard savestates resume at the wrong point.
             FrameReady = false;
-            m_RenderLine = 0;
-            // Force a SAT refresh on next DMA step to stabilize sprites.
-            m_DoSAT_DMA = true;
         }
 
         private unsafe void DrawScanLine()

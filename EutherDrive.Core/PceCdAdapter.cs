@@ -10,7 +10,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
     private const int DefaultWidth = 256;
     private const int DefaultHeight = 240;
     private const double DefaultFps = 60.0;
-    private const int MaxTicksPerFrame = 4000;
+    private const int MaxTicksPerFrame = 20000;
 
     private readonly BUS _bus;
     private byte[] _frameBuffer = new byte[DefaultWidth * DefaultHeight * 4];
@@ -80,44 +80,50 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
 
     public void Reset()
     {
-        _bus.Reset();
-        _frameReady = false;
-        _bus.PPU.FrameReady = false;
-        _frameCounter = 0;
+        lock (_stateLock)
+        {
+            _bus.Reset();
+            _frameReady = false;
+            _bus.PPU.FrameReady = false;
+            _frameCounter = 0;
+        }
     }
 
     public void RunFrame()
     {
-        _frameReady = false;
-        _bus.PPU.FrameReady = false;
-
-        int maxTicksPerFrame = MaxTicksPerFrame;
-        string? headlessTicksEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_HEADLESS_MAX_TICKS");
-        if (!string.IsNullOrWhiteSpace(headlessTicksEnv) && int.TryParse(headlessTicksEnv, out int ticksOverride) && ticksOverride > 0)
-            maxTicksPerFrame = ticksOverride;
-
-        int safety = 0;
-        while (!_frameReady && safety < maxTicksPerFrame)
+        lock (_stateLock)
         {
-            int cycles = _bus.tick();
-            _bus.CPU.m_Clock += cycles;
-            _bus.CPU.cycle();
-            safety++;
-        }
+            _frameReady = false;
+            _bus.PPU.FrameReady = false;
 
-        int samplesPerFrame = GetSamplesPerFrame();
-        EnsureAudioBuffer(samplesPerFrame * 2);
-        _bus.APU.GetSamples(_audioBuffer, _audioBuffer.Length);
-        ApplyMasterVolume(_audioBuffer);
+            int maxTicksPerFrame = MaxTicksPerFrame;
+            string? headlessTicksEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_HEADLESS_MAX_TICKS");
+            if (!string.IsNullOrWhiteSpace(headlessTicksEnv) && int.TryParse(headlessTicksEnv, out int ticksOverride) && ticksOverride > 0)
+                maxTicksPerFrame = ticksOverride;
 
-        if (!_frameReady)
-        {
-            EnsureFrameBuffer();
-            Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
-        }
-        else
-        {
-            _frameCounter++;
+            int safety = 0;
+            while (!_frameReady && safety < maxTicksPerFrame)
+            {
+                int cycles = _bus.tick();
+                _bus.CPU.m_Clock += cycles;
+                _bus.CPU.cycle();
+                safety++;
+            }
+
+            int samplesPerFrame = GetSamplesPerFrame();
+            EnsureAudioBuffer(samplesPerFrame * 2);
+            _bus.APU.GetSamples(_audioBuffer, _audioBuffer.Length);
+            ApplyMasterVolume(_audioBuffer);
+
+            if (!_frameReady)
+            {
+                EnsureFrameBuffer();
+                Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
+            }
+            else
+            {
+                _frameCounter++;
+            }
         }
     }
 
@@ -204,11 +210,13 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
 
             _frameCounter = reader.ReadInt64();
             _masterVolumeScale = reader.ReadSingle();
+            // Deserialize into a deterministic baseline so unsupported/non-serialized runtime
+            // fields don't keep history-dependent values across repeated loads.
+            _bus.Reset();
             StateBinarySerializer.ReadInto(reader, _bus);
             _bus.DeSerializable(this, this);
-            _bus.PPU.RebuildSatFromVram();
             _frameReady = false;
-            _bus.PPU.AfterStateLoad();
+            _bus.PPU.FrameReady = false;
         }
     }
 

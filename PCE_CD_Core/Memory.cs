@@ -6,6 +6,7 @@ namespace ePceCD
     [Serializable]
     public class MemoryBank
     {
+        [NonSerialized]
         protected int m_MemoryPage;
         protected const int MaxUnknownLogs = 20;
         private static int s_UnknownMemLogCount;

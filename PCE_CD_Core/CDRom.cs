@@ -192,6 +192,37 @@ namespace ePceCD
             _ADPCM.BindCdRom(this);
         }
 
+        public void EnterIdleState()
+        {
+            lock (_scsiTimers)
+            {
+                for (int i = 0; i < _scsiTimers.Count; i++)
+                {
+                    try
+                    {
+                        _scsiTimers[i].Stop();
+                        _scsiTimers[i].Dispose();
+                    }
+                    catch
+                    {
+                        // Best-effort cleanup.
+                    }
+                }
+                _scsiTimers.Clear();
+            }
+
+            ActiveIrqs = 0;
+            EnabledIrqs = 0;
+            CdPlaying = false;
+            AudioCS = 0;
+            AudioSS = 0;
+            AudioES = 0;
+            _cdSectorOffsetBytes = -1;
+            _lastRead6ConsumedBytes = 0;
+            _lastRead6ExpectedBytes = 0;
+            ResetController();
+        }
+
         public void RestoreExternalFilesAfterDeserialize()
         {
             // Track files are restored by BUS.DeSerializable(); restore optional .sub sidecar here.

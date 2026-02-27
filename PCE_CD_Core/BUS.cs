@@ -106,10 +106,9 @@ namespace ePceCD
 
         private void RebuildBankList()
         {
-            if (m_BankList == null || m_BankList.Length != 0x100)
-                InitBankList();
-            else
-                MapRomPages(_romPages);
+            // After state-load, `memory` entries may be replaced with newly deserialized RamBank
+            // objects. Recreate the full bank table from `memory` so MPR mappings point to loaded RAM.
+            InitBankList();
         }
 
 
@@ -117,6 +116,8 @@ namespace ePceCD
         {
             RebuildBankList();
             CDRom.RebindAfterDeserialize(this);
+            if (string.IsNullOrEmpty(CDfile))
+                CDRom.EnterIdleState();
             CPU.BUS = this;
 
             PPU.host = render;
@@ -192,6 +193,8 @@ namespace ePceCD
             m_EnableIRQ1 = true;
             m_EnableIRQ2 = true;
             m_EnableTIMER = true;
+            if (string.IsNullOrEmpty(CDfile))
+                CDRom.EnterIdleState();
 
             PPU.Reset();
             m_DeadClocks = 0;
