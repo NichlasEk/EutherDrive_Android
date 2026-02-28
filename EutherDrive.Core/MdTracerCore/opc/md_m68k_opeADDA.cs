@@ -16,15 +16,17 @@ namespace EutherDrive.Core.MdTracerCore
             // Timing: word 8 cykler, long 6 (matchar ditt original)
             g_clock = (w_size == 1) ? 8 : 6;
 
-            // Dst = An (adressregister)
-            g_work_val1.l = g_reg_addr[g_op1].l;
-
             // Src = <ea>
             adressing_func_address(g_op3, g_op4, w_size);
             g_work_val2.l = adressing_func_read(g_op3, g_op4, w_size);
 
             // ADDA.W är sign-extendad till 32 bit före addition; ADDA.L är 32-bit
             g_work_val2.l = get_int_cast(g_work_val2.l, w_size);
+
+            // Dst = An (adressregister).
+            // Read it after EA side effects so cases like ADDA.W (An)+,An
+            // use the architecturally updated An value.
+            g_work_val1.l = g_reg_addr[g_op1].l;
 
             // An = An + src
             g_work_data.l = g_work_val1.l + g_work_val2.l;
