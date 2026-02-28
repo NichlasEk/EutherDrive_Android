@@ -18,8 +18,6 @@ namespace ePceCD
     {
         private static readonly bool TraceVdcRegs =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_LOG"), "1", StringComparison.Ordinal);
-        private static readonly bool AlignSpritePattern =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_PATTERN_ALIGN"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSpriteFetch =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_FETCH_TRACE"), "1", StringComparison.Ordinal);
         private static readonly int TraceSpriteFetchLimit =
@@ -357,15 +355,12 @@ namespace ePceCD
                     int width = (cgx == 0) ? 1 : 2;
                     int height = (cgy == 0) ? 16 : (cgy == 1 ? 32 : 64);
                     int pattern = (sat2 >> 1) & 0x3FF;
-                    if (AlignSpritePattern)
+                    if (width == 2) pattern &= 0xFFFE;
+                    switch (cgy)
                     {
-                        if (width == 2) pattern &= 0xFFFE;
-                        switch (cgy)
-                        {
-                            case 1: pattern &= 0xFFFD; break;
-                            case 2:
-                            case 3: pattern &= 0xFFF9; break;
-                        }
+                        case 1: pattern &= 0xFFFD; break;
+                        case 2:
+                        case 3: pattern &= 0xFFF9; break;
                     }
                     m_SAT[i].m_Y = (sat0 & 0x3FF) - 64;
                     m_SAT[i].m_X = (sat1 & 0x3FF) - 32;
@@ -430,15 +425,12 @@ namespace ePceCD
                 int width = (cgx == 0) ? 1 : 2;
                 int height = (cgy == 0) ? 16 : (cgy == 1 ? 32 : 64);
                 int pattern = (sat2 >> 1) & 0x3FF;
-                if (AlignSpritePattern)
+                if (width == 2) pattern &= 0xFFFE;
+                switch (cgy)
                 {
-                    if (width == 2) pattern &= 0xFFFE;
-                    switch (cgy)
-                    {
-                        case 1: pattern &= 0xFFFD; break;
-                        case 2:
-                        case 3: pattern &= 0xFFF9; break;
-                    }
+                    case 1: pattern &= 0xFFFD; break;
+                    case 2:
+                    case 3: pattern &= 0xFFF9; break;
                 }
                 m_SAT[i].m_Y = (sat0 & 0x3FF) - 64;
                 m_SAT[i].m_X = (sat1 & 0x3FF) - 32;
@@ -495,7 +487,7 @@ namespace ePceCD
                 writer.WriteLine($"reg_mawr=0x{m_VDC_MAWR:X4}");
                 writer.WriteLine($"reg_marr=0x{m_VDC_MARR:X4}");
                 writer.WriteLine($"reg_vsar=0x{m_VDC_VSAR:X4}");
-                writer.WriteLine($"spr_pattern_align={(AlignSpritePattern ? 1 : 0)}");
+                writer.WriteLine("spr_pattern_align=1");
                 writer.WriteLine($"enable_bg={m_VDC_EnableBackground}");
                 writer.WriteLine($"enable_spr={m_VDC_EnableSprites}");
                 writer.WriteLine($"do_sat_dma={m_DoSAT_DMA}");
