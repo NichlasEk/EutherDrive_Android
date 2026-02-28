@@ -2,71 +2,81 @@
 
 ![EutherDrive logo](Icons/logo.jpeg)
 
-EutherDrive är en Mega Drive / Genesis-emulator skriven i C# med [Avalonia UI](https://avaloniaui.net/) som frontend.  
-Nu även med PC Engine (HuCard) och PC Engine CD-stöd.
-Projektet bygger på kärnkod från [MDTracer](https://github.com/sasayaki-japan/MDTracer) (MIT-licens) och utökar den med ett modernt, plattformsoberoende gränssnitt och förbättrad kompatibilitet.
+EutherDrive is a Mega Drive / Genesis emulator written in C# with [Avalonia UI](https://avaloniaui.net/) as the frontend.
+It now also includes PC Engine (HuCard) and PC Engine CD support.
+The project is based on core code from [MDTracer](https://github.com/sasayaki-japan/MDTracer) (MIT license) and extends it with a modern, cross-platform UI and improved compatibility.
 
-Emulatorn spelar också Sega Mastersystem spel. Alla titlar som jag provat fungerar inklusive korean mappers och Codemaster spel.
+The emulator also runs Sega Master System games. All titles tested so far work, including Korean mappers and Codemasters titles.
 
-Grundläggande SNES-stöd är inlagt via SuperNintendoEmulator-projektet (se referens nedan).
-Grundläggande NES stöd är nu integrerat via XamariNES också refererat nedan
+Basic SNES support is integrated via the SuperNintendoEmulator project (see references below).
+Basic NES support is integrated via XamariNES (see references below).
 
-Det grundläggande SNES stödet är påbyggt med specialcip och ny ljudmotor. Dessa är främst portar från jgenesis se referens nedan.
-Emulatorn spelar nu väldigt många SNES titlar
+The SNES implementation has been extended with special chips and a new audio engine, mostly ported from jgenesis.
+EutherDrive now runs many SNES titles.
 
-PC Engine (HuCard) och PC Engine CD stöds nu också. BIOS för CD behövs.
-Du kan lägga BIOS i EutherDrive/bios/ med något av namnen:
-syscard3.pce, syscard2.pce, syscard1.pce, systemcard.pce, bios.pce
-CD-ljudet är WIP.
+PC Engine (HuCard) and PC Engine CD are supported. A CD BIOS is required.
+CD audio support is still work in progress.
 
-Planerat är att också prova att tråda in ProjectPSX i UI för att kunna bygga vidare på och spela PSX titlar
+A future plan is to integrate ProjectPSX into the UI to continue development toward playable PSX titles.
 
-## Funktioner
-- Spelar upp Mega Drive ROM:ar direkt från filväljare
-- Grundläggande SNES-stöd (via separat core)
-- PC Engine (HuCard) och PC Engine CD-stöd
-- Avalonia-baserad frontend (Windows, Linux, macOS, Android)
-- Input-hantering för tangentbord och gamepads
-- Ljudutgång via Pipewire på Linux (planerar android fork)
-- Savestates (3 slots per ROM, en fil per ROM)
-- SRAM-sparning fungerar
-- Interlace-stöd fungerar, inklusive Sonic 2 interlaced-läge
-- PAL/NTSC-switch fungerar
-- Region hantering fungerar
+## Features
+- Loads and runs Mega Drive ROMs directly from a file picker
+- Basic SNES support (via separate core)
+- PC Engine (HuCard) and PC Engine CD support
+- Avalonia-based frontend (Windows, Linux, macOS, Android)
+- Keyboard and gamepad input handling
+- Audio output via Pipewire on Linux (Android fork planned)
+- Savestates (3 slots per ROM, one save file per ROM)
+- SRAM saving
+- Interlace support, including Sonic 2 interlaced mode
+- PAL/NTSC switch
+- Region handling
 
-## Kortkommandon (UI)
-- F1: Fullscreen
-- F5: Save Slot 1
-- F6: Save Slot 2
-- F7: Save Slot 3
-- F8: Load Slot 1
-- F9: Load Slot 2
-- F10: Load Slot 3
+## PC Engine CD BIOS
+You can set the PC Engine CD BIOS in two ways:
+
+1. In the UI (recommended):
+- Open the left menu.
+- Use the `PCE BIOS` section.
+- Click `Select BIOS...` to choose a BIOS file.
+- Use `Clear` to remove the override.
+
+2. Automatic BIOS lookup fallback:
+- Place a BIOS file in `EutherDrive/bios/` with one of these names:
+- `syscard3.pce`, `syscard2.pce`, `syscard1.pce`, `systemcard.pce`, `bios.pce`
+
+Note: explicit Arcade Card emulation is not implemented yet.
+
+## Keyboard Shortcuts (UI)
+- `F1`: Fullscreen
+- `F5`: Save Slot 1
+- `F6`: Save Slot 2
+- `F7`: Save Slot 3
+- `F8`: Load Slot 1
+- `F9`: Load Slot 2
+- `F10`: Load Slot 3
 
 ## Installation
-Bygg från källkod med .NET 8:
+Build from source with .NET 8:
+
 ```bash
-git clone https://github.com/[dittkonto]/EutherDrive
+git clone https://github.com/[your-account]/EutherDrive
 cd EutherDrive
 dotnet build
 dotnet run --project EutherDrive.UI
 ```
 
-## Referenser
-```
-https://github.com/sasayaki-japan/MDTracer-Genesis-megadrive-Emulator
-https://github.com/Kookpot/SuperNintendoEmulator
-https://github.com/unknowall/emuPCE
-https://github.com/enusbaum/XamariNES
-https://github.com/jsgroth/jgenesis
-https://github.com/BluestormDNA/ProjectPSX
-```
+## References
+- https://github.com/sasayaki-japan/MDTracer-Genesis-megadrive-Emulator
+- https://github.com/Kookpot/SuperNintendoEmulator
+- https://github.com/unknowall/emuPCE
+- https://github.com/enusbaum/XamariNES
+- https://github.com/jsgroth/jgenesis
+- https://github.com/BluestormDNA/ProjectPSX
 
-https://github.com/jsgroth/jgenesis/
-
-## Att göra
-Fixa Z80 beroende ljud. något är trasigt
-Implementera kontroller för spelare 2
-Implementera joypad stödet helt
-Skapa overlay för kontroller på android
-Eventuellt göra mer korrekt HBLANK metod enligt TODO.md
+## TODO
+- Fix Z80-dependent audio behavior (currently broken)
+- Implement player 2 controls
+- Complete joypad support
+- Add touchscreen control overlay for Android
+- Potentially implement a more accurate HBLANK method based on `TODO.md`
