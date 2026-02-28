@@ -34,7 +34,7 @@ internal static class DmaSourceDeviceExtensions
             0x00 => DmaSourceDevice.Rom,
             0x01 => DmaSourceDevice.Bwram,
             0x02 => DmaSourceDevice.Iram,
-            _ => DmaSourceDevice.Rom
+            _ => DmaSourceDevice.Iram
         };
     }
 }
@@ -80,7 +80,7 @@ internal enum CharacterConversionType
 
 internal static class CharacterConversionTypeExtensions
 {
-    public static CharacterConversionType FromBit(bool bit) => bit ? CharacterConversionType.One : CharacterConversionType.Two;
+    public static CharacterConversionType FromBit(bool bit) => bit ? CharacterConversionType.Two : CharacterConversionType.One;
 }
 
 internal enum CharacterConversionColorBits
@@ -177,6 +177,7 @@ internal sealed class Sa1Registers
 
     public bool SnesIrqFromSa1;
     public bool SnesIrqFromTimer;
+    public bool SnesNmiFromSa1;
     public InterruptVectorSource SnesIrqVectorSource = InterruptVectorSource.Rom;
     public InterruptVectorSource SnesNmiVectorSource = InterruptVectorSource.Rom;
     public byte MessageToSnes;
@@ -184,6 +185,7 @@ internal sealed class Sa1Registers
     public bool SnesIrqFromSa1Enabled;
     public bool SnesIrqFromTimerEnabled;
     public bool SnesIrqFromDmaEnabled;
+    public bool SnesNmiEnabled;
 
     public bool Sa1IrqFromSnesEnabled;
     public bool TimerIrqEnabled;
@@ -228,7 +230,7 @@ internal sealed class Sa1Registers
 
     public uint VarlenBitStartAddress;
     public ulong VarlenBitData;
-    public byte VarlenBitsRemaining;
+    public int VarlenBitsRemaining;
 
     public DmaState DmaState = DmaState.Idle;
     public bool CcdmaTransferInProgress;
@@ -237,19 +239,43 @@ internal sealed class Sa1Registers
 
     private DmaState _lastDmaState = DmaState.Idle;
 
-    public byte? SnesRead(uint address)
+    public byte? SnesRead(uint address, Sa1Timer timer, Sa1Mmc mmc, byte[] rom)
     {
-        if ((address & 0xFFFF) != 0x2300)
+        uint addr = address & 0xFFFF;
+        if (addr < 0x2300 || addr > 0x230F)
             return null;
-        byte value = ReadSfr();
+
+        byte value = addr switch
+        {
+            0x2300 => ReadSfr(),
+            0x2301 => ReadCfr(timer),
+            0x2302 => timer.ReadHcrLow(),
+            0x2303 => timer.ReadHcrHigh(),
+            0x2304 => timer.ReadVcrLow(),
+            0x2305 => timer.ReadVcrHigh(),
+            >= 0x2306 and <= 0x230A => ReadMr(address),
+            0x230B => ReadOf(),
+            0x230C => ReadVdpLow(),
+            0x230D => ReadVdpHigh(mmc, rom),
+            _ => 0
+        };
+
         if (Sa1Trace.IsEnabled)
-            Sa1Trace.Log("SNES", 0, -1, address & 0xFFFFFF, "R", value, "REG-SFR", null);
+        {
+            string name = addr switch {
+                0x2300 => "SFR", 0x2301 => "CFR", 0x2302 => "HCRL", 0x2303 => "HCRH",
+                0x2304 => "VCRL", 0x2305 => "VCRH", 0x230B => "OF", 0x230C => "VDPL", 0x230D => "VDPH",
+                >= 0x2306 and <= 0x230A => "MR", _ => "REG"
+            };
+            Sa1Trace.Log("SNES", 0, -1, address & 0xFFFFFF, "R", value, $"REG-{name}", null);
+        }
         return value;
     }
 
-    public byte Sa1Read(uint address, Sa1Timer timer)
+    public byte Sa1Read(uint address, Sa1Timer timer, Sa1Mmc mmc, byte[] rom)
     {
-        byte value = (address & 0xFFFF) switch
+        uint addr = address & 0xFFFF;
+        byte value = addr switch
         {
             0x2301 => ReadCfr(timer),
             0x2302 => timer.ReadHcrLow(),
@@ -259,12 +285,11 @@ internal sealed class Sa1Registers
             >= 0x2306 and <= 0x230A => ReadMr(address),
             0x230B => ReadOf(),
             0x230C => ReadVdpLow(),
-            0x230D => ReadVdpHigh(),
+            0x230D => ReadVdpHigh(mmc, rom),
             _ => 0
         };
         if (Sa1Trace.IsEnabled)
         {
-            uint addr = address & 0xFFFF;
             string name = addr switch {
                 0x2301 => "CFR", 0x2302 => "HCRL", 0x2303 => "HCRH",
                 0x2304 => "VCRL", 0x2305 => "VCRH", 0x230B => "OF", 0x230C => "VDPL", 0x230D => "VDPH",
@@ -275,34 +300,26 @@ internal sealed class Sa1Registers
         return value;
     }
 
-    public void SnesWrite(uint address, byte value, Sa1Mmc mmc)
+    public void SnesWrite(uint address, byte value, Sa1Mmc mmc, byte[] rom, byte[] iram)
     {
-        if (Sa1Trace.IsEnabled)
+        uint addr = address & 0xFFFF;
+        if (Sa1Trace.IsEnabled || TraceSa1Regs)
         {
-            switch (address & 0xFFFF)
+            string name = addr switch
             {
-                case 0x2200: TraceReg("SNES", "CCNT", address, value); break;
-                case 0x2201: TraceReg("SNES", "SIE", address, value); break;
-                case 0x2202: TraceReg("SNES", "SIC", address, value); break;
-                case 0x2203: TraceReg("SNES", "CRV-L", address, value); break;
-                case 0x2204: TraceReg("SNES", "CRV-H", address, value); break;
-                case 0x2205: TraceReg("SNES", "CNV-L", address, value); break;
-                case 0x2206: TraceReg("SNES", "CNV-H", address, value); break;
-                case 0x2207: TraceReg("SNES", "CIV-L", address, value); break;
-                case 0x2208: TraceReg("SNES", "CIV-H", address, value); break;
-                case 0x2220: TraceReg("SNES", "CXB", address, value); break;
-                case 0x2221: TraceReg("SNES", "DXB", address, value); break;
-                case 0x2222: TraceReg("SNES", "EXB", address, value); break;
-                case 0x2223: TraceReg("SNES", "FXB", address, value); break;
-                case 0x2224: TraceReg("SNES", "BMAPS", address, value); break;
-                case 0x2226: TraceReg("SNES", "SBWE", address, value); break;
-                case 0x2228: TraceReg("SNES", "BWPA", address, value); break;
-                case 0x2229: TraceReg("SNES", "SIWP", address, value); break;
-            }
+                0x2200 => "CCNT", 0x2201 => "SIE", 0x2202 => "SIC",
+                0x2203 => "CRV-L", 0x2204 => "CRV-H", 0x2205 => "CNV-L", 0x2206 => "CNV-H",
+                0x2207 => "CIV-L", 0x2208 => "CIV-H",
+                0x2220 => "CXB", 0x2221 => "DXB", 0x2222 => "EXB", 0x2223 => "FXB",
+                0x2224 => "BMAP", 0x2225 => "BMAPS", 0x2226 => "SBWE", 0x2227 => "CBWE",
+                0x2228 => "BWPA", 0x2229 => "SIWP", 0x222A => "CIWP",
+                _ => null
+            };
+            if (name != null)
+                LogReg($"[SA1-REGS] SNES W {name}=0x{value:X2} @ 0x{addr:X4}");
         }
-        if (TraceSa1Regs)
-            LogReg($"[SA1-REGS] SNES WR addr=0x{address & 0xFFFF:X4} val=0x{value:X2}");
-        switch (address & 0xFFFF)
+        
+        switch (addr)
         {
             case 0x2200: WriteCcnt(value); break;
             case 0x2201: WriteSie(value); break;
@@ -328,31 +345,30 @@ internal sealed class Sa1Registers
             case 0x2235: WriteDdaLow(value); break;
             case 0x2236: WriteDdaMid(value); break;
             case 0x2237: WriteDdaHigh(value); break;
+            case 0x2238: WriteDtcLow(value); break;
+            case 0x2239: WriteDtcHigh(value); break;
+            case 0x223F: mmc.WriteBbf(value); break;
         }
     }
 
     public void Sa1Write(uint address, byte value, Sa1Timer timer, Sa1Mmc mmc, byte[] rom, byte[] iram)
     {
-        if (Sa1Trace.IsEnabled)
+        uint addr = address & 0xFFFF;
+        if (Sa1Trace.IsEnabled || TraceSa1Regs)
         {
-            switch (address & 0xFFFF)
+            string name = addr switch
             {
-                case 0x2209: TraceReg("SA1", "SCNT", address, value); break;
-                case 0x220A: TraceReg("SA1", "CIE", address, value); break;
-                case 0x220B: TraceReg("SA1", "CIC", address, value); break;
-                case 0x220C: TraceReg("SA1", "SNV-L", address, value); break;
-                case 0x220D: TraceReg("SA1", "SNV-H", address, value); break;
-                case 0x220E: TraceReg("SA1", "SIV-L", address, value); break;
-                case 0x220F: TraceReg("SA1", "SIV-H", address, value); break;
-                case 0x2225: TraceReg("SA1", "BMAP", address, value); break;
-                case 0x2227: TraceReg("SA1", "CBWE", address, value); break;
-                case 0x222A: TraceReg("SA1", "CIWP", address, value); break;
-                case 0x223F: TraceReg("SA1", "BBF", address, value); break;
-            }
+                0x2209 => "SCNT", 0x220A => "CIE", 0x220B => "CIC",
+                0x220C => "SNV-L", 0x220D => "SNV-H", 0x220E => "SIV-L", 0x220F => "SIV-H",
+                0x2225 => "BMAPS", 0x2230 => "DCNT", 0x2231 => "CDMA",
+                0x223F => "BBF", 0x2250 => "MCNT", 0x2258 => "VDA-L",
+                _ => null
+            };
+            if (name != null)
+                LogReg($"[SA1-REGS] SA1  W {name}=0x{value:X2} @ 0x{addr:X4}");
         }
-        if (TraceSa1Regs)
-            LogReg($"[SA1-REGS] SA1 WR addr=0x{address & 0xFFFF:X4} val=0x{value:X2}");
-        switch (address & 0xFFFF)
+        
+        switch (addr)
         {
             case 0x2209: WriteScnt(value); break;
             case 0x220A: WriteCie(value); break;
@@ -396,11 +412,12 @@ internal sealed class Sa1Registers
 
     private byte ReadSfr()
     {
-        return (byte)((SnesIrqFromSa1 ? 0x80 : 0)
-            | (SnesIrqFromTimer ? 0x40 : 0)
-            | ((CharacterConversionIrq || Sa1DmaIrq) ? 0x20 : 0)
-            | (SnesNmiVectorSource.ToBit() ? 0x10 : 0)
-            | (MessageToSnes & 0x0F));
+        byte value = (byte)(MessageToSnes & 0x0F);
+        if (SnesIrqFromSa1) value |= 0x80;
+        if (SnesIrqFromTimer) value |= 0x40;
+        if (CharacterConversionIrq) value |= 0x20;
+        if (SnesNmiFromSa1) value |= 0x10;
+        return value;
     }
 
     private byte ReadCfr(Sa1Timer timer)
@@ -420,8 +437,37 @@ internal sealed class Sa1Registers
 
     private byte ReadOf() => (byte)(ArithmeticOverflow ? 0x80 : 0x00);
 
+    public byte VarlenBitControl;
+
     private byte ReadVdpLow() => ((ushort)VarlenBitData).Lsb();
-    private byte ReadVdpHigh() => ((ushort)VarlenBitData).Msb();
+    private byte ReadVdpHigh(Sa1Mmc mmc, byte[] rom)
+    {
+        byte value = ((ushort)VarlenBitData).Msb();
+        if (!VarlenBitControl.Bit(7))
+        {
+            ShiftVbd(mmc, rom);
+        }
+        return value;
+    }
+
+    private void ShiftVbd(Sa1Mmc mmc, byte[] rom)
+    {
+        int shift = (VarlenBitControl & 0x0F) == 0 ? 16 : (VarlenBitControl & 0x0F);
+        VarlenBitData >>= shift;
+        VarlenBitsRemaining -= shift;
+
+        while (VarlenBitsRemaining <= 16)
+        {
+            uint romAddr = mmc.MapRomAddress(VarlenBitStartAddress) ?? 0;
+            byte lsb = romAddr < rom.Length ? rom[romAddr] : (byte)0;
+            byte msb = romAddr + 1 < rom.Length ? rom[romAddr + 1] : (byte)0;
+            ushort word = (ushort)(lsb | (msb << 8));
+
+            VarlenBitData |= (ulong)word << VarlenBitsRemaining;
+            VarlenBitStartAddress = (VarlenBitStartAddress + 2) & 0xFFFFFF;
+            VarlenBitsRemaining += 16;
+        }
+    }
 
     private void WriteCcnt(byte value)
     {
@@ -445,6 +491,7 @@ internal sealed class Sa1Registers
         SnesIrqFromSa1Enabled = value.Bit(7);
         SnesIrqFromTimerEnabled = value.Bit(6);
         SnesIrqFromDmaEnabled = value.Bit(5);
+        SnesNmiEnabled = value.Bit(4);
     }
 
     private void WriteSic(byte value)
@@ -454,12 +501,9 @@ internal sealed class Sa1Registers
         if (value.Bit(6))
             SnesIrqFromTimer = false;
         if (value.Bit(5))
-        {
             CharacterConversionIrq = false;
-            Sa1DmaIrq = false;
-        }
-        if (TraceSa1Regs && value.Bit(7))
-            LogReg("[SA1-REGS] SIC cleared SNES IRQ");
+        if (value.Bit(4))
+            SnesNmiFromSa1 = false;
     }
 
     private void WriteCie(byte value)
@@ -505,7 +549,7 @@ internal sealed class Sa1Registers
     private void WriteSivLow(byte value) => Sa1Utils.SetLsb(ref SnesIrqVector, value);
     private void WriteSivHigh(byte value) => Sa1Utils.SetMsb(ref SnesIrqVector, value);
 
-    private static void LogReg(string line)
+    public void LogReg(string line)
     {
         lock (TraceSa1RegsLock)
         {
@@ -535,12 +579,14 @@ internal sealed class Sa1Registers
     {
         if (value.Bit(7))
             SnesIrqFromSa1 = true;
+        if (value.Bit(4))
+            SnesNmiFromSa1 = true;
         SnesIrqVectorSource = InterruptVectorSourceExtensions.FromBit(value.Bit(6));
         SnesNmiVectorSource = InterruptVectorSourceExtensions.FromBit(value.Bit(4));
 
         MessageToSnes = (byte)(value & 0x0F);
         if (TraceSa1Regs)
-            LogReg($"[SA1-REGS] SCNT=0x{value:X2} snes_irq={(SnesIrqFromSa1 ? 1 : 0)} msg=0x{MessageToSnes:X2}");
+            LogReg($"[SA1-REGS] SCNT=0x{value:X2} snes_irq={(SnesIrqFromSa1 ? 1 : 0)} snes_nmi={(SnesNmiFromSa1 ? 1 : 0)} msg=0x{MessageToSnes:X2}");
     }
 
     private void WriteSbwe(byte value)
@@ -692,11 +738,8 @@ internal sealed class Sa1Registers
     private void WriteMcnt(byte value)
     {
         ArithmeticOp = ArithmeticOpExtensions.FromByte(value);
-        if (ArithmeticOp == ArithmeticOp.MultiplyAccumulate)
-        {
-            ArithmeticResult = 0;
+        if (value.Bit(1))
             ArithmeticOverflow = false;
-        }
     }
 
     private void WriteMaLow(byte value) => Sa1Utils.SetLsb(ref ArithmeticParamA, value);
@@ -717,23 +760,10 @@ internal sealed class Sa1Registers
 
     private void WriteVbd(byte value, Sa1Mmc mmc, byte[] rom)
     {
-        if (VarlenBitsRemaining == 0)
-            return;
-
-        int shift = (value & 0x0F) == 0 ? 16 : (value & 0x0F);
-        VarlenBitData >>= shift;
-        VarlenBitsRemaining -= (byte)shift;
-
-        if (VarlenBitsRemaining <= 16)
+        VarlenBitControl = value;
+        if (value.Bit(7))
         {
-            uint romAddr = mmc.MapRomAddress(VarlenBitStartAddress) ?? 0;
-            byte lsb = romAddr < rom.Length ? rom[romAddr] : (byte)0;
-            byte msb = romAddr + 1 < rom.Length ? rom[romAddr + 1] : (byte)0;
-            ushort word = (ushort)(lsb | (msb << 8));
-
-            VarlenBitData |= (ulong)word << VarlenBitsRemaining;
-            VarlenBitStartAddress = (VarlenBitStartAddress + 2) & 0xFFFFFF;
-            VarlenBitsRemaining += 16;
+            ShiftVbd(mmc, rom);
         }
     }
 
@@ -742,16 +772,9 @@ internal sealed class Sa1Registers
     private void WriteVdaHigh(byte value, Sa1Mmc mmc, byte[] rom)
     {
         Sa1Utils.SetHighByte(ref VarlenBitStartAddress, value);
-        uint? romAddr = mmc.MapRomAddress(VarlenBitStartAddress);
-        if (romAddr.HasValue)
-        {
-            uint addr = romAddr.Value;
-            byte lsb = addr < rom.Length ? rom[addr] : (byte)0;
-            byte msb = addr + 1 < rom.Length ? rom[addr + 1] : (byte)0;
-            VarlenBitData = (ushort)(lsb | (msb << 8));
-            VarlenBitStartAddress = (VarlenBitStartAddress + 2) & 0xFFFFFF;
-            VarlenBitsRemaining = 16;
-        }
+        VarlenBitData = 0;
+        VarlenBitsRemaining = 0;
+        ShiftVbd(mmc, rom);
     }
 
     public bool CanWriteBwram(uint bwramAddr, bool isSnes)
@@ -772,11 +795,24 @@ internal sealed class Sa1Registers
         WriteSbwe(0x00);
         WriteCbwe(0x00);
         WriteBwpa(0x00);
-        WriteSiwp(0x00);
-        WriteCiwp(0x00);
+        WriteSiwp(0xFF);
+        WriteCiwp(0xFF);
         WriteDcnt(0x00);
         WriteCdma(0x80);
         WriteMcnt(0x00);
+
+        ArithmeticParamA = 0;
+        ArithmeticParamB = 0;
+        ArithmeticResult = 0;
+        ArithmeticOverflow = false;
+
+        VarlenBitData = 0;
+        VarlenBitsRemaining = 0;
+
+        DmaState = DmaState.Idle;
+        CcdmaTransferInProgress = false;
+        CharacterConversionIrq = false;
+        Sa1DmaIrq = false;
 
         mmc.WriteCxb(0x00);
         mmc.WriteDxb(0x01);
@@ -841,7 +877,7 @@ internal sealed class Sa1Registers
     {
         if (b == 0)
         {
-            return a.SignBit() ? ((short)1, (ushort)(~a + 1)) : ((short)-1, a);
+            return ((short)-1, a);
         }
 
         int dividend = (short)a;
@@ -900,13 +936,6 @@ internal sealed class Sa1Registers
 
     private void ProgressNormalDma(Sa1Mmc mmc, byte[] rom, byte[] iram, byte[] bwram)
     {
-        if (DmaTerminalCounter == 0)
-        {
-            DmaState = DmaState.Idle;
-            Sa1DmaIrq = true;
-            return;
-        }
-
         byte sourceByte;
         switch (DmaSource)
         {

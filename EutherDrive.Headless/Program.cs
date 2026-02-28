@@ -260,7 +260,8 @@ class Program
                     }
                     if (snes.System.CPU is KSNES.CPU.CPU cpu)
                     {
-                        Console.WriteLine($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}");
+                        string sa1Pc = snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1 && sa1.GetCpu() is KSNES.CPU.CPU sa1Cpu ? $" SA1 PC=0x{sa1Cpu.ProgramCounter24:X6}" : "";
+                        Console.WriteLine($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}");
                     }
                 }
 
@@ -397,6 +398,17 @@ class Program
                 int autoRunPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_PERIOD_FRAMES") ?? 90;
                 int autoRunPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_PULSE_COUNT") ?? 8;
                 bool autoRunLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_LOG") == "1";
+                string? pceTracePath = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_TRACE_FILE");
+                StreamWriter? pceTraceWriter = null;
+                if (!string.IsNullOrWhiteSpace(pceTracePath))
+                {
+                    string fullPath = Path.IsPathRooted(pceTracePath)
+                        ? pceTracePath
+                        : Path.Combine(dumpDir, pceTracePath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(fullPath) ?? dumpDir);
+                    pceTraceWriter = new StreamWriter(fullPath, append: false, Encoding.UTF8);
+                    Console.WriteLine($"[HEADLESS] PCE trace file: {fullPath}");
+                }
 
                 if (autoRun)
                 {
@@ -446,6 +458,8 @@ class Program
                     lastStartPressed = startPressed;
 
                     pce.RunFrame();
+                    if (pceTraceWriter != null)
+                        pceTraceWriter.WriteLine(pce.BuildDeterminismTraceLine(frame));
 
                     if (frame == 0 || frame == 5 || frame == 10)
                     {
@@ -463,6 +477,8 @@ class Program
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
                 Console.WriteLine($"[HEADLESS] PCE fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                pceTraceWriter?.Flush();
+                pceTraceWriter?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -954,6 +970,77 @@ class Program
                 ?? Path.GetDirectoryName(romPath)
                 ?? ".";
             Directory.CreateDirectory(dumpDir);
+
+            string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
+            bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase);
+
+            if (usePce)
+            {
+                var pce = new PceCdAdapter();
+                pce.LoadRom(romPath);
+
+                int? slotOverridePce = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadPce = TryLoadSavestatePayload(savestatePath, pce.RomIdentity, slotOverridePce, out var pceError);
+                if (payloadPce == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {pceError}");
+                    return 1;
+                }
+
+                using (var pceStateStream = new MemoryStream(payloadPce, writable: false))
+                using (var pceStateReader = new BinaryReader(pceStateStream))
+                    pce.LoadState(pceStateReader);
+
+                string? pceTracePath = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_TRACE_FILE");
+                StreamWriter? pceTraceWriter = null;
+                if (!string.IsNullOrWhiteSpace(pceTracePath))
+                {
+                    string fullPath = Path.IsPathRooted(pceTracePath)
+                        ? pceTracePath
+                        : Path.Combine(dumpDir, pceTracePath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(fullPath) ?? dumpDir);
+                    pceTraceWriter = new StreamWriter(fullPath, append: false, Encoding.UTF8);
+                    Console.WriteLine($"[HEADLESS] PCE trace file: {fullPath}");
+                }
+
+                bool autoRun = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN") == "1";
+                int autoRunDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_DELAY_FRAMES") ?? 90;
+                int autoRunPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_PULSE_FRAMES") ?? 3;
+                int autoRunPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_PERIOD_FRAMES") ?? 90;
+                int autoRunPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN_PULSE_COUNT") ?? 8;
+
+                static bool ShouldPressStartPce(int frame, int delay, int pulse, int period, int count)
+                {
+                    if (frame < delay || pulse <= 0 || period <= 0 || count <= 0)
+                        return false;
+                    int rel = frame - delay;
+                    int window = rel / period;
+                    if (window < 0 || window >= count)
+                        return false;
+                    return (rel % period) < pulse;
+                }
+
+                pce.GetFrameBuffer(out int w0, out int h0, out int s0);
+                pce.CaptureDebugSnapshot(dumpDir);
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    bool startPressed = autoRun &&
+                        ShouldPressStartPce(frame, autoRunDelayFrames, autoRunPulseFrames, autoRunPeriodFrames, autoRunPulseCount);
+                    pce.SetInputState(
+                        up: false, down: false, left: false, right: false,
+                        a: false, b: false, c: false, start: startPressed,
+                        x: false, y: false, z: false, mode: false,
+                        padType: PadType.SixButton);
+                    pce.RunFrame();
+                    if (pceTraceWriter != null)
+                        pceTraceWriter.WriteLine(pce.BuildDeterminismTraceLine(frame));
+                }
+                pceTraceWriter?.Flush();
+                pceTraceWriter?.Dispose();
+                return 0;
+            }
 
             var adapter = new MdTracerAdapter();
             adapter.LoadRom(romPath);

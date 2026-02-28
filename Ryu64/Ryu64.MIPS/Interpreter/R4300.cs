@@ -32,6 +32,10 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_BOOT_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceBootWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_BOOT_WINDOW_LIMIT", 4000);
         private static int _traceBootWindowCount = 0;
+        private static readonly bool TraceEarlyLoopWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_EARLY_LOOP"), "1", StringComparison.Ordinal);
+        private static readonly int TraceEarlyLoopWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_EARLY_LOOP_LIMIT", 6000);
+        private static int _traceEarlyLoopWindowCount = 0;
         private static readonly bool TraceEretWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_ERET_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceEretWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_ERET_WINDOW_LIMIT", 200);
@@ -57,10 +61,15 @@ namespace Ryu64.MIPS
         private const ulong CauseExcCodeRi = 10UL << 2;
         private static readonly bool UnknownOpcodeAsNop =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_UNKNOWN_AS_NOP"), "1", StringComparison.Ordinal);
-        // Default to strict VR4300 behavior: when BEV is set, use ROM exception vectors (BFC0...).
-        // Set EUTHERDRIVE_N64_STRICT_BEV_VECTORS=0 to force legacy RAM-vector behavior.
+        private static readonly bool AllowInstructionLowPhysicalFallbackOnTlbMiss =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_STRICT_ITLB"), "1", StringComparison.Ordinal);
+        private static readonly bool AlignMisalignedPcDuringBringup =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_ALIGN_MISALIGNED_PC"), "0", StringComparison.Ordinal);
+        // Bring-up default: prefer RAM vectors when BEV is set because PIF/boot ROM exception
+        // vectors are not fully emulated yet. Set EUTHERDRIVE_N64_STRICT_BEV_VECTORS=1 to force
+        // strict VR4300 ROM-vector behavior.
         private static readonly bool UseRamVectorsWhenBevSet =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_STRICT_BEV_VECTORS"), "0", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_STRICT_BEV_VECTORS"), "1", StringComparison.Ordinal);
         private static bool _executingDelaySlot;
         private static uint _delaySlotBranchPc;
         private static bool _loggedPifTailEntry;
@@ -460,6 +469,7 @@ namespace Ryu64.MIPS
             _tlbRefillLogCount = 0;
             _traceEretWindowCount = 0;
             _traceRefillWindowCount = 0;
+            _traceEarlyLoopWindowCount = 0;
 
             OpcodeTable.Init();
 
@@ -479,6 +489,20 @@ namespace Ryu64.MIPS
 
                         if ((pc & 0x3) != 0)
                         {
+                            if (AlignMisalignedPcDuringBringup)
+                            {
+                                uint alignedPc = pc & 0xFFFFFFFCu;
+                                if (_stuckPcLogCount < 64)
+                                {
+                                    _stuckPcLogCount++;
+                                    Common.Logger.PrintWarningLine(
+                                        $"R4300 bring-up: aligning misaligned PC from 0x{pc:x8} to 0x{alignedPc:x8} " +
+                                        $"(count={_stuckPcLogCount}).");
+                                }
+                                Registers.R4300.PC = alignedPc;
+                                continue;
+                            }
+
                             RaiseAddressErrorException(pc, isStore: false, pc);
                             continue;
                         }
@@ -555,7 +579,25 @@ namespace Ryu64.MIPS
                             // TLB-translate all virtual segments except direct-mapped kseg0/kseg1.
                             if (segment != 0x80000000u && segment != 0xA0000000u)
                             {
-                                uint translated = TLB.TranslateAddress(pc, throwOnMiss: true) & 0x1FFFFFFFu;
+                                uint translated;
+                                try
+                                {
+                                    translated = TLB.TranslateAddress(pc, throwOnMiss: true) & 0x1FFFFFFFu;
+                                }
+                                catch (Common.Exceptions.TLBMissException)
+                                {
+                                    // Bring-up fallback: allow low virtual instruction fetches to
+                                    // behave as direct physical when ITLB state is incomplete.
+                                    // Set EUTHERDRIVE_N64_STRICT_ITLB=1 to enforce strict behavior.
+                                    if (AllowInstructionLowPhysicalFallbackOnTlbMiss && pc < 0x05000000u)
+                                    {
+                                        translated = pc & 0x1FFFFFFFu;
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
                                 fetchAddress = 0xA0000000u | translated;
                             }
 
@@ -575,6 +617,36 @@ namespace Ryu64.MIPS
                                     $"t0=0x{Registers.R4300.Reg[8]:x16} t1=0x{Registers.R4300.Reg[9]:x16} " +
                                     $"t8=0x{Registers.R4300.Reg[24]:x16} t9=0x{Registers.R4300.Reg[25]:x16} " +
                                     $"ra=0x{Registers.R4300.Reg[31]:x16}");
+                            }
+
+                            if (TraceEarlyLoopWindow
+                                && _traceEarlyLoopWindowCount < TraceEarlyLoopWindowLimit
+                                && pc >= 0x80000120
+                                && pc <= 0x800001A0)
+                            {
+                                _traceEarlyLoopWindowCount++;
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong t6 = Registers.R4300.Reg[14];
+                                ulong t7 = Registers.R4300.Reg[15];
+                                ulong t8 = Registers.R4300.Reg[24];
+                                ulong t9 = Registers.R4300.Reg[25];
+                                uint t0w = 0;
+                                uint t1w = 0;
+                                uint t1w4 = 0;
+                                try { t0w = memory.ReadUInt32((uint)t0); } catch { }
+                                try { t1w = memory.ReadUInt32((uint)t1); } catch { }
+                                try { t1w4 = memory.ReadUInt32((uint)t1 + 4u); } catch { }
+
+                                Console.WriteLine(
+                                    $"[N64EARLY] #{_traceEarlyLoopWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} " +
+                                    $"t6=0x{t6:x16} t7=0x{t7:x16} t8=0x{t8:x16} t9=0x{t9:x16} " +
+                                    $"[t0]=0x{t0w:x8} [t1]=0x{t1w:x8} [t1+4]=0x{t1w4:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"piStatus=0x{memory.ReadUInt32(0x04600010):x8}");
                             }
 
                             if (TraceEretWindow

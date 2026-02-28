@@ -115,6 +115,7 @@ public partial class MainWindow : Window
     private IEmulatorCore? _pendingPresentCore;
 
     private string? _romPath;
+    private string? _pceBiosPath;
     private string? _psxBiosPath;
     private readonly List<string> _recentRomPaths = new();
     private bool _recentRomUpdating;
@@ -1156,6 +1157,54 @@ public partial class MainWindow : Window
         if (PsxBiosPathText != null)
             PsxBiosPathText.Text = _psxBiosPath ?? files[0].Name;
         StatusText.Text = "PSX BIOS selected";
+        SaveSettings();
+    }
+
+    private async void OnSelectPceBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        IStorageFolder? startFolder = null;
+        if (!string.IsNullOrWhiteSpace(_pceBiosPath))
+        {
+            string? folderPath = Path.GetDirectoryName(_pceBiosPath);
+            if (!string.IsNullOrWhiteSpace(folderPath))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(folderPath);
+        }
+
+        var options = new FilePickerOpenOptions
+        {
+            Title = "Select PCE CD BIOS/System Card",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("PCE BIOS")
+                {
+                    Patterns = new[] { "*.pce", "*.PCE", "*.bin", "*.BIN", "*.*" }
+                }
+            }
+        };
+
+        if (startFolder != null)
+            options.SuggestedStartLocation = startFolder;
+
+        var files = await StorageProvider.OpenFilePickerAsync(options);
+        if (files.Count == 0)
+            return;
+
+        _pceBiosPath = files[0].TryGetLocalPath();
+        PceCdAdapter.BiosPath = _pceBiosPath;
+        if (PceBiosPathText != null)
+            PceBiosPathText.Text = _pceBiosPath ?? files[0].Name;
+        StatusText.Text = "PCE BIOS selected";
+        SaveSettings();
+    }
+
+    private void OnClearPceBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        _pceBiosPath = null;
+        PceCdAdapter.BiosPath = null;
+        if (PceBiosPathText != null)
+            PceBiosPathText.Text = "(auto: ./bios/syscard*.pce|.bin)";
+        StatusText.Text = "PCE BIOS cleared";
         SaveSettings();
     }
 
@@ -2939,6 +2988,7 @@ public partial class MainWindow : Window
     {
         public string? LastRomPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
+        public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
@@ -2964,6 +3014,7 @@ public partial class MainWindow : Window
     {
         public string? LastRomPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
+        public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
@@ -3044,6 +3095,13 @@ public partial class MainWindow : Window
             PsxAdapter.BiosPath = _psxBiosPath;
             if (PsxBiosPathText != null)
                 PsxBiosPathText.Text = _psxBiosPath;
+        }
+        if (!string.IsNullOrWhiteSpace(settings.PceBiosPath))
+        {
+            _pceBiosPath = settings.PceBiosPath;
+            PceCdAdapter.BiosPath = _pceBiosPath;
+            if (PceBiosPathText != null)
+                PceBiosPathText.Text = _pceBiosPath;
         }
 
         _recentRomPaths.Clear();
@@ -3172,6 +3230,7 @@ public partial class MainWindow : Window
         {
             LastRomPath = _romPath,
             RecentRomPaths = _recentRomPaths.ToList(),
+            PceBiosPath = _pceBiosPath,
             PsxBiosPath = _psxBiosPath,
             MasterVolumePercent = _masterVolumePercent,
             PsgMixPercent = _psgMixPercent,
@@ -3252,6 +3311,7 @@ public partial class MainWindow : Window
         {
             LastRomPath = settings.LastRomPath,
             RecentRomPaths = settings.RecentRomPaths,
+            PceBiosPath = settings.PceBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
             MasterVolumePercent = settings.MasterVolumePercent,
             PsgMixPercent = settings.PsgMixPercent,
@@ -3331,6 +3391,7 @@ public partial class MainWindow : Window
         {
             LastRomPath = raw.LastRomPath,
             RecentRomPaths = raw.RecentRomPaths,
+            PceBiosPath = raw.PceBiosPath,
             PsxBiosPath = raw.PsxBiosPath,
             MasterVolumePercent = raw.MasterVolumePercent,
             PsgMixPercent = raw.PsgMixPercent,

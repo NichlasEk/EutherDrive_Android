@@ -17,6 +17,7 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
     private const int DefaultStride = DefaultWidth * 4;
 
     private readonly SNESSystem _system;
+    public SNESSystem System => _system;
     private readonly SnesAudioHandler _audioHandler = new();
     private readonly SnesFrameRenderer _renderer = new();
     private byte[] _frameBuffer = new byte[DefaultHeight * DefaultStride];

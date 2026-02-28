@@ -135,6 +135,11 @@ public class SPC700 : ISPC700
         _apu = apu;
     }
 
+    private static readonly bool TraceSpcPc =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPC700_PC"), "1", StringComparison.Ordinal);
+    private static readonly int TraceSpcPcLimit = 200000;
+    private int _traceSpcPcCount;
+
     public void Cycle() 
     {
         if (_cyclesLeft == 0)
@@ -145,6 +150,11 @@ public class SPC700 : ISPC700
             try
             {
                 (int item1, int item2) = GetAdr(mode);
+                if (TraceSpcPc && _traceSpcPcCount < TraceSpcPcLimit)
+                {
+                    Console.WriteLine($"[SPC700-PC] pc=0x{_br[PC]-1:X4} op=0x{instr:X2} adr=0x{item1:X4} A=0x{_r[A]:X2} X=0x{_r[X]:X2} Y=0x{_r[Y]:X2}");
+                    _traceSpcPcCount++;
+                }
                 _functions[instr](item1, item2, instr);
             }
             catch (Exception)

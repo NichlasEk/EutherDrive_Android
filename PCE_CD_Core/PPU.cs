@@ -20,11 +20,65 @@ namespace ePceCD
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_LOG"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSpriteFetch =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_FETCH_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly bool SpriteDrawForward =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_DRAW_FORWARD"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSpriteLine =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_LINE_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSpriteLineOnly =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_LINE_TRACE_LINE"), out int slLine) ? slLine : -1;
+        private static readonly int TraceSpriteLineMin =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_LINE_TRACE_MIN"), out int slMin) ? slMin : -1;
+        private static readonly int TraceSpriteLineMax =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_LINE_TRACE_MAX"), out int slMax) ? slMax : -1;
         private static readonly int TraceSpriteFetchLimit =
             int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_FETCH_TRACE_LIMIT"), out int sfLim) && sfLim > 0 ? sfLim : 4000;
+        private static readonly int TraceSpriteFetchLineOnly =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_FETCH_TRACE_LINE"), out int sfLine) ? sfLine : -1;
+        private static readonly int TraceSpriteFetchLineMin =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_FETCH_TRACE_MIN"), out int sfMin) ? sfMin : -1;
+        private static readonly int TraceSpriteFetchLineMax =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_FETCH_TRACE_MAX"), out int sfMax) ? sfMax : -1;
+        private static readonly int TraceSpriteLineLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_LINE_TRACE_LIMIT"), out int slLim) && slLim > 0 ? slLim : 4000;
+        private static readonly int TraceSpriteSatOnly =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_TRACE_SAT"), out int satOnly) ? satOnly : -1;
+        private static readonly string? TraceSpriteFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_TRACE_FILE");
+        private static readonly bool TraceSpriteStdout =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_TRACE_STDOUT"), "1", StringComparison.Ordinal);
+        private static readonly object TraceSpriteFileLock = new object();
         private static readonly int TraceVdcRegsLimit = 200;
         private int _traceVdcRegsCount;
         private int _traceSpriteFetchCount;
+        private int _traceSpriteLineCount;
+
+        private static void WriteSpriteTrace(string line)
+        {
+            bool wroteFile = false;
+            if (!string.IsNullOrWhiteSpace(TraceSpriteFile))
+            {
+                lock (TraceSpriteFileLock)
+                {
+                    File.AppendAllText(TraceSpriteFile!, line + Environment.NewLine);
+                }
+                wroteFile = true;
+            }
+
+            if (!wroteFile || TraceSpriteStdout)
+                Console.WriteLine(line);
+        }
+
+        private static bool TraceLineSelected(int line, int exact, int min, int max)
+        {
+            if (exact >= 0)
+                return line == exact;
+            if (min >= 0 && line < min)
+                return false;
+            if (max >= 0 && line > max)
+                return false;
+            return true;
+        }
+
         [Serializable]
         private struct SpriteAttribute
         {
@@ -48,6 +102,7 @@ namespace ePceCD
         }
         private SpriteAttribute[] m_SAT;
         private int m_RenderLine;
+        private int m_FrameCounter;
         public int CYCLES_PER_LINE = 1368;
         public int SCREEN_WIDTH = 256;
         private ushort[] m_VRAM;
@@ -204,6 +259,7 @@ namespace ePceCD
                 m_SAT[i] = new SpriteAttribute();
 
             m_RenderLine = 0;
+            m_FrameCounter = 0;
             m_DoSAT_DMA = false;
             m_WaitingIRQ = false;
 
@@ -239,6 +295,7 @@ namespace ePceCD
                 m_SAT[i] = new SpriteAttribute();
 
             m_RenderLine = 0;
+            m_FrameCounter = 0;
             m_DoSAT_DMA = false;
             m_WaitingIRQ = false;
 
@@ -269,6 +326,7 @@ namespace ePceCD
             m_BgCounterY = 0;
             m_BgOffsetY = 0;
             m_LatchedBxr = 0;
+            m_FrameCounter = 0;
         }
 
         public unsafe void tick()
@@ -327,6 +385,7 @@ namespace ePceCD
             if (m_RenderLine >= 262)
             {
                 m_RenderLine = 0;
+                m_FrameCounter++;
                 //ConvertColor();
                 Marshal.Copy(_screenBufPtr, _screenBuf, 0, _screenBuf.Length);
                 FrameReady = true;
@@ -616,23 +675,43 @@ namespace ePceCD
                 int BufferIndexes = 0;
                 int BufferUsage;
                 SpriteAttribute[] SprBuffer = new SpriteAttribute[17];
-                for (i = 0, BufferUsage = 0; i < 64 && BufferUsage < 17; i++)
+                int[] SprSatIndex = new int[17];
+                for (i = 0, BufferUsage = 0; i < 64; i++)
                 {
                     int y = m_SAT[i].m_Y;
                     if (visibleLine < y || visibleLine >= y + m_SAT[i].m_Height) continue;
-                    BufferUsage += m_SAT[i].m_Width;
-                    SprBuffer[BufferIndexes++] = m_SAT[i];
-                }
-                if (BufferUsage > 16)
-                {
-                    if (m_VDC_SprOvIRQ)
+                    int spriteCells = m_SAT[i].m_Width;
+                    if (BufferUsage + spriteCells > 16)
                     {
-                        m_VDC_OR = true;
-                        m_WaitingIRQ = true;
+                        if (m_VDC_SprOvIRQ)
+                        {
+                            m_VDC_OR = true;
+                            m_WaitingIRQ = true;
+                        }
+                        break;
                     }
-                    BufferUsage = 16;
+                    BufferUsage += spriteCells;
+                    SprBuffer[BufferIndexes++] = m_SAT[i];
+                    SprSatIndex[BufferIndexes - 1] = i;
                 }
-                for (i = BufferIndexes - 1; i >= 0; i--)
+                if (TraceSpriteLine && _traceSpriteLineCount < TraceSpriteLineLimit &&
+                    TraceLineSelected(visibleLine, TraceSpriteLineOnly, TraceSpriteLineMin, TraceSpriteLineMax))
+                {
+                    _traceSpriteLineCount++;
+                    WriteSpriteTrace($"[PCE-SPRLINE] frame={m_FrameCounter} render={m_RenderLine} line={visibleLine} count={BufferIndexes} usage={BufferUsage}");
+                    for (int si = 0; si < BufferIndexes; si++)
+                    {
+                        var s = SprBuffer[si];
+                        if (TraceSpriteSatOnly >= 0 && SprSatIndex[si] != TraceSpriteSatOnly)
+                            continue;
+                        WriteSpriteTrace(
+                            $"[PCE-SPRLINE] frame={m_FrameCounter} render={m_RenderLine} line={visibleLine} sat={SprSatIndex[si]:D2} x={s.m_X} y={s.m_Y} w={s.m_Width} h={s.m_Height} pat=0x{s.m_Pattern:X4} cg={(s.m_CGPage ? 1 : 0)} mode1={(s.m_Mode1 ? 1 : 0)} hf={(s.m_HorizontalFlip ? 1 : 0)} vf={(s.m_VerticalFlip ? 1 : 0)} pr={(s.m_Priority ? 1 : 0)}");
+                    }
+                }
+                int start = SpriteDrawForward ? 0 : (BufferIndexes - 1);
+                int end = SpriteDrawForward ? BufferIndexes : -1;
+                int step = SpriteDrawForward ? 1 : -1;
+                for (i = start; i != end; i += step)
                 {
                     int SprOffY;
                     if (SprBuffer[i].m_VerticalFlip)
@@ -653,22 +732,23 @@ namespace ePceCD
                         {
                             case 1:
                                 DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, SprBuffer[i].m_HorizontalFlip, SprBuffer[i].m_Mode1);
-                                TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile);
+                                TraceSpriteTileFetch(visibleLine, i, SprSatIndex[i], SprBuffer[i], tile, SprOffY, tileY, offsetY, tileLineOffset, x);
                                 break;
                             case 2:
+                                const int spriteTileXStride = 64;
                                 if (SprBuffer[i].m_HorizontalFlip)
                                 {
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, true, SprBuffer[i].m_Mode1);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + spriteTileXStride, SprBuffer[i].m_Priority, true, SprBuffer[i].m_Mode1);
                                     DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, true, SprBuffer[i].m_Mode1);
-                                    TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile + 64);
-                                    TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile);
+                                    TraceSpriteTileFetch(visibleLine, i, SprSatIndex[i], SprBuffer[i], tile + spriteTileXStride, SprOffY, tileY, offsetY, tileLineOffset, x);
+                                    TraceSpriteTileFetch(visibleLine, i, SprSatIndex[i], SprBuffer[i], tile, SprOffY, tileY, offsetY, tileLineOffset, x);
                                 }
                                 else
                                 {
                                     DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, false, SprBuffer[i].m_Mode1);
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, false, SprBuffer[i].m_Mode1);
-                                    TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile);
-                                    TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile + 64);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + spriteTileXStride, SprBuffer[i].m_Priority, false, SprBuffer[i].m_Mode1);
+                                    TraceSpriteTileFetch(visibleLine, i, SprSatIndex[i], SprBuffer[i], tile, SprOffY, tileY, offsetY, tileLineOffset, x);
+                                    TraceSpriteTileFetch(visibleLine, i, SprSatIndex[i], SprBuffer[i], tile + spriteTileXStride, SprOffY, tileY, offsetY, tileLineOffset, x);
                                 }
                                 break;
                         }
@@ -750,48 +830,76 @@ namespace ePceCD
 
         public unsafe void DrawSPRTile(int* ScanLinePtr, ref int* px, int palette, int tile, bool priority, bool flip, bool mode1)
         {
-            int p0 = m_VRAM[tile];
-            int p1 = m_VRAM[tile + 16];
-            int p2 = mode1 ? 0 : m_VRAM[tile + 32];
-            int p3 = mode1 ? 0 : m_VRAM[tile + 48];
-            int color = 0;
+            int w0 = m_VRAM[tile];
+            int w1 = m_VRAM[tile + 16];
+            int w2 = mode1 ? 0 : m_VRAM[tile + 32];
+            int w3 = mode1 ? 0 : m_VRAM[tile + 48];
             int* scanEnd = ScanLinePtr + SCREEN_WIDTH;
+            Span<byte> line = stackalloc byte[16];
+
+            // PCE sprite rows are 2x8 pixels packed per plane word (high-byte then low-byte).
+            // Decode as two independent 8-pixel groups to avoid cross-byte bit coupling.
+            int p0Left = (w0 >> 8) & 0xFF;
+            int p1Left = (w1 >> 8) & 0xFF;
+            int p2Left = (w2 >> 8) & 0xFF;
+            int p3Left = (w3 >> 8) & 0xFF;
+            int p0Right = w0 & 0xFF;
+            int p1Right = w1 & 0xFF;
+            int p2Right = w2 & 0xFF;
+            int p3Right = w3 & 0xFF;
+
+            for (int bit = 7, x = 0; bit >= 0; bit--, x++)
+            {
+                line[x] =
+                    (byte)(((p0Left >> bit) & 1) |
+                           (((p1Left >> bit) & 1) << 1) |
+                           (((p2Left >> bit) & 1) << 2) |
+                           (((p3Left >> bit) & 1) << 3));
+            }
+            for (int bit = 7, x = 8; bit >= 0; bit--, x++)
+            {
+                line[x] =
+                    (byte)(((p0Right >> bit) & 1) |
+                           (((p1Right >> bit) & 1) << 1) |
+                           (((p2Right >> bit) & 1) << 2) |
+                           (((p3Right >> bit) & 1) << 3));
+            }
 
             if (priority) palette |= 0x1000;
 
             if (flip)
-                for (int x = 0; x < 16; x++, px++)
-                {
-                    if (px >= scanEnd) break;
-                    if (px < ScanLinePtr) continue;
-                    color =
-                        ((p0 >> x) & 1) |
-                        (((p1 >> x) & 1) << 1) |
-                        (((p2 >> x) & 1) << 2) |
-                        (((p3 >> x) & 1) << 3);
-                    if (color == 0) continue;
-                    *px = palette | color;
-                }
-            else
+            {
                 for (int x = 15; x >= 0; x--, px++)
                 {
                     if (px >= scanEnd) break;
                     if (px < ScanLinePtr) continue;
-                    color =
-                        ((p0 >> x) & 1) |
-                        (((p1 >> x) & 1) << 1) |
-                        (((p2 >> x) & 1) << 2) |
-                        (((p3 >> x) & 1) << 3);
+                    int color = line[x];
                     if (color == 0) continue;
                     *px = palette | color;
                 }
+            }
+            else
+            {
+                for (int x = 0; x < 16; x++, px++)
+                {
+                    if (px >= scanEnd) break;
+                    if (px < ScanLinePtr) continue;
+                    int color = line[x];
+                    if (color == 0) continue;
+                    *px = palette | color;
+                }
+            }
         }
 
-        private void TraceSpriteTileFetch(int visibleLine, int bufferIndex, SpriteAttribute s, int tileBase)
+        private void TraceSpriteTileFetch(int visibleLine, int bufferIndex, int satIndex, SpriteAttribute s, int tileBase, int sprOffY, int tileY, int offsetY, int tileLineOffset, int xStart)
         {
             if (!TraceSpriteFetch)
                 return;
             if (_traceSpriteFetchCount >= TraceSpriteFetchLimit)
+                return;
+            if (!TraceLineSelected(visibleLine, TraceSpriteFetchLineOnly, TraceSpriteFetchLineMin, TraceSpriteFetchLineMax))
+                return;
+            if (TraceSpriteSatOnly >= 0 && satIndex != TraceSpriteSatOnly)
                 return;
             if ((uint)(tileBase + 48) >= (uint)m_VRAM.Length)
                 return;
@@ -800,8 +908,8 @@ namespace ePceCD
             ushort p1 = m_VRAM[tileBase + 16];
             ushort p2 = m_VRAM[tileBase + 32];
             ushort p3 = m_VRAM[tileBase + 48];
-            Console.WriteLine(
-                $"[PCE-SPR] line={visibleLine} idx={bufferIndex} x={s.m_X} y={s.m_Y} w={s.m_Width} h={s.m_Height} pat=0x{s.m_Pattern:X4} tile=0x{tileBase:X4} mode1={(s.m_Mode1 ? 1 : 0)} p0=0x{p0:X4} p1=0x{p1:X4} p2=0x{p2:X4} p3=0x{p3:X4}");
+            WriteSpriteTrace(
+                $"[PCE-SPR] frame={m_FrameCounter} render={m_RenderLine} line={visibleLine} idx={bufferIndex} sat={satIndex} x={s.m_X} y={s.m_Y} drawX={xStart} w={s.m_Width} h={s.m_Height} pat=0x{s.m_Pattern:X4} cg={(s.m_CGPage ? 1 : 0)} mode1={(s.m_Mode1 ? 1 : 0)} offY={sprOffY} tileY={tileY} row={offsetY} rowBase={tileLineOffset} tile=0x{tileBase:X4} p0=0x{p0:X4} p1=0x{p1:X4} p2=0x{p2:X4} p3=0x{p3:X4}");
         }
 
         public unsafe void DrawBGTile(int* ScanLinePtr, ref int* px, int palette, int tile)

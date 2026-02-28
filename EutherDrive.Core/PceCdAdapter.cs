@@ -15,6 +15,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
     private const int MaxTicksPerFrame = 20000;
 
     private readonly BUS _bus;
+    public static string? BiosPath { get; set; }
     private byte[] _frameBuffer = new byte[DefaultWidth * DefaultHeight * 4];
     private short[] _audioBuffer = Array.Empty<short>();
     private int _frameWidth = DefaultWidth;
@@ -289,6 +290,16 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         }
     }
 
+    public string BuildDeterminismTraceLine(long frameIndex)
+    {
+        lock (_stateLock)
+        {
+            EnsureFrameBuffer();
+            ulong frameHash = ComputeFrameHash(_frameBuffer.AsSpan(0, _frameHeight * _frameStride));
+            return _bus.BuildDeterminismTraceLine(frameIndex, frameHash);
+        }
+    }
+
     public double GetTargetFps() => DefaultFps;
 
     public void Dispose()
@@ -358,8 +369,24 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         }
     }
 
+    private static ulong ComputeFrameHash(ReadOnlySpan<byte> data)
+    {
+        const ulong offset = 1469598103934665603ul;
+        const ulong prime = 1099511628211ul;
+        ulong h = offset;
+        for (int i = 0; i < data.Length; i++)
+        {
+            h ^= data[i];
+            h *= prime;
+        }
+        return h;
+    }
+
     private static string? FindBiosPath()
     {
+        if (!string.IsNullOrWhiteSpace(BiosPath) && File.Exists(BiosPath))
+            return BiosPath;
+
         string biosDir = Path.Combine(Directory.GetCurrentDirectory(), "bios");
         if (!Directory.Exists(biosDir))
             return null;

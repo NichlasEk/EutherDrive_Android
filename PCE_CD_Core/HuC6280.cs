@@ -363,6 +363,25 @@ namespace ePceCD
             return m_MPR[index];
         }
 
+        public ushort PeekProgramCounter() => m_PC;
+        public byte PeekA() => m_A;
+        public byte PeekX() => m_X;
+        public byte PeekY() => m_Y;
+        public byte PeekS() => m_S;
+
+        public byte PeekP()
+        {
+            byte p = 0x20;
+            if (m_NFlag) p |= 0x80;
+            if (m_VFlag) p |= 0x40;
+            if (m_TFlag) p |= 0x20;
+            if (m_DFlag) p |= 0x08;
+            if (m_IFlag) p |= 0x04;
+            if (m_ZFlag) p |= 0x02;
+            if (m_CFlag) p |= 0x01;
+            return p;
+        }
+
         public void RebindBanks()
         {
             m_IOPage = GetBank(0xFF);

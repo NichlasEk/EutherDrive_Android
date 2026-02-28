@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 
 namespace ePceCD
 {
@@ -259,6 +260,28 @@ namespace ePceCD
         {
             // Nitro CD_Check_IRQ only considers IRQ request bits 2..6 (mask 0x7C).
             return (EnabledIrqs & ActiveIrqs & 0x7C) != 0;
+        }
+
+        public void AppendDeterminismTrace(StringBuilder sb)
+        {
+            if (sb == null)
+                return;
+
+            sb.Append(" cd_phase=").Append(_ScsiPhase);
+            sb.Append(" cd_cmd=").Append(((byte)_lastCmd).ToString("X2"));
+            sb.Append(" cd_cmdlen=").Append(_lastCmdLen);
+            sb.Append(" cd_dataofs=").Append(dataOffset);
+            sb.Append(" cd_bufpos=").Append(dataBuffer?.Position ?? -1);
+            sb.Append(" cd_buflen=").Append(dataBuffer?.Length ?? 0);
+            sb.Append(" cd_irqe=").Append(EnabledIrqs.ToString("X2"));
+            sb.Append(" cd_irqa=").Append(ActiveIrqs.ToString("X2"));
+            sb.Append(" cd_pending=").Append(IRQPending() ? 1 : 0);
+            sb.Append(" cd_sig_req=").Append(Signals[(int)ScsiSignal.Req] ? 1 : 0);
+            sb.Append(" cd_sig_ack=").Append(Signals[(int)ScsiSignal.Ack] ? 1 : 0);
+            sb.Append(" cd_sig_bsy=").Append(Signals[(int)ScsiSignal.Bsy] ? 1 : 0);
+            sb.Append(" cd_sig_cd=").Append(Signals[(int)ScsiSignal.Cd] ? 1 : 0);
+            sb.Append(" cd_sig_io=").Append(Signals[(int)ScsiSignal.Io] ? 1 : 0);
+            sb.Append(" cd_sig_msg=").Append(Signals[(int)ScsiSignal.Msg] ? 1 : 0);
         }
 
         private short SoftClip(int sample)

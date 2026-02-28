@@ -6,6 +6,8 @@ namespace Ryu64.MIPS
     {
         private static readonly bool TraceCop0 =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_COP0"), "1", StringComparison.Ordinal);
+        private static readonly bool CanonicalizeLowEretTargets =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CANONICALIZE_ERET"), "0", StringComparison.Ordinal);
 
         private static ulong NormalizeCop0WriteValue(int reg, ulong rawValue)
         {
@@ -141,16 +143,25 @@ namespace Ryu64.MIPS
             // VR4300 ERET semantics:
             // - If ERL is set, return to ErrorEPC and clear ERL.
             // - Otherwise, return to EPC and clear EXL.
+            uint targetPc;
             if ((status & StatusErlBit) != 0)
             {
-                Registers.R4300.PC = (uint)errorEpc & 0xFFFFFFFCu;
+                targetPc = (uint)errorEpc & 0xFFFFFFFCu;
                 Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status & ~StatusErlBit;
             }
             else
             {
-                Registers.R4300.PC = (uint)epc & 0xFFFFFFFCu;
+                targetPc = (uint)epc & 0xFFFFFFFCu;
                 Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status & ~StatusExlBit;
             }
+
+            // Bring-up compatibility:
+            // some early paths appear to save low physical-style EPC values.
+            // Canonicalize them to kseg0 to avoid trapping in refill/address-error loops.
+            if (CanonicalizeLowEretTargets && targetPc < 0x20000000u)
+                targetPc |= 0x80000000u;
+
+            Registers.R4300.PC = targetPc;
         }
     }
 }

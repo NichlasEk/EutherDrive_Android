@@ -11,8 +11,12 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_LOOSE_DATA_TLB"), "1", StringComparison.Ordinal);
         private static readonly bool AllowDirectLowPhysicalWindow =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_STRICT_LOWSEG"), "1", StringComparison.Ordinal);
+        private static readonly bool AllowLowPhysicalFallbackOnTlbMiss =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_LOWSEG_MISS_FALLBACK"), "0", StringComparison.Ordinal);
         private static readonly bool TraceN64Io =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_IO"), "1", StringComparison.Ordinal);
+        private static readonly bool MirrorPiRdLenAsCartToDram =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PI_RDLEN_MIRROR"), "1", StringComparison.Ordinal);
 
         public readonly byte[] SP_DMEM_RW         = new byte[0x1000];
         public readonly byte[] SP_IMEM_RW         = new byte[0x1000];
@@ -288,9 +292,9 @@ namespace Ryu64.MIPS
 
         public void PI_RD_LEN_WRITE_EVENT()
         {
-            // Bring-up compatibility path:
-            // Some boot paths may poke PI_RD_LEN while expecting cart->RDRAM transfer semantics.
-            // Mirror PI_WR_LEN behavior so IPL can progress instead of stalling before VI init.
+            // PI_RD_LEN is RDRAM -> cart on hardware.
+            // Keep default behavior non-destructive (no cart write-back implemented yet).
+            // Optional bring-up compatibility mode can mirror PI_WR_LEN semantics if needed.
             uint ReadLength = ReadUInt32Physical(0x04600008) & 0x00FFFFFF; // PI_RD_LEN_REG
             uint CartAddr   = ReadUInt32Physical(0x04600004) & 0x1FFFFFFE; // PI_CART_ADDR_REG
             uint DramAddr   = ReadUInt32Physical(0x04600000) & 0x00FFFFFE; // PI_DRAM_ADDR_REG
@@ -303,9 +307,12 @@ namespace Ryu64.MIPS
             _piDmaBusy = true;
             PI_STATUS_REG_R[3] |= 0b0001; // Set DMA Busy
 
-            int transferSize = ComputePiTransferSize(ReadLength, DramAddr, CartAddr);
-            if (transferSize > 0)
-                DmaCopyPhysical(DramAddr, CartAddr, transferSize);
+            if (MirrorPiRdLenAsCartToDram)
+            {
+                int transferSize = ComputePiTransferSize(ReadLength, DramAddr, CartAddr);
+                if (transferSize > 0)
+                    DmaCopyPhysical(DramAddr, CartAddr, transferSize);
+            }
 
             PI_STATUS_REG_R[3] &= 0b1110; // Clear DMA Busy
             _piDmaBusy = false;
@@ -475,10 +482,12 @@ namespace Ryu64.MIPS
         private static void ApplyMiMaskPair(ref uint mask, uint value, int clearBit, int setBit, int targetBit)
         {
             uint targetMask = 1u << targetBit;
+            // Bring-up compatibility: several IPL paths behave as if the pair ordering is
+            // set/clear rather than clear/set.
             if ((value & (1u << clearBit)) != 0)
-                mask &= ~targetMask;
-            if ((value & (1u << setBit)) != 0)
                 mask |= targetMask;
+            if ((value & (1u << setBit)) != 0)
+                mask &= ~targetMask;
         }
 
         private void SetMiPiInterrupt()
@@ -996,7 +1005,25 @@ namespace Ryu64.MIPS
             if (segment == 0x80000000u || segment == 0xA0000000u)
                 return virtualAddress & 0x1FFFFFFFu;
 
-            return TLB.TranslateAddress(virtualAddress, throwOnMiss: StrictDataTlb, isStore: isWrite) & 0x1FFFFFFFu;
+            try
+            {
+                return TLB.TranslateAddress(virtualAddress, throwOnMiss: StrictDataTlb, isStore: isWrite) & 0x1FFFFFFFu;
+            }
+            catch (Common.Exceptions.TLBMissException)
+            {
+                // Bring-up compromise:
+                // keep instruction-side TLB strict, but allow low data addresses to
+                // fall back to direct physical mapping on miss so SM64 can leave early
+                // refill loops before full TLB behavior is implemented.
+                if (AllowDirectLowPhysicalWindow
+                    && AllowLowPhysicalFallbackOnTlbMiss
+                    && virtualAddress < 0x05000000u)
+                {
+                    return virtualAddress;
+                }
+
+                throw;
+            }
         }
 
         private static uint PhysicalToKseg1(uint physicalAddress)

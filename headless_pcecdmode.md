@@ -72,3 +72,29 @@ EUTHERDRIVE_HEADLESS_CORE=pce \
 EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN=1 \
 dotnet run --project EutherDrive.Headless -- "/home/nichlas/roms/PCE/Castlevania Rondo of Blood [English]/Castlevania Rondo of Blood [English].cue" 3000
 ```
+
+## Determinism-trace (hitta första avvikelse utan gissning)
+
+Skriv en rad per frame med CPU/VDC/CD + RAM/VRAM/SAT/framebuffer-hash:
+
+```bash
+EUTHERDRIVE_HEADLESS_CORE=pce \
+EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN=1 \
+EUTHERDRIVE_PCE_TRACE_FILE=pce_trace_a.log \
+dotnet run --project EutherDrive.Headless -- "/path/to/game.cue" 2000
+```
+
+Kör om samma scenario till en andra fil:
+
+```bash
+EUTHERDRIVE_HEADLESS_CORE=pce \
+EUTHERDRIVE_PCE_HEADLESS_AUTO_RUN=1 \
+EUTHERDRIVE_PCE_TRACE_FILE=pce_trace_b.log \
+dotnet run --project EutherDrive.Headless -- "/path/to/game.cue" 2000
+```
+
+Diffa och få första divergerande frame/fält:
+
+```bash
+python scripts/pce_trace_diff.py pce_trace_a.log pce_trace_b.log
+```

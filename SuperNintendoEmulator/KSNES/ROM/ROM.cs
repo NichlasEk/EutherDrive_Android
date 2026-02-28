@@ -148,7 +148,7 @@ public class ROM : IROM
     internal KSNES.Specialchips.CX4.Cx4? Cx4 => _cx4;
     internal KSNES.Specialchips.DSP1.Dsp1? Dsp1 => _dsp1;
     internal KSNES.Specialchips.SuperFX.SuperFx? SuperFx => _superFx;
-    internal KSNES.Specialchips.SA1.Sa1? Sa1 => _sa1;
+    public object? Sa1 => _sa1;
 
     public void LoadSRAM()
     {
@@ -465,6 +465,7 @@ public class ROM : IROM
     }
 
     public bool IrqWanted => (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);
+    public bool NmiWanted => _sa1?.SnesNmi() ?? false;
 
     public byte ReadRomByteLoRom(uint address)
     {

@@ -504,8 +504,13 @@ public class SNESSystem : ISNESSystem
         {
             PPU.RenderLine(YPos);
         }
-        if (YPos == (PPU.FrameOverscan ? 240 : 225) && XPos == 0)
+        int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
+        if (YPos == vBlankStart && XPos == 0)
         {
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
+            {
+                Console.WriteLine($"[VBLANK-START] Y={YPos} IsPal={IsPal} Overscan={PPU.FrameOverscan} Start={vBlankStart}");
+            }
             _inNmi = true;
             _inVblank = true;
             if (_autoJoyRead)
@@ -521,6 +526,10 @@ public class SNESSystem : ISNESSystem
         }
         else if (YPos == 0 && XPos == 0)
         {
+            if (_inVblank && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
+            {
+                Console.WriteLine($"[VBLANK-END] Y={YPos} X={XPos}");
+            }
             _inNmi = false;
             _inVblank = false;
             InitHdma();
@@ -535,11 +544,13 @@ public class SNESSystem : ISNESSystem
         }
         ROM.RunCoprocessor(Cycles);
         XPos += 2;
+        Cycles += 2;
         if (XPos == 1364)
         {
             XPos = 0;
             YPos++;
-            if (YPos == 262)
+            int maxV = IsPal ? 312 : 262;
+            if (YPos == maxV)
             {
                 CatchUpApu();
                 YPos = 0;
@@ -793,6 +804,10 @@ public class SNESSystem : ISNESSystem
                 val3 |= _inHblank ? 0x40 : 0;
                 val3 |= _inVblank ? 0x80 : 0;
                 val3 |= OpenBus & 0x3e;
+                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_4212"), "1", StringComparison.Ordinal))
+                {
+                    Console.WriteLine($"[4212] R val=0x{val3:X2} vblank={_inVblank} hblank={_inHblank} autojoy={_autoJoyBusy} Y={YPos} X={XPos}");
+                }
                 return val3;
             case 0x4213:
                 return PPULatch ? 0x80 : 0;
@@ -865,6 +880,11 @@ public class SNESSystem : ISNESSystem
         switch (adr)
         {
             case 0x4200:
+                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
+                {
+                    int pcLog = CPU is KSNES.CPU.CPU cpuLog ? cpuLog.ProgramCounter24 : -1;
+                    Console.WriteLine($"[SNES-REG] W 0x4200 val=0x{value:X2} PC=0x{pcLog:X6}");
+                }
                 _autoJoyRead = (value & 0x1) > 0;
                 _hIrqEnabled = (value & 0x10) > 0;
                 _vIrqEnabled = (value & 0x20) > 0;

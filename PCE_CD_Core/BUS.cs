@@ -339,6 +339,85 @@ namespace ePceCD
             PPU.DumpDebugSnapshot(directory, prefix);
         }
 
+        public string BuildDeterminismTraceLine(long frameIndex, ulong frameHash)
+        {
+            var sb = new StringBuilder(512);
+            sb.Append("frame=").Append(frameIndex);
+            sb.Append(" fb_hash=").Append(frameHash.ToString("X16"));
+            sb.Append(" cpu_pc=").Append(CPU.PeekProgramCounter().ToString("X4"));
+            sb.Append(" cpu_a=").Append(CPU.PeekA().ToString("X2"));
+            sb.Append(" cpu_x=").Append(CPU.PeekX().ToString("X2"));
+            sb.Append(" cpu_y=").Append(CPU.PeekY().ToString("X2"));
+            sb.Append(" cpu_s=").Append(CPU.PeekS().ToString("X2"));
+            sb.Append(" cpu_p=").Append(CPU.PeekP().ToString("X2"));
+            sb.Append(" cpu_clk=").Append(CPU.m_Clock);
+            sb.Append(" bus_mpr=").Append(ComputeMprHash().ToString("X16"));
+            sb.Append(" bus_ram=").Append(ComputeRamHash().ToString("X16"));
+            sb.Append(" bus_bram=").Append(ComputeBramHash().ToString("X16"));
+            sb.Append(" bus_timer=").Append((m_TimerValue & 0xFFFFFFFFu).ToString("X8"));
+            sb.Append(" bus_tov=").Append((m_TimerOverflow & 0xFFFFFFFFu).ToString("X8"));
+            sb.Append(" bus_tcnt=").Append(m_TimerCounting ? 1 : 0);
+            sb.Append(" bus_irq1=").Append(m_EnableIRQ1 ? 1 : 0);
+            sb.Append(" bus_irq2=").Append(m_EnableIRQ2 ? 1 : 0);
+            sb.Append(" bus_tirq=").Append(m_EnableTIMER ? 1 : 0);
+            sb.Append(" bus_tfire=").Append(m_FiredTIMER ? 1 : 0);
+            sb.Append(" bus_ovf=").Append(m_OverFlowCycles);
+            sb.Append(" bus_dead=").Append(m_DeadClocks);
+            PPU.AppendDeterminismTrace(sb);
+            CDRom.AppendDeterminismTrace(sb);
+            return sb.ToString();
+        }
+
+        private static ulong Fnv1a64(ulong hash, ReadOnlySpan<byte> data)
+        {
+            const ulong prime = 1099511628211ul;
+            for (int i = 0; i < data.Length; i++)
+            {
+                hash ^= data[i];
+                hash *= prime;
+            }
+            return hash;
+        }
+
+        private static ulong Fnv1a64(ulong hash, byte value)
+        {
+            const ulong prime = 1099511628211ul;
+            hash ^= value;
+            hash *= prime;
+            return hash;
+        }
+
+        private ulong ComputeRamHash()
+        {
+            ulong h = 1469598103934665603ul;
+            if (memory == null)
+                return h;
+            for (int i = 0; i < memory.Length; i++)
+            {
+                var ram = memory[i];
+                if (ram?.m_Ram == null)
+                    continue;
+                h = Fnv1a64(h, ram.m_Ram);
+            }
+            return h;
+        }
+
+        private ulong ComputeBramHash()
+        {
+            ulong h = 1469598103934665603ul;
+            if (BRAM == null)
+                return h;
+            return Fnv1a64(h, BRAM.GetSnapshot());
+        }
+
+        private ulong ComputeMprHash()
+        {
+            ulong h = 1469598103934665603ul;
+            for (int i = 0; i < 8; i++)
+                h = Fnv1a64(h, CPU.PeekMpr(i));
+            return h;
+        }
+
         private byte ReadIRQCtrl(int address)
         {
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_IRQ") == "1")

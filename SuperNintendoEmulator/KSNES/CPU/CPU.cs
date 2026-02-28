@@ -43,8 +43,20 @@ public class CPU : ICPU
     private const int RLL = 27;
     private const int BM = 28;
 
-    private byte[] _r = [];
-    private ushort[] _br = [];
+    private byte[] _r = new byte[2];
+    private ushort[] _br = new ushort[6];
+
+    public ushort ProgramCounter
+    {
+        get => _br[PC];
+        set => _br[PC] = value;
+    }
+
+    public byte ProgramBank
+    {
+        get => _r[K];
+        set => _r[K] = value;
+    }
 
     public int ProgramCounter24 => (_r[K] << 16) | _br[PC];
 
@@ -228,7 +240,8 @@ public class CPU : ICPU
                         int b0 = snes.Peek(pcAddr);
                         int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
                         int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
-                        Console.WriteLine($"[CPU-PC] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}]");
+                        string regs = GetTraceState();
+                        Console.WriteLine($"[CPU-PC] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
                         _tracePcCount++;
                     }
                 }

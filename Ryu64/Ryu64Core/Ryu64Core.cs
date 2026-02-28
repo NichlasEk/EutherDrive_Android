@@ -75,14 +75,26 @@ namespace Ryu64Core
                     ulong cop0Status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
                     ulong cop0Cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
                     ulong cop0BadVaddr = Registers.COP0.Reg[Registers.COP0.BADVADDR_REG];
-                ulong t6 = Registers.R4300.Reg[14];
-                ulong t7 = Registers.R4300.Reg[15];
-                ulong t8 = Registers.R4300.Reg[24];
-                ulong t9 = Registers.R4300.Reg[25];
-                ulong t0 = Registers.R4300.Reg[8];
-                ulong t1 = Registers.R4300.Reg[9];
-                ulong ra = Registers.R4300.Reg[31];
-                    return $"pc=0x{pc:x8} op=0x{op:x8} cycles={cycles} unk={unknown} viStatus=0x{viStatus:x8} viOrigin=0x{viOrigin:x8} viWidth={viWidth} aiLen=0x{aiLen:x} miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} piStatus=0x{piStatus:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} piRdLen=0x{piRdLen:x8} piWrLen=0x{piWrLen:x8} siStatus=0x{siStatus:x8} siDram=0x{siDram:x8} siRd=0x{siRd64:x8} siWr=0x{siWr64:x8} pifCtl=0x{pifCtrl:x2} cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} badv=0x{cop0BadVaddr:x8} t0=0x{t0:x16} t1=0x{t1:x16} t6=0x{t6:x16} t7=0x{t7:x16} t8=0x{t8:x16} t9=0x{t9:x16} ra=0x{ra:x16}";
+                    ulong cop0Epc = Registers.COP0.Reg[Registers.COP0.EPC_REG];
+                    uint epc = (uint)cop0Epc;
+                    uint epcOp = 0;
+                    uint epcPrevOp = 0;
+                    uint epcNextOp = 0;
+                    try { epcOp = R4300.memory.ReadUInt32(epc); } catch { }
+                    try { epcPrevOp = R4300.memory.ReadUInt32(epc - 4); } catch { }
+                    try { epcNextOp = R4300.memory.ReadUInt32(epc + 4); } catch { }
+                    ulong t6 = Registers.R4300.Reg[14];
+                    ulong t7 = Registers.R4300.Reg[15];
+                    ulong t8 = Registers.R4300.Reg[24];
+                    ulong t9 = Registers.R4300.Reg[25];
+                    ulong t0 = Registers.R4300.Reg[8];
+                    ulong t1 = Registers.R4300.Reg[9];
+                    ulong v0 = Registers.R4300.Reg[2];
+                    ulong v1 = Registers.R4300.Reg[3];
+                    ulong a0 = Registers.R4300.Reg[4];
+                    ulong a1 = Registers.R4300.Reg[5];
+                    ulong ra = Registers.R4300.Reg[31];
+                    return $"pc=0x{pc:x8} op=0x{op:x8} epc=0x{epc:x8} epcPrev=0x{epcPrevOp:x8} epcOp=0x{epcOp:x8} epcNext=0x{epcNextOp:x8} cycles={cycles} unk={unknown} viStatus=0x{viStatus:x8} viOrigin=0x{viOrigin:x8} viWidth={viWidth} aiLen=0x{aiLen:x} miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} piStatus=0x{piStatus:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} piRdLen=0x{piRdLen:x8} piWrLen=0x{piWrLen:x8} siStatus=0x{siStatus:x8} siDram=0x{siDram:x8} siRd=0x{siRd64:x8} siWr=0x{siWr64:x8} pifCtl=0x{pifCtrl:x2} cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} badv=0x{cop0BadVaddr:x8} v0=0x{v0:x16} v1=0x{v1:x16} a0=0x{a0:x16} a1=0x{a1:x16} t0=0x{t0:x16} t1=0x{t1:x16} t6=0x{t6:x16} t7=0x{t7:x16} t8=0x{t8:x16} t9=0x{t9:x16} ra=0x{ra:x16}";
                 }
                 catch (Exception ex)
                 {
