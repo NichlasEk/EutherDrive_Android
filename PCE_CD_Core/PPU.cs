@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace ePceCD
@@ -17,8 +18,15 @@ namespace ePceCD
     {
         private static readonly bool TraceVdcRegs =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_LOG"), "1", StringComparison.Ordinal);
+        private static readonly bool AlignSpritePattern =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_PATTERN_ALIGN"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSpriteFetch =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_FETCH_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSpriteFetchLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_FETCH_TRACE_LIMIT"), out int sfLim) && sfLim > 0 ? sfLim : 4000;
         private static readonly int TraceVdcRegsLimit = 200;
         private int _traceVdcRegsCount;
+        private int _traceSpriteFetchCount;
         [Serializable]
         private struct SpriteAttribute
         {
@@ -26,6 +34,8 @@ namespace ePceCD
             public int m_Y;
             public int m_Pattern;
             public int m_Mode1Offset;
+            [NonSerialized]
+            public bool m_Mode1;
             //TODO: add CG support, ex: YS I & II
             public bool m_CGPage;
 
@@ -347,17 +357,21 @@ namespace ePceCD
                     int width = (cgx == 0) ? 1 : 2;
                     int height = (cgy == 0) ? 16 : (cgy == 1 ? 32 : 64);
                     int pattern = (sat2 >> 1) & 0x3FF;
-                    if (width == 2) pattern &= 0xFFFE;
-                    switch (cgy)
+                    if (AlignSpritePattern)
                     {
-                        case 1: pattern &= 0xFFFD; break;
-                        case 2:
-                        case 3: pattern &= 0xFFF9; break;
+                        if (width == 2) pattern &= 0xFFFE;
+                        switch (cgy)
+                        {
+                            case 1: pattern &= 0xFFFD; break;
+                            case 2:
+                            case 3: pattern &= 0xFFF9; break;
+                        }
                     }
                     m_SAT[i].m_Y = (sat0 & 0x3FF) - 64;
                     m_SAT[i].m_X = (sat1 & 0x3FF) - 32;
                     m_SAT[i].m_Pattern = pattern << 6;
                     m_SAT[i].m_Mode1Offset = mode1Offset;
+                    m_SAT[i].m_Mode1 = mode1;
                     m_SAT[i].m_CGPage = (sat2 & 0x0001) != 0;
                     m_SAT[i].m_Palette = ((sat3 & 0xF) << 4) | ((i == 0) ? 0x4100 : 0x2100);
                     m_SAT[i].m_Priority = (sat3 & 0x80) != 0;
@@ -416,17 +430,21 @@ namespace ePceCD
                 int width = (cgx == 0) ? 1 : 2;
                 int height = (cgy == 0) ? 16 : (cgy == 1 ? 32 : 64);
                 int pattern = (sat2 >> 1) & 0x3FF;
-                if (width == 2) pattern &= 0xFFFE;
-                switch (cgy)
+                if (AlignSpritePattern)
                 {
-                    case 1: pattern &= 0xFFFD; break;
-                    case 2:
-                    case 3: pattern &= 0xFFF9; break;
+                    if (width == 2) pattern &= 0xFFFE;
+                    switch (cgy)
+                    {
+                        case 1: pattern &= 0xFFFD; break;
+                        case 2:
+                        case 3: pattern &= 0xFFF9; break;
+                    }
                 }
                 m_SAT[i].m_Y = (sat0 & 0x3FF) - 64;
                 m_SAT[i].m_X = (sat1 & 0x3FF) - 32;
                 m_SAT[i].m_Pattern = pattern << 6;
                 m_SAT[i].m_Mode1Offset = mode1Offset;
+                m_SAT[i].m_Mode1 = mode1;
                 m_SAT[i].m_CGPage = (sat2 & 0x0001) != 0;
                 m_SAT[i].m_Palette = ((sat3 & 0xF) << 4) | ((i == 0) ? 0x4100 : 0x2100);
                 m_SAT[i].m_Priority = (sat3 & 0x80) != 0;
@@ -477,6 +495,7 @@ namespace ePceCD
                 writer.WriteLine($"reg_mawr=0x{m_VDC_MAWR:X4}");
                 writer.WriteLine($"reg_marr=0x{m_VDC_MARR:X4}");
                 writer.WriteLine($"reg_vsar=0x{m_VDC_VSAR:X4}");
+                writer.WriteLine($"spr_pattern_align={(AlignSpritePattern ? 1 : 0)}");
                 writer.WriteLine($"enable_bg={m_VDC_EnableBackground}");
                 writer.WriteLine($"enable_spr={m_VDC_EnableSprites}");
                 writer.WriteLine($"do_sat_dma={m_DoSAT_DMA}");
@@ -485,12 +504,12 @@ namespace ePceCD
 
             using (var writer = new StreamWriter(Path.Combine(directory, $"{prefix}_sprites.txt")))
             {
-                writer.WriteLine("idx x y pattern mode1 cgpage hflip vflip w h prio pal");
+                writer.WriteLine("idx x y pattern mode1 mode1ofs cgpage hflip vflip w h prio pal");
                 for (int i = 0; i < m_SAT.Length; i++)
                 {
                     var s = m_SAT[i];
                     writer.WriteLine(
-                        $"{i:D2} {s.m_X:D4} {s.m_Y:D4} 0x{s.m_Pattern:X4} {s.m_Mode1Offset:D2} {(s.m_CGPage ? 1 : 0)} {(s.m_HorizontalFlip ? 1 : 0)} {(s.m_VerticalFlip ? 1 : 0)} {s.m_Width:D1} {s.m_Height:D1} {(s.m_Priority ? 1 : 0)} {s.m_Palette:D2}");
+                        $"{i:D2} {s.m_X:D4} {s.m_Y:D4} 0x{s.m_Pattern:X4} {(s.m_Mode1 ? 1 : 0)} {s.m_Mode1Offset:D2} {(s.m_CGPage ? 1 : 0)} {(s.m_HorizontalFlip ? 1 : 0)} {(s.m_VerticalFlip ? 1 : 0)} {s.m_Width:D1} {s.m_Height:D1} {(s.m_Priority ? 1 : 0)} {s.m_Palette:D2}");
                 }
             }
 
@@ -500,6 +519,82 @@ namespace ePceCD
             var satBytes = new byte[satWords.Length * sizeof(ushort)];
             Buffer.BlockCopy(satWords, 0, satBytes, 0, satBytes.Length);
             File.WriteAllBytes(Path.Combine(directory, $"{prefix}_sat_raw.bin"), satBytes);
+        }
+
+        public void AppendDeterminismTrace(StringBuilder sb)
+        {
+            if (sb == null)
+                return;
+
+            sb.Append(" ppu_line=").Append(m_RenderLine);
+            sb.Append(" vsr=").Append(m_VDC_VSR.ToString("X4"));
+            sb.Append(" vdw=").Append(m_VDC_VDW.ToString("X4"));
+            sb.Append(" hdr=").Append(m_VDC_HDR.ToString("X4"));
+            sb.Append(" bxr=").Append(m_VDC_BXR.ToString("X4"));
+            sb.Append(" byr=").Append(m_VDC_BYR.ToString("X4"));
+            sb.Append(" mawr=").Append(m_VDC_MAWR.ToString("X4"));
+            sb.Append(" marr=").Append(m_VDC_MARR.ToString("X4"));
+            sb.Append(" vsar=").Append(m_VDC_VSAR.ToString("X4"));
+            sb.Append(" mwr=").Append(m_VDC_MWR.ToString("X4"));
+            sb.Append(" bg=").Append(m_VDC_EnableBackground ? 1 : 0);
+            sb.Append(" spr=").Append(m_VDC_EnableSprites ? 1 : 0);
+            sb.Append(" sat_dma=").Append(m_DoSAT_DMA ? 1 : 0);
+            sb.Append(" wait_irq=").Append(m_WaitingIRQ ? 1 : 0);
+            sb.Append(" vram_hash=").Append(ComputeVramHash().ToString("X16"));
+            sb.Append(" sat_hash=").Append(ComputeSatHash().ToString("X16"));
+            sb.Append(" vce_hash=").Append(ComputeVceHash().ToString("X16"));
+        }
+
+        private static ulong Fnv1a64(ulong hash, uint value)
+        {
+            const ulong prime = 1099511628211ul;
+            hash ^= (byte)value;
+            hash *= prime;
+            hash ^= (byte)(value >> 8);
+            hash *= prime;
+            hash ^= (byte)(value >> 16);
+            hash *= prime;
+            hash ^= (byte)(value >> 24);
+            hash *= prime;
+            return hash;
+        }
+
+        private ulong ComputeVramHash()
+        {
+            ulong h = 1469598103934665603ul;
+            for (int i = 0; i < m_VRAM.Length; i++)
+                h = Fnv1a64(h, m_VRAM[i]);
+            return h;
+        }
+
+        private ulong ComputeVceHash()
+        {
+            ulong h = 1469598103934665603ul;
+            for (int i = 0; i < m_VCE.Length; i++)
+                h = Fnv1a64(h, m_VCE[i]);
+            return h;
+        }
+
+        private ulong ComputeSatHash()
+        {
+            ulong h = 1469598103934665603ul;
+            for (int i = 0; i < m_SAT.Length; i++)
+            {
+                var s = m_SAT[i];
+                h = Fnv1a64(h, (uint)s.m_X);
+                h = Fnv1a64(h, (uint)s.m_Y);
+                h = Fnv1a64(h, (uint)s.m_Pattern);
+                h = Fnv1a64(h, (uint)s.m_Mode1Offset);
+                h = Fnv1a64(h, (uint)(s.m_Mode1 ? 1 : 0));
+                h = Fnv1a64(h, (uint)(s.m_CGPage ? 1 : 0));
+                h = Fnv1a64(h, (uint)(s.m_VerticalFlip ? 1 : 0));
+                h = Fnv1a64(h, (uint)(s.m_HorizontalFlip ? 1 : 0));
+                h = Fnv1a64(h, (uint)s.m_Width);
+                h = Fnv1a64(h, (uint)s.m_Height);
+                h = Fnv1a64(h, (uint)(s.m_Priority ? 1 : 0));
+                h = Fnv1a64(h, (uint)s.m_Palette);
+            }
+            return h;
         }
 
         private unsafe void DrawScanLine()
@@ -565,18 +660,23 @@ namespace ePceCD
                         switch (SprBuffer[i].m_Width)
                         {
                             case 1:
-                                DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, SprBuffer[i].m_HorizontalFlip, SprBuffer[i].m_Mode1Offset != 0);
+                                DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, SprBuffer[i].m_HorizontalFlip, SprBuffer[i].m_Mode1);
+                                TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile);
                                 break;
                             case 2:
                                 if (SprBuffer[i].m_HorizontalFlip)
                                 {
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, true, SprBuffer[i].m_Mode1Offset != 0);
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, true, SprBuffer[i].m_Mode1Offset != 0);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, true, SprBuffer[i].m_Mode1);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, true, SprBuffer[i].m_Mode1);
+                                    TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile + 64);
+                                    TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile);
                                 }
                                 else
                                 {
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, false, SprBuffer[i].m_Mode1Offset != 0);
-                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, false, SprBuffer[i].m_Mode1Offset != 0);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile, SprBuffer[i].m_Priority, false, SprBuffer[i].m_Mode1);
+                                    DrawSPRTile(ScanLinePtr, ref spx, SprBuffer[i].m_Palette, tile + 64, SprBuffer[i].m_Priority, false, SprBuffer[i].m_Mode1);
+                                    TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile);
+                                    TraceSpriteTileFetch(visibleLine, i, SprBuffer[i], tile + 64);
                                 }
                                 break;
                         }
@@ -663,12 +763,14 @@ namespace ePceCD
             int p2 = mode1 ? 0 : m_VRAM[tile + 32];
             int p3 = mode1 ? 0 : m_VRAM[tile + 48];
             int color = 0;
+            int* scanEnd = ScanLinePtr + SCREEN_WIDTH;
 
             if (priority) palette |= 0x1000;
 
             if (flip)
                 for (int x = 0; x < 16; x++, px++)
                 {
+                    if (px >= scanEnd) break;
                     if (px < ScanLinePtr) continue;
                     color =
                         ((p0 >> x) & 1) |
@@ -681,6 +783,7 @@ namespace ePceCD
             else
                 for (int x = 15; x >= 0; x--, px++)
                 {
+                    if (px >= scanEnd) break;
                     if (px < ScanLinePtr) continue;
                     color =
                         ((p0 >> x) & 1) |
@@ -690,6 +793,23 @@ namespace ePceCD
                     if (color == 0) continue;
                     *px = palette | color;
                 }
+        }
+
+        private void TraceSpriteTileFetch(int visibleLine, int bufferIndex, SpriteAttribute s, int tileBase)
+        {
+            if (!TraceSpriteFetch)
+                return;
+            if (_traceSpriteFetchCount >= TraceSpriteFetchLimit)
+                return;
+            if ((uint)(tileBase + 48) >= (uint)m_VRAM.Length)
+                return;
+            _traceSpriteFetchCount++;
+            ushort p0 = m_VRAM[tileBase];
+            ushort p1 = m_VRAM[tileBase + 16];
+            ushort p2 = m_VRAM[tileBase + 32];
+            ushort p3 = m_VRAM[tileBase + 48];
+            Console.WriteLine(
+                $"[PCE-SPR] line={visibleLine} idx={bufferIndex} x={s.m_X} y={s.m_Y} w={s.m_Width} h={s.m_Height} pat=0x{s.m_Pattern:X4} tile=0x{tileBase:X4} mode1={(s.m_Mode1 ? 1 : 0)} p0=0x{p0:X4} p1=0x{p1:X4} p2=0x{p2:X4} p3=0x{p3:X4}");
         }
 
         public unsafe void DrawBGTile(int* ScanLinePtr, ref int* px, int palette, int tile)

@@ -278,11 +278,19 @@ internal static class StateBinarySerializer
             int rank = reader.ReadInt32();
             bool isReadonly = field.IsInitOnly;
             
-            // DEBUG: Log if rank is huge
-            if (rank > 10)
+            // Backward compatibility:
+            // Older savestates wrote 1D arrays as [length] instead of [rank][length].
+            // If we see an unreasonable rank for a 1D array, treat the first int as legacy length.
+            int? legacyLength = null;
+            if (rank > 10 && field.FieldType.IsArray && field.FieldType.GetArrayRank() == 1)
+            {
+                legacyLength = rank;
+                rank = 1;
+                Console.WriteLine($"[DEBUG-StateBinarySerializer] Legacy 1D array header detected for field={field.Name}, length={legacyLength.Value}");
+            }
+            else if (rank > 10)
             {
                 Console.WriteLine($"[DEBUG-StateBinarySerializer] ReadArrayInto: field={field.Name} type={field.FieldType} rank={rank} (HUGE!)");
-                // Try to read next bytes to see what's in the stream
                 long pos = reader.BaseStream.Position;
                 byte[] next16 = new byte[Math.Min(16, reader.BaseStream.Length - pos)];
                 if (next16.Length > 0)
@@ -291,12 +299,6 @@ internal static class StateBinarySerializer
                     reader.BaseStream.Position = pos;
                     Console.WriteLine($"[DEBUG] Next {next16.Length} bytes: {BitConverter.ToString(next16)}");
                 }
-                
-                // If rank is unreasonable (corrupt data), try to recover
-                // _z80MbxPollDataLast should be byte[16] = rank=1, length=16
-                // But we see rank=128 (0x80). Maybe it's actually 0x01 (rank=1) with wrong endianness?
-                // Or maybe the byte 0x80 represents something else?
-                // For now, throw a clearer error
                 throw new InvalidDataException($"Array rank {rank} is unreasonable for field {field.Name}. Savestate file may be corrupt.");
             }
             
@@ -318,10 +320,18 @@ internal static class StateBinarySerializer
 
             int[] lengths = new int[rank];
             int total = 1;
-            for (int i = 0; i < rank; i++)
+            if (legacyLength.HasValue)
             {
-                lengths[i] = reader.ReadInt32();
-                total *= lengths[i];
+                lengths[0] = legacyLength.Value;
+                total = legacyLength.Value;
+            }
+            else
+            {
+                for (int i = 0; i < rank; i++)
+                {
+                    lengths[i] = reader.ReadInt32();
+                    total *= lengths[i];
+                }
             }
 
         Array? existing = (Array?)field.GetValue(target);
