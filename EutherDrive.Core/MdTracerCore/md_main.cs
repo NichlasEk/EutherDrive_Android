@@ -132,6 +132,24 @@ namespace EutherDrive.Core.MdTracerCore
         private static IBusInterface? _m68kEmuBus;
         private static int _m68kWaitCycles;
         private static int _m68kRefreshCounter;
+        private static readonly bool AutoUnmaskIrqDebug =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_IRQ_AUTOUNMASK"), "1", StringComparison.Ordinal);
+        private static int _autoUnmaskStuckCount;
+        private static bool _autoUnmaskLogged;
+        private static long _autoUnmaskFireCount;
+        private static int _m68kEmuLastSliceExecInstructions;
+        private static int _m68kEmuLastSliceDmaWaitCycles;
+        private static int _m68kEmuLastSliceDmaWaitEvents;
+        private static int _m68kEmuLastSliceRefreshWaitCycles;
+        private static int _m68kEmuLastSliceRefreshWaitEvents;
+        private static int _m68kEmuNoExecSliceStreak;
+        private static long _runFrameEnterCount;
+        private static long _runFrameCompleteCount;
+        private static long _runFrameLastFrame;
+        private static int _runFrameLastLines;
+        private static int _runFrameLastM68kCalls;
+        private static int _runFrameLastM68kBudget;
+        private static bool _loadedM68kEmuStateFromSavestate;
         // Z80/M68K cycle ratio for NTSC: Z80 ~3.58MHz, M68K ~7.67MHz => ratio ~0.466
         private static readonly double Z80PerM68kRatio = 3.579545 / 7.670000; // More precise ratio
         private static readonly int Z80ContinuousSliceCycles = ParseZ80ContinuousSliceCycles();
@@ -258,7 +276,15 @@ namespace EutherDrive.Core.MdTracerCore
         // timebase for YM2612 busy checks that doesn't depend on per-frame budgets.
         // We use M68K cycles as the base unit (VDL_LINE_RENDER_MC68_CLOCK per line).
         private static long _systemCycles;
+        private static long _mainHintReqCount;
+        private static long _mainVintReqCount;
+        private static long _mainExtReqCount;
+        private static long _mainHintAckCount;
+        private static long _mainVintAckCount;
+        private static long _mainExtAckCount;
         internal static long SystemCycles => _systemCycles;
+        internal static bool MainM68kEmuConfigured => UseM68kEmuMain;
+        internal static bool MainM68kEmuReady => UseM68kEmuMain && _m68kEmu != null && _m68kEmuBus != null;
         internal static void AdvanceSystemCycles(long cycles)
         {
             if (cycles <= 0)
@@ -280,6 +306,353 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 md_m68k.g_clock += cycles;
             }
+        }
+
+        internal readonly struct MainInterruptDebugSnapshot
+        {
+            internal readonly bool UsingM68kEmu;
+            internal readonly bool M68kEmuConfigured;
+            internal readonly bool M68kEmuReady;
+            internal readonly ushort Sr;
+            internal readonly byte InterruptMask;
+            internal readonly int PendingInterruptLevel;
+            internal readonly byte BusInterruptLevel;
+            internal readonly bool WillTakeInterrupt;
+            internal readonly bool CpuStopped;
+            internal readonly bool CpuFrozen;
+            internal readonly ushort NextOpcode;
+            internal readonly bool HintReq;
+            internal readonly bool VintReq;
+            internal readonly bool ExtReq;
+            internal readonly bool HintEnabled;
+            internal readonly bool VintEnabled;
+            internal readonly long HintReqCount;
+            internal readonly long VintReqCount;
+            internal readonly long ExtReqCount;
+            internal readonly long HintAckCount;
+            internal readonly long VintAckCount;
+            internal readonly long ExtAckCount;
+            internal readonly int M68kEmuSliceExecInstructions;
+            internal readonly int M68kEmuSliceDmaWaitCycles;
+            internal readonly int M68kEmuSliceDmaWaitEvents;
+            internal readonly int M68kEmuSliceRefreshWaitCycles;
+            internal readonly int M68kEmuSliceRefreshWaitEvents;
+            internal readonly int M68kEmuNoExecSliceStreak;
+            internal readonly long AutoUnmaskFireCount;
+            internal readonly long RunFrameEnterCount;
+            internal readonly long RunFrameCompleteCount;
+            internal readonly long RunFrameLastFrame;
+            internal readonly int RunFrameLastLines;
+            internal readonly int RunFrameLastM68kCalls;
+            internal readonly int RunFrameLastM68kBudget;
+
+            internal MainInterruptDebugSnapshot(
+                bool usingM68kEmu,
+                bool m68kEmuConfigured,
+                bool m68kEmuReady,
+                ushort sr,
+                byte interruptMask,
+                int pendingInterruptLevel,
+                byte busInterruptLevel,
+                bool willTakeInterrupt,
+                bool cpuStopped,
+                bool cpuFrozen,
+                ushort nextOpcode,
+                bool hintReq,
+                bool vintReq,
+                bool extReq,
+                bool hintEnabled,
+                bool vintEnabled,
+                long hintReqCount,
+                long vintReqCount,
+                long extReqCount,
+                long hintAckCount,
+                long vintAckCount,
+                long extAckCount,
+                int m68kEmuSliceExecInstructions,
+                int m68kEmuSliceDmaWaitCycles,
+                int m68kEmuSliceDmaWaitEvents,
+                int m68kEmuSliceRefreshWaitCycles,
+                int m68kEmuSliceRefreshWaitEvents,
+                int m68kEmuNoExecSliceStreak,
+                long autoUnmaskFireCount,
+                long runFrameEnterCount,
+                long runFrameCompleteCount,
+                long runFrameLastFrame,
+                int runFrameLastLines,
+                int runFrameLastM68kCalls,
+                int runFrameLastM68kBudget)
+            {
+                UsingM68kEmu = usingM68kEmu;
+                M68kEmuConfigured = m68kEmuConfigured;
+                M68kEmuReady = m68kEmuReady;
+                Sr = sr;
+                InterruptMask = interruptMask;
+                PendingInterruptLevel = pendingInterruptLevel;
+                BusInterruptLevel = busInterruptLevel;
+                WillTakeInterrupt = willTakeInterrupt;
+                CpuStopped = cpuStopped;
+                CpuFrozen = cpuFrozen;
+                NextOpcode = nextOpcode;
+                HintReq = hintReq;
+                VintReq = vintReq;
+                ExtReq = extReq;
+                HintEnabled = hintEnabled;
+                VintEnabled = vintEnabled;
+                HintReqCount = hintReqCount;
+                VintReqCount = vintReqCount;
+                ExtReqCount = extReqCount;
+                HintAckCount = hintAckCount;
+                VintAckCount = vintAckCount;
+                ExtAckCount = extAckCount;
+                M68kEmuSliceExecInstructions = m68kEmuSliceExecInstructions;
+                M68kEmuSliceDmaWaitCycles = m68kEmuSliceDmaWaitCycles;
+                M68kEmuSliceDmaWaitEvents = m68kEmuSliceDmaWaitEvents;
+                M68kEmuSliceRefreshWaitCycles = m68kEmuSliceRefreshWaitCycles;
+                M68kEmuSliceRefreshWaitEvents = m68kEmuSliceRefreshWaitEvents;
+                M68kEmuNoExecSliceStreak = m68kEmuNoExecSliceStreak;
+                AutoUnmaskFireCount = autoUnmaskFireCount;
+                RunFrameEnterCount = runFrameEnterCount;
+                RunFrameCompleteCount = runFrameCompleteCount;
+                RunFrameLastFrame = runFrameLastFrame;
+                RunFrameLastLines = runFrameLastLines;
+                RunFrameLastM68kCalls = runFrameLastM68kCalls;
+                RunFrameLastM68kBudget = runFrameLastM68kBudget;
+            }
+        }
+
+        internal static MainInterruptDebugSnapshot CaptureMainInterruptDebug()
+        {
+            md_vdp? vdp = g_md_vdp;
+            bool hintReq = md_m68k.g_interrupt_H_req;
+            bool vintReq = md_m68k.g_interrupt_V_req;
+            bool extReq = md_m68k.g_interrupt_EXT_req;
+            bool hintEnabled = vdp != null && vdp.g_vdp_reg_0_4_hinterrupt == 1;
+            bool vintEnabled = vdp != null && vdp.g_vdp_reg_1_5_vinterrupt == 1;
+
+            if (UseM68kEmuMain && _m68kEmu != null)
+            {
+                ushort sr = _m68kEmu.StatusRegister;
+                byte mask = (byte)((sr >> 8) & 0x07);
+                int pending = _m68kEmu.PendingInterruptLevel.HasValue ? _m68kEmu.PendingInterruptLevel.Value : -1;
+                byte busLevel = _m68kEmuBus?.InterruptLevel() ?? 0;
+                bool willTake = pending >= 0 || busLevel > mask;
+                return new MainInterruptDebugSnapshot(
+                    usingM68kEmu: true,
+                    m68kEmuConfigured: true,
+                    m68kEmuReady: true,
+                    sr: sr,
+                    interruptMask: mask,
+                    pendingInterruptLevel: pending,
+                    busInterruptLevel: busLevel,
+                    willTakeInterrupt: willTake,
+                    cpuStopped: _m68kEmu.IsStopped,
+                    cpuFrozen: _m68kEmu.IsFrozen,
+                    nextOpcode: _m68kEmu.NextOpcode,
+                    hintReq: hintReq,
+                    vintReq: vintReq,
+                    extReq: extReq,
+                    hintEnabled: hintEnabled,
+                    vintEnabled: vintEnabled,
+                    hintReqCount: _mainHintReqCount,
+                    vintReqCount: _mainVintReqCount,
+                    extReqCount: _mainExtReqCount,
+                    hintAckCount: _mainHintAckCount,
+                    vintAckCount: _mainVintAckCount,
+                    extAckCount: _mainExtAckCount,
+                    m68kEmuSliceExecInstructions: _m68kEmuLastSliceExecInstructions,
+                    m68kEmuSliceDmaWaitCycles: _m68kEmuLastSliceDmaWaitCycles,
+                    m68kEmuSliceDmaWaitEvents: _m68kEmuLastSliceDmaWaitEvents,
+                    m68kEmuSliceRefreshWaitCycles: _m68kEmuLastSliceRefreshWaitCycles,
+                    m68kEmuSliceRefreshWaitEvents: _m68kEmuLastSliceRefreshWaitEvents,
+                    m68kEmuNoExecSliceStreak: _m68kEmuNoExecSliceStreak,
+                    autoUnmaskFireCount: _autoUnmaskFireCount,
+                    runFrameEnterCount: _runFrameEnterCount,
+                    runFrameCompleteCount: _runFrameCompleteCount,
+                    runFrameLastFrame: _runFrameLastFrame,
+                    runFrameLastLines: _runFrameLastLines,
+                    runFrameLastM68kCalls: _runFrameLastM68kCalls,
+                    runFrameLastM68kBudget: _runFrameLastM68kBudget);
+            }
+
+            ushort srLegacy = md_m68k.g_reg_SR;
+            byte maskLegacy = (byte)(md_m68k.g_status_interrupt_mask & 0x07);
+            byte busLevelLegacy = 0;
+            if (hintReq && hintEnabled)
+                busLevelLegacy = 4;
+            else if (vintReq && vintEnabled && !md_m68k.g_interrupt_H_act)
+                busLevelLegacy = 6;
+            else if (extReq)
+                busLevelLegacy = md_m68k.g_interrupt_EXT_level;
+
+            bool willTakeLegacy = busLevelLegacy > maskLegacy;
+            return new MainInterruptDebugSnapshot(
+                usingM68kEmu: false,
+                m68kEmuConfigured: UseM68kEmuMain,
+                m68kEmuReady: false,
+                sr: srLegacy,
+                interruptMask: maskLegacy,
+                pendingInterruptLevel: -1,
+                busInterruptLevel: busLevelLegacy,
+                willTakeInterrupt: willTakeLegacy,
+                cpuStopped: md_m68k.g_68k_stop,
+                cpuFrozen: false,
+                nextOpcode: md_m68k.g_opcode,
+                hintReq: hintReq,
+                vintReq: vintReq,
+                extReq: extReq,
+                hintEnabled: hintEnabled,
+                vintEnabled: vintEnabled,
+                hintReqCount: _mainHintReqCount,
+                vintReqCount: _mainVintReqCount,
+                extReqCount: _mainExtReqCount,
+                hintAckCount: _mainHintAckCount,
+                vintAckCount: _mainVintAckCount,
+                extAckCount: _mainExtAckCount,
+                m68kEmuSliceExecInstructions: 0,
+                m68kEmuSliceDmaWaitCycles: 0,
+                m68kEmuSliceDmaWaitEvents: 0,
+                m68kEmuSliceRefreshWaitCycles: 0,
+                m68kEmuSliceRefreshWaitEvents: 0,
+                m68kEmuNoExecSliceStreak: 0,
+                autoUnmaskFireCount: _autoUnmaskFireCount,
+                runFrameEnterCount: _runFrameEnterCount,
+                runFrameCompleteCount: _runFrameCompleteCount,
+                runFrameLastFrame: _runFrameLastFrame,
+                runFrameLastLines: _runFrameLastLines,
+                runFrameLastM68kCalls: _runFrameLastM68kCalls,
+                runFrameLastM68kBudget: _runFrameLastM68kBudget);
+        }
+
+        internal static void EnsureMainM68kBackend()
+        {
+            if (!UseM68kEmuMain)
+                return;
+            if (g_md_bus == null)
+                return;
+
+            _m68kEmu ??= M68000.CreateBuilder()
+                .AllowTasWrites(md_m68k.AllowTasWrites)
+                .Name("MD-MAIN")
+                .Build();
+            _m68kEmuBus = new SegaCdMainM68kBus(g_md_bus);
+            _m68kEmu.Reset(_m68kEmuBus);
+            _m68kWaitCycles = 0;
+            _m68kRefreshCounter = 0;
+            md_m68k.g_reg_PC = _m68kEmu.Pc;
+            md_m68k.g_opcode = _m68kEmu.NextOpcode;
+        }
+
+        internal static void SyncM68kEmuFromLegacyState()
+        {
+            if (!UseM68kEmuMain)
+                return;
+
+            EnsureMainM68kBackend();
+            if (_m68kEmu == null)
+                return;
+
+            uint[] data = new uint[8];
+            for (int i = 0; i < 8; i++)
+                data[i] = md_m68k.g_reg_data[i].l;
+
+            uint[] address = new uint[7];
+            for (int i = 0; i < 7; i++)
+                address[i] = md_m68k.g_reg_addr[i].l;
+
+            ushort sr = md_m68k.g_reg_SR;
+            bool supervisor = (sr & 0x2000) != 0;
+            uint a7 = md_m68k.g_reg_addr[7].l;
+            uint usp = supervisor ? md_m68k.g_reg_addr_usp.l : a7;
+            uint ssp = supervisor ? a7 : md_m68k.g_reg_addr_usp.l;
+
+            var state = new M68000.M68000State(
+                data: data,
+                address: address,
+                usp: usp,
+                ssp: ssp,
+                sr: sr,
+                pc: md_m68k.g_reg_PC,
+                prefetch: md_m68k.g_opcode);
+            _m68kEmu.SetState(state);
+
+            _m68kWaitCycles = 0;
+            _m68kRefreshCounter = 0;
+        }
+
+        internal static void FinalizeM68kStateAfterSavestateLoad()
+        {
+            if (!UseM68kEmuMain)
+                return;
+
+            if (_loadedM68kEmuStateFromSavestate)
+            {
+                if (_m68kEmu != null)
+                {
+                    md_m68k.g_reg_PC = _m68kEmu.Pc;
+                    md_m68k.g_opcode = _m68kEmu.NextOpcode;
+                }
+                return;
+            }
+
+            SyncM68kEmuFromLegacyState();
+        }
+
+        internal static void CountMainIrqRequest(byte level)
+        {
+            switch (level)
+            {
+                case 4:
+                    _mainHintReqCount++;
+                    break;
+                case 6:
+                    _mainVintReqCount++;
+                    break;
+                default:
+                    if (level != 0)
+                        _mainExtReqCount++;
+                    break;
+            }
+        }
+
+        internal static void CountMainIrqAcknowledge(byte level)
+        {
+            switch (level)
+            {
+                case 4:
+                    _mainHintAckCount++;
+                    break;
+                case 6:
+                    _mainVintAckCount++;
+                    break;
+                default:
+                    if (level != 0)
+                        _mainExtAckCount++;
+                    break;
+            }
+        }
+
+        private static void ResetMainIrqDebugCounters()
+        {
+            _mainHintReqCount = 0;
+            _mainVintReqCount = 0;
+            _mainExtReqCount = 0;
+            _mainHintAckCount = 0;
+            _mainVintAckCount = 0;
+            _mainExtAckCount = 0;
+            _m68kEmuLastSliceExecInstructions = 0;
+            _m68kEmuLastSliceDmaWaitCycles = 0;
+            _m68kEmuLastSliceDmaWaitEvents = 0;
+            _m68kEmuLastSliceRefreshWaitCycles = 0;
+            _m68kEmuLastSliceRefreshWaitEvents = 0;
+            _m68kEmuNoExecSliceStreak = 0;
+            _autoUnmaskFireCount = 0;
+            _runFrameEnterCount = 0;
+            _runFrameCompleteCount = 0;
+            _runFrameLastFrame = -1;
+            _runFrameLastLines = 0;
+            _runFrameLastM68kCalls = 0;
+            _runFrameLastM68kBudget = 0;
         }
 
         // Synkroniseringssystem för gemensam tidsbas (inspirerat av andra emulatorer)
@@ -379,16 +752,50 @@ namespace EutherDrive.Core.MdTracerCore
             if (_m68kEmu == null || _m68kEmuBus == null)
                 return;
 
-            md_m68k.g_slice_start_clock_total = md_m68k.g_clock_total;
+            // Keep legacy md_m68k clocks slice-local while running the new core.
+            // This avoids int overflow corrupting HV timing probes after long runs.
+            md_m68k.g_slice_start_clock_total = 0;
             md_m68k.g_slice_clock_len = cycles;
-            md_m68k.g_clock_total += cycles;
+            md_m68k.g_clock_now = 0;
+            md_m68k.g_clock_total = cycles;
 
             int remaining = cycles;
             int guard = 0;
+            int execInstructions = 0;
+            int dmaWaitCycles = 0;
+            int dmaWaitEvents = 0;
+            int refreshWaitCycles = 0;
+            int refreshWaitEvents = 0;
             while (remaining > 0)
             {
                 if (++guard > 200000)
                     break;
+
+                if (AutoUnmaskIrqDebug)
+                {
+                    byte busLevelNow = _m68kEmuBus.InterruptLevel();
+                    byte maskNow = _m68kEmu.InterruptPriorityMask;
+                    if (busLevelNow != 0 && maskNow >= 7)
+                    {
+                        _autoUnmaskStuckCount++;
+                        if (_autoUnmaskStuckCount > 32)
+                        {
+                            _m68kEmu.ForceInterruptMask(3);
+                            _autoUnmaskFireCount++;
+                            if (!_autoUnmaskLogged)
+                            {
+                                _autoUnmaskLogged = true;
+                                Console.WriteLine(
+                                    $"[M68K-AUTOUNMASK] pc=0x{_m68kEmu.Pc:X8} bus={busLevelNow} oldMask={maskNow} -> newMask=3");
+                            }
+                            _autoUnmaskStuckCount = 0;
+                        }
+                    }
+                    else
+                    {
+                        _autoUnmaskStuckCount = 0;
+                    }
+                }
 
                 if (g_md_vdp != null)
                 {
@@ -396,6 +803,8 @@ namespace EutherDrive.Core.MdTracerCore
                     if (dmaWait > 0)
                     {
                         int waitStep = Math.Min(remaining, dmaWait);
+                        dmaWaitEvents++;
+                        dmaWaitCycles += waitStep;
                         AddM68kCycles(waitStep);
                         AdvanceSystemCycles(waitStep);
                         md_m68k.g_clock_now += waitStep;
@@ -407,6 +816,8 @@ namespace EutherDrive.Core.MdTracerCore
                 if (_m68kWaitCycles > 0)
                 {
                     int waitStep = Math.Min(remaining, _m68kWaitCycles);
+                    refreshWaitEvents++;
+                    refreshWaitCycles += waitStep;
                     _m68kWaitCycles -= waitStep;
                     md_m68k.g_clock_now += waitStep;
                     AddM68kCycles(waitStep);
@@ -417,6 +828,7 @@ namespace EutherDrive.Core.MdTracerCore
 
                 md_m68k.g_reg_PC = _m68kEmu.Pc;
                 md_m68k.g_opcode = _m68kEmu.NextOpcode;
+                execInstructions++;
 
                 uint used = _m68kEmu.ExecuteInstruction(_m68kEmuBus);
                 if (used == 0)
@@ -445,6 +857,15 @@ namespace EutherDrive.Core.MdTracerCore
                     _m68kRefreshCounter %= 128;
                 }
             }
+
+            _m68kEmuLastSliceExecInstructions = execInstructions;
+            _m68kEmuLastSliceDmaWaitCycles = dmaWaitCycles;
+            _m68kEmuLastSliceDmaWaitEvents = dmaWaitEvents;
+            _m68kEmuLastSliceRefreshWaitCycles = refreshWaitCycles;
+            _m68kEmuLastSliceRefreshWaitEvents = refreshWaitEvents;
+            _m68kEmuNoExecSliceStreak = execInstructions == 0
+                ? (_m68kEmuNoExecSliceStreak + 1)
+                : 0;
         }
 
         // --- Kärnkomponenter ---
@@ -479,18 +900,10 @@ namespace EutherDrive.Core.MdTracerCore
 
             // Reset maskinen
             g_md_m68k.reset();
+            ResetMainIrqDebugCounters();
             if (UseM68kEmuMain)
             {
-                _m68kEmu ??= M68000.CreateBuilder()
-                    .AllowTasWrites(md_m68k.AllowTasWrites)
-                    .Name("MD-MAIN")
-                    .Build();
-                _m68kEmuBus ??= new SegaCdMainM68kBus(g_md_bus);
-                _m68kEmu.Reset(_m68kEmuBus);
-                _m68kWaitCycles = 0;
-                _m68kRefreshCounter = 0;
-                md_m68k.g_reg_PC = _m68kEmu.Pc;
-                md_m68k.g_opcode = _m68kEmu.NextOpcode;
+                EnsureMainM68kBackend();
             }
             SafeResetZ80();
             g_md_vdp.reset();
@@ -523,16 +936,14 @@ namespace EutherDrive.Core.MdTracerCore
             // Säkerställ att run() körts
             if (g_md_m68k is null || g_md_z80 is null)
                 return;
+            _runFrameEnterCount++;
 
             if (g_hard_reset_req)
             {
                 g_md_m68k.reset();
-                if (UseM68kEmuMain && _m68kEmu != null && _m68kEmuBus != null)
-                {
-                    _m68kEmu.Reset(_m68kEmuBus);
-                    _m68kWaitCycles = 0;
-                    _m68kRefreshCounter = 0;
-                }
+                ResetMainIrqDebugCounters();
+                if (UseM68kEmuMain)
+                    EnsureMainM68kBackend();
                 SafeResetZ80();
                 g_md_vdp.reset();
                 ResetZ80WaitState();
@@ -548,6 +959,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             int lines = g_md_vdp.g_vertical_line_max;
             long frame = g_md_vdp?.FrameCounter ?? -1;
+            int frameM68kCalls = 0;
+            int frameM68kBudget = 0;
             if (ForceSeega && !_forceSeegaDone && frame >= ForceSeegaFrame)
             {
                 md_m68k.write32(0xFFF680, ForceSeegaPtr);
@@ -568,6 +981,7 @@ namespace EutherDrive.Core.MdTracerCore
             // CRITICAL: Tick Z80 safe boot timer BEFORE Z80 runs
             // This allows Z80 to run immediately when reset is released
             g_md_bus?.TickZ80SafeBoot(frame);
+            g_md_bus?.ApplyZ80BusReqLatch();
             
             int z80LineBudget = g_masterSystemMode ? SmsCyclesPerLine : Z80CyclesPerLine;
             bool z80RunPerLine = g_masterSystemMode;
@@ -632,6 +1046,8 @@ namespace EutherDrive.Core.MdTracerCore
                         int m68kSlice = Math.Min(sliceM68kCycles, totalM68kCycles - m68kDone);
 
                         // Run M68K slice with VDP FIFO/DMA timing
+                        frameM68kCalls++;
+                        frameM68kBudget += m68kSlice;
                         RunM68kWithVdp(m68kSlice);
                         m68kDone += m68kSlice;
 
@@ -642,6 +1058,7 @@ namespace EutherDrive.Core.MdTracerCore
                         // Max 32 cycles per slice to prevent audio jitter
                         while (z80Budget >= 1.0)
                         {
+                            g_md_bus?.ApplyZ80BusReqLatch();
                             if (g_md_bus?.Z80BusGranted ?? false)
                             {
                                 // Z80 bus is granted to 68k, Z80 cannot run
@@ -652,13 +1069,7 @@ namespace EutherDrive.Core.MdTracerCore
                             if (z80Cycles <= 0) break;
 
                             g_md_z80.BeginSystemCycleSlice();
-                            
-                                // Advance system cycles for Z80 execution BEFORE running Z80
-                                // Z80 runs at 3.58MHz, M68K at 7.67MHz
-                                // Convert Z80 cycles to M68K cycles for SystemCycles timebase
-                                // Convert Z80 cycles to M68K cycles using fraction accumulator
-                                // This must be done BEFORE running Z80 so that TickTimersFromZ80Cycles()
-                                // sees the correct SystemCycles value
+
                             g_md_z80.run(z80Cycles);
                             z80Budget -= z80Cycles;
                             g_md_z80.EndSystemCycleSlice();
@@ -694,12 +1105,20 @@ namespace EutherDrive.Core.MdTracerCore
                                 g_md_z80.EndSystemCycleSlice();
                             }
                             if (m68kCycles > 0)
+                            {
+                                frameM68kCalls++;
+                                frameM68kBudget += m68kCycles;
                                 RunM68kWithVdp(m68kCycles);
+                            }
                         }
                          else
                         {
                             if (m68kCycles > 0)
+                            {
+                                frameM68kCalls++;
+                                frameM68kBudget += m68kCycles;
                                 RunM68kWithVdp(m68kCycles);
+                            }
                             if (allowZ80 && z80Cycles > 0)
                             {
                                 g_md_z80.BeginSystemCycleSlice();
@@ -719,6 +1138,8 @@ namespace EutherDrive.Core.MdTracerCore
                         g_md_z80.run(z80LineBudget);
                         g_md_z80.EndSystemCycleSlice();
                     }
+                    frameM68kCalls++;
+                    frameM68kBudget += VDL_LINE_RENDER_MC68_CLOCK;
                     RunM68kWithVdp(VDL_LINE_RENDER_MC68_CLOCK);
                     if (allowZ80 && z80RunPerLine && !Z80RunBeforeM68k)
                     {
@@ -801,12 +1222,17 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     _smsCycleLogLastMs = now;
                     ushort pc = g_md_z80.DebugPc;
-                    Console.WriteLine($"[SMS CYCLES] budget/sec={_smsCycleLogAccumBudget} actual/sec={_smsCycleLogAccumActual} pc=0x{pc:X4}");
+                    Console.WriteLine($"[Z80 CYCLES/sec] budget={_smsCycleLogAccumBudget} actual={_smsCycleLogAccumActual} pc=0x{pc:X4}");
                     _smsCycleLogAccumBudget = 0;
                     _smsCycleLogAccumActual = 0;
                 }
                 g_md_z80.FlushZ80AudioRate(frame);
             }
+            _runFrameCompleteCount++;
+            _runFrameLastFrame = frame;
+            _runFrameLastLines = lines;
+            _runFrameLastM68kCalls = frameM68kCalls;
+            _runFrameLastM68kBudget = frameM68kBudget;
         }
 
         internal static void MaybeInjectMbx(long frame)

@@ -26,20 +26,27 @@ internal sealed class SegaCdMainM68kBus : IBusInterface
         var vdp = md_main.g_md_vdp;
         bool hintEnabled = vdp != null && vdp.g_vdp_reg_0_4_hinterrupt == 1;
         bool vintEnabled = vdp != null && vdp.g_vdp_reg_1_5_vinterrupt == 1;
+        byte level = 0;
 
-        if (md_m68k.g_interrupt_H_req && hintEnabled)
-            return 4;
-        if (md_m68k.g_interrupt_V_req && vintEnabled)
-            return 6;
+        // Return the highest active level; otherwise lower levels can hide
+        // higher-priority interrupts (e.g. HINT masking VINT).
         if (_memory != null && _memory.Registers.SoftwareInterruptEnabled && _memory.Registers.SoftwareInterruptPending)
-            return 2;
-        if (md_m68k.g_interrupt_EXT_req)
-            return md_m68k.g_interrupt_EXT_level;
-        return 0;
+            level = 2;
+        if (md_m68k.g_interrupt_H_req && hintEnabled && level < 4)
+            level = 4;
+        if (md_m68k.g_interrupt_V_req && vintEnabled && level < 6)
+            level = 6;
+        if (md_m68k.g_interrupt_EXT_req && level < md_m68k.g_interrupt_EXT_level)
+            level = md_m68k.g_interrupt_EXT_level;
+
+        return level;
     }
 
     public void AcknowledgeInterrupt(byte level)
     {
+        if (level != 0)
+            md_main.CountMainIrqAcknowledge(level);
+
         if (level == 4)
         {
             md_m68k.g_interrupt_H_req = false;

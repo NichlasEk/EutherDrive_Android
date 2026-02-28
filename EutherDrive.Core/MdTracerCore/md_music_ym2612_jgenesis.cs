@@ -10,6 +10,7 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _lastYmVal;
         private string _lastYmSource = "none";
         private long _systemCycleRemainder;
+        private static readonly int SystemCyclesPerYmTick = ParseSystemCyclesPerYmTick();
         private short[] _ringBuffer = new short[RingFramesDefault * 2];
         private int _ringRead;
         private int _ringWrite;
@@ -185,8 +186,21 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private const int FmSampleDivider = 24;
-        private const int SystemCyclesPerYmTick = 6;
         private const int RingFramesDefault = 16384;
+
+        private static int ParseSystemCyclesPerYmTick()
+        {
+            // SystemCycles in md_main are M68K cycles.
+            // Practical default tuned against in-game tempo: 8.
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_SYSTEM_CYCLES_PER_TICK");
+            if (!string.IsNullOrWhiteSpace(raw) &&
+                int.TryParse(raw.Trim(), out int value) &&
+                value > 0)
+            {
+                return value;
+            }
+            return 8;
+        }
 
         private int RingFramesCapacity => _ringBuffer.Length / 2;
 
