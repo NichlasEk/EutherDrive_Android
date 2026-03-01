@@ -296,9 +296,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void run(int in_clock)
         {
-            g_slice_start_clock_total = g_clock_total;
+            // Keep legacy clocks slice-local per run() call to avoid int overflow
+            // after long sessions / late savestates. HV timing probes only need
+            // cycles within the current slice.
+            g_slice_start_clock_total = 0;
             g_slice_clock_len = in_clock;
-            g_clock_total += in_clock;
+            g_clock_now = 0;
+            g_clock_total = in_clock;
             md_main.AddM68kCycles(in_clock);
             int iter = 0;
             while (g_clock_now < g_clock_total)
