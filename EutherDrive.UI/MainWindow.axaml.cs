@@ -135,7 +135,7 @@ public partial class MainWindow : Window
     private short[] _snesAudioTemp = Array.Empty<short>();
     private bool _audioEnabled = true;
     private bool _audioFormatMismatchLogged;
-    private const int AudioSampleRate = 44100;
+    private static readonly int AudioSampleRate = ParseAudioSampleRate();
     private const int AudioChannels = 2;
     private const int AudioBufferChunkFrames = 256;
     private static readonly double AudioCyclesScale = GetAudioCyclesScale();
@@ -399,71 +399,7 @@ public partial class MainWindow : Window
             StatusText.Text = $"Loading from CLI: {romPath}";
             _romPath = romPath;
             AddRecentRom(_romPath);
-            _core = CreateCoreForRom(_romPath);
-            ApplyMasterVolumeToCore();
-            if (_core is MdTracerAdapter)
-            {
-                ApplyAudioMixToCore();
-                ApplyDefaultCpuCyclesPerLine();
-                if (_core is MdTracerAdapter smsAdapter)
-                    smsAdapter.SetShowSmsOverscan(_smsOverscanEnabled);
-            }
             SaveSettings();
-            if (_core is MdTracerAdapter m)
-            {
-                m.PowerCycleAndLoadRom(_romPath);
-
-                // Auto-load savestate slot 1 if flag is set
-                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_LOAD_SLOT1_ON_BOOT") == "1")
-                {
-                    try
-                    {
-                        _savestateService.Load(m, 1);
-                        StatusText.Text = "Loaded savestate slot 1";
-                    }
-                    catch (Exception ex)
-                    {
-                        StatusText.Text = $"Savestate load failed: {ex.Message}";
-                    }
-                }
-
-                UpdateRomInfo(m.RomInfo);
-                ApplyFrameRateModeToCore(resetIfRunning: false);
-                Console.WriteLine(m.RomInfo.Summary);
-
-                // Sync UI checkbox with VDP class default (preserve framebuffer on display off)
-                if (PreserveFbCheck != null)
-                {
-                    md_vdp.PreserveFramebufferOnDisplayOff = PreserveFbCheck.IsChecked == true;
-                }
-            }
-            else
-            {
-                _core.LoadRom(_romPath);
-                if (_core is SnesAdapter snes)
-                {
-                    UpdateSnesRomInfo(snes);
-                    Console.WriteLine(snes.RomSummary ?? "SNES ROM loaded.");
-                }
-                else if (_core is NesAdapter nes)
-                {
-                    UpdateNesRomInfo(nes);
-                    Console.WriteLine(nes.RomSummary ?? "NES ROM loaded.");
-                }
-                else if (_core is PsxAdapter)
-                {
-                    UpdatePsxRomInfo(_romPath);
-                }
-                else if (_core is N64Adapter n64)
-                {
-                    UpdateN64RomInfo(_romPath, n64);
-                }
-                else if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
-                {
-                    UpdateSegaCdRomInfo(segaCd, _romPath);
-                }
-            }
-            _savestateViewModel.Refresh();
         }
         _presentOnUiAction = PresentPendingFrame;
         ApplyFullScreenLayout(WindowState == WindowState.FullScreen);
@@ -5694,6 +5630,20 @@ public partial class MainWindow : Window
         }
         // Default: no scaling unless explicitly overridden.
         return 1.0;
+    }
+
+    private static int ParseAudioSampleRate()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUTPUT_HZ");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value)
+            && value >= 22050
+            && value <= 192000)
+        {
+            return value;
+        }
+
+        return 44100;
     }
 
     private static int GetAudioTargetBufferedFrames()

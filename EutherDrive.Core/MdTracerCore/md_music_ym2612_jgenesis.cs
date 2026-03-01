@@ -10,6 +10,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_HOLD_LAST_ON_UNDERFLOW"), "1", StringComparison.Ordinal);
         private static readonly bool TraceDacRate =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DACRATE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceJgYmWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_JGYM_WRITES"), "1", StringComparison.Ordinal);
         private readonly Ym2612 _ym;
         private byte _lastYmAddr;
         private byte _lastYmVal;
@@ -29,6 +31,11 @@ namespace EutherDrive.Core.MdTracerCore
         private long _dacRateDeltaTicksMin = long.MaxValue;
         private long _dacRateDeltaTicksMax;
         private long _dacRateLastWriteTicks;
+        private long _writeRateWindowStartTicks;
+        private int _writeRateAllDataWrites;
+        private int _writeRateDacDataWrites;
+        private int _writeRateNonDacDataWrites;
+        private int _writeRateDacEnableWrites;
 
         public JgYm2612()
         {
@@ -57,8 +64,22 @@ namespace EutherDrive.Core.MdTracerCore
                     _lastYmVal = value;
                     _lastYmSource = source;
                     _ym.WriteData(value);
+                    RecordWriteRate();
                     if (_lastYmAddr == 0x2A)
+                    {
+                        _writeRateDacDataWrites++;
                         RecordDacWriteRate();
+                    }
+                    else if (_lastYmAddr == 0x2B)
+                    {
+                        _writeRateDacEnableWrites++;
+                        if (TraceJgYmWrites)
+                            Console.WriteLine($"[JGYM-2B] port=0 val=0x{value:X2} enabled={((value & 0x80) != 0 ? 1 : 0)} src={source}");
+                    }
+                    else
+                    {
+                        _writeRateNonDacDataWrites++;
+                    }
                     break;
                 case 2:
                     _lastYmAddr = value;
@@ -68,6 +89,9 @@ namespace EutherDrive.Core.MdTracerCore
                     _lastYmVal = value;
                     _lastYmSource = source;
                     _ym.WriteData(value);
+                    RecordWriteRate();
+                    if (_lastYmAddr == 0x2B && TraceJgYmWrites)
+                        Console.WriteLine($"[JGYM-2B] port=1 val=0x{value:X2} enabled={((value & 0x80) != 0 ? 1 : 0)} src={source}");
                     break;
             }
         }
@@ -87,6 +111,11 @@ namespace EutherDrive.Core.MdTracerCore
             _dacRateDeltaTicksMin = long.MaxValue;
             _dacRateDeltaTicksMax = 0;
             _dacRateLastWriteTicks = 0;
+            _writeRateWindowStartTicks = 0;
+            _writeRateAllDataWrites = 0;
+            _writeRateDacDataWrites = 0;
+            _writeRateNonDacDataWrites = 0;
+            _writeRateDacEnableWrites = 0;
             if (!_timingConfigLogged)
             {
                 _timingConfigLogged = true;
@@ -109,6 +138,11 @@ namespace EutherDrive.Core.MdTracerCore
             _dacRateDeltaTicksMin = long.MaxValue;
             _dacRateDeltaTicksMax = 0;
             _dacRateLastWriteTicks = 0;
+            _writeRateWindowStartTicks = 0;
+            _writeRateAllDataWrites = 0;
+            _writeRateDacDataWrites = 0;
+            _writeRateNonDacDataWrites = 0;
+            _writeRateDacEnableWrites = 0;
         }
 
         public void MarkZ80SafeBootComplete()
@@ -234,11 +268,6 @@ namespace EutherDrive.Core.MdTracerCore
                 if (m == "alwayszero" || m == "zero" || m == "off")
                     return Opn2BusyBehavior.AlwaysZero;
             }
-
-            // Backward-compatible override:
-            // EUTHERDRIVE_EMULATE_YM_BUSY=1 used to mean YM2612 busy model.
-            if (ReadEnvDefaultOn("EUTHERDRIVE_EMULATE_YM_BUSY", defaultValue: false))
-                return Opn2BusyBehavior.Ym2612;
 
             return Opn2BusyBehavior.Ym3438;
         }
@@ -379,6 +408,45 @@ namespace EutherDrive.Core.MdTracerCore
             _dacRateDeltaTicksMin = long.MaxValue;
             _dacRateDeltaTicksMax = 0;
             _dacRateLastWriteTicks = 0;
+        }
+
+        private void RecordWriteRate()
+        {
+            if (!TraceJgYmWrites)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            if (_writeRateWindowStartTicks == 0)
+                _writeRateWindowStartTicks = now;
+
+            _writeRateAllDataWrites++;
+            MaybeLogWriteRate(now, force: false);
+        }
+
+        private void MaybeLogWriteRate(long nowTicks, bool force)
+        {
+            if (!TraceJgYmWrites || _writeRateWindowStartTicks == 0)
+                return;
+
+            long elapsedTicks = nowTicks - _writeRateWindowStartTicks;
+            if (!force && elapsedTicks < Stopwatch.Frequency)
+                return;
+
+            double elapsedSec = elapsedTicks <= 0 ? 0.0 : elapsedTicks / (double)Stopwatch.Frequency;
+            double allHz = elapsedSec > 0.0 ? _writeRateAllDataWrites / elapsedSec : 0.0;
+            double dacHz = elapsedSec > 0.0 ? _writeRateDacDataWrites / elapsedSec : 0.0;
+            double nonDacHz = elapsedSec > 0.0 ? _writeRateNonDacDataWrites / elapsedSec : 0.0;
+
+            Console.WriteLine(
+                $"[JGYM-WR] dataWrites={_writeRateAllDataWrites} dataHz={allHz:0.0} " +
+                $"dac2A={_writeRateDacDataWrites} dacHz={dacHz:0.0} nonDac={_writeRateNonDacDataWrites} " +
+                $"nonDacHz={nonDacHz:0.0} reg2B={_writeRateDacEnableWrites}");
+
+            _writeRateWindowStartTicks = nowTicks;
+            _writeRateAllDataWrites = 0;
+            _writeRateDacDataWrites = 0;
+            _writeRateNonDacDataWrites = 0;
+            _writeRateDacEnableWrites = 0;
         }
     }
 

@@ -102,6 +102,16 @@ namespace EutherDrive.Core.MdTracerCore
 
             Console.WriteLine($"[m68k-reset] vectors: SP=0x{initialSp:X8} PC=0x{initialPc:X8}");
 
+            // Some bad/cracked ROM dumps ship with a zero reset SP vector.
+            // Hardware then wraps stack accesses into 24-bit space, which can
+            // lead to unstable startup behavior in practice. Use a conservative
+            // WRAM-top supervisor stack fallback for compatibility.
+            if (initialSp == 0)
+            {
+                initialSp = 0x00FFFD00;
+                Console.WriteLine($"[m68k-reset] SP vector is zero; using fallback SP=0x{initialSp:X8}");
+            }
+
             g_initial_PC = initialPc;
             g_reg_PC = initialPc;
 

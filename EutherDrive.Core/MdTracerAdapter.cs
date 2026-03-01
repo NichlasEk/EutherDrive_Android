@@ -128,11 +128,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly int Sonic2AudioRecoveryFrames =
         ParseNonNegativeInt("EUTHERDRIVE_SONIC2_AUDIO_RECOVERY_FRAMES", 180);
     private static readonly bool Sonic2AudioRecoveryEnabled =
-        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_AUDIO_RECOVERY_DISABLE"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_AUDIO_RECOVERY"), "1", StringComparison.Ordinal);
     private static readonly bool Sonic2ForceIffAfterLoad =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_FORCE_IFF"), "1", StringComparison.Ordinal);
     private static readonly bool Sonic2RuntimeRecoveryEnabled =
-        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_RUNTIME_RECOVERY_DISABLE"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_RUNTIME_RECOVERY"), "1", StringComparison.Ordinal);
     private static readonly int Sonic2RuntimeRecoveryStallFrames =
         ParseNonNegativeInt("EUTHERDRIVE_SONIC2_RUNTIME_RECOVERY_STALL_FRAMES", 90);
     private static readonly int Sonic2RuntimeRecoveryMaxPerSession =
@@ -194,7 +194,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly double YmLinearGain = DbToLinear(YmGainDb);
     private static readonly double PsgLinearGain = JgenesisPsgCoefficient * DbToLinear(PsgGainDb);
     private bool _ymEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM"), "1", StringComparison.Ordinal);
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM"), "0", StringComparison.Ordinal);
     private readonly bool _psgDisabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_PSG"), "1", StringComparison.Ordinal);
     private double _psgFrameAccumulator;
@@ -208,9 +208,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private bool _ymSilenceLogged;
     private SimpleLowPassFilter? _mixLowPass;
     private int _psgFrameSamples;
+    private double _psgResamplePhase;
+    private bool _psgResampleHasCarry;
+    private short _psgResampleCarry;
     private double _ymResamplePhase;
     private bool _ymResampleHasCarry;
     private short[] _psgFrameBuffer = Array.Empty<short>();
+    private short[] _psgInternalBuffer = Array.Empty<short>();
     private short[] _ymFrameBuffer = Array.Empty<short>();
     private short[] _ymInternalBuffer = Array.Empty<short>();
     private short _ymResampleCarryL;
@@ -226,6 +230,14 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private readonly SimpleLowPassSampleFilter _psgLowPass = new(OutputSampleRate, GenesisLowPassCutoffHz);
     private readonly SimpleLowPassSampleFilter _ymLowPass2L = new(OutputSampleRate, YmSecondLowPassCutoffHz);
     private readonly SimpleLowPassSampleFilter _ymLowPass2R = new(OutputSampleRate, YmSecondLowPassCutoffHz);
+    private readonly GenesisAudioFilterPort _jgAudioFilter = new(
+        OutputSampleRate,
+        OutputSampleRate,
+        GenesisDcFilterEnabled,
+        GenesisLowPassFilterEnabled,
+        GenesisLowPassCutoffHz,
+        YmSecondLowPassFilterEnabled,
+        YmSecondLowPassCutoffHz);
 
     private static int ParseAudioWarmupFrames()
     {
@@ -377,12 +389,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
             ymSample = ApplyMixPercent(ymSample, ymMixPercent);
             ymSample = ApplyLinearGain(ymSample, YmLinearGain);
-            if (GenesisDcFilterEnabled)
-                ymSample = (i & 1) == 0 ? _ymDcFilterL.Apply(ymSample) : _ymDcFilterR.Apply(ymSample);
-            if (GenesisLowPassFilterEnabled)
-                ymSample = (i & 1) == 0 ? _ymLowPassL.Apply(ymSample) : _ymLowPassR.Apply(ymSample);
-            if (YmSecondLowPassFilterEnabled)
-                ymSample = (i & 1) == 0 ? _ymLowPass2L.Apply(ymSample) : _ymLowPass2R.Apply(ymSample);
+            ymSample = _jgAudioFilter.FilterYm(ymSample, rightChannel: (i & 1) != 0);
             _ymFrameBuffer[i] = (short)ymSample;
 
             if (!ymInit)
@@ -502,6 +509,106 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             _ymResamplePhase = 0;
         else if (_ymResamplePhase > neededInternal)
             _ymResamplePhase = 0;
+    }
+
+    private static int ReadMonoSample(short[] buffer, int frames, int frame)
+    {
+        if (frames <= 0)
+            return 0;
+        if (frame < 0)
+            frame = 0;
+        else if (frame >= frames)
+            frame = frames - 1;
+        if ((uint)frame >= (uint)buffer.Length)
+            return 0;
+        return buffer[frame];
+    }
+
+    private void GeneratePsgResampledFrames(md_music music, int frames)
+    {
+        if (frames <= 0)
+            return;
+
+        double psgInternalSampleRate = md_main.GetGenesisMasterClockHz() / (15.0 * 16.0);
+        double ratio = psgInternalSampleRate / OutputSampleRate;
+        double phase = _psgResamplePhase;
+        int neededInternal = (int)Math.Floor(phase + ((frames - 1) * ratio)) + 2;
+        if (neededInternal < 2)
+            neededInternal = 2;
+
+        if (_psgInternalBuffer.Length < neededInternal)
+            _psgInternalBuffer = new short[neededInternal];
+
+        int writeOffset = 0;
+        if (_psgResampleHasCarry)
+        {
+            _psgInternalBuffer[0] = _psgResampleCarry;
+            writeOffset = 1;
+        }
+
+        for (int i = writeOffset; i < neededInternal; i++)
+            _psgInternalBuffer[i] = (short)music.PsgUpdateSample();
+
+        for (int i = 0; i < frames; i++)
+        {
+            int baseIndex = (int)phase;
+            if (baseIndex < 0)
+                baseIndex = 0;
+            int maxBase = neededInternal - 2;
+            if (maxBase < 0)
+                maxBase = 0;
+            if (baseIndex > maxBase)
+                baseIndex = maxBase;
+
+            double frac = phase - baseIndex;
+            if (frac < 0)
+                frac = 0;
+            else if (frac > 1.0)
+                frac = 1.0;
+
+            int sample;
+            if (YmResampleSimple)
+            {
+                int f = baseIndex;
+                if (f >= neededInternal) f = neededInternal - 1;
+                sample = ReadMonoSample(_psgInternalBuffer, neededInternal, f);
+            }
+            else
+            {
+                int f0 = baseIndex - 1;
+                int f1 = baseIndex;
+                int f2 = baseIndex + 1;
+                int f3 = baseIndex + 2;
+                if (f0 < 0) f0 = 0;
+                if (f2 >= neededInternal) f2 = neededInternal - 1;
+                if (f3 >= neededInternal) f3 = neededInternal - 1;
+
+                sample = _ymResampleLinear
+                    ? LinearInterpolate(
+                        ReadMonoSample(_psgInternalBuffer, neededInternal, f1),
+                        ReadMonoSample(_psgInternalBuffer, neededInternal, f2),
+                        frac)
+                    : CubicInterpolate(
+                        ReadMonoSample(_psgInternalBuffer, neededInternal, f0),
+                        ReadMonoSample(_psgInternalBuffer, neededInternal, f1),
+                        ReadMonoSample(_psgInternalBuffer, neededInternal, f2),
+                        ReadMonoSample(_psgInternalBuffer, neededInternal, f3),
+                        frac);
+            }
+
+            int dst = i * PsgChannels;
+            _psgFrameBuffer[dst] = (short)sample;
+            _psgFrameBuffer[dst + 1] = (short)sample;
+            phase += ratio;
+        }
+
+        _psgResampleCarry = _psgInternalBuffer[neededInternal - 1];
+        _psgResampleHasCarry = true;
+        _psgResamplePhase = phase - (neededInternal - 1);
+        if (_psgResamplePhase < 0)
+            _psgResamplePhase = 0;
+        else if (_psgResamplePhase > neededInternal)
+            _psgResamplePhase = 0;
     }
 
     public void SetMasterVolumePercent(int percent)
@@ -1095,8 +1202,14 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     md_main.g_md_cartridge.g_file_path = path;
                 }
 
-                bool useNormalizedForBus = md_main.g_md_cartridge.g_smd_header_size > 0 || md_main.g_md_cartridge.g_smd_deinterleaved;
+                // Always execute from the cartridge-normalized image when it differs from raw bytes.
+                // This covers copier-header removal, SMD deinterleave, and word-swapped signatures.
+                bool useNormalizedForBus = !ReferenceEquals(md_main.g_md_cartridge.g_file, rawData);
                 _rom = useNormalizedForBus ? md_main.g_md_cartridge.g_file : rawData;
+                Console.WriteLine(
+                    $"[MdTracerAdapter] ROM source for bus: {(useNormalizedForBus ? "normalized" : "raw")} " +
+                    $"(raw={rawData.Length} bytes, cart={md_main.g_md_cartridge.g_file.Length} bytes, " +
+                    $"header={md_main.g_md_cartridge.g_smd_header_size}, deint={(md_main.g_md_cartridge.g_smd_deinterleaved ? 1 : 0)})");
                 _bus = new MegaDriveBus(_rom);
                 md_bus.Current = _bus;
                 EutherDrive.Core.MdTracerCore.md_bus.Current = _bus;
@@ -1953,6 +2066,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _psgFrameAccumulator = (double)OutputSampleRate / GetTargetFps() * accumulatorFrames;
         _psgFrameSamples = 0;
         _psgLastFrame = -1;
+        _psgResamplePhase = 0;
+        _psgResampleHasCarry = false;
+        _psgResampleCarry = 0;
         _ymResamplePhase = 0;
         _ymResampleHasCarry = false;
         _ymDcFilterL.Reset();
@@ -1963,6 +2079,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _psgLowPass.Reset();
         _ymLowPass2L.Reset();
         _ymLowPass2R.Reset();
+        _jgAudioFilter.Reset();
         // Note: _audioSystemReady is managed separately
         
         if (TraceAudioDebug)
@@ -1983,6 +2100,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _audioGeneratedThisFrame = false;
         _psgFrameSamples = 0;
         _psgLastFrame = -1;
+        _psgResamplePhase = 0;
+        _psgResampleHasCarry = false;
+        _psgResampleCarry = 0;
         _ymResamplePhase = 0;
         _ymResampleHasCarry = false;
         _ymResampleCarryL = 0;
@@ -1991,8 +2111,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_psgFrameBuffer, 0, _psgFrameBuffer.Length);
         if (_ymFrameBuffer.Length > 0)
             Array.Clear(_ymFrameBuffer, 0, _ymFrameBuffer.Length);
+        if (_psgInternalBuffer.Length > 0)
+            Array.Clear(_psgInternalBuffer, 0, _psgInternalBuffer.Length);
         if (_ymInternalBuffer.Length > 0)
             Array.Clear(_ymInternalBuffer, 0, _ymInternalBuffer.Length);
+        _jgAudioFilter.Reset();
 
         if (TraceAudioDebug)
             Console.WriteLine("[AUDIO-TIMING] Audio startup state initialized (no synthetic prefill).");
@@ -3249,18 +3372,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int psgNonZero = 0;
         if (wantPsg)
         {
+            GeneratePsgResampledFrames(music, frames);
             for (int i = 0; i < frames; i++)
             {
-                int s = music.PsgUpdateSample();
-                if (s > short.MaxValue) s = short.MaxValue;
-                else if (s < short.MinValue) s = short.MinValue;
+                int idx = i * PsgChannels;
+                int s = _psgFrameBuffer[idx];
                 s = ApplyMixPercent(s, psgMixPercent);
                 s = ApplyLinearGain(s, PsgLinearGain);
-                if (GenesisDcFilterEnabled)
-                    s = _psgDcFilter.Apply(s);
-                if (GenesisLowPassFilterEnabled)
-                    s = _psgLowPass.Apply(s);
+                s = _jgAudioFilter.FilterPsg(s);
                 short sample = (short)s;
+                _psgFrameBuffer[idx] = sample;
+                _psgFrameBuffer[idx + 1] = sample;
+
                 if (!psgMinMaxInit)
                 {
                     psgMinMaxInit = true;
@@ -3272,12 +3395,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     if (sample < psgMin) psgMin = sample;
                     if (sample > psgMax) psgMax = sample;
                 }
+
                 int abs = sample < 0 ? -sample : sample;
                 if (abs > psgPeak) psgPeak = abs;
                 if (sample != 0) psgNonZero += PsgChannels;
-                int idx = i * PsgChannels;
-                _psgFrameBuffer[idx] = sample;
-                _psgFrameBuffer[idx + 1] = sample;
                 if (trackAudioLevel && !wantYm)
                     mixSumSq += (long)sample * sample * PsgChannels;
             }
@@ -3731,18 +3852,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int psgNonZero = 0;
         if (wantPsg)
         {
+            GeneratePsgResampledFrames(music, frames);
             for (int i = 0; i < frames; i++)
             {
-                int s = music.PsgUpdateSample();
-                if (s > short.MaxValue) s = short.MaxValue;
-                else if (s < short.MinValue) s = short.MinValue;
+                int idx = i * PsgChannels;
+                int s = _psgFrameBuffer[idx];
                 s = ApplyMixPercent(s, psgMixPercent);
                 s = ApplyLinearGain(s, PsgLinearGain);
-                if (GenesisDcFilterEnabled)
-                    s = _psgDcFilter.Apply(s);
-                if (GenesisLowPassFilterEnabled)
-                    s = _psgLowPass.Apply(s);
+                s = _jgAudioFilter.FilterPsg(s);
                 short sample = (short)s;
+                _psgFrameBuffer[idx] = sample;
+                _psgFrameBuffer[idx + 1] = sample;
+
                 if (!psgMinMaxInit)
                 {
                     psgMinMaxInit = true;
@@ -3757,9 +3878,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 int abs = sample < 0 ? -sample : sample;
                 if (abs > psgPeak) psgPeak = abs;
                 if (sample != 0) psgNonZero += PsgChannels;
-                int idx = i * PsgChannels;
-                _psgFrameBuffer[idx] = sample;
-                _psgFrameBuffer[idx + 1] = sample;
                 if (trackAudioLevel && !wantYm)
                     mixSumSq += (long)sample * sample * PsgChannels;
             }

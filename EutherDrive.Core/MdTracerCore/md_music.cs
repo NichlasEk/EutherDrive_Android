@@ -5,7 +5,6 @@ namespace EutherDrive.Core.MdTracerCore
         private readonly md_sn76489 g_md_sn76489 = new md_sn76489();
         private readonly JgYm2612 _jgYm = new JgYm2612();
         private readonly JgSn76489 _jgPsg = new JgSn76489();
-        private static readonly bool UseJgenesisPsg = ReadEnvDefaultOn("EUTHERDRIVE_PSG_JGENESIS");
         private int _psgNoiseGainPercent = 100;
 
         private JgYm2612 JgYm => _jgYm;
@@ -14,19 +13,10 @@ namespace EutherDrive.Core.MdTracerCore
         {
             JgYm.Start();
             g_md_sn76489.SN76489_Start();
-            if (UseJgenesisPsg)
-                _jgPsg.Reset();
+            _jgPsg.Reset();
         }
 
         public void run(int cycles) { }
-
-        private static bool ReadEnvDefaultOn(string name)
-        {
-            string? raw = Environment.GetEnvironmentVariable(name);
-            if (string.IsNullOrEmpty(raw))
-                return true;
-            return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
-        }
 
         public byte YmRead(uint address)
         {
@@ -70,17 +60,12 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void YmAdvanceSystemCycles(long cycles, int explicitYmTicks = -1, int explicitPsgTicks = -1)
         {
-            if (explicitYmTicks >= 0)
-                JgYm.AdvanceYmTicks(explicitYmTicks);
-            else
-                JgYm.AdvanceSystemCycles(cycles);
-            if (UseJgenesisPsg)
-            {
-                if (explicitPsgTicks >= 0)
-                    _jgPsg.AdvancePsgTicks(explicitPsgTicks, g_out_vol, _psgNoiseGainPercent);
-                else
-                    _jgPsg.AdvanceSystemCycles(cycles, g_out_vol, _psgNoiseGainPercent);
-            }
+            int ymTicks = explicitYmTicks < 0 ? 0 : explicitYmTicks;
+            int psgTicks = explicitPsgTicks < 0 ? 0 : explicitPsgTicks;
+            if (ymTicks > 0)
+                JgYm.AdvanceYmTicks(ymTicks);
+            if (psgTicks > 0)
+                _jgPsg.AdvancePsgTicks(psgTicks, g_out_vol, _psgNoiseGainPercent);
         }
 
         public void TickYmTimersFromZ80(int z80Cycles)
@@ -116,27 +101,19 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void PsgWrite(byte value)
         {
-            if (UseJgenesisPsg)
-                _jgPsg.Write(value);
+            _jgPsg.Write(value);
             // Keep legacy PSG state updated for stats/frequency UI.
             g_md_sn76489.write8(value);
         }
 
         public void PsgUpdate()
         {
-            if (UseJgenesisPsg)
-            {
-                _ = _jgPsg.UpdateSample(g_out_vol, _psgNoiseGainPercent);
-                return;
-            }
-            g_md_sn76489.SN76489_Update();
+            _ = _jgPsg.UpdateSample(g_out_vol, _psgNoiseGainPercent);
         }
 
         public int PsgUpdateSample()
         {
-            if (UseJgenesisPsg)
-                return _jgPsg.UpdateSample(g_out_vol, _psgNoiseGainPercent);
-            return g_md_sn76489.SN76489_Update();
+            return _jgPsg.UpdateSample(g_out_vol, _psgNoiseGainPercent);
         }
 
         public void SetPsgNoiseGainPercent(int percent)

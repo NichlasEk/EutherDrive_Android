@@ -116,19 +116,12 @@ internal static partial class md_main
 {
     private const double GenesisMclkNtscHz = 53_693_175.0;
     private const double GenesisMclkPalHz = 53_203_424.0;
-    private static readonly bool UseMdCycleCounters =
-        ReadEnvDefaultOn("EUTHERDRIVE_MD_CYCLE_COUNTERS", defaultValue: true);
-    private static readonly bool UseMdCycleCounterZ80Scheduling =
-        ReadEnvDefaultOn("EUTHERDRIVE_MD_CYCLE_COUNTERS_Z80_SCHED", defaultValue: true);
-    private static readonly bool UseMdCycleCounterYmDrive =
-        ReadEnvDefaultOn("EUTHERDRIVE_MD_CYCLE_COUNTERS_YM_DRIVE", defaultValue: true);
-    private static readonly bool UseMdCycleCounterPsgDrive =
-        ReadEnvDefaultOn("EUTHERDRIVE_MD_CYCLE_COUNTERS_PSG_DRIVE", defaultValue: true);
+    private const bool UseMdCycleCounters = true;
     private static readonly bool TraceMdCycleCounters =
         ReadEnvFlag("EUTHERDRIVE_TRACE_MD_CYCLE_COUNTERS");
     private static readonly int TraceMdCycleCountersEvery =
         ParseNonNegativeInt("EUTHERDRIVE_TRACE_MD_CYCLE_COUNTERS_EVERY", 60);
-    private static readonly int MdM68kDivider = MdCycleCounters.ParseM68kDivider();
+    private const int MdM68kDivider = 7;
     private static MdCycleCounters _mdCycleCounters = new((ulong)MdM68kDivider);
     private static long _mdCycleCounterFrameCount;
     private static long _mdCycleCounterZ80DriftAccum;
@@ -156,7 +149,7 @@ internal static partial class md_main
 
     internal static bool IsCycleCounterZ80SchedulingEnabled()
     {
-        return UseMdCycleCounters && UseMdCycleCounterZ80Scheduling;
+        return true;
     }
 
     internal static int TakeZ80TicksForScheduling()
@@ -173,7 +166,7 @@ internal static partial class md_main
 
     internal static bool IsCycleCounterYmDriveEnabled()
     {
-        return UseMdCycleCounters && UseMdCycleCounterYmDrive;
+        return true;
     }
 
     internal static int TakeYmTicksForScheduling()
@@ -190,7 +183,7 @@ internal static partial class md_main
 
     internal static int TakePsgTicksForScheduling()
     {
-        if (!UseMdCycleCounters || !UseMdCycleCounterPsgDrive)
+        if (!UseMdCycleCounters)
             return 0;
 
         long ticks = _mdCycleCounters.TakePsgTicks();
@@ -202,7 +195,7 @@ internal static partial class md_main
 
     internal static bool IsCycleCounterPsgDriveEnabled()
     {
-        return UseMdCycleCounters && UseMdCycleCounterPsgDrive;
+        return true;
     }
 
     internal static bool IsPalTimingMode()

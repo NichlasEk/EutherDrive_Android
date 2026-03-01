@@ -427,16 +427,12 @@ namespace EutherDrive.Core.MdTracerCore
             if (IgnoreZ80BusReq)
                 return true;
 
-            // Ensure BUSREQ latch is applied before checking access so
-            // 68k writes don't get blocked immediately after BUSREQ asserts.
             ApplyZ80BusReqLatch();
-            
-            // Many games (like Sonic 3) hold the Z80 in reset instead of requesting the bus
+
+            // Many games hold the Z80 in reset instead of requesting the bus
             // when they want to upload the audio driver to Z80 RAM.
             if (_z80BusGranted || _z80Reset)
                 return true;
-
-            // Optional allowance for mailboxes if needed, but the primary fix is above
             for (int i = 0; i < size; i++)
             {
                 uint target = addr + (uint)i;
@@ -1527,47 +1523,22 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (md_main.g_md_z80 == null)
                 return;
-            if (_z80Reset)
-                return;
-            if (_z80BusReqRequested != _z80BusReqLastRequested)
-            {
-                _z80BusReqLastRequested = _z80BusReqRequested;
-                _z80BusReqStableCount = 0;
-            }
-            else if (_z80BusReqStableCount != int.MaxValue)
-            {
-                _z80BusReqStableCount++;
-            }
 
-            if (!_z80BusReqRequested && _z80BusGranted)
-            {
-                _z80BusGranted = false;
-                _z80BusGrantedChanged = true;
-                md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
-                if (TraceZ80SigTransitions)
-                {
-                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                    Console.WriteLine($"[Z80BUSREQ-LATCH] frame={frame} grant=0");
-                }
+            // Keep latch behavior aligned with jgenesis: BUSREQ directly controls bus grant.
+            bool nextBusGranted = _z80BusReqRequested;
+            if (_z80BusGranted == nextBusGranted)
                 return;
-            }
 
-            if (_z80BusReqRequested && !_z80BusGranted)
-            {
-                int stableThreshold = Z80BusReqStableThreshold;
-                if (stableThreshold <= 0 && OtherEmuMode)
-                    stableThreshold = 1;
-                if (stableThreshold > 0 && _z80BusReqStableCount < stableThreshold)
-                    return;
-                _z80BusGranted = true;
-                _z80BusGrantedChanged = true;
-                md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+            _z80BusGranted = nextBusGranted;
+            _z80BusGrantedChanged = true;
+            md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+            if (_z80BusGranted)
                 ApplyPendingMbxWrites();
-                if (TraceZ80SigTransitions)
-                {
-                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                    Console.WriteLine($"[Z80BUSREQ-LATCH] frame={frame} grant=1");
-                }
+
+            if (TraceZ80SigTransitions)
+            {
+                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                Console.WriteLine($"[Z80BUSREQ-LATCH] frame={frame} grant={(_z80BusGranted ? 1 : 0)}");
             }
         }
 
@@ -3733,7 +3704,10 @@ namespace EutherDrive.Core.MdTracerCore
                 $"[MBXR68K] pc68k={md_m68k.g_reg_PC:X6} addr={addr:X6} size={size} val=0x{value.ToString(fmt)} dump= {dump}");
         }
 
-        // BUSACK semantics: bit0 == 1 when Z80 is running, bit0 == 0 when bus granted to 68k.
+        // BUSACK semantics: bit0 reflects bus ownership.
+        // 1 = Z80 owns bus, 0 = 68k owns bus (BUSREQ asserted).
+        // Do not gate BUSACK on RESET; several MD boot ROM paths poll A11100
+        // while RESET is asserted and expect bit0 to return high after BUSREQ release.
         private byte BuildBusAckRead8()
         {
             return (byte)(BuildBusAckRead16() >> 8);
@@ -3744,7 +3718,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Sega CD BIOS expects Z80 bus granted; return 0 in Sega CD mode.
             if (md_main.g_md_bus?.OverrideBus is EutherDrive.Core.SegaCd.SegaCdMainBusOverride)
                 return (ushort)(_openBus & 0xFEFE);
-            bool busAck = !_z80BusGranted && !_z80Reset;
+            bool busAck = !_z80BusGranted;
             byte status = (byte)(busAck ? 0x01 : 0x00);
             ushort busAckWord = (ushort)((status << 8) | status);
             return (ushort)(busAckWord | (_openBus & 0xFEFE));

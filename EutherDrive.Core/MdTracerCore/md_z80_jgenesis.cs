@@ -6,6 +6,7 @@ namespace EutherDrive.Core.MdTracerCore
     internal partial class md_z80
     {
         private static readonly bool UseJgenesisZ80 = ParseUseJgenesisZ80();
+        internal static bool IsJgenesisCoreEnabled => UseJgenesisZ80;
 
         private static bool ParseUseJgenesisZ80()
         {
@@ -173,12 +174,6 @@ namespace EutherDrive.Core.MdTracerCore
             if (TraceZ80Stats)
                 _z80StatsBudgetCount += in_clock;
 
-            if (!g_active)
-            {
-                AccumulateLineCycles(in_clock, 0);
-                return;
-            }
-
             if (HaltOnBusReq && busRequested)
             {
                 AccumulateLineCycles(in_clock, 0);
@@ -187,11 +182,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (busRequested || z80reset)
             {
+                g_active = false;
                 if (TraceZ80Stats)
                     _z80StatsBlockedCount++;
                 AccumulateLineCycles(in_clock, 0);
                 return;
             }
+            g_active = true;
 
             int cyclesConsumed = 0;
             g_clock_total += in_clock;

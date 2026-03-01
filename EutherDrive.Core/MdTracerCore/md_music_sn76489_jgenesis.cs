@@ -184,7 +184,6 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private const int SnDivider = 16;
-        private static readonly int PsgSampling = ParseOutputSampleRate();
         private const ushort InitialLfsr = 0x8000;
         private const float PsgSoftclipScale = 12000f;
         private const float PsgDcBlockR = 0.995f;
@@ -214,9 +213,7 @@ namespace EutherDrive.Core.MdTracerCore
         private Register _latchedRegister = Register.Tone0;
         private StereoControl _stereo;
         private int _divider = SnDivider;
-        private double _clockAccumulator;
-        private double _systemSampleAccumulator;
-        private double _psgTickSampleAccumulator;
+        private double _mclkRemainder;
         private float _dcBlockX1;
         private float _dcBlockY1;
         private short[] _ringBuffer = new short[32768];
@@ -229,9 +226,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             _latchedRegister = Register.Tone0;
             _divider = SnDivider;
-            _clockAccumulator = 0;
-            _systemSampleAccumulator = 0;
-            _psgTickSampleAccumulator = 0;
+            _mclkRemainder = 0;
             _dcBlockX1 = 0;
             _dcBlockY1 = 0;
             _ringRead = 0;
@@ -253,23 +248,19 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void AdvanceSystemCycles(long m68kCycles, int[] outVol, int noiseGainPercent)
         {
+            _ = outVol;
+            _ = noiseGainPercent;
             if (m68kCycles <= 0)
                 return;
 
-            // md_main.SystemCycles are M68K cycles. Convert elapsed M68K cycles to
-            // output samples at the configured output rate using active MD timing mode.
-            double m68kClockHz = md_main.GetM68kClockHzFromTiming();
-            _systemSampleAccumulator += (m68kCycles * PsgSampling) / m68kClockHz;
-            int samples = (int)_systemSampleAccumulator;
-            if (samples <= 0)
+            // Legacy compatibility path: convert M68K cycles to PSG ticks using
+            // Genesis MCLK->PSG divider chain.
+            double totalMclk = _mclkRemainder + (m68kCycles * 7.0);
+            int psgTicks = (int)(totalMclk / 15.0);
+            _mclkRemainder = totalMclk - (psgTicks * 15.0);
+            if (psgTicks <= 0)
                 return;
-            _systemSampleAccumulator -= samples;
-
-            for (int i = 0; i < samples; i++)
-            {
-                short sample = GenerateSampleWithInternalClockAdvance(outVol, noiseGainPercent);
-                WriteRing(sample);
-            }
+            AdvancePsgTicks(psgTicks, outVol, noiseGainPercent);
         }
 
         public void AdvancePsgTicks(int psgTicks, int[] outVol, int noiseGainPercent)
@@ -277,22 +268,13 @@ namespace EutherDrive.Core.MdTracerCore
             if (psgTicks <= 0)
                 return;
 
-            // Explicit tick path: ticks are already in PSG clock domain.
-            // Drive chip state per tick and emit output samples at configured output rate.
-            double psgClockHz = GetPsgClockHz();
-            double samplesPerTick = PsgSampling / psgClockHz;
             for (int i = 0; i < psgTicks; i++)
             {
-                Tick();
-                _psgTickSampleAccumulator += samplesPerTick;
-                if (_psgTickSampleAccumulator < 1.0)
+                if (!Tick())
                     continue;
 
-                int samplesToWrite = (int)_psgTickSampleAccumulator;
-                _psgTickSampleAccumulator -= samplesToWrite;
                 short sample = GenerateSampleCurrentState(outVol, noiseGainPercent);
-                for (int s = 0; s < samplesToWrite; s++)
-                    WriteRing(sample);
+                WriteRing(sample);
             }
         }
 
@@ -328,19 +310,6 @@ namespace EutherDrive.Core.MdTracerCore
             // Keep PSG time deterministic: when underflowing, do not synthesize
             // a new sample by advancing internal clocks out-of-band.
             return _lastSample;
-        }
-
-        private short GenerateSampleWithInternalClockAdvance(int[] outVol, int noiseGainPercent)
-        {
-            // Advance PSG clock based on output sample cadence.
-            _clockAccumulator += GetPsgClockHz() / PsgSampling;
-            int ticks = (int)_clockAccumulator;
-            if (ticks > 0)
-                _clockAccumulator -= ticks;
-            for (int i = 0; i < ticks; i++)
-                Tick();
-
-            return GenerateSampleCurrentState(outVol, noiseGainPercent);
         }
 
         private short GenerateSampleCurrentState(int[] outVol, int noiseGainPercent)
@@ -414,38 +383,18 @@ namespace EutherDrive.Core.MdTracerCore
             return sample;
         }
 
-        private static int ParseOutputSampleRate()
-        {
-            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUTPUT_HZ");
-            if (!string.IsNullOrWhiteSpace(raw)
-                && int.TryParse(raw.Trim(), out int value)
-                && value >= 22050
-                && value <= 192000)
-            {
-                return value;
-            }
-
-            // Match adapter default to keep the chain synchronized.
-            return 44100;
-        }
-
-        private static double GetPsgClockHz()
-        {
-            // SN76489 input clock in Genesis timing domain: mclk / 15.
-            return md_main.GetGenesisMasterClockHz() / 15.0;
-        }
-
-        private void Tick()
+        private bool Tick()
         {
             _divider--;
             if (_divider != 0)
-                return;
+                return false;
 
             _divider = SnDivider;
             _square[0].Clock();
             _square[1].Clock();
             _square[2].Clock();
             _noise.Clock(_square[2].Tone);
+            return true;
         }
 
         private void WriteRegisterLowBits(byte data)

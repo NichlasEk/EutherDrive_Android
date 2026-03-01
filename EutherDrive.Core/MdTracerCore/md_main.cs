@@ -157,7 +157,7 @@ namespace EutherDrive.Core.MdTracerCore
         // Z80/M68K cycle ratio for NTSC: Z80 ~3.58MHz, M68K ~7.67MHz => ratio ~0.466
         private static readonly double Z80PerM68kRatio = 3.579545 / 7.670000; // More precise ratio
         private static readonly int Z80ContinuousSliceCycles = ParseZ80ContinuousSliceCycles();
-        private static bool UseZ80ContinuousScheduling => !g_masterSystemMode && Z80ContinuousSliceCycles > 0;
+        private static bool UseZ80ContinuousScheduling => !g_masterSystemMode;
         private static int SmsCyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * SmsCycleMultiplier));
         private static int Z80CyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * Z80CycleMultiplier));
         public static int GetZ80CyclesPerLine() => Z80CyclesPerLine;
@@ -181,7 +181,6 @@ namespace EutherDrive.Core.MdTracerCore
         private static int _z80SliceCount;
         private static int _z80TotalCycles;
         private static int _z80MaxSlice;
-        private static double _z80ContinuousBudgetCarry;
         
         public static int Z80SliceCount 
         { 
@@ -297,18 +296,9 @@ namespace EutherDrive.Core.MdTracerCore
             _systemCycles += cycles;
             AdvanceCycleCounters(cycles);
             g_md_vdp?.ProcessVdpFifoForM68kCycles((int)Math.Min(cycles, int.MaxValue));
-            if (IsCycleCounterYmDriveEnabled())
-            {
-                int ymTicks = TakeYmTicksForScheduling();
-                int psgTicks = IsCycleCounterPsgDriveEnabled()
-                    ? TakePsgTicksForScheduling()
-                    : -1;
-                g_md_music?.YmAdvanceSystemCycles(cycles, ymTicks, psgTicks);
-            }
-            else
-            {
-                g_md_music?.YmAdvanceSystemCycles(cycles);
-            }
+            int ymTicks = TakeYmTicksForScheduling();
+            int psgTicks = TakePsgTicksForScheduling();
+            g_md_music?.YmAdvanceSystemCycles(cycles, ymTicks, psgTicks);
         }
 
         internal static void AddM68kWaitCycles(int cycles)
@@ -1070,7 +1060,6 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     int sliceM68kCycles = Z80ContinuousSliceCycles;
                     int totalM68kCycles = VDL_LINE_RENDER_MC68_CLOCK;
-                    double z80Budget = _z80ContinuousBudgetCarry;
 
                     int m68kDone = 0;
                     while (m68kDone < totalM68kCycles)
@@ -1110,45 +1099,9 @@ namespace EutherDrive.Core.MdTracerCore
                                     _z80MaxSlice = z80Cycles;
                             }
                         }
-                        else
-                        {
-                            // Add Z80 budget proportional to M68K cycles executed
-                            z80Budget += m68kSlice * Z80PerM68kRatio;
-
-                            // Run Z80 in small, even slices for better timing
-                            // Max 32 cycles per slice to prevent audio jitter
-                            while (z80Budget >= 1.0)
-                            {
-                                g_md_bus?.ApplyZ80BusReqLatch();
-                                if (g_md_bus?.Z80BusGranted ?? false)
-                                {
-                                    // Z80 bus is granted to 68k, Z80 cannot run
-                                    // Budget is consumed by M68K time, not Z80 execution
-                                    break;
-                                }
-                                int z80Cycles = Math.Min(32, (int)Math.Floor(z80Budget));
-                                if (z80Cycles <= 0) break;
-
-                                g_md_z80.BeginSystemCycleSlice();
-
-                                g_md_z80.run(z80Cycles);
-                                z80Budget -= z80Cycles;
-                                g_md_z80.EndSystemCycleSlice();
-
-                                // Telemetry: track Z80 execution
-                                _z80SliceCount++;
-                                _z80TotalCycles += z80Cycles;
-                                if (z80Cycles > _z80MaxSlice)
-                                    _z80MaxSlice = z80Cycles;
-                            }
-                        }
                     }
-                    _z80ContinuousBudgetCarry = useCycleCounterZ80Scheduling
-                        ? 0.0
-                        : Math.Clamp(z80Budget, 0.0, 512.0);
                     continue;
                 }
-                _z80ContinuousBudgetCarry = 0.0;
 
                 // Kör CPU:erna scanline-vis
                 if (!g_masterSystemMode && z80RunPerLine && Z80InterleaveSlices > 1)
@@ -1579,7 +1532,6 @@ namespace EutherDrive.Core.MdTracerCore
             _z80StableLowFrames = 0;
             _z80WaitReleased = Z80WaitBusReqFrames <= 0;
             _z80WaitLogged = false;
-            _z80ContinuousBudgetCarry = 0.0;
         }
 
         internal static bool ShouldRunZ80(long frame)
