@@ -50,6 +50,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             // Trace-instans (rätt typ, inte bool)
             g_form_code_trace ??= new Form_Code_Trace();
+            EnsureMainM68kBackend();
 
             // Nollställ flaggor (UI kan slå på dem senare)
             g_masterSystemMode = false;

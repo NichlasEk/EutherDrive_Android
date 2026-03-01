@@ -11,7 +11,7 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private static readonly int Z80YmWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_YM_WAIT", 4);
         private static readonly int Z80PsgWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_PSG_WAIT", 4);
-        private static readonly int Z80BankWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_BANK_WAIT", 16);
+        private static readonly int Z80BankWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_BANK_WAIT", 8);
         private static readonly bool TraceZ80AudioRate =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80PsgWrite =

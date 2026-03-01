@@ -745,6 +745,8 @@ private static readonly bool SpriteLinkSequential =
             g_hinterrupt_counter -= 1;
             if (g_hinterrupt_counter < 0)
             {
+                if (!md_m68k.g_interrupt_H_req)
+                    md_main.CountMainIrqRequest(4);
                 md_m68k.g_interrupt_H_req = true;
                 set_hinterrupt();
             }
@@ -754,6 +756,8 @@ private static readonly bool SpriteLinkSequential =
             {
                 if (g_vdp_reg_11_3_ext == 1)
                 {
+                    if (!md_m68k.g_interrupt_EXT_req)
+                        md_main.CountMainIrqRequest(md_m68k.g_interrupt_EXT_level);
                     md_m68k.g_interrupt_EXT_req = true;
 
                     if ((g_vdp_reg_0_1_hvcounter == 1) && (g_vdp_c00008_hvcounter_latched == false))
@@ -2277,6 +2281,8 @@ private static readonly bool SpriteLinkSequential =
             Array.Clear(_mdDataWriteCodeCounts, 0, _mdDataWriteCodeCounts.Length);
 
             g_vdp_status_7_vinterrupt = 1;
+            if (!md_m68k.g_interrupt_V_req)
+                md_main.CountMainIrqRequest(6);
             md_m68k.g_interrupt_V_req = true;
             // Z80 needs VBlank interrupt for sound drivers in both MD and SMS mode
             if (md_main.g_masterSystemMode)

@@ -76,6 +76,8 @@ namespace EutherDrive.Core.MdTracerCore
         public void YmAdvanceSystemCycles(long cycles)
         {
             JgYm.AdvanceSystemCycles(cycles);
+            if (UseJgenesisPsg)
+                _jgPsg.AdvanceSystemCycles(cycles, g_out_vol, _psgNoiseGainPercent);
         }
 
         public void TickYmTimersFromZ80(int z80Cycles)

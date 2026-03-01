@@ -15,6 +15,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_md_vdp = null;
             g_form_code_trace = null;
             g_md_cartridge = null;
+            _m68kEmuBus = null;
 
             g_masterSystemMode = false;
             g_masterSystemRom = null;

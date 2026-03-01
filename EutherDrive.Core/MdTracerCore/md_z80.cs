@@ -510,7 +510,10 @@ namespace EutherDrive.Core.MdTracerCore
             _lastCanRun = canRun;
 
             if (HaltOnBusReq && busRequested)
+            {
+                AccumulateLineCycles(in_clock, 0);
                 return;
+            }
             if (g_active == false) 
             {
                 // DEBUG: Try forcing active
@@ -522,6 +525,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 else
                 {
+                    AccumulateLineCycles(in_clock, 0);
                     return;
                 }
             }
@@ -534,6 +538,7 @@ namespace EutherDrive.Core.MdTracerCore
                     long blockFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
                     Console.WriteLine($"[Z80RUN-BLOCK] frame={blockFrame} pc=0x{g_reg_PC:X4} busReq={(busRequested ? 1 : 0)} reset={(z80reset ? 1 : 0)}");
                 }
+                AccumulateLineCycles(in_clock, 0);
                 return;
             }
 
@@ -560,6 +565,7 @@ namespace EutherDrive.Core.MdTracerCore
                         long blockFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
                         Console.WriteLine($"[Z80RUN-BLOCK] frame={blockFrame} pc=0x{g_reg_PC:X4} busReq={(busRequested ? 1 : 0)} reset={(z80reset ? 1 : 0)}");
                     }
+                    AccumulateLineCycles(in_clock, cyclesConsumed);
                     return;
                 }
 
@@ -1895,12 +1901,16 @@ NextPc:;
     internal void ForceSmsStackDefault()
     {
         if (md_main.g_masterSystemMode || md_main.g_masterSystemRomSize > 0)
+        {
             g_reg_SP = 0xDFF0;
+            _jgZ80?.SetSp(g_reg_SP);
+        }
     }
 
         internal void SetStackPointer(ushort sp)
         {
             g_reg_SP = sp;
+            _jgZ80?.SetSp(sp);
         }
         
         internal void ForceJumpToDriver()

@@ -132,8 +132,11 @@ namespace EutherDrive.Core.MdTracerCore
         private static IBusInterface? _m68kEmuBus;
         private static int _m68kWaitCycles;
         private static int _m68kRefreshCounter;
+        // Global deadlock safeguard for M68KEmu path:
+        // if IRQ is pending while mask stays at 7 for too long, release to level 3.
+        // Enabled by default; set EUTHERDRIVE_M68K_IRQ_AUTOUNMASK=0 to disable.
         private static readonly bool AutoUnmaskIrqDebug =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_IRQ_AUTOUNMASK"), "1", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_IRQ_AUTOUNMASK"), "0", StringComparison.Ordinal);
         private static int _autoUnmaskStuckCount;
         private static bool _autoUnmaskLogged;
         private static long _autoUnmaskFireCount;
@@ -177,6 +180,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static int _z80SliceCount;
         private static int _z80TotalCycles;
         private static int _z80MaxSlice;
+        private static double _z80ContinuousBudgetCarry;
         
         public static int Z80SliceCount 
         { 
@@ -675,6 +679,16 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             if (g_md_bus != null && (g_md_bus.Z80BusGranted || g_md_bus.Z80Reset))
                 return;
+
+            // In continuous scheduler mode Z80 is already budgeted proportionally to
+            // M68K execution. Running an additional catch-up here can double-count Z80
+            // time during frequent BUSREQ toggles (observed as ~2x Z80 cycles/sec).
+            if (UseZ80ContinuousScheduling)
+            {
+                _syncZ80.CurrentCycle = SystemCycles;
+                return;
+            }
+
             long target = SystemCycles;
             long delta = target - _syncZ80.CurrentCycle;
             if (delta <= 0)
@@ -1038,7 +1052,7 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     int sliceM68kCycles = Z80ContinuousSliceCycles;
                     int totalM68kCycles = VDL_LINE_RENDER_MC68_CLOCK;
-                    double z80Budget = 0.0;
+                    double z80Budget = _z80ContinuousBudgetCarry;
 
                     int m68kDone = 0;
                     while (m68kDone < totalM68kCycles)
@@ -1081,8 +1095,10 @@ namespace EutherDrive.Core.MdTracerCore
                                 _z80MaxSlice = z80Cycles;
                         }
                     }
+                    _z80ContinuousBudgetCarry = Math.Clamp(z80Budget, 0.0, 512.0);
                     continue;
                 }
+                _z80ContinuousBudgetCarry = 0.0;
 
                 // Kör CPU:erna scanline-vis
                 if (!g_masterSystemMode && z80RunPerLine && Z80InterleaveSlices > 1)
@@ -1149,7 +1165,9 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                 }
             }
-            if (allowZ80 && !z80RunPerLine)
+            // In continuous scheduling mode Z80 has already been budgeted during each
+            // line slice. Do not run an additional frame-budget pass.
+            if (allowZ80 && !z80RunPerLine && !UseZ80ContinuousScheduling)
             {
                 g_md_z80.BeginSystemCycleSlice();
                 g_md_z80.run(z80FrameBudget);
@@ -1476,13 +1494,13 @@ namespace EutherDrive.Core.MdTracerCore
         {
             // When > 0, enables continuous Z80 scheduling proportional to M68K cycles
             // Value = how many M68K cycles between Z80 slices (smaller = more frequent)
-            // Default 32 = enabled with good timing for audio
+            // Default 8 = more frequent arbitration windows for BUSREQ-heavy drivers
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_CONTINUOUS_SLICE_M68K_CYCLES");
             if (string.IsNullOrWhiteSpace(raw))
-                return 32; // Default enabled for better audio timing
+                return 8; // Default enabled with tighter interleave
             if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
                 return value;
-            return 32; // Default enabled
+            return 8; // Default enabled
         }
 
         internal static void ResetZ80WaitState()
@@ -1491,6 +1509,7 @@ namespace EutherDrive.Core.MdTracerCore
             _z80StableLowFrames = 0;
             _z80WaitReleased = Z80WaitBusReqFrames <= 0;
             _z80WaitLogged = false;
+            _z80ContinuousBudgetCarry = 0.0;
         }
 
         internal static bool ShouldRunZ80(long frame)

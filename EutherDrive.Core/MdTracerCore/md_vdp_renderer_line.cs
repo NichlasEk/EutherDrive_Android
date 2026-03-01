@@ -250,7 +250,10 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 g_game_cmap[dx] = 0;
                 g_game_primap[dx] = 0;
-                g_game_shadowmap[dx] = 0;
+                // Shadow/highlight map semantics:
+                // 0 = shadow, 1 = normal, 2 = highlight.
+                // Default should be normal when shadow mode is enabled.
+                g_game_shadowmap[dx] = (g_vdp_reg_12_3_shadow != 0) ? 1u : 0u;
                 g_sprite_line_mask[dx] = false;
             }
 
@@ -409,7 +412,7 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         g_game_cmap[wx]   = w_palette + picValue;
                         g_game_primap[wx] = w_priority;
-                        g_game_shadowmap[wx] = w_priority;
+                        g_game_shadowmap[wx] = (g_vdp_reg_12_3_shadow != 0) ? 1u : 0u;
                     }
                     w_view_x += 1;
                     w_view_dx += 1;
@@ -552,8 +555,8 @@ namespace EutherDrive.Core.MdTracerCore
                             {
                                 g_game_cmap[wx]   = w_palette + picValue;
                                 g_game_primap[wx] = w_priority;
+                                g_game_shadowmap[wx] = (g_vdp_reg_12_3_shadow != 0) ? 1u : 0u;
                             }
-                            g_game_shadowmap[wx] |= w_priority;
                         }
                         w_view_x += 1;
                         w_view_dx += 1;
@@ -677,28 +680,27 @@ namespace EutherDrive.Core.MdTracerCore
                                             }
                                             else if (w_color == 0x3e)
                                             {
-                                                // Palette 3, color 14: Transparent, makes underlying pixel HIGHLIGHT
+                                                // Palette 3, color 14: Transparent, makes underlying pixel SHADOW
                                                 uint w_map = g_game_shadowmap[w_posx];
-                                                if (w_map < 2) g_game_shadowmap[w_posx] = (uint)(w_map + 1);
+                                                if (w_map > 0) g_game_shadowmap[w_posx] = (uint)(w_map - 1);
                                             }
                                             else if (w_color == 0x3f)
                                             {
-                                                // Palette 3, color 15: Transparent, makes underlying pixel SHADOW
+                                                // Palette 3, color 15: Transparent, makes underlying pixel HIGHLIGHT
                                                 uint w_map = g_game_shadowmap[w_posx];
-                                                if (w_map > 0) g_game_shadowmap[w_posx] = (uint)(w_map - 1);
+                                                if (w_map < 2) g_game_shadowmap[w_posx] = (uint)(w_map + 1);
                                             }
                                             else if ((w_color & 0x0f) == 0x0e)
                                             {
                                                 // Colors 0x0E, 0x1E, 0x2E: ALWAYS NORMAL (no shadow inheritance)
                                                 g_game_cmap[w_posx]     = w_color;
                                                 g_game_primap[w_posx]   = w_priority;
-                                                g_game_shadowmap[w_posx] |= w_priority;
+                                                g_game_shadowmap[w_posx] = 1u;
                                             }
                                             else
                                             {
                                                 g_game_cmap[w_posx]   = w_color;
                                                 g_game_primap[w_posx] = w_priority;
-                                                g_game_shadowmap[w_posx] |= w_priority;
                                             }
                                         }
 
@@ -795,7 +797,6 @@ namespace EutherDrive.Core.MdTracerCore
                                     {
                                         g_game_cmap[w_posx]   = w_palette + picValueDirect;
                                         g_game_primap[w_posx] = w_priority;
-                                        g_game_shadowmap[w_posx] |= w_priority;
                                     }
                                 }
                                 else
@@ -807,7 +808,6 @@ namespace EutherDrive.Core.MdTracerCore
                                     {
                                         g_game_cmap[w_posx]   = w_palette + picValue;
                                         g_game_primap[w_posx] = w_priority;
-                                        g_game_shadowmap[w_posx] |= w_priority;
                                     }
                                 }
                             }

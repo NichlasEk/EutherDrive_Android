@@ -9,9 +9,14 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static bool ParseUseJgenesisZ80()
         {
+            // Explicit test switch: use legacy Z80 core with the new MD main/m68k path.
+            string? legacy = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_USE_LEGACY_Z80");
+            if (!string.IsNullOrEmpty(legacy))
+                return !(legacy == "1" || legacy.Equals("true", StringComparison.OrdinalIgnoreCase));
+
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_JGENESIS");
             if (string.IsNullOrEmpty(raw))
-                return true;
+                return false;
             return string.Equals(raw, "1", StringComparison.Ordinal);
         }
 
@@ -169,24 +174,33 @@ namespace EutherDrive.Core.MdTracerCore
                 _z80StatsBudgetCount += in_clock;
 
             if (!g_active)
+            {
+                AccumulateLineCycles(in_clock, 0);
                 return;
+            }
 
             if (HaltOnBusReq && busRequested)
+            {
+                AccumulateLineCycles(in_clock, 0);
                 return;
+            }
 
             if (busRequested || z80reset)
             {
                 if (TraceZ80Stats)
                     _z80StatsBlockedCount++;
+                AccumulateLineCycles(in_clock, 0);
                 return;
             }
 
+            int cyclesConsumed = 0;
             g_clock_total += in_clock;
             while (g_clock_total > 0)
             {
                 uint tCycles = _jgZ80.ExecuteInstruction(_jgBus);
                 int waitCycles = ConsumeWaitCycles();
                 uint totalCycles = tCycles + (uint)waitCycles;
+                cyclesConsumed += (int)totalCycles;
 
                 _totalCycles += totalCycles;
                 if (TraceZ80Stats)
@@ -202,6 +216,7 @@ namespace EutherDrive.Core.MdTracerCore
                 g_clock_total -= (int)totalCycles;
             }
 
+            AccumulateLineCycles(in_clock, cyclesConsumed);
             SyncLegacyRegsFromJg();
         }
 

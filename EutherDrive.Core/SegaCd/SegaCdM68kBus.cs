@@ -23,13 +23,13 @@ internal sealed class SegaCdMainM68kBus : IBusInterface
 
     public byte InterruptLevel()
     {
-        var vdp = md_main.g_md_vdp;
+        byte level = 0;
+        md_vdp? vdp = md_main.g_md_vdp;
         bool hintEnabled = vdp != null && vdp.g_vdp_reg_0_4_hinterrupt == 1;
         bool vintEnabled = vdp != null && vdp.g_vdp_reg_1_5_vinterrupt == 1;
-        byte level = 0;
 
-        // Return the highest active level; otherwise lower levels can hide
-        // higher-priority interrupts (e.g. HINT masking VINT).
+        // Return highest eligible pending IRQ level.
+        // Keep VDP enable gating so we don't deliver spurious H/V IRQs.
         if (_memory != null && _memory.Registers.SoftwareInterruptEnabled && _memory.Registers.SoftwareInterruptPending)
             level = 2;
         if (md_m68k.g_interrupt_H_req && hintEnabled && level < 4)
@@ -50,14 +50,14 @@ internal sealed class SegaCdMainM68kBus : IBusInterface
         if (level == 4)
         {
             md_m68k.g_interrupt_H_req = false;
-            md_m68k.g_interrupt_H_act = true;
+            md_m68k.g_interrupt_H_act = false;
             return;
         }
 
         if (level == 6)
         {
             md_m68k.g_interrupt_V_req = false;
-            md_m68k.g_interrupt_V_act = true;
+            md_m68k.g_interrupt_V_act = false;
             return;
         }
 
@@ -70,7 +70,7 @@ internal sealed class SegaCdMainM68kBus : IBusInterface
         if (level == md_m68k.g_interrupt_EXT_level)
         {
             md_m68k.g_interrupt_EXT_req = false;
-            md_m68k.g_interrupt_EXT_act = true;
+            md_m68k.g_interrupt_EXT_act = false;
             md_m68k.g_interrupt_EXT_ack?.Invoke(level);
         }
     }

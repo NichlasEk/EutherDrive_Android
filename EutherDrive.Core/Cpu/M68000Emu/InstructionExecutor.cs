@@ -21,6 +21,10 @@ internal sealed partial class InstructionExecutor
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_INDEXED"), "1", StringComparison.Ordinal);
     private static readonly int TracePcIndexedLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_PC_INDEXED_LIMIT", 64);
     private static int _tracePcIndexedRemaining = TracePcIndexed ? TracePcIndexedLimit : 0;
+    private static readonly bool TraceInterrupts =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_IRQ"), "1", StringComparison.Ordinal);
+    private static readonly int TraceInterruptLimit = ParseTraceLimit("EUTHERDRIVE_M68K_TRACE_IRQ_LIMIT", 256);
+    private static int _traceInterruptRemaining = TraceInterrupts ? TraceInterruptLimit : 0;
 
     private const uint AddressErrorVector = 3;
     private const uint IllegalOpcodeVector = 4;
@@ -47,18 +51,24 @@ internal sealed partial class InstructionExecutor
         if (_registers.PendingInterruptLevel.HasValue)
         {
             byte level = _registers.PendingInterruptLevel.Value;
+            ushort srBefore = _registers.StatusRegister();
             _registers.PendingInterruptLevel = null;
             _bus.AcknowledgeInterrupt(level);
             _registers.Stopped = false;
+            MaybeTraceInterrupt("take", level, srBefore, _registers.InterruptPriorityMask, pending: level);
             return HandleAutoVectoredInterrupt(level).IsOk ? 44u : 50u;
         }
 
         byte interruptLevel = (byte)(_bus.InterruptLevel() & 0x07);
-        if (interruptLevel > _registers.InterruptPriorityMask)
+        byte mask = (byte)(_registers.InterruptPriorityMask & 0x07);
+        if (interruptLevel > mask)
         {
             _registers.PendingInterruptLevel = interruptLevel;
+            MaybeTraceInterrupt("latch", interruptLevel, _registers.StatusRegister(), mask, pending: interruptLevel);
             return 10;
         }
+        if (interruptLevel != 0)
+            MaybeTraceInterrupt("masked", interruptLevel, _registers.StatusRegister(), mask, pending: null);
 
         if (_registers.Stopped)
             return 4;
@@ -552,6 +562,11 @@ internal sealed partial class InstructionExecutor
 
         uint vectorAddr = AutoVectoredInterruptBase + 4u * interruptLevel;
         uint newPc = _bus.ReadLong(vectorAddr);
+        if (TraceInterrupts && _traceInterruptRemaining > 0)
+        {
+            Console.WriteLine(
+                $"[M68K-IRQVEC] cpu={_name} level={interruptLevel} vector=0x{vectorAddr:X4} target=0x{newPc:X8}");
+        }
         var r2 = JumpToAddress(newPc);
         if (!r2.IsOk) return ExecuteResult<uint>.Err(r2.Error!.Value);
 
@@ -661,6 +676,16 @@ internal sealed partial class InstructionExecutor
         if (value <= 0)
             return int.MaxValue;
         return value;
+    }
+
+    private void MaybeTraceInterrupt(string phase, byte busLevel, ushort sr, byte mask, byte? pending)
+    {
+        if (!TraceInterrupts || _traceInterruptRemaining <= 0)
+            return;
+        _traceInterruptRemaining--;
+        string pendingText = pending.HasValue ? pending.Value.ToString() : "-";
+        Console.WriteLine(
+            $"[M68K-IRQ] cpu={_name} phase={phase} pc=0x{_registers.Pc:X8} sr=0x{sr:X4} mask={mask} bus={busLevel} pending={pendingText}");
     }
 
     private ExecuteResult<object> HandleTrap(uint vector, uint pc)

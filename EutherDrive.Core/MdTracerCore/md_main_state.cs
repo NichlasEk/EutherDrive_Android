@@ -1,4 +1,5 @@
 using System.IO;
+using EutherDrive.Core.Cpu.M68000Emu;
 
 namespace EutherDrive.Core.MdTracerCore;
 
@@ -29,6 +30,23 @@ internal static partial class md_main
         writer.Write(_injectMbxFrame);
 
         writer.Write(_systemCycles);
+
+        // Optional M68KEmu state (for savestates taken with new core active)
+        bool hasM68kEmuState = UseM68kEmuMain && _m68kEmu != null;
+        writer.Write(hasM68kEmuState);
+        if (hasM68kEmuState)
+        {
+            var state = _m68kEmu!.GetState();
+            for (int i = 0; i < state.Data.Length; i++)
+                writer.Write(state.Data[i]);
+            for (int i = 0; i < state.Address.Length; i++)
+                writer.Write(state.Address[i]);
+            writer.Write(state.Usp);
+            writer.Write(state.Ssp);
+            writer.Write(state.Sr);
+            writer.Write(state.Pc);
+            writer.Write(state.Prefetch);
+        }
     }
 
     internal static void LoadState(BinaryReader reader)
@@ -57,5 +75,47 @@ internal static partial class md_main
         _injectMbxFrame = reader.ReadInt64();
 
         _systemCycles = reader.ReadInt64();
+        _loadedM68kEmuStateFromSavestate = false;
+
+        // Optional trailing M68KEmu state; absent in old savestates.
+        if (reader.BaseStream.Position >= reader.BaseStream.Length)
+            return;
+
+        bool hasM68kEmuState = reader.ReadBoolean();
+        if (!hasM68kEmuState)
+            return;
+        if (!UseM68kEmuMain)
+            return;
+
+        uint[] data = new uint[8];
+        for (int i = 0; i < data.Length; i++)
+            data[i] = reader.ReadUInt32();
+
+        uint[] address = new uint[7];
+        for (int i = 0; i < address.Length; i++)
+            address[i] = reader.ReadUInt32();
+
+        uint usp = reader.ReadUInt32();
+        uint ssp = reader.ReadUInt32();
+        ushort sr = reader.ReadUInt16();
+        uint pc = reader.ReadUInt32();
+        ushort prefetch = reader.ReadUInt16();
+
+        EnsureMainM68kBackend();
+        if (_m68kEmu == null)
+            return;
+
+        var state = new M68000.M68000State(
+            data: data,
+            address: address,
+            usp: usp,
+            ssp: ssp,
+            sr: sr,
+            pc: pc,
+            prefetch: prefetch);
+        _m68kEmu.SetState(state);
+        _m68kWaitCycles = 0;
+        _m68kRefreshCounter = 0;
+        _loadedM68kEmuStateFromSavestate = true;
     }
 }

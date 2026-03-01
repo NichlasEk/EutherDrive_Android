@@ -43,7 +43,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             public double Sample(double[] volumeTable)
             {
-                double output = CurrentOutput == WaveOutput.Positive ? 1.0 : 0.0;
+                double output = CurrentOutput == WaveOutput.Positive ? 1.0 : -1.0;
                 return output * volumeTable[Attenuation];
             }
         }
@@ -79,7 +79,9 @@ namespace EutherDrive.Core.MdTracerCore
 
             public ushort Resolve(ushort tone2)
             {
-                return Kind == NoiseReloadKind.Tone2 ? tone2 : Value;
+                if (Kind == NoiseReloadKind.Tone2)
+                    return tone2 == 0 ? (ushort)1 : tone2;
+                return Value;
             }
         }
 
@@ -108,6 +110,8 @@ namespace EutherDrive.Core.MdTracerCore
                     return;
 
                 Counter = CounterReload.Resolve(tone2);
+                if (Counter == 0)
+                    Counter = 1;
                 CurrentCounterOutput = Invert(CurrentCounterOutput);
                 if (CurrentCounterOutput == WaveOutput.Positive)
                 {
@@ -117,7 +121,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             public double Sample(double[] volumeTable)
             {
-                double output = CurrentLfsrOutput == WaveOutput.Positive ? 1.0 : 0.0;
+                double output = CurrentLfsrOutput == WaveOutput.Positive ? 1.0 : -1.0;
                 return output * volumeTable[Attenuation];
             }
 
@@ -212,16 +216,27 @@ namespace EutherDrive.Core.MdTracerCore
         private StereoControl _stereo;
         private int _divider = SnDivider;
         private double _clockAccumulator;
+        private double _systemSampleAccumulator;
         private float _dcBlockX1;
         private float _dcBlockY1;
+        private short[] _ringBuffer = new short[32768];
+        private int _ringRead;
+        private int _ringWrite;
+        private int _ringCount;
+        private short _lastSample;
 
         public void Reset()
         {
             _latchedRegister = Register.Tone0;
             _divider = SnDivider;
             _clockAccumulator = 0;
+            _systemSampleAccumulator = 0;
             _dcBlockX1 = 0;
             _dcBlockY1 = 0;
+            _ringRead = 0;
+            _ringWrite = 0;
+            _ringCount = 0;
+            _lastSample = 0;
             _stereo.Reset();
             _square[0] = new SquareWaveGenerator();
             _square[1] = new SquareWaveGenerator();
@@ -233,6 +248,27 @@ namespace EutherDrive.Core.MdTracerCore
             _noise.CurrentLfsrOutput = WaveOutput.Negative;
             _noise.NoiseType = NoiseType.Periodic;
             _noise.Attenuation = 0x0F;
+        }
+
+        public void AdvanceSystemCycles(long m68kCycles, int[] outVol, int noiseGainPercent)
+        {
+            if (m68kCycles <= 0)
+                return;
+
+            // md_main.SystemCycles are M68K cycles. Convert elapsed M68K cycles to
+            // output samples at 44.1kHz using NTSC master clock baseline.
+            const double m68kClockHz = 7670454.0;
+            _systemSampleAccumulator += (m68kCycles * PsgSampling) / m68kClockHz;
+            int samples = (int)_systemSampleAccumulator;
+            if (samples <= 0)
+                return;
+            _systemSampleAccumulator -= samples;
+
+            for (int i = 0; i < samples; i++)
+            {
+                short sample = GenerateSample(outVol, noiseGainPercent);
+                WriteRing(sample);
+            }
         }
 
         public void Write(byte value)
@@ -255,7 +291,23 @@ namespace EutherDrive.Core.MdTracerCore
 
         public int UpdateSample(int[] outVol, int noiseGainPercent)
         {
-            // Advance PSG clock based on sample rate
+            if (_ringCount > 0)
+            {
+                short sample = ReadRing();
+                _lastSample = sample;
+                return sample;
+            }
+
+            // Fallback for early startup paths that request audio before
+            // any SystemCycles-driven PSG generation has occurred.
+            short generated = GenerateSample(outVol, noiseGainPercent);
+            _lastSample = generated;
+            return generated;
+        }
+
+        private short GenerateSample(int[] outVol, int noiseGainPercent)
+        {
+            // Advance PSG clock based on output sample cadence.
             _clockAccumulator += (double)PsgClock / PsgSampling;
             int ticks = (int)_clockAccumulator;
             if (ticks > 0)
@@ -285,7 +337,44 @@ namespace EutherDrive.Core.MdTracerCore
             float scaled = dcBlocked * PsgSoftclipScale;
             if (scaled > short.MaxValue) scaled = short.MaxValue;
             else if (scaled < short.MinValue) scaled = short.MinValue;
-            return (int)MathF.Round(scaled);
+            return (short)MathF.Round(scaled);
+        }
+
+        private int RingCapacity => _ringBuffer.Length;
+
+        private void WriteRing(short sample)
+        {
+            if (RingCapacity == 0)
+                return;
+
+            _ringBuffer[_ringWrite] = sample;
+            _ringWrite++;
+            if (_ringWrite >= RingCapacity)
+                _ringWrite = 0;
+
+            if (_ringCount == RingCapacity)
+            {
+                _ringRead++;
+                if (_ringRead >= RingCapacity)
+                    _ringRead = 0;
+            }
+            else
+            {
+                _ringCount++;
+            }
+        }
+
+        private short ReadRing()
+        {
+            if (_ringCount <= 0)
+                return _lastSample;
+
+            short sample = _ringBuffer[_ringRead];
+            _ringRead++;
+            if (_ringRead >= RingCapacity)
+                _ringRead = 0;
+            _ringCount--;
+            return sample;
         }
 
         private void Tick()

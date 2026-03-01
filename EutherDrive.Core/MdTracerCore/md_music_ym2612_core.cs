@@ -849,19 +849,16 @@ namespace EutherDrive.Core.MdTracerCore
             // Update last sync cycle
             _lastSyncSystemCycles = currentSystemCycles;
             
-            // Convert M68K cycles to YM2612 timer ticks
-            // YM2612 clock: 7.67MHz (7670454 Hz)
-            // Timer ticks at 72Hz (YM2612_CLOCK / 72)
-            // So: elapsedCycles * (YM2612_CLOCK / 72) / M68K_CLOCK
-            // Since YM2612_CLOCK ≈ M68K_CLOCK, simplifies to: elapsedCycles / 72
-            // So 72 M68K cycles ≈ 1 timer tick at YM2612_CLOCK / 72 rate
+            // Convert M68K cycles to YM2612 timer ticks.
+            // YM timer base is derived from FM clock and is effectively one tick per
+            // 144 master cycles. Using 72 here doubles timer speed and makes music
+            // drivers run too fast even when Z80 cycles/sec are correct.
             
             // Accumulate master cycles for timer ticks
             _timerTickFrac += elapsedCycles;
             
             // Calculate how many complete timer ticks we have
-            // 72 M68K cycles = 1 YM2612 timer tick (at YM2612_CLOCK / 72 rate)
-            const long CYCLES_PER_TIMER_TICK = 72;
+            const long CYCLES_PER_TIMER_TICK = 144;
             int ticks = (int)(_timerTickFrac / CYCLES_PER_TIMER_TICK);
             if (ticks <= 0)
                 return;
@@ -902,7 +899,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
 
             _timerTickFrac += deltaCycles;
-            const long CYCLES_PER_TIMER_TICK = 72;
+            const long CYCLES_PER_TIMER_TICK = 144;
             int ticks = (int)(_timerTickFrac / CYCLES_PER_TIMER_TICK);
             if (ticks <= 0)
                 return;

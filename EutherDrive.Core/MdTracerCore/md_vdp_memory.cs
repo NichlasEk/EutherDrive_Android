@@ -527,6 +527,9 @@ namespace EutherDrive.Core.MdTracerCore
 
         public uint read32(uint in_address)
         {
+            if (!md_main.g_masterSystemMode)
+                in_address = NormalizeMdVdpPortAddress(in_address);
+
             if (in_address <= 0xc0001e)
             {
                 return ((uint)read16(in_address) << 16) | read16(in_address + 2);
@@ -568,6 +571,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             in_address &= 0x00FF_FFFF;
+            if (!md_main.g_masterSystemMode)
+                in_address = NormalizeMdVdpPortAddress(in_address);
 
             if (in_address <= 0xc00003)
             {
@@ -611,7 +616,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            in_address &= 0xfffffe;
+            in_address = NormalizeMdVdpPortAddress(in_address);
 
             if (in_address <= 0xc00003)
             {
@@ -864,6 +869,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
 
+            in_address = NormalizeMdVdpPortAddress(in_address);
             if (in_address <= 0xc0001e)
             {
                 write16(in_address, (ushort)(in_data >> 16));
@@ -871,6 +877,16 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
             Error($"write32: invalid address 0x{in_address:X6}");
+        }
+
+        private static uint NormalizeMdVdpPortAddress(uint address)
+        {
+            uint a = address & 0x00FF_FFFF;
+            // VDP port region is mirrored across 0xC00000-0xDFFFFF.
+            // Fold any mirror hit to 0xC00000-0xC0001E (word aligned).
+            if (a >= 0x00C00000u && a <= 0x00DFFFFFu)
+                return 0x00C00000u | (a & 0x1Eu);
+            return a & 0x00FFFFFE;
         }
 
         private byte SmsReadData()

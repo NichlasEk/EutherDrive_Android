@@ -216,6 +216,8 @@ public partial class MainWindow : Window
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPEEDLOCK"), "1", StringComparison.Ordinal);
     private static readonly bool TraceSpeedLockErr =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPEEDLOCK_LOG"), "1", StringComparison.Ordinal);
+    private static readonly bool AllowUnsafeZ80CyclesMult =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_ALLOW_Z80_CYCLES_MULT"), "1", StringComparison.Ordinal);
     private long _audioDebugLastTicks;
     private double _audioDebugLastRatio;
     private long _audioDebugLastDeltaCycles;
@@ -3125,7 +3127,7 @@ public partial class MainWindow : Window
         _noiseMixPercent = ClampMixPercent(settings.NoiseMixPercent);
         _audioEnabled = settings.AudioEnabled;
         _ymResampleLinear = settings.YmResampleLinear;
-        _z80CyclesMult = settings.Z80CyclesMult > 0 ? settings.Z80CyclesMult : 1.0;
+        _z80CyclesMult = NormalizeZ80CyclesMult(settings.Z80CyclesMult > 0 ? settings.Z80CyclesMult : 1.0);
         _speedLockEnabled = settings.SpeedLockEnabled;
         _renderSkipEnabled = settings.RenderSkipEnabled;
         _speedScale = settings.SpeedScale > 0 ? settings.SpeedScale : 1.0;
@@ -3992,10 +3994,17 @@ public partial class MainWindow : Window
         if (_core is not MdTracerAdapter adapter)
             return;
 
-        bool wantYm = YmEnvEnabled || (AudioEnabledCheck?.IsChecked == true);
+        bool uiAudioEnabled = AudioEnabledCheck?.IsChecked ?? true;
+        bool wantYm = YmEnvEnabled || uiAudioEnabled;
         adapter.SetYmEnabled(wantYm);
         adapter.SetYmResampleLinear(_ymResampleLinear);
-        adapter.SetZ80CycleMultiplier(_z80CyclesMult);
+        double effectiveZ80Mult = NormalizeZ80CyclesMult(_z80CyclesMult);
+        if (Math.Abs(effectiveZ80Mult - _z80CyclesMult) > 0.0001)
+        {
+            _z80CyclesMult = effectiveZ80Mult;
+            UpdateZ80CyclesMultUi();
+        }
+        adapter.SetZ80CycleMultiplier(effectiveZ80Mult);
     }
 
     private void OnYmResampleChanged(object? sender, SelectionChangedEventArgs e)
@@ -4017,9 +4026,19 @@ public partial class MainWindow : Window
             return;
         if (value <= 0.0)
             return;
-        _z80CyclesMult = value;
+        _z80CyclesMult = NormalizeZ80CyclesMult(value);
+        UpdateZ80CyclesMultUi();
         ApplyAudioOptionsToCore();
         SaveSettings();
+    }
+
+    private static double NormalizeZ80CyclesMult(double value)
+    {
+        if (!(value > 0.0) || double.IsNaN(value) || double.IsInfinity(value))
+            return 1.0;
+        if (AllowUnsafeZ80CyclesMult)
+            return value;
+        return 1.0;
     }
 
     private void OnAudioToggle(object? sender, RoutedEventArgs e)
@@ -5045,6 +5064,74 @@ public partial class MainWindow : Window
         double targetFps = GetLiveTargetFps();
         double ticksPerFrame = Stopwatch.Frequency / targetFps;
         double nextTick = Stopwatch.GetTimestamp();
+        int uiHangFrames = 0;
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HANG_FRAMES");
+            if (!string.IsNullOrWhiteSpace(raw))
+                int.TryParse(raw.Trim(), out uiHangFrames);
+        }
+        bool uiHangDetectEnabled = uiHangFrames > 0;
+        uint uiHangLastM68kPc = 0;
+        ushort uiHangLastZ80Pc = 0;
+        long uiHangLastCycles = 0;
+        int uiHangStableFrames = 0;
+        bool uiHangReported = false;
+        int uiVideoHangFrames = 0;
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_VIDEO_HANG_FRAMES");
+            if (!string.IsNullOrWhiteSpace(raw))
+                int.TryParse(raw.Trim(), out uiVideoHangFrames);
+        }
+        bool uiVideoHangDetectEnabled = uiVideoHangFrames > 0;
+        int uiVideoTripwireFrames = 0;
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_TRIPWIRE_VIDEO_FRAMES");
+            if (!string.IsNullOrWhiteSpace(raw))
+                int.TryParse(raw.Trim(), out uiVideoTripwireFrames);
+        }
+        bool uiVideoTripwireEnabled = uiVideoTripwireFrames > 0;
+        uint uiVideoLastHash = 0;
+        long uiVideoLastCycles = 0;
+        int uiVideoStableFrames = 0;
+        bool uiVideoHangReported = false;
+        bool uiVideoTripwireReported = false;
+        long uiMdTraceFrame = 0;
+        int uiMdTraceEvery = 1;
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_MD_TRACE_EVERY");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out int parsed) && parsed > 0)
+                uiMdTraceEvery = parsed;
+        }
+        StreamWriter? uiMdTraceWriter = null;
+        {
+            string? tracePath = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_MD_TRACE_FILE");
+            if (!string.IsNullOrWhiteSpace(tracePath))
+            {
+                string fullPath = Path.IsPathRooted(tracePath)
+                    ? tracePath
+                    : Path.Combine(Directory.GetCurrentDirectory(), tracePath);
+                string? dir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                    Directory.CreateDirectory(dir);
+                uiMdTraceWriter = new StreamWriter(fullPath, append: false, Encoding.UTF8);
+                uiMdTraceWriter.WriteLine(
+                    "frame,m68k_pc,z80_pc,cycles,fb_hash,audio_buffered,irq_src,sr,irq_mask,pending_irq,bus_irq,irq_take,hreq,vreq,extreq,hint_en,vint_en,hreq_count,vreq_count,extreq_count,hack_count,vack_count,eack_count");
+                uiMdTraceWriter.Flush();
+                Console.WriteLine($"[UI-MD-TRACE] Writing per-frame trace to {fullPath} (every {uiMdTraceEvery} frame(s))");
+            }
+        }
+
+        static uint ComputeFramebufferHash(ReadOnlySpan<byte> buffer)
+        {
+            const uint offset = 2166136261u;
+            const uint prime = 16777619u;
+            uint hash = offset;
+            int step = buffer.Length >= 16384 ? 32 : 8;
+            for (int i = 0; i < buffer.Length; i += step)
+                hash = (hash ^ buffer[i]) * prime;
+            return hash;
+        }
+
         while (_emuRunning)
         {
             double currentTarget = GetLiveTargetFps();
@@ -5125,6 +5212,107 @@ public partial class MainWindow : Window
                     }
                     if (TraceUiProfile)
                         _uiProfileAudioTicks += Stopwatch.GetTimestamp() - audioStart;
+                }
+
+                if (core is MdTracerAdapter mdCore)
+                {
+                    uint m68kPc = mdCore.GetM68kPc();
+                    ushort z80Pc = mdCore.GetZ80Pc();
+                    long cycles = mdCore.GetSystemCycles();
+                    uint? hashForTrace = null;
+
+                    if (uiHangDetectEnabled && !uiHangReported)
+                    {
+                        if (m68kPc == uiHangLastM68kPc && z80Pc == uiHangLastZ80Pc && cycles == uiHangLastCycles)
+                        {
+                            uiHangStableFrames++;
+                        }
+                        else
+                        {
+                            uiHangStableFrames = 0;
+                            uiHangLastM68kPc = m68kPc;
+                            uiHangLastZ80Pc = z80Pc;
+                            uiHangLastCycles = cycles;
+                        }
+
+                        if (uiHangStableFrames >= uiHangFrames)
+                        {
+                            uiHangReported = true;
+                            string logsDir = Path.Combine(Directory.GetCurrentDirectory(), "logs");
+                            Directory.CreateDirectory(logsDir);
+                            string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+                            string ppmPath = Path.Combine(logsDir, $"ui_hang_{stamp}.ppm");
+                            mdCore.DumpFrameBufferToPpm(ppmPath);
+                            Console.Error.WriteLine(
+                                $"[UI-HANG] stableFrames={uiHangStableFrames} m68k=0x{m68kPc:X6} z80=0x{z80Pc:X4} cycles={cycles} dump='{ppmPath}'");
+                        }
+                    }
+
+                    bool needVideoStallCheck =
+                        uiVideoHangDetectEnabled || uiVideoTripwireEnabled;
+                    if (needVideoStallCheck && (!uiVideoHangReported || !uiVideoTripwireReported))
+                    {
+                        var fb = mdCore.GetFrameBuffer(out _, out _, out _);
+                        uint hash = ComputeFramebufferHash(fb);
+                        hashForTrace = hash;
+                        bool videoStalled = hash == uiVideoLastHash;
+                        bool emuAdvanced = cycles != uiVideoLastCycles;
+                        if (videoStalled && emuAdvanced)
+                        {
+                            uiVideoStableFrames++;
+                        }
+                        else
+                        {
+                            uiVideoStableFrames = 0;
+                        }
+                        uiVideoLastHash = hash;
+                        uiVideoLastCycles = cycles;
+
+                        if (uiVideoHangDetectEnabled && !uiVideoHangReported && uiVideoStableFrames >= uiVideoHangFrames)
+                        {
+                            uiVideoHangReported = true;
+                            string logsDir = Path.Combine(Directory.GetCurrentDirectory(), "logs");
+                            Directory.CreateDirectory(logsDir);
+                            string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+                            string ppmPath = Path.Combine(logsDir, $"ui_video_hang_{stamp}.ppm");
+                            mdCore.DumpFrameBufferToPpm(ppmPath);
+                            Console.Error.WriteLine(
+                                $"[UI-VIDEO-HANG] stableFrames={uiVideoStableFrames} hash=0x{hash:X8} m68k=0x{m68kPc:X6} z80=0x{z80Pc:X4} cycles={cycles} dump='{ppmPath}'");
+                        }
+
+                        if (uiVideoTripwireEnabled && !uiVideoTripwireReported && uiVideoStableFrames >= uiVideoTripwireFrames)
+                        {
+                            uiVideoTripwireReported = true;
+                            string logsDir = Path.Combine(Directory.GetCurrentDirectory(), "logs");
+                            Directory.CreateDirectory(logsDir);
+                            string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+                            string ppmPath = Path.Combine(logsDir, $"ui_tripwire_video_{stamp}.ppm");
+                            string txtPath = Path.Combine(logsDir, $"ui_tripwire_video_{stamp}.txt");
+                            mdCore.DumpFrameBufferToPpm(ppmPath);
+                            string snapshot = mdCore.BuildMainTripwireSnapshot();
+                            File.WriteAllText(txtPath,
+                                $"stableFrames={uiVideoStableFrames} hash=0x{hash:X8}\n{snapshot}\n");
+                            Console.Error.WriteLine(
+                                $"[UI-TRIPWIRE] stableFrames={uiVideoStableFrames} hash=0x{hash:X8} dump='{ppmPath}' snap='{txtPath}' {snapshot}");
+                        }
+                    }
+
+                    if (uiMdTraceWriter != null && ((uiMdTraceFrame % uiMdTraceEvery) == 0))
+                    {
+                        uint fbHash = hashForTrace ?? ComputeFramebufferHash(mdCore.GetFrameBuffer(out _, out _, out _));
+                        int audioBuffered = _audioEngine?.BufferedFrames ?? -1;
+                        MdTracerAdapter.MainInterruptDebugState irq = mdCore.GetMainInterruptDebugState();
+                        string irqSrc = irq.UsingM68kEmu
+                            ? "m68kemu"
+                            : (irq.M68kEmuConfigured && !irq.M68kEmuReady ? "m68kemu_unready_fallback_legacy" : "legacy");
+                        uiMdTraceWriter.WriteLine(
+                            $"{uiMdTraceFrame},0x{m68kPc:X6},0x{z80Pc:X4},{cycles},0x{fbHash:X8},{audioBuffered}," +
+                            $"{irqSrc},0x{irq.Sr:X4},{irq.InterruptMask},{irq.PendingInterruptLevel},{irq.BusInterruptLevel}," +
+                            $"{(irq.WillTakeInterrupt ? 1 : 0)},{(irq.HintReq ? 1 : 0)},{(irq.VintReq ? 1 : 0)},{(irq.ExtReq ? 1 : 0)}," +
+                            $"{(irq.HintEnabled ? 1 : 0)},{(irq.VintEnabled ? 1 : 0)}," +
+                            $"{irq.HintReqCount},{irq.VintReqCount},{irq.ExtReqCount},{irq.HintAckCount},{irq.VintAckCount},{irq.ExtAckCount}");
+                    }
+                    uiMdTraceFrame++;
                 }
 
                 long submitStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
@@ -5209,32 +5397,19 @@ public partial class MainWindow : Window
             if (!_speedLockEnabled && (_emuFpsFrames % 60) == 0)
                 Thread.Sleep(0);
         }
+
+        uiMdTraceWriter?.Flush();
+        uiMdTraceWriter?.Dispose();
     }
 
     private void CatchUpAudio(IEmulatorCore core)
     {
-        if (_audioEngine == null || core is not MdTracerAdapter adapter)
+        if (_audioEngine == null || core is not MdTracerAdapter)
             return;
-        if (AudioClockFrame)
-            return;
-
-        int buffered = _audioEngine.BufferedFrames;
-        if (buffered >= AudioTargetBufferedFrames)
-            return;
-
-        int framesToCatch = Math.Min(AudioMaxCatchupFramesPerTick, AudioTargetBufferedFrames - buffered);
-        if (framesToCatch <= 0)
-            return;
-
-        int safety = 0;
-        while (framesToCatch > 0 && safety < AudioMaxCatchupFramesPerTick)
-        {
-            ApplyInputToCore(adapter);
-            adapter.RunFrame();
-            GenerateAudioFromSystemCycles(adapter);
-            framesToCatch -= (int)(AudioSampleRate / GetLiveTargetFps());
-            safety++;
-        }
+        // Never run extra emulation frames for audio catch-up on MD.
+        // Running adapter.RunFrame() here changes simulation speed and can
+        // make music/gameplay run too fast when buffer is below target.
+        return;
     }
 
 

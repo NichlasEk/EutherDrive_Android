@@ -2200,7 +2200,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Port 0x43 -> 0xA04003 (YM2612 Port 1 Data, A0=1,A1=1)
             if (low >= 0x40 && low <= 0x43)
             {
-                uint result = 0xA00000u | (uint)(0x4000 | low);
+                uint result = 0xA04000u | (uint)(low & 0x03);
                 if (MdTracerCore.MdLog.Enabled)
                     Console.WriteLine($"[Z80IO] port=0x{port:X4} -> addr=0x{result:X6} pc=0x{DebugPc:X4}");
                 return result;
@@ -2208,7 +2208,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Ports 0x00-0x03 also map to YM2612 (legacy/alternative mapping)
             if (low <= 0x03)
             {
-                uint result = 0xA00000u | (uint)(0x4000 | low);
+                uint result = 0xA04000u | low;
                 if (MdTracerCore.MdLog.Enabled)
                     Console.WriteLine($"[Z80IO] port=0x{port:X4} -> addr=0x{result:X6} pc=0x{DebugPc:X4}");
                 return result;

@@ -44,8 +44,19 @@ public sealed class M68000
     public uint Pc => _regs.Pc;
     public uint Ssp => _regs.Ssp;
     public ushort NextOpcode => _regs.Prefetch;
+    public ushort StatusRegister => _regs.StatusRegister();
+    public byte InterruptPriorityMask => _regs.InterruptPriorityMask;
+    public byte? PendingInterruptLevel => _regs.PendingInterruptLevel;
+    public bool IsStopped => _regs.Stopped;
+    public bool IsFrozen => _regs.Frozen;
     public bool AddressError => _regs.AddressError;
     public bool LastInstructionWasMulOrDiv => _regs.LastInstructionWasMulDiv;
+
+    public void ForceInterruptMask(byte mask)
+    {
+        mask &= 0x07;
+        _regs.InterruptPriorityMask = mask;
+    }
 
     public readonly struct M68000State
     {
