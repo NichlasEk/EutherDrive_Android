@@ -306,6 +306,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static void stack_push32(uint in_val)
         {
+            if (_oddPcAfterOpLogRemaining > 0 && (in_val & 1) != 0)
+            {
+                _oddPcAfterOpLogRemaining--;
+                Console.WriteLine(
+                    $"[m68k] odd stack push32 val=0x{in_val:X8} pc=0x{g_reg_PC:X6} op=0x{g_opcode:X4} " +
+                    $"sp_before=0x{g_reg_addr[7].l:X8} sr=0x{g_reg_SR:X4}");
+            }
             g_reg_addr[7].l -= 4;
             write32(g_reg_addr[7].l, in_val);
         }
@@ -316,7 +323,6 @@ namespace EutherDrive.Core.MdTracerCore
 
             uint sp = g_reg_addr[7].l;
             w_val = read32(sp);
-            write32(sp, 0);
             g_reg_addr[7].l = sp + 4;
 
             return w_val;
@@ -334,7 +340,6 @@ namespace EutherDrive.Core.MdTracerCore
 
             uint sp = g_reg_addr[7].l;
             w_val = read16(sp);
-            write16(sp, 0);
             g_reg_addr[7].l = sp + 2;
 
             return w_val;

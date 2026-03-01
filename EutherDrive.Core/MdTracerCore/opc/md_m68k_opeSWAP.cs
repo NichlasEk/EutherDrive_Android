@@ -7,14 +7,13 @@ namespace EutherDrive.Core.MdTracerCore
         private void analyse_SWAP()
         {
            g_reg_PC += 2;
-           g_work_data.l = g_reg_data[g_op4].l;
-           g_reg_data[g_op4].w =  g_work_data.wup;
-           g_reg_data[g_op4].wup =  g_work_data.w;
+            g_work_data.l = g_reg_data[g_op4].l;
+            g_reg_data[g_op4].w =  g_work_data.wup;
+            g_reg_data[g_op4].wup =  g_work_data.w;
             uint result = g_reg_data[g_op4].l;
-            uint w_mask = MASKBIT[1];
-            uint w_most = MOSTBIT[1];
-            g_status_N = ((result & w_most) == w_most) ? true: false;
-            g_status_Z = ((result & w_mask) == 0) ? true: false;
+            // SWAP updates N/Z from the full 32-bit result.
+            g_status_N = (result & 0x8000_0000u) != 0;
+            g_status_Z = result == 0;
             g_status_V = false;
             g_status_C = false;
            g_clock += 4;

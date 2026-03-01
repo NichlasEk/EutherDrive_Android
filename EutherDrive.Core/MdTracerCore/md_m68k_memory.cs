@@ -13,6 +13,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int ForceB154ReadLimit =
             ParseTraceLimit("EUTHERDRIVE_FORCE_B154_READ_LIMIT", 8);
         private static int _forceB154ReadRemaining = ForceB154ReadLimit;
+        private static int _stackRetWatchLogRemaining = 256;
 
         /// <summary>
         /// Säkerställ att RAM/ROM-address-space är allokerad.
@@ -113,6 +114,23 @@ namespace EutherDrive.Core.MdTracerCore
             if (limit == 0 || addr >= limit)
                 return false;
             return !IsCartRamAddress(addr);
+        }
+
+        private static void MaybeLogStackRetWrite(uint logicalAddr, byte size, uint value)
+        {
+            if (_stackRetWatchLogRemaining <= 0)
+                return;
+
+            const uint watchStart = 0x00FFFFB0;
+            const uint watchEnd = 0x00FFFFBF;
+            uint end = logicalAddr + size - 1;
+            if (end < watchStart || logicalAddr > watchEnd)
+                return;
+
+            _stackRetWatchLogRemaining--;
+            Console.WriteLine(
+                $"[STACK-WATCH] W{size} pc=0x{g_reg_PC:X6} op=0x{g_opcode:X4} " +
+                $"addr=0x{logicalAddr:X6} val=0x{value:X8} sp=0x{g_reg_addr[7].l:X8} sr=0x{g_reg_SR:X4}");
         }
 
         //----------------------------------------------------------------
@@ -242,6 +260,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             mem[addr] = in_data;
             md_main.g_md_bus?.LogRamRangeDirect(logical, 1, write: true, in_data);
+            MaybeLogStackRetWrite(logical, 1, in_data);
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
                 && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
             {
@@ -267,6 +286,7 @@ namespace EutherDrive.Core.MdTracerCore
             mem[addr]  = (byte)(in_data >> 8);
             mem[addr1] = (byte)(in_data & 0x00FF);
             md_main.g_md_bus?.LogRamRangeDirect(logical, 2, write: true, in_data);
+            MaybeLogStackRetWrite(logical, 2, in_data);
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
                 && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
             {
@@ -297,6 +317,7 @@ namespace EutherDrive.Core.MdTracerCore
             mem[addr2] = (byte)((in_data >> 8) & 0x00FF);
             mem[addr3] = (byte)(in_data & 0x00FF);
             md_main.g_md_bus?.LogRamRangeDirect(logical, 4, write: true, in_data);
+            MaybeLogStackRetWrite(logical, 4, in_data);
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
                 && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
             {

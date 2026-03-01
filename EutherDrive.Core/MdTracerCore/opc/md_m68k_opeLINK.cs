@@ -13,6 +13,11 @@ namespace EutherDrive.Core.MdTracerCore
             stack_push32(g_reg_addr[g_op4].l);
             g_reg_addr[g_op4].l = g_reg_addr[7].l;
             g_reg_addr[7].l = (uint)(g_reg_addr[7].l + w_ext_disp);
+            if ((g_reg_addr[7].l & 1) != 0)
+            {
+                Console.WriteLine(
+                    $"[m68k] LINK odd SP pc=0x{(g_reg_PC - 4):X6} A{g_op4} sp=0x{g_reg_addr[7].l:X8} disp=0x{(ushort)w_ext_disp:X4}");
+            }
         }
    }
 }

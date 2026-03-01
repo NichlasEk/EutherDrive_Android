@@ -49,6 +49,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static uint _lastPcAfter;
         private static ushort _lastOpAfter;
         private static int _pcZeroLogRemaining = 16;
+        private static int _oddPcAfterOpLogRemaining = 64;
+        private static int _oddSpAfterOpLogRemaining = 128;
         private static readonly bool TraceMdStall =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_MD_STALL"), "1", StringComparison.Ordinal);
         private static readonly bool TraceOp4A38 =
@@ -344,6 +346,14 @@ namespace EutherDrive.Core.MdTracerCore
                             $"[m68k] PC jump pc=0x{pcBefore:X6} lastPc=0x{_lastPcAfter:X6} lastOp=0x{_lastOpAfter:X4} SP=0x{spNow:X8}");
                     }
                     _lastSpObserved = spNow;
+                    if ((pcBefore & 1) != 0)
+                    {
+                        HandleAddressErrorOnFetch(pcBefore);
+                        if (g_clock == 0)
+                            g_clock = 50;
+                        g_clock_now += g_clock;
+                        continue;
+                    }
                     g_opcode = read16(g_reg_PC);
                     if (TraceM68kStream && _traceM68kStreamRemaining > 0)
                     {
@@ -467,9 +477,25 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         opinfo.opcode();
                     }
+                    if (_oddPcAfterOpLogRemaining > 0 && (g_reg_PC & 1) != 0)
+                    {
+                        _oddPcAfterOpLogRemaining--;
+                        string opname = opinfo?.opname_out ?? "unknown";
+                        Console.WriteLine(
+                            $"[m68k] odd PC after op prevPc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
+                            $"newPc=0x{g_reg_PC:X6} sp=0x{g_reg_addr[7].l:X8} sr=0x{g_reg_SR:X4}");
+                    }
                     _lastPcAfter = g_reg_PC;
                     _lastOpAfter = g_opcode;
                     uint spAfter = g_reg_addr[7].l;
+                    if (_oddSpAfterOpLogRemaining > 0 && (spAfter & 1) != 0)
+                    {
+                        _oddSpAfterOpLogRemaining--;
+                        string opname = opinfo?.opname_out ?? "unknown";
+                        Console.WriteLine(
+                            $"[m68k] odd SP after op prevPc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
+                            $"SP:0x{spBefore:X8}->0x{spAfter:X8} pc_now=0x{g_reg_PC:X6} sr=0x{g_reg_SR:X4}");
+                    }
                     _lastSpAfterOp = spAfter;
                     if (_a7WriteLogRemaining > 0 && spAfter != spBefore)
                     {
@@ -681,6 +707,20 @@ namespace EutherDrive.Core.MdTracerCore
             RaiseException(kind, vector);
             if (g_clock == 0)
                 g_clock = 34;
+        }
+
+        private void HandleAddressErrorOnFetch(uint pc)
+        {
+            if (_illegalOpLogRemaining > 0)
+            {
+                _illegalOpLogRemaining--;
+                Console.WriteLine(
+                    $"[m68k] address error on opcode fetch pc=0x{pc:X6} " +
+                    $"lastPc=0x{_lastPcAfter:X6} lastOp=0x{_lastOpAfter:X4} " +
+                    $"sp=0x{g_reg_addr[7].l:X8} usp=0x{g_reg_addr_usp.l:X8}");
+            }
+
+            RaiseException("ADDR-ERR", 0x000C);
         }
 
         private static void RecordRecentOp(uint pc, ushort op)

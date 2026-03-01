@@ -12,6 +12,14 @@ namespace EutherDrive.Core.MdTracerCore
             uint stack0 = md_main.g_md_bus.read32(spBefore);
             uint stack1 = md_main.g_md_bus.read32(spBefore + 4);
             uint ret = stack_pop32();
+            if (_rtsBadLogRemaining > 0 && (ret & 1) != 0)
+            {
+                _rtsBadLogRemaining--;
+                Console.WriteLine(
+                    $"[m68k] RTS odd return pc=0x{w_pc:X6} sp=0x{spBefore:X8} ret=0x{ret:X8} " +
+                    $"stack0=0x{stack0:X8} stack1=0x{stack1:X8}");
+                Console.WriteLine($"[m68k] RTS odd return recent accesses: {FormatRecentAccesses(24)}");
+            }
             if (_rtsBadLogRemaining > 0 && (ret == 0 || spBefore >= 0xFFFF0000))
             {
                 _rtsBadLogRemaining--;
