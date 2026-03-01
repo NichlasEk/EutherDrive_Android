@@ -163,6 +163,22 @@ public sealed class WordRam
         return mapped.HasValue ? _ram[mapped.Value] : (byte)0x00;
     }
 
+    // VDP DMA on Sega CD can source from Word RAM even when main CPU access is gated.
+    // Keep normal mapping for 1M mode, but bypass 2M ownership gating for DMA reads.
+    public ushort MainCpuDmaReadWord(uint address)
+    {
+        if (_mode == WordRamMode.TwoM)
+        {
+            uint a0 = address & AddressMask;
+            uint a1 = (a0 + 1) & AddressMask;
+            return (ushort)((_ram[a0] << 8) | _ram[a1]);
+        }
+
+        byte msb = MainCpuReadRam(address);
+        byte lsb = MainCpuReadRam(address | 1);
+        return (ushort)((msb << 8) | lsb);
+    }
+
     public void MainCpuWriteRam(uint address, byte value)
     {
         uint? mapped = MainCpuMapAddress(address);

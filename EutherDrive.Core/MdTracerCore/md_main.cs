@@ -121,6 +121,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool ForceSeega = ReadEnvFlag("EUTHERDRIVE_FORCE_SEEGA");
         private static readonly int ForceSeegaFrame = ParseNonNegativeInt("EUTHERDRIVE_FORCE_SEEGA_FRAME", 20);
         private static readonly uint ForceSeegaPtr = ParseForceSeegaPtr();
+        private static readonly int? ForceFfd8Value = ParseOptionalHexOrInt("EUTHERDRIVE_FORCE_FFD8");
         private static readonly bool TraceSonic2Ram = ReadEnvFlag("EUTHERDRIVE_TRACE_SONIC2_RAM");
         private static readonly int TraceSonic2RamLimit = ParseNonNegativeInt("EUTHERDRIVE_TRACE_SONIC2_RAM_LIMIT", 512);
         private static int _traceSonic2RamRemaining = TraceSonic2Ram ? TraceSonic2RamLimit : 0;
@@ -975,6 +976,8 @@ namespace EutherDrive.Core.MdTracerCore
             long frame = g_md_vdp?.FrameCounter ?? -1;
             int frameM68kCalls = 0;
             int frameM68kBudget = 0;
+            if (ForceFfd8Value.HasValue)
+                md_m68k.write16(0x00FF_FFD8, (ushort)(ForceFfd8Value.Value & 0xFFFF));
             if (ForceSeega && !_forceSeegaDone && frame >= ForceSeegaFrame)
             {
                 md_m68k.write32(0xFFF680, ForceSeegaPtr);
@@ -1401,6 +1404,24 @@ namespace EutherDrive.Core.MdTracerCore
             if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value >= 0)
                 return value;
             return fallback;
+        }
+
+        private static int? ParseOptionalHexOrInt(string name)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                raw = raw.Substring(2);
+                if (int.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int hex))
+                    return hex;
+                return null;
+            }
+            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int dec))
+                return dec;
+            return null;
         }
 
         private static uint ParseForceSeegaPtr()

@@ -101,6 +101,7 @@ public sealed class SegaCdCddStub
     private int _dataSpeed = 1;
     private double _lastAudioLeft;
     private double _lastAudioRight;
+    private int _sectorReadFailLogRemaining = 16;
 
     private static readonly double[] FaderVolumeTable = BuildFaderTable();
 
@@ -509,7 +510,13 @@ public sealed class SegaCdCddStub
 
         // Read by track-relative time (matches jgenesis timing model).
         CdTime relative = time.SaturatingSub(track.StartTime);
-        _disc.ReadSector(track.Number, relative, _sectorBuffer);
+        bool sectorOk = _disc.ReadSector(track.Number, relative, _sectorBuffer);
+        if (!sectorOk && _sectorReadFailLogRemaining-- > 0)
+        {
+            Console.Error.WriteLine(
+                $"[SCD-CD-READFAIL] track={track.Number} abs={time} rel={relative} " +
+                $"start={track.StartTime} pregap={track.PregapLen} postgap={track.PostgapLen} fileTime={track.FileTime}");
+        }
         cdc.DecodeBlock(_sectorBuffer);
         _loadedAudioSector = track.TrackType == CdTrackType.Audio;
 

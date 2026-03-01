@@ -1083,6 +1083,7 @@ class Program
             adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_frame0.ppm"));
 
             int hangFrames = ParseOptionalIntEnv("EUTHERDRIVE_HANG_FRAMES") ?? 120;
+            int videoStallFrames = ParseOptionalIntEnv("EUTHERDRIVE_VIDEO_STALL_FRAMES") ?? 180;
             int? forceZ80DumpFrame = ParseOptionalIntEnv("EUTHERDRIVE_FORCE_Z80_DUMP_FRAME");
             bool forceZ80DumpExtra = Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_Z80_DUMP_EXTRA") == "1";
             string? forceZ80DumpPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_Z80_DUMP_PATH");
@@ -1091,10 +1092,68 @@ class Program
             long lastCycles = 0;
             int stableFrames = 0;
             bool hangTriggered = false;
+            ulong lastVideoFingerprint = 0;
+            int videoUnchangedFrames = 0;
+            bool videoFingerprintValid = false;
+            bool mdHoldUp = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_UP") == "1";
+            bool mdHoldDown = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_DOWN") == "1";
+            bool mdHoldLeft = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_LEFT") == "1";
+            bool mdHoldRight = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_RIGHT") == "1";
+            bool mdHoldA = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_A") == "1";
+            bool mdHoldB = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_B") == "1";
+            bool mdHoldC = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_C") == "1";
+            bool mdHoldStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_START") == "1";
+            bool mdHoldX = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_X") == "1";
+            bool mdHoldY = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_Y") == "1";
+            bool mdHoldZ = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_Z") == "1";
+            bool mdHoldMode = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_HEADLESS_HOLD_MODE") == "1";
+            bool mdInputEnabled =
+                mdHoldUp || mdHoldDown || mdHoldLeft || mdHoldRight || mdHoldA || mdHoldB ||
+                mdHoldC || mdHoldStart || mdHoldX || mdHoldY || mdHoldZ || mdHoldMode;
+            if (mdInputEnabled)
+            {
+                Console.WriteLine(
+                    $"[HEADLESS-MD-INPUT] hold up={mdHoldUp} down={mdHoldDown} left={mdHoldLeft} right={mdHoldRight} " +
+                    $"a={mdHoldA} b={mdHoldB} c={mdHoldC} start={mdHoldStart} x={mdHoldX} y={mdHoldY} z={mdHoldZ} mode={mdHoldMode}");
+            }
 
             for (int frame = 0; frame < framesToRun; frame++)
             {
+                if (mdInputEnabled)
+                {
+                    adapter.SetInputState(
+                        up: mdHoldUp,
+                        down: mdHoldDown,
+                        left: mdHoldLeft,
+                        right: mdHoldRight,
+                        a: mdHoldA,
+                        b: mdHoldB,
+                        c: mdHoldC,
+                        start: mdHoldStart,
+                        x: mdHoldX,
+                        y: mdHoldY,
+                        z: mdHoldZ,
+                        mode: mdHoldMode,
+                        padType: PadType.SixButton);
+                }
                 adapter.StepFrame();
+                ReadOnlySpan<byte> frameBuffer = adapter.GetFrameBuffer(out int fbWidth, out int fbHeight, out int fbStride);
+                ulong videoFingerprint = ComputeFrameFingerprint(frameBuffer, fbWidth, fbHeight, fbStride);
+                if (!videoFingerprintValid)
+                {
+                    videoFingerprintValid = true;
+                    lastVideoFingerprint = videoFingerprint;
+                    videoUnchangedFrames = 0;
+                }
+                else if (videoFingerprint == lastVideoFingerprint)
+                {
+                    videoUnchangedFrames++;
+                }
+                else
+                {
+                    lastVideoFingerprint = videoFingerprint;
+                    videoUnchangedFrames = 0;
+                }
                 if (forceZ80DumpFrame.HasValue && frame == forceZ80DumpFrame.Value && adapter is MdTracerAdapter mdAdapter)
                 {
                     mdAdapter.ForceDumpZ80($"forced frame={frame}", forceZ80DumpExtra, forceZ80DumpPath);
@@ -1120,6 +1179,17 @@ class Program
                     string ppmPath = Path.Combine(dumpDir, $"headless_hang_frame{frame}.ppm");
                     adapter.DumpFrameBufferToPpm(ppmPath);
                     Console.Error.WriteLine($"[HEADLESS-HANG] Dumped frame to {ppmPath}");
+                    hangTriggered = true;
+                    break;
+                }
+                if (videoStallFrames > 0 && videoUnchangedFrames >= videoStallFrames)
+                {
+                    Console.Error.WriteLine(
+                        $"[HEADLESS-VIDEO-STALL] frame={frame} unchangedFrames={videoUnchangedFrames} " +
+                        $"m68k=0x{m68kPc:X6} z80=0x{z80Pc:X4} cycles={cycles} fp=0x{videoFingerprint:X16}");
+                    string ppmPath = Path.Combine(dumpDir, $"headless_video_stall_frame{frame}.ppm");
+                    adapter.DumpFrameBufferToPpm(ppmPath);
+                    Console.Error.WriteLine($"[HEADLESS-VIDEO-STALL] Dumped frame to {ppmPath}");
                     hangTriggered = true;
                     break;
                 }
@@ -1197,6 +1267,40 @@ class Program
             Console.Error.WriteLine(ex.StackTrace);
             return 1;
         }
+    }
+
+    private static ulong ComputeFrameFingerprint(ReadOnlySpan<byte> fb, int width, int height, int stride)
+    {
+        if (fb.IsEmpty || width <= 0 || height <= 0 || stride <= 0)
+            return 0;
+
+        // FNV-1a over a sparse grid keeps overhead low while reliably catching frozen output.
+        const ulong offset = 1469598103934665603UL;
+        const ulong prime = 1099511628211UL;
+        ulong hash = offset;
+
+        int stepY = Math.Max(1, height / 24);
+        int stepX = Math.Max(1, width / 32);
+        for (int y = 0; y < height; y += stepY)
+        {
+            int row = y * stride;
+            for (int x = 0; x < width; x += stepX)
+            {
+                int i = row + (x * 4);
+                if (i + 3 >= fb.Length)
+                    continue;
+                hash ^= fb[i];
+                hash *= prime;
+                hash ^= fb[i + 1];
+                hash *= prime;
+                hash ^= fb[i + 2];
+                hash *= prime;
+                hash ^= fb[i + 3];
+                hash *= prime;
+            }
+        }
+
+        return hash;
     }
 
     private static int RunFromRawState(string romPath, string rawStatePath, int framesToRun)
@@ -1358,7 +1462,8 @@ class Program
     {
         if (ShouldSilenceConsole())
         {
-            bool keepStdErr = IsEnvEnabled("EUTHERDRIVE_SCD_PROFILE") && !IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE");
+            bool verbose = IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE") || IsEnvEnabled("EUTHERDRIVE_TRACE_VERBOSE");
+            bool keepStdErr = IsEnvEnabled("EUTHERDRIVE_SCD_PROFILE") && !verbose;
             Console.SetOut(TextWriter.Null);
             if (!keepStdErr)
                 Console.SetError(TextWriter.Null);
@@ -1370,7 +1475,7 @@ class Program
     private static bool ShouldSilenceConsole()
     {
         // If any trace flag is set, enable all console output
-        if (IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE"))
+        if (IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE") || IsEnvEnabled("EUTHERDRIVE_TRACE_VERBOSE"))
         {
             return false;
         }

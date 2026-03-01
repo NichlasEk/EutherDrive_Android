@@ -4,8 +4,11 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        private static int _s3InnerAddLogRemaining = 512;
+
         private void analyse_ADD()
         {
+            uint pcBefore = g_reg_PC;
             g_reg_PC += 2;
 
             int w_size = g_op2 & 0x03;
@@ -55,6 +58,15 @@ namespace EutherDrive.Core.MdTracerCore
             g_status_C = ((Sm && Dm) || (!Rm && Dm) || (Sm && !Rm));
 
             g_status_X = g_status_C;
+
+            if (TraceSonic3OuterLoop && _s3InnerAddLogRemaining > 0 && pcBefore >= 0x01940E && pcBefore <= 0x019412)
+            {
+                _s3InnerAddLogRemaining--;
+                Console.WriteLine(
+                    $"[S3-INNER-ADD] pc=0x{pcBefore:X6} op=0x{g_opcode:X4} size={w_size} src=0x{g_work_val2.l & w_mask:X8} " +
+                    $"dst=0x{g_work_val1.l & w_mask:X8} res=0x{g_work_data.l & w_mask:X8} " +
+                    $"D1=0x{g_reg_data[1].l:X8} D2=0x{g_reg_data[2].l:X8} SR=0x{g_reg_SR:X4}");
+            }
         }
     }
 }

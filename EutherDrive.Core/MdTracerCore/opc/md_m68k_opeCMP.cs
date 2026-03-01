@@ -8,6 +8,7 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SUB_CHK"), "1", StringComparison.Ordinal);
         private static int _traceSubChkRemaining = 8;
         private static int _s2CmpLogRemaining = 128;
+        private static int _s3InnerCmpLogRemaining = 512;
 
         private void analyse_CMP()
         {
@@ -52,6 +53,15 @@ namespace EutherDrive.Core.MdTracerCore
             g_status_Z = ((g_work_data.l & w_mask) == 0) ? true: false;
             g_status_V = ((SMC ^ DMC) & (DMC ^ RMC));
             g_status_C = ((SMC & !DMC) | (RMC & !DMC) | (SMC & RMC));
+
+            if (TraceSonic3OuterLoop && _s3InnerCmpLogRemaining > 0 && pcBefore >= 0x019414 && pcBefore <= 0x019418)
+            {
+                _s3InnerCmpLogRemaining--;
+                Console.WriteLine(
+                    $"[S3-INNER-CMP] pc=0x{pcBefore:X6} op=0x{g_opcode:X4} size={w_size} lhs=0x{g_work_val1.l & w_mask:X8} " +
+                    $"rhs=0x{g_work_val2.l & w_mask:X8} res=0x{g_work_data.l & w_mask:X8} " +
+                    $"N={(g_status_N ? 1 : 0)} Z={(g_status_Z ? 1 : 0)} V={(g_status_V ? 1 : 0)} C={(g_status_C ? 1 : 0)}");
+            }
 
             if (pcBefore >= 0x0199C0 && pcBefore <= 0x019A60 && _s2CmpLogRemaining > 0)
             {

@@ -1913,12 +1913,19 @@ NextPc:;
             _jgZ80?.SetSp(sp);
         }
         
-        internal void ForceJumpToDriver()
-        {
-            // Force Z80 to jump to sound driver at 0x0167
-            Console.WriteLine($"[Z80-FORCE] Forcing jump to 0x0167 from PC=0x{g_reg_PC:X4}");
-            g_reg_PC = 0x0167;
-        }
+    internal void ForceJumpToDriver()
+    {
+        // Force Z80 to jump to sound driver at 0x0167
+        Console.WriteLine($"[Z80-FORCE] Forcing jump to 0x0167 from PC=0x{g_reg_PC:X4}");
+        g_reg_PC = 0x0167;
+    }
+
+    internal void ForceEnableInterruptState(byte im = 1)
+    {
+        g_interruptMode = im;
+        g_IFF1 = true;
+        g_IFF2 = true;
+    }
 
         // ---- Prefixgrenar -----------------------------------------------------
 

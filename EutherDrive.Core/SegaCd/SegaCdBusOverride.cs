@@ -41,6 +41,11 @@ internal sealed class SegaCdMainBusOverride : IM68kBusOverride
         return true;
     }
 
+    internal ushort Read16ForDma(uint address)
+    {
+        return _memory.ReadMainWordForDma(address);
+    }
+
     public bool TryRead32(uint address, out uint value)
     {
         if (!Handles(address))

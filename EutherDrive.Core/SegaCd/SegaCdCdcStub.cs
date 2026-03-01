@@ -20,6 +20,8 @@ public sealed class SegaCdCdcStub
 {
     private const int BufferRamLen = 16 * 1024;
     private const ushort BufferRamAddressMask = (1 << 14) - 1;
+    // Match jgenesis/LC8951 behavior: decoded block pointer skips 12-byte sync
+    // and starts at sector header bytes 12..15.
     private const ushort DataTrackHeaderLen = 12;
     private const int Divider75Hz = 44100 / 75;
     private const int DecoderInterruptClearCycle = Divider75Hz * 4 / 10;
@@ -68,18 +70,11 @@ public sealed class SegaCdCdcStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_DECODE"),
         "1",
         StringComparison.Ordinal);
-    private static readonly bool CompatCdcForceWrrq = string.Equals(
-        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_CDC_COMPAT_FORCE_WRRQ"),
-        "1",
-        StringComparison.Ordinal);
-    private static readonly bool CompatCdcAutoDest = string.Equals(
-        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_DEST"),
-        "1",
-        StringComparison.Ordinal);
-    private static readonly bool CompatCdcAutoXfer = string.Equals(
-        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_XFER"),
-        "1",
-        StringComparison.Ordinal);
+    private static readonly bool CompatCdcForceWrrq = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_FORCE_WRRQ", defaultValue: false);
+    // Keep this enabled by default: several BIOS flows set DOUTEN before explicitly
+    // writing destination bits, and otherwise stall with DEST=None0.
+    private static readonly bool CompatCdcAutoDest = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_DEST", defaultValue: true);
+    private static readonly bool CompatCdcAutoXfer = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_XFER", defaultValue: false);
     private static readonly long TraceStartTicks = Stopwatch.GetTimestamp();
 
     public bool EndOfDataTransfer => _endOfDataTransfer;
@@ -88,6 +83,27 @@ public sealed class SegaCdCdcStub
     public byte DeviceDestinationBits => _destinationBits;
     public byte RegisterAddress => _registerAddress;
     public uint DmaAddress => _dmaAddress;
+
+    private static bool ReadCompatFlag(string key, bool defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(raw))
+            return defaultValue;
+
+        if (string.Equals(raw, "1", StringComparison.Ordinal)
+            || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.Equals(raw, "0", StringComparison.Ordinal)
+            || string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return defaultValue;
+    }
 
     public byte[] GetBufferRamSnapshot()
     {
@@ -321,6 +337,11 @@ public sealed class SegaCdCdcStub
                 _dataAddressCounter &= BufferRamAddressMask;
                 break;
             case 6:
+                if (CompatCdcAutoDest && _destination == SegaCdDeviceDestination.None0)
+                {
+                    _destination = SegaCdDeviceDestination.SubCpuRegister;
+                    _destinationBits = 0b011;
+                }
                 _dataTransferInProgress = _dataOutEnabled;
                 _endOfDataTransfer = !_dataTransferInProgress;
                 if (_dataTransferInProgress && IsHostData())
@@ -381,6 +402,12 @@ public sealed class SegaCdCdcStub
         {
             _dataTransferInProgress = false;
             _endOfDataTransfer = true;
+        }
+        else if (CompatCdcAutoDest && _destination == SegaCdDeviceDestination.None0)
+        {
+            // Some BIOS/game flows enable DOUTEN before destination bits are written.
+            _destination = SegaCdDeviceDestination.SubCpuRegister;
+            _destinationBits = 0b011;
         }
     }
 
@@ -462,8 +489,15 @@ public sealed class SegaCdCdcStub
             _destinationBits = 0b011;
         }
 
-        if (CompatCdcAutoXfer && _dataOutEnabled && IsHostData() && !_dataTransferInProgress)
+        if (CompatCdcAutoXfer && _dataOutEnabled && !_dataTransferInProgress)
         {
+            if (CompatCdcAutoDest && _destination == SegaCdDeviceDestination.None0)
+            {
+                _destination = SegaCdDeviceDestination.SubCpuRegister;
+                _destinationBits = 0b011;
+            }
+            if (!IsHostData())
+                return;
             if (_dataByteCounter == 0)
                 _dataByteCounter = 0xFFFF;
             _dataAddressCounter = _blockPointer;

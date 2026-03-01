@@ -12,6 +12,8 @@ namespace Ryu64Core
         private const uint ViWidthReg = 0xA4400008;
         private const uint ViVStartReg = 0xA4400028;
         private const int RdramSizeBytes = 8 * 1024 * 1024;
+        private static readonly bool EnableFramebufferOriginScanFallback =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FB_SCAN_FALLBACK"), "1", StringComparison.Ordinal);
 
         private const uint AiDramAddrReg = 0xA4500000;
         private const uint AiLenReg = 0xA4500004;
@@ -32,6 +34,7 @@ namespace Ryu64Core
         private uint _lastAudioLength;
         private uint _lastAudioDacrate;
         private string _lastFramebufferStatus = "Not started";
+        private uint _lastFallbackFramebufferOrigin;
 
         public event EventHandler<FramebufferUpdatedEventArgs> FramebufferUpdated;
         public event EventHandler<AudioBufferEventArgs> AudioBufferReady;
@@ -51,6 +54,12 @@ namespace Ryu64Core
 
                 try
                 {
+                    static uint SafeReadWord(uint addr)
+                    {
+                        try { return R4300.memory.ReadUInt32(addr); }
+                        catch { return 0; }
+                    }
+
                     uint pc = R4300.GetCurrentPc();
                     ulong cycles = R4300.GetCycleCounter();
                     long unknown = R4300.GetUnknownOpcodeCount();
@@ -94,7 +103,11 @@ namespace Ryu64Core
                     ulong a0 = Registers.R4300.Reg[4];
                     ulong a1 = Registers.R4300.Reg[5];
                     ulong ra = Registers.R4300.Reg[31];
-                    return $"pc=0x{pc:x8} op=0x{op:x8} epc=0x{epc:x8} epcPrev=0x{epcPrevOp:x8} epcOp=0x{epcOp:x8} epcNext=0x{epcNextOp:x8} cycles={cycles} unk={unknown} viStatus=0x{viStatus:x8} viOrigin=0x{viOrigin:x8} viWidth={viWidth} aiLen=0x{aiLen:x} miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} piStatus=0x{piStatus:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} piRdLen=0x{piRdLen:x8} piWrLen=0x{piWrLen:x8} siStatus=0x{siStatus:x8} siDram=0x{siDram:x8} siRd=0x{siRd64:x8} siWr=0x{siWr64:x8} pifCtl=0x{pifCtrl:x2} cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} badv=0x{cop0BadVaddr:x8} v0=0x{v0:x16} v1=0x{v1:x16} a0=0x{a0:x16} a1=0x{a1:x16} t0=0x{t0:x16} t1=0x{t1:x16} t6=0x{t6:x16} t7=0x{t7:x16} t8=0x{t8:x16} t9=0x{t9:x16} ra=0x{ra:x16}";
+                    uint a0w = SafeReadWord((uint)a0);
+                    uint a0w4 = SafeReadWord((uint)a0 + 4u);
+                    uint v0w = SafeReadWord((uint)v0);
+                    uint v0w4 = SafeReadWord((uint)v0 + 4u);
+                    return $"pc=0x{pc:x8} op=0x{op:x8} epc=0x{epc:x8} epcPrev=0x{epcPrevOp:x8} epcOp=0x{epcOp:x8} epcNext=0x{epcNextOp:x8} cycles={cycles} unk={unknown} viStatus=0x{viStatus:x8} viOrigin=0x{viOrigin:x8} viWidth={viWidth} aiLen=0x{aiLen:x} miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} piStatus=0x{piStatus:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} piRdLen=0x{piRdLen:x8} piWrLen=0x{piWrLen:x8} siStatus=0x{siStatus:x8} siDram=0x{siDram:x8} siRd=0x{siRd64:x8} siWr=0x{siWr64:x8} pifCtl=0x{pifCtrl:x2} cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} badv=0x{cop0BadVaddr:x8} v0=0x{v0:x16} v1=0x{v1:x16} a0=0x{a0:x16} a1=0x{a1:x16} [a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8} [v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} t0=0x{t0:x16} t1=0x{t1:x16} t6=0x{t6:x16} t7=0x{t7:x16} t8=0x{t8:x16} t9=0x{t9:x16} ra=0x{ra:x16}";
                 }
                 catch (Exception ex)
                 {
@@ -234,6 +247,22 @@ namespace Ryu64Core
                     return false;
                 }
 
+                // Optional bring-up fallback: some paths write obviously invalid VI origins
+                // (for example 0x0000027f). Disabled by default to avoid masking core bugs.
+                if (EnableFramebufferOriginScanFallback
+                    && origin < 0x00001000u
+                    && bytesPerPixel > 0)
+                {
+                    uint best = FindBestFramebufferOrigin(width, height, bytesPerPixel, origin, out int bestScore, out int viScore);
+                    if (best != origin)
+                    {
+                        _lastFallbackFramebufferOrigin = best;
+                        origin = best;
+                        _lastFramebufferStatus =
+                            $"Fallback VI origin used (vi=0x{(R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF):x8} -> fb=0x{origin:x8}, score={bestScore}, viScore={viScore})";
+                    }
+                }
+
                 int bufferSize = checked(width * height * bytesPerPixel);
                 if (bufferSize <= 0)
                 {
@@ -249,11 +278,12 @@ namespace Ryu64Core
                 framebuffer = new byte[bufferSize];
                 for (int i = 0; i < bufferSize; i++)
                 {
-                    framebuffer[i] = R4300.memory.ReadUInt8(origin + (uint)i);
+                    framebuffer[i] = R4300.memory.ReadUInt8PhysicalUncached(origin + (uint)i);
                 }
 
                 FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
-                _lastFramebufferStatus = $"OK viType={viType} origin=0x{origin:x8} size={width}x{height} bpp={bytesPerPixel}";
+                if (string.IsNullOrEmpty(_lastFramebufferStatus) || !_lastFramebufferStatus.StartsWith("Fallback VI origin used", StringComparison.Ordinal))
+                    _lastFramebufferStatus = $"OK viType={viType} origin=0x{origin:x8} size={width}x{height} bpp={bytesPerPixel}";
                 return true;
             }
             catch (Exception ex)
@@ -306,8 +336,8 @@ namespace Ryu64Core
                 uint readPtr = addr;
                 for (int i = 0; i < sampleCount; i++)
                 {
-                    byte hi = R4300.memory.ReadUInt8(readPtr++);
-                    byte lo = R4300.memory.ReadUInt8(readPtr++);
+                    byte hi = R4300.memory.ReadUInt8PhysicalUncached(readPtr++);
+                    byte lo = R4300.memory.ReadUInt8PhysicalUncached(readPtr++);
                     pcm[i] = (short)((hi << 8) | lo);
                 }
 
@@ -349,6 +379,114 @@ namespace Ryu64Core
             if (height < 120 || height > 576)
                 return 240;
             return height;
+        }
+
+        private int ScoreFramebufferCandidate(uint origin, int width, int height, int bytesPerPixel)
+        {
+            int bufferSize = checked(width * height * bytesPerPixel);
+            if (bufferSize <= 0 || (long)origin + bufferSize > RdramSizeBytes)
+                return int.MinValue;
+
+            int sampleCols = Math.Min(64, Math.Max(1, width));
+            int sampleRows = Math.Min(48, Math.Max(1, height));
+            int stepX = Math.Max(1, width / sampleCols);
+            int stepY = Math.Max(1, height / sampleRows);
+
+            int nonZero = 0;
+            int sameLeft = 0;
+            int sameUp = 0;
+            int hugeDiff = 0;
+            ushort[] prevRow = new ushort[sampleCols];
+            bool prevRowValid = false;
+
+            for (int sy = 0; sy < sampleRows; sy++)
+            {
+                int y = Math.Min(height - 1, sy * stepY);
+                ushort left = 0;
+                bool leftValid = false;
+
+                for (int sx = 0; sx < sampleCols; sx++)
+                {
+                    int x = Math.Min(width - 1, sx * stepX);
+                    uint pixelOffset = (uint)((y * width + x) * bytesPerPixel);
+                    ushort pixel;
+                    if (bytesPerPixel >= 2)
+                    {
+                        byte hi = R4300.memory.ReadUInt8PhysicalUncached(origin + pixelOffset);
+                        byte lo = R4300.memory.ReadUInt8PhysicalUncached(origin + pixelOffset + 1u);
+                        pixel = (ushort)((hi << 8) | lo);
+                    }
+                    else
+                    {
+                        byte value = R4300.memory.ReadUInt8PhysicalUncached(origin + pixelOffset);
+                        pixel = (ushort)(value << 8);
+                    }
+
+                    if (pixel != 0)
+                        nonZero++;
+
+                    if (leftValid)
+                    {
+                        if (pixel == left)
+                            sameLeft++;
+                        else if (Math.Abs(pixel - left) > 0x1800)
+                            hugeDiff++;
+                    }
+
+                    if (prevRowValid)
+                    {
+                        ushort up = prevRow[sx];
+                        if (pixel == up)
+                            sameUp++;
+                        else if (Math.Abs(pixel - up) > 0x1800)
+                            hugeDiff++;
+                    }
+
+                    prevRow[sx] = pixel;
+                    left = pixel;
+                    leftValid = true;
+                }
+
+                prevRowValid = true;
+            }
+
+            // Favor coherent images and penalize noisy/high-frequency regions.
+            return (nonZero * 5) + (sameLeft * 3) + (sameUp * 3) - (hugeDiff * 2);
+        }
+
+        private uint FindBestFramebufferOrigin(int width, int height, int bytesPerPixel, uint viOrigin, out int bestScore, out int viScore)
+        {
+            int bufferSize = checked(width * height * bytesPerPixel);
+            viScore = ScoreFramebufferCandidate(viOrigin, width, height, bytesPerPixel);
+            bestScore = viScore;
+            uint bestOrigin = viOrigin;
+
+            // Prefer reusing previous good fallback if still plausible.
+            if (_lastFallbackFramebufferOrigin != 0)
+            {
+                int lastScore = ScoreFramebufferCandidate(_lastFallbackFramebufferOrigin, width, height, bytesPerPixel);
+                if (lastScore > bestScore)
+                {
+                    bestScore = lastScore;
+                    bestOrigin = _lastFallbackFramebufferOrigin;
+                }
+            }
+
+            for (uint candidate = 0x001000u; (long)candidate + bufferSize <= RdramSizeBytes; candidate += 0x2000u)
+            {
+                int score = ScoreFramebufferCandidate(candidate, width, height, bytesPerPixel);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestOrigin = candidate;
+                }
+            }
+
+            // Only replace VI origin when fallback is clearly stronger.
+            if (bestOrigin != viOrigin && bestScore < viScore + 80)
+                return viOrigin;
+
+            return bestOrigin;
         }
 
         private static byte[] ShortToByteArray(short[] samples)

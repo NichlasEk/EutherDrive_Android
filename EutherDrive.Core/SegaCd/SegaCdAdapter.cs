@@ -99,9 +99,15 @@ public sealed class SegaCdAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_FRAMEBUFFER"),
             "1",
             StringComparison.Ordinal);
+    // Debug-only overlay of graphics-coprocessor image buffer.
+    // jgenesis renders Sega CD via VDP output; keep overlay disabled by default.
     private static readonly bool EnableGfxOverlay =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_GFX_OVERLAY"),
             "1",
+            StringComparison.Ordinal);
+    private static readonly bool EnableGfxFallbackWhenBlank =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_GFX_FALLBACK_WHEN_BLANK"),
+            "0",
             StringComparison.Ordinal);
     private static readonly bool ProfileScd =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_PROFILE"),
@@ -112,6 +118,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private bool _mainRamJumpLogged;
     private uint _lastMainPc;
     private ushort _lastMainOp;
+    private int _mainPcB3bStreak;
+    private int _mainPcB3bLogStreakMark;
     private int _mainDecompLogRemaining = 64;
     private long _lastSubWaitFrame = -1;
     private int _lastFbLogW = -1;
@@ -119,6 +127,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private int _lastFbLogStride = -1;
     private int _lastFbLogSrcLen = -1;
     private int _frameStatsRemaining = 4;
+    private bool _vdpFrameLooksBlank;
+    private int _gfxFallbackLogRemaining = 16;
     private long _profileFrames;
     private long _profileTotalTicks;
     private long _profileCpuTicks;
@@ -222,6 +232,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
             _memory.SetDisc(null);
         if (TraceCycleBudget)
             Console.Error.WriteLine($"[SCD-CYCLES] main={MainCyclesPerFrame} sub={SubCyclesPerFrame} (load)");
+        Console.WriteLine($"[SCD-CONFIG] m68kemu={(_useM68kEmu ? 1 : 0)} gfxOverlay={(EnableGfxOverlay ? 1 : 0)}");
         EutherDrive.Core.MdTracerCore.md_main.initialize();
         EutherDrive.Core.MdTracerCore.md_main.ResetZ80WaitState();
         _mainBus = EutherDrive.Core.MdTracerCore.md_main.g_md_bus;
@@ -426,7 +437,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
         var sb = new StringBuilder();
         sb.AppendLine($"SubCpuBusReq: {r.SubCpuBusReq}");
         sb.AppendLine($"SubCpuReset: {r.SubCpuReset}");
-        sb.AppendLine($"SoftwareInterruptPending: {r.SoftwareInterruptPending}");
+        sb.AppendLine($"MainSoftwareInterruptPending: {r.MainSoftwareInterruptPending}");
+        sb.AppendLine($"SubSoftwareInterruptPending: {r.SubSoftwareInterruptPending}");
         sb.AppendLine($"SoftwareInterruptEnabled: {r.SoftwareInterruptEnabled}");
         sb.AppendLine($"LedGreen: {r.LedGreen}");
         sb.AppendLine($"LedRed: {r.LedRed}");
@@ -455,6 +467,40 @@ public sealed class SegaCdAdapter : IEmulatorCore
     }
 
     private static string BoolStr(bool value) => value ? "true" : "false";
+
+    private static void SyncLegacyMain68kView(M68000 cpu)
+    {
+        var state = cpu.GetState();
+        ushort sr = state.Sr;
+        ushort op = state.Prefetch;
+
+        EutherDrive.Core.MdTracerCore.md_m68k.g_reg_PC = state.Pc & 0x00FF_FFFF;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_opcode = op;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_op = (byte)(op >> 12);
+        EutherDrive.Core.MdTracerCore.md_m68k.g_op1 = (byte)((op >> 9) & 0x07);
+        EutherDrive.Core.MdTracerCore.md_m68k.g_op2 = (byte)((op >> 6) & 0x07);
+        EutherDrive.Core.MdTracerCore.md_m68k.g_op3 = (byte)((op >> 3) & 0x07);
+        EutherDrive.Core.MdTracerCore.md_m68k.g_op4 = (byte)(op & 0x07);
+
+        for (int i = 0; i < 8; i++)
+            EutherDrive.Core.MdTracerCore.md_m68k.g_reg_data[i].l = state.Data[i];
+        for (int i = 0; i < 7; i++)
+            EutherDrive.Core.MdTracerCore.md_m68k.g_reg_addr[i].l = state.Address[i];
+
+        bool supervisor = (sr & 0x2000) != 0;
+        uint a7 = supervisor ? state.Ssp : state.Usp;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_reg_addr[7].l = a7;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_reg_addr_usp.l = state.Usp;
+
+        EutherDrive.Core.MdTracerCore.md_m68k.g_status_T = (sr & 0x8000) != 0;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_status_S = supervisor;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_status_interrupt_mask = (byte)((sr >> 8) & 0x07);
+        EutherDrive.Core.MdTracerCore.md_m68k.g_status_X = (sr & 0x0010) != 0;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_status_N = (sr & 0x0008) != 0;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_status_Z = (sr & 0x0004) != 0;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_status_V = (sr & 0x0002) != 0;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_status_C = (sr & 0x0001) != 0;
+    }
 
     private static string ScrollSizeToString(int bits)
     {
@@ -539,7 +585,13 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
             for (int line = 0; line < lines; line++)
             {
+                // Reset legacy 68k view's slice info for VDP timing calculations.
+                // The VDP uses clock_now as cycles into the current scanline.
+                EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now = 0;
+                EutherDrive.Core.MdTracerCore.md_m68k.g_slice_start_clock_total = 0;
+
                 int mainSlice = mainPerLine + (line < mainRemainder ? 1 : 0);
+                EutherDrive.Core.MdTracerCore.md_m68k.g_slice_clock_len = mainSlice;
                 int z80Slice = z80PerLine + (line < z80Remainder ? 1 : 0);
                 int baseMainSlice = baseMainPerLine + (line < baseMainRemainder ? 1 : 0);
 
@@ -562,6 +614,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     subSlice = ScaleCycleCount(subSlice, ScdCpuCycleScale);
 
                 EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
+                if (_useM68kEmu)
+                    SyncLegacyMain68kView(_mainCpu);
 
                 if (ProfileScd) _profileVdpTicks -= Stopwatch.GetTimestamp();
                 vdp.run(line);
@@ -602,11 +656,14 @@ public sealed class SegaCdAdapter : IEmulatorCore
                         int remaining = mainSlice;
                         while (remaining > 0)
                         {
+                            SyncLegacyMain68kView(_mainCpu);
+
                             int dmaWait = vdp.dma_status_update();
                             if (dmaWait > 0)
                             {
                                 int waitStep = Math.Min(remaining, dmaWait);
                                 remaining -= waitStep;
+                                EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)waitStep;
                                 continue;
                             }
 
@@ -623,9 +680,41 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                 _lastMainPc = pc;
                                 _lastMainOp = _mainCpu.NextOpcode;
                             }
+                            if (_mainCpu.Pc == 0x000B3B)
+                            {
+                                _mainPcB3bStreak++;
+                                if (_mainPcB3bStreak >= 1024 && (_mainPcB3bStreak - _mainPcB3bLogStreakMark) >= 1024)
+                                {
+                                    _mainPcB3bLogStreakMark = _mainPcB3bStreak;
+                                    long frame = vdp?.FrameCounter ?? -1;
+                                    byte mainIrq = _mainCpuBus!.InterruptLevel();
+                                    byte subIrq = _memory.GetSubInterruptLevel();
+                                    byte commMain = _memory.Registers.MainCpuCommunicationFlags;
+                                    byte commSub = _memory.Registers.SubCpuCommunicationFlags;
+                                    Console.Error.WriteLine(
+                                        $"[SCD-STALL-B3B] frame={frame} line={line} streak={_mainPcB3bStreak} " +
+                                        $"main_pc=0x{_mainCpu.Pc:X6} main_op=0x{_mainCpu.NextOpcode:X4} " +
+                                        $"sub_pc=0x{_subCpu.Pc:X6} sub_op=0x{_subCpu.NextOpcode:X4} " +
+                                        $"busreq={(_memory.Registers.SubCpuBusReq ? 1 : 0)} reset={(_memory.Registers.SubCpuReset ? 1 : 0)} halt={(_memory.SubCpuHalt ? 1 : 0)} " +
+                                        $"main_irq={mainIrq} sub_irq={subIrq} " +
+                                        $"cdc_int={( _memory.Cdc.InterruptPending ? 1 : 0)} cdd_int={(_memory.Cdd.InterruptPending ? 1 : 0)} " +
+                                        $"cdc_en={(_memory.Registers.CdcInterruptEnabled ? 1 : 0)} cdd_en={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} " +
+                                        $"comm[m=0x{commMain:X2},s=0x{commSub:X2}]");
+                                }
+                            }
+                            else
+                            {
+                                _mainPcB3bStreak = 0;
+                                _mainPcB3bLogStreakMark = 0;
+                            }
+
                             uint cycles = _mainCpu.ExecuteInstruction(_mainCpuBus!);
                             remaining -= (int)cycles;
+                            EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)cycles;
+
                         }
+
+                        SyncLegacyMain68kView(_mainCpu);
                     }
                     else
                     {
@@ -976,18 +1065,26 @@ public sealed class SegaCdAdapter : IEmulatorCore
             int pixels = Math.Min(frameW * frameH, src.Length / 4);
             int si = 0;
             int di = 0;
+            int nonBlackPixels = 0;
             for (int i = 0; i < pixels; i++)
             {
                 byte r = src[si + 0];
                 byte g = src[si + 1];
                 byte b = src[si + 2];
-                byte a = src[si + 3];
+                if ((r | g | b) != 0)
+                    nonBlackPixels++;
                 _frameBuffer[di + 0] = b;
                 _frameBuffer[di + 1] = g;
                 _frameBuffer[di + 2] = r;
-                _frameBuffer[di + 3] = a;
+                // Keep Sega CD output opaque in UI even if upstream alpha is unset.
+                _frameBuffer[di + 3] = 0xFF;
                 si += 4;
                 di += 4;
+            }
+            _vdpFrameLooksBlank = nonBlackPixels == 0;
+            if (TraceFrameBuffer && _frameStatsRemaining > 0)
+            {
+                Console.WriteLine($"[SCD-FRAME] vdpNonBlack={nonBlackPixels}/{Math.Max(1, pixels)} blank={(_vdpFrameLooksBlank ? 1 : 0)}");
             }
         }
 
@@ -1006,8 +1103,15 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     Console.WriteLine($"[SCD-FRAME] gfx w={rw} h={rh} stride={rw * 4}");
 
                 // Composite gfx buffer over the VDP output without changing the frame size.
-                if (EnableGfxOverlay)
+                bool applyGfxToFrame = EnableGfxOverlay || (EnableGfxFallbackWhenBlank && _vdpFrameLooksBlank);
+                if (applyGfxToFrame)
                 {
+                    bool fallbackMode = !EnableGfxOverlay && _vdpFrameLooksBlank;
+                    if (!EnableGfxOverlay && _vdpFrameLooksBlank && _gfxFallbackLogRemaining > 0)
+                    {
+                        _gfxFallbackLogRemaining--;
+                        Console.WriteLine($"[SCD-GFX-FALLBACK] applied=1 vdpBlank=1 gfx={_gfxWidth}x{_gfxHeight}");
+                    }
                     int dstX0 = (_frameWidth - _gfxWidth) / 2;
                     int dstY0 = (_frameHeight - _gfxHeight) / 2;
                     int srcX0 = 0;
@@ -1026,6 +1130,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     int copyH = Math.Min(_frameHeight - dstY0, _gfxHeight - srcY0);
                     int dstStride = _frameWidth * 4;
                     int srcStride = _gfxWidth * 4;
+                    int copiedPixels = 0;
+                    int alphaOnlyPixels = 0;
                     for (int y = 0; y < copyH; y++)
                     {
                         int srcRow = (srcY0 + y) * srcStride + srcX0 * 4;
@@ -1033,15 +1139,41 @@ public sealed class SegaCdAdapter : IEmulatorCore
                         for (int x = 0; x < copyW; x++)
                         {
                             int si = srcRow + x * 4;
+                            byte r = _gfxBuffer[si + 0];
+                            byte g = _gfxBuffer[si + 1];
+                            byte b = _gfxBuffer[si + 2];
                             byte a = _gfxBuffer[si + 3];
-                            if (a == 0)
+                            if (fallbackMode)
+                            {
+                                // In BIOS fallback mode prefer visible non-black pixels even when alpha is unset.
+                                if (((r | g | b) == 0) && a == 0)
+                                    continue;
+                            }
+                            else if (a == 0)
+                            {
                                 continue;
+                            }
+                            if (fallbackMode && (r | g | b) == 0 && a != 0)
+                            {
+                                // Some BIOS paths produce alpha-only gfx pixels.
+                                // Convert those to visible grayscale so fallback is not black.
+                                r = a;
+                                g = a;
+                                b = a;
+                                alphaOnlyPixels++;
+                            }
+
                             int di = dstRow + x * 4;
-                            _frameBuffer[di + 0] = _gfxBuffer[si + 0];
-                            _frameBuffer[di + 1] = _gfxBuffer[si + 1];
-                            _frameBuffer[di + 2] = _gfxBuffer[si + 2];
+                            _frameBuffer[di + 0] = b;
+                            _frameBuffer[di + 1] = g;
+                            _frameBuffer[di + 2] = r;
                             _frameBuffer[di + 3] = 0xFF;
+                            copiedPixels++;
                         }
+                    }
+                    if (TraceFrameBuffer && fallbackMode && _gfxFallbackLogRemaining > 0)
+                    {
+                        Console.WriteLine($"[SCD-GFX-FALLBACK] copied={copiedPixels} alphaOnly={alphaOnlyPixels} area={copyW}x{copyH}");
                     }
                 }
             }

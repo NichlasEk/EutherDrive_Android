@@ -291,6 +291,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TraceSmsRomWriteLimit =
             ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_ROM_WRITE_LIMIT", 512);
         private static readonly bool MirrorZ80Mailbox = ReadEnvDefaultOff("EUTHERDRIVE_MBX_MIRROR");
+        private static readonly bool DisableMailboxShadow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_MBX_SHADOW"), "1", StringComparison.Ordinal);
         private static readonly bool UseMdTracerCompat =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_MDTRACER_COMPAT"), "1", StringComparison.Ordinal);
         private static readonly bool Z80WindowWide =
@@ -2515,6 +2517,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         private byte MaybeApplyMailboxShadow(ushort addr, byte value)
         {
+            if (DisableMailboxShadow)
+                return value;
             if (!_mbxShadowValid || value != 0x00)
                 return value;
             if (addr < 0x1B80 || addr > 0x1B8F)

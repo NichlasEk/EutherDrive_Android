@@ -11,6 +11,7 @@ namespace Ryu64.MIPS
 
         public struct TLBEntry
         {
+            public bool Written;
             public uint PFN0;
             public byte PageCoherency0;
             public byte Dirty0;
@@ -29,6 +30,12 @@ namespace Ryu64.MIPS
         private const int TlbEntryCount = 32;
         private readonly static TLBEntry[] TLBEntries = new TLBEntry[TlbEntryCount];
 
+        public static void Reset()
+        {
+            for (int i = 0; i < TLBEntries.Length; i++)
+                TLBEntries[i] = default;
+        }
+
         public static uint TranslateAddress(uint Address)
         {
             return TranslateAddress(Address, false);
@@ -43,6 +50,9 @@ namespace Ryu64.MIPS
 
             foreach (TLBEntry Entry in TLBEntries)
             {
+                if (!Entry.Written)
+                    continue;
+
                 // Pair mask (both even+odd pages): low bits set up to pair size - 1.
                 // For 4K pages this becomes 0x1FFF (8K pair), while each page offset mask is 0x0FFF.
                 uint pairMask = (uint)((Entry.PageMask << 13) | 0x1FFFu);
@@ -107,6 +117,7 @@ namespace Ryu64.MIPS
         {
             TLBEntries[Index & 0x1F] = new TLBEntry()
             {
+                Written        = true,
                 PFN0           = (uint)((Registers.COP0.Reg[Registers.COP0.ENTRYLO0_REG] & 0x3FFFFFC0) >> 6),
                 Valid0         = (byte)((Registers.COP0.Reg[Registers.COP0.ENTRYLO0_REG] & 0b000010)   >> 1),
                 Dirty0         = (byte)((Registers.COP0.Reg[Registers.COP0.ENTRYLO0_REG] & 0b000100)   >> 2),
@@ -133,6 +144,8 @@ namespace Ryu64.MIPS
             for (uint i = 0; i < TLBEntries.Length; ++i)
             {
                 TLBEntry Entry = TLBEntries[i];
+                if (!Entry.Written)
+                    continue;
 
                 uint vpn2Mask = ~((uint)(Entry.PageMask << 13) | 0x1FFFu);
                 uint entryVpn2 = (Entry.VPN2 << 13) & vpn2Mask;

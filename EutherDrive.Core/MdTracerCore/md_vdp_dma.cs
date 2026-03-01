@@ -203,6 +203,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void dma_run_memory_req()
         {
+            _dmaOpenBus = 0;
             uint srcWordAddr = read_dma_src_addr();
             uint srcHigh = g_vdp_reg_23_5_dma_high;
             ushort srcLow = (ushort)((g_vdp_reg_22_dma_source_mid << 8) | g_vdp_reg_21_dma_source_low);
@@ -546,7 +547,15 @@ namespace EutherDrive.Core.MdTracerCore
         private ushort ReadDmaSourceWord(uint address)
         {
             var bus = md_main.g_md_bus;
-            ushort value = bus != null ? bus.read16(address) : md_m68k.read16(address);
+            ushort value;
+            if (bus?.OverrideBus is SegaCdMainBusOverride scdMain)
+            {
+                value = scdMain.Read16ForDma(address);
+            }
+            else
+            {
+                value = bus != null ? bus.read16(address) : md_m68k.read16(address);
+            }
             // Sega CD: DMA reads from Word RAM (0x200000-0x3FFFFF) are delayed by one word.
             if (bus?.OverrideBus is SegaCdMainBusOverride && address >= 0x200000 && address <= 0x3FFFFF)
             {

@@ -13,13 +13,46 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_STRICT_LOWSEG"), "1", StringComparison.Ordinal);
         private static readonly bool AllowLowPhysicalFallbackOnTlbMiss =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_LOWSEG_MISS_FALLBACK"), "0", StringComparison.Ordinal);
+        private static readonly bool AllowNullPageFallbackOnTlbMiss =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_LOWSEG_NULLPAGE_FALLBACK"), "1", StringComparison.Ordinal);
         private static readonly bool TraceN64Io =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_IO"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRspTaskDmem =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RSP_TASK_DMEM"), "1", StringComparison.Ordinal);
+        private static readonly uint? TraceWatchAddress = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_ADDR");
         private static readonly bool MirrorPiRdLenAsCartToDram =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PI_RDLEN_MIRROR"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSm64SlotWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SM64_SLOT_WRITES"), "1", StringComparison.Ordinal);
+        private static readonly bool AutoCompleteRspTaskOnHaltClear =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_SP_AUTOCOMPLETE"), "1", StringComparison.Ordinal);
+        private static readonly bool EnableRspTaskHleDispatcher =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_RSP_TASK_HLE"), "1", StringComparison.Ordinal);
+        private static ulong _rspKickCount;
+        private static bool _warnedRspTaskStub;
+
+        private static uint? ParseOptionalHexEnv(string name)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
+
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                raw = raw.Substring(2);
+
+            if (uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out uint parsed))
+                return parsed;
+
+            return null;
+        }
 
         public readonly byte[] SP_DMEM_RW         = new byte[0x1000];
         public readonly byte[] SP_IMEM_RW         = new byte[0x1000];
+        public readonly byte[] SP_MEM_ADDR_REG_RW = new byte[4];
+        public readonly byte[] SP_DRAM_ADDR_REG_RW = new byte[4];
+        public readonly byte[] SP_RD_LEN_REG_RW   = new byte[4];
+        public readonly byte[] SP_WR_LEN_REG_RW   = new byte[4];
         public readonly byte[] SP_STATUS_REG_R    = new byte[4];
         public readonly byte[] SP_STATUS_REG_W    = new byte[4];
         public readonly byte[] SP_DMA_BUSY_REG_R  = new byte[4];
@@ -94,6 +127,7 @@ namespace Ryu64.MIPS
         private bool _piDmaBusy;
         private uint _viCurrentLine;
         private uint _viLineCycleAccum;
+        private bool _warnedRspTaskHle;
 
         // VI_CURRENT is a 10-bit scan counter on N64 (0..1023).
         private const uint ViLinesPerFrame = 1024;
@@ -107,13 +141,20 @@ namespace Ryu64.MIPS
         {
             // RDRAM (base + expansion/mirror window).
             // Keep backing array at 8 MiB for now; accesses beyond that window mirror via ResolveArrayOffset().
-            MemoryMapList.Add(new MemEntry(0x00000000, 0x00FFFFFF, RDRAM, RDRAM,       "RDRAM"));
+            MemoryMapList.Add(new MemEntry(0x00000000, 0x03EFFFFF, RDRAM, RDRAM,       "RDRAM"));
             MemoryMapList.Add(new MemEntry(0x03F00000, 0x03FFFFFF, RDRAMReg, RDRAMReg, "RDRAM Registers"));
 
             // SP Registers
             MemoryMapList.Add(new MemEntry(0x04000000, 0x04000FFF, SP_DMEM_RW,         SP_DMEM_RW,          "SP_DMEM"));
             MemoryMapList.Add(new MemEntry(0x04001000, 0x04001FFF, SP_IMEM_RW,         SP_IMEM_RW,          "SP_IMEM"));
-            MemoryMapList.Add(new MemEntry(0x04040010, 0x04040013, SP_STATUS_REG_R,    SP_STATUS_REG_W,     "SP_STATUS_REG"));
+            MemoryMapList.Add(new MemEntry(0x04040000, 0x04040003, SP_MEM_ADDR_REG_RW, SP_MEM_ADDR_REG_RW,  "SP_MEM_ADDR_REG"));
+            MemoryMapList.Add(new MemEntry(0x04040004, 0x04040007, SP_DRAM_ADDR_REG_RW, SP_DRAM_ADDR_REG_RW, "SP_DRAM_ADDR_REG"));
+            MemoryMapList.Add(new MemEntry(0x04040008, 0x0404000B, SP_RD_LEN_REG_RW, SP_RD_LEN_REG_RW, "SP_RD_LEN_REG",
+                null, SP_RD_LEN_WRITE_EVENT));
+            MemoryMapList.Add(new MemEntry(0x0404000C, 0x0404000F, SP_WR_LEN_REG_RW, SP_WR_LEN_REG_RW, "SP_WR_LEN_REG",
+                null, SP_WR_LEN_WRITE_EVENT));
+            MemoryMapList.Add(new MemEntry(0x04040010, 0x04040013, SP_STATUS_REG_R,    SP_STATUS_REG_W,     "SP_STATUS_REG",
+                null, SP_STATUS_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04040018, 0x0404001B, SP_DMA_BUSY_REG_R,  SP_DMA_BUSY_REG_W,   "SP_DMA_BUSY_REG"));
             MemoryMapList.Add(new MemEntry(0x0404001C, 0x0404001F, SP_SEMAPHORE_REG_R, SP_SEMAPHORE_REG_W,  "SP_SEMAPHORE_REG"));
             MemoryMapList.Add(new MemEntry(0x04080000, 0x04080003, SP_PC_REG_RW,       SP_PC_REG_RW,        "SP_PC_REG"));
@@ -129,9 +170,12 @@ namespace Ryu64.MIPS
                 null, MI_INTR_MASK_WRITE_EVENT));
 
             // VI Registers
-            MemoryMapList.Add(new MemEntry(0x04400000, 0x04400003, VI_STATUS_REG_RW,  VI_STATUS_REG_RW,  "VI_STATUS_REG"));
-            MemoryMapList.Add(new MemEntry(0x04400004, 0x04400007, VI_ORIGIN_REG_RW,  VI_ORIGIN_REG_RW,  "VI_ORIGIN_REG"));
-            MemoryMapList.Add(new MemEntry(0x04400008, 0x0440000B, VI_WIDTH_REG_RW,   VI_WIDTH_REG_RW,   "VI_WIDTH_REG"));
+            MemoryMapList.Add(new MemEntry(0x04400000, 0x04400003, VI_STATUS_REG_RW,  VI_STATUS_REG_RW,  "VI_STATUS_REG",
+                null, VI_STATUS_WRITE_EVENT));
+            MemoryMapList.Add(new MemEntry(0x04400004, 0x04400007, VI_ORIGIN_REG_RW,  VI_ORIGIN_REG_RW,  "VI_ORIGIN_REG",
+                null, VI_ORIGIN_WRITE_EVENT));
+            MemoryMapList.Add(new MemEntry(0x04400008, 0x0440000B, VI_WIDTH_REG_RW,   VI_WIDTH_REG_RW,   "VI_WIDTH_REG",
+                null, VI_WIDTH_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x0440000C, 0x0440000F, VI_INTR_REG_RW,    VI_INTR_REG_RW,    "VI_INTR_REG"));
             MemoryMapList.Add(new MemEntry(0x04400010, 0x04400013, VI_CURRENT_REG_RW, VI_CURRENT_REG_RW, "VI_CURRENT_REG",
                 null, VI_CURRENT_WRITE_EVENT));
@@ -457,6 +501,258 @@ namespace Ryu64.MIPS
             }
         }
 
+        public void SP_RD_LEN_WRITE_EVENT()
+        {
+            if (TraceN64Io)
+            {
+                uint len = ReadBigEndianWord(SP_RD_LEN_REG_RW);
+                uint mem = ReadBigEndianWord(SP_MEM_ADDR_REG_RW);
+                uint dram = ReadBigEndianWord(SP_DRAM_ADDR_REG_RW);
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] SP_RD_LEN write len=0x{len:x8} spMem=0x{mem:x8} dram=0x{dram:x8} pc=0x{Registers.R4300.PC:x8}");
+            }
+            ExecuteSpDma(isReadFromDram: true);
+        }
+
+        public void SP_WR_LEN_WRITE_EVENT()
+        {
+            if (TraceN64Io)
+            {
+                uint len = ReadBigEndianWord(SP_WR_LEN_REG_RW);
+                uint mem = ReadBigEndianWord(SP_MEM_ADDR_REG_RW);
+                uint dram = ReadBigEndianWord(SP_DRAM_ADDR_REG_RW);
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] SP_WR_LEN write len=0x{len:x8} spMem=0x{mem:x8} dram=0x{dram:x8} pc=0x{Registers.R4300.PC:x8}");
+            }
+            ExecuteSpDma(isReadFromDram: false);
+        }
+
+        private void ExecuteSpDma(bool isReadFromDram)
+        {
+            uint memAddr = ReadBigEndianWord(SP_MEM_ADDR_REG_RW) & 0x1FFFu;
+            uint dramAddr = ReadBigEndianWord(SP_DRAM_ADDR_REG_RW) & 0x00FFFFF8u;
+            uint lenReg = ReadBigEndianWord(isReadFromDram ? SP_RD_LEN_REG_RW : SP_WR_LEN_REG_RW);
+
+            int transferLength = (int)((lenReg & 0xFFFu) + 1u);
+            int count = (int)(((lenReg >> 12) & 0xFFu) + 1u);
+            int skip = (int)((lenReg >> 20) & 0xFFFu);
+
+            if (transferLength <= 0 || count <= 0)
+                return;
+
+            SP_DMA_BUSY_REG_R[3] = 1;
+            uint status = ReadBigEndianWord(SP_STATUS_REG_R) | 0x00000004u; // DMA busy
+            WriteBigEndianWord(SP_STATUS_REG_R, status);
+
+            for (int block = 0; block < count; block++)
+            {
+                for (int i = 0; i < transferLength; i++)
+                {
+                    uint spAddress = (memAddr + (uint)i) & 0x1FFFu;
+                    uint rdAddress = (dramAddr + (uint)i) & 0x007FFFFFu;
+
+                    if (isReadFromDram)
+                    {
+                        byte value = ReadUInt8(PhysicalToKseg1(rdAddress));
+                        WriteSpMemoryByte(spAddress, value);
+                    }
+                    else
+                    {
+                        byte value = ReadSpMemoryByte(spAddress);
+                        WriteUInt8(PhysicalToKseg1(rdAddress), value);
+                    }
+                }
+
+                memAddr = (memAddr + (uint)transferLength) & 0x1FFFu;
+                dramAddr = (dramAddr + (uint)(transferLength + skip)) & 0x00FFFFF8u;
+            }
+
+            WriteBigEndianWord(SP_MEM_ADDR_REG_RW, memAddr);
+            WriteBigEndianWord(SP_DRAM_ADDR_REG_RW, dramAddr);
+
+            SP_DMA_BUSY_REG_R[3] = 0;
+            status = ReadBigEndianWord(SP_STATUS_REG_R) & ~0x00000004u;
+            WriteBigEndianWord(SP_STATUS_REG_R, status);
+        }
+
+        private byte ReadSpMemoryByte(uint spAddress)
+        {
+            if ((spAddress & 0x1000u) != 0)
+                return SP_IMEM_RW[spAddress & 0x0FFFu];
+            return SP_DMEM_RW[spAddress & 0x0FFFu];
+        }
+
+        private void WriteSpMemoryByte(uint spAddress, byte value)
+        {
+            if ((spAddress & 0x1000u) != 0)
+                SP_IMEM_RW[spAddress & 0x0FFFu] = value;
+            else
+                SP_DMEM_RW[spAddress & 0x0FFFu] = value;
+        }
+
+        public void SP_STATUS_WRITE_EVENT()
+        {
+            uint writeValue = ReadBigEndianWord(SP_STATUS_REG_W);
+            uint status = ReadBigEndianWord(SP_STATUS_REG_R);
+            if (TraceN64Io)
+            {
+                string storeCtx = BuildStoreContext();
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] SP_STATUS write value=0x{writeValue:x8} old=0x{status:x8} pc=0x{Registers.R4300.PC:x8} {storeCtx}");
+            }
+
+            // SP_STATUS write control bits use set/clear pairs.
+            if ((writeValue & 0x00000001u) != 0) status &= ~0x00000001u; // CLR_HALT
+            if ((writeValue & 0x00000002u) != 0) status |= 0x00000001u;  // SET_HALT
+            if ((writeValue & 0x00000004u) != 0) status &= ~0x00000002u; // CLR_BROKE
+            if ((writeValue & 0x00000008u) != 0) ClearMiSpInterrupt();    // CLR_INTR
+            if ((writeValue & 0x00000010u) != 0) SetMiSpInterrupt();      // SET_INTR
+
+            bool rspKicked = (writeValue & 0x00000001u) != 0;
+            if (rspKicked && EnableRspTaskHleDispatcher)
+                TryDispatchRspTaskHle(ref status);
+
+            // Optional bring-up behavior: when CPU clears HALT to kick RSP, complete task immediately.
+            // Disabled by default because it can distort scheduler/task-queue flow.
+            if (AutoCompleteRspTaskOnHaltClear && rspKicked)
+            {
+                _rspKickCount++;
+                if (!_warnedRspTaskStub)
+                {
+                    _warnedRspTaskStub = true;
+                    Common.Logger.PrintWarningLine(
+                        "[N64] RSP task execution is currently stubbed (HALT clear auto-completes task). " +
+                        "3D graphics/audio tasks will not render correctly until real RSP/RDP emulation is implemented.");
+                }
+                else if (TraceN64Io && (_rspKickCount <= 8 || (_rspKickCount % 256) == 0))
+                {
+                    Common.Logger.PrintWarningLine(
+                        $"[N64IO] RSP task kick auto-completed (count={_rspKickCount}) pc=0x{Registers.R4300.PC:x8}");
+                }
+
+                status |= 0x00000003u; // HALT | BROKE
+                SetMiSpInterrupt();
+            }
+
+            WriteBigEndianWord(SP_STATUS_REG_R, status);
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine($"[N64IO] SP_STATUS new=0x{status:x8}");
+            }
+        }
+
+        private struct RspTask
+        {
+            public uint Type;
+            public uint Flags;
+            public uint Ucode;
+            public uint UcodeSize;
+            public uint UcodeData;
+            public uint UcodeDataSize;
+            public uint DataPtr;
+            public uint DataSize;
+            public uint YieldDataPtr;
+            public uint YieldDataSize;
+        }
+
+        private void TryDispatchRspTaskHle(ref uint status)
+        {
+            if (!TryReadRspTaskFromDmem(out RspTask task))
+                return;
+
+            _rspKickCount++;
+
+            if (!_warnedRspTaskHle)
+            {
+                _warnedRspTaskHle = true;
+                Common.Logger.PrintWarningLine(
+                    "[N64] RSP HLE dispatcher active: tasks are acknowledged/completed, " +
+                    "but real RSP microcode execution is not implemented yet.");
+            }
+
+            if (TraceN64Io && (_rspKickCount <= 16 || (_rspKickCount % 256) == 0))
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] RSP task dispatch type={task.Type} flags=0x{task.Flags:x8} " +
+                    $"ucode=0x{task.Ucode:x8}/0x{task.UcodeSize:x} " +
+                    $"ucodeData=0x{task.UcodeData:x8}/0x{task.UcodeDataSize:x} " +
+                    $"data=0x{task.DataPtr:x8}/0x{task.DataSize:x} " +
+                    $"yield=0x{task.YieldDataPtr:x8}/0x{task.YieldDataSize:x} " +
+                    $"pc=0x{Registers.R4300.PC:x8}");
+            }
+
+            // Complete task (HALT|BROKE) and signal SP interrupt.
+            status |= 0x00000003u;
+            SetMiSpInterrupt();
+
+            // Graphics tasks also raise DP interrupt once the (stubbed) task is done.
+            if (task.Type == 1)
+                SetMiDpInterrupt();
+        }
+
+        private bool TryReadRspTaskFromDmem(out RspTask task)
+        {
+            // OS schedules tasks by writing an OSTask at DMEM+0xFC0.
+            const uint taskBase = 0x0FC0u;
+            task = new RspTask
+            {
+                Type = ReadSpDmemWord(taskBase + 0x00),
+                Flags = ReadSpDmemWord(taskBase + 0x04),
+                Ucode = ReadSpDmemWord(taskBase + 0x10),
+                UcodeSize = ReadSpDmemWord(taskBase + 0x14),
+                UcodeData = ReadSpDmemWord(taskBase + 0x18),
+                UcodeDataSize = ReadSpDmemWord(taskBase + 0x1C),
+                DataPtr = ReadSpDmemWord(taskBase + 0x30),
+                DataSize = ReadSpDmemWord(taskBase + 0x34),
+                YieldDataPtr = ReadSpDmemWord(taskBase + 0x38),
+                YieldDataSize = ReadSpDmemWord(taskBase + 0x3C),
+            };
+
+            if (task.Type == 0 || task.Type > 4)
+            {
+                if (TraceRspTaskDmem)
+                    TraceRspTaskHeaderWords(taskBase, $"reject:type=0x{task.Type:x8}");
+                return false;
+            }
+
+            // Keep validation intentionally permissive for bring-up.
+            if (task.Ucode == 0 || task.DataPtr == 0)
+            {
+                if (TraceRspTaskDmem)
+                    TraceRspTaskHeaderWords(taskBase, $"reject:ucode=0x{task.Ucode:x8} data=0x{task.DataPtr:x8}");
+                return false;
+            }
+
+            return true;
+        }
+
+        private void TraceRspTaskHeaderWords(uint taskBase, string reason)
+        {
+            uint w0 = ReadSpDmemWord(taskBase + 0x00);
+            uint w1 = ReadSpDmemWord(taskBase + 0x04);
+            uint w2 = ReadSpDmemWord(taskBase + 0x08);
+            uint w3 = ReadSpDmemWord(taskBase + 0x0C);
+            uint w4 = ReadSpDmemWord(taskBase + 0x10);
+            uint w5 = ReadSpDmemWord(taskBase + 0x14);
+            uint w6 = ReadSpDmemWord(taskBase + 0x18);
+            uint w7 = ReadSpDmemWord(taskBase + 0x1C);
+            uint wC = ReadSpDmemWord(taskBase + 0x30);
+            uint wD = ReadSpDmemWord(taskBase + 0x34);
+            Common.Logger.PrintWarningLine(
+                $"[N64IO] RSP task header dump ({reason}) " +
+                $"w0=0x{w0:x8} w1=0x{w1:x8} w2=0x{w2:x8} w3=0x{w3:x8} w4=0x{w4:x8} w5=0x{w5:x8} w6=0x{w6:x8} w7=0x{w7:x8} " +
+                $"wC=0x{wC:x8} wD=0x{wD:x8} pc=0x{Registers.R4300.PC:x8}");
+        }
+
+        private uint ReadSpDmemWord(uint dmemOffset)
+        {
+            uint index = dmemOffset & 0x0FFFu;
+            return ((uint)SP_DMEM_RW[index] << 24)
+                 | ((uint)SP_DMEM_RW[(index + 1) & 0x0FFFu] << 16)
+                 | ((uint)SP_DMEM_RW[(index + 2) & 0x0FFFu] << 8)
+                 | SP_DMEM_RW[(index + 3) & 0x0FFFu];
+        }
+
         private static uint ReadBigEndianWord(byte[] arr)
         {
             if (arr == null || arr.Length < 4)
@@ -482,12 +778,22 @@ namespace Ryu64.MIPS
         private static void ApplyMiMaskPair(ref uint mask, uint value, int clearBit, int setBit, int targetBit)
         {
             uint targetMask = 1u << targetBit;
-            // Bring-up compatibility: several IPL paths behave as if the pair ordering is
-            // set/clear rather than clear/set.
             if ((value & (1u << clearBit)) != 0)
-                mask |= targetMask;
-            if ((value & (1u << setBit)) != 0)
                 mask &= ~targetMask;
+            if ((value & (1u << setBit)) != 0)
+                mask |= targetMask;
+        }
+
+        private void SetMiSpInterrupt()
+        {
+            const byte MiSpIntrBit = 0x01; // MI_INTR_REG bit for SP
+            MI_INTR_REG_R[3] |= MiSpIntrBit;
+        }
+
+        private void ClearMiSpInterrupt()
+        {
+            const byte MiSpIntrBit = 0x01; // MI_INTR_REG bit for SP
+            MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiSpIntrBit);
         }
 
         private void SetMiPiInterrupt()
@@ -534,10 +840,95 @@ namespace Ryu64.MIPS
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiViIntrBit);
         }
 
+        private void SetMiDpInterrupt()
+        {
+            const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
+            MI_INTR_REG_R[3] |= MiDpIntrBit;
+        }
+
         public void VI_CURRENT_WRITE_EVENT()
         {
             // Writing VI_CURRENT acknowledges/clears VI interrupt on real hardware.
             ClearMiViInterrupt();
+        }
+
+        public void VI_STATUS_WRITE_EVENT()
+        {
+            if (!TraceN64Io)
+                return;
+
+            uint value = ReadBigEndianWord(VI_STATUS_REG_RW);
+            string storeCtx = BuildStoreContext();
+            ulong a0 = Registers.R4300.Reg[4];
+            ulong a1 = Registers.R4300.Reg[5];
+            ulong a2 = Registers.R4300.Reg[6];
+            ulong a3 = Registers.R4300.Reg[7];
+            ulong v0 = Registers.R4300.Reg[2];
+            ulong v1 = Registers.R4300.Reg[3];
+            Common.Logger.PrintWarningLine(
+                $"[N64IO] VI_STATUS write value=0x{value:x8} pc=0x{Registers.R4300.PC:x8} " +
+                $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} v0=0x{v0:x16} v1=0x{v1:x16} {storeCtx}");
+        }
+
+        public void VI_ORIGIN_WRITE_EVENT()
+        {
+            if (!TraceN64Io)
+                return;
+
+            uint value = ReadBigEndianWord(VI_ORIGIN_REG_RW);
+            string storeCtx = BuildStoreContext();
+            ulong a0 = Registers.R4300.Reg[4];
+            ulong a1 = Registers.R4300.Reg[5];
+            ulong a2 = Registers.R4300.Reg[6];
+            ulong a3 = Registers.R4300.Reg[7];
+            ulong t0 = Registers.R4300.Reg[8];
+            ulong t1 = Registers.R4300.Reg[9];
+            ulong v0 = Registers.R4300.Reg[2];
+            ulong v1 = Registers.R4300.Reg[3];
+            Common.Logger.PrintWarningLine(
+                $"[N64IO] VI_ORIGIN write value=0x{value:x8} pc=0x{Registers.R4300.PC:x8} " +
+                $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} t0=0x{t0:x16} t1=0x{t1:x16} v0=0x{v0:x16} v1=0x{v1:x16} {storeCtx}");
+        }
+
+        public void VI_WIDTH_WRITE_EVENT()
+        {
+            if (!TraceN64Io)
+                return;
+
+            uint value = ReadBigEndianWord(VI_WIDTH_REG_RW);
+            string storeCtx = BuildStoreContext();
+            ulong a0 = Registers.R4300.Reg[4];
+            ulong a1 = Registers.R4300.Reg[5];
+            ulong a2 = Registers.R4300.Reg[6];
+            ulong a3 = Registers.R4300.Reg[7];
+            ulong v0 = Registers.R4300.Reg[2];
+            ulong v1 = Registers.R4300.Reg[3];
+            Common.Logger.PrintWarningLine(
+                $"[N64IO] VI_WIDTH write value=0x{value:x8} pc=0x{Registers.R4300.PC:x8} " +
+                $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} v0=0x{v0:x16} v1=0x{v1:x16} {storeCtx}");
+        }
+
+        private static string BuildStoreContext()
+        {
+            try
+            {
+                uint pc = Registers.R4300.PC;
+                uint op = R4300.memory.ReadUInt32(pc);
+                uint opcode = op >> 26;
+                if (opcode != 0x2B)
+                    return $"op=0x{op:x8}";
+
+                int rs = (int)((op >> 21) & 0x1F);
+                int rt = (int)((op >> 16) & 0x1F);
+                short imm = (short)(op & 0xFFFF);
+                ulong rsVal = Registers.R4300.Reg[rs];
+                ulong rtVal = Registers.R4300.Reg[rt];
+                return $"op=0x{op:x8} sw rs=r{rs}=0x{rsVal:x16} rt=r{rt}=0x{rtVal:x16} imm={imm}";
+            }
+            catch
+            {
+                return "op=<unavailable>";
+            }
         }
 
         private void SetSiBusy(bool busy)
@@ -650,10 +1041,13 @@ namespace Ryu64.MIPS
             if (TryGetSiAliasedEntry(index, out MemEntry siEntry))
                 return siEntry;
 
+            if (TryGetSpMirroredEntry(index, out MemEntry spEntry))
+                return spEntry;
+
             // Robust fallback: treat the full RDRAM window as mapped even if table lookup
             // would miss for any reason. This prevents runaway OpenBus loops on normal RAM.
-            if (index <= 0x00FFFFFF)
-                return new MemEntry(0x00000000, 0x00FFFFFF, RDRAM, RDRAM, "RDRAM_FALLBACK");
+            if (index <= 0x03EFFFFF)
+                return new MemEntry(0x00000000, 0x03EFFFFF, RDRAM, RDRAM, "RDRAM_FALLBACK");
 
             bool FoundEntry = false;
             MemEntry Result = new MemEntry();
@@ -682,6 +1076,38 @@ namespace Ryu64.MIPS
             }
 
             return Result;
+        }
+
+        private bool TryGetSpMirroredEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+
+            // RSP DMEM/IMEM window is commonly mirrored through the 0x0400_xxxx range.
+            // Mirror low 8KB so IPL accesses like 0xA40028xx don't fall to OpenBus.
+            if (index < 0x04000000 || index > 0x0403FFFF)
+                return false;
+
+            uint mirrorOffset = (index - 0x04000000u) & 0x1FFFu;
+            uint mirrorBase = index - mirrorOffset;
+
+            if ((mirrorOffset & 0x1000u) == 0)
+            {
+                entry = new MemEntry(
+                    mirrorBase,
+                    mirrorBase + 0x0FFFu,
+                    SP_DMEM_RW,
+                    SP_DMEM_RW,
+                    "SP_DMEM_MIRROR");
+                return true;
+            }
+
+            entry = new MemEntry(
+                mirrorBase,
+                mirrorBase + 0x0FFFu,
+                SP_IMEM_RW,
+                SP_IMEM_RW,
+                "SP_IMEM_MIRROR");
+            return true;
         }
 
         private bool TryGetSiAliasedEntry(uint index, out MemEntry entry)
@@ -830,15 +1256,38 @@ namespace Ryu64.MIPS
 
         public byte ReadUInt8(uint index)
         {
-            byte value = this[index];
-            InvokeMappedReadEvent(index);
-            return value;
+            return this[index];
         }
 
         public void WriteUInt8(uint index, byte value)
         {
+            if (TraceWatchAddress.HasValue)
+            {
+                uint watched = TraceWatchAddress.Value;
+                uint physical = 0;
+                bool havePhysical = false;
+                try
+                {
+                    physical = ToPhysicalAddress(index, isWrite: true);
+                    havePhysical = true;
+                }
+                catch
+                {
+                    // Best effort watch logging.
+                }
+
+                if (index == watched || (havePhysical && physical == watched))
+                {
+                    byte oldValue = 0;
+                    try { oldValue = ReadUInt8(index); } catch { }
+                    Common.Logger.PrintWarningLine(
+                        $"[N64WATCH] write8 addr=0x{index:x8}" +
+                        (havePhysical ? $" phys=0x{physical:x8}" : string.Empty) +
+                        $" old=0x{oldValue:x2} new=0x{value:x2} pc=0x{Registers.R4300.PC:x8}");
+                }
+            }
+
             this[index] = value;
-            InvokeMappedWriteEvent(index);
         }
 
         public sbyte ReadInt8(uint index)
@@ -855,7 +1304,6 @@ namespace Ryu64.MIPS
         {
             byte[] Res = this[index, 2];
             Array.Reverse(Res);
-            InvokeMappedReadEvent(index);
             unsafe
             {
                 fixed (byte* point = &Res[0])
@@ -868,6 +1316,32 @@ namespace Ryu64.MIPS
 
         public void WriteUInt16(uint index, ushort value)
         {
+            if (TraceWatchAddress.HasValue)
+            {
+                uint watched = TraceWatchAddress.Value;
+                uint physical = 0;
+                bool havePhysical = false;
+                try
+                {
+                    physical = ToPhysicalAddress(index, isWrite: true);
+                    havePhysical = true;
+                }
+                catch
+                {
+                    // Best effort watch logging.
+                }
+
+                if (index == watched || (havePhysical && physical == watched))
+                {
+                    ushort oldValue = 0;
+                    try { oldValue = ReadUInt16(index); } catch { }
+                    Common.Logger.PrintWarningLine(
+                        $"[N64WATCH] write16 addr=0x{index:x8}" +
+                        (havePhysical ? $" phys=0x{physical:x8}" : string.Empty) +
+                        $" old=0x{oldValue:x4} new=0x{value:x4} pc=0x{Registers.R4300.PC:x8}");
+                }
+            }
+
             unsafe
             {
                 ushort* point = &value;
@@ -878,7 +1352,6 @@ namespace Ryu64.MIPS
 
                 this[index, 2] = PointArray;
             }
-            InvokeMappedWriteEvent(index);
         }
 
         public short ReadInt16(uint index)
@@ -907,6 +1380,44 @@ namespace Ryu64.MIPS
 
         public void WriteUInt32(uint index, uint value)
         {
+            if (TraceWatchAddress.HasValue)
+            {
+                uint watched = TraceWatchAddress.Value;
+                uint physical = 0;
+                bool havePhysical = false;
+                try
+                {
+                    physical = ToPhysicalAddress(index, isWrite: true);
+                    havePhysical = true;
+                }
+                catch
+                {
+                    // Best effort watch logging.
+                }
+
+                if (index == watched || (havePhysical && physical == watched))
+                {
+                    uint oldValue = 0;
+                    try { oldValue = ReadUInt32(index); } catch { }
+                    Common.Logger.PrintWarningLine(
+                        $"[N64WATCH] write32 addr=0x{index:x8}" +
+                        (havePhysical ? $" phys=0x{physical:x8}" : string.Empty) +
+                        $" old=0x{oldValue:x8} new=0x{value:x8} pc=0x{Registers.R4300.PC:x8}");
+                }
+            }
+
+            if (TraceSm64SlotWrites)
+            {
+                uint nonCachedIndex = ToPhysicalAddress(index, isWrite: true);
+                if (nonCachedIndex == 0x003359A8u)
+                {
+                    uint oldValue = 0;
+                    try { oldValue = ReadUInt32(index); } catch { }
+                    Console.WriteLine(
+                        $"[N64SM64SLOT] write [0x{index:x8}/phys 0x{nonCachedIndex:x8}] old=0x{oldValue:x8} new=0x{value:x8} pc=0x{Registers.R4300.PC:x8}");
+                }
+            }
+
             unsafe
             {
                 uint* point = &value;
@@ -1013,10 +1524,15 @@ namespace Ryu64.MIPS
             {
                 // Bring-up compromise:
                 // keep instruction-side TLB strict, but allow low data addresses to
-                // fall back to direct physical mapping on miss so SM64 can leave early
-                // refill loops before full TLB behavior is implemented.
+                // fall back to direct physical mapping on miss so software can leave
+                // early refill loops before full TLB behavior is implemented.
+                //
+                // Never apply this fallback for the first page (null/near-null pointers),
+                // otherwise invalid pointer walks can silently read RDRAM at 0x00000000
+                // and derail exception-list logic (seen in SM64 startup).
                 if (AllowDirectLowPhysicalWindow
                     && AllowLowPhysicalFallbackOnTlbMiss
+                    && (virtualAddress >= 0x00001000u || AllowNullPageFallbackOnTlbMiss)
                     && virtualAddress < 0x05000000u)
                 {
                     return virtualAddress;
@@ -1034,6 +1550,11 @@ namespace Ryu64.MIPS
         private uint ReadUInt32Physical(uint physicalAddress)
         {
             return ReadUInt32(PhysicalToKseg1(physicalAddress));
+        }
+
+        public byte ReadUInt8PhysicalUncached(uint physicalAddress)
+        {
+            return ReadUInt8(PhysicalToKseg1(physicalAddress));
         }
 
         private void WriteUInt32Physical(uint physicalAddress, uint value)

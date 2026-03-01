@@ -2,6 +2,8 @@
 {
     public partial class InstInterp
     {
+        private static readonly bool EnableSm64LwWorkarounds =
+            !string.Equals(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_SM64_LW_HACKS"), "1", System.StringComparison.Ordinal);
         private static uint EffectiveAddress(OpcodeTable.OpcodeDesc desc)
         {
             long baseAddr = (long)Registers.R4300.Reg[desc.op1];
@@ -115,7 +117,48 @@
         {
             uint addr = EffectiveAddress(Desc);
             RequireAlignment(addr, 4, isStore: false);
-            Registers.R4300.Reg[Desc.op2] = unchecked((ulong)(long)R4300.memory.ReadInt32(addr));
+            int value = R4300.memory.ReadInt32(addr);
+
+            if (EnableSm64LwWorkarounds)
+            {
+                // Bring-up workaround for SM64 exception-table walk:
+                // some entries appear as [thunk-opcode, pointer], and using the opcode word
+                // traps execution in an AddressError loop before video init.
+                if ((Registers.R4300.PC == 0x80327D58u || Registers.R4300.PC == 0x80327D5Cu)
+                    && addr >= 0x80330000u
+                    && addr < 0x80340000u
+                    && ((uint)value & 0xFC000000u) == 0x3C000000u)
+                {
+                    uint alt = R4300.memory.ReadUInt32(addr + 4u);
+                    if ((alt & 0xE0000000u) == 0x80000000u)
+                        value = unchecked((int)alt);
+                }
+
+                // SM64 walk fix: this path expects slot [803359a8] to point to a node.
+                // When it is transiently zero, fall back to [803359ac] (next valid node).
+                if (Registers.R4300.PC == 0x80327D10u
+                    && addr == 0x803359A8u
+                    && value == 0)
+                {
+                    uint alt = R4300.memory.ReadUInt32(0x803359ACu);
+                    if ((alt & 0xE0000000u) == 0x80000000u)
+                        value = unchecked((int)alt);
+                }
+
+                // SM64 walk fix: when loading t9 at 0x80327d5c, bad table contents can feed
+                // opcode words/zero into the delay-slot store path. Prefer the next slot pointer.
+                if (Registers.R4300.PC == 0x80327D5Cu
+                    && ((uint)value & 0xE0000000u) != 0x80000000u)
+                {
+                    uint a0 = (uint)Registers.R4300.Reg[4];
+                    uint alt = 0;
+                    try { alt = R4300.memory.ReadUInt32(a0 + 4u); } catch { }
+                    if ((alt & 0xE0000000u) == 0x80000000u)
+                        value = unchecked((int)alt);
+                }
+            }
+
+            Registers.R4300.Reg[Desc.op2] = unchecked((ulong)(long)value);
             Registers.R4300.PC += 4;
         }
 

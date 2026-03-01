@@ -69,6 +69,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private long _bootRecoverLastResetToggles;
     private long _bootRecoverToggleAccum;
     private bool _bootRecoverSigInit;
+    private int _sonic2AudioRecoveryFramesRemaining;
 
     // Framebuffer analyzer for live debugging
     public FramebufferAnalyzer FbAnalyzer { get; } = null!;
@@ -110,6 +111,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly int BootRecoverEdgeStableFrames = ParseBootRecoverEdgeStableFrames();
     private static readonly bool BootRecoverLog =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOT_RECOVER_LOG"), "1", StringComparison.Ordinal);
+    private static readonly int Sonic2AudioRecoveryFrames =
+        ParseNonNegativeInt("EUTHERDRIVE_SONIC2_AUDIO_RECOVERY_FRAMES", 180);
+    private static readonly bool Sonic2AudioRecoveryEnabled =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_AUDIO_RECOVERY_DISABLE"), "1", StringComparison.Ordinal);
+    private static readonly bool Sonic2ForceIffAfterLoad =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_FORCE_IFF"), "1", StringComparison.Ordinal);
     private static readonly bool TracePcPerFrame =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_FRAME"), "1", StringComparison.Ordinal);
     private static readonly int TracePcEveryFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_PC_FRAME_EVERY", 60);
@@ -1337,6 +1344,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _bootRecoverLastResetToggles = 0;
         _bootRecoverToggleAccum = 0;
         _bootRecoverSigInit = false;
+        _sonic2AudioRecoveryFramesRemaining = 0;
     }
 
     private void ResetZ80Only()
@@ -1806,6 +1814,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
             int vlines = ApplyFrameRateMode(effectiveFrameRateMode);
             long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            MaybeSonic2AudioRecovery(frame);
             if (TracePcPerFrame && TracePcEveryFrames >= 0)
             {
                 if (TracePcEveryFrames == 0 || (frame >= 0 && frame % TracePcEveryFrames == 0))
@@ -1900,6 +1909,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
 
             md_main.MaybeInjectMbx(frame);
+            MaybeSonic2AudioRecovery(frame);
             md_main.g_md_music?.FlushDacRateFrame(frame);
             md_main.g_md_music?.FlushAudioStats(frame);
             md_main.g_md_bus?.FlushZ80WinHist(frame);
@@ -2230,33 +2240,100 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         {
             var serializer = new MdTracerStateSerializer();
             serializer.Load(reader);
-            
-            // Z80 state is already loaded by the serializer, no need to reset it
-            // The savestate contains Z80 registers, PC, and internal state
-            
-            // Ensure Z80 bus state is correct (but don't reset Z80 CPU)
-            if (md_main.g_md_bus != null)
+
+            // Keep loaded BUSREQ/RESET state from savestate; just resync Z80 active bit.
+            // Forcing bus lines after load can desync audio driver state (e.g. Sonic 2).
+            if (md_main.g_md_bus != null && md_main.g_md_z80 != null)
             {
-                var busType = md_main.g_md_bus.GetType();
-                
-                // Set Z80 bus to normal running state (not granted, not reset)
-                var busGrantedField = busType.GetField("_z80BusGranted", 
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                var resetField = busType.GetField("_z80Reset", 
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                
-                if (busGrantedField != null) busGrantedField.SetValue(md_main.g_md_bus, false);
-                if (resetField != null) resetField.SetValue(md_main.g_md_bus, false);
-                
-                // Force Z80 safe boot to be inactive
-                var safeBootField = busType.GetField("_z80SafeBootActive", 
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (safeBootField != null)
+                md_main.g_md_bus.ApplyZ80BusReqLatch();
+                bool busReq = md_main.g_md_bus.Z80BusGranted;
+                bool reset = md_main.g_md_bus.Z80Reset;
+                md_main.g_md_z80.g_active = !busReq && !reset;
+            }
+
+            TryRecoverSonic2MailboxAfterLoad();
+            if (Sonic2ForceIffAfterLoad && _romIdentity != null && md_main.g_md_z80 != null)
+            {
+                string n = _romIdentity.Name ?? string.Empty;
+                if (n.IndexOf("sonic the hedgehog 2", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    n.IndexOf("sonic2", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    safeBootField.SetValue(md_main.g_md_bus, false);
+                    md_main.g_md_z80.ForceEnableInterruptState();
+                    Console.WriteLine("[Savestate] Sonic2 forced Z80 IFF/IM after load");
                 }
             }
         }
+    }
+
+    private void TryRecoverSonic2MailboxAfterLoad()
+    {
+        if (!Sonic2AudioRecoveryEnabled)
+            return;
+
+        if (_romIdentity == null || md_main.g_md_z80 == null)
+            return;
+
+        string name = _romIdentity.Name ?? string.Empty;
+        if (name.IndexOf("sonic the hedgehog 2", StringComparison.OrdinalIgnoreCase) < 0 &&
+            name.IndexOf("sonic2", StringComparison.OrdinalIgnoreCase) < 0)
+            return;
+
+        ushort pc = md_main.g_md_z80.CpuPc;
+        if (pc < 0x0174 || pc > 0x0176)
+            return;
+
+        if (Sonic2ForceIffAfterLoad)
+            md_main.g_md_z80.ForceEnableInterruptState();
+
+        byte mbx88 = md_main.g_md_z80.PeekZ80Ram(0x1B88);
+        byte mbx89 = md_main.g_md_z80.PeekZ80Ram(0x1B89);
+        byte fixed88 = (byte)(mbx88 & 0x7F);
+        byte fixed89 = (byte)(mbx89 & 0x7F);
+        if (fixed88 != mbx88 || fixed89 != mbx89)
+        {
+            md_main.g_md_z80.write8(0x1B88, fixed88);
+            md_main.g_md_z80.write8(0x1B89, fixed89);
+        }
+
+        // Sonic 2 can get stranded in the boot NOP/JR loop (0x0174..0x0176)
+        // after savestate load; jump back to driver entry so audio progresses.
+        md_main.g_md_z80.ForceJumpToDriver();
+        _sonic2AudioRecoveryFramesRemaining = Sonic2AudioRecoveryFrames;
+        Console.WriteLine(
+            $"[Savestate] Sonic2 audio recovery applied: pc=0x{pc:X4} " +
+            $"1B88 {mbx88:X2}->{fixed88:X2} 1B89 {mbx89:X2}->{fixed89:X2} jump=0x0167");
+    }
+
+    private void MaybeSonic2AudioRecovery(long frame)
+    {
+        if (!Sonic2AudioRecoveryEnabled)
+            return;
+
+        if (_sonic2AudioRecoveryFramesRemaining <= 0 || _romIdentity == null || md_main.g_md_z80 == null)
+            return;
+
+        ushort pc = md_main.g_md_z80.CpuPc;
+        if (pc < 0x0174 || pc > 0x0176)
+        {
+            _sonic2AudioRecoveryFramesRemaining--;
+            return;
+        }
+
+        byte mbx88 = md_main.g_md_z80.PeekZ80Ram(0x1B88);
+        byte mbx89 = md_main.g_md_z80.PeekZ80Ram(0x1B89);
+        byte fixed88 = (byte)(mbx88 & 0x7F);
+        byte fixed89 = (byte)(mbx89 & 0x7F);
+        if (fixed88 != mbx88 || fixed89 != mbx89)
+        {
+            md_main.g_md_z80.write8(0x1B88, fixed88);
+            md_main.g_md_z80.write8(0x1B89, fixed89);
+        }
+
+        md_main.g_md_z80.ForceJumpToDriver();
+        Console.WriteLine(
+            $"[Savestate] Sonic2 audio recovery tick: frame={frame} pc=0x{pc:X4} " +
+            $"1B88 {mbx88:X2}->{fixed88:X2} 1B89 {mbx89:X2}->{fixed89:X2} left={_sonic2AudioRecoveryFramesRemaining}");
+        _sonic2AudioRecoveryFramesRemaining--;
     }
 
     /// <summary>

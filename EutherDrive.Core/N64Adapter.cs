@@ -31,6 +31,7 @@ public sealed class N64Adapter : IEmulatorCore
     private long _runFrameCount;
     private long _noFramebufferCount;
     private long _noAudioCount;
+    private bool? _swap5551BytesDecision;
     private readonly ulong _targetCyclesPerRunFrame = ReadUlongEnv("EUTHERDRIVE_N64_TARGET_CYCLES_PER_RUNFRAME", 300_000);
     private readonly int _runFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_RUNFRAME_WAIT_MS", 12);
 
@@ -55,6 +56,7 @@ public sealed class N64Adapter : IEmulatorCore
         _runFrameCount = 0;
         _noFramebufferCount = 0;
         _noAudioCount = 0;
+        _swap5551BytesDecision = null;
         EnsureFrameBuffer(DefaultWidth, DefaultHeight);
         Console.WriteLine($"[N64Adapter] ROM loaded: '{Path.GetFileName(path)}' -> '{Path.GetFileName(_resolvedRomPath)}'");
     }
@@ -73,6 +75,7 @@ public sealed class N64Adapter : IEmulatorCore
         _runFrameCount = 0;
         _noFramebufferCount = 0;
         _noAudioCount = 0;
+        _swap5551BytesDecision = null;
     }
 
     public void RunFrame()
@@ -189,7 +192,8 @@ public sealed class N64Adapter : IEmulatorCore
         if (_noFramebufferCount > 0)
         {
             Console.WriteLine(
-                $"[N64Adapter] Framebuffer recovered at runFrame={_runFrameCount} after {_noFramebufferCount} misses");
+                $"[N64Adapter] Framebuffer recovered at runFrame={_runFrameCount} after {_noFramebufferCount} misses " +
+                $"(w={width} h={height} bpp={bytesPerPixel}) status={_core.LastFramebufferStatus}");
             _noFramebufferCount = 0;
         }
 
@@ -201,7 +205,15 @@ public sealed class N64Adapter : IEmulatorCore
         }
         else
         {
-            ConvertRgba5551ToBgra(raw, _frameBuffer);
+            if (!_swap5551BytesDecision.HasValue)
+            {
+                var (swap, normalScore, swappedScore) = DetectRgba5551ByteOrder(raw);
+                _swap5551BytesDecision = swap;
+                Console.WriteLine(
+                    $"[N64Adapter] RGBA5551 byte-order auto-detect: swap={swap} scoreNormal={normalScore} scoreSwapped={swappedScore}");
+            }
+
+            ConvertRgba5551ToBgra(raw, _frameBuffer, _swap5551BytesDecision.Value);
         }
     }
 
@@ -298,7 +310,7 @@ public sealed class N64Adapter : IEmulatorCore
         return fallback;
     }
 
-    private static void ConvertRgba5551ToBgra(ReadOnlySpan<byte> src, Span<byte> dst)
+    private static void ConvertRgba5551ToBgra(ReadOnlySpan<byte> src, Span<byte> dst, bool swapBytes)
     {
         int pixels = Math.Min(src.Length / 2, dst.Length / 4);
         int si = 0;
@@ -306,13 +318,15 @@ public sealed class N64Adapter : IEmulatorCore
 
         for (int i = 0; i < pixels; i++)
         {
-            ushort p = (ushort)((src[si] << 8) | src[si + 1]);
+            ushort p = swapBytes
+                ? (ushort)((src[si + 1] << 8) | src[si])
+                : (ushort)((src[si] << 8) | src[si + 1]);
             si += 2;
 
             int r5 = (p >> 11) & 0x1F;
             int g5 = (p >> 6) & 0x1F;
             int b5 = (p >> 1) & 0x1F;
-            byte a = (byte)((p & 1) != 0 ? 0xFF : 0xFF);
+            byte a = (byte)((p & 1) != 0 ? 0xFF : 0x00);
 
             dst[di + 0] = (byte)((b5 * 255) / 31);
             dst[di + 1] = (byte)((g5 * 255) / 31);
@@ -323,6 +337,29 @@ public sealed class N64Adapter : IEmulatorCore
 
         if (di < dst.Length)
             dst[di..].Clear();
+    }
+
+    private static (bool Swap, int NormalScore, int SwappedScore) DetectRgba5551ByteOrder(ReadOnlySpan<byte> src)
+    {
+        int pixels = Math.Min(src.Length / 2, 4096);
+        int normalScore = 0;
+        int swappedScore = 0;
+        int si = 0;
+
+        for (int i = 0; i < pixels; i++)
+        {
+            ushort pNormal = (ushort)((src[si] << 8) | src[si + 1]);
+            ushort pSwapped = (ushort)((src[si + 1] << 8) | src[si]);
+            si += 2;
+
+            // Score non-black RGB values (ignore alpha bit).
+            if ((pNormal & 0xFFFE) != 0)
+                normalScore++;
+            if ((pSwapped & 0xFFFE) != 0)
+                swappedScore++;
+        }
+
+        return (swappedScore > normalScore, normalScore, swappedScore);
     }
 
     private static void ConvertRgba8888ToBgra(ReadOnlySpan<byte> src, Span<byte> dst)

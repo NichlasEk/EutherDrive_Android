@@ -5,7 +5,8 @@ namespace EutherDrive.Core.SegaCd;
 public sealed class SegaCdRegisters
 {
     // $A12000: Reset / BUSREQ
-    public bool SoftwareInterruptPending { get; set; }
+    public bool MainSoftwareInterruptPending { get; set; }
+    public bool SubSoftwareInterruptPending { get; set; }
     public bool SoftwareInterruptEnabled { get; set; }
     public bool SubCpuBusReq { get; set; } = true;
     public bool SubCpuReset { get; set; } = true;
@@ -57,7 +58,8 @@ public sealed class SegaCdRegisters
 
     public void Reset()
     {
-        SoftwareInterruptPending = false;
+        MainSoftwareInterruptPending = false;
+        SubSoftwareInterruptPending = false;
         SubCpuBusReq = true;
         SubCpuReset = true;
         LedGreen = true;

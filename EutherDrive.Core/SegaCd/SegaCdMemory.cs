@@ -424,6 +424,13 @@ public sealed class SegaCdMemory
         return 0xFFFF;
     }
 
+    internal ushort ReadMainWordForDma(uint address)
+    {
+        if (address >= 0x200000 && address <= 0x3FFFFF)
+            return WordRam.MainCpuDmaReadWord(address);
+        return ReadMainWord(address);
+    }
+
     public void WriteMainByte(uint address, byte value)
     {
         if (address <= 0x1FFFFF)
@@ -539,8 +546,9 @@ public sealed class SegaCdMemory
         if (cpu == ScdCpu.Main && !(Registers.SubCpuBusReq || Registers.SubCpuReset))
         {
             if (LogMainRegs)
-                Console.WriteLine($"[SCD-PRG] Main write without BUSREQ/RESET addr=0x{address:X6} val=0x{value:X2}");
-            // Allow main writes even if sub CPU is running; some BIOS builds expect this.
+                Console.WriteLine($"[SCD-PRG] Main write blocked (sub owns bus) addr=0x{address:X6} val=0x{value:X2}");
+            // Match hardware and jgenesis: main CPU cannot write PRG RAM while sub CPU has the bus.
+            return;
         }
 
         uint boundary = (uint)Registers.PrgRamWriteProtect * 0x200;
@@ -591,7 +599,7 @@ public sealed class SegaCdMemory
         }
         byte value = address switch
         {
-            0xA12000 => (byte)(((Registers.SoftwareInterruptEnabled ? 1 : 0) << 7) | (Registers.SoftwareInterruptPending ? 1 : 0)),
+            0xA12000 => (byte)(((Registers.SoftwareInterruptEnabled ? 1 : 0) << 7) | (Registers.MainSoftwareInterruptPending ? 1 : 0)),
             // Bit1: BUSREQ (1=request), Bit0: RESET (1=run)
             0xA12001 => (byte)(((Registers.SubCpuBusReq ? 1 : 0) << 1) | (Registers.SubCpuReset ? 0 : 1)),
             0xA12002 => Registers.PrgRamWriteProtect,
@@ -652,7 +660,7 @@ public sealed class SegaCdMemory
         switch (address)
         {
             case 0xA12000:
-                Registers.SoftwareInterruptPending = (value & 1) != 0;
+                Registers.SubSoftwareInterruptPending = (value & 1) != 0;
                 break;
             case 0xA12001:
                 Registers.SubCpuBusReq = (value & 0x02) != 0;
@@ -676,18 +684,11 @@ public sealed class SegaCdMemory
                 if (LogMainRegs)
                     Console.WriteLine($"[SCD-WORDRAM] main ctl=0x{value:X2} {WordRam.GetDebugState()}");
                 break;
-            case 0xA12004:
-                Cdc.SetDeviceDestination((byte)(value & 0x07));
-                break;
-            case 0xA12005:
-                Cdc.SetRegisterAddress((byte)(value & 0x1F));
-                break;
             case 0xA12006:
+                Registers.HInterruptVector = (ushort)((Registers.HInterruptVector & 0x00FF) | (value << 8));
+                break;
             case 0xA12007:
-                if (address == 0xA12007)
-                    Cdc.WriteRegister(value);
-                else
-                    Registers.HInterruptVector = (ushort)((value << 8) | value);
+                Registers.HInterruptVector = (ushort)((Registers.HInterruptVector & 0xFF00) | value);
                 break;
             case 0xA12008:
             case 0xA12009:
@@ -695,6 +696,7 @@ public sealed class SegaCdMemory
                 break;
             case 0xA1200E:
             case 0xA1200F:
+                // Hardware-compatible behavior: both byte addresses update main CPU flags.
                 Registers.MainCpuCommunicationFlags = value;
                 if (LogCommFlags)
                     Console.WriteLine($"[SCD-COMM] MAIN W8 0x{address:X6} = 0x{value:X2}");
@@ -718,7 +720,12 @@ public sealed class SegaCdMemory
         {
             case 0xA12000:
             case 0xA12002:
+                WriteMainRegisterByte(address, (byte)(value >> 8));
+                WriteMainRegisterByte(address | 1, (byte)value);
+                break;
             case 0xA12004:
+                // CDC mode (high byte) + CDC register address (low byte)
+                // Mirrors hardware/jgenesis register pairing.
                 WriteMainRegisterByte(address, (byte)(value >> 8));
                 WriteMainRegisterByte(address | 1, (byte)value);
                 break;
@@ -729,6 +736,7 @@ public sealed class SegaCdMemory
                 Cdc.WriteHostData(ScdCpu.Main);
                 break;
             case 0xA1200E:
+                // Only main CPU flags are writable by main CPU word access.
                 Registers.MainCpuCommunicationFlags = (byte)(value >> 8);
                 break;
             case >= 0xA12010 and <= 0xA1201F:
@@ -799,7 +807,7 @@ public sealed class SegaCdMemory
         switch (reg)
         {
             case 0x0000:
-                return (byte)(((Registers.LedGreen ? 1 : 0) << 1) | (Registers.LedRed ? 1 : 0));
+                return (byte)(((Registers.LedGreen ? 1 : 0) << 1) | (Registers.LedRed ? 1 : 0) | (Registers.SubSoftwareInterruptPending ? 1 : 0));
             case 0x0001:
                 return 0x01;
             case 0x0002:
@@ -994,6 +1002,7 @@ public sealed class SegaCdMemory
             case 0x0000:
                 Registers.LedGreen = (value & 0x02) != 0;
                 Registers.LedRed = (value & 0x01) != 0;
+                Registers.MainSoftwareInterruptPending = (value & 0x01) != 0;
                 break;
             case 0x0001:
                 if (LogCddReset && _cddResetLogRemaining-- > 0)
@@ -1037,6 +1046,7 @@ public sealed class SegaCdMemory
                 break;
             case 0x000E:
             case 0x000F:
+                // Hardware-compatible behavior: both byte addresses update sub CPU flags.
                 Registers.SubCpuCommunicationFlags = value;
                 if (LogCommFlags)
                     Console.WriteLine($"[SCD-COMM] SUB W8 0x{reg:X4} = 0x{value:X2}");
@@ -1127,7 +1137,6 @@ public sealed class SegaCdMemory
                 WriteSubRegisterByte(reg | 1, (byte)value);
                 break;
             case 0x0002:
-                WriteSubRegisterByte(reg, (byte)(value >> 8));
                 WriteSubRegisterByte(reg | 1, (byte)value);
                 break;
             case 0x0004:
@@ -1147,6 +1156,7 @@ public sealed class SegaCdMemory
                 Registers.StopwatchCounter = (ushort)(value & 0x0FFF);
                 break;
             case 0x000E:
+                // Only sub CPU flags are writable by sub CPU word access.
                 Registers.SubCpuCommunicationFlags = (byte)value;
                 break;
             case >= 0x0020 and <= 0x002F:
@@ -1261,10 +1271,12 @@ public sealed class SegaCdMemory
                 }
             case <= 0x0EFFFF:
                 {
+                    // Backup RAM: $FE0000-$FEFFFF (masked to 0x0E0000-0x0EFFFF)
                     int backupAddr = (int)((addr & 0x3FFF) >> 1);
                     return _backupRam[backupAddr];
                 }
             case <= 0x0F7FFF:
+                // PCM: $FF0000-$FF7FFF (masked to 0x0F0000-0x0F7FFF)
                 return Pcm.Read((addr & 0x3FFF) >> 1);
             case <= 0x0FFFFF:
                 {
@@ -1412,7 +1424,7 @@ public sealed class SegaCdMemory
                 Console.WriteLine("[SCD-SUBINT] level=3 source=TIMER");
             return 3;
         }
-        if (Registers.SoftwareInterruptEnabled && Registers.SoftwareInterruptPending)
+        if (Registers.SoftwareInterruptEnabled && Registers.SubSoftwareInterruptPending)
         {
             if (LogSubInt)
                 Console.WriteLine("[SCD-SUBINT] level=2 source=SW");
@@ -1444,7 +1456,7 @@ public sealed class SegaCdMemory
                 Graphics.AcknowledgeInterrupt();
                 break;
             case 2:
-                Registers.SoftwareInterruptPending = false;
+                Registers.SubSoftwareInterruptPending = false;
                 break;
             case 3:
                 Registers.TimerInterruptPending = false;

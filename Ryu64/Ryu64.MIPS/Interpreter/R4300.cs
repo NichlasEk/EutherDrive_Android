@@ -44,6 +44,26 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_REFILL_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceRefillWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_REFILL_WINDOW_LIMIT", 400);
         private static int _traceRefillWindowCount = 0;
+        private static readonly bool TraceSm64WalkWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SM64_WALK_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSm64WalkWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_SM64_WALK_WINDOW_LIMIT", 2000);
+        private static int _traceSm64WalkWindowCount = 0;
+        private static readonly bool TraceViInitWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_INIT_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceViInitWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_VI_INIT_WINDOW_LIMIT", 600);
+        private static int _traceViInitWindowCount = 0;
+        private static readonly bool TraceViPrepWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_PREP_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceViPrepWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_VI_PREP_WINDOW_LIMIT", 400);
+        private static int _traceViPrepWindowCount = 0;
+        private static readonly bool TraceViCalcWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_CALC_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceViCalcWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_VI_CALC_WINDOW_LIMIT", 200);
+        private static int _traceViCalcWindowCount = 0;
+        private static readonly bool TraceStuckPcDetails =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_STUCK_PC"), "1", StringComparison.Ordinal);
+        private static readonly bool EnableSm64AddressErrorPatch =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_SM64_ADDRERR_PATCH"), "1", StringComparison.Ordinal);
         private const ulong StatusExlBit = 1UL << 1;
         private const ulong StatusErlBit = 1UL << 2;
         private const ulong StatusIeBit = 1UL << 0;
@@ -53,6 +73,7 @@ namespace Ryu64.MIPS
         private const ulong CauseExcCodeMask = 0x7CUL;
         private const ulong CauseIpMask = 0x0000FF00UL;
         private const ulong CauseIp2Bit = 1UL << 10;
+        private const ulong CauseIp7Bit = 1UL << 15;
         private const ulong CauseExcCodeTlbLoad = 2UL << 2;
         private const ulong CauseExcCodeTlbStore = 3UL << 2;
         private const ulong CauseExcCodeAddressErrorLoad = 4UL << 2;
@@ -72,9 +93,13 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_STRICT_BEV_VECTORS"), "1", StringComparison.Ordinal);
         private static bool _executingDelaySlot;
         private static uint _delaySlotBranchPc;
+        private static bool _delaySlotExceptionPending;
+        private static uint _delaySlotExceptionBranchPc;
         private static bool _loggedPifTailEntry;
         private static bool _loggedFirstBfcEntry;
         private static ulong _tlbRefillLogCount;
+        private static ulong _addressErrorLogCount;
+        private static bool _sm64ThunkPatched;
 
         private static int ParseTraceLimit(string name, int fallback)
         {
@@ -112,6 +137,8 @@ namespace Ryu64.MIPS
             bool exlAlreadySet = (status & StatusExlBit) != 0;
             bool bevSet = (status & StatusBevBit) != 0;
             bool inDelaySlot = _executingDelaySlot;
+            uint branchPc = _delaySlotBranchPc;
+            ConsumeDelaySlotExceptionContext(ref inDelaySlot, ref branchPc);
 
             if (_tlbRefillLogCount <= 32 || (_tlbRefillLogCount % 256) == 0)
             {
@@ -151,7 +178,7 @@ namespace Ryu64.MIPS
             Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG] = (badAddress & 0xFFFFE000u) | (entryHi & 0xFFu);
             Registers.COP0.Reg[Registers.COP0.CONTEXT_REG] = (context & 0xFF80000FUL) | (((ulong)badAddress >> 9) & 0x007FFFF0UL);
             if (!exlAlreadySet)
-                Registers.COP0.Reg[Registers.COP0.EPC_REG] = (inDelaySlot ? _delaySlotBranchPc : faultingPc) & 0xFFFFFFFCu;
+                Registers.COP0.Reg[Registers.COP0.EPC_REG] = (inDelaySlot ? branchPc : faultingPc) & 0xFFFFFFFCu;
             Registers.COP0.Reg[Registers.COP0.CAUSE_REG] =
                 (cause & ~(CauseExcCodeMask | CauseBdBit))
                 | (isStore ? CauseExcCodeTlbStore : CauseExcCodeTlbLoad)
@@ -183,9 +210,11 @@ namespace Ryu64.MIPS
             bool exlAlreadySet = (status & StatusExlBit) != 0;
             bool bevSet = (status & StatusBevBit) != 0;
             bool inDelaySlot = _executingDelaySlot;
+            uint branchPc = _delaySlotBranchPc;
+            ConsumeDelaySlotExceptionContext(ref inDelaySlot, ref branchPc);
 
             if (!exlAlreadySet)
-                Registers.COP0.Reg[Registers.COP0.EPC_REG] = (inDelaySlot ? _delaySlotBranchPc : faultingPc) & 0xFFFFFFFCu;
+                Registers.COP0.Reg[Registers.COP0.EPC_REG] = (inDelaySlot ? branchPc : faultingPc) & 0xFFFFFFFCu;
             Registers.COP0.Reg[Registers.COP0.CAUSE_REG] =
                 (cause & ~(CauseExcCodeMask | CauseBdBit))
                 | exceptionCode
@@ -204,8 +233,99 @@ namespace Ryu64.MIPS
 
         private static void RaiseAddressErrorException(uint badAddress, bool isStore, uint faultingPc)
         {
+            if (EnableSm64AddressErrorPatch
+                && !_sm64ThunkPatched
+                && !isStore
+                && badAddress == 0x3C1A8036u
+                && (uint)Registers.R4300.Reg[4] == 0x803359A8u)
+            {
+                try
+                {
+                    uint slot0 = memory.ReadUInt32(0x803359A8u);
+                    uint slot1 = memory.ReadUInt32(0x803359ACu);
+                    if (slot0 == 0 && (slot1 & 0xE0000000u) == 0x80000000u)
+                    {
+                        memory.WriteUInt32(0x803359A8u, slot1);
+                        _sm64ThunkPatched = true;
+                        Common.Logger.PrintWarningLine(
+                            $"Applied SM64 thunk patch: [803359a8]=0x{slot1:x8} after AddressError at pc=0x{faultingPc:x8}");
+                        return;
+                    }
+                }
+                catch
+                {
+                    // Best-effort recovery only.
+                }
+            }
+
+            _addressErrorLogCount++;
+            if (_addressErrorLogCount <= 64 || (_addressErrorLogCount % 256) == 0)
+            {
+                ulong a0 = Registers.R4300.Reg[4];
+                ulong v0 = Registers.R4300.Reg[2];
+                uint a0w = 0;
+                uint a0wm8 = 0;
+                uint a0wm4 = 0;
+                uint a0w4 = 0;
+                uint a0w8 = 0;
+                uint a0wc = 0;
+                uint a0w10 = 0;
+                uint v0w = 0;
+                uint v0w4 = 0;
+                uint v0w8 = 0;
+                uint v0wc = 0;
+                uint v0w10 = 0;
+                uint v0wm4 = 0;
+                try { a0w = memory.ReadUInt32((uint)a0); } catch { }
+                try { a0wm8 = memory.ReadUInt32((uint)a0 - 8u); } catch { }
+                try { a0wm4 = memory.ReadUInt32((uint)a0 - 4u); } catch { }
+                try { a0w4 = memory.ReadUInt32((uint)a0 + 4u); } catch { }
+                try { a0w8 = memory.ReadUInt32((uint)a0 + 8u); } catch { }
+                try { a0wc = memory.ReadUInt32((uint)a0 + 12u); } catch { }
+                try { a0w10 = memory.ReadUInt32((uint)a0 + 16u); } catch { }
+                try { v0w = memory.ReadUInt32((uint)v0); } catch { }
+                try { v0w4 = memory.ReadUInt32((uint)v0 + 4u); } catch { }
+                try { v0w8 = memory.ReadUInt32((uint)v0 + 8u); } catch { }
+                try { v0wc = memory.ReadUInt32((uint)v0 + 12u); } catch { }
+                try { v0w10 = memory.ReadUInt32((uint)v0 + 16u); } catch { }
+                try { v0wm4 = memory.ReadUInt32((uint)v0 - 4u); } catch { }
+
+                Common.Logger.PrintWarningLine(
+                    $"Address error exception (count={_addressErrorLogCount}) " +
+                    $"pc=0x{faultingPc:x8} badv=0x{badAddress:x8} store={isStore} " +
+                    $"epc=0x{Registers.COP0.Reg[Registers.COP0.EPC_REG]:x8} " +
+                    $"cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8} " +
+                    $"status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} " +
+                    $"a0=0x{a0:x16} v0=0x{v0:x16} " +
+                    $"[a0-8]=0x{a0wm8:x8} [a0-4]=0x{a0wm4:x8} [a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8} [a0+8]=0x{a0w8:x8} [a0+c]=0x{a0wc:x8} [a0+10]=0x{a0w10:x8} " +
+                    $"[v0-4]=0x{v0wm4:x8} [v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} [v0+8]=0x{v0w8:x8} [v0+c]=0x{v0wc:x8} [v0+10]=0x{v0w10:x8}");
+
+                if (_addressErrorLogCount <= 16)
+                {
+                    StringBuilder sb = new StringBuilder();
+                    sb.Append("Recent PCs before AddressError:");
+                    for (int i = 0; i < 24; i++)
+                    {
+                        int idx = (_recentInstPos - 1 - i) & RecentInstHistoryMask;
+                        RecentInst rec = _recentInst[idx];
+                        sb.Append($" [{i}]pc=0x{rec.Pc:x8}/op=0x{rec.Op:x8}");
+                    }
+                    Common.Logger.PrintWarningLine(sb.ToString());
+                }
+            }
+
             Registers.COP0.Reg[Registers.COP0.BADVADDR_REG] = badAddress;
             RaiseCpuException(isStore ? CauseExcCodeAddressErrorStore : CauseExcCodeAddressErrorLoad, faultingPc);
+        }
+
+        private static void ConsumeDelaySlotExceptionContext(ref bool inDelaySlot, ref uint branchPc)
+        {
+            if (!_delaySlotExceptionPending)
+                return;
+
+            inDelaySlot = true;
+            branchPc = _delaySlotExceptionBranchPc;
+            _delaySlotExceptionPending = false;
         }
 
         private static bool ServiceInterrupts(uint pc)
@@ -216,8 +336,10 @@ namespace Ryu64.MIPS
             uint miMask = memory.ReadUInt32(0xA430000Cu);
             bool rcpPending = (miIntr & miMask & 0x3Fu) != 0;
 
-            ulong pendingIp = rcpPending ? CauseIp2Bit : 0UL;
-            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] = (cause & ~CauseIpMask) | pendingIp;
+            // Only control IP2 from MI; preserve all other pending IP bits (timer/SW/etc).
+            cause = rcpPending ? (cause | CauseIp2Bit) : (cause & ~CauseIp2Bit);
+            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] = cause;
+            ulong pendingIp = cause & CauseIpMask;
 
             ulong status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
             bool canTake = (status & (StatusExlBit | StatusErlBit)) == 0
@@ -242,6 +364,13 @@ namespace Ryu64.MIPS
             {
                 InterpretOpcode(memory.ReadUInt32(delayPc));
             }
+            catch
+            {
+                // Preserve delay-slot metadata for outer catch handlers.
+                _delaySlotExceptionPending = true;
+                _delaySlotExceptionBranchPc = _delaySlotBranchPc;
+                throw;
+            }
             finally
             {
                 _executingDelaySlot = prevInDelay;
@@ -262,6 +391,14 @@ namespace Ryu64.MIPS
                 chunks[i] = $"{prefix}=0x{list[i].Key:x8}:{list[i].Value}";
 
             return string.Join(", ", chunks);
+        }
+
+        private static bool CountCompareReached(uint previousCount, uint newCount, uint compare)
+        {
+            // compare match between previousCount(exclusive) -> newCount(inclusive), wrapping at 32-bit.
+            if (previousCount <= newCount)
+                return compare > previousCount && compare <= newCount;
+            return compare > previousCount || compare <= newCount;
         }
 
         private static uint CRC32(uint StartAddress, uint Length)
@@ -398,7 +535,12 @@ namespace Ryu64.MIPS
             CycleCounter += Info.Cycles;
             Count        += Info.Cycles;
             memory?.Tick(Info.Cycles);
-            Registers.COP0.Reg[Registers.COP0.COUNT_REG] = Count >> 1;
+            uint previousCount = (uint)Registers.COP0.Reg[Registers.COP0.COUNT_REG];
+            uint newCount = (uint)(Count >> 1);
+            Registers.COP0.Reg[Registers.COP0.COUNT_REG] = newCount;
+            uint compare = (uint)Registers.COP0.Reg[Registers.COP0.COMPARE_REG];
+            if (CountCompareReached(previousCount, newCount, compare))
+                Registers.COP0.Reg[Registers.COP0.CAUSE_REG] |= CauseIp7Bit;
             uint random = (uint)Registers.COP0.Reg[Registers.COP0.RANDOM_REG] & 0x1Fu;
             uint wired = (uint)Registers.COP0.Reg[Registers.COP0.WIRED_REG] & 0x1Fu;
             if (random <= wired)
@@ -453,6 +595,7 @@ namespace Ryu64.MIPS
             memory.FastMemoryCopy(0xA4000000, 0xB0000000, 0x1000); // Load the 4 KiB IPL3 boot code into SP memory.
             memory.WriteUInt8(0xBFC007FF, GetInitialPifControlByte(cicSeed)); // kseg1 alias of PIF RAM control byte.
 
+            TLB.Reset();
             COP0.PowerOnCOP0();
             COP1.PowerOnCOP1();
 
@@ -470,6 +613,7 @@ namespace Ryu64.MIPS
             _traceEretWindowCount = 0;
             _traceRefillWindowCount = 0;
             _traceEarlyLoopWindowCount = 0;
+            _traceSm64WalkWindowCount = 0;
 
             OpcodeTable.Init();
 
@@ -515,6 +659,26 @@ namespace Ryu64.MIPS
                                 Common.Logger.PrintWarningLine(
                                     $"R4300 watchdog: PC appears stuck at 0x{pc:x8} for {samePcIterations} iterations " +
                                     $"(report #{_stuckPcLogCount}).");
+                                if (TraceStuckPcDetails)
+                                {
+                                    uint op = 0;
+                                    uint miIntr = 0, miMask = 0, viStatus = 0, viCurrent = 0;
+                                    ulong cop0Status = 0, cop0Cause = 0, cop0Epc = 0;
+                                    try { op = memory.ReadUInt32(pc); } catch { }
+                                    try { miIntr = memory.ReadUInt32(0x04300008u); } catch { }
+                                    try { miMask = memory.ReadUInt32(0x0430000Cu); } catch { }
+                                    try { viStatus = memory.ReadUInt32(0x04400000u); } catch { }
+                                    try { viCurrent = memory.ReadUInt32(0x04400010u); } catch { }
+                                    cop0Status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
+                                    cop0Cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
+                                    cop0Epc = Registers.COP0.Reg[Registers.COP0.EPC_REG];
+                                    Common.Logger.PrintWarningLine(
+                                        $"R4300 stuck details: pc=0x{pc:x8} op=0x{op:x8} " +
+                                        $"cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} cop0Epc=0x{cop0Epc:x8} " +
+                                        $"miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} viStatus=0x{viStatus:x8} viCurrent=0x{viCurrent:x8} " +
+                                        $"t0=0x{Registers.R4300.Reg[8]:x16} t1=0x{Registers.R4300.Reg[9]:x16} " +
+                                        $"a0=0x{Registers.R4300.Reg[4]:x16} v0=0x{Registers.R4300.Reg[2]:x16}");
+                                }
                             }
                         }
                         else
@@ -700,6 +864,120 @@ namespace Ryu64.MIPS
                                     $"badv=0x{Registers.COP0.Reg[Registers.COP0.BADVADDR_REG]:x8} " +
                                     $"entryHi=0x{Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG]:x8} " +
                                     $"context=0x{Registers.COP0.Reg[Registers.COP0.CONTEXT_REG]:x8}");
+                            }
+
+                            if (TraceSm64WalkWindow
+                                && _traceSm64WalkWindowCount < TraceSm64WalkWindowLimit
+                                && pc >= 0x80327D10
+                                && pc <= 0x80327D70)
+                            {
+                                _traceSm64WalkWindowCount++;
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong t8 = Registers.R4300.Reg[24];
+                                ulong t6 = Registers.R4300.Reg[14];
+                                uint a0w = 0, a0w4 = 0, a0w8 = 0, a0wc = 0;
+                                uint t8w = 0, t8w4 = 0, t8w8 = 0, t8wc = 0;
+                                uint v0w = 0, v0w4 = 0;
+                                try { a0w = memory.ReadUInt32((uint)a0); } catch { }
+                                try { a0w4 = memory.ReadUInt32((uint)a0 + 4u); } catch { }
+                                try { a0w8 = memory.ReadUInt32((uint)a0 + 8u); } catch { }
+                                try { a0wc = memory.ReadUInt32((uint)a0 + 12u); } catch { }
+                                try { t8w = memory.ReadUInt32((uint)t8); } catch { }
+                                try { t8w4 = memory.ReadUInt32((uint)t8 + 4u); } catch { }
+                                try { t8w8 = memory.ReadUInt32((uint)t8 + 8u); } catch { }
+                                try { t8wc = memory.ReadUInt32((uint)t8 + 12u); } catch { }
+                                try { v0w = memory.ReadUInt32((uint)v0); } catch { }
+                                try { v0w4 = memory.ReadUInt32((uint)v0 + 4u); } catch { }
+                                uint opD64 = 0;
+                                try { opD64 = memory.ReadUInt32(0x80327D64u); } catch { }
+
+                                Console.WriteLine(
+                                    $"[N64SM64WALK] #{_traceSm64WalkWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} t8=0x{t8:x16} t6=0x{t6:x16} v0=0x{v0:x16} " +
+                                    $"[a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8} [a0+8]=0x{a0w8:x8} [a0+c]=0x{a0wc:x8} " +
+                                    $"[t8]=0x{t8w:x8} [t8+4]=0x{t8w4:x8} [t8+8]=0x{t8w8:x8} [t8+c]=0x{t8wc:x8} " +
+                                    $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} op@80327d64=0x{opD64:x8}");
+                            }
+
+                            if (TraceViInitWindow
+                                && _traceViInitWindowCount < TraceViInitWindowLimit
+                                && pc >= 0x80328290
+                                && pc <= 0x803283A0)
+                            {
+                                _traceViInitWindowCount++;
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong t4 = Registers.R4300.Reg[12];
+                                ulong t5 = Registers.R4300.Reg[13];
+                                ulong t6 = Registers.R4300.Reg[14];
+                                ulong t7 = Registers.R4300.Reg[15];
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong sp = Registers.R4300.Reg[29];
+                                uint sp3c = 0;
+                                uint sp38 = 0;
+                                uint sp40 = 0;
+                                try { sp38 = memory.ReadUInt32((uint)sp + 0x38u); } catch { }
+                                try { sp3c = memory.ReadUInt32((uint)sp + 0x3Cu); } catch { }
+                                try { sp40 = memory.ReadUInt32((uint)sp + 0x40u); } catch { }
+                                Console.WriteLine(
+                                    $"[N64VIINIT] #{_traceViInitWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} v0=0x{v0:x16} v1=0x{v1:x16} " +
+                                    $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} " +
+                                    $"t4=0x{t4:x16} t5=0x{t5:x16} t6=0x{t6:x16} t7=0x{t7:x16} " +
+                                    $"sp=0x{sp:x16} [sp+38]=0x{sp38:x8} [sp+3c]=0x{sp3c:x8} [sp+40]=0x{sp40:x8}");
+                            }
+
+                            if (TraceViPrepWindow
+                                && _traceViPrepWindowCount < TraceViPrepWindowLimit
+                                && pc >= 0x803280A0
+                                && pc <= 0x80328120)
+                            {
+                                _traceViPrepWindowCount++;
+                                ulong sp = Registers.R4300.Reg[29];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong s2 = Registers.R4300.Reg[18];
+                                ulong s3 = Registers.R4300.Reg[19];
+                                ulong s4 = Registers.R4300.Reg[20];
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                uint sp3c = 0;
+                                try { sp3c = memory.ReadUInt32((uint)sp + 0x3Cu); } catch { }
+                                Console.WriteLine(
+                                    $"[N64VIPREP] #{_traceViPrepWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} v0=0x{v0:x16} " +
+                                    $"s0=0x{s0:x16} s1=0x{s1:x16} s2=0x{s2:x16} s3=0x{s3:x16} s4=0x{s4:x16} " +
+                                    $"sp=0x{sp:x16} [sp+3c]=0x{sp3c:x8}");
+                            }
+
+                            if (TraceViCalcWindow
+                                && _traceViCalcWindowCount < TraceViCalcWindowLimit
+                                && pc >= 0x80327E80
+                                && pc <= 0x80327F20)
+                            {
+                                _traceViCalcWindowCount++;
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                Console.WriteLine(
+                                    $"[N64VICALC] #{_traceViCalcWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} v0=0x{v0:x16} " +
+                                    $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} " +
+                                    $"s0=0x{s0:x16} s1=0x{s1:x16}");
                             }
 
                             InterpretOpcode(Opcode);

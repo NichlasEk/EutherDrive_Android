@@ -37,6 +37,7 @@ namespace Ryu64.MIPS
 
         private static void WriteCop0Register(int reg, ulong rawValue)
         {
+            const ulong CauseIp7Bit = 1UL << 15;
             ulong value = NormalizeCop0WriteValue(reg, rawValue);
             Registers.COP0.Reg[reg] = value;
 
@@ -44,6 +45,11 @@ namespace Ryu64.MIPS
             {
                 // VR4300: RANDOM is reset when WIRED changes.
                 Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = 0x1Fu;
+            }
+            else if (reg == Registers.COP0.COMPARE_REG)
+            {
+                // Writing COMPARE acknowledges/clears the CP0 timer pending bit (IP7).
+                Registers.COP0.Reg[Registers.COP0.CAUSE_REG] &= ~CauseIp7Bit;
             }
         }
 

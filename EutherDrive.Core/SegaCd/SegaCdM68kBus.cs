@@ -30,7 +30,7 @@ internal sealed class SegaCdMainM68kBus : IBusInterface
 
         // Return highest eligible pending IRQ level.
         // Keep VDP enable gating so we don't deliver spurious H/V IRQs.
-        if (_memory != null && _memory.Registers.SoftwareInterruptEnabled && _memory.Registers.SoftwareInterruptPending)
+        if (_memory != null && _memory.Registers.MainSoftwareInterruptPending)
             level = 2;
         if (md_m68k.g_interrupt_H_req && hintEnabled && level < 4)
             level = 4;
@@ -63,9 +63,10 @@ internal sealed class SegaCdMainM68kBus : IBusInterface
 
         if (level == 2 && _memory != null)
         {
-            _memory.Registers.SoftwareInterruptPending = false;
+            _memory.Registers.MainSoftwareInterruptPending = false;
             return;
         }
+
 
         if (level == md_m68k.g_interrupt_EXT_level)
         {
