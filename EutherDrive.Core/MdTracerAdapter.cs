@@ -374,6 +374,182 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => md_main.g_md_vdp?.FrameCounter;
 
+    public readonly struct MainInterruptDebugState
+    {
+        public readonly bool UsingM68kEmu;
+        public readonly bool M68kEmuConfigured;
+        public readonly bool M68kEmuReady;
+        public readonly ushort Sr;
+        public readonly byte InterruptMask;
+        public readonly int PendingInterruptLevel;
+        public readonly byte BusInterruptLevel;
+        public readonly bool WillTakeInterrupt;
+        public readonly bool CpuStopped;
+        public readonly bool CpuFrozen;
+        public readonly ushort NextOpcode;
+        public readonly bool HintReq;
+        public readonly bool VintReq;
+        public readonly bool ExtReq;
+        public readonly bool HintEnabled;
+        public readonly bool VintEnabled;
+        public readonly long HintReqCount;
+        public readonly long VintReqCount;
+        public readonly long ExtReqCount;
+        public readonly long HintAckCount;
+        public readonly long VintAckCount;
+        public readonly long ExtAckCount;
+        public readonly int M68kEmuSliceExecInstructions;
+        public readonly int M68kEmuSliceDmaWaitCycles;
+        public readonly int M68kEmuSliceDmaWaitEvents;
+        public readonly int M68kEmuSliceRefreshWaitCycles;
+        public readonly int M68kEmuSliceRefreshWaitEvents;
+        public readonly int M68kEmuNoExecSliceStreak;
+        public readonly long AutoUnmaskFireCount;
+        public readonly long RunFrameEnterCount;
+        public readonly long RunFrameCompleteCount;
+        public readonly long RunFrameLastFrame;
+        public readonly int RunFrameLastLines;
+        public readonly int RunFrameLastM68kCalls;
+        public readonly int RunFrameLastM68kBudget;
+
+        public MainInterruptDebugState(
+            bool usingM68kEmu,
+            bool m68kEmuConfigured,
+            bool m68kEmuReady,
+            ushort sr,
+            byte interruptMask,
+            int pendingInterruptLevel,
+            byte busInterruptLevel,
+            bool willTakeInterrupt,
+            bool cpuStopped,
+            bool cpuFrozen,
+            ushort nextOpcode,
+            bool hintReq,
+            bool vintReq,
+            bool extReq,
+            bool hintEnabled,
+            bool vintEnabled,
+            long hintReqCount,
+            long vintReqCount,
+            long extReqCount,
+            long hintAckCount,
+            long vintAckCount,
+            long extAckCount,
+            int m68kEmuSliceExecInstructions,
+            int m68kEmuSliceDmaWaitCycles,
+            int m68kEmuSliceDmaWaitEvents,
+            int m68kEmuSliceRefreshWaitCycles,
+            int m68kEmuSliceRefreshWaitEvents,
+            int m68kEmuNoExecSliceStreak,
+            long autoUnmaskFireCount,
+            long runFrameEnterCount,
+            long runFrameCompleteCount,
+            long runFrameLastFrame,
+            int runFrameLastLines,
+            int runFrameLastM68kCalls,
+            int runFrameLastM68kBudget)
+        {
+            UsingM68kEmu = usingM68kEmu;
+            M68kEmuConfigured = m68kEmuConfigured;
+            M68kEmuReady = m68kEmuReady;
+            Sr = sr;
+            InterruptMask = interruptMask;
+            PendingInterruptLevel = pendingInterruptLevel;
+            BusInterruptLevel = busInterruptLevel;
+            WillTakeInterrupt = willTakeInterrupt;
+            CpuStopped = cpuStopped;
+            CpuFrozen = cpuFrozen;
+            NextOpcode = nextOpcode;
+            HintReq = hintReq;
+            VintReq = vintReq;
+            ExtReq = extReq;
+            HintEnabled = hintEnabled;
+            VintEnabled = vintEnabled;
+            HintReqCount = hintReqCount;
+            VintReqCount = vintReqCount;
+            ExtReqCount = extReqCount;
+            HintAckCount = hintAckCount;
+            VintAckCount = vintAckCount;
+            ExtAckCount = extAckCount;
+            M68kEmuSliceExecInstructions = m68kEmuSliceExecInstructions;
+            M68kEmuSliceDmaWaitCycles = m68kEmuSliceDmaWaitCycles;
+            M68kEmuSliceDmaWaitEvents = m68kEmuSliceDmaWaitEvents;
+            M68kEmuSliceRefreshWaitCycles = m68kEmuSliceRefreshWaitCycles;
+            M68kEmuSliceRefreshWaitEvents = m68kEmuSliceRefreshWaitEvents;
+            M68kEmuNoExecSliceStreak = m68kEmuNoExecSliceStreak;
+            AutoUnmaskFireCount = autoUnmaskFireCount;
+            RunFrameEnterCount = runFrameEnterCount;
+            RunFrameCompleteCount = runFrameCompleteCount;
+            RunFrameLastFrame = runFrameLastFrame;
+            RunFrameLastLines = runFrameLastLines;
+            RunFrameLastM68kCalls = runFrameLastM68kCalls;
+            RunFrameLastM68kBudget = runFrameLastM68kBudget;
+        }
+    }
+
+    public MainInterruptDebugState GetMainInterruptDebugState()
+    {
+        var s = md_main.CaptureMainInterruptDebug();
+        return new MainInterruptDebugState(
+            usingM68kEmu: s.UsingM68kEmu,
+            m68kEmuConfigured: s.M68kEmuConfigured,
+            m68kEmuReady: s.M68kEmuReady,
+            sr: s.Sr,
+            interruptMask: s.InterruptMask,
+            pendingInterruptLevel: s.PendingInterruptLevel,
+            busInterruptLevel: s.BusInterruptLevel,
+            willTakeInterrupt: s.WillTakeInterrupt,
+            cpuStopped: s.CpuStopped,
+            cpuFrozen: s.CpuFrozen,
+            nextOpcode: s.NextOpcode,
+            hintReq: s.HintReq,
+            vintReq: s.VintReq,
+            extReq: s.ExtReq,
+            hintEnabled: s.HintEnabled,
+            vintEnabled: s.VintEnabled,
+            hintReqCount: s.HintReqCount,
+            vintReqCount: s.VintReqCount,
+            extReqCount: s.ExtReqCount,
+            hintAckCount: s.HintAckCount,
+            vintAckCount: s.VintAckCount,
+            extAckCount: s.ExtAckCount,
+            m68kEmuSliceExecInstructions: s.M68kEmuSliceExecInstructions,
+            m68kEmuSliceDmaWaitCycles: s.M68kEmuSliceDmaWaitCycles,
+            m68kEmuSliceDmaWaitEvents: s.M68kEmuSliceDmaWaitEvents,
+            m68kEmuSliceRefreshWaitCycles: s.M68kEmuSliceRefreshWaitCycles,
+            m68kEmuSliceRefreshWaitEvents: s.M68kEmuSliceRefreshWaitEvents,
+            m68kEmuNoExecSliceStreak: s.M68kEmuNoExecSliceStreak,
+            autoUnmaskFireCount: s.AutoUnmaskFireCount,
+            runFrameEnterCount: s.RunFrameEnterCount,
+            runFrameCompleteCount: s.RunFrameCompleteCount,
+            runFrameLastFrame: s.RunFrameLastFrame,
+            runFrameLastLines: s.RunFrameLastLines,
+            runFrameLastM68kCalls: s.RunFrameLastM68kCalls,
+            runFrameLastM68kBudget: s.RunFrameLastM68kBudget);
+    }
+
+    public string BuildMainTripwireSnapshot()
+    {
+        MainInterruptDebugState s = GetMainInterruptDebugState();
+        uint m68k = GetM68kPc();
+        ushort z80 = GetZ80Pc();
+        long cycles = GetSystemCycles();
+        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+        int line = md_main.g_md_vdp?.g_scanline ?? -1;
+        int display = md_main.g_md_vdp?.g_vdp_reg_1_6_display ?? 0;
+
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"frame={frame} line={line} display={display} m68k=0x{m68k:X6} z80=0x{z80:X4} cycles={cycles} " +
+            $"irq_src={(s.UsingM68kEmu ? "m68kemu" : "legacy")} cfg={(s.M68kEmuConfigured ? 1 : 0)} ready={(s.M68kEmuReady ? 1 : 0)} " +
+            $"sr=0x{s.Sr:X4} mask={s.InterruptMask} pending={s.PendingInterruptLevel} bus={s.BusInterruptLevel} take={(s.WillTakeInterrupt ? 1 : 0)} " +
+            $"stopped={(s.CpuStopped ? 1 : 0)} frozen={(s.CpuFrozen ? 1 : 0)} op=0x{s.NextOpcode:X4} " +
+            $"hreq={(s.HintReq ? 1 : 0)} vreq={(s.VintReq ? 1 : 0)} extreq={(s.ExtReq ? 1 : 0)} hen={(s.HintEnabled ? 1 : 0)} ven={(s.VintEnabled ? 1 : 0)} " +
+            $"req[h={s.HintReqCount},v={s.VintReqCount},e={s.ExtReqCount}] ack[h={s.HintAckCount},v={s.VintAckCount},e={s.ExtAckCount}] " +
+            $"slice[exec={s.M68kEmuSliceExecInstructions},dma={s.M68kEmuSliceDmaWaitCycles}/{s.M68kEmuSliceDmaWaitEvents},wait={s.M68kEmuSliceRefreshWaitCycles}/{s.M68kEmuSliceRefreshWaitEvents},noexec={s.M68kEmuNoExecSliceStreak}] autounmask={s.AutoUnmaskFireCount} " +
+            $"runframe[e={s.RunFrameEnterCount},c={s.RunFrameCompleteCount},f={s.RunFrameLastFrame},lines={s.RunFrameLastLines},m68k={s.RunFrameLastM68kCalls}/{s.RunFrameLastM68kBudget}]");
+    }
+
     public void SetYmEnabled(bool enabled)
     {
         _ymEnabled = enabled;
@@ -1411,70 +1587,27 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     
     private void GenerateInitialAudioSamples()
     {
-        if (TraceAudioDebug)
-        {
-            Console.WriteLine($"[AUDIO-TIMING] Generating initial audio samples to pre-fill buffer...");
-        }
-        
-        var music = md_main.g_md_music;
-        if (music == null)
-        {
-            if (TraceAudioDebug)
-                Console.WriteLine($"[AUDIO-TIMING] music is null, cannot generate initial samples");
-            return;
-        }
-        
-        // Generate enough samples for warmup frames (default 6)
-        int framesToGenerate = _audioWarmupFrames > 0 ? _audioWarmupFrames : 6;
-        int samplesToGenerate = framesToGenerate * (int)(PsgSampleRate / GetTargetFps());
-        
-        if (TraceAudioDebug)
-            Console.WriteLine($"[AUDIO-TIMING] Generating {framesToGenerate} frames ({samplesToGenerate} samples)");
-        
-        bool wantPsg = !_psgDisabled;
-        bool wantYm = _ymEnabled;
-        
-        
-        // Generate PSG samples
-        if (wantPsg)
-        {
-            if (TraceAudioDebug)
-                Console.WriteLine($"[AUDIO-TIMING] Generating {samplesToGenerate} PSG samples");
-            for (int i = 0; i < samplesToGenerate; i++)
-            {
-                music.PsgUpdate(); // Generate samples into PSG's internal buffer
-            }
-        }
-        
-        // Generate YM2612 samples
-        if (wantYm)
-        {
-            // YM generates at internal rate (~53.267 kHz)
-            int ymSamplesToGenerate = framesToGenerate * (int)(YmInternalSampleRate / GetTargetFps());
-            if (TraceAudioDebug)
-                Console.WriteLine($"[AUDIO-TIMING] Generating {ymSamplesToGenerate} YM samples");
-            for (int i = 0; i < ymSamplesToGenerate; i++)
-            {
-                music.YmUpdate(); // Generate samples into YM's internal buffer
-            }
-            
-            // Also advance YM timers
-            music.YmEnsureAdvanceEachFrame();
-        }
-        
-        // Mark audio system as ready immediately
+        // Do not synthesize startup audio here.
+        // Pre-generating samples before any emulation time has passed can create
+        // audible overlays/double-voice artifacts during first seconds of boot.
         _audioSystemReady = true;
         _audioWarmupFrames = 0;
-
-        // Pre-fill mixed audio buffer to avoid startup underflow
-        int prefillFrames = samplesToGenerate;
-        if (prefillFrames > 0)
-        {
-            GetAudioBufferForFrames(prefillFrames, out _, out _);
-        }
+        _audioGeneratedThisFrame = false;
+        _psgFrameSamples = 0;
+        _psgLastFrame = -1;
+        _ymResamplePhase = 0;
+        _ymResampleHasCarry = false;
+        _ymResampleCarryL = 0;
+        _ymResampleCarryR = 0;
+        if (_psgFrameBuffer.Length > 0)
+            Array.Clear(_psgFrameBuffer, 0, _psgFrameBuffer.Length);
+        if (_ymFrameBuffer.Length > 0)
+            Array.Clear(_ymFrameBuffer, 0, _ymFrameBuffer.Length);
+        if (_ymInternalBuffer.Length > 0)
+            Array.Clear(_ymInternalBuffer, 0, _ymInternalBuffer.Length);
 
         if (TraceAudioDebug)
-            Console.WriteLine($"[AUDIO-TIMING] Initial audio samples generated. Audio system is ready.");
+            Console.WriteLine("[AUDIO-TIMING] Audio startup state initialized (no synthetic prefill).");
     }
 
     private void EnsureFramebufferInitialized(string reason)

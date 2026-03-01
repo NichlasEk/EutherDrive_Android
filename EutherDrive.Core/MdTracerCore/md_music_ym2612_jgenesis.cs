@@ -1,20 +1,34 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace EutherDrive.Core.MdTracerCore
 {
     internal sealed class JgYm2612
     {
+        private static readonly bool HoldLastSampleOnUnderflow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_HOLD_LAST_ON_UNDERFLOW"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceDacRate =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DACRATE"), "1", StringComparison.Ordinal);
         private readonly Ym2612 _ym;
         private byte _lastYmAddr;
         private byte _lastYmVal;
         private string _lastYmSource = "none";
         private long _systemCycleRemainder;
         private static readonly int SystemCyclesPerYmTick = ParseSystemCyclesPerYmTick();
+        private static bool _timingConfigLogged;
         private short[] _ringBuffer = new short[RingFramesDefault * 2];
         private int _ringRead;
         private int _ringWrite;
         private int _ringCountFrames;
+        private short _lastOutL;
+        private short _lastOutR;
+        private long _dacRateWindowStartTicks;
+        private int _dacRateWindowWrites;
+        private long _dacRateDeltaTicksSum;
+        private long _dacRateDeltaTicksMin = long.MaxValue;
+        private long _dacRateDeltaTicksMax;
+        private long _dacRateLastWriteTicks;
 
         public JgYm2612()
         {
@@ -50,7 +64,9 @@ namespace EutherDrive.Core.MdTracerCore
                 case 1:
                     _lastYmVal = value;
                     _lastYmSource = source;
-                    _ym.WriteData(value);
+                    _ym.WriteData1(value);
+                    if (_lastYmAddr == 0x2A)
+                        RecordDacWriteRate();
                     break;
                 case 2:
                     _lastYmAddr = value;
@@ -59,7 +75,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 3:
                     _lastYmVal = value;
                     _lastYmSource = source;
-                    _ym.WriteData(value);
+                    _ym.WriteData2(value);
                     break;
             }
         }
@@ -71,6 +87,19 @@ namespace EutherDrive.Core.MdTracerCore
             _ringRead = 0;
             _ringWrite = 0;
             _ringCountFrames = 0;
+            _lastOutL = 0;
+            _lastOutR = 0;
+            _dacRateWindowStartTicks = 0;
+            _dacRateWindowWrites = 0;
+            _dacRateDeltaTicksSum = 0;
+            _dacRateDeltaTicksMin = long.MaxValue;
+            _dacRateDeltaTicksMax = 0;
+            _dacRateLastWriteTicks = 0;
+            if (!_timingConfigLogged)
+            {
+                _timingConfigLogged = true;
+                Console.WriteLine($"[JGYM-TIMING] SystemCyclesPerYmTick={SystemCyclesPerYmTick} FmSampleDivider={FmSampleDivider}");
+            }
         }
 
         public void FullReset()
@@ -80,6 +109,14 @@ namespace EutherDrive.Core.MdTracerCore
             _ringRead = 0;
             _ringWrite = 0;
             _ringCountFrames = 0;
+            _lastOutL = 0;
+            _lastOutR = 0;
+            _dacRateWindowStartTicks = 0;
+            _dacRateWindowWrites = 0;
+            _dacRateDeltaTicksSum = 0;
+            _dacRateDeltaTicksMin = long.MaxValue;
+            _dacRateDeltaTicksMax = 0;
+            _dacRateLastWriteTicks = 0;
         }
 
         public void MarkZ80SafeBootComplete()
@@ -105,8 +142,12 @@ namespace EutherDrive.Core.MdTracerCore
                 if (_ringCountFrames > 0)
                 {
                     int idx = _ringRead * 2;
-                    dst[write++] = _ringBuffer[idx];
-                    dst[write++] = _ringBuffer[idx + 1];
+                    short l = _ringBuffer[idx];
+                    short r = _ringBuffer[idx + 1];
+                    _lastOutL = l;
+                    _lastOutR = r;
+                    dst[write++] = l;
+                    dst[write++] = r;
                     _ringRead++;
                     if (_ringRead >= RingFramesCapacity)
                         _ringRead = 0;
@@ -114,9 +155,18 @@ namespace EutherDrive.Core.MdTracerCore
                     continue;
                 }
 
-                // Underflow: output silence instead of time-stretching
-                dst[write++] = 0;
-                dst[write++] = 0;
+                if (HoldLastSampleOnUnderflow)
+                {
+                    // Opt-in: hold last sample to reduce zipper/noise bursts.
+                    dst[write++] = _lastOutL;
+                    dst[write++] = _lastOutR;
+                }
+                else
+                {
+                    // Default/legacy behavior.
+                    dst[write++] = 0;
+                    dst[write++] = 0;
+                }
             }
         }
 
@@ -134,6 +184,7 @@ namespace EutherDrive.Core.MdTracerCore
         public void FlushDacRateFrame(long frame)
         {
             _ = frame;
+            MaybeLogDacRate(force: false);
         }
 
         public void ConsumeAudStatCounters(
@@ -191,7 +242,9 @@ namespace EutherDrive.Core.MdTracerCore
         private static int ParseSystemCyclesPerYmTick()
         {
             // SystemCycles in md_main are M68K cycles.
-            // Practical default tuned against in-game tempo: 8.
+            // Default to 6 system cycles per YM tick.
+            // This keeps YM/Z80 pace aligned now that earlier overcompensation
+            // in the timing path has been removed.
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_SYSTEM_CYCLES_PER_TICK");
             if (!string.IsNullOrWhiteSpace(raw) &&
                 int.TryParse(raw.Trim(), out int value) &&
@@ -199,7 +252,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 return value;
             }
-            return 8;
+            return 6;
         }
 
         private int RingFramesCapacity => _ringBuffer.Length / 2;
@@ -247,6 +300,62 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 WriteSample(ToSample(left), ToSample(right));
             });
+        }
+
+        private void RecordDacWriteRate()
+        {
+            if (!TraceDacRate)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            if (_dacRateWindowStartTicks == 0)
+                _dacRateWindowStartTicks = now;
+
+            if (_dacRateLastWriteTicks != 0)
+            {
+                long delta = now - _dacRateLastWriteTicks;
+                _dacRateDeltaTicksSum += delta;
+                if (delta < _dacRateDeltaTicksMin) _dacRateDeltaTicksMin = delta;
+                if (delta > _dacRateDeltaTicksMax) _dacRateDeltaTicksMax = delta;
+            }
+
+            _dacRateLastWriteTicks = now;
+            _dacRateWindowWrites++;
+            MaybeLogDacRate(force: false);
+        }
+
+        private void MaybeLogDacRate(bool force)
+        {
+            if (!TraceDacRate || _dacRateWindowStartTicks == 0)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            long elapsedTicks = now - _dacRateWindowStartTicks;
+            if (!force && elapsedTicks < Stopwatch.Frequency)
+                return;
+
+            double elapsedSec = elapsedTicks <= 0 ? 0.0 : elapsedTicks / (double)Stopwatch.Frequency;
+            double rateHz = elapsedSec > 0.0 ? _dacRateWindowWrites / elapsedSec : 0.0;
+            string avgCycles = "n/a";
+            string minCycles = "n/a";
+            string maxCycles = "n/a";
+            if (_dacRateWindowWrites > 1)
+            {
+                double avgTicks = _dacRateDeltaTicksSum / (double)(_dacRateWindowWrites - 1);
+                avgCycles = avgTicks.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+                minCycles = _dacRateDeltaTicksMin.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                maxCycles = _dacRateDeltaTicksMax.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            Console.WriteLine(
+                $"[JGYM-DACRATE] writes={_dacRateWindowWrites} hz={rateHz:0.0} avgTicks={avgCycles} minTicks={minCycles} maxTicks={maxCycles}");
+
+            _dacRateWindowStartTicks = now;
+            _dacRateWindowWrites = 0;
+            _dacRateDeltaTicksSum = 0;
+            _dacRateDeltaTicksMin = long.MaxValue;
+            _dacRateDeltaTicksMax = 0;
+            _dacRateLastWriteTicks = 0;
         }
     }
 
@@ -1063,8 +1172,8 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _dacChannelEnabled;
         private byte _dacChannelSample;
         private readonly LowFrequencyOscillator _lfo = new LowFrequencyOscillator();
-        private byte _selectedRegister;
-        private RegisterGroup _selectedRegisterGroup;
+        private byte _selectedRegister1;
+        private byte _selectedRegister2;
         private byte _sampleDivider;
         private byte _busyCyclesRemaining;
         private readonly TimerA _timerA = new TimerA();
@@ -1082,8 +1191,8 @@ namespace EutherDrive.Core.MdTracerCore
             _quantizeOutput = quantizeOutput;
             _emulateLadderEffect = emulateLadderEffect;
             _busyBehavior = busyBehavior;
-            _selectedRegister = 0;
-            _selectedRegisterGroup = RegisterGroup.One;
+            _selectedRegister1 = 0;
+            _selectedRegister2 = 0;
             _sampleDivider = FmSampleDivider;
             _busyCyclesRemaining = 0;
         }
@@ -1099,8 +1208,8 @@ namespace EutherDrive.Core.MdTracerCore
             _dacChannelEnabled = false;
             _dacChannelSample = 0;
             _lfo.SetEnabled(false);
-            _selectedRegister = 0;
-            _selectedRegisterGroup = RegisterGroup.One;
+            _selectedRegister1 = 0;
+            _selectedRegister2 = 0;
             _sampleDivider = FmSampleDivider;
             _busyCyclesRemaining = 0;
             _timerA.WriteControl(new TimerControl { Enabled = false, OverflowFlagEnabled = false, ClearOverflowFlag = true });
@@ -1112,29 +1221,33 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void WriteAddress1(byte value)
         {
-            _selectedRegister = value;
-            _selectedRegisterGroup = RegisterGroup.One;
+            _selectedRegister1 = value;
         }
 
         public void WriteAddress2(byte value)
         {
-            _selectedRegister = value;
-            _selectedRegisterGroup = RegisterGroup.Two;
+            _selectedRegister2 = value;
         }
 
         public void WriteData(byte value)
         {
-            if (_selectedRegisterGroup == RegisterGroup.One)
-                WriteGroup1Register(value);
-            else
-                WriteGroup2Register(value);
+            WriteData1(value);
         }
 
-        private void WriteGroup1Register(byte value)
+        public void WriteData1(byte value)
+        {
+            WriteGroup1Register(_selectedRegister1, value);
+        }
+
+        public void WriteData2(byte value)
+        {
+            WriteGroup2Register(_selectedRegister2, value);
+        }
+
+        private void WriteGroup1Register(byte register, byte value)
         {
             _busyCyclesRemaining = WriteBusyCycles;
 
-            byte register = _selectedRegister;
             switch (register)
             {
                 case 0x22:
@@ -1202,10 +1315,9 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
-        private void WriteGroup2Register(byte value)
+        private void WriteGroup2Register(byte register, byte value)
         {
             _busyCyclesRemaining = WriteBusyCycles;
-            byte register = _selectedRegister;
             if (register >= 0x30 && register <= 0x9F)
                 WriteOperatorLevelRegister(register, value, Group2BaseChannel);
             else if (register >= 0xA0 && register <= 0xBF)
