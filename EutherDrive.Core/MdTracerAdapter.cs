@@ -70,6 +70,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private long _bootRecoverToggleAccum;
     private bool _bootRecoverSigInit;
     private int _sonic2AudioRecoveryFramesRemaining;
+    private int _sonic2RuntimeStallFrames;
+    private int _sonic2RuntimeRecoveryCount;
 
     // Framebuffer analyzer for live debugging
     public FramebufferAnalyzer FbAnalyzer { get; } = null!;
@@ -97,6 +99,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly int TraceYmSilenceDump = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_ON_SILENCE_DUMP", 128);
     private static readonly bool TraceAll =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_ALL"), "1", StringComparison.Ordinal);
+    private static readonly bool GenesisDcFilterEnabled =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GENESIS_DC_FILTER"), "0", StringComparison.Ordinal);
+    private static readonly bool GenesisLowPassFilterEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GENESIS_LPF"), "1", StringComparison.Ordinal);
+    private static readonly double GenesisLowPassCutoffHz =
+        ParsePositiveDouble("EUTHERDRIVE_GENESIS_LPF_CUTOFF_HZ", 3390.0);
+    private static readonly bool YmSecondLowPassFilterEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_2ND_LPF"), "1", StringComparison.Ordinal);
+    private static readonly double YmSecondLowPassCutoffHz =
+        ParsePositiveDouble("EUTHERDRIVE_YM_2ND_LPF_CUTOFF_HZ", 8000.0);
+    private static readonly bool GenesisFloatMixEnabled =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GENESIS_FLOAT_MIX"), "0", StringComparison.Ordinal);
     private static readonly bool YmResampleLinear =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase)
         || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_LINEAR"), "1", StringComparison.OrdinalIgnoreCase);
@@ -117,11 +131,23 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_AUDIO_RECOVERY_DISABLE"), "1", StringComparison.Ordinal);
     private static readonly bool Sonic2ForceIffAfterLoad =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_FORCE_IFF"), "1", StringComparison.Ordinal);
+    private static readonly bool Sonic2RuntimeRecoveryEnabled =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SONIC2_RUNTIME_RECOVERY_DISABLE"), "1", StringComparison.Ordinal);
+    private static readonly int Sonic2RuntimeRecoveryStallFrames =
+        ParseNonNegativeInt("EUTHERDRIVE_SONIC2_RUNTIME_RECOVERY_STALL_FRAMES", 90);
+    private static readonly int Sonic2RuntimeRecoveryMaxPerSession =
+        ParseNonNegativeInt("EUTHERDRIVE_SONIC2_RUNTIME_RECOVERY_MAX", 0);
     private static readonly bool TracePcPerFrame =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_FRAME"), "1", StringComparison.Ordinal);
     private static readonly int TracePcEveryFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_PC_FRAME_EVERY", 60);
     private static readonly bool TraceReset =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RESET"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceSonic2Timing =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SONIC2_TIMING"), "1", StringComparison.Ordinal);
+    private static readonly int TraceSonic2TimingEvery =
+        ParseNonNegativeInt("EUTHERDRIVE_TRACE_SONIC2_TIMING_EVERY", 1);
+    private static readonly int TraceSonic2TimingStartFrame =
+        ParseNonNegativeInt("EUTHERDRIVE_TRACE_SONIC2_TIMING_START_FRAME", 0);
 
     // ASCII streaming mode for live viewer
     private static readonly bool AsciiStreamEnabled =
@@ -157,11 +183,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private int _lastGc2;
     private readonly long[] _hotspotTicks = new long[(int)PerfHotspot.Count];
 
-    private const int PsgSampleRate = 44100;
+    private static readonly int OutputSampleRate = ParseOutputSampleRate();
     private const int PsgChannels = 2;
-    private const int YmInternalSampleRate = 53267;
+    // jgenesis PSG coefficient (-7 dB) used in final Genesis mix path.
+    private const double JgenesisPsgCoefficient = 0.44668359215096315;
     private static readonly double YmResampleScale = GetYmResampleScale();
     private static readonly double FmMixGain = GetFmMixGain();
+    private static readonly double YmGainDb = ParseGainDb("EUTHERDRIVE_YM_GAIN_DB", 0.0);
+    private static readonly double PsgGainDb = ParseGainDb("EUTHERDRIVE_PSG_GAIN_DB", 0.0);
+    private static readonly double YmLinearGain = DbToLinear(YmGainDb);
+    private static readonly double PsgLinearGain = JgenesisPsgCoefficient * DbToLinear(PsgGainDb);
     private bool _ymEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM"), "1", StringComparison.Ordinal);
     private readonly bool _psgDisabled =
@@ -187,6 +218,14 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private bool _ymResampleLinear;
     private bool _audioSystemReady = false;
     private int _audioWarmupFrames = ParseAudioWarmupFrames();
+    private readonly SimpleHighPassFilter _ymDcFilterL = new(OutputSampleRate, 5.0);
+    private readonly SimpleHighPassFilter _ymDcFilterR = new(OutputSampleRate, 5.0);
+    private readonly SimpleHighPassFilter _psgDcFilter = new(OutputSampleRate, 5.0);
+    private readonly SimpleLowPassSampleFilter _ymLowPassL = new(OutputSampleRate, GenesisLowPassCutoffHz);
+    private readonly SimpleLowPassSampleFilter _ymLowPassR = new(OutputSampleRate, GenesisLowPassCutoffHz);
+    private readonly SimpleLowPassSampleFilter _psgLowPass = new(OutputSampleRate, GenesisLowPassCutoffHz);
+    private readonly SimpleLowPassSampleFilter _ymLowPass2L = new(OutputSampleRate, YmSecondLowPassCutoffHz);
+    private readonly SimpleLowPassSampleFilter _ymLowPass2R = new(OutputSampleRate, YmSecondLowPassCutoffHz);
 
     private static int ParseAudioWarmupFrames()
     {
@@ -194,6 +233,275 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value > 0)
             return value;
         return 6;
+    }
+
+    private static int ParseOutputSampleRate()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUTPUT_HZ");
+        if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 22050 && value <= 192000)
+            return value;
+        return 44100;
+    }
+
+    private static double ParsePositiveDouble(string name, double defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return defaultValue;
+        if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value) && value > 0.0)
+            return value;
+        return defaultValue;
+    }
+
+    private static double ParseGainDb(string name, double defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return defaultValue;
+        if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+            return value;
+        return defaultValue;
+    }
+
+    private static double DbToLinear(double db)
+    {
+        return Math.Pow(10.0, db / 20.0);
+    }
+
+    private static int ApplyLinearGain(int sample, double gain)
+    {
+        if (gain == 1.0)
+            return sample;
+        double scaled = sample * gain;
+        if (scaled > short.MaxValue) return short.MaxValue;
+        if (scaled < short.MinValue) return short.MinValue;
+        return (int)Math.Round(scaled);
+    }
+
+    private static int MixGenesisSamples(int psgSample, int ymSample)
+    {
+        if (!GenesisFloatMixEnabled)
+        {
+            int mixedInt = psgSample + ymSample;
+            if (mixedInt > short.MaxValue) return short.MaxValue;
+            if (mixedInt < short.MinValue) return short.MinValue;
+            return mixedInt;
+        }
+
+        // jgenesis mixes in normalized domain and clamps to [-1, 1].
+        double psgNorm = psgSample / (double)short.MaxValue;
+        double ymNorm = ymSample / (double)short.MaxValue;
+        double mixed = psgNorm + ymNorm;
+        if (mixed > 1.0) mixed = 1.0;
+        else if (mixed < -1.0) mixed = -1.0;
+        return (int)Math.Round(mixed * short.MaxValue);
+    }
+
+    private readonly struct AudioMixStats
+    {
+        public AudioMixStats(int min, int max, int peak, int nonZero)
+        {
+            Min = min;
+            Max = max;
+            Peak = peak;
+            NonZero = nonZero;
+        }
+
+        public int Min { get; }
+        public int Max { get; }
+        public int Peak { get; }
+        public int NonZero { get; }
+    }
+
+    private AudioMixStats MixCollectedChipBuffers(int samples, bool trackAudioLevel, ref long mixSumSq)
+    {
+        int mixMin = 0;
+        int mixMax = 0;
+        int mixPeak = 0;
+        int mixNonZero = 0;
+        bool mixInit = false;
+
+        for (int i = 0; i < samples; i++)
+        {
+            int mixed = MixGenesisSamples(_psgFrameBuffer[i], _ymFrameBuffer[i]);
+            _psgFrameBuffer[i] = (short)mixed;
+
+            if (!mixInit)
+            {
+                mixInit = true;
+                mixMin = mixed;
+                mixMax = mixed;
+            }
+            else
+            {
+                if (mixed < mixMin) mixMin = mixed;
+                if (mixed > mixMax) mixMax = mixed;
+            }
+
+            int mixAbs = mixed < 0 ? -mixed : mixed;
+            if (mixAbs > mixPeak) mixPeak = mixAbs;
+            if (mixed != 0) mixNonZero++;
+            if (trackAudioLevel)
+                mixSumSq += (long)mixed * mixed;
+        }
+
+        return new AudioMixStats(mixMin, mixMax, mixPeak, mixNonZero);
+    }
+
+    private AudioMixStats ProcessYmBufferAndMix(
+        int samples,
+        int ymMixPercent,
+        bool trackAudioLevel,
+        ref long mixSumSq,
+        out int ymMin,
+        out int ymMax,
+        out int ymPeak,
+        out int ymNonZero)
+    {
+        ymMin = 0;
+        ymMax = 0;
+        ymPeak = 0;
+        ymNonZero = 0;
+        bool ymInit = false;
+
+        for (int i = 0; i < samples; i++)
+        {
+            int ymSample = _ymFrameBuffer[i];
+            if (FmMixGain != 1.0)
+            {
+                double scaled = ymSample * FmMixGain;
+                if (scaled > short.MaxValue) ymSample = short.MaxValue;
+                else if (scaled < short.MinValue) ymSample = short.MinValue;
+                else ymSample = (int)Math.Round(scaled);
+                _ymFrameBuffer[i] = (short)ymSample;
+            }
+            ymSample = ApplyMixPercent(ymSample, ymMixPercent);
+            ymSample = ApplyLinearGain(ymSample, YmLinearGain);
+            if (GenesisDcFilterEnabled)
+                ymSample = (i & 1) == 0 ? _ymDcFilterL.Apply(ymSample) : _ymDcFilterR.Apply(ymSample);
+            if (GenesisLowPassFilterEnabled)
+                ymSample = (i & 1) == 0 ? _ymLowPassL.Apply(ymSample) : _ymLowPassR.Apply(ymSample);
+            if (YmSecondLowPassFilterEnabled)
+                ymSample = (i & 1) == 0 ? _ymLowPass2L.Apply(ymSample) : _ymLowPass2R.Apply(ymSample);
+            _ymFrameBuffer[i] = (short)ymSample;
+
+            if (!ymInit)
+            {
+                ymInit = true;
+                ymMin = ymSample;
+                ymMax = ymSample;
+            }
+            else
+            {
+                if (ymSample < ymMin) ymMin = ymSample;
+                if (ymSample > ymMax) ymMax = ymSample;
+            }
+
+            int ymAbs = ymSample < 0 ? -ymSample : ymSample;
+            if (ymAbs > ymPeak) ymPeak = ymAbs;
+            if (ymSample != 0) ymNonZero++;
+        }
+
+        return MixCollectedChipBuffers(samples, trackAudioLevel, ref mixSumSq);
+    }
+
+    private void PrepareYmInternalBuffer(int neededInternal, out int writeOffsetFrames, out int genFrames)
+    {
+        int internalSamples = neededInternal * PsgChannels;
+        if (_ymInternalBuffer.Length < internalSamples)
+            _ymInternalBuffer = new short[internalSamples];
+
+        writeOffsetFrames = 0;
+        if (_ymResampleHasCarry)
+        {
+            _ymInternalBuffer[0] = _ymResampleCarryL;
+            _ymInternalBuffer[1] = _ymResampleCarryR;
+            writeOffsetFrames = 1;
+        }
+
+        genFrames = neededInternal - writeOffsetFrames;
+    }
+
+    private void ResampleYmOutputFrames(int frames, int neededInternal, double ratio, ref double phase)
+    {
+        for (int i = 0; i < frames; i++)
+        {
+            int baseIndex = (int)phase;
+            if (baseIndex < 0)
+                baseIndex = 0;
+            int maxBase = neededInternal - 2;
+            if (maxBase < 0)
+                maxBase = 0;
+            if (baseIndex > maxBase)
+                baseIndex = maxBase;
+            double frac = phase - baseIndex;
+            if (frac < 0)
+                frac = 0;
+            else if (frac > 1.0)
+                frac = 1.0;
+
+            int ymL;
+            int ymR;
+            if (YmResampleSimple)
+            {
+                int f = baseIndex;
+                if (f >= neededInternal) f = neededInternal - 1;
+                ymL = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f, 0);
+                ymR = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f, 1);
+            }
+            else
+            {
+                int f0 = baseIndex - 1;
+                int f1 = baseIndex;
+                int f2 = baseIndex + 1;
+                int f3 = baseIndex + 2;
+                if (f0 < 0) f0 = 0;
+                if (f2 >= neededInternal) f2 = neededInternal - 1;
+                if (f3 >= neededInternal) f3 = neededInternal - 1;
+
+                ymL = _ymResampleLinear
+                    ? LinearInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                        frac)
+                    : CubicInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
+                        frac);
+                ymR = _ymResampleLinear
+                    ? LinearInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                        frac)
+                    : CubicInterpolate(
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
+                        ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
+                        frac);
+            }
+
+            int dst = i * PsgChannels;
+            _ymFrameBuffer[dst] = (short)ymL;
+            _ymFrameBuffer[dst + 1] = (short)ymR;
+
+            phase += ratio;
+        }
+    }
+
+    private void CommitYmResampleState(int neededInternal, double phase)
+    {
+        int lastIndex = (neededInternal - 1) * PsgChannels;
+        _ymResampleCarryL = _ymInternalBuffer[lastIndex];
+        _ymResampleCarryR = _ymInternalBuffer[lastIndex + 1];
+        _ymResampleHasCarry = true;
+        _ymResamplePhase = phase - (neededInternal - 1);
+        if (_ymResamplePhase < 0)
+            _ymResamplePhase = 0;
+        else if (_ymResamplePhase > neededInternal)
+            _ymResamplePhase = 0;
     }
 
     public void SetMasterVolumePercent(int percent)
@@ -288,6 +596,68 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         }
     }
 
+    private sealed class SimpleHighPassFilter
+    {
+        private readonly double _alpha;
+        private double _x1;
+        private double _y1;
+
+        public SimpleHighPassFilter(int sampleRate, double cutoffHz)
+        {
+            if (cutoffHz <= 0)
+                cutoffHz = 5.0;
+            double dt = 1.0 / sampleRate;
+            double rc = 1.0 / (2.0 * Math.PI * cutoffHz);
+            _alpha = rc / (rc + dt);
+        }
+
+        public void Reset()
+        {
+            _x1 = 0.0;
+            _y1 = 0.0;
+        }
+
+        public int Apply(int sample)
+        {
+            double x = sample;
+            double y = _alpha * (_y1 + x - _x1);
+            _x1 = x;
+            _y1 = y;
+            if (y > short.MaxValue) return short.MaxValue;
+            if (y < short.MinValue) return short.MinValue;
+            return (int)Math.Round(y);
+        }
+    }
+
+    private sealed class SimpleLowPassSampleFilter
+    {
+        private readonly double _alpha;
+        private double _y1;
+
+        public SimpleLowPassSampleFilter(int sampleRate, double cutoffHz)
+        {
+            if (cutoffHz <= 0)
+                cutoffHz = 3390.0;
+            double dt = 1.0 / sampleRate;
+            double rc = 1.0 / (2.0 * Math.PI * cutoffHz);
+            _alpha = dt / (rc + dt);
+        }
+
+        public void Reset()
+        {
+            _y1 = 0.0;
+        }
+
+        public int Apply(int sample)
+        {
+            double y = _y1 + _alpha * (sample - _y1);
+            _y1 = y;
+            if (y > short.MaxValue) return short.MaxValue;
+            if (y < short.MinValue) return short.MinValue;
+            return (int)Math.Round(y);
+        }
+    }
+
     private static SimpleLowPassFilter? CreateLowPassIfEnabled(int sampleRate)
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_LP_HZ");
@@ -366,7 +736,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     public MdTracerAdapter()
     {
         FbAnalyzer = new FramebufferAnalyzer(this);
-        _mixLowPass = CreateLowPassIfEnabled(PsgSampleRate);
+        _mixLowPass = CreateLowPassIfEnabled(OutputSampleRate);
         _ymResampleLinear = YmResampleLinear;
 
         // Auto-enable if env var is set
@@ -1345,6 +1715,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _bootRecoverToggleAccum = 0;
         _bootRecoverSigInit = false;
         _sonic2AudioRecoveryFramesRemaining = 0;
+        _sonic2RuntimeStallFrames = 0;
+        _sonic2RuntimeRecoveryCount = 0;
     }
 
     private void ResetZ80Only()
@@ -1578,11 +1950,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         }
 
         double accumulatorFrames = accumulatorOverride ?? (isGemsTiming ? -5.0 : 0.5);
-        _psgFrameAccumulator = (double)PsgSampleRate / GetTargetFps() * accumulatorFrames;
+        _psgFrameAccumulator = (double)OutputSampleRate / GetTargetFps() * accumulatorFrames;
         _psgFrameSamples = 0;
         _psgLastFrame = -1;
         _ymResamplePhase = 0;
         _ymResampleHasCarry = false;
+        _ymDcFilterL.Reset();
+        _ymDcFilterR.Reset();
+        _psgDcFilter.Reset();
+        _ymLowPassL.Reset();
+        _ymLowPassR.Reset();
+        _psgLowPass.Reset();
+        _ymLowPass2L.Reset();
+        _ymLowPass2R.Reset();
         // Note: _audioSystemReady is managed separately
         
         if (TraceAudioDebug)
@@ -1814,6 +2194,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
             int vlines = ApplyFrameRateMode(effectiveFrameRateMode);
             long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            long systemCyclesBeforeFrame = md_main.SystemCycles;
             MaybeSonic2AudioRecovery(frame);
             if (TracePcPerFrame && TracePcEveryFrames >= 0)
             {
@@ -1833,6 +2214,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 long vdpTicks = 0;
                 int z80Budget = md_main.GetZ80CyclesPerLine();
                 int cpuBudget = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
+                bool useCycleCounterZ80Scheduling = md_main.IsCycleCounterZ80SchedulingEnabled();
 
                 for (int v = 0; v < vlines; v++)
                 {
@@ -1865,11 +2247,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
                     if (allowZ80)
                     {
-                        md_main.g_md_z80?.BeginSystemCycleSlice();
-                        md_main.g_md_z80?.run(z80Budget);
-                        md_main.g_md_z80?.EndSystemCycleSlice();
-                        // Track Z80 cycles for Aladdin debug
-                        md_main.AddZ80Cycles(z80Budget);
+                        int z80CyclesToRun = z80Budget;
+                        if (useCycleCounterZ80Scheduling)
+                            z80CyclesToRun = md_main.TakeZ80TicksForScheduling();
+
+                        if (z80CyclesToRun > 0)
+                        {
+                            md_main.g_md_z80?.BeginSystemCycleSlice();
+                            md_main.g_md_z80?.run(z80CyclesToRun);
+                            md_main.g_md_z80?.EndSystemCycleSlice();
+                            // Track Z80 cycles for Aladdin debug
+                            md_main.AddZ80Cycles(z80CyclesToRun);
+                        }
                     }
                 }
 
@@ -1921,12 +2310,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             if (md_main.g_md_z80 != null)
             {
                 var (actual, budget) = md_main.g_md_z80.ConsumeFrameCycleStats();
+                MdCycleCounterFrameStats cycleStats = md_main.ConsumeCycleCounterFrameStats(actual);
                 if (IsEnvFlagSet("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES") &&
                     (TraceZ80FrameCyclesEvery <= 0 || frame % TraceZ80FrameCyclesEvery == 0))
                 {
                     Console.WriteLine($"[Z80-CYCLES] frame={frame} actual={actual} budget={budget}");
                 }
                 md_main.g_md_z80.FlushZ80AudioRate(frame);
+                md_main.MaybeLogCycleCounterFrame(frame, cycleStats, actual);
+                MaybeTraceSonic2Timing(frame, vlines, systemCyclesBeforeFrame, actual, budget);
             }
             
             // Per-frame diagnostic logging for Genesis mode (when md_main.RunFrame() is not called)
@@ -2282,8 +2674,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (pc < 0x0174 || pc > 0x0176)
             return;
 
-        if (Sonic2ForceIffAfterLoad)
-            md_main.g_md_z80.ForceEnableInterruptState();
+        md_main.g_md_z80.ForceEnableInterruptState();
 
         byte mbx88 = md_main.g_md_z80.PeekZ80Ram(0x1B88);
         byte mbx89 = md_main.g_md_z80.PeekZ80Ram(0x1B89);
@@ -2309,18 +2700,102 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (!Sonic2AudioRecoveryEnabled)
             return;
 
-        if (_sonic2AudioRecoveryFramesRemaining <= 0 || _romIdentity == null || md_main.g_md_z80 == null)
+        if (_sonic2AudioRecoveryFramesRemaining > 0 && _romIdentity != null && md_main.g_md_z80 != null)
+        {
+            ushort pc = md_main.g_md_z80.CpuPc;
+            if (pc < 0x0174 || pc > 0x0176)
+            {
+                _sonic2AudioRecoveryFramesRemaining--;
+            }
+            else
+            {
+                byte mbx88 = md_main.g_md_z80.PeekZ80Ram(0x1B88);
+                byte mbx89 = md_main.g_md_z80.PeekZ80Ram(0x1B89);
+                byte fixed88 = (byte)(mbx88 & 0x7F);
+                byte fixed89 = (byte)(mbx89 & 0x7F);
+                if (fixed88 != mbx88 || fixed89 != mbx89)
+                {
+                    md_main.g_md_z80.write8(0x1B88, fixed88);
+                    md_main.g_md_z80.write8(0x1B89, fixed89);
+                }
+
+                md_main.g_md_z80.ForceJumpToDriver();
+                Console.WriteLine(
+                    $"[Savestate] Sonic2 audio recovery tick: frame={frame} pc=0x{pc:X4} " +
+                    $"1B88 {mbx88:X2}->{fixed88:X2} 1B89 {mbx89:X2}->{fixed89:X2} left={_sonic2AudioRecoveryFramesRemaining}");
+                _sonic2AudioRecoveryFramesRemaining--;
+            }
+        }
+
+        MaybeSonic2RuntimeAudioRecovery(frame);
+    }
+
+    private bool IsSonic2RomLoaded()
+    {
+        if (_romIdentity == null)
+            return false;
+        string name = _romIdentity.Name ?? string.Empty;
+        return name.IndexOf("sonic the hedgehog 2", StringComparison.OrdinalIgnoreCase) >= 0
+            || name.IndexOf("sonic2", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private void MaybeTraceSonic2Timing(long frame, int vlines, long systemCyclesBeforeFrame, long z80ActualCycles, long z80BudgetCycles)
+    {
+        if (!TraceSonic2Timing || !IsSonic2RomLoaded() || md_main.g_md_z80 == null)
+            return;
+        if (frame < TraceSonic2TimingStartFrame)
+            return;
+        if (TraceSonic2TimingEvery > 0 && frame % TraceSonic2TimingEvery != 0)
+            return;
+
+        int cpuBudget = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
+        long m68kBudgetCycles = (long)cpuBudget * vlines;
+        long systemDelta = md_main.SystemCycles - systemCyclesBeforeFrame;
+        ushort z80Pc = md_main.g_md_z80.DebugPc;
+        byte mbx88 = md_main.g_md_z80.PeekZ80Ram(0x1B88);
+        byte mbx89 = md_main.g_md_z80.PeekZ80Ram(0x1B89);
+
+        int dacEnabled = md_main.g_md_music?.DebugDacEnabled ?? 0;
+        int dacData = md_main.g_md_music?.DebugDacData ?? 0;
+        byte ymAddr = md_main.g_md_music?.DebugLastYmAddr ?? 0;
+        byte ymVal = md_main.g_md_music?.DebugLastYmVal ?? 0;
+        string ymSrc = md_main.g_md_music?.DebugLastYmSource ?? "none";
+
+        Console.WriteLine(
+            $"[S2-TIMING] frame={frame} sysDelta={systemDelta} m68kBudget={m68kBudgetCycles} " +
+            $"z80Actual={z80ActualCycles} z80Budget={z80BudgetCycles} z80pc=0x{z80Pc:X4} " +
+            $"mbx88=0x{mbx88:X2} mbx89=0x{mbx89:X2} ymLast=0x{ymAddr:X2}:0x{ymVal:X2}/{ymSrc} " +
+            $"dacEn={(dacEnabled != 0 ? 1 : 0)} dacData=0x{dacData:X2}");
+    }
+
+    private void MaybeSonic2RuntimeAudioRecovery(long frame)
+    {
+        if (!Sonic2RuntimeRecoveryEnabled || !IsSonic2RomLoaded() || md_main.g_md_z80 == null)
             return;
 
         ushort pc = md_main.g_md_z80.CpuPc;
         if (pc < 0x0174 || pc > 0x0176)
         {
-            _sonic2AudioRecoveryFramesRemaining--;
+            _sonic2RuntimeStallFrames = 0;
             return;
         }
 
         byte mbx88 = md_main.g_md_z80.PeekZ80Ram(0x1B88);
         byte mbx89 = md_main.g_md_z80.PeekZ80Ram(0x1B89);
+        if ((mbx88 & 0x80) == 0 && (mbx89 & 0x80) == 0)
+        {
+            _sonic2RuntimeStallFrames = 0;
+            return;
+        }
+
+        _sonic2RuntimeStallFrames++;
+        if (_sonic2RuntimeStallFrames < Sonic2RuntimeRecoveryStallFrames)
+            return;
+
+        if (Sonic2RuntimeRecoveryMaxPerSession > 0 &&
+            _sonic2RuntimeRecoveryCount >= Sonic2RuntimeRecoveryMaxPerSession)
+            return;
+
         byte fixed88 = (byte)(mbx88 & 0x7F);
         byte fixed89 = (byte)(mbx89 & 0x7F);
         if (fixed88 != mbx88 || fixed89 != mbx89)
@@ -2329,11 +2804,14 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             md_main.g_md_z80.write8(0x1B89, fixed89);
         }
 
+        md_main.g_md_z80.ForceEnableInterruptState();
+
         md_main.g_md_z80.ForceJumpToDriver();
+        _sonic2RuntimeRecoveryCount++;
+        _sonic2RuntimeStallFrames = 0;
         Console.WriteLine(
-            $"[Savestate] Sonic2 audio recovery tick: frame={frame} pc=0x{pc:X4} " +
-            $"1B88 {mbx88:X2}->{fixed88:X2} 1B89 {mbx89:X2}->{fixed89:X2} left={_sonic2AudioRecoveryFramesRemaining}");
-        _sonic2AudioRecoveryFramesRemaining--;
+            $"[Sonic2] Runtime audio watchdog recovery frame={frame} pc=0x{pc:X4} " +
+            $"1B88 {mbx88:X2}->{fixed88:X2} 1B89 {mbx89:X2}->{fixed89:X2} count={_sonic2RuntimeRecoveryCount}");
     }
 
     /// <summary>
@@ -2694,7 +3172,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
     {
-        sampleRate = PsgSampleRate;
+        sampleRate = OutputSampleRate;
         channels = PsgChannels;
 
         var music = md_main.g_md_music;
@@ -2743,7 +3221,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         _psgLastFrame = frame;
         _audioGeneratedThisFrame = false; // Reset for new frame
-        _psgFrameAccumulator += (double)PsgSampleRate / GetTargetFps();
+        _psgFrameAccumulator += (double)OutputSampleRate / GetTargetFps();
         int frames = (int)_psgFrameAccumulator;
         if (frames <= 0)
         {
@@ -2777,6 +3255,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 if (s > short.MaxValue) s = short.MaxValue;
                 else if (s < short.MinValue) s = short.MinValue;
                 s = ApplyMixPercent(s, psgMixPercent);
+                s = ApplyLinearGain(s, PsgLinearGain);
+                if (GenesisDcFilterEnabled)
+                    s = _psgDcFilter.Apply(s);
+                if (GenesisLowPassFilterEnabled)
+                    s = _psgLowPass.Apply(s);
                 short sample = (short)s;
                 if (!psgMinMaxInit)
                 {
@@ -2806,7 +3289,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         int ymMin = 0;
         int ymMax = 0;
-        bool ymMinMaxInit = false;
         int ymPeak = 0;
         int ymNonZero = 0;
         if (wantYm)
@@ -2827,14 +3309,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 Console.WriteLine($"[AUDIO-BUFFER] GetAudioBufferForFrames: Resampling YM: frames={frames} samples={samples} SystemCycles={md_main.SystemCycles}");
             }
 
-            double ratio = (YmInternalSampleRate * YmResampleScale) / PsgSampleRate;
+            double ymInternalSampleRate = md_main.GetYmSampleRateHzFromTiming();
+            double ratio = (ymInternalSampleRate * YmResampleScale) / OutputSampleRate;
             double phase = _ymResamplePhase;
             int neededInternal = (int)Math.Floor(phase + ((frames - 1) * ratio)) + 2;
             if (neededInternal < 2)
                 neededInternal = 2;
             int internalSamples = neededInternal * PsgChannels;
-            if (_ymInternalBuffer.Length < internalSamples)
-                _ymInternalBuffer = new short[internalSamples];
             if (TraceYmInternal && !_ymInternalEnterLoggedOnce)
             {
                 Console.WriteLine($"[YM-INT-ENTER] frames={frames} neededInternal={neededInternal} internalSamples={internalSamples} ratio={ratio:0.0000}");
@@ -2851,15 +3332,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 _ymInternalEnterLoggedOnce = true;
             }
 
-            int writeOffsetFrames = 0;
-            if (_ymResampleHasCarry)
-            {
-                _ymInternalBuffer[0] = _ymResampleCarryL;
-                _ymInternalBuffer[1] = _ymResampleCarryR;
-                writeOffsetFrames = 1;
-            }
-
-            int genFrames = neededInternal - writeOffsetFrames;
+            PrepareYmInternalBuffer(neededInternal, out int writeOffsetFrames, out int genFrames);
             if (genFrames > 0)
             {
                 var dst = _ymInternalBuffer.AsSpan(writeOffsetFrames * PsgChannels, genFrames * PsgChannels);
@@ -3016,81 +3489,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 _ymResampleDebugOnce = true;
             }
 
-            for (int i = 0; i < frames; i++)
-            {
-                int baseIndex = (int)phase;
-                if (baseIndex < 0)
-                    baseIndex = 0;
-                int maxBase = neededInternal - 2;
-                if (maxBase < 0)
-                    maxBase = 0;
-                if (baseIndex > maxBase)
-                    baseIndex = maxBase;
-                double frac = phase - baseIndex;
-                if (frac < 0)
-                    frac = 0;
-                else if (frac > 1.0)
-                    frac = 1.0;
-
-                int ymL;
-                int ymR;
-                if (YmResampleSimple)
-                {
-                    int f = baseIndex;
-                    if (f >= neededInternal) f = neededInternal - 1;
-                    ymL = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f, 0);
-                    ymR = ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f, 1);
-                }
-                else
-                {
-                    int f0 = baseIndex - 1;
-                    int f1 = baseIndex;
-                    int f2 = baseIndex + 1;
-                    int f3 = baseIndex + 2;
-                    if (f0 < 0) f0 = 0;
-                    if (f2 >= neededInternal) f2 = neededInternal - 1;
-                    if (f3 >= neededInternal) f3 = neededInternal - 1;
-
-                    ymL = _ymResampleLinear
-                        ? LinearInterpolate(
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                            frac)
-                        : CubicInterpolate(
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
-                            frac);
-                    ymR = _ymResampleLinear
-                        ? LinearInterpolate(
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                            frac)
-                        : CubicInterpolate(
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
-                            frac);
-                }
-
-                int dst = i * PsgChannels;
-                _ymFrameBuffer[dst] = (short)ymL;
-                _ymFrameBuffer[dst + 1] = (short)ymR;
-
-                phase += ratio;
-            }
-
-            int lastIndex = (neededInternal - 1) * PsgChannels;
-            _ymResampleCarryL = _ymInternalBuffer[lastIndex];
-            _ymResampleCarryR = _ymInternalBuffer[lastIndex + 1];
-            _ymResampleHasCarry = true;
-            _ymResamplePhase = phase - (neededInternal - 1);
-            if (_ymResamplePhase < 0)
-                _ymResamplePhase = 0;
-            else if (_ymResamplePhase > neededInternal)
-                _ymResamplePhase = 0;
+            ResampleYmOutputFrames(frames, neededInternal, ratio, ref phase);
+            CommitYmResampleState(neededInternal, phase);
 
             bool forceResampleOut = !_ymResampleOutForcedOnce || (dacEnabledNow && !_ymResampleOutForcedDacOnce);
             if (TraceAudioDebug && forceResampleOut)
@@ -3163,59 +3563,21 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
             int mixMin = 0;
             int mixMax = 0;
-            bool mixMinMaxInit = false;
             int mixPeak = 0;
             int mixNonZero = 0;
-            for (int i = 0; i < samples; i++)
-            {
-                int ymSample = _ymFrameBuffer[i];
-                if (FmMixGain != 1.0)
-                {
-                    double scaled = ymSample * FmMixGain;
-                    if (scaled > short.MaxValue) ymSample = short.MaxValue;
-                    else if (scaled < short.MinValue) ymSample = short.MinValue;
-                    else ymSample = (int)Math.Round(scaled);
-                    _ymFrameBuffer[i] = (short)ymSample;
-                }
-                ymSample = ApplyMixPercent(ymSample, ymMixPercent);
-                _ymFrameBuffer[i] = (short)ymSample;
-                if (!ymMinMaxInit)
-                {
-                    ymMinMaxInit = true;
-                    ymMin = ymSample;
-                    ymMax = ymSample;
-                }
-                else
-                {
-                    if (ymSample < ymMin) ymMin = ymSample;
-                    if (ymSample > ymMax) ymMax = ymSample;
-                }
-                int ymAbs = ymSample < 0 ? -ymSample : ymSample;
-                if (ymAbs > ymPeak) ymPeak = ymAbs;
-                if (ymSample != 0) ymNonZero++;
-
-                int mixed = _psgFrameBuffer[i] + _ymFrameBuffer[i];
-                if (mixed > short.MaxValue) mixed = short.MaxValue;
-                else if (mixed < short.MinValue) mixed = short.MinValue;
-                _psgFrameBuffer[i] = (short)mixed;
-
-                if (!mixMinMaxInit)
-                {
-                    mixMinMaxInit = true;
-                    mixMin = mixed;
-                    mixMax = mixed;
-                }
-                else
-                {
-                    if (mixed < mixMin) mixMin = mixed;
-                    if (mixed > mixMax) mixMax = mixed;
-                }
-                int mixAbs = mixed < 0 ? -mixed : mixed;
-                if (mixAbs > mixPeak) mixPeak = mixAbs;
-                if (mixed != 0) mixNonZero++;
-                if (trackAudioLevel)
-                    mixSumSq += (long)mixed * mixed;
-            }
+            AudioMixStats mixStats = ProcessYmBufferAndMix(
+                samples,
+                ymMixPercent,
+                trackAudioLevel,
+                ref mixSumSq,
+                out ymMin,
+                out ymMax,
+                out ymPeak,
+                out ymNonZero);
+            mixMin = mixStats.Min;
+            mixMax = mixStats.Max;
+            mixPeak = mixStats.Peak;
+            mixNonZero = mixStats.NonZero;
             if (TraceAudioDebug && !_ymResampleOutLoggedOnce && dacEnabledNow)
             {
                 Console.Error.WriteLine($"[YM-MIX-OUT] frame={frameNow} ymMin={ymMin} ymMax={ymMax} mixMin={mixMin} mixMax={mixMax}");
@@ -3309,7 +3671,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     public ReadOnlySpan<short> GetAudioBufferForFrames(int frames, out int sampleRate, out int channels)
     {
-        sampleRate = PsgSampleRate;
+        sampleRate = OutputSampleRate;
         channels = PsgChannels;
 
         if (frames <= 0)
@@ -3375,6 +3737,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 if (s > short.MaxValue) s = short.MaxValue;
                 else if (s < short.MinValue) s = short.MinValue;
                 s = ApplyMixPercent(s, psgMixPercent);
+                s = ApplyLinearGain(s, PsgLinearGain);
+                if (GenesisDcFilterEnabled)
+                    s = _psgDcFilter.Apply(s);
+                if (GenesisLowPassFilterEnabled)
+                    s = _psgLowPass.Apply(s);
                 short sample = (short)s;
                 if (!psgMinMaxInit)
                 {
@@ -3404,12 +3771,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         int ymMin = 0;
         int ymMax = 0;
-        bool ymMinMaxInit = false;
         int ymPeak = 0;
         int ymNonZero = 0;
         int mixMin = 0;
         int mixMax = 0;
-        bool mixMinMaxInit = false;
         int mixPeak = 0;
         int mixNonZero = 0;
         if (wantYm)
@@ -3424,24 +3789,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 _ymFrameBuffer = new short[samples];
 
             // Resample YM from internal rate (~53.2kHz) to output rate (44.1kHz).
-            double ratio = (YmInternalSampleRate * YmResampleScale) / PsgSampleRate;
+            double ymInternalSampleRate = md_main.GetYmSampleRateHzFromTiming();
+            double ratio = (ymInternalSampleRate * YmResampleScale) / OutputSampleRate;
             double phase = _ymResamplePhase;
             int neededInternal = (int)Math.Floor(phase + ((frames - 1) * ratio)) + 2;
             if (neededInternal < 2)
                 neededInternal = 2;
-            int internalSamples = neededInternal * PsgChannels;
-            if (_ymInternalBuffer.Length < internalSamples)
-                _ymInternalBuffer = new short[internalSamples];
-
-            int writeOffsetFrames = 0;
-            if (_ymResampleHasCarry)
-            {
-                _ymInternalBuffer[0] = _ymResampleCarryL;
-                _ymInternalBuffer[1] = _ymResampleCarryR;
-                writeOffsetFrames = 1;
-            }
-
-            int genFrames = neededInternal - writeOffsetFrames;
+            PrepareYmInternalBuffer(neededInternal, out int writeOffsetFrames, out int genFrames);
             if (genFrames > 0)
             {
                 var dst = _ymInternalBuffer.AsSpan(writeOffsetFrames * PsgChannels, genFrames * PsgChannels);
@@ -3534,62 +3888,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 _ymResampleDebugFramesOnce = true;
             }
 
-            for (int i = 0; i < frames; i++)
-            {
-                int baseIndex = (int)phase;
-                if (baseIndex < 0)
-                    baseIndex = 0;
-                int maxBase = neededInternal - 2;
-                if (maxBase < 0)
-                    maxBase = 0;
-                if (baseIndex > maxBase)
-                    baseIndex = maxBase;
-                double frac = phase - baseIndex;
-                if (frac < 0)
-                    frac = 0;
-                else if (frac > 1.0)
-                    frac = 1.0;
-                int f0 = baseIndex - 1;
-                int f1 = baseIndex;
-                int f2 = baseIndex + 1;
-                int f3 = baseIndex + 2;
-                if (f0 < 0) f0 = 0;
-                if (f2 >= neededInternal) f2 = neededInternal - 1;
-                if (f3 >= neededInternal) f3 = neededInternal - 1;
-
-                int ymL = YmResampleSimple
-                    ? ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0)
-                    : (_ymResampleLinear
-                        ? LinearInterpolate(
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                            frac)
-                        : CubicInterpolate(
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 0),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 0),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 0),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 0),
-                            frac));
-                int ymR = YmResampleSimple
-                    ? ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1)
-                    : (_ymResampleLinear
-                        ? LinearInterpolate(
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                            frac)
-                        : CubicInterpolate(
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f0, 1),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f1, 1),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f2, 1),
-                            ReadInterleavedSample(_ymInternalBuffer, neededInternal, PsgChannels, f3, 1),
-                            frac));
-
-                int dst = i * PsgChannels;
-                _ymFrameBuffer[dst] = (short)ymL;
-                _ymFrameBuffer[dst + 1] = (short)ymR;
-
-                phase += ratio;
-            }
+            ResampleYmOutputFrames(frames, neededInternal, ratio, ref phase);
 
             bool forceResampleOut = !_ymResampleOutForcedOnce || (dacEnabledNow && !_ymResampleOutForcedDacOnce);
             if (TraceAudioDebug && forceResampleOut)
@@ -3628,66 +3927,21 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     _ymResampleOutForcedDacOnce = true;
             }
 
-            int lastIndex = (neededInternal - 1) * PsgChannels;
-            _ymResampleCarryL = _ymInternalBuffer[lastIndex];
-            _ymResampleCarryR = _ymInternalBuffer[lastIndex + 1];
-            _ymResampleHasCarry = true;
-            _ymResamplePhase = phase - (neededInternal - 1);
-            if (_ymResamplePhase < 0)
-                _ymResamplePhase = 0;
-            else if (_ymResamplePhase > neededInternal)
-                _ymResamplePhase = 0;
+            CommitYmResampleState(neededInternal, phase);
 
-            for (int i = 0; i < samples; i++)
-            {
-                int ymSample = _ymFrameBuffer[i];
-                if (FmMixGain != 1.0)
-                {
-                    double scaled = ymSample * FmMixGain;
-                    if (scaled > short.MaxValue) ymSample = short.MaxValue;
-                    else if (scaled < short.MinValue) ymSample = short.MinValue;
-                    else ymSample = (int)Math.Round(scaled);
-                    _ymFrameBuffer[i] = (short)ymSample;
-                }
-                ymSample = ApplyMixPercent(ymSample, ymMixPercent);
-                _ymFrameBuffer[i] = (short)ymSample;
-                if (!ymMinMaxInit)
-                {
-                    ymMinMaxInit = true;
-                    ymMin = ymSample;
-                    ymMax = ymSample;
-                }
-                else
-                {
-                    if (ymSample < ymMin) ymMin = ymSample;
-                    if (ymSample > ymMax) ymMax = ymSample;
-                }
-                int ymAbs = ymSample < 0 ? -ymSample : ymSample;
-                if (ymAbs > ymPeak) ymPeak = ymAbs;
-                if (ymSample != 0) ymNonZero++;
-
-                int mixed = _psgFrameBuffer[i] + _ymFrameBuffer[i];
-                if (mixed > short.MaxValue) mixed = short.MaxValue;
-                else if (mixed < short.MinValue) mixed = short.MinValue;
-                _psgFrameBuffer[i] = (short)mixed;
-
-                if (!mixMinMaxInit)
-                {
-                    mixMinMaxInit = true;
-                    mixMin = mixed;
-                    mixMax = mixed;
-                }
-                else
-                {
-                    if (mixed < mixMin) mixMin = mixed;
-                    if (mixed > mixMax) mixMax = mixed;
-                }
-                int mixAbs = mixed < 0 ? -mixed : mixed;
-                if (mixAbs > mixPeak) mixPeak = mixAbs;
-                if (mixed != 0) mixNonZero++;
-                if (trackAudioLevel)
-                    mixSumSq += (long)mixed * mixed;
-            }
+            AudioMixStats mixStats = ProcessYmBufferAndMix(
+                samples,
+                ymMixPercent,
+                trackAudioLevel,
+                ref mixSumSq,
+                out ymMin,
+                out ymMax,
+                out ymPeak,
+                out ymNonZero);
+            mixMin = mixStats.Min;
+            mixMax = mixStats.Max;
+            mixPeak = mixStats.Peak;
+            mixNonZero = mixStats.NonZero;
 
             if (TraceAudioEnabled && ShouldLogPerSecond(ref _lastAudioLogTicks))
             {
@@ -3809,8 +4063,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     public double GetM68kClockHz()
     {
-        // Approx hardware master clock for M68K (NTSC/PAL).
-        return GetEffectiveFrameRateMode() == FrameRateMode.Hz50 ? 7600489.0 : 7670454.0;
+        return md_main.GetM68kClockHzFromTiming();
     }
 
     public bool WritePsg(byte value)

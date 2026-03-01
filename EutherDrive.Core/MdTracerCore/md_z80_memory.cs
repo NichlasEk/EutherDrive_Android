@@ -9,9 +9,9 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_z80
     {
-        private static readonly int Z80YmWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_YM_WAIT", 4);
-        private static readonly int Z80PsgWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_PSG_WAIT", 4);
-        private static readonly int Z80BankWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_BANK_WAIT", 8);
+        private static readonly int Z80YmWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_YM_WAIT", 0);
+        private static readonly int Z80PsgWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_PSG_WAIT", 0);
+        private static readonly int Z80BankWaitCycles = ParseWaitCycles("EUTHERDRIVE_Z80_BANK_WAIT", 0);
         private static readonly bool TraceZ80AudioRate =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceZ80PsgWrite =
@@ -1543,11 +1543,7 @@ namespace EutherDrive.Core.MdTracerCore
                 // YM2612
                 if (a <= 0x4003 && Z80YmWaitCycles > 0)
                     AddWaitCycles(Z80YmWaitCycles);
-                w_out = UseMdTracerCompat
-                    ? md_main.g_md_music.YmRead(a)
-                    : (a == 0x4000 || a == 0x4002
-                        ? md_main.g_md_music.YmReadStatus(clearOnRead: false)
-                        : md_main.g_md_music.YmRead(a));
+                w_out = md_main.g_md_music.YmRead(a);
                 if (a == 0x4000 || a == 0x4002)
                     RecordYmStatusRead();
                 if (ShouldTraceBootIo())

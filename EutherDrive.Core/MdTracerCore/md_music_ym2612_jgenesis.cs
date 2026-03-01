@@ -15,7 +15,7 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _lastYmVal;
         private string _lastYmSource = "none";
         private long _systemCycleRemainder;
-        private static readonly int SystemCyclesPerYmTick = ParseSystemCyclesPerYmTick();
+        private static readonly int LegacySystemCyclesPerYmTick = ParseLegacySystemCyclesPerYmTick();
         private static bool _timingConfigLogged;
         private short[] _ringBuffer = new short[RingFramesDefault * 2];
         private int _ringRead;
@@ -34,9 +34,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             bool quantize = ReadEnvDefaultOn("EUTHERDRIVE_YM_QUANTIZE", defaultValue: true);
             bool ladder = ReadEnvDefaultOn("EUTHERDRIVE_YM_LADDER", defaultValue: true);
-            Opn2BusyBehavior busy = ReadEnvDefaultOn("EUTHERDRIVE_EMULATE_YM_BUSY", defaultValue: false)
-                ? Opn2BusyBehavior.Ym2612
-                : Opn2BusyBehavior.AlwaysZero;
+            Opn2BusyBehavior busy = ParseOpn2BusyBehavior();
 
             _ym = new Ym2612(new bool[6], quantize, ladder, busy);
         }
@@ -44,12 +42,6 @@ namespace EutherDrive.Core.MdTracerCore
         public byte Read(uint address)
         {
             return _ym.ReadRegister((ushort)(address & 0x0003));
-        }
-
-        public byte ReadStatus(bool clearOnRead)
-        {
-            _ = clearOnRead;
-            return _ym.ReadRegister(0);
         }
 
         public void Write(uint address, byte value, string source)
@@ -64,7 +56,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 1:
                     _lastYmVal = value;
                     _lastYmSource = source;
-                    _ym.WriteData1(value);
+                    _ym.WriteData(value);
                     if (_lastYmAddr == 0x2A)
                         RecordDacWriteRate();
                     break;
@@ -75,7 +67,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 3:
                     _lastYmVal = value;
                     _lastYmSource = source;
-                    _ym.WriteData2(value);
+                    _ym.WriteData(value);
                     break;
             }
         }
@@ -98,7 +90,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (!_timingConfigLogged)
             {
                 _timingConfigLogged = true;
-                Console.WriteLine($"[JGYM-TIMING] SystemCyclesPerYmTick={SystemCyclesPerYmTick} FmSampleDivider={FmSampleDivider}");
+                Console.WriteLine($"[JGYM-TIMING] LegacySystemCyclesPerYmTick={LegacySystemCyclesPerYmTick} FmSampleDivider={FmSampleDivider}");
             }
         }
 
@@ -228,6 +220,29 @@ namespace EutherDrive.Core.MdTracerCore
             return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static Opn2BusyBehavior ParseOpn2BusyBehavior()
+        {
+            // jgenesis default in genesis-config is Ym3438.
+            string? mode = Environment.GetEnvironmentVariable("EUTHERDRIVE_OPN2_BUSY_BEHAVIOR");
+            if (!string.IsNullOrWhiteSpace(mode))
+            {
+                string m = mode.Trim().ToLowerInvariant();
+                if (m == "ym2612")
+                    return Opn2BusyBehavior.Ym2612;
+                if (m == "ym3438" || m == "default")
+                    return Opn2BusyBehavior.Ym3438;
+                if (m == "alwayszero" || m == "zero" || m == "off")
+                    return Opn2BusyBehavior.AlwaysZero;
+            }
+
+            // Backward-compatible override:
+            // EUTHERDRIVE_EMULATE_YM_BUSY=1 used to mean YM2612 busy model.
+            if (ReadEnvDefaultOn("EUTHERDRIVE_EMULATE_YM_BUSY", defaultValue: false))
+                return Opn2BusyBehavior.Ym2612;
+
+            return Opn2BusyBehavior.Ym3438;
+        }
+
         private static short ToSample(double value)
         {
             double scaled = value * short.MaxValue;
@@ -239,13 +254,13 @@ namespace EutherDrive.Core.MdTracerCore
         private const int FmSampleDivider = 24;
         private const int RingFramesDefault = 16384;
 
-        private static int ParseSystemCyclesPerYmTick()
+        private static int ParseLegacySystemCyclesPerYmTick()
         {
-            // SystemCycles in md_main are M68K cycles.
-            // Default to 6 system cycles per YM tick.
-            // This keeps YM/Z80 pace aligned now that earlier overcompensation
-            // in the timing path has been removed.
-            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_SYSTEM_CYCLES_PER_TICK");
+            // Legacy fallback path only (used when explicit MCLK YM tick drive is disabled).
+            // Keep previous compatibility default.
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_LEGACY_SYSTEM_CYCLES_PER_TICK");
+            if (string.IsNullOrWhiteSpace(raw))
+                raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_SYSTEM_CYCLES_PER_TICK");
             if (!string.IsNullOrWhiteSpace(raw) &&
                 int.TryParse(raw.Trim(), out int value) &&
                 value > 0)
@@ -287,8 +302,8 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
 
             long totalCycles = cycles + _systemCycleRemainder;
-            long ymTicks = totalCycles / SystemCyclesPerYmTick;
-            _systemCycleRemainder = totalCycles % SystemCyclesPerYmTick;
+            long ymTicks = totalCycles / LegacySystemCyclesPerYmTick;
+            _systemCycleRemainder = totalCycles % LegacySystemCyclesPerYmTick;
 
             if (ymTicks <= 0)
                 return;
@@ -296,7 +311,15 @@ namespace EutherDrive.Core.MdTracerCore
             if (ymTicks > int.MaxValue)
                 ymTicks = int.MaxValue;
 
-            _ym.Tick((int)ymTicks, (left, right) =>
+            AdvanceYmTicks((int)ymTicks);
+        }
+
+        public void AdvanceYmTicks(int ymTicks)
+        {
+            if (ymTicks <= 0)
+                return;
+
+            _ym.Tick(ymTicks, (left, right) =>
             {
                 WriteSample(ToSample(left), ToSample(right));
             });
@@ -1172,8 +1195,8 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _dacChannelEnabled;
         private byte _dacChannelSample;
         private readonly LowFrequencyOscillator _lfo = new LowFrequencyOscillator();
-        private byte _selectedRegister1;
-        private byte _selectedRegister2;
+        private byte _selectedRegister;
+        private RegisterGroup _selectedRegisterGroup;
         private byte _sampleDivider;
         private byte _busyCyclesRemaining;
         private readonly TimerA _timerA = new TimerA();
@@ -1191,8 +1214,8 @@ namespace EutherDrive.Core.MdTracerCore
             _quantizeOutput = quantizeOutput;
             _emulateLadderEffect = emulateLadderEffect;
             _busyBehavior = busyBehavior;
-            _selectedRegister1 = 0;
-            _selectedRegister2 = 0;
+            _selectedRegister = 0;
+            _selectedRegisterGroup = RegisterGroup.One;
             _sampleDivider = FmSampleDivider;
             _busyCyclesRemaining = 0;
         }
@@ -1208,8 +1231,8 @@ namespace EutherDrive.Core.MdTracerCore
             _dacChannelEnabled = false;
             _dacChannelSample = 0;
             _lfo.SetEnabled(false);
-            _selectedRegister1 = 0;
-            _selectedRegister2 = 0;
+            _selectedRegister = 0;
+            _selectedRegisterGroup = RegisterGroup.One;
             _sampleDivider = FmSampleDivider;
             _busyCyclesRemaining = 0;
             _timerA.WriteControl(new TimerControl { Enabled = false, OverflowFlagEnabled = false, ClearOverflowFlag = true });
@@ -1221,27 +1244,27 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void WriteAddress1(byte value)
         {
-            _selectedRegister1 = value;
+            _selectedRegister = value;
+            _selectedRegisterGroup = RegisterGroup.One;
         }
 
         public void WriteAddress2(byte value)
         {
-            _selectedRegister2 = value;
+            _selectedRegister = value;
+            _selectedRegisterGroup = RegisterGroup.Two;
         }
 
         public void WriteData(byte value)
         {
-            WriteData1(value);
-        }
-
-        public void WriteData1(byte value)
-        {
-            WriteGroup1Register(_selectedRegister1, value);
-        }
-
-        public void WriteData2(byte value)
-        {
-            WriteGroup2Register(_selectedRegister2, value);
+            switch (_selectedRegisterGroup)
+            {
+                case RegisterGroup.One:
+                    WriteGroup1Register(_selectedRegister, value);
+                    break;
+                case RegisterGroup.Two:
+                    WriteGroup2Register(_selectedRegister, value);
+                    break;
+            }
         }
 
         private void WriteGroup1Register(byte register, byte value)

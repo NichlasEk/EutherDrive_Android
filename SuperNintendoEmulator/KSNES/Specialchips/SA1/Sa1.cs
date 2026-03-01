@@ -144,6 +144,8 @@ public sealed class Sa1
                 }
                 _lastSa1Nmi = currentNmi;
 
+                _tracePc = _cpu.ProgramCounter24;
+                _traceOp = TryGetSa1OpByte(_tracePc);
                 _cpu.Cycle();
                 _bwramWaitCycles += _system.BwramWaitCycles;
                 _system.BwramWaitCycles = 0;
@@ -209,14 +211,15 @@ public sealed class Sa1
         return -1;
     }
 
+    private int _tracePc;
+    private int _traceOp;
+
     private void TraceSa1(string rw, uint address, byte value, string region, uint? resolved = null)
     {
         if (!Sa1Trace.IsEnabled)
             return;
-        int pc = _cpu.ProgramCounter24;
-        int op = TryGetSa1OpByte(pc);
         string? regs = Sa1Trace.IncludeRegsEnabled ? _cpu.GetTraceState() : null;
-        Sa1Trace.Log("SA1", pc, op, address, rw, value, region, resolved, regs);
+        Sa1Trace.Log("SA1", _tracePc, _traceOp, address, rw, value, region, resolved, regs);
     }
 
     private void TraceState(string state)

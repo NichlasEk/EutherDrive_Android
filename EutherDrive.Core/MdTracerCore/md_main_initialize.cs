@@ -62,6 +62,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_trace_sip = false;
             g_hard_reset_req = false;
             g_trace_nextframe = false;
+            ResetCycleCounters();
 
             // CPU-usage meter (om den finns i denna partial)
             g_task_usage = 0;

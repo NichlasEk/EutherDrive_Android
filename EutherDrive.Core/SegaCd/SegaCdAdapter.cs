@@ -71,6 +71,12 @@ public sealed class SegaCdAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAINPC_FRAME"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool TraceMainWaitLoop =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAINWAIT"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly string? MainWaitTraceFilePath =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_MAINWAIT_FILE");
     private static readonly bool TraceMainDebug =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAIN_DEBUG"),
             "1",
@@ -105,16 +111,13 @@ public sealed class SegaCdAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_GFX_OVERLAY"),
             "1",
             StringComparison.Ordinal);
-    private static readonly bool EnableGfxFallbackWhenBlank =
-        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_GFX_FALLBACK_WHEN_BLANK"),
-            "0",
-            StringComparison.Ordinal);
     private static readonly bool ProfileScd =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_PROFILE"),
             "1",
             StringComparison.Ordinal);
     private int _mainPcLogRemaining = 32;
     private long _lastMainPcFrame = -1;
+    private long _lastMainWaitLogFrame = -1;
     private bool _mainRamJumpLogged;
     private uint _lastMainPc;
     private ushort _lastMainOp;
@@ -647,6 +650,67 @@ public sealed class SegaCdAdapter : IEmulatorCore
                         }
                     }
                 }
+                if (TraceMainWaitLoop && frameCounter != _lastMainWaitLogFrame && (frameCounter % 60) == 0)
+                {
+                    _lastMainWaitLogFrame = frameCounter;
+                    uint pc = _useM68kEmu ? _mainCpu.Pc : _mainContext!.RegPc;
+                    ushort op = _useM68kEmu ? _mainCpu.NextOpcode : _mainContext!.Opcode;
+                    ushort sr = _useM68kEmu ? _mainCpu.GetState().Sr : _mainContext!.RegSr;
+                    int imask = (sr >> 8) & 0x07;
+                    ushort ext = _mainCpuBus?.ReadWord(0x000A1C) ?? 0;
+                    uint probeAddrRaw = ext;
+                    uint probeAddrSe = unchecked((uint)(int)(short)ext);
+                    byte probeRaw8 = _mainCpuBus?.ReadByte(probeAddrRaw) ?? 0;
+                    ushort probeRaw16 = _mainCpuBus?.ReadWord(probeAddrRaw) ?? 0;
+                    byte probeSe8 = _mainCpuBus?.ReadByte(probeAddrSe) ?? 0;
+                    ushort probeSe16 = _mainCpuBus?.ReadWord(probeAddrSe) ?? 0;
+                    byte gate00 = _mainCpuBus?.ReadByte(0x00A12000) ?? 0;
+                    byte gate01 = _mainCpuBus?.ReadByte(0x00A12001) ?? 0;
+                    byte gate02 = _mainCpuBus?.ReadByte(0x00A12002) ?? 0;
+                    byte gate03 = _mainCpuBus?.ReadByte(0x00A12003) ?? 0;
+                    byte gate0E = _mainCpuBus?.ReadByte(0x00A1200E) ?? 0;
+                    uint vec2 = _mainCpuBus?.ReadLong(0x00000068) ?? 0;
+                    uint vec4 = _mainCpuBus?.ReadLong(0x00000070) ?? 0;
+                    uint vec6 = _mainCpuBus?.ReadLong(0x00000078) ?? 0;
+                    ushort vec2Op = _mainCpuBus?.ReadWord(vec2) ?? 0;
+                    ushort vec4Op = _mainCpuBus?.ReadWord(vec4) ?? 0;
+                    ushort vec6Op = _mainCpuBus?.ReadWord(vec6) ?? 0;
+                    byte mainIrq = _mainCpuBus?.InterruptLevel() ?? 0;
+                    byte subIrq = _memory.GetSubInterruptLevel();
+                    bool mainSwPending = _memory.Registers.MainSoftwareInterruptPending;
+                    bool subSwPending = _memory.Registers.SubSoftwareInterruptPending;
+                    bool cddPending = _memory.Cdd.InterruptPending;
+                    bool cdcPending = _memory.Cdc.InterruptPending;
+                    bool hintEnabled = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp?.g_vdp_reg_0_4_hinterrupt == 1;
+                    bool vintEnabled = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp?.g_vdp_reg_1_5_vinterrupt == 1;
+                    Console.WriteLine(
+                        $"[SCD-MAIN-WAIT] frame={frameCounter} pc=0x{pc:X6} op=0x{op:X4} " +
+                        $"sr=0x{sr:X4} imask={imask} " +
+                        $"tstExt=0x{ext:X4} raw=0x{probeAddrRaw:X6} b=0x{probeRaw8:X2} w=0x{probeRaw16:X4} " +
+                        $"se=0x{probeAddrSe:X8} b=0x{probeSe8:X2} w=0x{probeSe16:X4} " +
+                        $"A12000=0x{gate00:X2} A12001=0x{gate01:X2} A12002=0x{gate02:X2} A12003=0x{gate03:X2} A1200E=0x{gate0E:X2} " +
+                        $"V2=0x{vec2:X8}/0x{vec2Op:X4} V4=0x{vec4:X8}/0x{vec4Op:X4} V6=0x{vec6:X8}/0x{vec6Op:X4} " +
+                        $"IRQ[m={mainIrq},sub={subIrq},swM={(mainSwPending ? 1 : 0)},swS={(subSwPending ? 1 : 0)},h={(md_m68k.g_interrupt_H_req ? 1 : 0)},v={(md_m68k.g_interrupt_V_req ? 1 : 0)},ext={(md_m68k.g_interrupt_EXT_req ? 1 : 0)},he={(hintEnabled ? 1 : 0)},ve={(vintEnabled ? 1 : 0)},cdd={(cddPending ? 1 : 0)},cdc={(cdcPending ? 1 : 0)}]");
+                    if (!string.IsNullOrWhiteSpace(MainWaitTraceFilePath))
+                    {
+                        string lineOut =
+                            $"[SCD-MAIN-WAIT] frame={frameCounter} pc=0x{pc:X6} op=0x{op:X4} " +
+                            $"sr=0x{sr:X4} imask={imask} " +
+                            $"tstExt=0x{ext:X4} raw=0x{probeAddrRaw:X6} b=0x{probeRaw8:X2} w=0x{probeRaw16:X4} " +
+                            $"se=0x{probeAddrSe:X8} b=0x{probeSe8:X2} w=0x{probeSe16:X4} " +
+                            $"A12000=0x{gate00:X2} A12001=0x{gate01:X2} A12002=0x{gate02:X2} A12003=0x{gate03:X2} A1200E=0x{gate0E:X2} " +
+                            $"V2=0x{vec2:X8}/0x{vec2Op:X4} V4=0x{vec4:X8}/0x{vec4Op:X4} V6=0x{vec6:X8}/0x{vec6Op:X4} " +
+                            $"IRQ[m={mainIrq},sub={subIrq},swM={(mainSwPending ? 1 : 0)},swS={(subSwPending ? 1 : 0)},h={(md_m68k.g_interrupt_H_req ? 1 : 0)},v={(md_m68k.g_interrupt_V_req ? 1 : 0)},ext={(md_m68k.g_interrupt_EXT_req ? 1 : 0)},he={(hintEnabled ? 1 : 0)},ve={(vintEnabled ? 1 : 0)},cdd={(cddPending ? 1 : 0)},cdc={(cdcPending ? 1 : 0)}]";
+                        try
+                        {
+                            File.AppendAllText(MainWaitTraceFilePath!, lineOut + Environment.NewLine);
+                        }
+                        catch
+                        {
+                            // Ignore trace write issues to avoid impacting emulation.
+                        }
+                    }
+                }
 
                 if (mainSlice > 0)
                 {
@@ -1027,64 +1091,80 @@ public sealed class SegaCdAdapter : IEmulatorCore
             if (_frameBuffer.Length != needed)
                 _frameBuffer = new byte[needed];
 
-            var src = vdp.RgbaFrame;
+            var srcArgb = vdp.GetFrameBuffer();
             if (TraceFrameBuffer)
             {
                 int stride = frameW * 4;
-                if (frameW != _lastFbLogW || frameH != _lastFbLogH || stride != _lastFbLogStride || src.Length != _lastFbLogSrcLen)
+                int srcLenBytes = srcArgb.Length * 4;
+                if (frameW != _lastFbLogW || frameH != _lastFbLogH || stride != _lastFbLogStride || srcLenBytes != _lastFbLogSrcLen)
                 {
                     _lastFbLogW = frameW;
                     _lastFbLogH = frameH;
                     _lastFbLogStride = stride;
-                    _lastFbLogSrcLen = src.Length;
-                    Console.WriteLine($"[SCD-FRAME] vdp w={frameW} h={frameH} stride={stride} srcLen={src.Length}");
+                    _lastFbLogSrcLen = srcLenBytes;
+                    Console.WriteLine($"[SCD-FRAME] vdp w={frameW} h={frameH} stride={stride} srcLen={srcLenBytes}");
                 }
-                if (_frameStatsRemaining > 0 && src.Length >= 4)
+                if (_frameStatsRemaining > 0 && srcArgb.Length > 0)
                 {
                     _frameStatsRemaining--;
-                    int sampleCount = Math.Min(src.Length / 4, 1024);
+                    int sampleCount = Math.Min(srcArgb.Length, 1024);
                     int nonZero = 0;
                     int rgbNonZero = 0;
                     for (int i = 0; i < sampleCount; i++)
                     {
-                        int siSample = i * 4;
-                        byte r0 = src[siSample + 0];
-                        byte g0 = src[siSample + 1];
-                        byte b0 = src[siSample + 2];
-                        byte a0 = src[siSample + 3];
+                        uint argb = srcArgb[i];
+                        byte a0 = (byte)(argb >> 24);
+                        byte r0 = (byte)(argb >> 16);
+                        byte g0 = (byte)(argb >> 8);
+                        byte b0 = (byte)argb;
                         if (r0 != 0 || g0 != 0 || b0 != 0)
                             rgbNonZero++;
                         if (r0 != 0 || g0 != 0 || b0 != 0 || a0 != 0)
                             nonZero++;
                     }
+                    uint p0 = srcArgb[0];
+                    byte p0a = (byte)(p0 >> 24);
+                    byte p0r = (byte)(p0 >> 16);
+                    byte p0g = (byte)(p0 >> 8);
+                    byte p0b = (byte)p0;
                     Console.WriteLine(
-                        $"[SCD-FRAME] sample0={src[0]:X2} {src[1]:X2} {src[2]:X2} {src[3]:X2} " +
+                        $"[SCD-FRAME] sample0={p0r:X2} {p0g:X2} {p0b:X2} {p0a:X2} " +
                         $"sampleNonZero={nonZero}/{sampleCount} sampleRgbNonZero={rgbNonZero}/{sampleCount}");
                 }
             }
-            int pixels = Math.Min(frameW * frameH, src.Length / 4);
-            int si = 0;
+            int pixels = Math.Min(frameW * frameH, srcArgb.Length);
             int di = 0;
             int nonBlackPixels = 0;
             for (int i = 0; i < pixels; i++)
             {
-                byte r = src[si + 0];
-                byte g = src[si + 1];
-                byte b = src[si + 2];
+                uint argb = srcArgb[i];
+                byte a = (byte)(argb >> 24);
+                byte r = (byte)(argb >> 16);
+                byte g = (byte)(argb >> 8);
+                byte b = (byte)argb;
                 if ((r | g | b) != 0)
                     nonBlackPixels++;
                 _frameBuffer[di + 0] = b;
                 _frameBuffer[di + 1] = g;
                 _frameBuffer[di + 2] = r;
-                // Keep Sega CD output opaque in UI even if upstream alpha is unset.
-                _frameBuffer[di + 3] = 0xFF;
-                si += 4;
+                _frameBuffer[di + 3] = a != 0 ? a : (byte)0xFF;
                 di += 4;
             }
             _vdpFrameLooksBlank = nonBlackPixels == 0;
             if (TraceFrameBuffer && _frameStatsRemaining > 0)
             {
                 Console.WriteLine($"[SCD-FRAME] vdpNonBlack={nonBlackPixels}/{Math.Max(1, pixels)} blank={(_vdpFrameLooksBlank ? 1 : 0)}");
+            }
+            if (TraceFrameBuffer && frameCounter >= 0 && (frameCounter % 120) == 0 && srcArgb.Length > 0)
+            {
+                uint p0 = srcArgb[0];
+                byte p0a = (byte)(p0 >> 24);
+                byte p0r = (byte)(p0 >> 16);
+                byte p0g = (byte)(p0 >> 8);
+                byte p0b = (byte)p0;
+                Console.WriteLine(
+                    $"[SCD-FRAME-PERIODIC] frame={frameCounter} p0={p0r:X2} {p0g:X2} {p0b:X2} {p0a:X2} " +
+                    $"vdpNonBlack={nonBlackPixels}/{Math.Max(1, pixels)}");
             }
         }
 
@@ -1103,15 +1183,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     Console.WriteLine($"[SCD-FRAME] gfx w={rw} h={rh} stride={rw * 4}");
 
                 // Composite gfx buffer over the VDP output without changing the frame size.
-                bool applyGfxToFrame = EnableGfxOverlay || (EnableGfxFallbackWhenBlank && _vdpFrameLooksBlank);
+                // Keep disabled by default; this is debug-only overlay only.
+                bool applyGfxToFrame = EnableGfxOverlay;
                 if (applyGfxToFrame)
                 {
-                    bool fallbackMode = !EnableGfxOverlay && _vdpFrameLooksBlank;
-                    if (!EnableGfxOverlay && _vdpFrameLooksBlank && _gfxFallbackLogRemaining > 0)
-                    {
-                        _gfxFallbackLogRemaining--;
-                        Console.WriteLine($"[SCD-GFX-FALLBACK] applied=1 vdpBlank=1 gfx={_gfxWidth}x{_gfxHeight}");
-                    }
                     int dstX0 = (_frameWidth - _gfxWidth) / 2;
                     int dstY0 = (_frameHeight - _gfxHeight) / 2;
                     int srcX0 = 0;
@@ -1131,7 +1206,6 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     int dstStride = _frameWidth * 4;
                     int srcStride = _gfxWidth * 4;
                     int copiedPixels = 0;
-                    int alphaOnlyPixels = 0;
                     for (int y = 0; y < copyH; y++)
                     {
                         int srcRow = (srcY0 + y) * srcStride + srcX0 * 4;
@@ -1143,24 +1217,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             byte g = _gfxBuffer[si + 1];
                             byte b = _gfxBuffer[si + 2];
                             byte a = _gfxBuffer[si + 3];
-                            if (fallbackMode)
-                            {
-                                // In BIOS fallback mode prefer visible non-black pixels even when alpha is unset.
-                                if (((r | g | b) == 0) && a == 0)
-                                    continue;
-                            }
-                            else if (a == 0)
+                            if (a == 0)
                             {
                                 continue;
-                            }
-                            if (fallbackMode && (r | g | b) == 0 && a != 0)
-                            {
-                                // Some BIOS paths produce alpha-only gfx pixels.
-                                // Convert those to visible grayscale so fallback is not black.
-                                r = a;
-                                g = a;
-                                b = a;
-                                alphaOnlyPixels++;
                             }
 
                             int di = dstRow + x * 4;
@@ -1171,9 +1230,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             copiedPixels++;
                         }
                     }
-                    if (TraceFrameBuffer && fallbackMode && _gfxFallbackLogRemaining > 0)
+                    if (TraceFrameBuffer && _gfxFallbackLogRemaining > 0)
                     {
-                        Console.WriteLine($"[SCD-GFX-FALLBACK] copied={copiedPixels} alphaOnly={alphaOnlyPixels} area={copyW}x{copyH}");
+                        _gfxFallbackLogRemaining--;
+                        Console.WriteLine($"[SCD-GFX-OVERLAY] copied={copiedPixels} area={copyW}x{copyH}");
                     }
                 }
             }

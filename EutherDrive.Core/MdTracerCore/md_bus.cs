@@ -216,6 +216,8 @@ namespace EutherDrive.Core.MdTracerCore
             ParseZ80Addr("EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_START") ?? 0x0D00;
         private static readonly bool EmulateYmBusy =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_EMULATE_YM_BUSY"), "1", StringComparison.Ordinal);
+        private static readonly bool YmBusySafeBootHacks =
+            ReadEnvDefaultOff("EUTHERDRIVE_YM_BUSY_SAFEBOOT_HACKS");
         private static readonly ushort ForceZ80PcOnUploadEnd =
             ParseZ80Addr("EUTHERDRIVE_Z80_FORCE_PC_ON_UPLOAD_END") ?? 0x0E50;
         private static readonly ushort ForceZ80PcOnUploadTarget =
@@ -1260,7 +1262,7 @@ namespace EutherDrive.Core.MdTracerCore
                 // CRITICAL FIX FOR SHINOBI III AND YM BUSY EMULATION:
                 // If YM busy emulation is enabled, release Z80 reset IMMEDIATELY on first tick
                 // Shinobi III doesn't do Z80 uploads and gets stuck if reset is held
-                if (EmulateYmBusy)
+                if (EmulateYmBusy && YmBusySafeBootHacks)
                 {
                     Console.WriteLine($"[Z80SAFE-YMBUSY] frame={now} IMMEDIATE Z80 reset release for YM busy emulation");
                     ReleaseZ80SafeBootReset(now);
@@ -1287,7 +1289,7 @@ namespace EutherDrive.Core.MdTracerCore
                     // FORCE release Z80 reset after 50 frames when YM busy emulation is enabled
                     // Some games (Sonic 1, Shinobi III) get stuck during boot with YM busy emulation
                     // Reduced from 200 to 50 because games freeze at SEGA logo (~frame 50-70)
-                    if (now - _z80SafeBootStartFrame >= 50)
+                    if (EmulateYmBusy && YmBusySafeBootHacks && now - _z80SafeBootStartFrame >= 50)
                     {
                         Console.WriteLine($"[Z80SAFE-FORCE] frame={now} forcing Z80 reset release due to timeout with YM busy emulation");
                         ReleaseZ80SafeBootReset(now);
@@ -1390,7 +1392,7 @@ namespace EutherDrive.Core.MdTracerCore
                     // When YM busy emulation is enabled, Z80 MUST be able to run immediately
                     // Otherwise it gets stuck waiting for busreq release while YM is busy
                     Console.WriteLine($"[Z80SAFE-DEBUG] EmulateYmBusy={EmulateYmBusy} at frame={frame}");
-                    if (EmulateYmBusy)
+                    if (EmulateYmBusy && YmBusySafeBootHacks)
                     {
                         // Release busreq immediately for YM busy emulation
                         _z80BusReqRequested = false;

@@ -33,11 +33,6 @@ namespace EutherDrive.Core.MdTracerCore
             return JgYm.Read(address);
         }
 
-        public byte YmReadStatus(bool clearOnRead)
-        {
-            return JgYm.ReadStatus(clearOnRead);
-        }
-
         public void YmWrite(uint address, byte value, string source)
         {
             JgYm.Write(address, value, source);
@@ -73,11 +68,19 @@ namespace EutherDrive.Core.MdTracerCore
             JgYm.EnsureAdvanceEachFrame();
         }
 
-        public void YmAdvanceSystemCycles(long cycles)
+        public void YmAdvanceSystemCycles(long cycles, int explicitYmTicks = -1, int explicitPsgTicks = -1)
         {
-            JgYm.AdvanceSystemCycles(cycles);
+            if (explicitYmTicks >= 0)
+                JgYm.AdvanceYmTicks(explicitYmTicks);
+            else
+                JgYm.AdvanceSystemCycles(cycles);
             if (UseJgenesisPsg)
-                _jgPsg.AdvanceSystemCycles(cycles, g_out_vol, _psgNoiseGainPercent);
+            {
+                if (explicitPsgTicks >= 0)
+                    _jgPsg.AdvancePsgTicks(explicitPsgTicks, g_out_vol, _psgNoiseGainPercent);
+                else
+                    _jgPsg.AdvanceSystemCycles(cycles, g_out_vol, _psgNoiseGainPercent);
+            }
         }
 
         public void TickYmTimersFromZ80(int z80Cycles)

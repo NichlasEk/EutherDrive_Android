@@ -75,6 +75,7 @@ internal static partial class md_main
         _injectMbxFrame = reader.ReadInt64();
 
         _systemCycles = reader.ReadInt64();
+        ResetCycleCounters();
         _loadedM68kEmuStateFromSavestate = false;
 
         // Optional trailing M68KEmu state; absent in old savestates.

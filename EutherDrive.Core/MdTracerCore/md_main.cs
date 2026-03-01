@@ -295,8 +295,20 @@ namespace EutherDrive.Core.MdTracerCore
             if (cycles <= 0)
                 return;
             _systemCycles += cycles;
+            AdvanceCycleCounters(cycles);
             g_md_vdp?.ProcessVdpFifoForM68kCycles((int)Math.Min(cycles, int.MaxValue));
-            g_md_music?.YmAdvanceSystemCycles(cycles);
+            if (IsCycleCounterYmDriveEnabled())
+            {
+                int ymTicks = TakeYmTicksForScheduling();
+                int psgTicks = IsCycleCounterPsgDriveEnabled()
+                    ? TakePsgTicksForScheduling()
+                    : -1;
+                g_md_music?.YmAdvanceSystemCycles(cycles, ymTicks, psgTicks);
+            }
+            else
+            {
+                g_md_music?.YmAdvanceSystemCycles(cycles);
+            }
         }
 
         internal static void AddM68kWaitCycles(int cycles)
@@ -916,6 +928,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Reset maskinen
             g_md_m68k.reset();
             ResetMainIrqDebugCounters();
+            ResetCycleCounters();
             if (UseM68kEmuMain)
             {
                 EnsureMainM68kBackend();
@@ -957,6 +970,7 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 g_md_m68k.reset();
                 ResetMainIrqDebugCounters();
+                ResetCycleCounters();
                 if (UseM68kEmuMain)
                     EnsureMainM68kBackend();
                 SafeResetZ80();
@@ -1001,6 +1015,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_md_bus?.ApplyZ80BusReqLatch();
             
             int z80LineBudget = g_masterSystemMode ? SmsCyclesPerLine : Z80CyclesPerLine;
+            bool useCycleCounterZ80Scheduling = IsCycleCounterZ80SchedulingEnabled();
             bool z80RunPerLine = g_masterSystemMode;
             if (!g_masterSystemMode && ForceZ80RunPerLine)
             {
@@ -1068,37 +1083,69 @@ namespace EutherDrive.Core.MdTracerCore
                         RunM68kWithVdp(m68kSlice);
                         m68kDone += m68kSlice;
 
-                        // Add Z80 budget proportional to M68K cycles executed
-                        z80Budget += m68kSlice * Z80PerM68kRatio;
-
-                        // Run Z80 in small, even slices for better timing
-                        // Max 32 cycles per slice to prevent audio jitter
-                        while (z80Budget >= 1.0)
+                        if (useCycleCounterZ80Scheduling)
                         {
-                            g_md_bus?.ApplyZ80BusReqLatch();
-                            if (g_md_bus?.Z80BusGranted ?? false)
+                            int z80Ready = TakeZ80TicksForScheduling();
+                            while (z80Ready > 0)
                             {
-                                // Z80 bus is granted to 68k, Z80 cannot run
-                                // Budget is consumed by M68K time, not Z80 execution
-                                break;
+                                g_md_bus?.ApplyZ80BusReqLatch();
+                                if (g_md_bus?.Z80BusGranted ?? false)
+                                {
+                                    // Match divider-driven behavior: consumed ticks do not backlog.
+                                    break;
+                                }
+
+                                int z80Cycles = Math.Min(32, z80Ready);
+                                if (z80Cycles <= 0)
+                                    break;
+
+                                g_md_z80.BeginSystemCycleSlice();
+                                g_md_z80.run(z80Cycles);
+                                g_md_z80.EndSystemCycleSlice();
+
+                                z80Ready -= z80Cycles;
+                                _z80SliceCount++;
+                                _z80TotalCycles += z80Cycles;
+                                if (z80Cycles > _z80MaxSlice)
+                                    _z80MaxSlice = z80Cycles;
                             }
-                            int z80Cycles = Math.Min(32, (int)Math.Floor(z80Budget));
-                            if (z80Cycles <= 0) break;
+                        }
+                        else
+                        {
+                            // Add Z80 budget proportional to M68K cycles executed
+                            z80Budget += m68kSlice * Z80PerM68kRatio;
 
-                            g_md_z80.BeginSystemCycleSlice();
+                            // Run Z80 in small, even slices for better timing
+                            // Max 32 cycles per slice to prevent audio jitter
+                            while (z80Budget >= 1.0)
+                            {
+                                g_md_bus?.ApplyZ80BusReqLatch();
+                                if (g_md_bus?.Z80BusGranted ?? false)
+                                {
+                                    // Z80 bus is granted to 68k, Z80 cannot run
+                                    // Budget is consumed by M68K time, not Z80 execution
+                                    break;
+                                }
+                                int z80Cycles = Math.Min(32, (int)Math.Floor(z80Budget));
+                                if (z80Cycles <= 0) break;
 
-                            g_md_z80.run(z80Cycles);
-                            z80Budget -= z80Cycles;
-                            g_md_z80.EndSystemCycleSlice();
-                            
-                            // Telemetry: track Z80 execution
-                            _z80SliceCount++;
-                            _z80TotalCycles += z80Cycles;
-                            if (z80Cycles > _z80MaxSlice)
-                                _z80MaxSlice = z80Cycles;
+                                g_md_z80.BeginSystemCycleSlice();
+
+                                g_md_z80.run(z80Cycles);
+                                z80Budget -= z80Cycles;
+                                g_md_z80.EndSystemCycleSlice();
+
+                                // Telemetry: track Z80 execution
+                                _z80SliceCount++;
+                                _z80TotalCycles += z80Cycles;
+                                if (z80Cycles > _z80MaxSlice)
+                                    _z80MaxSlice = z80Cycles;
+                            }
                         }
                     }
-                    _z80ContinuousBudgetCarry = Math.Clamp(z80Budget, 0.0, 512.0);
+                    _z80ContinuousBudgetCarry = useCycleCounterZ80Scheduling
+                        ? 0.0
+                        : Math.Clamp(z80Budget, 0.0, 512.0);
                     continue;
                 }
                 _z80ContinuousBudgetCarry = 0.0;
@@ -1231,11 +1278,13 @@ namespace EutherDrive.Core.MdTracerCore
             if (g_md_z80 != null)
             {
                 var (actual, budget) = g_md_z80.ConsumeFrameCycleStats();
+                MdCycleCounterFrameStats cycleStats = ConsumeCycleCounterFrameStats(actual);
                 bool traceCycles = TraceZ80FrameCycles || ReadEnvFlag("EUTHERDRIVE_TRACE_Z80_FRAME_CYCLES");
                 if (traceCycles && (TraceZ80FrameCyclesEvery <= 0 || frame % TraceZ80FrameCyclesEvery == 0))
                 {
                     Console.WriteLine($"[Z80-CYCLES] frame={frame} actual={actual} budget={budget}");
                 }
+                MaybeLogCycleCounterFrame(frame, cycleStats, actual);
                 _smsCycleLogAccumActual += actual;
                 _smsCycleLogAccumBudget += budget;
                 long now = _smsCycleLogTimer.ElapsedMilliseconds;
