@@ -17,6 +17,7 @@ public sealed class Sdl2AudioSink : IAudioSink
     private int _channels = 2;
     private bool _started;
     private byte[] _tempBuffer = Array.Empty<byte>();
+    private short[] _monoScratch = Array.Empty<short>();
     private NullAudioSink? _nullSink;
     private bool _logOverflow;
 
@@ -71,21 +72,25 @@ public sealed class Sdl2AudioSink : IAudioSink
         }
 
         ReadOnlySpan<short> span = interleaved;
-        if (_channels < 2)
+        if (_channels == 1)
         {
-            var expanded = new short[interleaved.Length * 2];
-            for (int i = 0, j = 0; i < interleaved.Length; i++, j += 2)
+            // Engine produces stereo interleaved data; downmix for mono devices.
+            if ((interleaved.Length & 1) == 0)
             {
-                short sample = interleaved[i];
-                expanded[j] = sample;
-                expanded[j + 1] = sample;
+                int monoSamples = interleaved.Length / 2;
+                EnsureMonoScratch(monoSamples);
+                for (int i = 0, j = 0; i < monoSamples; i++, j += 2)
+                {
+                    int mixed = (interleaved[j] + interleaved[j + 1]) / 2;
+                    _monoScratch[i] = (short)Math.Clamp(mixed, short.MinValue, short.MaxValue);
+                }
+                span = _monoScratch.AsSpan(0, monoSamples);
             }
-            span = expanded;
         }
 
         int bytes = span.Length * sizeof(short);
         EnsureTempBuffer(bytes);
-        Buffer.BlockCopy(span.ToArray(), 0, _tempBuffer, 0, bytes);
+        MemoryMarshal.AsBytes(span).CopyTo(_tempBuffer);
 
         uint queuedBytes = SDL_GetQueuedAudioSize(_deviceId);
         uint maxQueued = (uint)(_sampleRate * Math.Max(1, _channels) * sizeof(short) / 5); // ~200ms
@@ -98,6 +103,7 @@ public sealed class Sdl2AudioSink : IAudioSink
             }
             return;
         }
+        _logOverflow = false;
 
         GCHandle handle = GCHandle.Alloc(_tempBuffer, GCHandleType.Pinned);
         int rc;
@@ -191,6 +197,12 @@ public sealed class Sdl2AudioSink : IAudioSink
     {
         if (_tempBuffer.Length < bytes)
             _tempBuffer = new byte[bytes];
+    }
+
+    private void EnsureMonoScratch(int samples)
+    {
+        if (_monoScratch.Length < samples)
+            _monoScratch = new short[samples];
     }
 
     private static void EnsureSdlInit()

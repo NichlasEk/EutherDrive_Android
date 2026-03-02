@@ -1583,12 +1583,15 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 output[outIndex + 1] = (short)Math.Clamp((int)Math.Round(sumR), short.MinValue, short.MaxValue);
 
                 phase += _step;
-                if (phase >= inFrames)
-                    phase -= inFrames;
             }
 
-            if (phase < 0)
-                phase = 0;
+            if (inFrames > 0)
+            {
+                while (phase >= inFrames)
+                    phase -= inFrames;
+                while (phase < 0)
+                    phase += inFrames;
+            }
             _phase = phase;
             return output;
         }
@@ -1613,7 +1616,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
             for (int n = 0; n < taps; n++)
             {
                 double a = 2.0 * Math.PI * n / denom;
-                w[n] = 0.42 + 0.5 * Math.Cos(a) + 0.08 * Math.Cos(2.0 * a);
+                w[n] = 0.42 - 0.5 * Math.Cos(a) + 0.08 * Math.Cos(2.0 * a);
             }
             return w;
         }

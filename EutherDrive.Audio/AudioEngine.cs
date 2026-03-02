@@ -231,7 +231,10 @@ public sealed class AudioEngine : IDisposable
 
         _running = false;
         _dataEvent.Set();
-        _thread?.Join(500);
+        Thread? thread = _thread;
+        _thread = null;
+        if (thread != null && thread != Thread.CurrentThread)
+            thread.Join();
         _sink.Stop();
     }
 
