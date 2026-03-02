@@ -4,6 +4,8 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        private static readonly bool TraceS2Bcc =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_S2_BCC"), "1", StringComparison.Ordinal);
         private static int _s2BccLogRemaining = 256;
         private static int _s2VintBccLogRemaining = 128;
         private static int _s3OuterBccLogRemaining = 256;
@@ -53,18 +55,18 @@ namespace EutherDrive.Core.MdTracerCore
                    MdLog.WriteLine($"[m68k] BNE disp=0x{(byte)g_opcode:X2} Z={(g_status_Z ? 1 : 0)} take={(take ? 1 : 0)}");
                }
            }
-           if (pc == 0x000B92)
+           if (TraceS2Bcc && pc == 0x000B92)
            {
                Console.WriteLine($"[m68k] Bcc pc=0x{pc:X6} cond=0x{cond:X} Z={(g_status_Z ? 1 : 0)} take={(take ? 1 : 0)} disp=0x{(byte)g_opcode:X2}");
            }
-           if (pc >= 0x0199C0 && pc <= 0x019A60 && _s2BccLogRemaining > 0)
+           if (TraceS2Bcc && pc >= 0x0199C0 && pc <= 0x019A60 && _s2BccLogRemaining > 0)
            {
                _s2BccLogRemaining--;
                Console.WriteLine(
                    $"[S2-BCC] pc=0x{pc:X6} cond=0x{cond:X} disp=0x{(byte)g_opcode:X2} take={(take ? 1 : 0)} " +
                    $"N={(g_status_N ? 1 : 0)} Z={(g_status_Z ? 1 : 0)} V={(g_status_V ? 1 : 0)} C={(g_status_C ? 1 : 0)}");
            }
-           if (pc == 0x0003D6 && _s2VintBccLogRemaining > 0)
+           if (TraceS2Bcc && pc == 0x0003D6 && _s2VintBccLogRemaining > 0)
            {
                _s2VintBccLogRemaining--;
                Console.WriteLine(

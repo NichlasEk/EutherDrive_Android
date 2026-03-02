@@ -13,7 +13,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int ForceB154ReadLimit =
             ParseTraceLimit("EUTHERDRIVE_FORCE_B154_READ_LIMIT", 8);
         private static int _forceB154ReadRemaining = ForceB154ReadLimit;
-        private static int _stackRetWatchLogRemaining = 256;
+        private static int _stackRetWatchLogRemaining = ParseTraceLimit("EUTHERDRIVE_M68K_STACK_WATCH_LIMIT", 0);
 
         /// <summary>
         /// Säkerställ att RAM/ROM-address-space är allokerad.

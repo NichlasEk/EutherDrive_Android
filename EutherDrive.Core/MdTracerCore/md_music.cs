@@ -144,6 +144,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal void FlushAudioStats(long frame)
         {
+            JgYm.FlushRuntimeStats(frame);
             if (!JgYm.AudStatEnabled)
             {
                 JgYm.FlushTimerStats(frame);

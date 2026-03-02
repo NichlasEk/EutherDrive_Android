@@ -10,10 +10,16 @@ namespace EutherDrive.Core.MdTracerCore
         // Set EUTHERDRIVE_YM_HOLD_LAST_ON_UNDERFLOW=0 to force silence-on-underflow.
         private static readonly bool HoldLastSampleOnUnderflow =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_HOLD_LAST_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
+        private static readonly int UnderflowHoldFrames = ParseUnderflowHoldFrames();
         private static readonly bool TraceDacRate =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DACRATE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceJgYmWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_JGYM_WRITES"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmRuntime =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_RUNTIME"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmKeyOnOff =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_KEYONOFF"), "1", StringComparison.Ordinal);
+        private static readonly int TraceYmKeyOnOffLimit = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_KEYONOFF_LIMIT", 512);
         private readonly Ym2612 _ym;
         private byte _lastYmAddr;
         private byte _lastYmVal;
@@ -27,6 +33,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _ringCountFrames;
         private short _lastOutL;
         private short _lastOutR;
+        private int _underflowHoldFramesRemaining;
         private long _dacRateWindowStartTicks;
         private int _dacRateWindowWrites;
         private long _dacRateDeltaTicksSum;
@@ -38,6 +45,17 @@ namespace EutherDrive.Core.MdTracerCore
         private int _writeRateDacDataWrites;
         private int _writeRateNonDacDataWrites;
         private int _writeRateDacEnableWrites;
+        private long _rtWindowStartTicks;
+        private int _rtYmTicks;
+        private int _rtSamplesGenerated;
+        private int _rtSamplesConsumed;
+        private int _rtUnderflowSamples;
+        private int _rtUnderflowBursts;
+        private int _rtUnderflowBurstCurrent;
+        private int _rtUnderflowBurstMax;
+        private int _rtWritesTotal;
+        private int _rtWritesDac;
+        private int _traceYmKeyOnOffRemaining = TraceYmKeyOnOffLimit;
 
         public JgYm2612()
         {
@@ -66,9 +84,12 @@ namespace EutherDrive.Core.MdTracerCore
                     _lastYmVal = value;
                     _lastYmSource = source;
                     _ym.WriteData(value);
+                    _rtWritesTotal++;
+                    MaybeTraceKeyOnOff(port, value, source);
                     RecordWriteRate();
                     if (_lastYmAddr == 0x2A)
                     {
+                        _rtWritesDac++;
                         _writeRateDacDataWrites++;
                         RecordDacWriteRate();
                     }
@@ -91,6 +112,8 @@ namespace EutherDrive.Core.MdTracerCore
                     _lastYmVal = value;
                     _lastYmSource = source;
                     _ym.WriteData(value);
+                    _rtWritesTotal++;
+                    MaybeTraceKeyOnOff(port, value, source);
                     RecordWriteRate();
                     if (_lastYmAddr == 0x2B && TraceJgYmWrites)
                         Console.WriteLine($"[JGYM-2B] port=1 val=0x{value:X2} enabled={((value & 0x80) != 0 ? 1 : 0)} src={source}");
@@ -107,6 +130,7 @@ namespace EutherDrive.Core.MdTracerCore
             _ringCountFrames = 0;
             _lastOutL = 0;
             _lastOutR = 0;
+            _underflowHoldFramesRemaining = 0;
             _dacRateWindowStartTicks = 0;
             _dacRateWindowWrites = 0;
             _dacRateDeltaTicksSum = 0;
@@ -118,6 +142,17 @@ namespace EutherDrive.Core.MdTracerCore
             _writeRateDacDataWrites = 0;
             _writeRateNonDacDataWrites = 0;
             _writeRateDacEnableWrites = 0;
+            _rtWindowStartTicks = 0;
+            _rtYmTicks = 0;
+            _rtSamplesGenerated = 0;
+            _rtSamplesConsumed = 0;
+            _rtUnderflowSamples = 0;
+            _rtUnderflowBursts = 0;
+            _rtUnderflowBurstCurrent = 0;
+            _rtUnderflowBurstMax = 0;
+            _rtWritesTotal = 0;
+            _rtWritesDac = 0;
+            _traceYmKeyOnOffRemaining = TraceYmKeyOnOffLimit;
             if (!_timingConfigLogged)
             {
                 _timingConfigLogged = true;
@@ -145,6 +180,29 @@ namespace EutherDrive.Core.MdTracerCore
             _writeRateDacDataWrites = 0;
             _writeRateNonDacDataWrites = 0;
             _writeRateDacEnableWrites = 0;
+            _rtWindowStartTicks = 0;
+            _rtYmTicks = 0;
+            _rtSamplesGenerated = 0;
+            _rtSamplesConsumed = 0;
+            _rtUnderflowSamples = 0;
+            _rtUnderflowBursts = 0;
+            _rtUnderflowBurstCurrent = 0;
+            _rtUnderflowBurstMax = 0;
+            _rtWritesTotal = 0;
+            _rtWritesDac = 0;
+            _traceYmKeyOnOffRemaining = TraceYmKeyOnOffLimit;
+        }
+
+        private void MaybeTraceKeyOnOff(int port, byte value, string source)
+        {
+            if (!TraceYmKeyOnOff || _traceYmKeyOnOffRemaining <= 0 || _lastYmAddr != 0x28)
+                return;
+
+            _traceYmKeyOnOffRemaining--;
+            int channel = value & 0x07;
+            int opMask = (value >> 4) & 0x0F;
+            Console.WriteLine(
+                $"[YM-KEY] port={port} addr=0x28 val=0x{value:X2} chSel={channel} opMask=0x{opMask:X1} src={source} rem={_traceYmKeyOnOffRemaining}");
         }
 
         public void MarkZ80SafeBootComplete()
@@ -174,6 +232,9 @@ namespace EutherDrive.Core.MdTracerCore
                     short r = _ringBuffer[idx + 1];
                     _lastOutL = l;
                     _lastOutR = r;
+                    _underflowHoldFramesRemaining = UnderflowHoldFrames;
+                    _rtSamplesConsumed++;
+                    _rtUnderflowBurstCurrent = 0;
                     dst[write++] = l;
                     dst[write++] = r;
                     _ringRead++;
@@ -183,8 +244,16 @@ namespace EutherDrive.Core.MdTracerCore
                     continue;
                 }
 
-                if (HoldLastSampleOnUnderflow)
+                _rtUnderflowSamples++;
+                if (_rtUnderflowBurstCurrent == 0)
+                    _rtUnderflowBursts++;
+                _rtUnderflowBurstCurrent++;
+                if (_rtUnderflowBurstCurrent > _rtUnderflowBurstMax)
+                    _rtUnderflowBurstMax = _rtUnderflowBurstCurrent;
+
+                if (HoldLastSampleOnUnderflow && _underflowHoldFramesRemaining > 0)
                 {
+                    _underflowHoldFramesRemaining--;
                     // Opt-in: hold last sample to reduce zipper/noise bursts.
                     dst[write++] = _lastOutL;
                     dst[write++] = _lastOutR;
@@ -201,6 +270,15 @@ namespace EutherDrive.Core.MdTracerCore
         public void EnsureAdvanceEachFrame()
         {
             // YM timing is driven by AdvanceSystemCycles()
+        }
+
+        private static int ParseUnderflowHoldFrames()
+        {
+            const int fallback = 64;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_UNDERFLOW_HOLD_FRAMES");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 0)
+                return value;
+            return fallback;
         }
 
         public void TickTimersFromZ80Cycles(int z80Cycles)
@@ -232,6 +310,45 @@ namespace EutherDrive.Core.MdTracerCore
         public void FlushTimerStats(long frame)
         {
             _ = frame;
+        }
+
+        public void FlushRuntimeStats(long frame)
+        {
+            if (!TraceYmRuntime)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            if (_rtWindowStartTicks == 0)
+            {
+                _rtWindowStartTicks = now;
+                return;
+            }
+
+            long elapsedTicks = now - _rtWindowStartTicks;
+            if (elapsedTicks < Stopwatch.Frequency)
+                return;
+
+            double sec = elapsedTicks / (double)Stopwatch.Frequency;
+            double tickHz = _rtYmTicks / sec;
+            double genHz = _rtSamplesGenerated / sec;
+            double consHz = _rtSamplesConsumed / sec;
+            double wrHz = _rtWritesTotal / sec;
+            double dacWrHz = _rtWritesDac / sec;
+            Console.WriteLine(
+                $"[YM-RT] frame={frame} ticks={_rtYmTicks} tickHz={tickHz:0.0} gen={_rtSamplesGenerated} genHz={genHz:0.0} " +
+                $"cons={_rtSamplesConsumed} consHz={consHz:0.0} uf={_rtUnderflowSamples} bursts={_rtUnderflowBursts} maxBurst={_rtUnderflowBurstMax} " +
+                $"ring={_ringCountFrames}/{RingFramesCapacity} wr={_rtWritesTotal} wrHz={wrHz:0.0} dacWr={_rtWritesDac} dacWrHz={dacWrHz:0.0}");
+
+            _rtWindowStartTicks = now;
+            _rtYmTicks = 0;
+            _rtSamplesGenerated = 0;
+            _rtSamplesConsumed = 0;
+            _rtUnderflowSamples = 0;
+            _rtUnderflowBursts = 0;
+            _rtUnderflowBurstCurrent = 0;
+            _rtUnderflowBurstMax = 0;
+            _rtWritesTotal = 0;
+            _rtWritesDac = 0;
         }
 
         public int DebugDacEnabled => _ym.DacEnabled ? 0x80 : 0;
@@ -301,6 +418,18 @@ namespace EutherDrive.Core.MdTracerCore
             return 6;
         }
 
+        private static int ParseNonNegativeInt(string name, int defaultValue)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(raw) &&
+                int.TryParse(raw.Trim(), out int value) &&
+                value >= 0)
+            {
+                return value;
+            }
+            return defaultValue;
+        }
+
         private int RingFramesCapacity => _ringBuffer.Length / 2;
 
         private void WriteSample(short left, short right)
@@ -350,9 +479,11 @@ namespace EutherDrive.Core.MdTracerCore
             if (ymTicks <= 0)
                 return;
 
+            _rtYmTicks += ymTicks;
             _ym.Tick(ymTicks, (left, right) =>
             {
                 WriteSample(ToSample(left), ToSample(right));
+                _rtSamplesGenerated++;
             });
         }
 

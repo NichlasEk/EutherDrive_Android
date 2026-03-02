@@ -157,6 +157,8 @@ namespace EutherDrive.Core.MdTracerCore
         // Z80/M68K cycle ratio for NTSC: Z80 ~3.58MHz, M68K ~7.67MHz => ratio ~0.466
         private static readonly double Z80PerM68kRatio = 3.579545 / 7.670000; // More precise ratio
         private static readonly int Z80ContinuousSliceCycles = ParseZ80ContinuousSliceCycles();
+        private static readonly int Z80BusReqReleaseBoostCycles =
+            ParseNonNegativeInt("EUTHERDRIVE_Z80_BUSREQ_RELEASE_BOOST_CYCLES", 96);
         private static bool UseZ80ContinuousScheduling => !g_masterSystemMode;
         private static int SmsCyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * SmsCycleMultiplier));
         private static int Z80CyclesPerLine => Math.Max(1, (int)(VDL_LINE_RENDER_Z80_CLOCK * Z80CycleMultiplier));
@@ -181,6 +183,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static int _z80SliceCount;
         private static int _z80TotalCycles;
         private static int _z80MaxSlice;
+        private static int _z80PendingTicksCarry;
+        private static int _z80BusReqReleaseBoostPending;
         
         public static int Z80SliceCount 
         { 
@@ -205,6 +209,7 @@ namespace EutherDrive.Core.MdTracerCore
             _z80SliceCount = 0;
             _z80TotalCycles = 0;
             _z80MaxSlice = 0;
+            _z80PendingTicksCarry = 0;
         }
         
         public static void AddZ80Cycles(int cycles)
@@ -296,8 +301,8 @@ namespace EutherDrive.Core.MdTracerCore
             _systemCycles += cycles;
             AdvanceCycleCounters(cycles);
             g_md_vdp?.ProcessVdpFifoForM68kCycles((int)Math.Min(cycles, int.MaxValue));
-            int ymTicks = TakeYmTicksForScheduling();
-            int psgTicks = TakePsgTicksForScheduling();
+            int ymTicks = IsCycleCounterYmDriveEnabled() ? TakeYmTicksForScheduling() : -1;
+            int psgTicks = IsCycleCounterPsgDriveEnabled() ? TakePsgTicksForScheduling() : -1;
             g_md_music?.YmAdvanceSystemCycles(cycles, ymTicks, psgTicks);
         }
 
@@ -683,15 +688,6 @@ namespace EutherDrive.Core.MdTracerCore
             if (g_md_bus != null && (g_md_bus.Z80BusGranted || g_md_bus.Z80Reset))
                 return;
 
-            // In continuous scheduler mode Z80 is already budgeted proportionally to
-            // M68K execution. Running an additional catch-up here can double-count Z80
-            // time during frequent BUSREQ toggles (observed as ~2x Z80 cycles/sec).
-            if (UseZ80ContinuousScheduling)
-            {
-                _syncZ80.CurrentCycle = SystemCycles;
-                return;
-            }
-
             long target = SystemCycles;
             long delta = target - _syncZ80.CurrentCycle;
             if (delta <= 0)
@@ -1032,6 +1028,7 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[Z80SCHED] mode=frame budget={z80FrameBudget} lines={lines}");
             }
 
+            int z80PendingTicks = _z80PendingTicksCarry;
             for (int vline = 0; vline < lines; vline++)
             {
                 if (g_masterSystemMode)
@@ -1060,10 +1057,50 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     int sliceM68kCycles = Z80ContinuousSliceCycles;
                     int totalM68kCycles = VDL_LINE_RENDER_MC68_CLOCK;
+                    double z80Budget = 0.0;
+
+                    void DrainZ80Ready(ref int z80Ready)
+                    {
+                        while (z80Ready > 0)
+                        {
+                            g_md_bus?.ApplyZ80BusReqLatch();
+                            if (g_md_bus?.Z80BusGranted ?? false)
+                                break;
+
+                            int z80Cycles = Math.Min(32, z80Ready);
+                            if (z80Cycles <= 0)
+                                break;
+
+                            g_md_z80.BeginSystemCycleSlice();
+                            g_md_z80.run(z80Cycles);
+                            g_md_z80.EndSystemCycleSlice();
+
+                            z80Ready -= z80Cycles;
+                            _z80SliceCount++;
+                            _z80TotalCycles += z80Cycles;
+                            if (z80Cycles > _z80MaxSlice)
+                                _z80MaxSlice = z80Cycles;
+                        }
+                    }
 
                     int m68kDone = 0;
                     while (m68kDone < totalM68kCycles)
                     {
+                        // BUSREQ can flap quickly in some drivers; when it releases,
+                        // give Z80 a short catch-up window before the next 68k slice.
+                        int releaseBoost = useCycleCounterZ80Scheduling ? TakeZ80BusReqReleaseBoost() : 0;
+                        if (releaseBoost > 0)
+                        {
+                            int boostedReady = z80PendingTicks + releaseBoost;
+                            DrainZ80Ready(ref boostedReady);
+                            z80PendingTicks = boostedReady;
+                        }
+
+                        // Try to consume previously accumulated Z80 budget before the
+                        // next 68k slice to avoid deterministic BUSREQ phase-lock.
+                        if (useCycleCounterZ80Scheduling && z80PendingTicks > 0)
+                            DrainZ80Ready(ref z80PendingTicks);
+
                         int m68kSlice = Math.Min(sliceM68kCycles, totalM68kCycles - m68kDone);
 
                         // Run M68K slice with VDP FIFO/DMA timing
@@ -1074,17 +1111,23 @@ namespace EutherDrive.Core.MdTracerCore
 
                         if (useCycleCounterZ80Scheduling)
                         {
-                            int z80Ready = TakeZ80TicksForScheduling();
-                            while (z80Ready > 0)
+                            // Preserve Z80 ticks across BUSREQ windows instead of dropping them.
+                            int z80Ready = z80PendingTicks + TakeZ80TicksForScheduling();
+                            DrainZ80Ready(ref z80Ready);
+                            z80PendingTicks = z80Ready;
+                        }
+                        else
+                        {
+                            // Legacy fallback from the Sonic2-good era: derive Z80 budget from
+                            // executed 68k cycles and drain in small slices.
+                            z80Budget += m68kSlice * Z80PerM68kRatio;
+                            while (z80Budget >= 1.0)
                             {
                                 g_md_bus?.ApplyZ80BusReqLatch();
                                 if (g_md_bus?.Z80BusGranted ?? false)
-                                {
-                                    // Match divider-driven behavior: consumed ticks do not backlog.
                                     break;
-                                }
 
-                                int z80Cycles = Math.Min(32, z80Ready);
+                                int z80Cycles = Math.Min(32, (int)Math.Floor(z80Budget));
                                 if (z80Cycles <= 0)
                                     break;
 
@@ -1092,7 +1135,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 g_md_z80.run(z80Cycles);
                                 g_md_z80.EndSystemCycleSlice();
 
-                                z80Ready -= z80Cycles;
+                                z80Budget -= z80Cycles;
                                 _z80SliceCount++;
                                 _z80TotalCycles += z80Cycles;
                                 if (z80Cycles > _z80MaxSlice)
@@ -1168,6 +1211,7 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                 }
             }
+            _z80PendingTicksCarry = useCycleCounterZ80Scheduling ? z80PendingTicks : 0;
             // In continuous scheduling mode Z80 has already been budgeted during each
             // line slice. Do not run an additional frame-budget pass.
             if (allowZ80 && !z80RunPerLine && !UseZ80ContinuousScheduling)
@@ -1524,6 +1568,21 @@ namespace EutherDrive.Core.MdTracerCore
             if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value > 0)
                 return value;
             return 8; // Default enabled
+        }
+
+        internal static void OnZ80BusReqReleased()
+        {
+            if (Z80BusReqReleaseBoostCycles <= 0)
+                return;
+            long next = (long)_z80BusReqReleaseBoostPending + Z80BusReqReleaseBoostCycles;
+            _z80BusReqReleaseBoostPending = (int)Math.Min(next, 4096L);
+        }
+
+        private static int TakeZ80BusReqReleaseBoost()
+        {
+            int pending = _z80BusReqReleaseBoostPending;
+            _z80BusReqReleaseBoostPending = 0;
+            return pending;
         }
 
         internal static void ResetZ80WaitState()

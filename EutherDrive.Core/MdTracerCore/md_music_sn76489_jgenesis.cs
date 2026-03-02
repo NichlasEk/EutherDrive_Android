@@ -10,6 +10,7 @@ namespace EutherDrive.Core.MdTracerCore
         // Set EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW=0 to force silence-on-underflow.
         private static readonly bool HoldLastSampleOnUnderflow =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
+        private static readonly int UnderflowHoldSamples = ParseUnderflowHoldSamples();
         private enum WaveOutput : byte
         {
             Negative = 0,
@@ -225,6 +226,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _ringWrite;
         private int _ringCount;
         private short _lastSample;
+        private int _underflowHoldSamplesRemaining;
 
         public void Reset()
         {
@@ -237,6 +239,7 @@ namespace EutherDrive.Core.MdTracerCore
             _ringWrite = 0;
             _ringCount = 0;
             _lastSample = 0;
+            _underflowHoldSamplesRemaining = 0;
             _stereo.Reset();
             _square[0] = new SquareWaveGenerator();
             _square[1] = new SquareWaveGenerator();
@@ -308,12 +311,27 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 short sample = ReadRing();
                 _lastSample = sample;
+                _underflowHoldSamplesRemaining = UnderflowHoldSamples;
                 return sample;
             }
 
             // Keep PSG time deterministic: when underflowing, do not synthesize
             // a new sample by advancing internal clocks out-of-band.
-            return HoldLastSampleOnUnderflow ? _lastSample : 0;
+            if (HoldLastSampleOnUnderflow && _underflowHoldSamplesRemaining > 0)
+            {
+                _underflowHoldSamplesRemaining--;
+                return _lastSample;
+            }
+            return 0;
+        }
+
+        private static int ParseUnderflowHoldSamples()
+        {
+            const int fallback = 64;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_UNDERFLOW_HOLD_SAMPLES");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 0)
+                return value;
+            return fallback;
         }
 
         private short GenerateSampleCurrentState(int[] outVol, int noiseGainPercent)

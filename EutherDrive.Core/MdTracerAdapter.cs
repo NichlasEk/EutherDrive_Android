@@ -102,7 +102,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly bool GenesisDcFilterEnabled =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GENESIS_DC_FILTER"), "0", StringComparison.Ordinal);
     private static readonly bool GenesisLowPassFilterEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GENESIS_LPF"), "1", StringComparison.Ordinal);
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GENESIS_LPF"), "0", StringComparison.Ordinal);
     private static readonly double GenesisLowPassCutoffHz =
         ParsePositiveDouble("EUTHERDRIVE_GENESIS_LPF_CUTOFF_HZ", 3390.0);
     private static readonly bool YmSecondLowPassFilterEnabled =

@@ -125,10 +125,6 @@ public sealed class SegaCdCddStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDD_SEEK"),
         "1",
         StringComparison.Ordinal);
-    private static readonly bool MotorStoppedToReadingToc = string.Equals(
-        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_CDD_MOTORSTOP_TOC"),
-        "1",
-        StringComparison.Ordinal);
     private static readonly long TraceStartTicks = Stopwatch.GetTimestamp();
 
     public byte[] Status => _status;
@@ -462,9 +458,10 @@ public sealed class SegaCdCddStub
                 {
                     _state = State.NoDisc;
                 }
-                else if (MotorStoppedToReadingToc)
+                else
                 {
-                    // Match jgenesis: transition to ReadingToc one clock after motor stop
+                    // Match jgenesis behavior: always transition to ReadingToc one clock after motor stop.
+                    // This avoids BIOS hangs waiting for drive progression from the stopped state.
                     _state = State.ReadingToc;
                 }
                 break;

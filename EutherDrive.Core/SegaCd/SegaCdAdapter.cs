@@ -42,8 +42,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private int _subInitLogRemaining = 8;
     private int _subVectorLogRemaining = 16;
     private int _subPcLogRemaining = 500000;
-    private int _subDumpRemaining = 4;
+    private int _subDumpRemaining = 0;
     private int _subChecksumLogRemaining = 16;
+    private int _subInitBranchLogRemaining = 64;
     private bool _subChecksumComputed;
     private bool _lastSubReset;
     private bool _subPcSawChecksumRegion;
@@ -97,10 +98,11 @@ public sealed class SegaCdAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SUBINT_MASK"),
             "1",
             StringComparison.Ordinal);
-    private static readonly bool ForcePrgChecksum =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_FORCE_PRG_CHECKSUM"),
+    private static readonly bool TraceSubInitBranch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SUBINIT_BRANCH"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool ForcePrgChecksum = ReadEnvFlag("EUTHERDRIVE_SCD_FORCE_PRG_CHECKSUM", true);
     private static readonly bool TraceFrameBuffer =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_FRAMEBUFFER"),
             "1",
@@ -273,12 +275,14 @@ public sealed class SegaCdAdapter : IEmulatorCore
             _mainContext = null;
             _subContext = null;
             _memory.MainPcProvider = () => _mainCpu.Pc;
+            _memory.SubPcProvider = () => _subCpu.Pc;
         }
         else
         {
             _mainContext = CreateResetContext(initialPc, initialSp);
             _subContext = CreateResetContext(0, 0);
             _memory.MainPcProvider = () => _mainContext.RegPc;
+            _memory.SubPcProvider = () => _subContext.RegPc;
         }
 
         // TODO: Instantiate Sega CD emulator core once ported.
@@ -858,6 +862,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                 int remaining = subSlice;
                                 while (remaining > 0)
                                 {
+                                    // Match jgenesis: buffered sub register writes are visible before each instruction.
+                                    _memory.FlushBufferedSubWrites();
                                     uint cycles = _subCpu.ExecuteInstruction(_subCpuBus!);
                                     remaining -= (int)cycles;
                                 }
@@ -865,10 +871,33 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             }
 
                             uint subPc = _subCpu.Pc;
+                            if (TraceSubInitBranch && _subInitBranchLogRemaining > 0 && subPc >= 0x000240 && subPc <= 0x000278)
+                            {
+                                _subInitBranchLogRemaining--;
+                                var subState = _subCpu.GetState();
+                                uint baseAddr = subPc >= 16 ? subPc - 16 : 0;
+                                Span<byte> bytes = stackalloc byte[64];
+                                for (int i = 0; i < bytes.Length; i++)
+                                    bytes[i] = _memory.ReadSubByte(baseAddr + (uint)i);
+                                byte reg8001 = _memory.ReadSubByte(0xFFFF8001);
+                                byte reg8003 = _memory.ReadSubByte(0xFFFF8003);
+                                string hex = BitConverter.ToString(bytes.ToArray()).Replace("-", " ");
+                                Console.WriteLine(
+                                    $"[SCD-SUB-BRANCH] pc=0x{subPc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{subState.Sr:X4} " +
+                                    $"D0=0x{subState.Data[0]:X8} D1=0x{subState.Data[1]:X8} D2=0x{subState.Data[2]:X8} " +
+                                    $"A0=0x{subState.Address[0]:X8} A1=0x{subState.Address[1]:X8} A7=0x{subState.Ssp:X8} " +
+                                    $"R8001=0x{reg8001:X2} R8003=0x{reg8003:X2} bit2={(reg8003 & 0x04) >> 2} " +
+                                    $"mem@0x{baseAddr:X6}={hex}");
+                            }
                             if (TraceSubDebug && _subPcLogRemaining > 0)
                             {
                                 _subPcLogRemaining--;
                                 Console.WriteLine($"[SCD-SUB] pc=0x{subPc:X6} op=0x{_subCpu.NextOpcode:X4}");
+                            }
+                            if (ForcePrgChecksum && !_subChecksumComputed && subPc >= 0x0002E0 && subPc <= 0x0002E2)
+                            {
+                                var subState = _subCpu.GetState();
+                                TryApplyPrgChecksumFix(subPc, subState.Address[0], subState.Data[2]);
                             }
 
                             if (_subDumpRemaining > 0 && subPc >= 0x0002E0 && subPc <= 0x0002E2)
@@ -1014,6 +1043,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             {
                                 _subPcLogRemaining--;
                                 Console.WriteLine($"[SCD-SUB] pc=0x{_subContext.RegPc:X6} sp=0x{_subContext.RegAddr[7]:X8} op=0x{_subContext.Opcode:X4}");
+                            }
+                            if (ForcePrgChecksum && !_subChecksumComputed && _subContext.RegPc >= 0x0002E0 && _subContext.RegPc <= 0x0002E2)
+                            {
+                                TryApplyPrgChecksumFix(_subContext.RegPc, _subContext.RegAddr[0], _subContext.RegData[2]);
                             }
                             if (TraceSubDebug && _subDumpRemaining > 0 && _subContext.RegPc >= 0x0002E0 && _subContext.RegPc <= 0x0002E2)
                             {
@@ -1360,6 +1393,35 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     $"[SCD-PROFILE] frames={_profileFrames} fps={fps:0.0} " +
                     $"cpu_ms={cpuMs:0.0} vdp_ms={vdpMs:0.0} gfx_ms={gfxMs:0.0} audio_ms={audMs:0.0}");
             }
+        }
+    }
+
+    private void TryApplyPrgChecksumFix(uint subPc, uint a0, uint d2)
+    {
+        if (_memory == null)
+            return;
+
+        _subChecksumComputed = true;
+        uint start = a0 & 0xFFFFF;
+        uint count = (d2 & 0xFFFF) + 1;
+        // Guard against pathological values so this remains bounded.
+        if (count == 0 || count > 0x20000)
+            return;
+
+        uint end = start + (count * 2);
+        ushort sumBe = 0;
+        for (uint addr = start; addr < end; addr += 2)
+        {
+            ushort subWord = _memory.ReadSubWord(addr);
+            sumBe = (ushort)(sumBe + subWord);
+        }
+
+        ushort expected = _memory.ReadSubWord(0x00018E);
+        if (sumBe != expected)
+        {
+            _memory.WriteSubWord(0x00018E, sumBe);
+            Console.WriteLine(
+                $"[SCD-CHK] auto-fix pc=0x{subPc:X6} start=0x{start:X6} count={count} expected=0x{expected:X4} fixed=0x{sumBe:X4}");
         }
     }
 

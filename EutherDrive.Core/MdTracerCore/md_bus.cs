@@ -1532,22 +1532,52 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (md_main.g_md_z80 == null)
                 return;
-
-            // BUSACK follows BUSREQ state (A11100).
-            bool nextBusGranted = IsZ80BusAcked();
-            if (_z80BusGranted == nextBusGranted)
-                return;
-
-            _z80BusGranted = nextBusGranted;
-            _z80BusGrantedChanged = true;
-            md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
-            if (_z80BusGranted)
-                ApplyPendingMbxWrites();
-
-            if (TraceZ80SigTransitions)
+            if (_z80Reset)
             {
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                Console.WriteLine($"[Z80BUSREQ-LATCH] frame={frame} grant={(_z80BusGranted ? 1 : 0)}");
+                if (_z80BusGranted)
+                {
+                    _z80BusGranted = false;
+                    _z80BusGrantedChanged = true;
+                    md_main.g_md_z80.g_active = false;
+                }
+                return;
+            }
+            if (_z80BusReqRequested != _z80BusReqLastRequested)
+            {
+                _z80BusReqLastRequested = _z80BusReqRequested;
+                _z80BusReqStableCount = 0;
+            }
+            else if (_z80BusReqStableCount != int.MaxValue)
+            {
+                _z80BusReqStableCount++;
+            }
+
+            if (!_z80BusReqRequested && _z80BusGranted)
+            {
+                _z80BusGranted = false;
+                _z80BusGrantedChanged = true;
+                md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+                if (TraceZ80SigTransitions)
+                {
+                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                    Console.WriteLine($"[Z80BUSREQ-LATCH] frame={frame} grant=0");
+                }
+                return;
+            }
+
+            if (_z80BusReqRequested && !_z80BusGranted)
+            {
+                if (Z80BusReqStableThreshold > 0 && _z80BusReqStableCount < Z80BusReqStableThreshold)
+                    return;
+                _z80BusGranted = true;
+                _z80BusGrantedChanged = true;
+                md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
+                ApplyPendingMbxWrites();
+                if (TraceZ80SigTransitions)
+                {
+                    long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                    Console.WriteLine($"[Z80BUSREQ-LATCH] frame={frame} grant=1");
+                }
             }
         }
 
@@ -3055,13 +3085,19 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static byte DecodeZ80RegByte(ushort raw, bool uds, bool lds)
         {
+            // Match MD hardware/jgenesis register lane semantics:
+            // - Word writes to A11100/A11200 use bit 8 (MSB lane)
+            // - Byte write on even address uses MSB lane
+            // - Byte write on odd address uses LSB lane
+            // Do not "fallback" to LSB for word writes; that can create spurious
+            // BUSREQ/RESET edges when low-byte noise is present.
+            if (uds && lds)
+                return (byte)((raw >> 8) & 0xFF);
             if (uds && !lds)
                 return (byte)((raw >> 8) & 0xFF);
             if (lds && !uds)
                 return (byte)(raw & 0xFF);
-            byte hi = (byte)((raw >> 8) & 0xFF);
-            byte lo = (byte)(raw & 0xFF);
-            return hi != 0 ? hi : lo;
+            return (byte)((raw >> 8) & 0xFF);
         }
 
         private void LogZ80RegDecode(string tag, uint addr, ushort raw, bool uds, bool lds, byte regByte, bool state)
@@ -3076,65 +3112,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void HandleZ80BusReqWrite(uint addr, ushort raw, bool uds, bool lds, uint logValue)
         {
-            bool jgenesisCore = md_z80.IsJgenesisCoreEnabled;
+            if (OtherEmuMode && lds && !uds)
+                return;
             bool prev = _z80BusReqRequested;
             byte regByte = DecodeZ80RegByte(raw, uds, lds);
             bool next = (regByte & 0x01) != 0;
-            if (!jgenesisCore && Z80BusReqInvert)
+            if (Z80BusReqInvert)
                 next = !next;
-
-            int minToggleCycles = Z80BusReqMinToggleCycles;
-            if (!jgenesisCore && minToggleCycles <= 0 && OtherEmuMode)
-                minToggleCycles = Z80BusReqMinToggleCyclesOtherEmu;
-            if (!jgenesisCore && prev != next && minToggleCycles > 0)
-            {
-                long now = md_main.SystemCycles;
-                if (_z80BusReqLastToggleCycle != long.MinValue)
-                {
-                    long sinceToggle = now - _z80BusReqLastToggleCycle;
-                    if (sinceToggle >= 0 && sinceToggle < minToggleCycles)
-                    {
-                        if (TraceZ80SigTransitions)
-                        {
-                            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                            Console.WriteLine(
-                                $"[Z80SIG-TRANS-SKIP] frame={frame} type=BUSREQ pc68k=0x{md_m68k.g_reg_PC:X6} " +
-                                $"addr=0x{addr:X6} prev={(prev ? 1 : 0)} next={(next ? 1 : 0)} " +
-                                $"raw=0x{raw:X4} uds={(uds ? 1 : 0)} lds={(lds ? 1 : 0)} " +
-                                $"deltaCycles={sinceToggle} min={minToggleCycles}");
-                        }
-                        next = prev;
-                    }
-                }
-            }
-
-            if (!jgenesisCore && !prev && next)
-            {
-                int maxAssertsPerFrame = Z80BusReqMaxAssertsPerFrame;
-                if (maxAssertsPerFrame <= 0 && OtherEmuMode)
-                    maxAssertsPerFrame = Z80BusReqMaxAssertsPerFrameOtherEmu;
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                if (frame != _z80BusReqAssertFrame)
-                {
-                    _z80BusReqAssertFrame = frame;
-                    _z80BusReqAssertCountInFrame = 0;
-                }
-                if (maxAssertsPerFrame > 0 && _z80BusReqAssertCountInFrame >= maxAssertsPerFrame)
-                {
-                    if (TraceZ80SigTransitions)
-                    {
-                        Console.WriteLine(
-                            $"[Z80SIG-TRANS-SKIP] frame={frame} type=BUSREQ_ASSERT pc68k=0x{md_m68k.g_reg_PC:X6} " +
-                            $"addr=0x{addr:X6} raw=0x{raw:X4} uds={(uds ? 1 : 0)} lds={(lds ? 1 : 0)} " +
-                            $"assertCount={_z80BusReqAssertCountInFrame} max={maxAssertsPerFrame}");
-                    }
-                    next = prev;
-                }
-                else
-                {
-                    _z80BusReqAssertCountInFrame++;
-                }
-            }
             
             // FIX: Implement otheremumdemu-style BUSREQ handling
             // When safe boot is active, force BUSREQ to be granted
@@ -3144,8 +3128,8 @@ namespace EutherDrive.Core.MdTracerCore
             // Sync Z80 when BUSREQ changes (like otheremumdemu does)
             if (prev != next && md_main.g_md_z80 != null)
             {
-                if (!jgenesisCore && OtherEmuMode)
-                    md_main.SyncZ80ToSystemCycles();
+                // Keep Z80 timebase coherent across BUSREQ edges in all MD paths.
+                md_main.SyncZ80ToSystemCycles();
                 if (TraceZ80Win)
                 {
                     Console.WriteLine($"[BUSREQ-TRACE] prev={prev} next={next} reset={_z80Reset}");
@@ -3156,10 +3140,7 @@ namespace EutherDrive.Core.MdTracerCore
             _z80ForceGrant = false;
             Interlocked.Increment(ref _z80BusReqWriteCount);
             if (prev != next)
-            {
-                _z80BusReqLastToggleCycle = md_main.SystemCycles;
                 Interlocked.Increment(ref _z80BusReqToggleCount);
-            }
             LogZ80RegWrite(addr, logValue);
             LogZ80RegDecode("BUSREQ", addr, raw, uds, lds, regByte, next);
             if (TraceZ80Win && _z80BusReqLogRemaining > 0)
@@ -3178,7 +3159,9 @@ namespace EutherDrive.Core.MdTracerCore
             }
             _z80BusAckLogState = -1;
             _z80BusAckLogState8 = -1;
-            if (!jgenesisCore && ResetZ80OnBusReqRelease && prev && !next && md_main.g_md_z80 != null &&
+            if (prev && !next)
+                md_main.OnZ80BusReqReleased();
+            if (ResetZ80OnBusReqRelease && prev && !next && md_main.g_md_z80 != null &&
                 _z80ResetOnBusReqRemaining > 0)
             {
                 md_main.BeginZ80ResetCycle();
@@ -3226,9 +3209,8 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     else
                     {
-                        // Legacy behavior
-                        if (OtherEmuMode)
-                            md_main.SyncZ80ToSystemCycles();
+                        // Keep Z80 aligned before RESET-release start sequence.
+                        md_main.SyncZ80ToSystemCycles();
                         md_main.BeginZ80ResetCycle();
                         md_main.g_md_music?.YmStart();
                         md_main.g_md_z80.reset(); // Reset Z80 when reset is released (sets PC=0)

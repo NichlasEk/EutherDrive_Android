@@ -4,6 +4,8 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal partial class md_m68k
     {
+        private static readonly bool TraceOp303B =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_OP303B"), "1", StringComparison.Ordinal);
         private static int _trace303bRemaining = 64;
         private void analyse_MOVE_b()
         {
@@ -91,7 +93,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_work_data.l = (uint)adressing_func_read(g_op3, g_op4, w_size); 
             adressing_func_address(g_op2, g_op1, w_size); 
             adressing_func_write(g_op2, g_op1, w_size, g_work_data.l); 
-            if (g_opcode == 0x303B && _trace303bRemaining > 0)
+            if (TraceOp303B && g_opcode == 0x303B && _trace303bRemaining > 0)
             {
                 _trace303bRemaining--;
                 Console.WriteLine(
