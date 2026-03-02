@@ -122,6 +122,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private static readonly bool PsgResampleLinear = ParsePsgResampleLinear();
     private static readonly bool PsgResampleSimple =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SIMPLE"), "1", StringComparison.OrdinalIgnoreCase);
+    private static readonly bool PsgResampleSinc =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SINC"), "0", StringComparison.OrdinalIgnoreCase);
+    private static readonly int PsgSincTaps = NormalizeEvenTaps(ParseNonNegativeInt("EUTHERDRIVE_PSG_RESAMPLE_SINC_TAPS", 24));
+    private static readonly double[] PsgSincWindow = BuildBlackmanWindow(PsgSincTaps);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
     private double _z80CycleMultiplier = ParseZ80CycleMultiplier();
@@ -251,6 +255,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         GenesisLowPassCutoffHz,
         YmSecondLowPassFilterEnabled,
         YmSecondLowPassCutoffHz);
+    private GenesisAudioFilterPort? _jgPsgPreResampleFilter;
+    private int _jgPsgPreResampleRateHz;
 
     private static int ParseAudioWarmupFrames()
     {
@@ -537,12 +543,32 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         return buffer[frame];
     }
 
+    private void EnsurePsgPreResampleFilter(int psgSampleRateHz)
+    {
+        if (psgSampleRateHz < 1000)
+            psgSampleRateHz = 1000;
+
+        if (_jgPsgPreResampleFilter != null && _jgPsgPreResampleRateHz == psgSampleRateHz)
+            return;
+
+        _jgPsgPreResampleFilter = new GenesisAudioFilterPort(
+            psgSampleRateHz,
+            psgSampleRateHz,
+            GenesisDcFilterEnabled,
+            GenesisLowPassFilterEnabled,
+            GenesisLowPassCutoffHz,
+            enableYm2ndLpf: false,
+            ym2ndLpfCutoffHz: YmSecondLowPassCutoffHz);
+        _jgPsgPreResampleRateHz = psgSampleRateHz;
+    }
+
     private void GeneratePsgResampledFrames(md_music music, int frames)
     {
         if (frames <= 0)
             return;
 
         double psgInternalSampleRate = md_main.GetGenesisMasterClockHz() / (15.0 * 16.0);
+        EnsurePsgPreResampleFilter((int)Math.Round(psgInternalSampleRate));
         double ratio = psgInternalSampleRate / OutputSampleRate;
         double phase = _psgResamplePhase;
         int neededInternal = (int)Math.Floor(phase + ((frames - 1) * ratio)) + 2;
@@ -560,7 +586,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         }
 
         for (int i = writeOffset; i < neededInternal; i++)
-            _psgInternalBuffer[i] = (short)music.PsgUpdateSample();
+        {
+            int sample = music.PsgUpdateSample();
+            if (_jgPsgPreResampleFilter != null)
+                sample = _jgPsgPreResampleFilter.FilterPsg(sample);
+            _psgInternalBuffer[i] = (short)sample;
+        }
 
         for (int i = 0; i < frames; i++)
         {
@@ -596,17 +627,48 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 if (f2 >= neededInternal) f2 = neededInternal - 1;
                 if (f3 >= neededInternal) f3 = neededInternal - 1;
 
-                sample = _psgResampleLinear
-                    ? LinearInterpolate(
-                        ReadMonoSample(_psgInternalBuffer, neededInternal, f1),
-                        ReadMonoSample(_psgInternalBuffer, neededInternal, f2),
-                        frac)
-                    : CubicInterpolate(
-                        ReadMonoSample(_psgInternalBuffer, neededInternal, f0),
-                        ReadMonoSample(_psgInternalBuffer, neededInternal, f1),
-                        ReadMonoSample(_psgInternalBuffer, neededInternal, f2),
-                        ReadMonoSample(_psgInternalBuffer, neededInternal, f3),
-                        frac);
+                if (PsgResampleSinc)
+                {
+                    int taps = PsgSincTaps;
+                    int half = taps / 2;
+                    double cutoff = 0.5 * Math.Min(1.0, OutputSampleRate / psgInternalSampleRate);
+                    double sum = 0.0;
+                    double norm = 0.0;
+
+                    for (int t = 0; t < taps; t++)
+                    {
+                        int k = t - half + 1;
+                        int src = baseIndex + k;
+                        if (src < 0) src = 0;
+                        else if (src >= neededInternal) src = neededInternal - 1;
+
+                        double x = k - frac;
+                        double coeff = Sinc(2.0 * cutoff * x) * PsgSincWindow[t] * (2.0 * cutoff);
+                        sum += ReadMonoSample(_psgInternalBuffer, neededInternal, src) * coeff;
+                        norm += coeff;
+                    }
+
+                    if (Math.Abs(norm) > 1e-18)
+                        sum /= norm;
+
+                    if (sum > short.MaxValue) sample = short.MaxValue;
+                    else if (sum < short.MinValue) sample = short.MinValue;
+                    else sample = (int)Math.Round(sum);
+                }
+                else
+                {
+                    sample = _psgResampleLinear
+                        ? LinearInterpolate(
+                            ReadMonoSample(_psgInternalBuffer, neededInternal, f1),
+                            ReadMonoSample(_psgInternalBuffer, neededInternal, f2),
+                            frac)
+                        : CubicInterpolate(
+                            ReadMonoSample(_psgInternalBuffer, neededInternal, f0),
+                            ReadMonoSample(_psgInternalBuffer, neededInternal, f1),
+                            ReadMonoSample(_psgInternalBuffer, neededInternal, f2),
+                            ReadMonoSample(_psgInternalBuffer, neededInternal, f3),
+                            frac);
+                }
             }
 
             int dst = i * PsgChannels;
@@ -822,6 +884,39 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (v > short.MaxValue) v = short.MaxValue;
         else if (v < short.MinValue) v = short.MinValue;
         return (int)Math.Round(v);
+    }
+
+    private static int NormalizeEvenTaps(int taps)
+    {
+        if (taps < 8) taps = 8;
+        if ((taps & 1) != 0) taps++;
+        return taps;
+    }
+
+    private static double[] BuildBlackmanWindow(int taps)
+    {
+        double[] w = new double[taps];
+        if (taps == 1)
+        {
+            w[0] = 1.0;
+            return w;
+        }
+
+        double denom = taps - 1;
+        for (int n = 0; n < taps; n++)
+        {
+            double a = 2.0 * Math.PI * n / denom;
+            w[n] = 0.42 - 0.5 * Math.Cos(a) + 0.08 * Math.Cos(2.0 * a);
+        }
+        return w;
+    }
+
+    private static double Sinc(double x)
+    {
+        if (Math.Abs(x) < 1e-12)
+            return 1.0;
+        double pix = Math.PI * x;
+        return Math.Sin(pix) / pix;
     }
 
     private static double GetYmResampleScale()
@@ -2117,6 +2212,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _ymLowPass2L.Reset();
         _ymLowPass2R.Reset();
         _jgAudioFilter.Reset();
+        _jgPsgPreResampleFilter?.Reset();
         // Note: _audioSystemReady is managed separately
         
         if (TraceAudioDebug)
@@ -2153,6 +2249,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         if (_ymInternalBuffer.Length > 0)
             Array.Clear(_ymInternalBuffer, 0, _ymInternalBuffer.Length);
         _jgAudioFilter.Reset();
+        _jgPsgPreResampleFilter?.Reset();
 
         if (TraceAudioDebug)
             Console.WriteLine("[AUDIO-TIMING] Audio startup state initialized (no synthetic prefill).");
@@ -3511,7 +3608,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 int s = _psgFrameBuffer[idx];
                 s = ApplyMixPercent(s, psgMixPercent);
                 s = ApplyLinearGain(s, PsgLinearGain);
-                s = _jgAudioFilter.FilterPsg(s);
                 short sample = (short)s;
                 _psgFrameBuffer[idx] = sample;
                 _psgFrameBuffer[idx + 1] = sample;

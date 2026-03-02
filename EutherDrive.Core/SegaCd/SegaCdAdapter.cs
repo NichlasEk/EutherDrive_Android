@@ -232,6 +232,12 @@ public sealed class SegaCdAdapter : IEmulatorCore
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_FORCE_NO_DISC"), "1", StringComparison.Ordinal);
         if (forceNoDisc)
             _memory.SetDisc(null);
+        if (_useM68kEmu)
+        {
+            long currentFrame = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp?.FrameCounter ?? -1;
+            Console.WriteLine($"[FRAME-DEBUG] LoadRom MainPC=0x{_mainCpu.Pc:X6} SubPC=0x{_subCpu.Pc:X6}");
+        }
+
         if (TraceCycleBudget)
             Console.Error.WriteLine($"[SCD-CYCLES] main={MainCyclesPerFrame} sub={SubCyclesPerFrame} (load)");
         Console.WriteLine($"[SCD-CONFIG] m68kemu={(_useM68kEmu ? 1 : 0)} gfxOverlay={(EnableGfxOverlay ? 1 : 0)}");
@@ -527,6 +533,13 @@ public sealed class SegaCdAdapter : IEmulatorCore
     {
         if (_memory == null || _mainBus == null)
             return;
+
+        long currentFrame = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp?.FrameCounter ?? -1;
+        if (_useM68kEmu && currentFrame % 60 == 0 && currentFrame < 300)
+        {
+            Console.WriteLine($"[FRAME-DEBUG] frame={currentFrame} MainPC=0x{_mainCpu.Pc:X6} SubPC=0x{_subCpu.Pc:X6}");
+        }
+
         if (_useM68kEmu)
         {
             if (_mainCpuBus == null || _subCpuBus == null)
@@ -788,6 +801,15 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                 _mainPcB3bLogStreakMark = 0;
                             }
 
+                            if (_mainCpu.Pc == 0x00132C && frameCounter % 60 == 0)
+                            {
+                                var state = _mainCpu.GetState();
+                                uint w1 = _mainCpuBus!.ReadWord(_mainCpu.Pc + 2);
+                                uint w2 = _mainCpuBus!.ReadWord(_mainCpu.Pc + 4);
+                                uint w3 = _mainCpuBus!.ReadWord(_mainCpu.Pc + 6);
+                                Console.WriteLine($"[MAIN-STUCK] PC=132C OP={_mainCpu.NextOpcode:X4} w1={w1:X4} w2={w2:X4} w3={w3:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
+                            }
+
                             uint cycles = _mainCpu.ExecuteInstruction(_mainCpuBus!);
                             remaining -= (int)cycles;
                             EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)cycles;
@@ -872,6 +894,16 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                 int remaining = subSlice;
                                 while (remaining > 0)
                                 {
+                                    if (_subCpu.Pc == 0x0003D4 && frameCounter % 60 == 0)
+                                    {
+                                        Console.WriteLine($"[SUB-STUCK] PC=3D4 OP={_subCpu.NextOpcode:X4}");
+                                    }
+                                    if (_subCpu.Pc == 0x0003DA && frameCounter % 60 == 0)
+                                    {
+                                        var state = _subCpu.GetState();
+                                        Console.WriteLine($"[SUB-STUCK] PC=3DA OP={_subCpu.NextOpcode:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
+                                    }
+
                                     // Match jgenesis: buffered sub register writes are visible before each instruction.
                                     _memory.FlushBufferedSubWrites();
                                     uint cycles = _subCpu.ExecuteInstruction(_subCpuBus!);

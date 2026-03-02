@@ -2198,8 +2198,11 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
 
-            // 0xC00010/11 SN76489 (PSG) – tills ljud kopplas in, ignorera
-            if (in_address == 0xC00010 || in_address == 0xC00011)
+            // SN76489 PSG byte-write decode (jgenesis/hardware-compatible):
+            // within VDP window, PSG responds on odd offsets 0x11/13/15/17 (mirrored).
+            uint vdpLow = in_address & 0x1Fu;
+            bool isPsgWrite = vdpLow == 0x11u || vdpLow == 0x13u || vdpLow == 0x15u || vdpLow == 0x17u;
+            if (in_address >= 0xC00000 && in_address <= 0xDFFFFF && isPsgWrite)
             {
                 if (md_main.g_md_music == null)
                 {

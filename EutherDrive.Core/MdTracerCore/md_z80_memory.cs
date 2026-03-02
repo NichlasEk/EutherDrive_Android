@@ -1891,29 +1891,40 @@ namespace EutherDrive.Core.MdTracerCore
                     LogBootIo("write", a, in_data);
                 MaybeLogZ80AfterFlagRet("Z80AFTERRET-IO", "write", a, in_data);
             }
-            else if (a == 0x7F11)
+            else if (a >= 0x7F00 && a <= 0x7F1F)
             {
-                // SN76489 PSG
-                if (TraceZ80PsgWrite)
-                    Console.WriteLine($"[Z80-PSG-WRITE] addr=0x{a:X4} val=0x{in_data:X2} PC=0x{DebugPc:X4}");
-                if (Z80PsgWaitCycles > 0)
-                    AddWaitCycles(Z80PsgWaitCycles);
-                md_psg_trace.TraceWrite("Z80", a, in_data, DebugPc);
-                md_main.g_md_music.PsgWrite(in_data);
-                RecordPsgWrite();
+                // VDP/PSG area. PSG responds on odd offsets 0x11/13/15/17 (mirrored).
+                int low = a & 0x1F;
+                bool isPsgWrite = low == 0x11 || low == 0x13 || low == 0x15 || low == 0x17;
+                if (isPsgWrite)
+                {
+                    if (TraceZ80PsgWrite)
+                        Console.WriteLine($"[Z80-PSG-WRITE] addr=0x{a:X4} val=0x{in_data:X2} PC=0x{DebugPc:X4}");
+                    if (Z80PsgWaitCycles > 0)
+                        AddWaitCycles(Z80PsgWaitCycles);
+                    md_psg_trace.TraceWrite("Z80", a, in_data, DebugPc);
+                    md_main.g_md_music.PsgWrite(in_data);
+                    RecordPsgWrite();
+                    if (ShouldTraceBootIo())
+                        LogBootIo("write", a, in_data);
+                    if (TraceZ80Ym && _z80YmLogRemaining > 0)
+                    {
+                        Console.WriteLine($"[Z80YM] write pc=0x{g_reg_PC:X4} addr=0x{a:X4} val=0x{in_data:X2}");
+                        if (_z80YmLogRemaining != int.MaxValue)
+                            _z80YmLogRemaining--;
+                    }
+                    MaybeLogZ80AfterFlagRet("Z80AFTERRET-PSG", "write", a, in_data);
+                    return;
+                }
+
+                // Unmapped VDP/IO bytes
                 if (ShouldTraceBootIo())
                     LogBootIo("write", a, in_data);
-                if (TraceZ80Ym && _z80YmLogRemaining > 0)
-                {
-                    Console.WriteLine($"[Z80YM] write pc=0x{g_reg_PC:X4} addr=0x{a:X4} val=0x{in_data:X2}");
-                    if (_z80YmLogRemaining != int.MaxValue)
-                        _z80YmLogRemaining--;
-                }
-                MaybeLogZ80AfterFlagRet("Z80AFTERRET-PSG", "write", a, in_data);
+                MaybeLogZ80AfterFlagRet("Z80AFTERRET-IO", "write", a, in_data);
             }
-            else if (a >= 0x7F00 && a <= 0x7FFF)
+            else if (a >= 0x7F20 && a <= 0x7FFF)
             {
-                // Ej mappat (förutom PSG på 0x7F11)
+                // Invalid/unmapped area
                 if (ShouldTraceBootIo())
                     LogBootIo("write", a, in_data);
                 MaybeLogZ80AfterFlagRet("Z80AFTERRET-IO", "write", a, in_data);

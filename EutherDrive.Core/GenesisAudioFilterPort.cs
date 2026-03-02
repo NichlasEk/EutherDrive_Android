@@ -53,24 +53,32 @@ internal sealed class GenesisAudioFilterPort
 
     public int FilterYm(int sample, bool rightChannel)
     {
-        int filtered = sample;
+        double filtered = sample;
         if (_enableDcBlock)
             filtered = rightChannel ? _ymDcR.Apply(filtered) : _ymDcL.Apply(filtered);
         if (_enableYm2ndLpf)
             filtered = rightChannel ? _ym2ndLpfR.Apply(filtered) : _ym2ndLpfL.Apply(filtered);
         if (_enableGenesisLpf)
             filtered = rightChannel ? _ymGenLpfR.Apply(filtered) : _ymGenLpfL.Apply(filtered);
-        return filtered;
+        return ClampToInt16(filtered);
     }
 
     public int FilterPsg(int sample)
     {
-        int filtered = sample;
+        double filtered = sample;
         if (_enableDcBlock)
             filtered = _psgDc.Apply(filtered);
         if (_enableGenesisLpf)
             filtered = _psgGenLpf.Apply(filtered);
-        return filtered;
+        return ClampToInt16(filtered);
+    }
+
+    private static int ClampToInt16(double value)
+    {
+        int v = (int)Math.Round(value);
+        if (v > short.MaxValue) return short.MaxValue;
+        if (v < short.MinValue) return short.MinValue;
+        return v;
     }
 
     private sealed class FirstOrderLowPass
@@ -87,13 +95,10 @@ internal sealed class GenesisAudioFilterPort
             _alpha = dt / (rc + dt);
         }
 
-        public int Apply(int sample)
+        public double Apply(double sample)
         {
             _state += _alpha * (sample - _state);
-            int v = (int)Math.Round(_state);
-            if (v > short.MaxValue) return short.MaxValue;
-            if (v < short.MinValue) return short.MinValue;
-            return v;
+            return _state;
         }
 
         public void Reset()
@@ -117,15 +122,12 @@ internal sealed class GenesisAudioFilterPort
             _alpha = rc / (rc + dt);
         }
 
-        public int Apply(int sample)
+        public double Apply(double sample)
         {
             double output = _alpha * (_prevOutput + sample - _prevInput);
             _prevInput = sample;
             _prevOutput = output;
-            int v = (int)Math.Round(output);
-            if (v > short.MaxValue) return short.MaxValue;
-            if (v < short.MinValue) return short.MinValue;
-            return v;
+            return output;
         }
 
         public void Reset()
@@ -173,15 +175,12 @@ internal sealed class GenesisAudioFilterPort
             _a2 = a2 / a0;
         }
 
-        public int Apply(int sample)
+        public double Apply(double sample)
         {
             double output = _b0 * sample + _z1;
             _z1 = _b1 * sample - _a1 * output + _z2;
             _z2 = _b2 * sample - _a2 * output;
-            int v = (int)Math.Round(output);
-            if (v > short.MaxValue) return short.MaxValue;
-            if (v < short.MinValue) return short.MinValue;
-            return v;
+            return output;
         }
 
         public void Reset()
