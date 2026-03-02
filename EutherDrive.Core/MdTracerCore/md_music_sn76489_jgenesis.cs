@@ -6,8 +6,10 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private static readonly bool AudioMuteFmPsg =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_MUTE_FMPSG"), "1", StringComparison.Ordinal);
+        // Default to hold-last to avoid audible gating/crackle when the PSG ring underflows.
+        // Set EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW=0 to force silence-on-underflow.
         private static readonly bool HoldLastSampleOnUnderflow =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW"), "1", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
         private enum WaveOutput : byte
         {
             Negative = 0,

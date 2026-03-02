@@ -6,8 +6,10 @@ namespace EutherDrive.Core.MdTracerCore
 {
     internal sealed class JgYm2612
     {
+        // Default to hold-last to avoid audible gating when the YM ring underflows.
+        // Set EUTHERDRIVE_YM_HOLD_LAST_ON_UNDERFLOW=0 to force silence-on-underflow.
         private static readonly bool HoldLastSampleOnUnderflow =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_HOLD_LAST_ON_UNDERFLOW"), "1", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_HOLD_LAST_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
         private static readonly bool TraceDacRate =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DACRATE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceJgYmWrites =

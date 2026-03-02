@@ -1185,6 +1185,9 @@ namespace EutherDrive.Core.MdTracerCore
                 g_md_z80.EndSystemCycleSlice();
             }
 
+            // Keep YM timer progression pinned to frame cadence as a safety net.
+            g_md_music?.YmEnsureAdvanceEachFrame();
+
             MaybeInjectMbx(frame);
             g_md_music?.FlushDacRateFrame(frame);
             g_md_music?.FlushAudioStats(frame);

@@ -2494,6 +2494,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 MaybeLogPerformance();
             }
 
+        // Safety net for YM timer cadence (helps avoid tempo/jitter artifacts).
+        md_main.g_md_music?.YmEnsureAdvanceEachFrame();
+
         // Blitta VDP RGB555 -> UI BGRA staging buffer
         EnsureFramebufferInitialized("RunFrame");
              var vdpBuffer = _vdp.GetFrameBuffer();
@@ -3308,9 +3311,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int frames;
         lock (_stateLock)
         {
-            if (frame == _psgLastFrame && _audioGeneratedThisFrame)
-                return _psgFrameSamples > 0 ? _psgFrameBuffer.AsSpan(0, _psgFrameSamples) : ReadOnlySpan<short>.Empty;
-
             _psgFrameAccumulator += (double)OutputSampleRate / GetTargetFps();
             frames = (int)_psgFrameAccumulator;
             if (frames <= 0)
@@ -3370,15 +3370,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             {
                 Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBufferForFrames lock frame={md_main.g_md_vdp?.FrameCounter ?? -1} _audioSystemReady={(_audioSystemReady ? 1 : 0)}");
             }
-            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
-            if (frame == _psgLastFrame && _audioGeneratedThisFrame)
-                return _psgFrameSamples > 0 ? _psgFrameBuffer.AsSpan(0, _psgFrameSamples) : ReadOnlySpan<short>.Empty;
-
-            if (frame != _psgLastFrame)
-            {
-                _psgLastFrame = frame;
-                _audioGeneratedThisFrame = false;
-            }
+            _psgLastFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
             _audioGeneratedThisFrame = true;
             
             int samples = frames * PsgChannels;
