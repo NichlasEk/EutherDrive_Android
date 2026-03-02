@@ -116,9 +116,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_LINEAR"), "1", StringComparison.OrdinalIgnoreCase);
     private static readonly bool YmResampleSimple =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_SIMPLE"), "1", StringComparison.OrdinalIgnoreCase);
-    private static readonly bool PsgResampleLinear =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_LINEAR"), "1", StringComparison.OrdinalIgnoreCase);
+    private static readonly bool PsgResampleLinear = ParsePsgResampleLinear();
     private static readonly bool PsgResampleSimple =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SIMPLE"), "1", StringComparison.OrdinalIgnoreCase);
     private static readonly bool SkipVdpRenderEnabled =
@@ -827,6 +825,26 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return value;
         }
         return 1.0;
+    }
+
+    private static bool ParsePsgResampleLinear()
+    {
+        // PSG is rich in sharp edges; cubic interpolation can introduce audible ringing.
+        // Default to linear unless explicitly forced to cubic/0.
+        string? mode = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE");
+        if (!string.IsNullOrWhiteSpace(mode))
+        {
+            if (string.Equals(mode, "cubic", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (string.Equals(mode, "linear", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        string? legacy = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_LINEAR");
+        if (!string.IsNullOrWhiteSpace(legacy))
+            return !string.Equals(legacy, "0", StringComparison.OrdinalIgnoreCase);
+
+        return true;
     }
 
     private static double GetFmMixGain()

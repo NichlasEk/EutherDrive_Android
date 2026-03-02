@@ -11,6 +11,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool HoldLastSampleOnUnderflow =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
         private static readonly int UnderflowHoldSamples = ParseUnderflowHoldSamples();
+        private static readonly int MaxBufferedSamples = ParseMaxBufferedSamples();
         private enum WaveOutput : byte
         {
             Negative = 0,
@@ -18,6 +19,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private static WaveOutput Invert(WaveOutput value) => value == WaveOutput.Negative ? WaveOutput.Positive : WaveOutput.Negative;
+        private static double ToSampleAmplitude(WaveOutput value) => value == WaveOutput.Positive ? 1.0 : 0.0;
 
         private sealed class SquareWaveGenerator
         {
@@ -48,8 +50,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             public double Sample(double[] volumeTable)
             {
-                double output = CurrentOutput == WaveOutput.Positive ? 1.0 : -1.0;
-                return output * volumeTable[Attenuation];
+                return ToSampleAmplitude(CurrentOutput) * volumeTable[Attenuation];
             }
         }
 
@@ -85,7 +86,7 @@ namespace EutherDrive.Core.MdTracerCore
             public ushort Resolve(ushort tone2)
             {
                 if (Kind == NoiseReloadKind.Tone2)
-                    return tone2 == 0 ? (ushort)1 : tone2;
+                    return tone2;
                 return Value;
             }
         }
@@ -115,8 +116,6 @@ namespace EutherDrive.Core.MdTracerCore
                     return;
 
                 Counter = CounterReload.Resolve(tone2);
-                if (Counter == 0)
-                    Counter = 1;
                 CurrentCounterOutput = Invert(CurrentCounterOutput);
                 if (CurrentCounterOutput == WaveOutput.Positive)
                 {
@@ -126,8 +125,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             public double Sample(double[] volumeTable)
             {
-                double output = CurrentLfsrOutput == WaveOutput.Positive ? 1.0 : -1.0;
-                return output * volumeTable[Attenuation];
+                return ToSampleAmplitude(CurrentLfsrOutput) * volumeTable[Attenuation];
             }
 
             private void ShiftLfsr()
@@ -190,8 +188,6 @@ namespace EutherDrive.Core.MdTracerCore
 
         private const int SnDivider = 16;
         private const ushort InitialLfsr = 0x8000;
-        private const float PsgSoftclipScale = 12000f;
-        private const float PsgDcBlockR = 0.995f;
 
         private static readonly double[] AttenuationToVolume = new[]
         {
@@ -219,8 +215,6 @@ namespace EutherDrive.Core.MdTracerCore
         private StereoControl _stereo;
         private int _divider = SnDivider;
         private double _mclkRemainder;
-        private float _dcBlockX1;
-        private float _dcBlockY1;
         private short[] _ringBuffer = new short[32768];
         private int _ringRead;
         private int _ringWrite;
@@ -233,8 +227,6 @@ namespace EutherDrive.Core.MdTracerCore
             _latchedRegister = Register.Tone0;
             _divider = SnDivider;
             _mclkRemainder = 0;
-            _dcBlockX1 = 0;
-            _dcBlockY1 = 0;
             _ringRead = 0;
             _ringWrite = 0;
             _ringCount = 0;
@@ -307,6 +299,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             _ = outVol;
             _ = noiseGainPercent;
+            TrimExcessBufferedSamples();
             if (_ringCount > 0)
             {
                 short sample = ReadRing();
@@ -327,9 +320,20 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static int ParseUnderflowHoldSamples()
         {
-            const int fallback = 64;
+            const int fallback = 0;
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_UNDERFLOW_HOLD_SAMPLES");
             if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 0)
+                return value;
+            return fallback;
+        }
+
+        private static int ParseMaxBufferedSamples()
+        {
+            // Keep PSG low-latency. If producer/consumer drift, drop oldest samples
+            // rather than letting stale SFX play far too late.
+            const int fallback = 1024;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_MAX_BUFFERED_SAMPLES");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 16)
                 return value;
             return fallback;
         }
@@ -351,14 +355,10 @@ namespace EutherDrive.Core.MdTracerCore
             if (AudioMuteFmPsg)
                 return 0;
 
-            float mixed = (float)sampleL;
-            float dcBlocked = mixed - _dcBlockX1 + (PsgDcBlockR * _dcBlockY1);
-            _dcBlockX1 = mixed;
-            _dcBlockY1 = dcBlocked;
-            float scaled = dcBlocked * PsgSoftclipScale;
+            double scaled = sampleL * short.MaxValue;
             if (scaled > short.MaxValue) scaled = short.MaxValue;
             else if (scaled < short.MinValue) scaled = short.MinValue;
-            return (short)MathF.Round(scaled);
+            return (short)Math.Round(scaled);
         }
 
         private static int GetOutVol(int[] outVol, int index)
@@ -403,6 +403,20 @@ namespace EutherDrive.Core.MdTracerCore
                 _ringRead = 0;
             _ringCount--;
             return sample;
+        }
+
+        private void TrimExcessBufferedSamples()
+        {
+            int maxBuffered = MaxBufferedSamples;
+            if (maxBuffered <= 0 || _ringCount <= maxBuffered)
+                return;
+
+            int drop = _ringCount - maxBuffered;
+            _ringRead += drop;
+            int cap = RingCapacity;
+            if (_ringRead >= cap)
+                _ringRead %= cap;
+            _ringCount = maxBuffered;
         }
 
         private bool Tick()
