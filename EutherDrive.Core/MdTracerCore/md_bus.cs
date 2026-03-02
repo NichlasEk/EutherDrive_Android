@@ -2719,7 +2719,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
 
-            if (in_address >= 0xFF0000)
+            if (in_address >= 0xE00000)
             {
                 LogRamRange(in_address, 4, write: true, value: in_data);
                 md_m68k.write32(in_address, in_data);
