@@ -20,6 +20,7 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
     private readonly int[] _buffers = new int[4]; // Increased from 2 to 4 for better buffering
     private readonly int[] _scratch = new int[1];
     private byte[] _tempBuffer = Array.Empty<byte>();
+    private short[] _stereoScratch = Array.Empty<short>();
     private int _nextBuffer;
     private int _sampleRate;
     private int _channels = 2;
@@ -95,34 +96,36 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
         ReadOnlySpan<short> span = samples;
         if (_channels < 2)
         {
-            var expanded = new short[samples.Length * 2];
+            int stereoSamples = samples.Length * 2;
+            EnsureStereoScratch(stereoSamples);
             for (int i = 0, j = 0; i < samples.Length; i++, j += 2)
             {
                 var sample = samples[i];
-                expanded[j + 0] = sample;
-                expanded[j + 1] = sample;
+                _stereoScratch[j + 0] = sample;
+                _stereoScratch[j + 1] = sample;
             }
-            span = expanded;
+            span = _stereoScratch.AsSpan(0, stereoSamples);
         }
 
         int bytes = span.Length * sizeof(short);
         EnsureTempBuffer(bytes);
+        MemoryMarshal.AsBytes(span).CopyTo(_tempBuffer);
 
-        unsafe
+        GCHandle handle = GCHandle.Alloc(_tempBuffer, GCHandleType.Pinned);
+        try
         {
-            fixed (byte* dest = _tempBuffer)
-            fixed (short* src = span)
-            {
-                Buffer.MemoryCopy(src, dest, bytes, bytes);
-                alBufferData(_buffers[_nextBuffer], AL_FORMAT_STEREO16, (IntPtr)dest, bytes, _sampleRate);
-                LogAlError("alBufferData");
-
-                _scratch[0] = _buffers[_nextBuffer];
-                alSourceQueueBuffers(_source, 1, _scratch);
-                LogAlError("alSourceQueueBuffers");
-                _nextBuffer = (_nextBuffer + 1) % _buffers.Length;
-            }
+            alBufferData(_buffers[_nextBuffer], AL_FORMAT_STEREO16, handle.AddrOfPinnedObject(), bytes, _sampleRate);
+            LogAlError("alBufferData");
         }
+        finally
+        {
+            handle.Free();
+        }
+
+        _scratch[0] = _buffers[_nextBuffer];
+        alSourceQueueBuffers(_source, 1, _scratch);
+        LogAlError("alSourceQueueBuffers");
+        _nextBuffer = (_nextBuffer + 1) % _buffers.Length;
 
         alGetSourcei(_source, AL_SOURCE_STATE, out int state);
         if (state != AL_PLAYING)
@@ -150,6 +153,12 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
     {
         if (_tempBuffer.Length < bytes)
             _tempBuffer = new byte[bytes];
+    }
+
+    private void EnsureStereoScratch(int samples)
+    {
+        if (_stereoScratch.Length < samples)
+            _stereoScratch = new short[samples];
     }
 
     private void ProcessBuffers()

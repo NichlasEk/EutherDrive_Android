@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -12,11 +13,11 @@ namespace EutherDrive.Audio;
 public sealed class PwCatAudioSink : IAudioSink, IDisposable
 {
     private const int QueueCapacity = 64;
-    private readonly Channel<byte[]> _channel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(QueueCapacity)
+    private readonly Channel<AudioChunk> _channel = Channel.CreateBounded<AudioChunk>(new BoundedChannelOptions(QueueCapacity)
     {
         SingleReader = true,
         SingleWriter = true,
-        FullMode = BoundedChannelFullMode.DropOldest
+        FullMode = BoundedChannelFullMode.Wait
     });
 
     private Process? _process;
@@ -29,6 +30,18 @@ public sealed class PwCatAudioSink : IAudioSink, IDisposable
     private NullAudioSink? _nullSink;
 
     public bool IsFallback => _fallback;
+
+    private readonly struct AudioChunk
+    {
+        public AudioChunk(byte[] buffer, int length)
+        {
+            Buffer = buffer;
+            Length = length;
+        }
+
+        public byte[] Buffer { get; }
+        public int Length { get; }
+    }
 
     public void Start(int sampleRate, int channels)
     {
@@ -99,15 +112,26 @@ public sealed class PwCatAudioSink : IAudioSink, IDisposable
         if (_process == null || _process.HasExited)
             return;
 
-        var bytes = new byte[interleaved.Length * sizeof(short)];
-        MemoryMarshal.Cast<short, byte>(interleaved).CopyTo(bytes);
+        int byteLength = interleaved.Length * sizeof(short);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(byteLength);
+        MemoryMarshal.Cast<short, byte>(interleaved).CopyTo(buffer.AsSpan(0, byteLength));
+        AudioChunk chunk = new AudioChunk(buffer, byteLength);
 
-        if (!_channel.Writer.TryWrite(bytes))
+        if (!_channel.Writer.TryWrite(chunk))
         {
-            Interlocked.Increment(ref _overflows);
+            if (_channel.Reader.TryRead(out var dropped))
+            {
+                ReturnBuffer(dropped);
+            }
+
+            if (!_channel.Writer.TryWrite(chunk))
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+                Interlocked.Increment(ref _overflows);
 #if DEBUG
-            Console.WriteLine($"[PwCatAudioSink] overflow count={_overflows}");
+                Console.WriteLine($"[PwCatAudioSink] overflow count={_overflows}");
 #endif
+            }
         }
     }
 
@@ -127,6 +151,7 @@ public sealed class PwCatAudioSink : IAudioSink, IDisposable
         _writerThread?.Join(1000);
         _stderrThread?.Join(1000);
         _stdoutThread?.Join(1000);
+        DrainQueuedChunks();
 
         try
         {
@@ -155,18 +180,34 @@ public sealed class PwCatAudioSink : IAudioSink, IDisposable
                 if (_process.HasExited)
                 {
                     Console.WriteLine($"[PwCatAudioSink] pw-cat exited (code={_process.ExitCode}).");
+                    ReturnBuffer(chunk);
                     return;
                 }
                 try
                 {
-                    stdin.Write(chunk, 0, chunk.Length);
+                    stdin.Write(chunk.Buffer, 0, chunk.Length);
+                    ReturnBuffer(chunk);
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[PwCatAudioSink] write error: {ex.Message}");
+                    ReturnBuffer(chunk);
                     return;
                 }
             }
+        }
+    }
+
+    private static void ReturnBuffer(AudioChunk chunk)
+    {
+        ArrayPool<byte>.Shared.Return(chunk.Buffer);
+    }
+
+    private void DrainQueuedChunks()
+    {
+        while (_channel.Reader.TryRead(out var chunk))
+        {
+            ReturnBuffer(chunk);
         }
     }
 
