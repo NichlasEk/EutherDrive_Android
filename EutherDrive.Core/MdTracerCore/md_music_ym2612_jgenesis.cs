@@ -83,7 +83,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 1:
                     _lastYmVal = value;
                     _lastYmSource = source;
-                    _ym.WriteData(value);
+                    _ym.WriteData1(value);
                     _rtWritesTotal++;
                     MaybeTraceKeyOnOff(port, value, source);
                     RecordWriteRate();
@@ -111,7 +111,7 @@ namespace EutherDrive.Core.MdTracerCore
                 case 3:
                     _lastYmVal = value;
                     _lastYmSource = source;
-                    _ym.WriteData(value);
+                    _ym.WriteData2(value);
                     _rtWritesTotal++;
                     MaybeTraceKeyOnOff(port, value, source);
                     RecordWriteRate();
@@ -1396,8 +1396,8 @@ namespace EutherDrive.Core.MdTracerCore
         private bool _dacChannelEnabled;
         private byte _dacChannelSample;
         private readonly LowFrequencyOscillator _lfo = new LowFrequencyOscillator();
-        private byte _selectedRegister;
-        private RegisterGroup _selectedRegisterGroup;
+        private byte _selectedRegister1;
+        private byte _selectedRegister2;
         private byte _sampleDivider;
         private byte _busyCyclesRemaining;
         private readonly TimerA _timerA = new TimerA();
@@ -1415,8 +1415,8 @@ namespace EutherDrive.Core.MdTracerCore
             _quantizeOutput = quantizeOutput;
             _emulateLadderEffect = emulateLadderEffect;
             _busyBehavior = busyBehavior;
-            _selectedRegister = 0;
-            _selectedRegisterGroup = RegisterGroup.One;
+            _selectedRegister1 = 0;
+            _selectedRegister2 = 0;
             _sampleDivider = FmSampleDivider;
             _busyCyclesRemaining = 0;
         }
@@ -1432,8 +1432,8 @@ namespace EutherDrive.Core.MdTracerCore
             _dacChannelEnabled = false;
             _dacChannelSample = 0;
             _lfo.SetEnabled(false);
-            _selectedRegister = 0;
-            _selectedRegisterGroup = RegisterGroup.One;
+            _selectedRegister1 = 0;
+            _selectedRegister2 = 0;
             _sampleDivider = FmSampleDivider;
             _busyCyclesRemaining = 0;
             _timerA.WriteControl(new TimerControl { Enabled = false, OverflowFlagEnabled = false, ClearOverflowFlag = true });
@@ -1445,27 +1445,22 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void WriteAddress1(byte value)
         {
-            _selectedRegister = value;
-            _selectedRegisterGroup = RegisterGroup.One;
+            _selectedRegister1 = value;
         }
 
         public void WriteAddress2(byte value)
         {
-            _selectedRegister = value;
-            _selectedRegisterGroup = RegisterGroup.Two;
+            _selectedRegister2 = value;
         }
 
-        public void WriteData(byte value)
+        public void WriteData1(byte value)
         {
-            switch (_selectedRegisterGroup)
-            {
-                case RegisterGroup.One:
-                    WriteGroup1Register(_selectedRegister, value);
-                    break;
-                case RegisterGroup.Two:
-                    WriteGroup2Register(_selectedRegister, value);
-                    break;
-            }
+            WriteGroup1Register(_selectedRegister1, value);
+        }
+
+        public void WriteData2(byte value)
+        {
+            WriteGroup2Register(_selectedRegister2, value);
         }
 
         private void WriteGroup1Register(byte register, byte value)

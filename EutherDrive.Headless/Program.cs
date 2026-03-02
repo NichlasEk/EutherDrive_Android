@@ -1117,6 +1117,20 @@ class Program
                     $"a={mdHoldA} b={mdHoldB} c={mdHoldC} start={mdHoldStart} x={mdHoldX} y={mdHoldY} z={mdHoldZ} mode={mdHoldMode}");
             }
 
+            var dumpFrames = new HashSet<int>();
+            string? dumpFramesRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+            if (!string.IsNullOrWhiteSpace(dumpFramesRaw))
+            {
+                foreach (string part in dumpFramesRaw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (int.TryParse(part.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int frameIndex))
+                        dumpFrames.Add(frameIndex);
+                }
+            }
+            int? dumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+            if (dumpFrameSingle.HasValue)
+                dumpFrames.Add(dumpFrameSingle.Value);
+
             for (int frame = 0; frame < framesToRun; frame++)
             {
                 if (mdInputEnabled)
@@ -1246,7 +1260,7 @@ class Program
                 }
                 Console.WriteLine($"[HEADLESS] Frame {frame} completed");
 
-                if (frame == 0 || frame == 5 || frame == 10)
+                if (frame == 0 || frame == 5 || frame == 10 || dumpFrames.Contains(frame))
                 {
                     string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
                     adapter.DumpFrameBufferToPpm(ppmPath);

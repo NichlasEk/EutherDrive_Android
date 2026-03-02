@@ -258,7 +258,14 @@ internal sealed class CdCue
     private static string ResolveCueFilePath(string cuePath, string fileName)
     {
         string dir = Path.GetDirectoryName(cuePath) ?? string.Empty;
-        return Path.GetFullPath(Path.Combine(dir, fileName));
+        string combined = Path.Combine(dir, fileName);
+        if (File.Exists(combined))
+            return Path.GetFullPath(combined);
+
+        // Fallback: try filename only in the same directory
+        string nameOnly = Path.GetFileName(fileName);
+        string fallback = Path.Combine(dir, nameOnly);
+        return Path.GetFullPath(fallback);
     }
 
     private static int GuessSectorSize(string path)

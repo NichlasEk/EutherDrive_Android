@@ -88,6 +88,7 @@ public sealed class SegaCdCddStub
     private bool _trayAutoClose;
     private CdTime? _nextClockPlay;
     private bool _interruptPending;
+    private bool _subcodeInterruptPending;
     private readonly byte[] _status = new byte[10];
     private readonly byte[] _sectorBuffer = new byte[CdRom.BytesPerSector];
     private CdRom? _disc;
@@ -129,6 +130,7 @@ public sealed class SegaCdCddStub
 
     public byte[] Status => _status;
     public bool InterruptPending => _interruptPending;
+    public bool SubcodeInterruptPending => _subcodeInterruptPending;
 
     public bool PlayingAudio => IsPlayingAudio();
     public (double Left, double Right) LastAudioSample => (_lastAudioLeft, _lastAudioRight);
@@ -331,6 +333,11 @@ public sealed class SegaCdCddStub
         _interruptPending = false;
     }
 
+    public void AcknowledgeSubcodeInterrupt()
+    {
+        _subcodeInterruptPending = false;
+    }
+
     public void Clock44100Hz(SegaCdCdcStub cdc, WordRam wordRam, byte[] prgRam, bool prgRamAccessible, SegaCdPcmStub pcm)
     {
         AdjustFaderVolume();
@@ -357,8 +364,9 @@ public sealed class SegaCdCddStub
     {
         State prevState = _state;
         _interruptPending = true;
+        _subcodeInterruptPending = true;
         if (LogCddIrq)
-            Console.WriteLine($"[SCD-CDD-IRQ] pending=1 state={_state} time={CurrentTime()}");
+            Console.WriteLine($"[SCD-CDD-IRQ] pending=1 subcode=1 state={_state} time={CurrentTime()}");
         if (TraceCddState)
             Console.Error.WriteLine($"[SCD-CDD-STATE] t={TraceStamp()} state={_state} time={CurrentTime()}");
         if (TraceCddSeek && _state == State.Seeking)

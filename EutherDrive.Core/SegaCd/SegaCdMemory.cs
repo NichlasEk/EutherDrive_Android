@@ -114,11 +114,11 @@ public sealed class SegaCdMemory
     private bool _ramCartWritesEnabled = true;
     private bool _backupRamDirty;
     private uint _timerDivider = TimerDivider;
-    private readonly long[] _subAckCounts = new long[6];
+    private readonly long[] _subAckCounts = new long[7];
     public const uint SubBusAddressMask = 0x0FFFFF;
     private const uint SubRegisterAddressMask = 0x01FF;
 
-    private readonly BufferedWrite[] _bufferedSubWrites = new BufferedWrite[32];
+    private readonly BufferedWrite[] _bufferedSubWrites = new BufferedWrite[128];
     private int _bufferedSubWriteCount;
     public Func<uint>? MainPcProvider { get; set; }
     public Func<uint>? SubPcProvider { get; set; }
@@ -853,7 +853,7 @@ public sealed class SegaCdMemory
             case 0x0000:
                 return (byte)(((Registers.LedGreen ? 1 : 0) << 1) | (Registers.LedRed ? 1 : 0));
             case 0x0001:
-                return 0x01;
+                return (byte)(((Registers.SubSoftwareInterruptPending ? 1 : 0) << 1) | (Registers.MainSoftwareInterruptPending ? 1 : 0));
             case 0x0002:
                 return Registers.PrgRamWriteProtect;
             case 0x0003:
@@ -945,7 +945,7 @@ public sealed class SegaCdMemory
     {
         uint reg = address & SubRegisterAddressMask;
         LogFirstSubRegAccess(reg, isWrite: false);
-        if (LogSubReads && reg is 0x0008 or 0x000A or 0x000C or 0x0036 or 0x0038 or 0x0042)
+        if (LogSubReads && reg is 0x0001 or 0x0008 or 0x000A or 0x000C or 0x0036 or 0x0038 or 0x0042)
         {
             ushort val = reg switch
             {
@@ -1034,7 +1034,7 @@ public sealed class SegaCdMemory
             Console.WriteLine($"[SCD-SUB-CDC] W 0x{reg:X4} = 0x{value:X2}");
         }
         if (LogSubRegs
-            && reg is 0x0004 or 0x0005 or 0x0007 or 0x0030 or 0x0031 or 0x0033 or 0x0034 or 0x0035 or 0x0037
+            && reg is 0x0001 or 0x0004 or 0x0005 or 0x0007 or 0x0030 or 0x0031 or 0x0033 or 0x0034 or 0x0035 or 0x0037
                 or >= 0x0042 and <= 0x004B)
         {
             Console.WriteLine($"[SCD-SUBREG-W] 0x{reg:X4} = 0x{value:X2}");
@@ -1051,7 +1051,11 @@ public sealed class SegaCdMemory
                 if (LogCddReset && _cddResetLogRemaining-- > 0)
                     Console.WriteLine($"[SCD-CDD-RESET] W8 0x0001 = 0x{value:X2}");
                 {
-                    bool lineHigh = (value & 0x01) != 0;
+                    // Bit 0: IEN2 (Software Interrupt to Main CPU)
+                    Registers.MainSoftwareInterruptPending = (value & 0x01) != 0;
+
+                    // Bit 2: CDD Reset
+                    bool lineHigh = (value & 0x04) != 0;
                     if (_cddResetLineHigh && !lineHigh)
                     {
                         if (LogCddResetEdge)
@@ -1376,14 +1380,7 @@ public sealed class SegaCdMemory
                     Console.WriteLine($"[SCD-SUBREG-PROBE] W8 0x{address:X6} = 0x{value:X2}");
                 }
                 LogSubBusLine($"[SCD-SUBBUS] W8 0x{addr:X6} = 0x{value:X2}");
-                if ((addr & SubRegisterAddressMask) == 0x003)
-                {
-                    BufferSubWrite(BufferedWriteKind.Byte, addr, value);
-                }
-                else
-                {
-                    WriteSubRegisterByte(addr, value);
-                }
+                BufferSubWrite(BufferedWriteKind.Byte, addr, value);
                 break;
         }
     }
@@ -1418,14 +1415,7 @@ public sealed class SegaCdMemory
                     Console.WriteLine($"[SCD-SUBREG-PROBE] W16 0x{address:X6} = 0x{value:X4}");
                 }
                 LogSubBusLine($"[SCD-SUBBUS] W16 0x{addr:X6} = 0x{value:X4}");
-                if ((addr & SubRegisterAddressMask) == 0x002)
-                {
-                    BufferSubWrite(BufferedWriteKind.Word, addr, value);
-                }
-                else
-                {
-                    WriteSubRegisterWord(addr, value);
-                }
+                BufferSubWrite(BufferedWriteKind.Word, addr, value);
                 break;
         }
     }
@@ -1447,6 +1437,12 @@ public sealed class SegaCdMemory
 
     public byte GetSubInterruptLevel()
     {
+        if (Registers.SubcodeInterruptEnabled && Cdd.SubcodeInterruptPending)
+        {
+            if (LogSubInt)
+                Console.WriteLine("[SCD-SUBINT] level=6 source=SUBCODE");
+            return 6;
+        }
         if (Registers.CdcInterruptEnabled && Cdc.InterruptPending)
         {
             if (LogSubInt)
@@ -1516,16 +1512,20 @@ public sealed class SegaCdMemory
             case 5:
                 Cdc.AcknowledgeInterrupt();
                 break;
+            case 6:
+                Cdd.AcknowledgeSubcodeInterrupt();
+                break;
         }
     }
 
-    public void ConsumeSubAckCounts(out long level1, out long level2, out long level3, out long level4, out long level5)
+    public void ConsumeSubAckCounts(out long level1, out long level2, out long level3, out long level4, out long level5, out long level6)
     {
         level1 = Interlocked.Exchange(ref _subAckCounts[1], 0);
         level2 = Interlocked.Exchange(ref _subAckCounts[2], 0);
         level3 = Interlocked.Exchange(ref _subAckCounts[3], 0);
         level4 = Interlocked.Exchange(ref _subAckCounts[4], 0);
         level5 = Interlocked.Exchange(ref _subAckCounts[5], 0);
+        level6 = Interlocked.Exchange(ref _subAckCounts[6], 0);
     }
 
     public bool SubCpuHalt => Registers.SubCpuBusReq;

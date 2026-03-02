@@ -320,7 +320,14 @@ namespace EutherDrive.Core.MdTracerCore
         public uint MapRomAddress(uint address)
         {
             if (!g_mapper_is_ssf)
-                return address;
+            {
+                // MD cartridge space mirrors when ROM is smaller than the full
+                // address window. Many titles/homebrew jump to high logical
+                // addresses that rely on this modulo behavior.
+                if (g_file_size <= 0)
+                    return 0;
+                return address % (uint)g_file_size;
+            }
             int idx = (int)((address >> 19) & 0x07);
             uint bank = g_mapper_banks[idx];
             return (bank << 19) | (address & 0x07FFFF);

@@ -192,6 +192,8 @@ namespace EutherDrive.Core.MdTracerCore
             ParseNonNegativeInt("EUTHERDRIVE_Z80_BUSREQ_MAX_ASSERTS_PER_FRAME", 0);
         private static readonly int Z80BusReqMaxAssertsPerFrameOtherEmu =
             ParseNonNegativeInt("EUTHERDRIVE_Z80_BUSREQ_MAX_ASSERTS_PER_FRAME_OTHEREMU", 0);
+        private static readonly int Z80BusReqAckDelayCycles =
+            ParseNonNegativeInt("EUTHERDRIVE_Z80_BUSREQ_ACK_DELAY_CYCLES", 0);
         // Hard-disabled: no safe-boot bus/reset hacks; keep bus behavior fully runtime-driven.
         private static readonly bool Z80SafeBootEnabled = false;
         private static readonly int Z80SafeBootDelayFrames =
@@ -1550,6 +1552,15 @@ namespace EutherDrive.Core.MdTracerCore
             else if (_z80BusReqStableCount != int.MaxValue)
             {
                 _z80BusReqStableCount++;
+            }
+
+            // Model a short BUSACK propagation delay instead of instantaneous grant
+            // flips, which can create deterministic flapping in tight BUSREQ loops.
+            if (Z80BusReqAckDelayCycles > 0 && _z80BusReqLastToggleCycle != long.MinValue)
+            {
+                long delta = md_main.SystemCycles - _z80BusReqLastToggleCycle;
+                if (delta >= 0 && delta < Z80BusReqAckDelayCycles)
+                    return;
             }
 
             if (!_z80BusReqRequested && _z80BusGranted)
@@ -3124,6 +3135,40 @@ namespace EutherDrive.Core.MdTracerCore
             // When safe boot is active, force BUSREQ to be granted
             if (IsZ80SafeBootEnabledForCurrentCore() && _z80SafeBootActive)
                 next = true;
+
+            long nowCycles = md_main.SystemCycles;
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            int minToggleCycles = OtherEmuMode ? Z80BusReqMinToggleCyclesOtherEmu : Z80BusReqMinToggleCycles;
+            int maxAssertsPerFrame = OtherEmuMode ? Z80BusReqMaxAssertsPerFrameOtherEmu : Z80BusReqMaxAssertsPerFrame;
+
+            // Debounce pathological back-to-back BUSREQ edges that can phase-lock
+            // on tight 68k polling loops and starve Z80 progress.
+            if (prev != next && minToggleCycles > 0 && _z80BusReqLastToggleCycle != long.MinValue)
+            {
+                long delta = nowCycles - _z80BusReqLastToggleCycle;
+                if (delta >= 0 && delta < minToggleCycles)
+                    next = prev;
+            }
+
+            // Bound repeated BUSREQ asserts within one frame to prevent deterministic
+            // on/off flapping from monopolizing arbitration windows.
+            if (!prev && next && maxAssertsPerFrame > 0)
+            {
+                if (_z80BusReqAssertFrame != frame)
+                {
+                    _z80BusReqAssertFrame = frame;
+                    _z80BusReqAssertCountInFrame = 0;
+                }
+
+                if (_z80BusReqAssertCountInFrame >= maxAssertsPerFrame)
+                {
+                    next = false;
+                }
+                else
+                {
+                    _z80BusReqAssertCountInFrame++;
+                }
+            }
             
             // Sync Z80 when BUSREQ changes (like otheremumdemu does)
             if (prev != next && md_main.g_md_z80 != null)
@@ -3140,7 +3185,10 @@ namespace EutherDrive.Core.MdTracerCore
             _z80ForceGrant = false;
             Interlocked.Increment(ref _z80BusReqWriteCount);
             if (prev != next)
+            {
                 Interlocked.Increment(ref _z80BusReqToggleCount);
+                _z80BusReqLastToggleCycle = nowCycles;
+            }
             LogZ80RegWrite(addr, logValue);
             LogZ80RegDecode("BUSREQ", addr, raw, uds, lds, regByte, next);
             if (TraceZ80Win && _z80BusReqLogRemaining > 0)
@@ -3153,10 +3201,14 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[Z80SIG] BUSREQ={(next ? 1 : 0)} (stopOn={(next ? 1 : 0)})");
             if (prev != next && TraceZ80SigTransitions)
             {
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
                 Console.WriteLine(
                     $"[Z80SIG-TRANS] frame={frame} type=BUSREQ pc68k=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} prev={(prev ? 1 : 0)} next={(next ? 1 : 0)} busReq={(next ? 1 : 0)} reset={(_z80Reset ? 1 : 0)} raw=0x{raw:X4} uds={(uds ? 1 : 0)} lds={(lds ? 1 : 0)}");
             }
+
+            // Keep BUSACK/bus ownership in sync immediately after A11100 writes
+            // (jgenesis/hardware-style signal semantics).
+            ApplyZ80BusReqLatch();
+
             _z80BusAckLogState = -1;
             _z80BusAckLogState8 = -1;
             if (prev && !next)
@@ -3728,8 +3780,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (md_main.g_md_bus?.OverrideBus is EutherDrive.Core.SegaCd.SegaCdMainBusOverride)
                 return (ushort)(_openBus & 0xFEFE);
             // A11100 bit0 reflects !BUSACK.
-            bool busAck = !_z80BusGranted;
-            byte status = (byte)(busAck ? 0x01 : 0x00);
+            // BUSACK is true when BUSREQ is asserted and RESET is deasserted.
+            bool busAck = IsZ80BusAcked();
+            byte status = (byte)(busAck ? 0x00 : 0x01);
             ushort busAckWord = (ushort)((status << 8) | status);
             return (ushort)(busAckWord | (_openBus & 0xFEFE));
         }

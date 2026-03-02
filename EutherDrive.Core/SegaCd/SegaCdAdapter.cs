@@ -107,12 +107,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_FRAMEBUFFER"),
             "1",
             StringComparison.Ordinal);
-    // Debug-only overlay of graphics-coprocessor image buffer.
-    // jgenesis renders Sega CD via VDP output; keep overlay disabled by default.
-    private static readonly bool EnableGfxOverlay =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_GFX_OVERLAY"),
-            "1",
-            StringComparison.Ordinal);
+    // Debug overlay of graphics-coprocessor image buffer. Enabled by default to
+    // help diagnose if Sub CPU is rendering while Main CPU is stuck.
+    private static readonly bool EnableGfxOverlay = ReadEnvFlag("EUTHERDRIVE_SCD_GFX_OVERLAY", true);
     private static readonly bool ProfileScd =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_PROFILE"),
             "1",
@@ -239,6 +236,11 @@ public sealed class SegaCdAdapter : IEmulatorCore
             Console.Error.WriteLine($"[SCD-CYCLES] main={MainCyclesPerFrame} sub={SubCyclesPerFrame} (load)");
         Console.WriteLine($"[SCD-CONFIG] m68kemu={(_useM68kEmu ? 1 : 0)} gfxOverlay={(EnableGfxOverlay ? 1 : 0)}");
         EutherDrive.Core.MdTracerCore.md_main.initialize();
+        if (EutherDrive.Core.MdTracerCore.md_main.g_md_io != null)
+        {
+            EutherDrive.Core.MdTracerCore.md_io.Current = EutherDrive.Core.MdTracerCore.md_main.g_md_io;
+            EutherDrive.Core.MdTracerCore.md_main.g_md_io.SetRomRegionHint(RegionHint);
+        }
         EutherDrive.Core.MdTracerCore.md_main.ResetZ80WaitState();
         _mainBus = EutherDrive.Core.MdTracerCore.md_main.g_md_bus;
         if (_mainBus != null)
@@ -722,6 +724,14 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     long mainCyclesConsumed = 0;
                     if (_useM68kEmu)
                     {
+                        if (_memory.Registers.MainSoftwareInterruptPending)
+                        {
+                            md_m68k.g_interrupt_EXT_req = true;
+                            md_m68k.g_interrupt_EXT_level = 2;
+                            md_m68k.g_interrupt_EXT_vector = 0x68;
+                            md_m68k.g_interrupt_EXT_ack = (level) => { /* no-op or handled via register write */ };
+                        }
+
                         int remaining = mainSlice;
                         while (remaining > 0)
                         {
@@ -1363,7 +1373,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 byte subLevel = _memory.GetSubInterruptLevel();
                 bool cddPend = _memory.Cdd.InterruptPending;
                 ushort sw = _memory.Registers.StopwatchCounter;
-                _memory.ConsumeSubAckCounts(out long ack1, out long ack2, out long ack3, out long ack4, out long ack5);
+                _memory.ConsumeSubAckCounts(out long ack1, out long ack2, out long ack3, out long ack4, out long ack5, out long ack6);
                 byte cdd0 = _memory.Cdd.Status.Length > 0 ? _memory.Cdd.Status[0] : (byte)0;
                 byte cdd1 = _memory.Cdd.Status.Length > 1 ? _memory.Cdd.Status[1] : (byte)0;
                 byte cdd2 = _memory.Cdd.Status.Length > 2 ? _memory.Cdd.Status[2] : (byte)0;
@@ -1372,7 +1382,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     $"[SCD-TIMER] t={tCounter}/{tInterval} sw=0x{sw:X3} pend={(tPend ? 1 : 0)} en={(tEn ? 1 : 0)} " +
                     $"cddS={cdd0:X2} {cdd1:X2} {cdd2:X2} {cdd3:X2} " +
                     $"cddEn={(cddEn ? 1 : 0)} cdcEn={(cdcEn ? 1 : 0)} cddPend={(cddPend ? 1 : 0)} " +
-                    $"ack1={ack1} ack2={ack2} ack3={ack3} ack4={ack4} ack5={ack5} " +
+                    $"ack1={ack1} ack2={ack2} ack3={ack3} ack4={ack4} ack5={ack5} ack6={ack6} " +
                     $"hostclk={(hostClk ? 1 : 0)} subInt={subLevel}");
             }
         }

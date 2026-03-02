@@ -15,10 +15,15 @@ internal partial class md_m68k
             return;
         }
 
-        // Clear whichever interrupt was active
-        if (g_interrupt_H_act) g_interrupt_H_act = false;
-        else if (g_interrupt_V_act) g_interrupt_V_act = false;
-        else if (g_interrupt_EXT_act) g_interrupt_EXT_act = false;
+        // Clear active flag by current interrupt mask level (pre-RTE SR).
+        // This keeps nested IRQ bookkeeping correct (e.g. VINT preempting HINT).
+        int currentMask = (g_reg_SR >> 8) & 0x07;
+        if (currentMask >= 6)
+            g_interrupt_V_act = false;
+        else if (currentMask == 4)
+            g_interrupt_H_act = false;
+        else if (g_interrupt_EXT_act)
+            g_interrupt_EXT_act = false;
 
         // Restore SR and PC from stack (SR update handles S-bit swap)
         ushort newSr = stack_pop16();

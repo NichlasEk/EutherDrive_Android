@@ -553,17 +553,43 @@ namespace EutherDrive.Core.MdTracerCore
 
             bool vintPending = g_interrupt_V_req;
             bool vintEnabled = md_main.g_md_vdp.g_vdp_reg_1_5_vinterrupt == 1;
-            bool canVint = vintPending && (g_status_interrupt_mask < 6) && vintEnabled && !g_interrupt_H_act;
+            bool canVint = vintPending && (g_status_interrupt_mask < 6) && vintEnabled;
             if (TraceM68kIntPending && vintPending && !canVint && _traceM68kIntPendingRemaining > 0)
             {
                 _traceM68kIntPendingRemaining--;
                 Console.WriteLine(
                     $"[m68k int] VINT pending BLOCKED pc=0x{pcBefore:X6} sr=0x{g_reg_SR:X4} " +
-                    $"mask={g_status_interrupt_mask} vdpVint={vintEnabled} hintAct={(g_interrupt_H_act ? 1 : 0)}");
+                    $"mask={g_status_interrupt_mask} vdpVint={vintEnabled}");
             }
 
-            if (g_interrupt_H_req && (g_status_interrupt_mask < 4)
-                && (md_main.g_md_vdp.g_vdp_reg_0_4_hinterrupt == 1))
+            bool hintCan = g_interrupt_H_req
+                && (g_status_interrupt_mask < 4)
+                && (md_main.g_md_vdp.g_vdp_reg_0_4_hinterrupt == 1);
+            bool vintCan = g_interrupt_V_req
+                && (g_status_interrupt_mask < 6)
+                && (md_main.g_md_vdp.g_vdp_reg_1_5_vinterrupt == 1);
+            bool extCan = g_interrupt_EXT_req && (g_status_interrupt_mask < g_interrupt_EXT_level);
+
+            // Real 68k behavior: service highest interrupt level that is currently pending.
+            int selected = 0; // 1=HINT(4), 2=VINT(6), 3=EXT(level)
+            byte bestLevel = 0;
+            if (hintCan)
+            {
+                selected = 1;
+                bestLevel = 4;
+            }
+            if (vintCan && 6 >= bestLevel)
+            {
+                selected = 2;
+                bestLevel = 6;
+            }
+            if (extCan && g_interrupt_EXT_level >= bestLevel)
+            {
+                selected = 3;
+                bestLevel = g_interrupt_EXT_level;
+            }
+
+            if (selected == 1)
             {
                 ushort oldSr = g_reg_SR;
                 if (!g_status_S)
@@ -596,13 +622,12 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 g_reg_PC = w_start_address;
                 g_reg_SR = (ushort)((oldSr & 0xF8FF) | 0x2000 | (4 << 8));
+                g_status_interrupt_mask = (byte)((g_reg_SR >> 8) & 0x07);
                 g_interrupt_H_req = false;
                 g_interrupt_H_act = true;
                 g_68k_stop = false;
             }
-            else if (g_interrupt_V_req && (g_status_interrupt_mask < 6)
-                && (md_main.g_md_vdp.g_vdp_reg_1_5_vinterrupt == 1)
-                && !g_interrupt_H_act)
+            else if (selected == 2)
             {
                 ushort oldSr = g_reg_SR;
                 if (!g_status_S)
@@ -635,11 +660,12 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 g_reg_PC = w_start_address;
                 g_reg_SR = (ushort)((oldSr & 0xF8FF) | 0x2000 | (6 << 8));
+                g_status_interrupt_mask = (byte)((g_reg_SR >> 8) & 0x07);
                 g_interrupt_V_req = false;
                 g_interrupt_V_act = true;
                 g_68k_stop = false;
             }
-            else if (g_interrupt_EXT_req && (g_status_interrupt_mask < g_interrupt_EXT_level))
+            else if (selected == 3)
             {
                 ushort oldSr = g_reg_SR;
                 if (!g_status_S)
@@ -672,6 +698,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 g_reg_PC = w_start_address;
                 g_reg_SR = (ushort)((oldSr & 0xF8FF) | 0x2000 | (g_interrupt_EXT_level << 8));
+                g_status_interrupt_mask = (byte)((g_reg_SR >> 8) & 0x07);
                 g_interrupt_EXT_req = false;
                 g_interrupt_EXT_act = true;
                 g_interrupt_EXT_ack?.Invoke(g_interrupt_EXT_level);

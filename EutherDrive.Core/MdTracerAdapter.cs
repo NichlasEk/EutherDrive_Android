@@ -72,6 +72,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private int _sonic2AudioRecoveryFramesRemaining;
     private int _sonic2RuntimeStallFrames;
     private int _sonic2RuntimeRecoveryCount;
+    private int _captainAmericaMailboxWaitGroup;
+    private int _captainAmericaMailboxStableFrames;
+    private uint _captainAmericaMailboxLastSemState;
 
     // Framebuffer analyzer for live debugging
     public FramebufferAnalyzer FbAnalyzer { get; } = null!;
@@ -140,6 +143,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         ParseNonNegativeInt("EUTHERDRIVE_SONIC2_RUNTIME_RECOVERY_STALL_FRAMES", 90);
     private static readonly int Sonic2RuntimeRecoveryMaxPerSession =
         ParseNonNegativeInt("EUTHERDRIVE_SONIC2_RUNTIME_RECOVERY_MAX", 0);
+    private static readonly bool CaptainAmericaMailboxRecoveryEnabled =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_CAPAMERICA_MAILBOX_RECOVERY"), "0", StringComparison.Ordinal);
+    private static readonly bool CaptainAmericaMailboxRecoveryDebug =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_CAPAMERICA_MAILBOX_RECOVERY_DEBUG"), "1", StringComparison.Ordinal);
+    private static readonly int CaptainAmericaMailboxRecoveryFrames =
+        ParseNonNegativeInt("EUTHERDRIVE_CAPAMERICA_MAILBOX_RECOVERY_FRAMES", 120);
     private static readonly bool TracePcPerFrame =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_FRAME"), "1", StringComparison.Ordinal);
     private static readonly int TracePcEveryFrames = ParseNonNegativeInt("EUTHERDRIVE_TRACE_PC_FRAME_EVERY", 60);
@@ -1855,6 +1864,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _sonic2AudioRecoveryFramesRemaining = 0;
         _sonic2RuntimeStallFrames = 0;
         _sonic2RuntimeRecoveryCount = 0;
+        _captainAmericaMailboxWaitGroup = 0;
+        _captainAmericaMailboxStableFrames = 0;
+        _captainAmericaMailboxLastSemState = 0;
     }
 
     private void ResetZ80Only()
@@ -2343,6 +2355,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             int vlines = ApplyFrameRateMode(effectiveFrameRateMode);
             long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
             long systemCyclesBeforeFrame = md_main.SystemCycles;
+            MaybeCaptainAmericaMailboxRecovery(frame);
             MaybeSonic2AudioRecovery(frame);
             if (TracePcPerFrame && TracePcEveryFrames >= 0)
             {
@@ -2390,6 +2403,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     {
                         _cpu.RunSome(budget: cpuBudget);
                     }
+                    // Captain America can wedge in semaphore wait loops mid-frame;
+                    // detect/recover in slice-time instead of only frame boundaries.
+                    MaybeCaptainAmericaMailboxRecovery(frame);
                     md_main.AdvanceSystemCycles(cpuBudget);
                     md_main.AddM68kCycles(cpuBudget);
 
@@ -2446,6 +2462,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
 
             md_main.MaybeInjectMbx(frame);
+            MaybeCaptainAmericaMailboxRecovery(frame);
             MaybeSonic2AudioRecovery(frame);
             md_main.g_md_music?.FlushDacRateFrame(frame);
             md_main.g_md_music?.FlushAudioStats(frame);
@@ -2782,9 +2799,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             if (md_main.g_md_bus != null && md_main.g_md_z80 != null)
             {
                 md_main.g_md_bus.ApplyZ80BusReqLatch();
-                bool busReq = md_main.g_md_bus.Z80BusGranted;
+                bool z80BusGranted = md_main.g_md_bus.Z80BusGranted;
                 bool reset = md_main.g_md_bus.Z80Reset;
-                md_main.g_md_z80.g_active = !busReq && !reset;
+                // Z80 runs when 68k has NOT requested the bus and reset is deasserted.
+                md_main.g_md_z80.g_active = !z80BusGranted && !reset;
             }
 
             TryRecoverSonic2MailboxAfterLoad();
@@ -2881,6 +2899,88 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         string name = _romIdentity.Name ?? string.Empty;
         return name.IndexOf("sonic the hedgehog 2", StringComparison.OrdinalIgnoreCase) >= 0
             || name.IndexOf("sonic2", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private bool IsCaptainAmericaAvengersRomLoaded()
+    {
+        if (_romIdentity == null)
+            return false;
+        string name = _romIdentity.Name ?? string.Empty;
+        return name.IndexOf("captain america", StringComparison.OrdinalIgnoreCase) >= 0
+            && name.IndexOf("avengers", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private void MaybeCaptainAmericaMailboxRecovery(long frame)
+    {
+        if (!CaptainAmericaMailboxRecoveryEnabled)
+            return;
+
+        uint pc = md_m68k.g_reg_PC & 0x00FF_FFFF;
+        int waitGroup = 0;
+        if (pc == 0x001706 || pc == 0x00170C)
+            waitGroup = 1; // wait until FF0E0E != 0
+        else if (pc == 0x001724 || pc == 0x031B7C || pc == 0x031B82 || pc == 0x031C60)
+            waitGroup = 2; // wait until FF0E0C == 0
+        else if (pc == 0x031B5A || pc == 0x031B62 || pc == 0x031C46)
+            waitGroup = 3; // wait until FF0E0E >= 4
+
+        if (waitGroup == 0)
+        {
+            _captainAmericaMailboxWaitGroup = 0;
+            _captainAmericaMailboxStableFrames = 0;
+            return;
+        }
+
+        byte sem0c = md_m68k.read8(0x00FF0E0C);
+        ushort sem0e = md_m68k.read16(0x00FF0E0E);
+        uint semState = ((uint)sem0c << 16) | sem0e;
+
+        // Track stability by semantic wait-group only. Semaphore bytes can flap in
+        // this game's deadlock loops, which made state-equality too strict.
+        if (waitGroup == _captainAmericaMailboxWaitGroup)
+            _captainAmericaMailboxStableFrames++;
+        else
+            _captainAmericaMailboxStableFrames = 1;
+
+        _captainAmericaMailboxWaitGroup = waitGroup;
+        _captainAmericaMailboxLastSemState = semState;
+
+        int threshold = CaptainAmericaMailboxRecoveryFrames > 0 ? CaptainAmericaMailboxRecoveryFrames : 120;
+        if (_captainAmericaMailboxStableFrames < threshold)
+            return;
+
+        bool changed = false;
+
+        // Kick semaphore waits only when the loop has been stable for a long time.
+        if (waitGroup == 2 && sem0c != 0)
+        {
+            md_m68k.write8(0x00FF0E0C, 0x00);
+            changed = true;
+        }
+        if (waitGroup == 3 && sem0e < 4)
+        {
+            md_m68k.write16(0x00FF0E0E, 0x0004);
+            changed = true;
+        }
+        if (waitGroup == 1 && sem0e == 0)
+        {
+            md_m68k.write16(0x00FF0E0E, 0x0001);
+            changed = true;
+        }
+
+        if (!changed)
+            return;
+
+        if (CaptainAmericaMailboxRecoveryDebug)
+        {
+            Console.WriteLine(
+                $"[CAP-MAILBOX-RECOVER] frame={frame} pc=0x{pc:X6} group={waitGroup} stable={_captainAmericaMailboxStableFrames} " +
+                $"FF0E0C=0x{sem0c:X2} FF0E0E=0x{sem0e:X4}");
+        }
+
+        // Avoid hammering; require the loop to stabilize again before another kick.
+        _captainAmericaMailboxStableFrames = 0;
+        _captainAmericaMailboxLastSemState = 0;
     }
 
     private void MaybeTraceSonic2Timing(long frame, int vlines, long systemCyclesBeforeFrame, long z80ActualCycles, long z80BudgetCycles)
