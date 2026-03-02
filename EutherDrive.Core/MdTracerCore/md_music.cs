@@ -60,12 +60,25 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void YmAdvanceSystemCycles(long cycles, int explicitYmTicks = -1, int explicitPsgTicks = -1)
         {
-            int ymTicks = explicitYmTicks < 0 ? 0 : explicitYmTicks;
-            int psgTicks = explicitPsgTicks < 0 ? 0 : explicitPsgTicks;
-            if (ymTicks > 0)
-                JgYm.AdvanceYmTicks(ymTicks);
-            if (psgTicks > 0)
-                _jgPsg.AdvancePsgTicks(psgTicks, g_out_vol, _psgNoiseGainPercent);
+            if (explicitYmTicks >= 0)
+            {
+                if (explicitYmTicks > 0)
+                    JgYm.AdvanceYmTicks(explicitYmTicks);
+            }
+            else
+            {
+                JgYm.AdvanceSystemCycles(cycles);
+            }
+
+            if (explicitPsgTicks >= 0)
+            {
+                if (explicitPsgTicks > 0)
+                    _jgPsg.AdvancePsgTicks(explicitPsgTicks, g_out_vol, _psgNoiseGainPercent);
+            }
+            else
+            {
+                _jgPsg.AdvanceSystemCycles(cycles, g_out_vol, _psgNoiseGainPercent);
+            }
         }
 
         public void TickYmTimersFromZ80(int z80Cycles)

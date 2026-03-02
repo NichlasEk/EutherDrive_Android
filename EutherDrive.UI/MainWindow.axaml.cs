@@ -5369,7 +5369,12 @@ public partial class MainWindow : Window
     private ReadOnlySpan<short> AudioPullProducer(int frames)
     {
         if (_core is MdTracerAdapter adapter)
-            return adapter.GetAudioBufferForFrames(frames, out _, out _);
+        {
+            lock (_coreAudioLock)
+            {
+                return adapter.GetAudioBufferForFrames(frames, out _, out _);
+            }
+        }
         if (_core is SnesAdapter || _core is PceCdAdapter || _core is N64Adapter || _core is SegaCdAdapter)
             return DequeueSnesAudio(frames);
         return ReadOnlySpan<short>.Empty;

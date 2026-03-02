@@ -715,6 +715,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 if (mainSlice > 0)
                 {
                     if (ProfileScd) _profileCpuTicks -= Stopwatch.GetTimestamp();
+                    long mainCyclesConsumed = 0;
                     if (_useM68kEmu)
                     {
                         int remaining = mainSlice;
@@ -728,6 +729,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                 int waitStep = Math.Min(remaining, dmaWait);
                                 remaining -= waitStep;
                                 EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)waitStep;
+                                mainCyclesConsumed += waitStep;
                                 continue;
                             }
 
@@ -775,6 +777,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             uint cycles = _mainCpu.ExecuteInstruction(_mainCpuBus!);
                             remaining -= (int)cycles;
                             EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)cycles;
+                            mainCyclesConsumed += cycles;
 
                         }
 
@@ -783,6 +786,13 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     else
                     {
                         _cpuRunner.RunSome(_mainContext!, mainSlice);
+                        mainCyclesConsumed += mainSlice;
+                    }
+
+                    if (mainCyclesConsumed > 0)
+                    {
+                        // Keep MD audio/VDP scheduling timebase aligned with executed main-CPU cycles.
+                        EutherDrive.Core.MdTracerCore.md_main.AdvanceSystemCycles(mainCyclesConsumed);
                     }
                     if (ProfileScd) _profileCpuTicks += Stopwatch.GetTimestamp();
                 }

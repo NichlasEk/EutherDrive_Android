@@ -10,6 +10,7 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
     private const int AL_FORMAT_STEREO16 = 0x1103;
     private const int AL_SOURCE_STATE = 0x1010;
     private const int AL_PLAYING = 0x1012;
+    private const int AL_BUFFERS_QUEUED = 0x1015;
     private const int AL_BUFFERS_PROCESSED = 0x1016;
     private const int AL_NO_ERROR = 0;
 
@@ -85,6 +86,12 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
         if (!_started || samples.Length == 0)
             return;
 
+        // Reclaim processed buffers before queueing a new one.
+        ProcessBuffers();
+        alGetSourcei(_source, AL_BUFFERS_QUEUED, out int queued);
+        if (queued >= _buffers.Length)
+            return;
+
         ReadOnlySpan<short> span = samples;
         if (_channels < 2)
         {
@@ -117,7 +124,6 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
             }
         }
 
-        ProcessBuffers();
         alGetSourcei(_source, AL_SOURCE_STATE, out int state);
         if (state != AL_PLAYING)
         {
