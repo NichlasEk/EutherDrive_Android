@@ -550,7 +550,13 @@ namespace EutherDrive.Core.MdTracerCore
             ushort value;
             if (bus?.OverrideBus is SegaCdMainBusOverride scdMain)
             {
-                value = scdMain.Read16ForDma(address);
+                // Sega CD override owns 0x000000-0x7FFFFF and gate regs.
+                // Main RAM mirror (0xE00000-0xFFFFFF) still lives on the regular MD bus path.
+                bool handledByScdOverride =
+                    address <= 0x007FFFFF || (address >= 0x00A12000 && address <= 0x00A1202F);
+                value = handledByScdOverride
+                    ? scdMain.Read16ForDma(address)
+                    : (bus != null ? bus.read16(address) : md_m68k.read16(address));
             }
             else
             {

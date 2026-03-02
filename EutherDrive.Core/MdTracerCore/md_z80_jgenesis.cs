@@ -10,15 +10,18 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static bool ParseUseJgenesisZ80()
         {
-            // Explicit test switch: use legacy Z80 core with the new MD main/m68k path.
+            // Explicit legacy override: force old Z80 core.
             string? legacy = Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_USE_LEGACY_Z80");
             if (!string.IsNullOrEmpty(legacy))
                 return !(legacy == "1" || legacy.Equals("true", StringComparison.OrdinalIgnoreCase));
 
+            // Explicit enable/disable for jgenesis Z80.
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_JGENESIS");
-            if (string.IsNullOrEmpty(raw))
-                return false;
-            return string.Equals(raw, "1", StringComparison.Ordinal);
+            if (!string.IsNullOrEmpty(raw))
+                return string.Equals(raw, "1", StringComparison.Ordinal);
+
+            // Default to jgenesis Z80 so the full jgenesis-style audio chain is active.
+            return true;
         }
 
         private Z80? _jgZ80;

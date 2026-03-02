@@ -135,9 +135,9 @@ namespace EutherDrive.Core.MdTracerCore
         private static int _m68kRefreshCounter;
         // Global deadlock safeguard for M68KEmu path:
         // if IRQ is pending while mask stays at 7 for too long, release to level 3.
-        // Enabled by default; set EUTHERDRIVE_M68K_IRQ_AUTOUNMASK=0 to disable.
+        // Disabled by default; set EUTHERDRIVE_M68K_IRQ_AUTOUNMASK=1 to enable.
         private static readonly bool AutoUnmaskIrqDebug =
-            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_IRQ_AUTOUNMASK"), "0", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_IRQ_AUTOUNMASK"), "1", StringComparison.Ordinal);
         private static int _autoUnmaskStuckCount;
         private static bool _autoUnmaskLogged;
         private static long _autoUnmaskFireCount;
@@ -1184,9 +1184,6 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 g_md_z80.EndSystemCycleSlice();
             }
-
-            // Advance YM2612 timers from SystemCycles once per frame
-            g_md_music?.YmEnsureAdvanceEachFrame();
 
             MaybeInjectMbx(frame);
             g_md_music?.FlushDacRateFrame(frame);

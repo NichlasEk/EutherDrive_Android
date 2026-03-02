@@ -192,8 +192,8 @@ namespace EutherDrive.Core.MdTracerCore
             ParseNonNegativeInt("EUTHERDRIVE_Z80_BUSREQ_MAX_ASSERTS_PER_FRAME", 0);
         private static readonly int Z80BusReqMaxAssertsPerFrameOtherEmu =
             ParseNonNegativeInt("EUTHERDRIVE_Z80_BUSREQ_MAX_ASSERTS_PER_FRAME_OTHEREMU", 0);
-        private static readonly bool Z80SafeBootEnabled =
-            ReadEnvDefaultOff("EUTHERDRIVE_Z80_SAFE_BOOT");
+        // Hard-disabled: no safe-boot bus/reset hacks; keep bus behavior fully runtime-driven.
+        private static readonly bool Z80SafeBootEnabled = false;
         private static readonly int Z80SafeBootDelayFrames =
             ParseSafeBootDelayFrames("EUTHERDRIVE_Z80_SAFE_BOOT_DELAY", 1);
         private const int Z80SafeBootBusReqTimeoutFrames = 2;
@@ -396,6 +396,9 @@ namespace EutherDrive.Core.MdTracerCore
             ReadEnvDefaultOff("EUTHERDRIVE_Z80_MBX_WIDE_CMD_MIRROR");
         private static bool IsZ80BusReq(uint addr) => (addr & 0xFFFFFE) == 0xA11100;
         private static bool IsZ80Reset(uint addr) => (addr & 0xFFFFFE) == 0xA11200;
+        // Match jgenesis/hardware semantics:
+        // BUSACK is asserted only when BUSREQ is asserted and RESET is deasserted.
+        private bool IsZ80BusAcked() => _z80BusReqRequested && !_z80Reset;
         private static bool IsZ80Mailbox(uint addr)
         {
             uint low = addr & 0x1FFF;
@@ -429,9 +432,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             ApplyZ80BusReqLatch();
 
-            // Many games hold the Z80 in reset instead of requesting the bus
-            // when they want to upload the audio driver to Z80 RAM.
-            if (_z80BusGranted || _z80Reset)
+            // 68k can access Z80 window when BUSACK is active.
+            if (_z80BusGranted)
                 return true;
             for (int i = 0; i < size; i++)
             {
@@ -1221,7 +1223,7 @@ namespace EutherDrive.Core.MdTracerCore
             _z80SafeBootResetReleaseFrame = -1;
             _openBus = 0xFFFF;
 
-            if (Z80SafeBootEnabled)
+            if (IsZ80SafeBootEnabledForCurrentCore())
                 StartZ80SafeBoot();
 
             EnsureSramInitialized();
@@ -1229,12 +1231,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal void TickZ80SafeBoot(long frame)
         {
+            bool safeBootEnabled = IsZ80SafeBootEnabledForCurrentCore();
             if (TraceZ80SafeBoot)
-                Console.WriteLine($"[Z80SAFE-TICK-DEBUG] frame={frame} enabled={Z80SafeBootEnabled} active={_z80SafeBootActive}");
-            if (!Z80SafeBootEnabled || !_z80SafeBootActive)
+                Console.WriteLine($"[Z80SAFE-TICK-DEBUG] frame={frame} enabled={safeBootEnabled} active={_z80SafeBootActive}");
+            if (!safeBootEnabled || !_z80SafeBootActive)
             {
                 if (TraceZ80SafeBoot && frame % 60 == 0)
-                    Console.WriteLine($"[Z80SAFE-TICK] frame={frame} enabled={Z80SafeBootEnabled} active={_z80SafeBootActive}");
+                    Console.WriteLine($"[Z80SAFE-TICK] frame={frame} enabled={safeBootEnabled} active={_z80SafeBootActive}");
                 return;
             }
             long now = frame >= 0 ? frame : SafeBootFrameNow();
@@ -1430,7 +1433,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void MarkZ80SafeBootUploadWrite(uint addr)
         {
-            if (!Z80SafeBootEnabled || !_z80SafeBootUploadActive)
+            if (!IsZ80SafeBootEnabledForCurrentCore() || !_z80SafeBootUploadActive)
                 return;
             long frame = SafeBootFrameNow();
             _z80SafeBootSawUpload = true;
@@ -1468,9 +1471,15 @@ namespace EutherDrive.Core.MdTracerCore
             Console.WriteLine($"[Z80SAFE] total writes during safe boot: {_z80SafeBootWriteCount} bytes");
         }
 
+        private static bool IsZ80SafeBootEnabledForCurrentCore()
+        {
+            // Safe-boot/upload hacks are legacy flow; disable them when jgenesis Z80 core is active.
+            return Z80SafeBootEnabled && !md_z80.IsJgenesisCoreEnabled;
+        }
+
         private bool ShouldSuppressSafeBootMirror()
         {
-            return Z80SafeBootEnabled && _z80SafeBootUploadActive;
+            return IsZ80SafeBootEnabledForCurrentCore() && _z80SafeBootUploadActive;
         }
 
         internal bool Z80BusGranted 
@@ -1524,8 +1533,8 @@ namespace EutherDrive.Core.MdTracerCore
             if (md_main.g_md_z80 == null)
                 return;
 
-            // Keep latch behavior aligned with jgenesis: BUSREQ directly controls bus grant.
-            bool nextBusGranted = _z80BusReqRequested;
+            // BUSACK follows BUSREQ state (A11100).
+            bool nextBusGranted = IsZ80BusAcked();
             if (_z80BusGranted == nextBusGranted)
                 return;
 
@@ -2504,7 +2513,7 @@ namespace EutherDrive.Core.MdTracerCore
                         bool inBootArea = z80Addr >= 0x0040 && z80Addr <= 0x0046;
                         bool nextInBootArea = (z80Addr + 1) >= 0x0040 && (z80Addr + 1) <= 0x0046;
 
-                        if (Z80SafeBootEnabled && _z80SafeBootUploadActive && (inBootArea || nextInBootArea))
+                        if (IsZ80SafeBootEnabledForCurrentCore() && _z80SafeBootUploadActive && (inBootArea || nextInBootArea))
                         {
                             // Handle partial boot area writes in compat mode
                             if (TraceZ80Win && _z80WinLogRemaining > 0)
@@ -3067,16 +3076,17 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void HandleZ80BusReqWrite(uint addr, ushort raw, bool uds, bool lds, uint logValue)
         {
+            bool jgenesisCore = md_z80.IsJgenesisCoreEnabled;
             bool prev = _z80BusReqRequested;
             byte regByte = DecodeZ80RegByte(raw, uds, lds);
             bool next = (regByte & 0x01) != 0;
-            if (Z80BusReqInvert)
+            if (!jgenesisCore && Z80BusReqInvert)
                 next = !next;
 
             int minToggleCycles = Z80BusReqMinToggleCycles;
-            if (minToggleCycles <= 0 && OtherEmuMode)
+            if (!jgenesisCore && minToggleCycles <= 0 && OtherEmuMode)
                 minToggleCycles = Z80BusReqMinToggleCyclesOtherEmu;
-            if (prev != next && minToggleCycles > 0)
+            if (!jgenesisCore && prev != next && minToggleCycles > 0)
             {
                 long now = md_main.SystemCycles;
                 if (_z80BusReqLastToggleCycle != long.MinValue)
@@ -3098,7 +3108,7 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            if (!prev && next)
+            if (!jgenesisCore && !prev && next)
             {
                 int maxAssertsPerFrame = Z80BusReqMaxAssertsPerFrame;
                 if (maxAssertsPerFrame <= 0 && OtherEmuMode)
@@ -3128,13 +3138,13 @@ namespace EutherDrive.Core.MdTracerCore
             
             // FIX: Implement otheremumdemu-style BUSREQ handling
             // When safe boot is active, force BUSREQ to be granted
-            if (Z80SafeBootEnabled && _z80SafeBootActive)
+            if (IsZ80SafeBootEnabledForCurrentCore() && _z80SafeBootActive)
                 next = true;
             
             // Sync Z80 when BUSREQ changes (like otheremumdemu does)
             if (prev != next && md_main.g_md_z80 != null)
             {
-                if (OtherEmuMode)
+                if (!jgenesisCore && OtherEmuMode)
                     md_main.SyncZ80ToSystemCycles();
                 if (TraceZ80Win)
                 {
@@ -3168,7 +3178,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
             _z80BusAckLogState = -1;
             _z80BusAckLogState8 = -1;
-            if (ResetZ80OnBusReqRelease && prev && !next && md_main.g_md_z80 != null &&
+            if (!jgenesisCore && ResetZ80OnBusReqRelease && prev && !next && md_main.g_md_z80 != null &&
                 _z80ResetOnBusReqRemaining > 0)
             {
                 md_main.BeginZ80ResetCycle();
@@ -3182,44 +3192,61 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void HandleZ80ResetWrite(uint addr, ushort raw, bool uds, bool lds, uint logValue)
         {
+            bool jgenesisCore = md_z80.IsJgenesisCoreEnabled;
             bool prev = _z80Reset;
             byte regByte = DecodeZ80RegByte(raw, uds, lds);
             bool next = (regByte & 0x01) == 0;
-            if (Z80SafeBootEnabled && _z80SafeBootUploadActive)
+            if (IsZ80SafeBootEnabledForCurrentCore() && _z80SafeBootUploadActive)
                 next = true;
             _z80Reset = next;
+            ApplyZ80BusReqLatch();
             if (prev != next && md_main.g_md_z80 != null)
             {
                 if (next)
                 {
-                    md_main.BeginZ80ResetCycle();
-                    md_main.g_md_z80.reset();
+                    if (jgenesisCore)
+                    {
+                        // Match jgenesis: Z80 RESET assertion resets YM, but does not force a Z80 core reset here.
+                        md_main.g_md_music?.YmFullReset();
+                    }
+                    else
+                    {
+                        md_main.BeginZ80ResetCycle();
+                        md_main.g_md_z80.reset();
+                    }
                     md_main.g_md_z80.g_active = false;
                 }
                 else
                 {
-                    // Sync Z80 and reinitialize FM when reset is released (matching otheremumdemu behavior)
-                    if (OtherEmuMode)
-                        md_main.SyncZ80ToSystemCycles();
-                    md_main.BeginZ80ResetCycle();
-                    md_main.g_md_music?.YmStart();
-                    md_main.g_md_z80.reset(); // Reset Z80 when reset is released (sets PC=0)
-                    md_main.g_md_z80.ArmPostResetHold();
-                    if (ForceZ80SpOnResetRelease)
-                        md_main.g_md_z80.SetStackPointer(0x1B80);
-                    // Z80 PC is now 0, will execute from address 0x0000
-                    // For Sonic 2, the boot code at 0x0000 will JP to driver
-                    if (ForceZ80ReadyFlag)
+                    if (jgenesisCore)
                     {
-                        md_main.g_md_z80.write8(0x1B80, 0x80);
-                        Console.WriteLine("[Z80-READY-INJECT] addr=0x1B80 val=0x80");
+                        // Match jgenesis: no forced Z80 re-reset or post-release hacks.
+                        ApplyZ80BusReqLatch();
+                        md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
                     }
-                    ApplyZ80BusReqLatch();
-                    bool newActive = !_z80BusGranted && !_z80Reset;
-                    long currentFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
-                    if (TraceZ80ResetRelease)
-                        Console.WriteLine($"[Z80-RESET-RELEASE] frame={currentFrame} reset released, setting g_active={newActive} (busreq={_z80BusGranted}, reset={_z80Reset})");
-                    md_main.g_md_z80.g_active = newActive;
+                    else
+                    {
+                        // Legacy behavior
+                        if (OtherEmuMode)
+                            md_main.SyncZ80ToSystemCycles();
+                        md_main.BeginZ80ResetCycle();
+                        md_main.g_md_music?.YmStart();
+                        md_main.g_md_z80.reset(); // Reset Z80 when reset is released (sets PC=0)
+                        md_main.g_md_z80.ArmPostResetHold();
+                        if (ForceZ80SpOnResetRelease)
+                            md_main.g_md_z80.SetStackPointer(0x1B80);
+                        if (ForceZ80ReadyFlag)
+                        {
+                            md_main.g_md_z80.write8(0x1B80, 0x80);
+                            Console.WriteLine("[Z80-READY-INJECT] addr=0x1B80 val=0x80");
+                        }
+                        ApplyZ80BusReqLatch();
+                        bool newActive = !_z80BusGranted && !_z80Reset;
+                        long currentFrame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                        if (TraceZ80ResetRelease)
+                            Console.WriteLine($"[Z80-RESET-RELEASE] frame={currentFrame} reset released, setting g_active={newActive} (busreq={_z80BusGranted}, reset={_z80Reset})");
+                        md_main.g_md_z80.g_active = newActive;
+                    }
                 }
 
             }
@@ -3433,7 +3460,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             // [BOOT-PROTECT] Protect boot code area (0x0040-0x0046) during safe boot upload
             // This includes: DI (0x0040), LD SP,nn (0x0041-0x0043), JP nn (0x0044-0x0046)
-            if (Z80SafeBootEnabled && _z80SafeBootUploadActive && z80Addr >= 0x0040 && z80Addr <= 0x0046)
+            if (IsZ80SafeBootEnabledForCurrentCore() && _z80SafeBootUploadActive && z80Addr >= 0x0040 && z80Addr <= 0x0046)
             {
                 // Skip write to protect boot code (DI, LD SP, JP to driver)
                 if (TraceZ80Win && _z80WinLogRemaining > 0)
@@ -3718,6 +3745,7 @@ namespace EutherDrive.Core.MdTracerCore
             // Sega CD BIOS expects Z80 bus granted; return 0 in Sega CD mode.
             if (md_main.g_md_bus?.OverrideBus is EutherDrive.Core.SegaCd.SegaCdMainBusOverride)
                 return (ushort)(_openBus & 0xFEFE);
+            // A11100 bit0 reflects !BUSACK.
             bool busAck = !_z80BusGranted;
             byte status = (byte)(busAck ? 0x01 : 0x00);
             ushort busAckWord = (ushort)((status << 8) | status);

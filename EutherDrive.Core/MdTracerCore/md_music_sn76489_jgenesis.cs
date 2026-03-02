@@ -6,6 +6,8 @@ namespace EutherDrive.Core.MdTracerCore
     {
         private static readonly bool AudioMuteFmPsg =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_MUTE_FMPSG"), "1", StringComparison.Ordinal);
+        private static readonly bool HoldLastSampleOnUnderflow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW"), "1", StringComparison.Ordinal);
         private enum WaveOutput : byte
         {
             Negative = 0,
@@ -309,7 +311,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             // Keep PSG time deterministic: when underflowing, do not synthesize
             // a new sample by advancing internal clocks out-of-band.
-            return _lastSample;
+            return HoldLastSampleOnUnderflow ? _lastSample : 0;
         }
 
         private short GenerateSampleCurrentState(int[] outVol, int noiseGainPercent)
