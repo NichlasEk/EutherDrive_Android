@@ -2222,6 +2222,27 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     }
 
     public void PowerCycleAndLoadRom(string path) => LoadRom(path);
+
+    public void HardFlushAudioState()
+    {
+        // Also reset Z80-side timing/latches to avoid stale startup tone patterns.
+        md_main.ResetZ80WaitState();
+        if (md_main.g_md_z80 != null)
+        {
+            ResetZ80Only();
+            md_main.g_md_z80.ForceSmsStackDefault();
+        }
+
+        // Hard flush inside sound core as well (YM/PSG internals), not just UI/audio engine state.
+        md_main.g_md_music ??= new md_music();
+        md_main.g_md_music.reset();
+        md_main.g_md_music.YmFullReset();
+
+        ResetAudioFrameState();
+        GenerateInitialAudioSamples();
+        if (TraceAudioDebug)
+            Console.WriteLine("[AUDIO-TIMING] HardFlushAudioState completed.");
+    }
     
     private void GenerateInitialAudioSamples()
     {

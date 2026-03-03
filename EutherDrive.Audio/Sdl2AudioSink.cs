@@ -20,6 +20,8 @@ public sealed class Sdl2AudioSink : IAudioSink
     private short[] _monoScratch = Array.Empty<short>();
     private NullAudioSink? _nullSink;
     private bool _logOverflow;
+    private bool _playbackStarted;
+    private uint _startupMinQueuedBytes;
 
     public static Sdl2AudioSink? TryCreate()
     {
@@ -56,7 +58,9 @@ public sealed class Sdl2AudioSink : IAudioSink
             return;
         }
 
-        SDL_PauseAudioDevice(_deviceId, 0);
+        _playbackStarted = false;
+        _startupMinQueuedBytes = GetStartupMinQueuedBytes(_sampleRate, _channels);
+        SDL_PauseAudioDevice(_deviceId, 1);
         _started = true;
     }
 
@@ -118,6 +122,17 @@ public sealed class Sdl2AudioSink : IAudioSink
         if (rc != 0)
         {
             Console.WriteLine($"[Sdl2AudioSink] SDL_QueueAudio failed: {SDL_GetErrorString()}");
+            return;
+        }
+
+        if (!_playbackStarted)
+        {
+            uint queuedAfter = SDL_GetQueuedAudioSize(_deviceId);
+            if (queuedAfter >= _startupMinQueuedBytes)
+            {
+                SDL_PauseAudioDevice(_deviceId, 0);
+                _playbackStarted = true;
+            }
         }
     }
 
@@ -134,6 +149,8 @@ public sealed class Sdl2AudioSink : IAudioSink
 
         SDL_ClearQueuedAudio(_deviceId);
         SDL_PauseAudioDevice(_deviceId, 1);
+        _playbackStarted = false;
+        _startupMinQueuedBytes = 0;
         _started = false;
     }
 
@@ -238,6 +255,26 @@ public sealed class Sdl2AudioSink : IAudioSink
     {
         IntPtr ptr = SDL_GetError();
         return ptr == IntPtr.Zero ? "<no error>" : Marshal.PtrToStringUTF8(ptr) ?? "<unknown>";
+    }
+
+    private static uint GetStartupMinQueuedBytes(int sampleRate, int channels)
+    {
+        // Keep this low: AudioEngine already has a startup gate.
+        // A too-large SDL queue gate can stall startup/inter-ROM transitions.
+        double seconds = 0.02;
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_STARTUP_QUEUE_SECONDS");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double parsed)
+            && parsed >= 0.0
+            && parsed <= 1.0)
+        {
+            seconds = parsed;
+        }
+
+        double bytes = sampleRate * Math.Max(1, channels) * sizeof(short) * seconds;
+        if (bytes < 512)
+            bytes = 512;
+        return (uint)Math.Round(bytes);
     }
 
     [StructLayout(LayoutKind.Sequential)]

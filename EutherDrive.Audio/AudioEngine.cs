@@ -63,6 +63,9 @@ public sealed class AudioEngine : IDisposable
     private long _drainNextTicks;
     private double _drainTicksPerFrame;
     private long _primingUntilTicks;
+    private bool _startupGateActive;
+    private int _startupGateMinFrames;
+    private bool _holdOnUnderrun = true;
     private readonly bool _outputPllEnabled;
     private readonly double _outputPllMax;
     private double _outputPllRatio = 1.0;
@@ -73,6 +76,7 @@ public sealed class AudioEngine : IDisposable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_RAW_TIMING"), "1", StringComparison.Ordinal);
     private static readonly bool TimedDrainEnabled =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_TIMED_DRAIN"), "0", StringComparison.Ordinal);
+    private static readonly double AudioPrimeSeconds = GetAudioPrimeSeconds();
 
     public AudioEngine(IAudioSink sink, int sampleRate, int channels, int framesPerBatch = 1024, int bufferFrames = 8192)
     {
@@ -96,6 +100,7 @@ public sealed class AudioEngine : IDisposable
 
         _ring = new short[bufferFrames * channels];
         _batch = new short[framesPerBatch * channels];
+        _holdOnUnderrun = !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_UNDERRUN_SILENCE"), "1", StringComparison.Ordinal);
 
     }
 
@@ -116,7 +121,9 @@ public sealed class AudioEngine : IDisposable
         ResetStats();
         _sink.Start(_sampleRate, _channels);
         _drainNextTicks = 0;
-        _primingUntilTicks = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 0.5);
+        _primingUntilTicks = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * AudioPrimeSeconds);
+        _startupGateActive = true;
+        _startupGateMinFrames = ComputeStartupGateFrames();
         _running = true;
         _thread = new Thread(DrainLoop) { IsBackground = true, Name = "AudioEngine" };
         _thread.Start();
@@ -146,7 +153,7 @@ public sealed class AudioEngine : IDisposable
 
     public void Submit(ReadOnlySpan<short> interleaved)
     {
-        if (!_running || interleaved.IsEmpty)
+        if (interleaved.IsEmpty)
             return;
 
         if (_outputPllEnabled && _targetBufferedFrames > 0)
@@ -244,17 +251,19 @@ public sealed class AudioEngine : IDisposable
         {
             TryFillFromProducer();
 
-            if (TimedDrainEnabled && _targetBufferedFrames > 0 && _primingUntilTicks != 0)
+            if (TimedDrainEnabled && _startupGateActive)
             {
-                int primingBuffered = Volatile.Read(ref _currentBufferedFrames);
-                if (primingBuffered < _targetBufferedFrames)
+                int buffered = Volatile.Read(ref _currentBufferedFrames);
+                bool hasAnyAudio = buffered > 0 || Interlocked.Read(ref _producedFramesTotal) > 0;
+                bool gateSatisfied = buffered >= _startupGateMinFrames;
+                // Hard startup gate: do not drain before we have actual buffered audio.
+                // This avoids first-boot underrun/race where cold-start generation is slow.
+                if (!hasAnyAudio || !gateSatisfied)
                 {
-                    if (Stopwatch.GetTimestamp() < _primingUntilTicks)
-                    {
-                        _dataEvent.WaitOne(5);
-                        continue;
-                    }
+                    _dataEvent.WaitOne(5);
+                    continue;
                 }
+                _startupGateActive = false;
                 _primingUntilTicks = 0;
             }
 
@@ -298,17 +307,30 @@ public sealed class AudioEngine : IDisposable
                 int missingFrames = _batch.Length / _channels;
                 Interlocked.Increment(ref _underrunEventsTotal);
                 Interlocked.Add(ref _underrunFramesTotal, missingFrames);
-                // Submit silence to keep output timing stable.
-                Array.Clear(_batch, 0, _batch.Length);
-                _sink.Submit(_batch);
-                Interlocked.Add(ref _consumedFramesTotal, _framesPerBatch);
-                Interlocked.Increment(ref _drainBatchesTotal);
-                Interlocked.Add(ref _drainBatchFramesTotal, _framesPerBatch);
-                UpdateBufferedStats(currentFrames);
-                if (TimedDrainEnabled)
-                    PaceDrain(_framesPerBatch);
+
+                if (_holdOnUnderrun && _targetBufferedFrames > 0)
+                {
+                    // Underrun recovery: re-arm startup gate and wait for real audio
+                    // instead of draining with injected silence.
+                    _startupGateActive = true;
+                    _startupGateMinFrames = ComputeStartupGateFrames();
+                    _drainNextTicks = 0;
+                    _dataEvent.WaitOne(5);
+                }
                 else
-                    _dataEvent.WaitOne(10);
+                {
+                    // Legacy behavior: inject silence to keep output timing stable.
+                    Array.Clear(_batch, 0, _batch.Length);
+                    _sink.Submit(_batch);
+                    Interlocked.Add(ref _consumedFramesTotal, _framesPerBatch);
+                    Interlocked.Increment(ref _drainBatchesTotal);
+                    Interlocked.Add(ref _drainBatchFramesTotal, _framesPerBatch);
+                    UpdateBufferedStats(currentFrames);
+                    if (TimedDrainEnabled)
+                        PaceDrain(_framesPerBatch);
+                    else
+                        _dataEvent.WaitOne(10);
+                }
             }
 
             if (TraceStats)
@@ -629,6 +651,8 @@ public sealed class AudioEngine : IDisposable
         _pullFrameAccumulator = 0;
         _drainNextTicks = 0;
         _primingUntilTicks = 0;
+        _startupGateActive = false;
+        _startupGateMinFrames = 0;
         _outputPllRatio = 1.0;
     }
 
@@ -642,5 +666,36 @@ public sealed class AudioEngine : IDisposable
             return value;
         }
         return 0.005;
+    }
+
+    private static double GetAudioPrimeSeconds()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PRIME_SECONDS");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+            && value >= 0.1
+            && value <= 10.0)
+        {
+            return value;
+        }
+
+        // 0.5s was too short on cold start (JIT + first ROM load), which could
+        // let drain begin before prefill has time to fill the ring.
+        return 2.0;
+    }
+
+    private int ComputeStartupGateFrames()
+    {
+        // Do not require the full target buffer on cold boot; that can delay first audio
+        // noticeably when JIT/startup is still warming up. Keep a small gate here and let
+        // sink/startup queue thresholds handle the remaining smoothing.
+        int floor = Math.Min(_framesPerBatch * 2, _bufferFrames);
+        if (floor < _framesPerBatch)
+            floor = _framesPerBatch;
+
+        if (_targetBufferedFrames <= 0)
+            return floor;
+
+        return Math.Min(_targetBufferedFrames, floor);
     }
 }

@@ -169,6 +169,8 @@ public partial class MainWindow : Window
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_PULL") == "1";
     private static readonly bool AudioPllEnabled =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_PLL") == "1" && !AudioRawTiming;
+    private static readonly bool AudioStartupPrimeUncapped =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_STARTUP_PRIME_UNCAPPED") == "1";
     private const int AudioMaxFramesPerTick = 4096;
     private static readonly int AudioTargetBufferedFrames = GetAudioTargetBufferedFrames();
     private static readonly int AudioMaxCatchupFramesPerTick = GetAudioMaxCatchupFramesPerTick();
@@ -1163,10 +1165,14 @@ public partial class MainWindow : Window
             Console.WriteLine($"[UI] Start clicked. romPath='{_romPath}' exists={(!string.IsNullOrWhiteSpace(_romPath) && File.Exists(_romPath))}");
             _timer.Stop();
             StopEmuLoop();
+            // Deterministic restart: stop audio thread/sink before loading next ROM.
+            // Prevents stale queued audio and startup races across ROM switches.
+            StopAudioEngine();
             _frames = 0;
             _fpsSw.Restart();
             _earlyMagentaTimer.Restart();
             _earlyMagentaReported = false;
+            _audioPullReady = false;
             if (SplashImage != null)
                 SplashImage.IsVisible = true;
 
@@ -1205,6 +1211,8 @@ public partial class MainWindow : Window
                     if (_core is MdTracerAdapter m)
                     {
                         m.PowerCycleAndLoadRom(_romPath);
+                        // Hard-reset MD audio state after load to avoid stale/cold-start tone artifacts.
+                        m.HardFlushAudioState();
                         Console.WriteLine("[UI] ROM loaded into core.");
                         _audioPullReady = true;
                         PrimePullAudio();
@@ -3740,6 +3748,7 @@ public partial class MainWindow : Window
         _audioEngineSink = CreateAudioSink(AudioSinkEnv);
         _audioEngine = new AudioEngine(_audioEngineSink, AudioSampleRate, AudioChannels, framesPerBatch: AudioEngineBatchFrames, bufferFrames: AudioEngineBufferFrames);
         _audioEngine.SetTargetBufferedFrames(AudioTargetBufferedFrames);
+        PrefillAudioEngineWithSilence();
         _audioEngine.Start();
         if (AudioPullEnabled)
         {
@@ -3758,8 +3767,7 @@ public partial class MainWindow : Window
         }
         _audioFormatMismatchLogged = false;
         ResetAudioTiming();
-        if (_core is MdTracerAdapter adapter)
-            PrefillAudioEngineBuffer(adapter);
+        SeedAudioTimingFromCore();
         InitSnesAudioRing();
     }
 
@@ -3825,6 +3833,41 @@ public partial class MainWindow : Window
         _audioPullReady = false;
         _audioPullLastFrameCounter = -1;
         _audioPullLastFrameCounterTicks = 0;
+    }
+
+    private void SeedAudioTimingFromCore()
+    {
+        if (_core is not MdTracerAdapter adapter)
+            return;
+
+        // Make first post-load frame produce audio deterministically.
+        long currentCycles = adapter.GetSystemCycles();
+        if (currentCycles <= 0)
+            return;
+
+        if (!AudioClockFrame && !_audioPullMode && !_audioTimedEnabled)
+        {
+            double cps = adapter.GetM68kClockHz();
+            double fps = adapter.GetTargetFps();
+            if (cps > 0 && fps > 0)
+            {
+                long oneFrameCycles = (long)Math.Round(cps / fps);
+                if (oneFrameCycles > 0)
+                    _audioLastSystemCycles = Math.Max(0, currentCycles - oneFrameCycles);
+                else
+                    _audioLastSystemCycles = currentCycles;
+            }
+            else
+            {
+                _audioLastSystemCycles = currentCycles;
+            }
+        }
+        else
+        {
+            _audioLastSystemCycles = currentCycles;
+        }
+
+        _audioLastTicks = Stopwatch.GetTimestamp();
     }
 
     private void InitSnesAudioRing()
@@ -3922,6 +3965,30 @@ public partial class MainWindow : Window
                 break;
             _audioEngine.Submit(audio);
             safety++;
+        }
+    }
+
+    private void PrefillAudioEngineWithSilence()
+    {
+        if (_audioEngine == null)
+            return;
+        int target = AudioTargetBufferedFrames;
+        if (target <= 0)
+            target = AudioEngineBatchFrames * 2;
+        int chunkFrames = AudioEngineBatchFrames;
+        int needed = Math.Min(target, AudioEngineBatchFrames * 2);
+        if (needed <= 0)
+            return;
+
+        int samplesPerChunk = chunkFrames * AudioChannels;
+        short[] silent = new short[samplesPerChunk];
+        int remaining = needed;
+        while (remaining > 0)
+        {
+            int frames = Math.Min(remaining, chunkFrames);
+            int samples = frames * AudioChannels;
+            _audioEngine.Submit(silent.AsSpan(0, samples));
+            remaining -= frames;
         }
     }
 
@@ -4975,6 +5042,7 @@ public partial class MainWindow : Window
             return;
         if (_emuRunning)
             return;
+
         _emuRunning = true;
         _emuThread = new Thread(EmuLoop)
         {
@@ -5000,6 +5068,8 @@ public partial class MainWindow : Window
         double targetFps = GetLiveTargetFps();
         double ticksPerFrame = Stopwatch.Frequency / targetFps;
         double nextTick = Stopwatch.GetTimestamp();
+        bool audioStartupPriming = AudioStartupPrimeUncapped && _audioEngine != null && !_audioPullMode && AudioTargetBufferedFrames > 0;
+        long audioStartupPrimeUntilTicks = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 3.0);
         int uiHangFrames = 0;
         {
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HANG_FRAMES");
@@ -5081,7 +5151,24 @@ public partial class MainWindow : Window
             var core = _core;
             if (core == null)
                 continue;
-            if (_speedLockEnabled && now < nextTick)
+
+            bool useSpeedLock = _speedLockEnabled;
+            if (audioStartupPriming && _audioEngine != null)
+            {
+                int buffered = _audioEngine.BufferedFrames;
+                if (buffered >= AudioTargetBufferedFrames || now >= audioStartupPrimeUntilTicks)
+                {
+                    audioStartupPriming = false;
+                    nextTick = now;
+                }
+                else
+                {
+                    // Let emulation run uncapped briefly on cold start to fill audio queue.
+                    useSpeedLock = false;
+                }
+            }
+
+            if (useSpeedLock && now < nextTick)
             {
                 int sleepMs = (int)((nextTick - now) * 1000 / Stopwatch.Frequency);
                 if (sleepMs > 2)
@@ -5104,7 +5191,7 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            if (_speedLockEnabled)
+            if (useSpeedLock)
             {
                 if (now - nextTick > ticksPerFrame * 4)
                     nextTick = now;
@@ -5122,6 +5209,8 @@ public partial class MainWindow : Window
                         _uiProfileRunFrameTicks += Stopwatch.GetTimestamp() - runStart;
                     long audioStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
                     GenerateAudioFromSystemCycles(core);
+                    if (core is MdTracerAdapter mdAudioAdapter)
+                        TopUpMdAudioIfLow(mdAudioAdapter);
                     if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
@@ -5497,6 +5586,35 @@ public partial class MainWindow : Window
             Console.WriteLine(
                 $"[AUDIO-QUEUE] buffered={_audioEngine.BufferedFrames} target={AudioTargetBufferedFrames} " +
                 $"rateScale={rateScale:F4} acc={_audioFrameAccumulator:F2}");
+        }
+    }
+
+    private void TopUpMdAudioIfLow(MdTracerAdapter adapter)
+    {
+        if (_audioEngine == null || _audioPullMode || _audioTimedEnabled || AudioClockFrame)
+            return;
+        if (AudioTargetBufferedFrames <= 0)
+            return;
+
+        int buffered = _audioEngine.BufferedFrames;
+        int lowWater = Math.Max(AudioBufferChunkFrames * 2, AudioTargetBufferedFrames / 2);
+        if (buffered >= lowWater)
+            return;
+
+        int needFrames = lowWater - buffered;
+        if (needFrames <= 0)
+            return;
+
+        int safety = 0;
+        while (needFrames > 0 && safety < 8)
+        {
+            int chunk = Math.Min(needFrames, AudioBufferChunkFrames);
+            var audio = adapter.GetAudioBufferForFrames(chunk, out int rate, out int channels);
+            if (audio.IsEmpty || rate != AudioSampleRate || channels != AudioChannels)
+                break;
+            _audioEngine.Submit(audio);
+            needFrames -= chunk;
+            safety++;
         }
     }
 
