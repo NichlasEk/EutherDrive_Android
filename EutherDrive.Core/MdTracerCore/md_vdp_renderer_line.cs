@@ -429,8 +429,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 vsramWord &= 0x3ff;
                             else
                                 vsramWord &= 0x7ff;
-                            if (g_vdp_interlace_mode == 2)
-                                vsramWord &= 0x7fe;
+                            // Interlace double uses full 11-bit VScroll mask (0x7FF), same as jgenesis.
                             int view = VScrollSubtract ? (lineY - vsramWord) : (vsramWord + lineY);
                             view %= g_scroll_ysize;
                             if (view < 0) view += g_scroll_ysize;
@@ -591,8 +590,7 @@ namespace EutherDrive.Core.MdTracerCore
                                 vsramWord &= 0x3ff;
                             else
                                 vsramWord &= 0x7ff;
-                            if (g_vdp_interlace_mode == 2)
-                                vsramWord &= 0x7fe;
+                            // Interlace double uses full 11-bit VScroll mask (0x7FF), same as jgenesis.
                             int view = VScrollSubtract ? (lineY - vsramWord) : (vsramWord + lineY);
                             view %= g_scroll_ysize;
                             if (view < 0) view += g_scroll_ysize;

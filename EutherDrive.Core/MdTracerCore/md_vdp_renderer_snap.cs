@@ -276,11 +276,7 @@ namespace EutherDrive.Core.MdTracerCore
                         w_vscrollA &= 0x7ff;
                         w_vscrollB &= 0x7ff;
                     }
-                    if (g_vdp_interlace_mode == 2)
-                    {
-                        w_vscrollA &= 0x7fe;
-                        w_vscrollB &= 0x7fe;
-                    }
+                    // Interlace double uses full 11-bit VScroll mask (0x7FF), same as jgenesis.
 
                     for (int i = 0; i < VSRAM_DATASIZE; i++)
                     {
@@ -325,11 +321,7 @@ namespace EutherDrive.Core.MdTracerCore
                             w_vscrollA &= 0x7ff;
                             w_vscrollB &= 0x7ff;
                         }
-                        if (g_vdp_interlace_mode == 2)
-                        {
-                            w_vscrollA &= 0x7fe;
-                            w_vscrollB &= 0x7fe;
-                        }
+                        // Interlace double uses full 11-bit VScroll mask (0x7FF), same as jgenesis.
 
                         int viewA = VScrollSubtract ? (lineY - w_vscrollA) : (w_vscrollA + lineY);
                         int viewB = VScrollSubtract ? (lineY - w_vscrollB) : (w_vscrollB + lineY);
