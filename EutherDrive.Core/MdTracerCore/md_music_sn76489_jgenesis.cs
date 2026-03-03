@@ -308,23 +308,6 @@ namespace EutherDrive.Core.MdTracerCore
                 return sample;
             }
 
-            // If producer fell behind, synthesize one PSG sample on demand instead of
-            // outputting a hard gap (0). Hard gaps are very audible on short SFX.
-            for (int i = 0; i < SnDivider && _ringCount == 0; i++)
-            {
-                if (!Tick())
-                    continue;
-                short sample = GenerateSampleCurrentState(outVol, noiseGainPercent);
-                WriteRing(sample);
-            }
-            if (_ringCount > 0)
-            {
-                short sample = ReadRing();
-                _lastSample = sample;
-                _underflowHoldSamplesRemaining = UnderflowHoldSamples;
-                return sample;
-            }
-
             // Keep PSG time deterministic: when underflowing, do not synthesize
             // a new sample by advancing internal clocks out-of-band.
             if (HoldLastSampleOnUnderflow && _underflowHoldSamplesRemaining > 0)
