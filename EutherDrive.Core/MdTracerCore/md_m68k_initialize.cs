@@ -106,14 +106,23 @@ namespace EutherDrive.Core.MdTracerCore
             if (initialSp != initialSpRaw || initialPc != initialPcRaw)
                 Console.WriteLine($"[m68k-reset] vectors (24-bit): SP=0x{initialSp:X8} PC=0x{initialPc:X8}");
 
-            // Some bad/cracked ROM dumps ship with a zero reset SP vector.
-            // Hardware then wraps stack accesses into 24-bit space, which can
-            // lead to unstable startup behavior in practice. Use a conservative
-            // WRAM-top supervisor stack fallback for compatibility.
+            // Real 68000 behavior is to use the vector as-is, even when it is 0.
+            // Keep the old compatibility fallback available as an opt-in escape hatch.
             if (initialSp == 0)
             {
-                initialSp = 0x00FFFD00;
-                Console.WriteLine($"[m68k-reset] SP vector is zero; using fallback SP=0x{initialSp:X8}");
+                bool useZeroSpFallback = string.Equals(
+                    Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_ZERO_SP_FALLBACK"),
+                    "1",
+                    StringComparison.Ordinal);
+                if (useZeroSpFallback)
+                {
+                    initialSp = 0x00FFFD00;
+                    Console.WriteLine($"[m68k-reset] SP vector is zero; using fallback SP=0x{initialSp:X8}");
+                }
+                else
+                {
+                    Console.WriteLine("[m68k-reset] SP vector is zero; using hardware behavior (A7=0x00000000)");
+                }
             }
 
             g_initial_PC = initialPc;
