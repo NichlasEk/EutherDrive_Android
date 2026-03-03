@@ -385,7 +385,9 @@ namespace EutherDrive.Core.MdTracerCore
                         int vscrollIndex = wx >> 4;
                         if (VScrollUseHScroll)
                         {
-                            int scrolledX = wx + w_view_x;
+                            // w_view_x already tracks the scrolled X position for this pixel.
+                            // Adding wx again double-counts X and selects wrong per-cell VSRAM entries.
+                            int scrolledX = w_view_x;
                             vscrollIndex = scrolledX >> 4;
                             if (!IsH40Mode())
                             {
@@ -537,7 +539,9 @@ namespace EutherDrive.Core.MdTracerCore
                         int vscrollIndex = wx >> 4;
                         if (VScrollUseHScroll)
                         {
-                            int scrolledX = wx + w_view_x;
+                            // w_view_x already tracks the scrolled X position for this pixel.
+                            // Adding wx again double-counts X and selects wrong per-cell VSRAM entries.
+                            int scrolledX = w_view_x;
                             vscrollIndex = scrolledX >> 4;
                             if (!IsH40Mode())
                             {
@@ -843,7 +847,7 @@ namespace EutherDrive.Core.MdTracerCore
                     bool bOpaque = planeBColor[wx] != 0;
                     if (aOpaque && bOpaque)
                     {
-                        if (planeAPrio[wx] > planeBPrio[wx])
+                        if (planeAPrio[wx] >= planeBPrio[wx])
                         {
                             bgColor = planeAColor[wx];
                             bgPrio = planeAPrio[wx];
