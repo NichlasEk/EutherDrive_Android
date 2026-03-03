@@ -138,6 +138,12 @@ namespace EutherDrive.Core.MdTracerCore
             if (MdTracerCore.MdLog.Enabled && g_scanline == 0)
                 MdTracerCore.MdLog.WriteLine($"[VDP] frame={_frameCounter} display={g_vdp_reg_1_6_display}");
 
+            // Rebuild sprite row cache once per frame from live VRAM.
+            // Some games (incl. Sonic 3 save/select) update SAT in ways that can
+            // bypass cache-dirty tracking and leave stale sprite rows at frame bottom.
+            if (g_scanline == 0)
+                InvalidateSpriteRowCache();
+
             // Sprite overflow is evaluated per scanline regardless of display enable.
             if (!md_main.g_masterSystemMode)
                 EvaluateSpriteOverflowForLine(g_scanline);

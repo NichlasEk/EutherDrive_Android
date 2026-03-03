@@ -1186,14 +1186,16 @@ private static readonly bool SpriteLinkSequential =
             int spriteDisplayTop = (g_vdp_interlace_mode == 2) ? 0x100 : 0x080;
             int spriteDisplayMask = (g_vdp_interlace_mode == 2) ? 0x3FF : 0x1FF;
             int yMask = g_sprite_vmask;
+            int spriteBase = GetSpriteTableBase();
             int spritesRemaining = g_max_sprite_num;
             int spriteIndex = 0;
 
             do
             {
                 int addr = spriteIndex << 3;
-                ushort w_val1 = SpriteCacheReadWord(addr);
-                ushort w_val2 = SpriteCacheReadWord(addr + 2);
+                // Read SAT attributes directly from live VRAM to avoid stale cache desync.
+                ushort w_val1 = ReadVramWordAligned(spriteBase + addr);
+                ushort w_val2 = ReadVramWordAligned(spriteBase + addr + 2);
 
                 int spriteY = w_val1 & yMask;
                 int heightTiles = ((w_val2 >> 8) & 0x0003) + 1;

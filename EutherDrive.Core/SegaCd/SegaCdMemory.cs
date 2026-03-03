@@ -858,7 +858,8 @@ public sealed class SegaCdMemory
             case 0x0000:
                 return (byte)(((Registers.LedGreen ? 1 : 0) << 1) | (Registers.LedRed ? 1 : 0));
             case 0x0001:
-                return (byte)(((Registers.MainSoftwareInterruptPending ? 1 : 0) << 1) | (Registers.SubSoftwareInterruptPending ? 1 : 0));
+                // Bit 0: INT2 pending from Main CPU (IFL2). Bit 1: INT1 (V-Blank) pending (IFL1).
+                return (byte)(((Cdd.SubcodeInterruptPending ? 1 : 0) << 1) | (Registers.SubSoftwareInterruptPending ? 1 : 0));
             case 0x0002:
                 return Registers.PrgRamWriteProtect;
             case 0x0003:
@@ -1434,7 +1435,7 @@ public sealed class SegaCdMemory
 
     private void LogFirstSubRegAccess(uint reg, bool isWrite)
     {
-        if (reg <= 0x0001)
+        if (reg <= 0x0001 && isWrite)
         {
             Registers.SubSoftwareInterruptPending = false;
         }
@@ -1448,46 +1449,26 @@ public sealed class SegaCdMemory
     {
         if (Registers.SubcodeInterruptEnabled && Cdd.SubcodeInterruptPending)
         {
-            if (LogSubInt)
-                Console.WriteLine("[SCD-SUBINT] level=6 source=SUBCODE");
             return 6;
         }
         if (Registers.CdcInterruptEnabled && Cdc.InterruptPending)
         {
-            if (LogSubInt)
-                Console.WriteLine("[SCD-SUBINT] level=5 source=CDC");
             return 5;
         }
         if (Registers.CddInterruptEnabled && Registers.CddHostClockOn && Cdd.InterruptPending)
         {
-            if (LogSubInt)
-                Console.WriteLine("[SCD-SUBINT] level=4 source=CDD");
             return 4;
-        }
-        if (LogSubInt && Registers.CddInterruptEnabled && !Registers.CddHostClockOn && Cdd.InterruptPending)
-        {
-            Console.WriteLine("[SCD-SUBINT] CDD pending but host clock off");
-        }
-        if (LogSubInt && !Registers.CddInterruptEnabled && Cdd.InterruptPending)
-        {
-            Console.WriteLine("[SCD-SUBINT] CDD pending but interrupt disabled");
         }
         if (Registers.TimerInterruptEnabled && Registers.TimerInterruptPending)
         {
-            if (LogSubInt)
-                Console.WriteLine("[SCD-SUBINT] level=3 source=TIMER");
             return 3;
         }
         if (Registers.SoftwareInterruptEnabled && Registers.SubSoftwareInterruptPending)
         {
-            if (LogSubInt)
-                Console.WriteLine("[SCD-SUBINT] level=2 source=SW");
             return 2;
         }
         if (Registers.GraphicsInterruptEnabled && Graphics.InterruptPending)
         {
-            if (LogSubInt)
-                Console.WriteLine("[SCD-SUBINT] level=1 source=GFX");
             return 1;
         }
         return 0;

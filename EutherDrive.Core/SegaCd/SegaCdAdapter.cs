@@ -234,8 +234,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
             _memory.SetDisc(null);
         if (_useM68kEmu)
         {
-            long currentFrame = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp?.FrameCounter ?? -1;
-            Console.WriteLine($"[FRAME-DEBUG] LoadRom MainPC=0x{_mainCpu.Pc:X6} SubPC=0x{_subCpu.Pc:X6}");
+            // Initialized builder above
         }
 
         if (TraceCycleBudget)
@@ -533,12 +532,6 @@ public sealed class SegaCdAdapter : IEmulatorCore
     {
         if (_memory == null || _mainBus == null)
             return;
-
-        long currentFrame = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp?.FrameCounter ?? -1;
-        if (_useM68kEmu && currentFrame % 60 == 0 && currentFrame < 300)
-        {
-            Console.WriteLine($"[FRAME-DEBUG] frame={currentFrame} MainPC=0x{_mainCpu.Pc:X6} SubPC=0x{_subCpu.Pc:X6}");
-        }
 
         if (_useM68kEmu)
         {

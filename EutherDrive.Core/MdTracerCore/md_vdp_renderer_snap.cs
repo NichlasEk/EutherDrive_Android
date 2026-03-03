@@ -399,12 +399,11 @@ namespace EutherDrive.Core.MdTracerCore
                 for (int i = 0; i < row.Count; i++)
                 {
                     int w_now_link = row.SpriteIndices[i];
-                    int w_addr = w_now_link << 3;
-                    ushort w_val1 = SpriteCacheReadWord(w_addr);
-                    // Keep SAT entry coherent by reading all words from the same cache snapshot.
-                    // Mixing cached word1 with live-VRAM word3/4 can produce transient sprite tile/position glitches.
-                    ushort w_val3 = SpriteCacheReadWord(w_addr + 4);
-                    ushort w_val4 = SpriteCacheReadWord(w_addr + 6);
+                    int w_addr = GetSpriteTableBase() + (w_now_link << 3);
+                    // Read sprite attributes directly from live VRAM to avoid SAT cache desync.
+                    ushort w_val1 = ReadVramWordAligned(w_addr);
+                    ushort w_val3 = ReadVramWordAligned(w_addr + 4);
+                    ushort w_val4 = ReadVramWordAligned(w_addr + 6);
 
                     int w_top_x      = w_val4 & 0x01ff;
                     int w_top_y      = w_val1 & g_sprite_vmask;

@@ -96,11 +96,43 @@ namespace EutherDrive.Core.MdTracerCore
             return value < 0 ? fallback : value;
         }
 
-        // When display is OFF, preserve framebuffer instead of filling with black
-        // Default is TRUE - many games use display toggle as an effect (Mystic Defender, etc.)
-        // Can be toggled at runtime via static property or EUTHERDRIVE_FILL_FB_ON_DISPLAY_OFF=1 env var
+        private bool IsLineInWindowVertical(int lineY)
+        {
+            int cellShift = GetCellHeightShift();
+            int lineCell = lineY >> cellShift;
+            int windowY = g_vdp_reg[18] & 0x1F;
+            bool centerToBottom = (g_vdp_reg[18] & 0x80) != 0;
+            return centerToBottom ? (lineCell >= windowY) : (lineCell < windowY);
+        }
+
+        private void GetWindowHorizontalRange(int activeDisplayPixels, out int startPixel, out int endPixel)
+        {
+            int windowX = g_vdp_reg[17] & 0x1F;
+            bool centerToRight = (g_vdp_reg[17] & 0x80) != 0;
+            int splitPixel = windowX << 3;
+            if (!centerToRight)
+            {
+                startPixel = 0;
+                endPixel = splitPixel;
+            }
+            else
+            {
+                startPixel = splitPixel;
+                endPixel = activeDisplayPixels;
+            }
+
+            if (startPixel < 0) startPixel = 0;
+            if (endPixel < 0) endPixel = 0;
+            if (startPixel > activeDisplayPixels) startPixel = activeDisplayPixels;
+            if (endPixel > activeDisplayPixels) endPixel = activeDisplayPixels;
+        }
+
+        // Hardware-accurate default: when display is OFF, current line should be filled (not preserved).
+        // Preserving stale pixels can leak previous frame content as bottom-line garbage in some games.
+        // Optional opt-in compatibility behavior:
+        //   EUTHERDRIVE_PRESERVE_FB_ON_DISPLAY_OFF=1
         private static bool _preserveFramebufferOnDisplayOff =
-            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FILL_FB_ON_DISPLAY_OFF"), "1", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PRESERVE_FB_ON_DISPLAY_OFF"), "1", StringComparison.Ordinal);
 
         public static bool PreserveFramebufferOnDisplayOff
         {
@@ -184,6 +216,14 @@ namespace EutherDrive.Core.MdTracerCore
             TraceNameTableRowDumpIfNeeded();
             int renderLine = GetRenderLine(g_scanline);
             int cellShift = GetCellHeightShift();
+            uint[] planeAColor = new uint[g_display_xsize];
+            uint[] planeAPrio = new uint[g_display_xsize];
+            uint[] planeBColor = new uint[g_display_xsize];
+            uint[] planeBPrio = new uint[g_display_xsize];
+            uint[] spriteColor = new uint[g_display_xsize];
+            uint[] spritePrio = new uint[g_display_xsize];
+            sbyte[] spriteShDelta = new sbyte[g_display_xsize];
+            bool[] spriteForceNormal = new bool[g_display_xsize];
             if (TraceTileFetch && g_scanline == TraceTileFetchScanline && _traceTileFetchFrame != _frameCounter)
             {
                 _traceTileFetchFrame = _frameCounter;
@@ -410,9 +450,8 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                     if (picValue != 0)
                     {
-                        g_game_cmap[wx]   = w_palette + picValue;
-                        g_game_primap[wx] = w_priority;
-                        g_game_shadowmap[wx] = (g_vdp_reg_12_3_shadow != 0) ? 1u : 0u;
+                        planeBColor[wx] = w_palette + picValue;
+                        planeBPrio[wx] = w_priority;
                     }
                     w_view_x += 1;
                     w_view_dx += 1;
@@ -539,24 +578,20 @@ namespace EutherDrive.Core.MdTracerCore
                                 $"tileBase=0x{tileBase:X4} picAddr={(w_pic_addr >= 0 ? $"0x{w_pic_addr:X4}" : "direct")}");
                         }
                     }
-                        if (g_game_primap[wx] <= w_priority)
+                        uint picValue;
+                        if (w_pic_addr < 0)
                         {
-                            uint picValue;
-                            if (w_pic_addr < 0)
-                            {
-                                picValue = ReadPatternPixelDirect((int)w_char, w_view_dx, w_view_dy, w_reverse, TileRebaseKind.PlaneA);
-                            }
-                            else
-                            {
-                                uint w_pic_w = g_renderer_vram[w_pic_addr + (w_view_dx >> 2)];
-                                picValue = (uint)((w_pic_w >> ((3 - (w_view_dx & 3)) << 2)) & 0x0f);
-                            }
-                            if (picValue != 0)
-                            {
-                                g_game_cmap[wx]   = w_palette + picValue;
-                                g_game_primap[wx] = w_priority;
-                                g_game_shadowmap[wx] = (g_vdp_reg_12_3_shadow != 0) ? 1u : 0u;
-                            }
+                            picValue = ReadPatternPixelDirect((int)w_char, w_view_dx, w_view_dy, w_reverse, TileRebaseKind.PlaneA);
+                        }
+                        else
+                        {
+                            uint w_pic_w = g_renderer_vram[w_pic_addr + (w_view_dx >> 2)];
+                            picValue = (uint)((w_pic_w >> ((3 - (w_view_dx & 3)) << 2)) & 0x0f);
+                        }
+                        if (picValue != 0)
+                        {
+                            planeAColor[wx] = w_palette + picValue;
+                            planeAPrio[wx] = w_priority;
                         }
                         w_view_x += 1;
                         w_view_dx += 1;
@@ -627,7 +662,6 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             if ((0 <= w_posx) && (w_posx < g_display_xsize))
                             {
-                                bool canDrawSprite = IgnoreSpritePriority || g_game_primap[w_posx] <= w_priority;
                                 bool maskedBySprite = !DisableSpriteLineMask && g_sprite_line_mask[w_posx];
                                 if (!maskedBySprite)
                                 {
@@ -670,38 +704,20 @@ namespace EutherDrive.Core.MdTracerCore
 
                                     if (w_pic != 0)
                                     {
-                                        if (canDrawSprite)
+                                        uint w_color = (uint)(w_palette + w_pic);
+                                        if (g_vdp_reg_12_3_shadow != 0 && w_color == 0x3e)
                                         {
-                                            uint w_color = (uint)(w_palette + w_pic);
-                                            if (g_vdp_reg_12_3_shadow == 0)
-                                            {
-                                                g_game_cmap[w_posx]   = w_color;
-                                                g_game_primap[w_posx] = w_priority;
-                                            }
-                                            else if (w_color == 0x3e)
-                                            {
-                                                // Palette 3, color 14: Transparent, makes underlying pixel SHADOW
-                                                uint w_map = g_game_shadowmap[w_posx];
-                                                if (w_map > 0) g_game_shadowmap[w_posx] = (uint)(w_map - 1);
-                                            }
-                                            else if (w_color == 0x3f)
-                                            {
-                                                // Palette 3, color 15: Transparent, makes underlying pixel HIGHLIGHT
-                                                uint w_map = g_game_shadowmap[w_posx];
-                                                if (w_map < 2) g_game_shadowmap[w_posx] = (uint)(w_map + 1);
-                                            }
-                                            else if ((w_color & 0x0f) == 0x0e)
-                                            {
-                                                // Colors 0x0E, 0x1E, 0x2E: ALWAYS NORMAL (no shadow inheritance)
-                                                g_game_cmap[w_posx]     = w_color;
-                                                g_game_primap[w_posx]   = w_priority;
-                                                g_game_shadowmap[w_posx] = 1u;
-                                            }
-                                            else
-                                            {
-                                                g_game_cmap[w_posx]   = w_color;
-                                                g_game_primap[w_posx] = w_priority;
-                                            }
+                                            spriteShDelta[w_posx] = -1;
+                                        }
+                                        else if (g_vdp_reg_12_3_shadow != 0 && w_color == 0x3f)
+                                        {
+                                            spriteShDelta[w_posx] = +1;
+                                        }
+                                        else
+                                        {
+                                            spriteColor[w_posx] = w_color;
+                                            spritePrio[w_posx] = w_priority;
+                                            spriteForceNormal[w_posx] = (w_color & 0x0f) == 0x0e;
                                         }
 
                                         // Sprite-sprite priority resolution is independent of plane priority.
@@ -721,64 +737,35 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 if (DisableWindow)
                     goto SkipWindow;
-                int w_xcell_st = g_line_snap[g_scanline].window_x_st;
-                int w_xcell_ed = g_line_snap[g_scanline].window_x_ed;
-                if (w_xcell_st != w_xcell_ed)
+                // jgenesis-style window selection:
+                // if line is in vertical window -> full width, otherwise horizontal range only.
+                int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
+                int activeWidth = g_display_xsize;
+                int windowStartPixel;
+                int windowEndPixel;
+                if (IsLineInWindowVertical(lineY))
                 {
-                    // Window-rader behöver full interlace-linje i mode 2 för korrekt tile-rad.
-                    int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
+                    windowStartPixel = 0;
+                    windowEndPixel = activeWidth;
+                }
+                else
+                {
+                    GetWindowHorizontalRange(activeWidth, out windowStartPixel, out windowEndPixel);
+                }
+
+                if (windowStartPixel < windowEndPixel)
+                {
                     int w_view_dy = GetRowInCell(lineY);
                     int windowWidthCells = IsH40Mode() ? 64 : 32;
-                    int w_addr = (g_vdp_reg_3_windows >> 1) + ((lineY >> cellShift) * windowWidthCells) + w_xcell_st;
+                    int windowBaseWord = g_vdp_reg_3_windows >> 1;
+                    int rowWord = (lineY >> cellShift) * windowWidthCells;
+                    int startCell = windowStartPixel >> 3;
+                    int endCellExclusive = (windowEndPixel + 7) >> 3;
+                    int w_posx = startCell << 3;
 
-                    if (TraceWindowHud && g_scanline == TraceWindowHudScanline)
+                    for (int w_cx = startCell; w_cx < endCellExclusive; w_cx++)
                     {
-                        Console.WriteLine($"[HUD-WINDOW] frame={_frameCounter} scanline={g_scanline} lineY={lineY} w_st={w_xcell_st} w_ed={w_xcell_ed} " +
-                            $"base=0x{(g_vdp_reg_3_windows >> 1):X4} addr=0x{w_addr:X4} winW={windowWidthCells} cellShift={cellShift}");
-                        int dumpTile = -1;
-                        int dumpTileAlt = -1;
-                        for (int i = 0; i < 8 && (w_xcell_st + i) <= w_xcell_ed; i++)
-                        {
-                            int addr = w_addr + i;
-                            uint val = ReadNameTableWord(g_vdp_reg_3_windows >> 1, addr - (g_vdp_reg_3_windows >> 1));
-                            Console.WriteLine($"[HUD-WINDOW] nt[{i}] addr=0x{addr:X4} val=0x{val:X4} char=0x{(val & 0x7FF):X3} pal={(val>>13)&3} pri={(val>>15)&1}");
-                            if (dumpTile < 0)
-                            {
-                                int tile = (int)(val & 0x7FF);
-                                if (tile != 0)
-                                    dumpTile = tile;
-                            }
-                            if (dumpTileAlt < 0)
-                            {
-                                int tile = (int)(val & 0x7FF);
-                                if (tile >= 0x40)
-                                    dumpTileAlt = tile;
-                            }
-                        }
-                        if (TraceWindowHudDumpTile)
-                        {
-                            if (dumpTile >= 0)
-                                DumpTilePattern("WIN", 0, dumpTile);
-                            if (dumpTileAlt >= 0 && dumpTileAlt != dumpTile)
-                                DumpTilePattern("WIN", 1, dumpTileAlt);
-                        }
-                    }
-                     
-                     // DEBUG: Log window info
-                     if (g_scanline == 100 && _frameCounter >= 7058 && _frameCounter <= 7060)
-                     {
-                         Console.WriteLine($"[DEBUG-WINDOW] frame={_frameCounter} scanline={g_scanline} base=0x{(g_vdp_reg_3_windows >> 1):X4} (reg3=0x{g_vdp_reg_3_windows:X4})");
-                         Console.WriteLine($"[DEBUG-WINDOW] xcell_st={w_xcell_st} xcell_ed={w_xcell_ed} lineY={lineY}");
-                         for (int i = 0; i < 5 && (w_xcell_st + i) <= w_xcell_ed; i++)
-                         {
-                             uint val = g_renderer_vram[w_addr + i];
-                             Console.WriteLine($"[DEBUG-WINDOW] tile[{i}]=0x{val:X4} pri={(val>>15)&1} char={val&0x7FF}");
-                         }
-                     }
-                    int w_posx = w_xcell_st << 3;
-                    for (int w_cx = w_xcell_st; w_cx <= w_xcell_ed; w_cx++)
-                    {
-                        uint w_val = ReadNameTableWord(g_vdp_reg_3_windows >> 1, w_addr++ - (g_vdp_reg_3_windows >> 1));
+                        uint w_val = ReadNameTableWord(windowBaseWord, rowWord + w_cx);
                         uint w_priority = ((w_val >> 15) & 0x0001);
                         uint w_palette  = (((w_val >> 13) & 0x0003) << 4);
                         uint w_reverse_bits = (w_val >> 11) & 0x0003;
@@ -786,17 +773,17 @@ namespace EutherDrive.Core.MdTracerCore
 
                         for (int w_dx = 0; w_dx < 8; w_dx++)
                         {
-                            if ((g_game_cmap[w_posx] == 0) || (g_game_primap[w_posx] <= w_priority))
+                            if (w_posx >= windowStartPixel && w_posx < windowEndPixel)
                             {
-                                // DIRECT VRAM MODE: Read pattern directly from vram[]
                                 if (ForceDirectVramReadWindow || ForceDirectVramReadPlanes || w_reverse_bits != 0)
                                 {
                                     uint picValueDirect = ReadPatternPixelDirect((int)w_char, w_dx, w_view_dy, w_reverse_bits, TileRebaseKind.Window);
 
                                     if (picValueDirect != 0)
                                     {
-                                        g_game_cmap[w_posx]   = w_palette + picValueDirect;
-                                        g_game_primap[w_posx] = w_priority;
+                                        // Window replaces plane A where enabled.
+                                        planeAColor[w_posx] = w_palette + picValueDirect;
+                                        planeAPrio[w_posx] = w_priority;
                                     }
                                 }
                                 else
@@ -806,8 +793,8 @@ namespace EutherDrive.Core.MdTracerCore
                                      uint picValue   = (uint)((w_pic_w >> ((3 - (w_dx & 3)) << 2)) & 0x0f);
                                     if (picValue != 0)
                                     {
-                                        g_game_cmap[w_posx]   = w_palette + picValue;
-                                        g_game_primap[w_posx] = w_priority;
+                                        planeAColor[w_posx] = w_palette + picValue;
+                                        planeAPrio[w_posx] = w_priority;
                                     }
                                 }
                             }
@@ -828,8 +815,62 @@ namespace EutherDrive.Core.MdTracerCore
                 int outputWidth = g_output_xsize;
                 for (int wx = 0; wx < visibleWidth; wx++)
                 {
-                    uint w_colnum = g_game_cmap[wx];
-                     if (w_colnum == 0) w_colnum = g_vdp_reg_7_backcolor;
+                    uint bgColor = 0;
+                    uint bgPrio = 0;
+
+                    bool aOpaque = planeAColor[wx] != 0;
+                    bool bOpaque = planeBColor[wx] != 0;
+                    if (aOpaque && bOpaque)
+                    {
+                        if (planeAPrio[wx] >= planeBPrio[wx])
+                        {
+                            bgColor = planeAColor[wx];
+                            bgPrio = planeAPrio[wx];
+                        }
+                        else
+                        {
+                            bgColor = planeBColor[wx];
+                            bgPrio = planeBPrio[wx];
+                        }
+                    }
+                    else if (aOpaque)
+                    {
+                        bgColor = planeAColor[wx];
+                        bgPrio = planeAPrio[wx];
+                    }
+                    else if (bOpaque)
+                    {
+                        bgColor = planeBColor[wx];
+                        bgPrio = planeBPrio[wx];
+                    }
+
+                    uint w_colnum = bgColor != 0 ? bgColor : g_vdp_reg_7_backcolor;
+                    uint outPrio = bgPrio;
+                    if (!DisableSprites && spriteColor[wx] != 0 && (IgnoreSpritePriority || spritePrio[wx] >= bgPrio))
+                    {
+                        w_colnum = spriteColor[wx];
+                        outPrio = spritePrio[wx];
+                    }
+
+                    g_game_cmap[wx] = w_colnum;
+                    g_game_primap[wx] = outPrio;
+                    g_game_shadowmap[wx] = (g_vdp_reg_12_3_shadow != 0) ? 1u : 0u;
+
+                    if (g_vdp_reg_12_3_shadow != 0 && !DisableSprites && spriteShDelta[wx] != 0 && (IgnoreSpritePriority || spritePrio[wx] >= outPrio))
+                    {
+                        if (spriteShDelta[wx] < 0)
+                        {
+                            if (g_game_shadowmap[wx] > 0) g_game_shadowmap[wx]--;
+                        }
+                        else
+                        {
+                            if (g_game_shadowmap[wx] < 2) g_game_shadowmap[wx]++;
+                        }
+                    }
+                    if (g_vdp_reg_12_3_shadow != 0 && !DisableSprites && spriteForceNormal[wx] && (IgnoreSpritePriority || spritePrio[wx] >= outPrio))
+                    {
+                        g_game_shadowmap[wx] = 1u;
+                    }
 
                      uint color;
                      if (g_vdp_reg_12_3_shadow == 0)

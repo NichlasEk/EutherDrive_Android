@@ -3332,7 +3332,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return;
 
         int srcWidth = 320;
-        int copyHeight = Math.Min(_fbH, 224);
+        // Use full visible MD height in normal modes (224/240).
+        // A hard 224 cap leaves stale pixels in the bottom rows for 240-line scenes
+        // (e.g. menu/UI screens in some Sonic titles).
+        int copyHeight = _fbH <= 240 ? _fbH : Math.Min(_fbH, 224);
         int copyWidth = Math.Min(_fbW, srcWidth);
         int dstStride = 1280;
 
