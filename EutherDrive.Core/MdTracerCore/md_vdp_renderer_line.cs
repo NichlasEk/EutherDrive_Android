@@ -828,7 +828,7 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             if (w_posx >= windowStartPixel && w_posx < windowEndPixel)
                             {
-                                if (ForceDirectVramReadWindow || ForceDirectVramReadPlanes || w_reverse_bits != 0)
+                                if (ForceDirectVramReadWindow || ForceDirectVramReadPlanes)
                                 {
                                     uint picValueDirect = ReadPatternPixelDirect((int)w_char, w_dx, w_view_dy, w_reverse_bits, TileRebaseKind.Window);
 
