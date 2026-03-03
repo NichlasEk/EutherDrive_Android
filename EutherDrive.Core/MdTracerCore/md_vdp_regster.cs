@@ -261,26 +261,50 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
-        private static int DecodeScrollSize(int raw)
-        {
-            switch (raw & 0x03)
-            {
-                case 0: return 32;
-                case 1: return 64;
-                default: return 128;
-            }
-        }
-
         private void RecomputeScrollSizes()
         {
-            g_scroll_ycell = DecodeScrollSize(g_vdp_reg_16_5_scrollV);
+            int rawV = g_vdp_reg_16_5_scrollV & 0x03;
+            int rawH = g_vdp_reg_16_1_scrollH & 0x03;
+
+            // jgenesis/hardware-compatible handling of prohibited scroll sizes:
+            // - H invalid (2): behaves as 32x1 scroll planes.
+            // - V invalid (2) with valid H: behaves as 32 tiles high.
+            bool hInvalid = rawH == 2;
+            bool vInvalid = rawV == 2;
+
+            int decodedH = rawH switch
+            {
+                0 => 32,
+                1 => 64,
+                3 => 128,
+                _ => 32
+            };
+
+            int decodedV = rawV switch
+            {
+                0 => 32,
+                1 => 64,
+                3 => 128,
+                _ => 32
+            };
+
+            if (hInvalid)
+            {
+                g_scroll_xcell = 32;
+                g_scroll_ycell = 1;
+            }
+            else
+            {
+                g_scroll_xcell = decodedH;
+                g_scroll_ycell = vInvalid ? 32 : decodedV;
+            }
+
+            g_scroll_xsize = g_scroll_xcell << 3;
+            g_scroll_xsize_mask = g_scroll_xsize - 1;
+
             int yShift = g_vdp_interlace_mode == 2 ? 4 : 3;
             g_scroll_ysize = g_scroll_ycell << yShift;
             g_scroll_ysize_mask = g_scroll_ysize - 1;
-
-            g_scroll_xcell = DecodeScrollSize(g_vdp_reg_16_1_scrollH);
-            g_scroll_xsize = g_scroll_xcell << 3;
-            g_scroll_xsize_mask = g_scroll_xsize - 1;
         }
 
         private static byte DecodeInterlaceMode(byte raw)
