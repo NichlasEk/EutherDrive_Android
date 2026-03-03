@@ -99,6 +99,14 @@ namespace EutherDrive.Core.MdTracerCore
                 // skalar
                 g_snap_line_snap[y].hscrollA             = g_line_snap[y].hscrollA;
                 g_snap_line_snap[y].hscrollB             = g_line_snap[y].hscrollB;
+                g_snap_line_snap[y].scrolla_base         = g_line_snap[y].scrolla_base;
+                g_snap_line_snap[y].scrollb_base         = g_line_snap[y].scrollb_base;
+                g_snap_line_snap[y].window_base          = g_line_snap[y].window_base;
+                g_snap_line_snap[y].reg11_vscroll_mode   = g_line_snap[y].reg11_vscroll_mode;
+                g_snap_line_snap[y].reg17_window_h       = g_line_snap[y].reg17_window_h;
+                g_snap_line_snap[y].reg18_window_v       = g_line_snap[y].reg18_window_v;
+                g_snap_line_snap[y].reg7_backcolor       = g_line_snap[y].reg7_backcolor;
+                g_snap_line_snap[y].reg12_shadow_enable  = g_line_snap[y].reg12_shadow_enable;
                 g_snap_line_snap[y].window_x_st          = g_line_snap[y].window_x_st;
                 g_snap_line_snap[y].window_x_ed          = g_line_snap[y].window_x_ed;
                 g_snap_line_snap[y].sprite_rendrere_num  = g_line_snap[y].sprite_rendrere_num;
@@ -162,6 +170,14 @@ namespace EutherDrive.Core.MdTracerCore
 
             // HScroll A/B
             {
+                g_line_snap[g_scanline].scrolla_base = g_vdp_reg_2_scrolla;
+                g_line_snap[g_scanline].scrollb_base = g_vdp_reg_4_scrollb;
+                g_line_snap[g_scanline].window_base = g_vdp_reg_3_windows;
+                g_line_snap[g_scanline].reg11_vscroll_mode = g_vdp_reg_11_2_vscroll;
+                g_line_snap[g_scanline].reg17_window_h = g_vdp_reg[17];
+                g_line_snap[g_scanline].reg18_window_v = g_vdp_reg[18];
+                g_line_snap[g_scanline].reg7_backcolor = (uint)g_vdp_reg_7_backcolor;
+                g_line_snap[g_scanline].reg12_shadow_enable = (uint)g_vdp_reg_12_3_shadow;
                 int hscrollLine = GetHScrollLine(scrollScanline);
                 int hscrollMode = UseScrollLatch ? _latchedReg11HScroll : g_vdp_reg_11_1_hscroll;
                 int w_addr = UseScrollLatch ? _latchedReg13HScroll : g_vdp_reg_13_hscroll;

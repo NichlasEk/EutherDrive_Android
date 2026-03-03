@@ -96,20 +96,21 @@ namespace EutherDrive.Core.MdTracerCore
             return value < 0 ? fallback : value;
         }
 
-        private bool IsLineInWindowVertical(int lineY)
+        private bool IsLineInWindowVertical(int lineY, byte reg18)
         {
             int cellShift = GetCellHeightShift();
             int lineCell = lineY >> cellShift;
-            int windowY = g_vdp_reg[18] & 0x1F;
-            bool centerToBottom = (g_vdp_reg[18] & 0x80) != 0;
+            int windowY = reg18 & 0x1F;
+            bool centerToBottom = (reg18 & 0x80) != 0;
             return centerToBottom ? (lineCell >= windowY) : (lineCell < windowY);
         }
 
-        private void GetWindowHorizontalRange(int activeDisplayPixels, out int startPixel, out int endPixel)
+        private void GetWindowHorizontalRange(int activeDisplayPixels, byte reg17, out int startPixel, out int endPixel)
         {
-            int windowX = g_vdp_reg[17] & 0x1F;
-            bool centerToRight = (g_vdp_reg[17] & 0x80) != 0;
-            int splitPixel = windowX << 3;
+            int windowX = reg17 & 0x1F;
+            bool centerToRight = (reg17 & 0x80) != 0;
+            // Reg17 horizontal window position is in 16-pixel steps on MD.
+            int splitPixel = windowX << 4;
             if (!centerToRight)
             {
                 startPixel = 0;
@@ -125,6 +126,15 @@ namespace EutherDrive.Core.MdTracerCore
             if (endPixel < 0) endPixel = 0;
             if (startPixel > activeDisplayPixels) startPixel = activeDisplayPixels;
             if (endPixel > activeDisplayPixels) endPixel = activeDisplayPixels;
+        }
+
+        private int GetMaskedWindowBaseByteAddress(int rawWindowBase)
+        {
+            // jgenesis behavior:
+            // H32: keep A15..A11 (mask 0xF800)
+            // H40: A11 ignored (mask 0xF000)
+            int mask = IsH40Mode() ? 0xF000 : 0xF800;
+            return rawWindowBase & mask;
         }
 
         // Hardware-accurate default: when display is OFF, current line should be filled (not preserved).
@@ -143,8 +153,10 @@ namespace EutherDrive.Core.MdTracerCore
         // Helper to read a word from vram[] (handles the MD byte-swap)
         private ushort vram_read_render(int addr)
         {
-            addr &= 0xFFFF;
-            addr &= 0xFFFE; // Word-align, wrap at 64KB
+            // Support both 64KB and 128KB VRAM layouts.
+            int vramMask = g_vram.Length - 1;
+            addr &= vramMask;
+            addr &= ~1; // Word-align
             return (ushort)((g_vram[addr] << 8) | g_vram[addr ^ 1]);
         }
 
@@ -197,10 +209,13 @@ namespace EutherDrive.Core.MdTracerCore
 
         private ushort ReadNameTableWord(int baseWord, int offsetWord)
         {
-            // Nametable size depends on scroll plane size (regs 16). Wrap by total entries.
+            // Plane dimensions wrap first, but nametable addressing is still limited to 8KB
+            // (4096 words). Large plane sizes (128x64 / 64x128 / 128x128) must wrap at that
+            // boundary as well.
             int entries = g_scroll_xcell * g_scroll_ycell; // power-of-two: 1024..8192
             int mask = entries - 1;
-            int wordIndex = baseWord + (offsetWord & mask);
+            int wrappedOffset = (offsetWord & mask) & 0x0FFF;
+            int wordIndex = baseWord + wrappedOffset;
             int byteAddr = (wordIndex << 1) & 0xFFFF;
             return vram_read_render(byteAddr);
         }
@@ -208,8 +223,14 @@ namespace EutherDrive.Core.MdTracerCore
         private void rendering_line_cpu(int outputLine, uint[]? targetBuffer = null)
         {
             uint[] destBuffer = targetBuffer ?? g_game_screen;
+            VDP_LINE_SNAP lineSnap = g_line_snap[g_scanline];
+            int reg11VScrollMode = lineSnap.reg11_vscroll_mode;
+            byte lineReg17 = lineSnap.reg17_window_h;
+            byte lineReg18 = lineSnap.reg18_window_v;
+            uint backColor = lineSnap.reg7_backcolor;
+            bool shadowEnabled = lineSnap.reg12_shadow_enable != 0;
             int w_vscroll_mask = 0xffff;
-            if (g_vdp_reg_11_2_vscroll == 1)
+            if (reg11VScrollMode == 1)
             {
                 w_vscroll_mask = 0x000f;
             }
@@ -293,7 +314,7 @@ namespace EutherDrive.Core.MdTracerCore
                 // Shadow/highlight map semantics:
                 // 0 = shadow, 1 = normal, 2 = highlight.
                 // Default should be normal when shadow mode is enabled.
-                g_game_shadowmap[dx] = (g_vdp_reg_12_3_shadow != 0) ? 1u : 0u;
+                g_game_shadowmap[dx] = shadowEnabled ? 1u : 0u;
                 g_sprite_line_mask[dx] = false;
             }
 
@@ -309,7 +330,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_view_addr = 0;
                 int w_view_dx = 8;
                 int w_view_dy = 0;
-                int scrollB_byte_addr = g_vdp_reg_4_scrollb & (IsH40Mode() ? 0xFE00 : 0xFC00);
+                int scrollB_byte_addr = g_line_snap[g_scanline].scrollb_base & (IsH40Mode() ? 0xFE00 : 0xFC00);
                 int w_screen_adrdr = scrollB_byte_addr >> 1;
                 int w_pic_addr = 0;
 
@@ -342,10 +363,10 @@ namespace EutherDrive.Core.MdTracerCore
                 // DEBUG: Log first few tiles of Plane B
                 if (g_scanline == 100 && _frameCounter >= 100 && _frameCounter <= 110)
                 {
-                    int debug_scrollB_byte_addr = g_vdp_reg_4_scrollb & (IsH40Mode() ? 0xFE00 : 0xFC00);
+                    int debug_scrollB_byte_addr = g_line_snap[g_scanline].scrollb_base & (IsH40Mode() ? 0xFE00 : 0xFC00);
                     int debug_scrollB_word_addr = debug_scrollB_byte_addr >> 1;
                     if (TraceRenderPlaneDebug)
-                        Console.WriteLine($"[DEBUG-PLANE-B] frame={_frameCounter} scanline={g_scanline} reg4=0x{g_vdp_reg_4_scrollb:X4} byte_addr=0x{debug_scrollB_byte_addr:X4} word_addr=0x{debug_scrollB_word_addr:X4}");
+                         Console.WriteLine($"[DEBUG-PLANE-B] frame={_frameCounter} scanline={g_scanline} reg4=0x{g_line_snap[g_scanline].scrollb_base:X4} byte_addr=0x{debug_scrollB_byte_addr:X4} word_addr=0x{debug_scrollB_word_addr:X4}");
                     // Check VRAM directly too
                     for (int i = 0; i < 10; i++)
                     {
@@ -376,7 +397,7 @@ namespace EutherDrive.Core.MdTracerCore
                             }
                         }
                         int w_view_y;
-                        if (VScrollUseH40Neg1 && !ForceScrollZero && IsH40Mode() && g_vdp_reg_11_2_vscroll != 0 && fineScrollX != 0 && wx < fineScrollX)
+                        if (VScrollUseH40Neg1 && !ForceScrollZero && IsH40Mode() && reg11VScrollMode != 0 && fineScrollX != 0 && wx < fineScrollX)
                         {
                             ushort vsramWord = g_vsram.Length > 39 ? g_vsram[39] : g_vsram[1];
                             int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
@@ -470,16 +491,16 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_view_addr = 0;
                 int w_view_dx = 8;
                 int w_view_dy = 0;
-                     int scrollA_byte_addr = g_vdp_reg_2_scrolla & (IsH40Mode() ? 0xFE00 : 0xFC00);
+                     int scrollA_byte_addr = g_line_snap[g_scanline].scrolla_base & (IsH40Mode() ? 0xFE00 : 0xFC00);
                      int w_screen_adrdr = scrollA_byte_addr >> 1;
                      
                  // DEBUG: Log first few tiles of Plane A
                  if (g_scanline == 100 && _frameCounter >= 100 && _frameCounter <= 110)
                  {
-                     int debug_scrollA_byte_addr = g_vdp_reg_2_scrolla & (IsH40Mode() ? 0xFE00 : 0xFC00);
+                     int debug_scrollA_byte_addr = g_line_snap[g_scanline].scrolla_base & (IsH40Mode() ? 0xFE00 : 0xFC00);
                      int debug_scrollA_word_addr = debug_scrollA_byte_addr >> 1;
                      if (TraceRenderPlaneDebug)
-                         Console.WriteLine($"[DEBUG-PLANE-A] frame={_frameCounter} scanline={g_scanline} reg2=0x{g_vdp_reg_2_scrolla:X4} byte_addr=0x{debug_scrollA_byte_addr:X4} word_addr=0x{debug_scrollA_word_addr:X4}");
+                         Console.WriteLine($"[DEBUG-PLANE-A] frame={_frameCounter} scanline={g_scanline} reg2=0x{g_line_snap[g_scanline].scrolla_base:X4} byte_addr=0x{debug_scrollA_byte_addr:X4} word_addr=0x{debug_scrollA_word_addr:X4}");
                      for (int i = 0; i < 10; i++)
                      {
                          uint cacheVal = g_renderer_vram[debug_scrollA_word_addr + i];
@@ -528,7 +549,7 @@ namespace EutherDrive.Core.MdTracerCore
                             }
                         }
                         int w_view_y;
-                        if (VScrollUseH40Neg1 && !ForceScrollZero && IsH40Mode() && g_vdp_reg_11_2_vscroll != 0 && fineScrollX != 0 && wx < fineScrollX)
+                        if (VScrollUseH40Neg1 && !ForceScrollZero && IsH40Mode() && reg11VScrollMode != 0 && fineScrollX != 0 && wx < fineScrollX)
                         {
                             ushort vsramWord = g_vsram.Length > 38 ? g_vsram[38] : g_vsram[0];
                             int lineY = (g_vdp_interlace_mode == 0) ? g_scanline : GetInterlaceLine(g_scanline);
@@ -705,11 +726,11 @@ namespace EutherDrive.Core.MdTracerCore
                                     if (w_pic != 0)
                                     {
                                         uint w_color = (uint)(w_palette + w_pic);
-                                        if (g_vdp_reg_12_3_shadow != 0 && w_color == 0x3e)
+                                        if (shadowEnabled && w_color == 0x3e)
                                         {
                                             spriteShDelta[w_posx] = -1;
                                         }
-                                        else if (g_vdp_reg_12_3_shadow != 0 && w_color == 0x3f)
+                                        else if (shadowEnabled && w_color == 0x3f)
                                         {
                                             spriteShDelta[w_posx] = +1;
                                         }
@@ -743,21 +764,21 @@ namespace EutherDrive.Core.MdTracerCore
                 int activeWidth = g_display_xsize;
                 int windowStartPixel;
                 int windowEndPixel;
-                if (IsLineInWindowVertical(lineY))
+                if (IsLineInWindowVertical(lineY, lineReg18))
                 {
                     windowStartPixel = 0;
                     windowEndPixel = activeWidth;
                 }
                 else
                 {
-                    GetWindowHorizontalRange(activeWidth, out windowStartPixel, out windowEndPixel);
+                    GetWindowHorizontalRange(activeWidth, lineReg17, out windowStartPixel, out windowEndPixel);
                 }
 
                 if (windowStartPixel < windowEndPixel)
                 {
                     int w_view_dy = GetRowInCell(lineY);
                     int windowWidthCells = IsH40Mode() ? 64 : 32;
-                    int windowBaseWord = g_vdp_reg_3_windows >> 1;
+                    int windowBaseWord = GetMaskedWindowBaseByteAddress(g_line_snap[g_scanline].window_base) >> 1;
                     int rowWord = (lineY >> cellShift) * windowWidthCells;
                     int startCell = windowStartPixel >> 3;
                     int endCellExclusive = (windowEndPixel + 7) >> 3;
@@ -822,7 +843,7 @@ namespace EutherDrive.Core.MdTracerCore
                     bool bOpaque = planeBColor[wx] != 0;
                     if (aOpaque && bOpaque)
                     {
-                        if (planeAPrio[wx] >= planeBPrio[wx])
+                        if (planeAPrio[wx] > planeBPrio[wx])
                         {
                             bgColor = planeAColor[wx];
                             bgPrio = planeAPrio[wx];
@@ -844,7 +865,7 @@ namespace EutherDrive.Core.MdTracerCore
                         bgPrio = planeBPrio[wx];
                     }
 
-                    uint w_colnum = bgColor != 0 ? bgColor : g_vdp_reg_7_backcolor;
+                    uint w_colnum = bgColor != 0 ? bgColor : backColor;
                     uint outPrio = bgPrio;
                     if (!DisableSprites && spriteColor[wx] != 0 && (IgnoreSpritePriority || spritePrio[wx] >= bgPrio))
                     {
@@ -854,9 +875,9 @@ namespace EutherDrive.Core.MdTracerCore
 
                     g_game_cmap[wx] = w_colnum;
                     g_game_primap[wx] = outPrio;
-                    g_game_shadowmap[wx] = (g_vdp_reg_12_3_shadow != 0) ? 1u : 0u;
+                    g_game_shadowmap[wx] = shadowEnabled ? 1u : 0u;
 
-                    if (g_vdp_reg_12_3_shadow != 0 && !DisableSprites && spriteShDelta[wx] != 0 && (IgnoreSpritePriority || spritePrio[wx] >= outPrio))
+                    if (shadowEnabled && !DisableSprites && spriteShDelta[wx] != 0 && (IgnoreSpritePriority || spritePrio[wx] >= outPrio))
                     {
                         if (spriteShDelta[wx] < 0)
                         {
@@ -867,13 +888,13 @@ namespace EutherDrive.Core.MdTracerCore
                             if (g_game_shadowmap[wx] < 2) g_game_shadowmap[wx]++;
                         }
                     }
-                    if (g_vdp_reg_12_3_shadow != 0 && !DisableSprites && spriteForceNormal[wx] && (IgnoreSpritePriority || spritePrio[wx] >= outPrio))
+                    if (shadowEnabled && !DisableSprites && spriteForceNormal[wx] && (IgnoreSpritePriority || spritePrio[wx] >= outPrio))
                     {
                         g_game_shadowmap[wx] = 1u;
                     }
 
                      uint color;
-                     if (g_vdp_reg_12_3_shadow == 0)
+                     if (!shadowEnabled)
                      {
                          color = g_color[w_colnum];
                      }
@@ -889,7 +910,7 @@ namespace EutherDrive.Core.MdTracerCore
 
                 if (outputWidth > visibleWidth)
                 {
-                    uint borderColor = g_color[g_vdp_reg_7_backcolor];
+                    uint borderColor = g_color[backColor];
                     for (int wx = visibleWidth; wx < outputWidth; wx++)
                     {
                         destBuffer[w_base + wx] = borderColor;

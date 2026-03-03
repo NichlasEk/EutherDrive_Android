@@ -246,8 +246,10 @@ namespace EutherDrive.Core.MdTracerCore
             UpdateOutputWidth();
             RecomputeWindowBounds();
 
-            g_vdp_reg_3_windows = (ushort)((g_vdp_reg[3] & 0x7e) << 10);
-            g_vdp_reg_5_sprite  = (ushort)(((h40Mode ? (g_vdp_reg[5] & 0x7e) : (g_vdp_reg[5] & 0x7f)) << 9));
+            // Reg #3 uses bits 5..1 for window base.
+            g_vdp_reg_3_windows = (ushort)((g_vdp_reg[3] & 0x3e) << 10);
+            // Reg #5 stores full SAT base bits 15..9; H32/H40 masking is applied on use.
+            g_vdp_reg_5_sprite  = (ushort)((g_vdp_reg[5] & 0x7f) << 9);
             g_sprite_cache_base = -1;
             InvalidateSpriteRowCache();
 
@@ -788,7 +790,9 @@ namespace EutherDrive.Core.MdTracerCore
                 }
 
                 case 3:
-                    g_vdp_reg_3_windows = (ushort)((in_data & 0x7e) << 10);
+                    // Register #3: window nametable base uses bits 5..1.
+                    // Bit 6 is not part of the base address.
+                    g_vdp_reg_3_windows = (ushort)((in_data & 0x3e) << 10);
                     break;
 
                 case 4:
@@ -803,7 +807,9 @@ namespace EutherDrive.Core.MdTracerCore
                 case 5:
                 {
                     int oldVal = g_vdp_reg_5_sprite;
-                    g_vdp_reg_5_sprite = (ushort)(((IsH40Mode() ? (in_data & 0x7e) : (in_data & 0x7f)) << 9));
+                    // Register #5 stores SAT base bits 15..9 independent of H32/H40.
+                    // H mode masking (A9 ignored in H40) is applied when SAT is read.
+                    g_vdp_reg_5_sprite = (ushort)((in_data & 0x7f) << 9);
                     if (oldVal != g_vdp_reg_5_sprite)
                     {
                         g_sprite_cache_base = -1;
@@ -849,24 +855,48 @@ namespace EutherDrive.Core.MdTracerCore
                 }
 
                   case 12:
-                        // Register 12 is latched on V-Int (takes effect at next VBlank)
-                        // Critical for H40->H32 transition in some games
-                       _reg12_latched_7_cellmode1     = (byte)((in_data >> 7) & 0x01);
-                       _reg12_latched_3_shadow        = (byte)((in_data >> 3) & 0x01);
-                       _reg12_latched_2_interlacemode = (byte)((in_data >> 1) & 0x03);
-                       _reg12_latched_0_cellmode2     = (byte)(in_data & 0x01);
-                       _reg12_latch_pending = true;
-                       
-                       // [REG12-W] on reg12 write: frame, data byte (0x??), rs1(bit7), rs0(bit0), shadow(bit3), interlace(bits1-2)
-                       byte rs1 = (byte)((in_data >> 7) & 0x01);
-                       byte rs0 = (byte)(in_data & 0x01);
-                       byte shadow = (byte)((in_data >> 3) & 0x01);
-                       byte interlace = (byte)((in_data >> 1) & 0x03);
-                       bool newH40 = rs1 != 0 || rs0 != 0;
+                  {
+                       // Apply reg12 immediately on write.
+                       // Per-line rendering timing is handled by line snapshots in the renderer.
+                       byte prevInterlace = g_vdp_interlace_mode;
+                       bool prevH40 = IsH40Mode();
+
+                       g_vdp_reg_12_7_cellmode1     = (byte)((in_data >> 7) & 0x01);
+                       g_vdp_reg_12_3_shadow        = (byte)((in_data >> 3) & 0x01);
+                       g_vdp_reg_12_2_interlacemode = (byte)((in_data >> 1) & 0x03);
+                       g_vdp_reg_12_0_cellmode2     = (byte)(in_data & 0x01);
+                       g_vdp_interlace_mode = DecodeInterlaceMode(g_vdp_reg_12_2_interlacemode);
+                       ApplyInterlaceOverrides();
+                       _reg12_latch_pending = false;
+
+                       bool newH40 = IsH40Mode();
+                       if (prevH40 != newH40)
+                       {
+                           ApplyHorizontalMode(newH40);
+                       }
+
+                       if (prevInterlace != g_vdp_interlace_mode)
+                       {
+                           Console.WriteLine($"[VDP-INTERLACE-CHANGE] frame={_frameCounter} prev={prevInterlace} new={g_vdp_interlace_mode} reg12_interlacemode={g_vdp_reg_12_2_interlacemode}");
+                           g_vdp_interlace_field = 0;
+                           InvalidateSpriteRowCache();
+                           RecomputeScrollSizes();
+                           RecomputeWindowBounds();
+                           UpdateOutputWidth();
+                       }
+
                        if (TraceReg12)
-                           Console.WriteLine($"[REG12-W] frame={_frameCounter} data=0x{in_data:X2} rs1={rs1} rs0={rs0} shadow={shadow} interlace={interlace} H40={newH40} PENDING");
-                       
+                       {
+                           byte rs1 = (byte)((in_data >> 7) & 0x01);
+                           byte rs0 = (byte)(in_data & 0x01);
+                           byte shadow = (byte)((in_data >> 3) & 0x01);
+                           byte interlace = (byte)((in_data >> 1) & 0x03);
+                           int width = newH40 ? 320 : 256;
+                           Console.WriteLine($"[REG12-W] frame={_frameCounter} data=0x{in_data:X2} rs1={rs1} rs0={rs0} shadow={shadow} interlace={interlace} H40={newH40} APPLY width={width}");
+                       }
+
                        break;
+                  }
 
                 case 13:
                 {

@@ -731,6 +731,12 @@ class Program
             adapter.FrameBufferHasContent();
             adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_output.ppm"));
 
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_MD_SNAPSHOT") == "1")
+            {
+                string snapPrefix = adapter.CaptureDebugSnapshot(dumpDir);
+                Console.WriteLine($"[HEADLESS] MD snapshot captured: {snapPrefix}");
+            }
+
             // Check framebuffer and dump if requested
             Console.WriteLine("[HEADLESS] Checking framebuffer...");
             if (adapter.FrameBufferHasContent())

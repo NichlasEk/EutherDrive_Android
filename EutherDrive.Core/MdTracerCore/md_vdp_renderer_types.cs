@@ -26,6 +26,14 @@ namespace EutherDrive.Core.MdTracerCore
         {
             public int hscrollA;
             public int hscrollB;
+            public int scrolla_base;
+            public int scrollb_base;
+            public int window_base;
+            public byte reg11_vscroll_mode;
+            public byte reg17_window_h;
+            public byte reg18_window_v;
+            public uint reg7_backcolor;
+            public uint reg12_shadow_enable;
             public int window_x_st;
             public int window_x_ed;
             public int sprite_rendrere_num;
