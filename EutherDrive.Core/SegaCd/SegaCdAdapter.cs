@@ -901,7 +901,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                     if (_subCpu.Pc == 0x0003DA && frameCounter % 60 == 0)
                                     {
                                         var state = _subCpu.GetState();
-                                        Console.WriteLine($"[SUB-STUCK] PC=3DA OP={_subCpu.NextOpcode:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
+                                        uint w1 = _subCpuBus!.ReadWord(0x03D4);
+                                        uint w2 = _subCpuBus!.ReadWord(0x03D6);
+                                        uint w3 = _subCpuBus!.ReadWord(0x03D8);
+                                        Console.WriteLine($"[SUB-STUCK] PC=3DA OP={_subCpu.NextOpcode:X4} w1={w1:X4} w2={w2:X4} w3={w3:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
                                     }
 
                                     // Match jgenesis: buffered sub register writes are visible before each instruction.
@@ -989,10 +992,6 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             }
                             _memory.FlushBufferedSubWrites();
                         }
-                    }
-                    else
-                    {
-                        _memory.EmulateSubCpuHandshake();
                     }
                 }
                 else

@@ -103,7 +103,10 @@ public sealed class WordRam
         if (_mode == WordRamMode.TwoM)
         {
             dmna = _owner2m == ScdCpu.Sub;
-            ret = !dmna;
+            // RET bit: 1 if Sub CPU has returned the Word RAM, or if Main CPU owns it.
+            // When Sub CPU requests Word RAM, it writes 0 to RET, which we might need to track if we want to model the exact handshake.
+            // For now, standard emulation practice: if Main CPU owns it, RET=1. If Sub CPU owns it, RET=0 until Sub CPU returns it.
+            ret = _owner2m == ScdCpu.Main;
         }
         else
         {
@@ -118,11 +121,19 @@ public sealed class WordRam
     public void MainCpuWriteControl(byte value)
     {
         bool dmna = (value & 0x02) != 0;
-        if (dmna)
+        if (_mode == WordRamMode.TwoM)
         {
-            _owner2m = ScdCpu.Sub;
-            FlushBufferedSubWrites();
-            _subBlockedRead = false;
+            if (dmna)
+            {
+                _owner2m = ScdCpu.Sub;
+                FlushBufferedSubWrites();
+                _subBlockedRead = false;
+            }
+            else
+            {
+                // Main CPU taking back ownership
+                _owner2m = ScdCpu.Main;
+            }
         }
 
         if (_mode == WordRamMode.OneM && !dmna)
@@ -137,8 +148,20 @@ public sealed class WordRam
         _mode = (value & 0x04) != 0 ? WordRamMode.OneM : WordRamMode.TwoM;
         bool ret = (value & 0x01) != 0;
 
-        if (ret)
-            _owner2m = ScdCpu.Main;
+        if (_mode == WordRamMode.TwoM)
+        {
+            if (ret)
+            {
+                // Sub CPU returning ownership to Main CPU
+                _owner2m = ScdCpu.Main;
+            }
+            else
+            {
+                // Sub CPU requests ownership (doesn't take it directly, just signals)
+                // In a perfect model we'd track the request, but usually just setting it to Sub isn't right here.
+                // It stays Sub until returned.
+            }
+        }
 
         ScdCpu prev = _bank0Owner1m;
         _bank0Owner1m = ret ? ScdCpu.Sub : ScdCpu.Main;

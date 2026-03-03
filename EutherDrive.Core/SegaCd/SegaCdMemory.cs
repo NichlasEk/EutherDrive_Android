@@ -700,7 +700,12 @@ public sealed class SegaCdMemory
         switch (address)
         {
             case 0xA12000:
-                Registers.SubSoftwareInterruptPending = (value & 1) != 0;
+                Registers.SoftwareInterruptEnabled = (value & 0x80) != 0;
+                Registers.SubSoftwareInterruptPending = (value & 0x01) != 0;
+                if ((value & 0x02) == 0)
+                {
+                    Registers.MainSoftwareInterruptPending = false;
+                }
                 break;
             case 0xA12001:
                 Registers.SubCpuBusReq = (value & 0x02) != 0;
@@ -853,7 +858,7 @@ public sealed class SegaCdMemory
             case 0x0000:
                 return (byte)(((Registers.LedGreen ? 1 : 0) << 1) | (Registers.LedRed ? 1 : 0));
             case 0x0001:
-                return (byte)(((Registers.SubSoftwareInterruptPending ? 1 : 0) << 1) | (Registers.MainSoftwareInterruptPending ? 1 : 0));
+                return (byte)(((Registers.MainSoftwareInterruptPending ? 1 : 0) << 1) | (Registers.SubSoftwareInterruptPending ? 1 : 0));
             case 0x0002:
                 return Registers.PrgRamWriteProtect;
             case 0x0003:
@@ -1429,6 +1434,10 @@ public sealed class SegaCdMemory
 
     private void LogFirstSubRegAccess(uint reg, bool isWrite)
     {
+        if (reg <= 0x0001)
+        {
+            Registers.SubSoftwareInterruptPending = false;
+        }
         if (_subRegAccessLogged)
             return;
         _subRegAccessLogged = true;
