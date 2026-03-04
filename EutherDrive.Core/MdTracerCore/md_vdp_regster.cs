@@ -142,6 +142,7 @@ namespace EutherDrive.Core.MdTracerCore
         public byte g_vdp_reg_22_dma_source_mid;
         public byte g_vdp_reg_23_dma_mode;
         public byte g_vdp_reg_23_5_dma_high;
+        private bool g_vdp_mode4;
 
         private bool g_hmodeLogged;
 
@@ -744,6 +745,11 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void set_vdp_register(uint in_num, byte in_data)
         {
+            // In mode 4, writes to registers >10 are ignored.
+            // Some games depend on this quirk during boot/setup.
+            if (g_vdp_mode4 && in_num > 10)
+                return;
+
             byte oldRaw = g_vdp_reg[in_num];
             g_vdp_reg[in_num] = in_data;
             switch (in_num)
@@ -761,6 +767,7 @@ namespace EutherDrive.Core.MdTracerCore
                      g_vdp_reg_1_5_vinterrupt = (byte)((in_data >> 5) & 0x01);
                      g_vdp_reg_1_4_dma      = (byte)((in_data >> 4) & 0x01);
                      g_vdp_reg_1_3_cellmode = (byte)((in_data >> 3) & 0x01);
+                     g_vdp_mode4 = (in_data & 0x04) == 0;
                      
                       // REMOVED: SPECIAL FIX FOR SONIC 2 SPECIAL STAGE
                       // Game should handle its own display and mode switching

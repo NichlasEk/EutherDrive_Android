@@ -66,6 +66,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_vdp_reg_11_3_ext = 0;
             g_vdp_reg_11_2_vscroll = 0;
             g_vdp_reg_11_1_hscroll = 0;
+            g_vdp_mode4 = true;
             g_vdp_reg_12_7_cellmode1 = 0;
             g_vdp_reg_12_3_shadow = 0;
             g_vdp_reg_12_2_interlacemode = 0;

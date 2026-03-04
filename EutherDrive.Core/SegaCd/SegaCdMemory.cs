@@ -701,7 +701,10 @@ public sealed class SegaCdMemory
         {
             case 0xA12000:
                 Registers.SoftwareInterruptEnabled = (value & 0x80) != 0;
-                Registers.SubSoftwareInterruptPending = (value & 0x01) != 0;
+                bool nextPend = (value & 0x01) != 0;
+                if (nextPend != Registers.SubSoftwareInterruptPending)
+                    Console.WriteLine($"[COMM-DEBUG] MAIN W 0xA12000 = 0x{value:X2} (pend={nextPend}) PC=0x{MainPcProvider?.Invoke():X6}");
+                Registers.SubSoftwareInterruptPending = nextPend;
                 if ((value & 0x02) == 0)
                 {
                     Registers.MainSoftwareInterruptPending = false;
@@ -858,8 +861,14 @@ public sealed class SegaCdMemory
             case 0x0000:
                 return (byte)(((Registers.LedGreen ? 1 : 0) << 1) | (Registers.LedRed ? 1 : 0));
             case 0x0001:
-                // Bit 0: INT2 pending from Main CPU (IFL2). Bit 1: INT1 (V-Blank) pending (IFL1).
-                return (byte)(((Cdd.SubcodeInterruptPending ? 1 : 0) << 1) | (Registers.SubSoftwareInterruptPending ? 1 : 0));
+                // Bit 0: INT2 pending from Main CPU (IFL2). Bit 1: INT1/Subcode pending (IFL1).
+                byte res = (byte)(((Cdd.SubcodeInterruptPending ? 1 : 0) << 1) | (Registers.SubSoftwareInterruptPending ? 1 : 0));
+                if (_subRegProbeRemaining > 0)
+                {
+                    _subRegProbeRemaining--;
+                    Console.WriteLine($"[COMM-LOG] SUB R 0x8001 = 0x{res:X2} (pend={Registers.SubSoftwareInterruptPending})");
+                }
+                return res;
             case 0x0002:
                 return Registers.PrgRamWriteProtect;
             case 0x0003:
@@ -1100,6 +1109,8 @@ public sealed class SegaCdMemory
             case 0x000E:
             case 0x000F:
                 // Hardware-compatible behavior: both byte addresses update sub CPU flags.
+                if (Registers.SubCpuCommunicationFlags != value)
+                    Console.WriteLine($"[COMM-DEBUG] SUB  W 0x800F = 0x{value:X2} PC=0x{SubPcProvider?.Invoke():X6}");
                 Registers.SubCpuCommunicationFlags = value;
                 if (LogCommFlags)
                     Console.WriteLine($"[SCD-COMM] SUB W8 0x{reg:X4} = 0x{value:X2}");
