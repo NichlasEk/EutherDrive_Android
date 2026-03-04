@@ -334,6 +334,41 @@ internal static class StateBinarySerializer
                 }
             }
 
+        int targetRank = field.FieldType.IsArray ? field.FieldType.GetArrayRank() : rank;
+        if (targetRank != rank)
+        {
+            // Backward compatibility: if a savestate stored this array with a different rank,
+            // flatten into 1D for current field shape when possible.
+            if (targetRank == 1)
+            {
+                bool isReadonlyFlat = field.IsInitOnly;
+                Array? existingFlat = (Array?)field.GetValue(target);
+                Array flatBuffer;
+                if (existingFlat == null || existingFlat.Rank != 1 || existingFlat.Length != total)
+                {
+                    flatBuffer = Array.CreateInstance(elementType, total);
+                    if (!isReadonlyFlat)
+                        field.SetValue(target, flatBuffer);
+                }
+                else
+                {
+                    flatBuffer = existingFlat;
+                }
+
+                for (int i = 0; i < total; i++)
+                {
+                    object? value = ReadValue(reader, elementType);
+                    flatBuffer.SetValue(value, i);
+                }
+                return;
+            }
+
+            // Unsupported rank migration for this field shape; consume payload to keep stream aligned.
+            for (int i = 0; i < total; i++)
+                _ = ReadValue(reader, elementType);
+            return;
+        }
+
         Array? existing = (Array?)field.GetValue(target);
         Array buffer;
 
