@@ -12,6 +12,9 @@ namespace EutherDrive.Core.MdTracerCore
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
         private static readonly int UnderflowHoldSamples = ParseUnderflowHoldSamples();
         private static readonly int MaxBufferedSamples = ParseMaxBufferedSamples();
+        private static readonly bool TracePsgStuck =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PSG_STUCK"), "1", StringComparison.Ordinal);
+        private static readonly int StuckSampleThreshold = ParseStuckSampleThreshold();
         private enum WaveOutput : byte
         {
             Negative = 0,
@@ -221,6 +224,10 @@ namespace EutherDrive.Core.MdTracerCore
         private int _ringCount;
         private short _lastSample;
         private int _underflowHoldSamplesRemaining;
+        private long _sampleCounter;
+        private long _writeCounter;
+        private readonly long[] _lastWriteCounterByVoice = new long[4];
+        private readonly long[] _lastStuckLogSampleByVoice = new long[4];
 
         public void Reset()
         {
@@ -232,6 +239,10 @@ namespace EutherDrive.Core.MdTracerCore
             _ringCount = 0;
             _lastSample = 0;
             _underflowHoldSamplesRemaining = 0;
+            _sampleCounter = 0;
+            _writeCounter = 0;
+            Array.Clear(_lastWriteCounterByVoice, 0, _lastWriteCounterByVoice.Length);
+            Array.Clear(_lastStuckLogSampleByVoice, 0, _lastStuckLogSampleByVoice.Length);
             _stereo.Reset();
             _square[0] = new SquareWaveGenerator();
             _square[1] = new SquareWaveGenerator();
@@ -279,6 +290,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void Write(byte value)
         {
+            _writeCounter++;
             if ((value & 0x80) != 0)
             {
                 _latchedRegister = RegisterFromLatchByte(value);
@@ -305,6 +317,8 @@ namespace EutherDrive.Core.MdTracerCore
                 short sample = ReadRing();
                 _lastSample = sample;
                 _underflowHoldSamplesRemaining = UnderflowHoldSamples;
+                _sampleCounter++;
+                MaybeLogStuckState(sample);
                 return sample;
             }
 
@@ -322,6 +336,8 @@ namespace EutherDrive.Core.MdTracerCore
                 short sample = ReadRing();
                 _lastSample = sample;
                 _underflowHoldSamplesRemaining = UnderflowHoldSamples;
+                _sampleCounter++;
+                MaybeLogStuckState(sample);
                 return sample;
             }
 
@@ -330,8 +346,12 @@ namespace EutherDrive.Core.MdTracerCore
             if (HoldLastSampleOnUnderflow && _underflowHoldSamplesRemaining > 0)
             {
                 _underflowHoldSamplesRemaining--;
+                _sampleCounter++;
+                MaybeLogStuckState(_lastSample);
                 return _lastSample;
             }
+            _sampleCounter++;
+            MaybeLogStuckState(0);
             return 0;
         }
 
@@ -351,6 +371,16 @@ namespace EutherDrive.Core.MdTracerCore
             const int fallback = 1024;
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_MAX_BUFFERED_SAMPLES");
             if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 16)
+                return value;
+            return fallback;
+        }
+
+        private static int ParseStuckSampleThreshold()
+        {
+            // ~0.75s at 44.1kHz. High enough to avoid normal short SFX tails.
+            const int fallback = 33075;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_STUCK_SAMPLES");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 2048)
                 return value;
             return fallback;
         }
@@ -456,27 +486,35 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 case Register.Tone0:
                     _square[0].UpdateToneLowBits(data);
+                    MarkVoiceWrite(0);
                     break;
                 case Register.Tone1:
                     _square[1].UpdateToneLowBits(data);
+                    MarkVoiceWrite(1);
                     break;
                 case Register.Tone2:
                     _square[2].UpdateToneLowBits(data);
+                    MarkVoiceWrite(2);
                     break;
                 case Register.Noise:
                     _noise.WriteData(data);
+                    MarkVoiceWrite(3);
                     break;
                 case Register.Volume0:
                     _square[0].Attenuation = (byte)(data & 0x0F);
+                    MarkVoiceWrite(0);
                     break;
                 case Register.Volume1:
                     _square[1].Attenuation = (byte)(data & 0x0F);
+                    MarkVoiceWrite(1);
                     break;
                 case Register.Volume2:
                     _square[2].Attenuation = (byte)(data & 0x0F);
+                    MarkVoiceWrite(2);
                     break;
                 case Register.Volume3:
                     _noise.Attenuation = (byte)(data & 0x0F);
+                    MarkVoiceWrite(3);
                     break;
             }
         }
@@ -487,17 +525,85 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 case Register.Tone0:
                     _square[0].UpdateToneHighBits(data);
+                    MarkVoiceWrite(0);
                     break;
                 case Register.Tone1:
                     _square[1].UpdateToneHighBits(data);
+                    MarkVoiceWrite(1);
                     break;
                 case Register.Tone2:
                     _square[2].UpdateToneHighBits(data);
+                    MarkVoiceWrite(2);
                     break;
                 default:
                     WriteRegisterLowBits(data);
                     break;
             }
+        }
+
+        private void MarkVoiceWrite(int voice)
+        {
+            if ((uint)voice >= 4)
+                return;
+            _lastWriteCounterByVoice[voice] = _writeCounter;
+            _lastStuckLogSampleByVoice[voice] = 0;
+        }
+
+        private void MaybeLogStuckState(short mixedSample)
+        {
+            if (!TracePsgStuck)
+                return;
+
+            MaybeLogVoiceStuck(
+                voice: 0,
+                active: _square[0].Attenuation < 0x0F,
+                attenuation: _square[0].Attenuation,
+                tone: _square[0].Tone,
+                extra: 0,
+                mixedSample: mixedSample);
+            MaybeLogVoiceStuck(
+                voice: 1,
+                active: _square[1].Attenuation < 0x0F,
+                attenuation: _square[1].Attenuation,
+                tone: _square[1].Tone,
+                extra: 0,
+                mixedSample: mixedSample);
+            MaybeLogVoiceStuck(
+                voice: 2,
+                active: _square[2].Attenuation < 0x0F,
+                attenuation: _square[2].Attenuation,
+                tone: _square[2].Tone,
+                extra: 0,
+                mixedSample: mixedSample);
+            int noiseExtra = (_noise.NoiseType == NoiseType.White ? 1 : 0) | ((_noise.CounterReload.Kind == NoiseReloadKind.Tone2 ? 1 : 0) << 1);
+            MaybeLogVoiceStuck(
+                voice: 3,
+                active: _noise.Attenuation < 0x0F,
+                attenuation: _noise.Attenuation,
+                tone: 0,
+                extra: noiseExtra,
+                mixedSample: mixedSample);
+        }
+
+        private void MaybeLogVoiceStuck(int voice, bool active, byte attenuation, ushort tone, int extra, short mixedSample)
+        {
+            if (!active)
+                return;
+
+            long writesSinceVoiceWrite = _writeCounter - _lastWriteCounterByVoice[voice];
+            if (writesSinceVoiceWrite <= 0)
+                return;
+
+            long activeSamples = _sampleCounter - _lastStuckLogSampleByVoice[voice];
+            if (_lastStuckLogSampleByVoice[voice] == 0)
+                activeSamples = _sampleCounter;
+
+            if (activeSamples < StuckSampleThreshold)
+                return;
+
+            _lastStuckLogSampleByVoice[voice] = _sampleCounter;
+            Console.WriteLine(
+                $"[PSG-STUCK?] sample={_sampleCounter} voice={voice} att=0x{attenuation:X1} tone=0x{tone:X3} extra=0x{extra:X1} writesSinceVoiceWrite={writesSinceVoiceWrite} mixed={mixedSample}");
         }
 
         private static Register RegisterFromLatchByte(byte value)

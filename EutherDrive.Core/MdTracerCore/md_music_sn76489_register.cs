@@ -30,57 +30,100 @@ namespace EutherDrive.Core.MdTracerCore
             
             if ((in_val & 0x80) != 0)
             {
-                int w_num = (in_val >> 5) & 0x03;
-
-                if ((in_val & 0x10) == 0)
-                {
-                    // Tone/noise latch
-                    if (w_num <= 2)
-                    {
-                        // lower 4 bits av 10-bitars frekvens
-                        g_freq[w_num] = (g_freq[w_num] & 0x03F0) | (in_val & 0x0F);
-                        if (g_freq[w_num] < FREQ_MIN) g_freq[w_num] = FREQ_MIN;
-                        g_write_num_bk = w_num;
-                    }
-                    else
-                    {
-                        // Noise
-                        g_shift_reg = NOISEINITIAL;
-                        g_freq[3] = 0x10 << (in_val & 0x03);   // 0x10, 0x20, 0x40, eller 0x80 (ch2 clock)
-                        g_noise_mode = (in_val & 0x04) != 0;
-                        g_write_num_bk = -1;
-                    }
-                }
-                else
-                {
-                    // Volume (4 bit)
-                    g_vol[w_num] = VOL_MAP[in_val & 0x0F];
-                    g_write_num_bk = -1;
-                }
-
-                // Exponera frekvens till UI/logg om mastervolymen inte mutar kanalen
-                if (w_num <= 2)
-                {
-                    int idx = 6 + w_num; // PSG visas på index 6..8 i md_music
-                    if (idx >= 0 && idx < md_main.g_md_music.g_freq_out.Length)
-                    {
-                        if (g_vol[w_num] == 0)
-                            md_main.g_md_music.g_freq_out[idx] = 0;
-                        else
-                            md_main.g_md_music.g_freq_out[idx] = (int)(PSG_CLOCK / ((g_freq[w_num] + 1) << 4));
-                    }
-                }
+                // LATCH/DATA byte: select register and write low bits.
+                g_latched_register = DecodeLatchedRegister(in_val);
+                WriteRegisterLowBits(g_latched_register, in_val);
             }
             else
             {
-                // Andra halvan av 10-bitars frekvens (6 bitar)
-                if (g_write_num_bk != -1)
+                // DATA byte:
+                // - For tone registers, this writes the high 6 bits.
+                // - For noise/volume registers, this writes low bits again.
+                WriteRegisterData(g_latched_register, in_val);
+            }
+            
+            UpdatePsgFreqOut();
+        }
+
+        private static int DecodeLatchedRegister(byte value)
+        {
+            int channel = (value >> 5) & 0x03;
+            bool isVolume = (value & 0x10) != 0;
+            if (isVolume)
+            {
+                return 1 + (channel << 1); // vol0,vol1,vol2,vol3 => 1,3,5,7
+            }
+            if (channel == 3)
+            {
+                return 6; // noise
+            }
+            return channel << 1; // tone0,tone1,tone2 => 0,2,4
+        }
+
+        private void WriteRegisterLowBits(int reg, byte value)
+        {
+            switch (reg)
+            {
+                case 0: // tone0 low
+                case 2: // tone1 low
+                case 4: // tone2 low
                 {
-                    int ch = g_write_num_bk;
-                    g_freq[ch] = (g_freq[ch] & 0x000F) | ((in_val & 0x3F) << 4);
+                    int ch = reg >> 1;
+                    g_freq[ch] = (g_freq[ch] & 0x03F0) | (value & 0x0F);
                     if (g_freq[ch] < FREQ_MIN) g_freq[ch] = FREQ_MIN;
-                    g_write_num_bk = -1;
+                    break;
                 }
+                case 6: // noise
+                {
+                    g_shift_reg = NOISEINITIAL;
+                    g_freq[3] = 0x10 << (value & 0x03); // 0x10,0x20,0x40 or 0x80 (tone2 clock)
+                    g_noise_mode = (value & 0x04) != 0;
+                    break;
+                }
+                case 1: // vol0
+                case 3: // vol1
+                case 5: // vol2
+                case 7: // vol3
+                {
+                    int ch = reg >> 1;
+                    g_vol[ch] = VOL_MAP[value & 0x0F];
+                    break;
+                }
+            }
+        }
+
+        private void WriteRegisterData(int reg, byte value)
+        {
+            switch (reg)
+            {
+                case 0: // tone0 high
+                case 2: // tone1 high
+                case 4: // tone2 high
+                {
+                    int ch = reg >> 1;
+                    g_freq[ch] = (g_freq[ch] & 0x000F) | ((value & 0x3F) << 4);
+                    if (g_freq[ch] < FREQ_MIN) g_freq[ch] = FREQ_MIN;
+                    break;
+                }
+                default:
+                    // jgenesis-compatible behavior: DATA byte also updates low bits for
+                    // noise/volume registers using the currently latched register.
+                    WriteRegisterLowBits(reg, value);
+                    break;
+            }
+        }
+
+        private void UpdatePsgFreqOut()
+        {
+            for (int ch = 0; ch <= 2; ch++)
+            {
+                int idx = 6 + ch; // PSG visas på index 6..8 i md_music
+                if (idx < 0 || idx >= md_main.g_md_music.g_freq_out.Length)
+                    continue;
+                if (g_vol[ch] == 0)
+                    md_main.g_md_music.g_freq_out[idx] = 0;
+                else
+                    md_main.g_md_music.g_freq_out[idx] = (int)(PSG_CLOCK / ((g_freq[ch] + 1) << 4));
             }
         }
 

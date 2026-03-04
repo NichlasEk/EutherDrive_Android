@@ -434,16 +434,9 @@ namespace EutherDrive.Core.MdTracerCore
 
             ApplyZ80BusReqLatch();
 
-            // 68k can access Z80 window when BUSACK is active.
-            if (_z80BusGranted)
-                return true;
-            for (int i = 0; i < size; i++)
-            {
-                uint target = addr + (uint)i;
-                if (IsZ80MailboxAccess(target) || IsZ80BankReg(target))
-                    return true;
-            }
-            return false;
+            // Match jgenesis/hardware semantics strictly:
+            // 68k can access the Z80 window only when BUSACK is active.
+            return _z80BusGranted;
         }
 
         private static int ParseTraceLimit(string name, int fallback)

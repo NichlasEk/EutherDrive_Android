@@ -29,7 +29,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int[] g_vol = Array.Empty<int>();
         private bool[] g_duty = Array.Empty<bool>();
         private bool g_noise_mode;
-        private int g_write_num_bk;
+        private int g_latched_register;
         private int g_shift_reg;
         private float g_ch2_clock;
         private int _noiseGainPercent = 100;
@@ -57,7 +57,7 @@ namespace EutherDrive.Core.MdTracerCore
             g_freq = new int[CHANNEL_NUM];
             g_vol = new int[CHANNEL_NUM];
             g_duty = new bool[4];
-            g_write_num_bk = -1;
+            g_latched_register = 0;
             g_shift_reg = NOISEINITIAL;
 
             for (int w_ch = 0; w_ch <= 3; w_ch++)
