@@ -831,8 +831,8 @@ namespace EutherDrive.Core.MdTracerCore
                                 if (ForceDirectVramReadWindow || ForceDirectVramReadPlanes)
                                 {
                                     uint picValueDirect = ReadPatternPixelDirect((int)w_char, w_dx, w_view_dy, w_reverse_bits, TileRebaseKind.Window);
-                                    // Window always replaces Plane A where enabled, even for color 0.
-                                    planeAColor[w_posx] = w_palette + picValueDirect;
+                                    // Window always replaces Plane A where enabled, but color 0 stays transparent.
+                                    planeAColor[w_posx] = picValueDirect == 0 ? 0u : (w_palette + picValueDirect);
                                     planeAPrio[w_posx] = w_priority;
                                 }
                                 else
@@ -840,8 +840,8 @@ namespace EutherDrive.Core.MdTracerCore
                                     int  w_pic_addr = GetTileWordAddress((int)w_char, w_view_dy, w_reverse_bits, TileRebaseKind.Window) + (w_dx >> 2);
                                     uint w_pic_w    = g_renderer_vram[w_pic_addr];
                                     uint picValue   = (uint)((w_pic_w >> ((3 - (w_dx & 3)) << 2)) & 0x0f);
-                                    // Window always replaces Plane A where enabled, even for color 0.
-                                    planeAColor[w_posx] = w_palette + picValue;
+                                    // Window always replaces Plane A where enabled, but color 0 stays transparent.
+                                    planeAColor[w_posx] = picValue == 0 ? 0u : (w_palette + picValue);
                                     planeAPrio[w_posx] = w_priority;
                                 }
                             }
