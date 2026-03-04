@@ -384,18 +384,23 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM"), "1", StringComparison.Ordinal);
         private static readonly bool Z80WindowWide =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_WINDOW_WIDE"), "1", StringComparison.Ordinal);
+        // jgenesis/hardware path: treat 0x1B00-0x1B7F as plain Z80 RAM unless explicitly enabled.
         private static readonly bool AllowZ80MailboxWide =
-            ReadEnvDefaultOn("EUTHERDRIVE_Z80_MBX_WIDE");
+            ReadEnvDefaultOff("EUTHERDRIVE_Z80_MBX_WIDE");
         private static readonly bool IgnoreZ80BusReq =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_IGNORE_BUSREQ"), "1", StringComparison.Ordinal);
         private static readonly bool DirectZ80WindowWords =
-            ReadEnvDefaultOn("EUTHERDRIVE_Z80_DIRECT_WORDS");
+            ReadEnvDefaultOff("EUTHERDRIVE_Z80_DIRECT_WORDS");
         private static readonly bool Z80UdsOnly =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_UDS_ONLY"), "1", StringComparison.Ordinal);
         private static readonly bool MirrorZ80WindowReads =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_WINDOW_MIRROR_READS"), "1", StringComparison.Ordinal);
+            ReadEnvDefaultOn("EUTHERDRIVE_Z80_WINDOW_MIRROR_READS");
         private static readonly bool MirrorZ80MailboxWideCmd =
             ReadEnvDefaultOff("EUTHERDRIVE_Z80_MBX_WIDE_CMD_MIRROR");
+        // Keep strict jgenesis/hardware semantics by default:
+        // word/long writes to Z80 window only commit UDS/MSB lanes.
+        private static readonly bool AllowZ80MailboxDualLaneWrites =
+            ReadEnvDefaultOff("EUTHERDRIVE_Z80_MBX_DUAL_LANE");
         private static bool IsZ80BusReq(uint addr) => (addr & 0xFFFFFE) == 0xA11100;
         private static bool IsZ80Reset(uint addr) => (addr & 0xFFFFFE) == 0xA11200;
         // Match jgenesis/hardware semantics:
@@ -1936,7 +1941,7 @@ namespace EutherDrive.Core.MdTracerCore
                     SetOpenBusFromWord(open);
                     return open;
                 }
-                if (MirrorZ80WindowReads && !IsZ80Mailbox(in_address) && !IsZ80Mailbox(in_address + 1))
+                if (MirrorZ80WindowReads)
                 {
                     uint byteAddr = (in_address & 1) == 0 ? in_address : in_address + 1;
                     byte mbxVal8 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(byteAddr & 0x1FFF) : (byte)0xFF;
@@ -2076,11 +2081,7 @@ namespace EutherDrive.Core.MdTracerCore
                     SetOpenBusFromLong(open);
                     return open;
                 }
-                if (MirrorZ80WindowReads &&
-                    !IsZ80Mailbox(in_address) &&
-                    !IsZ80Mailbox(in_address + 1) &&
-                    !IsZ80Mailbox(in_address + 2) &&
-                    !IsZ80Mailbox(in_address + 3))
+                if (MirrorZ80WindowReads)
                 {
                     uint baseAddr = (in_address & 1) == 0 ? in_address : in_address + 1;
                     byte hi0 = md_main.g_md_z80 != null ? md_main.g_md_z80.read8(baseAddr & 0x1FFF) : (byte)0xFF;
@@ -2483,7 +2484,8 @@ namespace EutherDrive.Core.MdTracerCore
                         RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: true);
                         return;
                     }
-                    if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1))
+                    if (AllowZ80MailboxDualLaneWrites &&
+                        (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1)))
                     {
                         MaybeLogZ80WinRangeWrite16(in_address, in_data, uds: true, lds: true, blocked: false);
                         byte mbxHi = (byte)((in_data >> 8) & 0xFF);
@@ -2607,7 +2609,25 @@ namespace EutherDrive.Core.MdTracerCore
                     RecordZ80WinWriteAccess(in_address, 2, in_data, blocked: true);
                     return;
                 }
-                if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1))
+                // jgenesis/hardware-compatible: 68k word writes into Z80 window commit
+                // only the UDS/MSB lane byte.
+                if (!DirectZ80WindowWords)
+                {
+                    uint aligned = in_address & 0xFFFFFEu;
+                    byte udsHi = (byte)((in_data >> 8) & 0xFF);
+                    MaybeLogZ80WinRangeWrite16(aligned, in_data, uds: true, lds: false, blocked: false);
+                    bool prevRangeLog = _suppressZ80WinRangeByteLog;
+                    _suppressZ80WinRangeByteLog = true;
+                    bool prevStat = _suppressZ80WinStatByteLog;
+                    _suppressZ80WinStatByteLog = true;
+                    write8(aligned, udsHi);
+                    _suppressZ80WinStatByteLog = prevStat;
+                    _suppressZ80WinRangeByteLog = prevRangeLog;
+                    RecordZ80WinWriteAccess(aligned, 2, in_data, blocked: false);
+                    return;
+                }
+                if (AllowZ80MailboxDualLaneWrites &&
+                    (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1)))
                 {
                     MaybeLogZ80WinRangeWrite16(in_address, in_data, uds: true, lds: true, blocked: false);
                     byte mbxHi = (byte)((in_data >> 8) & 0xFF);
@@ -2786,8 +2806,9 @@ namespace EutherDrive.Core.MdTracerCore
                         RecordZ80WinWriteAccess(in_address, 4, in_data, blocked: true);
                         return;
                     }
-                    if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1) ||
-                        IsZ80MailboxWriteRange(in_address + 2) || IsZ80MailboxWriteRange(in_address + 3))
+                    if (AllowZ80MailboxDualLaneWrites &&
+                        (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1) ||
+                         IsZ80MailboxWriteRange(in_address + 2) || IsZ80MailboxWriteRange(in_address + 3)))
                     {
                         MaybeLogZ80WinRangeWrite32(in_address, in_data, uds: true, lds: true, blocked: false);
                         byte mbxB3 = (byte)((in_data >> 24) & 0xFF);
@@ -2924,8 +2945,28 @@ namespace EutherDrive.Core.MdTracerCore
                     RecordZ80WinWriteAccess(in_address, 4, in_data, blocked: true);
                     return;
                 }
-                if (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1) ||
-                    IsZ80MailboxWriteRange(in_address + 2) || IsZ80MailboxWriteRange(in_address + 3))
+                // jgenesis/hardware-compatible: 68k long writes into Z80 window commit
+                // the UDS/MSB byte from each contained word (bytes 3 and 1).
+                if (!DirectZ80WindowWords)
+                {
+                    uint aligned = in_address & 0xFFFFFEu;
+                    byte udsHi1 = (byte)((in_data >> 24) & 0xFF);
+                    byte udsHi0 = (byte)((in_data >> 8) & 0xFF);
+                    MaybeLogZ80WinRangeWrite32(aligned, in_data, uds: true, lds: false, blocked: false);
+                    bool prevRangeLog = _suppressZ80WinRangeByteLog;
+                    _suppressZ80WinRangeByteLog = true;
+                    bool prevStat = _suppressZ80WinStatByteLog;
+                    _suppressZ80WinStatByteLog = true;
+                    write8(aligned, udsHi1);
+                    write8(aligned + 2, udsHi0);
+                    _suppressZ80WinStatByteLog = prevStat;
+                    _suppressZ80WinRangeByteLog = prevRangeLog;
+                    RecordZ80WinWriteAccess(aligned, 4, in_data, blocked: false);
+                    return;
+                }
+                if (AllowZ80MailboxDualLaneWrites &&
+                    (IsZ80MailboxWriteRange(in_address) || IsZ80MailboxWriteRange(in_address + 1) ||
+                     IsZ80MailboxWriteRange(in_address + 2) || IsZ80MailboxWriteRange(in_address + 3)))
                 {
                     MaybeLogZ80WinRangeWrite32(in_address, in_data, uds: true, lds: true, blocked: false);
                     byte mbxB3 = (byte)((in_data >> 24) & 0xFF);

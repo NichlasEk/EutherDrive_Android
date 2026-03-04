@@ -297,6 +297,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TraceSmsRomWriteLimit =
             ParseWatchLimit("EUTHERDRIVE_TRACE_SMS_ROM_WRITE_LIMIT", 512);
         private static readonly bool MirrorZ80Mailbox = ReadEnvDefaultOff("EUTHERDRIVE_MBX_MIRROR");
+        private static readonly bool EnableMailboxShadow = ReadEnvDefaultOn("EUTHERDRIVE_MBX_SHADOW");
         private static readonly bool DisableMailboxShadow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_MBX_SHADOW"), "1", StringComparison.Ordinal);
         private static readonly bool UseMdTracerCompat =
@@ -2579,15 +2580,48 @@ namespace EutherDrive.Core.MdTracerCore
 
         private byte MaybeApplyMailboxShadow(ushort addr, byte value)
         {
-            if (DisableMailboxShadow)
+            if (!EnableMailboxShadow || DisableMailboxShadow)
                 return value;
+            EnsureMailboxShadowSeededFromRam();
             if (!_mbxShadowValid || value != 0x00)
                 return value;
-            if (addr < 0x1B80 || addr > 0x1B8F)
+            int offset;
+            if (addr >= 0x1B80 && addr <= 0x1B8F)
+            {
+                offset = addr - 0x1B80;
+            }
+            else if (addr == 0x1BFE)
+            {
+                // Common mailbox alias used by some drivers for command/status tail bytes.
+                offset = 0x0E;
+            }
+            else if (addr == 0x1BFF)
+            {
+                // Common mailbox alias used by some drivers for command/status tail bytes.
+                offset = 0x0F;
+            }
+            else
+            {
                 return value;
-            int offset = addr - 0x1B80;
+            }
             byte shadow = _mbxShadow[offset];
             return shadow == 0x00 ? value : shadow;
+        }
+
+        private void EnsureMailboxShadowSeededFromRam()
+        {
+            if (_mbxShadowValid || g_ram == null || g_ram.Length == 0)
+                return;
+            int baseIndex = 0x1B80 & 0x1FFF;
+            bool hasAny = false;
+            for (int i = 0; i < 0x10; i++)
+            {
+                byte b = g_ram[(baseIndex + i) & 0x1FFF];
+                _mbxShadow[i] = b;
+                if (b != 0x00)
+                    hasAny = true;
+            }
+            _mbxShadowValid = hasAny;
         }
 
         private void ResetMailboxShadow()
@@ -2626,9 +2660,23 @@ namespace EutherDrive.Core.MdTracerCore
                     _mbxLastNonZeroWriteFrame = _mbxLastWriteFrame;
                 }
             }
-            if (low < 0x1B80 || low > 0x1B8F)
+            int offset;
+            if (low >= 0x1B80 && low <= 0x1B8F)
+            {
+                offset = (int)(low - 0x1B80);
+            }
+            else if (low == 0x1BFE)
+            {
+                offset = 0x0E;
+            }
+            else if (low == 0x1BFF)
+            {
+                offset = 0x0F;
+            }
+            else
+            {
                 return;
-            int offset = (int)(low - 0x1B80);
+            }
             _mbxShadow[offset] = value;
             _mbxShadowValid = true;
             if (value != 0x00)
