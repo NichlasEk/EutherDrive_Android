@@ -1148,7 +1148,9 @@ namespace EutherDrive.Core.MdTracerCore
             _z80BusReqAssertFrame = -1;
             _z80BusReqAssertCountInFrame = 0;
             _z80ForceGrant = false;
-            _z80Reset = Z80ResetAssertOnBoot;
+            // Match jgenesis startup signal defaults for deterministic audio CPU bring-up:
+            // BUSREQ released, RESET asserted. The game then deasserts RESET via A11200.
+            _z80Reset = md_z80.IsJgenesisCoreEnabled ? true : Z80ResetAssertOnBoot;
             _sramLock = false;
             if (md_main.g_md_z80 != null)
                 md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
@@ -3244,7 +3246,11 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     if (jgenesisCore)
                     {
-                        // Match jgenesis: Z80 RESET assertion resets YM, but does not force a Z80 core reset here.
+                        // In this integration the Z80 core does not observe RESET line transitions
+                        // unless we explicitly reset it here. QuackShot and similar drivers pulse
+                        // A11200 and expect a real Z80 reset edge.
+                        md_main.BeginZ80ResetCycle();
+                        md_main.g_md_z80.reset();
                         md_main.g_md_music?.YmFullReset();
                     }
                     else

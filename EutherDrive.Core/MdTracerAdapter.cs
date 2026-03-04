@@ -1968,12 +1968,24 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     {
         if (md_main.g_md_z80 == null)
             return;
+        if (md_z80.IsJgenesisCoreEnabled)
+        {
+            // Keep startup deterministic in jgenesis mode across ROM swaps/reset paths:
+            // reset core state + clear RAM, but do not add post-reset hold delays here.
+            md_main.BeginZ80ResetCycle();
+            md_main.g_md_z80.reset();
+            md_main.g_md_z80.ClearZ80Ram();
+            bool z80BusReq = md_main.g_md_bus?.Z80BusGranted ?? false;
+            bool z80Reset = md_main.g_md_bus?.Z80Reset ?? false;
+            md_main.g_md_z80.g_active = !z80BusReq && !z80Reset;
+            return;
+        }
         md_main.BeginZ80ResetCycle();
         md_main.g_md_z80.reset();
         md_main.g_md_z80.ArmPostResetHold();
-        bool busReq = md_main.g_md_bus?.Z80BusGranted ?? false;
-        bool reset = md_main.g_md_bus?.Z80Reset ?? false;
-        md_main.g_md_z80.g_active = !busReq && !reset;
+        bool fallbackBusReq = md_main.g_md_bus?.Z80BusGranted ?? false;
+        bool fallbackReset = md_main.g_md_bus?.Z80Reset ?? false;
+        md_main.g_md_z80.g_active = !fallbackBusReq && !fallbackReset;
     }
 
     public void Reset()
