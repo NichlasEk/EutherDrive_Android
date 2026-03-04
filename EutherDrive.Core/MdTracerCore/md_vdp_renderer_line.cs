@@ -716,46 +716,50 @@ namespace EutherDrive.Core.MdTracerCore
                             if ((0 <= w_posx) && (w_posx < g_display_xsize))
                             {
                                 bool maskedBySprite = !DisableSpriteLineMask && g_sprite_line_mask[w_posx];
-                                if (!maskedBySprite)
+                                uint w_pic_w;
+                                int x_in_tile = w_cx;
+                                int y_in_tile = w_cy;
+
+                                // Use direct VRAM fetch for sprite pixels.
+                                // Sprite flip/index semantics are easier to keep correct here than through
+                                // reverse-page cache indirection, and avoids cache desync artifacts.
+                                bool useDirectSprite = true;
+                                if (useDirectSprite)
                                 {
-                                    uint w_pic_w;
-                                    int x_in_tile = w_cx;
-                                    int y_in_tile = w_cy;
+                                    x_in_tile = ((w_reverse & 0x01) != 0) ? (7 - w_cx) : w_cx;
+                                    if ((w_reverse & 0x02) != 0)
+                                        y_in_tile = (cellHeight - 1) - w_cy;
 
-                                    // Use direct VRAM fetch for sprite pixels.
-                                    // Sprite flip/index semantics are easier to keep correct here than through
-                                    // reverse-page cache indirection, and avoids cache desync artifacts.
-                                    bool useDirectSprite = true;
-                                    if (useDirectSprite)
+                                    if (g_vdp_interlace_mode == 2)
                                     {
-                                        x_in_tile = ((w_reverse & 0x01) != 0) ? (7 - w_cx) : w_cx;
-                                        if ((w_reverse & 0x02) != 0)
-                                            y_in_tile = (cellHeight - 1) - w_cy;
-
-                                        if (g_vdp_interlace_mode == 2)
-                                        {
-                                            int tileIndex = w_char_cur & 0x3FF;
-                                            int baseAddr = tileIndex << 6; // 64 bytes per pattern (8x16)
-                                            int byteAddr = baseAddr + (y_in_tile << 2) + ((x_in_tile >> 2) << 1);
-                                            w_pic_w = vram_read_render(byteAddr);
-                                        }
-                                        else
-                                        {
-                                            int tileIndex = w_char_cur & 0x7FF;
-                                            int baseAddr = tileIndex << 5; // 32 bytes per pattern (8x8)
-                                            int byteAddr = baseAddr + (y_in_tile << 2) + ((x_in_tile >> 2) << 1);
-                                            w_pic_w = vram_read_render(byteAddr);
-                                        }
+                                        int tileIndex = w_char_cur & 0x3FF;
+                                        int baseAddr = tileIndex << 6; // 64 bytes per pattern (8x16)
+                                        int byteAddr = baseAddr + (y_in_tile << 2) + ((x_in_tile >> 2) << 1);
+                                        w_pic_w = vram_read_render(byteAddr);
                                     }
                                     else
                                     {
-                                        int w_num = GetTileWordAddress(w_char_cur, y_in_tile, w_reverse, TileRebaseKind.None) + (x_in_tile >> 2);
-                                        w_pic_w = g_renderer_vram[w_num];
+                                        int tileIndex = w_char_cur & 0x7FF;
+                                        int baseAddr = tileIndex << 5; // 32 bytes per pattern (8x8)
+                                        int byteAddr = baseAddr + (y_in_tile << 2) + ((x_in_tile >> 2) << 1);
+                                        w_pic_w = vram_read_render(byteAddr);
                                     }
+                                }
+                                else
+                                {
+                                    int w_num = GetTileWordAddress(w_char_cur, y_in_tile, w_reverse, TileRebaseKind.None) + (x_in_tile >> 2);
+                                    w_pic_w = g_renderer_vram[w_num];
+                                }
 
-                                    uint w_pic = (w_pic_w >> ((3 - (x_in_tile & 3)) << 2)) & 0x0f;
-
-                                    if (w_pic != 0)
+                                uint w_pic = (w_pic_w >> ((3 - (x_in_tile & 3)) << 2)) & 0x0f;
+                                if (w_pic != 0)
+                                {
+                                    if (maskedBySprite)
+                                    {
+                                        // VDP status bit 5: sprite collision (sticky until status read/reset).
+                                        g_vdp_status_5_collision = 1;
+                                    }
+                                    else
                                     {
                                         uint w_color = (uint)(w_palette + w_pic);
                                         if (shadowEnabled && w_color == 0x3e)
