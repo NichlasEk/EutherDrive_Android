@@ -4386,6 +4386,14 @@ public partial class MainWindow : Window
         var audio = _core.GetAudioBuffer(out int sampleRate, out int channels);
         if (audio.IsEmpty)
         {
+            // Debug hard-mute mode: if both MD sources are explicitly disabled,
+            // flush backend queue so stale OpenAL buffers cannot masquerade as live hiss.
+            bool mdHardMute =
+                string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM"), "0", StringComparison.Ordinal)
+                && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_PSG"), "1", StringComparison.Ordinal);
+            if (mdHardMute)
+                _audioOutput.Stop();
+
             if (TraceAudioLevel)
                 Console.WriteLine("[AUDLVL] pcm EMPTY");
             return;

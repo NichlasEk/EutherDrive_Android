@@ -114,9 +114,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         ParsePositiveDouble("EUTHERDRIVE_YM_2ND_LPF_CUTOFF_HZ", 8000.0);
     private static readonly bool GenesisFloatMixEnabled =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GENESIS_FLOAT_MIX"), "0", StringComparison.Ordinal);
-    private static readonly bool YmResampleLinear =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_LINEAR"), "1", StringComparison.OrdinalIgnoreCase);
+    private static readonly bool YmResampleLinear = ParseYmResampleLinear();
     private static readonly bool YmResampleSimple =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_SIMPLE"), "1", StringComparison.OrdinalIgnoreCase);
     private static readonly bool PsgResampleLinear = ParsePsgResampleLinear();
@@ -124,6 +122,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SIMPLE"), "1", StringComparison.OrdinalIgnoreCase);
     private static readonly bool PsgResampleSinc =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SINC"), "0", StringComparison.OrdinalIgnoreCase);
+    private static readonly bool YmFilterPreResampleEnabled =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_FILTER_PRE_RESAMPLE"), "0", StringComparison.OrdinalIgnoreCase);
     private static readonly int PsgSincTaps = NormalizeEvenTaps(ParseNonNegativeInt("EUTHERDRIVE_PSG_RESAMPLE_SINC_TAPS", 24));
     private static readonly double[] PsgSincWindow = BuildBlackmanWindow(PsgSincTaps);
     private static readonly bool SkipVdpRenderEnabled =
@@ -222,6 +222,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private volatile int _psgNoisePercent = 100;
     private int _ymSilentFrames;
     private bool _ymSilenceLogged;
+    private bool _audioAllSourcesDisabledLogged;
     private SimpleLowPassFilter? _mixLowPass;
     private int _psgFrameSamples;
     private double _psgResamplePhase;
@@ -257,6 +258,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         YmSecondLowPassCutoffHz);
     private GenesisAudioFilterPort? _jgPsgPreResampleFilter;
     private int _jgPsgPreResampleRateHz;
+    private GenesisAudioFilterPort? _jgYmPreResampleFilter;
+    private int _jgYmPreResampleRateHz;
 
     private static int ParseAudioWarmupFrames()
     {
@@ -408,7 +411,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             }
             ymSample = ApplyMixPercent(ymSample, ymMixPercent);
             ymSample = ApplyLinearGain(ymSample, YmLinearGain);
-            ymSample = _jgAudioFilter.FilterYm(ymSample, rightChannel: (i & 1) != 0);
+            if (!YmFilterPreResampleEnabled)
+                ymSample = _jgAudioFilter.FilterYm(ymSample, rightChannel: (i & 1) != 0);
             _ymFrameBuffer[i] = (short)ymSample;
 
             if (!ymInit)
@@ -560,6 +564,43 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             enableYm2ndLpf: false,
             ym2ndLpfCutoffHz: YmSecondLowPassCutoffHz);
         _jgPsgPreResampleRateHz = psgSampleRateHz;
+    }
+
+    private void EnsureYmPreResampleFilter(int ymSampleRateHz)
+    {
+        if (ymSampleRateHz < 1000)
+            ymSampleRateHz = 1000;
+
+        if (_jgYmPreResampleFilter != null && _jgYmPreResampleRateHz == ymSampleRateHz)
+            return;
+
+        _jgYmPreResampleFilter = new GenesisAudioFilterPort(
+            ymSampleRateHz,
+            ymSampleRateHz,
+            GenesisDcFilterEnabled,
+            GenesisLowPassFilterEnabled,
+            GenesisLowPassCutoffHz,
+            YmSecondLowPassFilterEnabled,
+            YmSecondLowPassCutoffHz);
+        _jgYmPreResampleRateHz = ymSampleRateHz;
+    }
+
+    private void FilterYmPreResampleBuffer(int writeOffsetFrames, int genFrames)
+    {
+        if (_jgYmPreResampleFilter == null || genFrames <= 0)
+            return;
+
+        for (int i = 0; i < genFrames; i++)
+        {
+            int frame = writeOffsetFrames + i;
+            int idx = frame * PsgChannels;
+            int l = _ymInternalBuffer[idx];
+            int r = _ymInternalBuffer[idx + 1];
+            l = _jgYmPreResampleFilter.FilterYm(l, rightChannel: false);
+            r = _jgYmPreResampleFilter.FilterYm(r, rightChannel: true);
+            _ymInternalBuffer[idx] = (short)l;
+            _ymInternalBuffer[idx + 1] = (short)r;
+        }
     }
 
     private void GeneratePsgResampledFrames(md_music music, int frames)
@@ -951,6 +992,26 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         return true;
     }
 
+    private static bool ParseYmResampleLinear()
+    {
+        // YM defaulting to cubic can introduce audible ringing/zipper artifacts
+        // on DAC-heavy titles. Default to linear unless explicitly forced to cubic.
+        string? mode = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE");
+        if (!string.IsNullOrWhiteSpace(mode))
+        {
+            if (string.Equals(mode, "cubic", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (string.Equals(mode, "linear", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        string? legacy = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE_LINEAR");
+        if (!string.IsNullOrWhiteSpace(legacy))
+            return !string.Equals(legacy, "0", StringComparison.OrdinalIgnoreCase);
+
+        return true;
+    }
+
     private static double GetFmMixGain()
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_FM_MIX_GAIN");
@@ -974,6 +1035,17 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _mixLowPass = CreateLowPassIfEnabled(OutputSampleRate);
         _ymResampleLinear = YmResampleLinear;
         _psgResampleLinear = PsgResampleLinear;
+
+        bool showAudioConfig = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_AUDIO_CONFIG"), "1", StringComparison.Ordinal)
+            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_PSG"), "1", StringComparison.Ordinal)
+            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM"), "0", StringComparison.Ordinal);
+        if (showAudioConfig)
+        {
+            string ymRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") ?? "<unset>";
+            string psgRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_PSG") ?? "<unset>";
+            string ymResampleRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE") ?? "<unset>";
+            Console.WriteLine($"[AUDIO-CONFIG] YM(raw)={ymRaw} YM(enabled)={(_ymEnabled ? 1 : 0)} PSG_DISABLE(raw)={psgRaw} PSG(enabled)={(_psgDisabled ? 0 : 1)} YM_RESAMPLE(raw)={ymResampleRaw} YM_LINEAR={(_ymResampleLinear ? 1 : 0)} PSG_LINEAR={(_psgResampleLinear ? 1 : 0)}");
+        }
 
         // Auto-enable if env var is set
         if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_ANALYZER"), "1", StringComparison.Ordinal))
@@ -2225,6 +2297,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _ymLowPass2R.Reset();
         _jgAudioFilter.Reset();
         _jgPsgPreResampleFilter?.Reset();
+        _jgYmPreResampleFilter?.Reset();
         // Note: _audioSystemReady is managed separately
         
         if (TraceAudioDebug)
@@ -2283,6 +2356,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_ymInternalBuffer, 0, _ymInternalBuffer.Length);
         _jgAudioFilter.Reset();
         _jgPsgPreResampleFilter?.Reset();
+        _jgYmPreResampleFilter?.Reset();
 
         if (TraceAudioDebug)
             Console.WriteLine("[AUDIO-TIMING] Audio startup state initialized (no synthetic prefill).");
@@ -3603,7 +3677,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBufferForFrames enter frames={frames} wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
         }
         if (!wantPsg && !wantYm)
+        {
+            if (!_audioAllSourcesDisabledLogged)
+            {
+                Console.WriteLine($"[AUDIO-MUTE] All MD sources disabled (wantPsg=0 wantYm=0) at frame={md_main.g_md_vdp?.FrameCounter ?? -1}");
+                _audioAllSourcesDisabledLogged = true;
+            }
             return ReadOnlySpan<short>.Empty;
+        }
+        if (_audioAllSourcesDisabledLogged)
+            _audioAllSourcesDisabledLogged = false;
 
         // Audio system should be ready after GenerateInitialAudioSamples()
         // If not, something went wrong
@@ -3692,6 +3775,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
             // Resample YM from internal rate (~53.2kHz) to output rate (44.1kHz).
             double ymInternalSampleRate = md_main.GetYmSampleRateHzFromTiming();
+            if (YmFilterPreResampleEnabled)
+                EnsureYmPreResampleFilter((int)Math.Round(ymInternalSampleRate));
             double ratio = (ymInternalSampleRate * YmResampleScale) / OutputSampleRate;
             double phase = _ymResamplePhase;
             int neededInternal = (int)Math.Floor(phase + ((frames - 1) * ratio)) + 2;
@@ -3702,6 +3787,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             {
                 var dst = _ymInternalBuffer.AsSpan(writeOffsetFrames * PsgChannels, genFrames * PsgChannels);
                 music.YmUpdateBatch(dst, genFrames);
+                if (YmFilterPreResampleEnabled)
+                    FilterYmPreResampleBuffer(writeOffsetFrames, genFrames);
             }
             if (TraceAudioDebug && !_ymInternalForcedLoggedOnce)
             {

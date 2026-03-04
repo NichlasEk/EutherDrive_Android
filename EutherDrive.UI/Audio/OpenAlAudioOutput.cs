@@ -146,7 +146,9 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
 
         _started = false;
         alSourceStop(_source);
-        ProcessBuffers();
+        // Hard flush: remove every queued buffer, not just processed ones.
+        // This prevents stale audio from leaking into next run/core instance.
+        FlushAllQueuedBuffers();
     }
 
     private void EnsureTempBuffer(int bytes)
@@ -169,6 +171,18 @@ internal sealed class OpenAlAudioOutput : IDisposable, IAudioSink
             alSourceUnqueueBuffers(_source, 1, _scratch);
             LogAlError("alSourceUnqueueBuffers");
         }
+    }
+
+    private void FlushAllQueuedBuffers()
+    {
+        ProcessBuffers();
+        alGetSourcei(_source, AL_BUFFERS_QUEUED, out int queued);
+        while (queued-- > 0)
+        {
+            alSourceUnqueueBuffers(_source, 1, _scratch);
+            LogAlError("alSourceUnqueueBuffers(flush)");
+        }
+        _nextBuffer = 0;
     }
 
     public void Dispose()
