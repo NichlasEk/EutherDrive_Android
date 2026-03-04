@@ -831,24 +831,18 @@ namespace EutherDrive.Core.MdTracerCore
                                 if (ForceDirectVramReadWindow || ForceDirectVramReadPlanes)
                                 {
                                     uint picValueDirect = ReadPatternPixelDirect((int)w_char, w_dx, w_view_dy, w_reverse_bits, TileRebaseKind.Window);
-
-                                    if (picValueDirect != 0)
-                                    {
-                                        // Window replaces plane A where enabled.
-                                        planeAColor[w_posx] = w_palette + picValueDirect;
-                                        planeAPrio[w_posx] = w_priority;
-                                    }
+                                    // Window always replaces Plane A where enabled, even for color 0.
+                                    planeAColor[w_posx] = w_palette + picValueDirect;
+                                    planeAPrio[w_posx] = w_priority;
                                 }
                                 else
                                 {
                                     int  w_pic_addr = GetTileWordAddress((int)w_char, w_view_dy, w_reverse_bits, TileRebaseKind.Window) + (w_dx >> 2);
                                     uint w_pic_w    = g_renderer_vram[w_pic_addr];
-                                     uint picValue   = (uint)((w_pic_w >> ((3 - (w_dx & 3)) << 2)) & 0x0f);
-                                    if (picValue != 0)
-                                    {
-                                        planeAColor[w_posx] = w_palette + picValue;
-                                        planeAPrio[w_posx] = w_priority;
-                                    }
+                                    uint picValue   = (uint)((w_pic_w >> ((3 - (w_dx & 3)) << 2)) & 0x0f);
+                                    // Window always replaces Plane A where enabled, even for color 0.
+                                    planeAColor[w_posx] = w_palette + picValue;
+                                    planeAPrio[w_posx] = w_priority;
                                 }
                             }
                             w_posx += 1;
