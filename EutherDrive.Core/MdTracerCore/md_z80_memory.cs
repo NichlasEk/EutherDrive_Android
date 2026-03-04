@@ -145,6 +145,7 @@ namespace EutherDrive.Core.MdTracerCore
         private int _z80MailboxWideLogRemaining = 128;
         private int _z80MailboxWideReadAllRemaining = 128;
         private int _mbxRawZ80Remaining = TraceMbxRawZ80Limit;
+        private int _mbxRawZ80WriteRemaining = TraceMbxRawZ80Limit;
         private readonly byte[] _z80MailboxSnapshot = new byte[0x10];
         private string _mbxLastNonZeroDump = string.Empty;
         private long _mbxLastNonZeroFrame = -1;
@@ -160,6 +161,7 @@ namespace EutherDrive.Core.MdTracerCore
         private byte _mbxWideCmdLatchValue;
         private int _z80MbxPollReads;
         private int _z80MbxPollWideReads;
+        private int _z80MbxPollCmdReads;
         private ushort _z80MbxPollLastAddr;
         private byte _z80MbxPollLastValue;
         private ushort _z80MbxPollLastPc;
@@ -169,6 +171,10 @@ namespace EutherDrive.Core.MdTracerCore
         private int _z80MbxPollDataRemaining;
         private readonly byte[] _z80MbxPollDataLast = new byte[0x10];
         private bool _z80MbxPollDataLastValid;
+        private byte _z80MbxPollDataLastFe;
+        private bool _z80MbxPollDataLastFeValid;
+        private byte _z80MbxPollDataLastFf;
+        private bool _z80MbxPollDataLastFfValid;
         private long _ymStatusLastCycle;
         private bool _ymStatusHasLast;
         private long _ymStatusDeltaTotal;
@@ -849,6 +855,8 @@ namespace EutherDrive.Core.MdTracerCore
                 _z80MbxPollReads++;
             else if (addr >= 0x1B00 && addr <= 0x1B7F)
                 _z80MbxPollWideReads++;
+            else if (addr == 0x1BFE || addr == 0x1BFF)
+                _z80MbxPollCmdReads++;
         }
 
         private void MaybeLogZ80MbxPollEdge(ushort addr, byte value)
@@ -872,16 +880,41 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             if (IsOpcodeFetch(addr))
                 return;
-            if (ramAddr < 0x1B80 || ramAddr > 0x1B8F)
+            if (ramAddr >= 0x1B80 && ramAddr <= 0x1B8F)
+            {
+                int offset = ramAddr - 0x1B80;
+                byte prev = _z80MbxPollDataLastValid ? _z80MbxPollDataLast[offset] : (byte)0x00;
+                if (value == 0x00 && prev == 0x00)
+                    return;
+                if (_z80MbxPollDataLastValid && value == prev)
+                    return;
+                _z80MbxPollDataLast[offset] = value;
+                _z80MbxPollDataLastValid = true;
+            }
+            else if (ramAddr == 0x1BFE)
+            {
+                byte prev = _z80MbxPollDataLastFeValid ? _z80MbxPollDataLastFe : (byte)0x00;
+                if (value == 0x00 && prev == 0x00)
+                    return;
+                if (_z80MbxPollDataLastFeValid && value == prev)
+                    return;
+                _z80MbxPollDataLastFe = value;
+                _z80MbxPollDataLastFeValid = true;
+            }
+            else if (ramAddr == 0x1BFF)
+            {
+                byte prev = _z80MbxPollDataLastFfValid ? _z80MbxPollDataLastFf : (byte)0x00;
+                if (value == 0x00 && prev == 0x00)
+                    return;
+                if (_z80MbxPollDataLastFfValid && value == prev)
+                    return;
+                _z80MbxPollDataLastFf = value;
+                _z80MbxPollDataLastFfValid = true;
+            }
+            else
+            {
                 return;
-            int offset = ramAddr - 0x1B80;
-            byte prev = _z80MbxPollDataLastValid ? _z80MbxPollDataLast[offset] : (byte)0x00;
-            if (value == 0x00 && prev == 0x00)
-                return;
-            if (_z80MbxPollDataLastValid && value == prev)
-                return;
-            _z80MbxPollDataLast[offset] = value;
-            _z80MbxPollDataLastValid = true;
+            }
             long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
             Console.WriteLine($"[Z80MBX-DATA] frame={frame} pc=0x{DebugPc:X4} addr=0x{ramAddr:X4} val=0x{value:X2}");
             if (_z80MbxPollDataRemaining != int.MaxValue)
@@ -1009,14 +1042,15 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (!TraceZ80MbxPoll)
                 return;
-            if (_z80MbxPollReads == 0 && _z80MbxPollWideReads == 0)
+            if (_z80MbxPollReads == 0 && _z80MbxPollWideReads == 0 && _z80MbxPollCmdReads == 0)
             {
-                Console.WriteLine($"[Z80MBX-POLL] frame={frame} reads=0 wide=0");
+                Console.WriteLine($"[Z80MBX-POLL] frame={frame} reads=0 wide=0 cmd=0");
                 return;
             }
-            Console.WriteLine($"[Z80MBX-POLL] frame={frame} reads={_z80MbxPollReads} wide={_z80MbxPollWideReads} last=0x{_z80MbxPollLastAddr:X4} pc=0x{_z80MbxPollLastPc:X4} val=0x{_z80MbxPollLastValue:X2}");
+            Console.WriteLine($"[Z80MBX-POLL] frame={frame} reads={_z80MbxPollReads} wide={_z80MbxPollWideReads} cmd={_z80MbxPollCmdReads} last=0x{_z80MbxPollLastAddr:X4} pc=0x{_z80MbxPollLastPc:X4} val=0x{_z80MbxPollLastValue:X2}");
             _z80MbxPollReads = 0;
             _z80MbxPollWideReads = 0;
+            _z80MbxPollCmdReads = 0;
         }
 
         internal void FlushZ80WaitLoopHist(long frame)
@@ -1111,6 +1145,20 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             _mbxRawZ80Remaining--;
             Console.WriteLine($"[MBXRAWZ80] pc=0x{DebugPc:X4} addr=0x{ramAddr:X4} val=0x{value:X2}");
+        }
+
+        private void MaybeLogMbxRawZ80Write(ushort ramAddr, byte value)
+        {
+            if (!TraceMbxRawZ80)
+                return;
+            if (ramAddr < 0x1B00 || ramAddr > 0x1BFF)
+                return;
+            if (TraceMbxRawZ80NonZero && value == 0x00)
+                return;
+            if (_mbxRawZ80WriteRemaining <= 0)
+                return;
+            _mbxRawZ80WriteRemaining--;
+            Console.WriteLine($"[MBXRAWZ80W] pc=0x{DebugPc:X4} addr=0x{ramAddr:X4} val=0x{value:X2}");
         }
 
         private void MaybeLogZ80ReadRange(ushort addr, byte value)
@@ -1466,7 +1514,8 @@ namespace EutherDrive.Core.MdTracerCore
                 MaybeLogMbxRawZ80Read(ramAddr, w_out);
                 if (ShouldTraceZ80Ram1800(ramAddr))
                     LogZ80Ram1800("R", ramAddr, w_out);
-                bool isMbxPoll = TraceZ80MbxPoll && ramAddr >= 0x1B00 && ramAddr <= 0x1B8F;
+                bool isMbxPoll = TraceZ80MbxPoll &&
+                                 ((ramAddr >= 0x1B00 && ramAddr <= 0x1B8F) || ramAddr == 0x1BFE || ramAddr == 0x1BFF);
                 if (ShouldTraceBootIo())
                     LogBootIo("read", a, w_out);
                 if (TraceZ80RamReadRangeStart.HasValue && TraceZ80RamReadRangeEnd.HasValue && _z80RamReadRangeRemaining > 0)
@@ -1529,6 +1578,10 @@ namespace EutherDrive.Core.MdTracerCore
                         if (prev != w_out)
                             LogMbxEdge("rdNZ", ramAddr, w_out, null, DebugPc, null);
                     }
+                    MaybeLogZ80MbxPollEdge(ramAddr, w_out);
+                }
+                else if (ramAddr == 0x1BFE || ramAddr == 0x1BFF)
+                {
                     MaybeLogZ80MbxPollEdge(ramAddr, w_out);
                 }
                 MaybeLogZ80MbxPollData(a, ramAddr, w_out);
@@ -1781,6 +1834,7 @@ namespace EutherDrive.Core.MdTracerCore
                     return;
                 byte oldValue = g_ram[ramAddr];
                 g_ram[ramAddr] = in_data;
+                MaybeLogMbxRawZ80Write(ramAddr, in_data);
                 if (ShouldTraceZ80Ram1800(ramAddr))
                     LogZ80Ram1800("W", ramAddr, in_data);
                 if (TraceZ80Flag65 && ramAddr == 0x0065 && _z80Flag65WriteRemaining > 0)
@@ -2215,6 +2269,7 @@ namespace EutherDrive.Core.MdTracerCore
             if (TraceMbxRawZ80)
             {
                 _mbxRawZ80Remaining = TraceMbxRawZ80Limit;
+                _mbxRawZ80WriteRemaining = TraceMbxRawZ80Limit;
             }
             if (TraceZ80Flag65)
             {

@@ -10,6 +10,8 @@ namespace EutherDrive.Core.MdTracerCore
         // Set EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW=0 to force silence-on-underflow.
         private static readonly bool HoldLastSampleOnUnderflow =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
+        private static readonly bool SynthesizeOnUnderflow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_SYNTH_ON_UNDERFLOW"), "1", StringComparison.Ordinal);
         private static readonly int UnderflowHoldSamples = ParseUnderflowHoldSamples();
         private static readonly int MaxBufferedSamples = ParseMaxBufferedSamples();
         private static readonly bool TracePsgStuck =
@@ -322,23 +324,27 @@ namespace EutherDrive.Core.MdTracerCore
                 return sample;
             }
 
-            // If producer fell behind, synthesize one PSG sample on demand instead of
-            // outputting a hard gap (0). Hard gaps are very audible on short SFX.
-            for (int i = 0; i < SnDivider && _ringCount == 0; i++)
+            // Keep underflow behavior strict by default (jgenesis-like): output silence
+            // if no sample is available. Optional on-demand synthesis can be enabled
+            // explicitly for experiments.
+            if (SynthesizeOnUnderflow)
             {
-                if (!Tick())
-                    continue;
-                short sample = GenerateSampleCurrentState(outVol, noiseGainPercent);
-                WriteRing(sample);
-            }
-            if (_ringCount > 0)
-            {
-                short sample = ReadRing();
-                _lastSample = sample;
-                _underflowHoldSamplesRemaining = UnderflowHoldSamples;
-                _sampleCounter++;
-                MaybeLogStuckState(sample);
-                return sample;
+                for (int i = 0; i < SnDivider && _ringCount == 0; i++)
+                {
+                    if (!Tick())
+                        continue;
+                    short sample = GenerateSampleCurrentState(outVol, noiseGainPercent);
+                    WriteRing(sample);
+                }
+                if (_ringCount > 0)
+                {
+                    short sample = ReadRing();
+                    _lastSample = sample;
+                    _underflowHoldSamplesRemaining = UnderflowHoldSamples;
+                    _sampleCounter++;
+                    MaybeLogStuckState(sample);
+                    return sample;
+                }
             }
 
             // Keep PSG time deterministic: when underflowing, do not synthesize
