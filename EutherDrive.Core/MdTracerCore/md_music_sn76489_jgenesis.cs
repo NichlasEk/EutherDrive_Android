@@ -15,6 +15,8 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool SynthesizeOnUnderflow =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_SYNTH_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
         private static readonly int UnderflowHoldSamples = ParseUnderflowHoldSamples();
+        private static readonly int UnderflowRefillSamples = ParseUnderflowRefillSamples();
+        private static readonly int UnderflowLowWatermark = ParseUnderflowLowWatermark();
         private static readonly int MaxBufferedSamples = ParseMaxBufferedSamples();
         private static readonly bool TracePsgStuck =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PSG_STUCK"), "1", StringComparison.Ordinal);
@@ -318,6 +320,9 @@ namespace EutherDrive.Core.MdTracerCore
             _ = outVol;
             _ = noiseGainPercent;
             TrimExcessBufferedSamples();
+            // Proactively refill when ring level is running low to avoid audible dropouts.
+            if (_ringCount <= UnderflowLowWatermark)
+                RefillRingForOutput(UnderflowRefillSamples, outVol, noiseGainPercent);
             if (_ringCount > 0)
             {
                 short sample = ReadRing();
@@ -331,24 +336,15 @@ namespace EutherDrive.Core.MdTracerCore
             // Keep underflow behavior strict by default (jgenesis-like): output silence
             // if no sample is available. Optional on-demand synthesis can be enabled
             // explicitly for experiments.
-            if (SynthesizeOnUnderflow)
+            RefillRingForOutput(Math.Max(1, UnderflowRefillSamples), outVol, noiseGainPercent);
+            if (_ringCount > 0)
             {
-                for (int i = 0; i < SnDivider && _ringCount == 0; i++)
-                {
-                    if (!Tick())
-                        continue;
-                    short sample = GenerateSampleCurrentState(outVol, noiseGainPercent);
-                    WriteRing(sample);
-                }
-                if (_ringCount > 0)
-                {
-                    short sample = ReadRing();
-                    _lastSample = sample;
-                    _underflowHoldSamplesRemaining = UnderflowHoldSamples;
-                    _sampleCounter++;
-                    MaybeLogStuckState(sample);
-                    return sample;
-                }
+                short sample = ReadRing();
+                _lastSample = sample;
+                _underflowHoldSamplesRemaining = UnderflowHoldSamples;
+                _sampleCounter++;
+                MaybeLogStuckState(sample);
+                return sample;
             }
 
             // Keep PSG time deterministic: when underflowing, do not synthesize
@@ -367,8 +363,28 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static int ParseUnderflowHoldSamples()
         {
-            const int fallback = 0;
+            // Small fallback hold smooths edge cases where refill cannot keep up.
+            const int fallback = 8;
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_UNDERFLOW_HOLD_SAMPLES");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 0)
+                return value;
+            return fallback;
+        }
+
+        private static int ParseUnderflowRefillSamples()
+        {
+            // Keep refill burst modest: enough to hide jitter, not enough to add large latency.
+            const int fallback = 12;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_UNDERFLOW_REFILL_SAMPLES");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 1)
+                return value;
+            return fallback;
+        }
+
+        private static int ParseUnderflowLowWatermark()
+        {
+            int fallback = Math.Max(1, UnderflowRefillSamples / 3);
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_UNDERFLOW_LOW_WATERMARK");
             if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 0)
                 return value;
             return fallback;
@@ -460,6 +476,28 @@ namespace EutherDrive.Core.MdTracerCore
                 _ringRead = 0;
             _ringCount--;
             return sample;
+        }
+
+        private void RefillRingForOutput(int targetSamples, int[] outVol, int noiseGainPercent)
+        {
+            if (!SynthesizeOnUnderflow || targetSamples <= 0)
+                return;
+
+            int maxBuffered = MaxBufferedSamples;
+            if (maxBuffered > 0 && targetSamples > maxBuffered)
+                targetSamples = maxBuffered;
+            if (_ringCount >= targetSamples)
+                return;
+
+            int missing = targetSamples - _ringCount;
+            int tickBudget = missing * SnDivider * 2;
+            for (int i = 0; i < tickBudget && _ringCount < targetSamples; i++)
+            {
+                if (!Tick())
+                    continue;
+                short sample = GenerateSampleCurrentState(outVol, noiseGainPercent);
+                WriteRing(sample);
+            }
         }
 
         private void TrimExcessBufferedSamples()
