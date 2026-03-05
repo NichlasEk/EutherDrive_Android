@@ -8,6 +8,8 @@ namespace EutherDrive.Core.Savestates;
 
 internal static class StateBinarySerializer
 {
+    private const int MaxArrayElements = 16 * 1024 * 1024;
+
     private static readonly ConcurrentDictionary<Type, FieldInfo[]> FieldCache = new();
 
     public static void WriteObject(BinaryWriter writer, object? obj)
@@ -319,20 +321,29 @@ internal static class StateBinarySerializer
             }
 
             int[] lengths = new int[rank];
-            int total = 1;
+            long totalLong = 1;
             if (legacyLength.HasValue)
             {
+                if (legacyLength.Value < 0 || legacyLength.Value > MaxArrayElements)
+                    throw new InvalidDataException(
+                        $"Array length {legacyLength.Value} is unreasonable for field {field.Name}.");
                 lengths[0] = legacyLength.Value;
-                total = legacyLength.Value;
+                totalLong = legacyLength.Value;
             }
             else
             {
                 for (int i = 0; i < rank; i++)
                 {
                     lengths[i] = reader.ReadInt32();
-                    total *= lengths[i];
+                    if (lengths[i] < 0)
+                        throw new InvalidDataException($"Negative array length for field {field.Name}.");
+                    totalLong *= lengths[i];
+                    if (totalLong > MaxArrayElements)
+                        throw new InvalidDataException(
+                            $"Array element count {totalLong} is unreasonable for field {field.Name}.");
                 }
             }
+            int total = (int)totalLong;
 
         int targetRank = field.FieldType.IsArray ? field.FieldType.GetArrayRank() : rank;
         if (targetRank != rank)

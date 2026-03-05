@@ -37,7 +37,7 @@ public sealed class SavestateService
     {
         try
         {
-            var file = ReadFile(romId);
+            var file = ReadFileMetadata(romId);
             var results = new SavestateSlotInfo[SlotCount];
             for (int i = 0; i < SlotCount; i++)
             {
@@ -106,16 +106,17 @@ public sealed class SavestateService
     public void Load(RomIdentity romId, ISavestateCapable core, int slotIndex)
     {
         ValidateSlotIndex(slotIndex);
-        var file = ReadFile(romId);
+        var file = ReadFileMetadata(romId);
         var slot = file.Slots[slotIndex - 1];
         if (!slot.HasData)
             throw new InvalidOperationException($"Slot {slotIndex} is empty.");
         if (slot.IsCorrupt)
             throw new InvalidDataException($"Slot {slotIndex} is corrupt.");
-        if (slot.Payload == null)
+        if (slot.PayloadLength <= 0)
             throw new InvalidDataException($"Slot {slotIndex} payload missing.");
 
-        using var stream = new MemoryStream(slot.Payload, writable: false);
+        byte[] payload = ReadSlotPayload(romId, slot);
+        using var stream = new MemoryStream(payload, writable: false);
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
         core.LoadState(reader);
         Console.WriteLine($"[Savestate] Loaded slot {slotIndex} for '{romId.Name}'.");
@@ -201,6 +202,30 @@ public sealed class SavestateService
 
     private SavestateFile ReadFile(RomIdentity romId)
     {
+        SavestateFile file = ReadFileMetadata(romId);
+        string path = GetStatePath(romId);
+        using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        foreach (var slot in file.Slots)
+        {
+            if (!slot.HasData || slot.PayloadLength <= 0)
+                continue;
+
+            try
+            {
+                slot.Payload = ReadSlotPayload(stream, slot);
+            }
+            catch (Exception ex)
+            {
+                slot.IsCorrupt = true;
+                slot.Error = ex.Message;
+                slot.Payload = null;
+            }
+        }
+        return file;
+    }
+
+    private SavestateFile ReadFileMetadata(RomIdentity romId)
+    {
         string path = GetStatePath(romId);
         using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
@@ -247,31 +272,37 @@ public sealed class SavestateService
             file.Slots[i] = slot;
         }
 
-        for (int i = 0; i < SlotCount; i++)
+        return file;
+    }
+
+    private byte[] ReadSlotPayload(RomIdentity romId, SavestateSlotEntry slot)
+    {
+        string path = GetStatePath(romId);
+        using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return ReadSlotPayload(stream, slot);
+    }
+
+    private byte[] ReadSlotPayload(FileStream stream, SavestateSlotEntry slot)
+    {
+        if (slot.PayloadOffset < 0 || slot.PayloadLength <= 0 || slot.PayloadOffset + slot.PayloadLength > stream.Length)
+            throw new InvalidDataException("Payload out of range.");
+
+        stream.Seek(slot.PayloadOffset, SeekOrigin.Begin);
+        byte[] payload = new byte[slot.PayloadLength];
+        int totalRead = 0;
+        while (totalRead < payload.Length)
         {
-            var slot = file.Slots[i];
-            if (!slot.HasData || slot.PayloadLength <= 0)
-                continue;
-            if (slot.PayloadOffset < 0 || slot.PayloadOffset + slot.PayloadLength > stream.Length)
-            {
-                slot.IsCorrupt = true;
-                slot.Error = "Payload out of range.";
-                continue;
-            }
-
-            stream.Seek(slot.PayloadOffset, SeekOrigin.Begin);
-            slot.Payload = reader.ReadBytes(slot.PayloadLength);
-
-            byte[] checksum = ComputeSha256(slot.Payload);
-            if (slot.PayloadHash == null || !HashesEqual(checksum, slot.PayloadHash))
-            {
-                slot.IsCorrupt = true;
-                slot.Error = "Checksum mismatch.";
-                slot.Payload = null;
-            }
+            int read = stream.Read(payload, totalRead, payload.Length - totalRead);
+            if (read == 0)
+                throw new EndOfStreamException("Unexpected end of savestate payload.");
+            totalRead += read;
         }
 
-        return file;
+        byte[] checksum = ComputeSha256(payload);
+        if (slot.PayloadHash == null || !HashesEqual(checksum, slot.PayloadHash))
+            throw new InvalidDataException("Checksum mismatch.");
+
+        return payload;
     }
 
     private void WriteFile(RomIdentity romId, SavestateFile file)
