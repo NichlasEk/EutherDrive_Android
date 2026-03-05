@@ -206,6 +206,7 @@
         <TextBlock Name="FpsText" Text="FPS: -"/>
         <TextBlock Name="EmuFpsText" Text="Emu FPS: -"/>
         <TextBlock Name="FrameText" Text="Frame: -"/>
+        <TextBlock Name="ResolutionText" Text="Resolution: -"/>
         <CheckBox Content="Speed lock (real-time)" IsChecked="True" Name="SpeedLockCheck" Checked="OnSpeedLockToggle" Unchecked="OnSpeedLockToggle"/>
         <CheckBox Content="Render skip when fast" IsChecked="False" Name="RenderSkipCheck" Checked="OnRenderSkipToggle" Unchecked="OnRenderSkipToggle"/>
         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">

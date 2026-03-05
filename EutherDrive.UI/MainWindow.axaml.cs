@@ -4210,6 +4210,21 @@ public partial class MainWindow : Window
             long frame = savestateCore.FrameCounter ?? -1;
             FrameText.Text = $"Frame: {frame}";
         }
+
+        if (ResolutionText != null)
+        {
+            if (_lastPresentedWidth > 0 && _lastPresentedHeight > 0)
+                ResolutionText.Text = $"Resolution: {_lastPresentedWidth}x{_lastPresentedHeight}";
+            else if (_core != null)
+            {
+                _ = _core.GetFrameBuffer(out int w, out int h, out _);
+                ResolutionText.Text = w > 0 && h > 0 ? $"Resolution: {w}x{h}" : "Resolution: -";
+            }
+            else
+            {
+                ResolutionText.Text = "Resolution: -";
+            }
+        }
     }
 
     private void MaybeUpdateStatusText()
