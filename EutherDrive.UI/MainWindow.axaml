@@ -234,6 +234,7 @@
         <TextBlock Text="Dev / Test" FontWeight="Bold"/>
         <CheckBox Content="Interlace Test Mode (448px)" IsChecked="False" Name="InterlaceTestCheck" Checked="OnInterlaceTestToggle" Unchecked="OnInterlaceTestToggle"/>
         <CheckBox Content="Static (no flicker)" IsChecked="True" Name="InterlaceStaticCheck" Checked="OnInterlaceStaticToggle" Unchecked="OnInterlaceStaticToggle" IsEnabled="False"/>
+        <CheckBox Content="Sharp Pixels" IsChecked="True" Name="SharpPixelsCheck" Checked="OnSharpPixelsToggle" Unchecked="OnSharpPixelsToggle"/>
         <CheckBox Content="Force Opaque Pixels" IsChecked="False" Name="ForceOpaqueCheck"/>
         <CheckBox Content="ASCII Stream (for viewer)" IsChecked="False" Name="AsciiStreamCheck" Checked="OnAsciiStreamToggle" Unchecked="OnAsciiStreamToggle"/>
         <CheckBox Content="Preserve FB on Display Off" IsChecked="True" Name="PreserveFbCheck" Checked="OnPreserveFbToggle" Unchecked="OnPreserveFbToggle"/>

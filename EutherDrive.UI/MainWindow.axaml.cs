@@ -100,6 +100,7 @@ public partial class MainWindow : Window
     private bool _audioDebugEnabled;
     private bool _pad2MirrorEnabled;
     private bool _inputTraceEnabled;
+    private bool _sharpPixelsEnabled = true;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
     private readonly Stopwatch _earlyMagentaTimer = new();
     private bool _earlyMagentaReported;
@@ -369,6 +370,7 @@ public partial class MainWindow : Window
         UpdateSpeedUi();
         UpdateSmsOverscanUi();
         UpdateSegaCdOptionsUi();
+        UpdateSharpPixelsUi();
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
@@ -884,6 +886,24 @@ public partial class MainWindow : Window
     private void OnAutoFireToggle(object? sender, RoutedEventArgs e)
     {
         UpdateAutoFireMask();
+    }
+
+    private void OnSharpPixelsToggle(object? sender, RoutedEventArgs e)
+    {
+        _sharpPixelsEnabled = SharpPixelsCheck?.IsChecked != false;
+        UpdateSharpPixelsUi();
+        SaveSettings();
+    }
+
+    private void UpdateSharpPixelsUi()
+    {
+        if (SharpPixelsCheck != null)
+            SharpPixelsCheck.IsChecked = _sharpPixelsEnabled;
+        if (ScreenImage == null)
+            return;
+        RenderOptions.SetBitmapInterpolationMode(
+            ScreenImage,
+            _sharpPixelsEnabled ? BitmapInterpolationMode.None : BitmapInterpolationMode.MediumQuality);
     }
 
     private void UpdateAutoFireMask()
@@ -2947,6 +2967,7 @@ public partial class MainWindow : Window
         public bool RenderSkipEnabled { get; set; } = false;
         public double SpeedScale { get; set; } = 1.0;
         public bool SmsOverscanEnabled { get; set; } = false;
+        public bool SharpPixelsEnabled { get; set; } = true;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
         public Dictionary<string, bool>? RomSegaCdRamCartOverrides { get; set; }
@@ -2973,6 +2994,7 @@ public partial class MainWindow : Window
         public bool RenderSkipEnabled { get; set; } = false;
         public double SpeedScale { get; set; } = 1.0;
         public bool SmsOverscanEnabled { get; set; } = false;
+        public bool SharpPixelsEnabled { get; set; } = true;
         public string? DefaultRegionOverride { get; set; }
         public Dictionary<string, string>? RomRegionOverrides { get; set; }
         public Dictionary<string, bool>? RomSegaCdRamCartOverrides { get; set; }
@@ -3076,6 +3098,7 @@ public partial class MainWindow : Window
         _renderSkipEnabled = settings.RenderSkipEnabled;
         _speedScale = settings.SpeedScale > 0 ? settings.SpeedScale : 1.0;
         _smsOverscanEnabled = settings.SmsOverscanEnabled;
+        _sharpPixelsEnabled = settings.SharpPixelsEnabled;
 
         _defaultRegionOverride = settings.DefaultRegionOverride;
         _romRegionOverrides.Clear();
@@ -3123,6 +3146,7 @@ public partial class MainWindow : Window
         UpdateSpeedLockUi();
         UpdateRenderSkipUi();
         UpdateSpeedUi();
+        UpdateSharpPixelsUi();
     }
 
     private static void NormalizeMappingSet(InputMappingSet set, bool includePause)
@@ -3189,6 +3213,7 @@ public partial class MainWindow : Window
             RenderSkipEnabled = _renderSkipEnabled,
             SpeedScale = _speedScale,
             SmsOverscanEnabled = _smsOverscanEnabled,
+            SharpPixelsEnabled = _sharpPixelsEnabled,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
             RomSegaCdRamCartOverrides = new Dictionary<string, bool>(_romSegaCdRamCartOverrides, StringComparer.OrdinalIgnoreCase),
@@ -3270,6 +3295,7 @@ public partial class MainWindow : Window
             RenderSkipEnabled = settings.RenderSkipEnabled,
             SpeedScale = settings.SpeedScale,
             SmsOverscanEnabled = settings.SmsOverscanEnabled,
+            SharpPixelsEnabled = settings.SharpPixelsEnabled,
             DefaultRegionOverride = settings.DefaultRegionOverride.ToString(),
             FrameRateMode = settings.FrameRateMode.ToString()
         };
@@ -3349,7 +3375,8 @@ public partial class MainWindow : Window
             SpeedLockEnabled = raw.SpeedLockEnabled,
             RenderSkipEnabled = raw.RenderSkipEnabled,
             SpeedScale = raw.SpeedScale,
-            SmsOverscanEnabled = raw.SmsOverscanEnabled
+            SmsOverscanEnabled = raw.SmsOverscanEnabled,
+            SharpPixelsEnabled = raw.SharpPixelsEnabled
         };
 
         if (Enum.TryParse<ConsoleRegion>(raw.DefaultRegionOverride ?? string.Empty, out var region))
