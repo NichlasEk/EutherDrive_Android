@@ -235,6 +235,17 @@
         <CheckBox Content="Interlace Test Mode (448px)" IsChecked="False" Name="InterlaceTestCheck" Checked="OnInterlaceTestToggle" Unchecked="OnInterlaceTestToggle"/>
         <CheckBox Content="Static (no flicker)" IsChecked="True" Name="InterlaceStaticCheck" Checked="OnInterlaceStaticToggle" Unchecked="OnInterlaceStaticToggle" IsEnabled="False"/>
         <CheckBox Content="Sharp Pixels" IsChecked="True" Name="SharpPixelsCheck" Checked="OnSharpPixelsToggle" Unchecked="OnSharpPixelsToggle"/>
+        <CheckBox Content="CRT Scanlines" IsChecked="False" Name="CrtScanlinesCheck" Checked="OnCrtScanlinesToggle" Unchecked="OnCrtScanlinesToggle"/>
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <TextBlock Text="Scanline Strength" VerticalAlignment="Center"/>
+          <Slider Name="CrtScanlineStrengthSlider"
+                  Minimum="0"
+                  Maximum="100"
+                  Width="120"
+                  Value="22"
+                  ValueChanged="OnCrtScanlineStrengthChanged"/>
+          <TextBlock Name="CrtScanlineStrengthText" Width="42" Text="22%" VerticalAlignment="Center"/>
+        </StackPanel>
         <CheckBox Content="Force Opaque Pixels" IsChecked="False" Name="ForceOpaqueCheck"/>
         <CheckBox Content="ASCII Stream (for viewer)" IsChecked="False" Name="AsciiStreamCheck" Checked="OnAsciiStreamToggle" Unchecked="OnAsciiStreamToggle"/>
         <CheckBox Content="Preserve FB on Display Off" IsChecked="True" Name="PreserveFbCheck" Checked="OnPreserveFbToggle" Unchecked="OnPreserveFbToggle"/>

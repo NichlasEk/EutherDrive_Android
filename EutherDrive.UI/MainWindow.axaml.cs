@@ -101,6 +101,9 @@ public partial class MainWindow : Window
     private bool _pad2MirrorEnabled;
     private bool _inputTraceEnabled;
     private bool _sharpPixelsEnabled = true;
+    private bool _crtScanlinesEnabled;
+    private int _crtScanlineStrengthPercent = DefaultCrtScanlineStrengthPercent;
+    private bool _updatingCrtScanlineUi;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
     private readonly Stopwatch _earlyMagentaTimer = new();
     private bool _earlyMagentaReported;
@@ -280,6 +283,7 @@ public partial class MainWindow : Window
     private const int DefaultYmMixPercent = 100;
     private const int DefaultNoiseMixPercent = 100;
     private const int DefaultCpuCyclesPerLine = 488;
+    private const int DefaultCrtScanlineStrengthPercent = 22;
 
     // UI heartbeat
     private readonly bool _heartbeatEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HEARTBEAT") == "1";
@@ -371,6 +375,7 @@ public partial class MainWindow : Window
         UpdateSmsOverscanUi();
         UpdateSegaCdOptionsUi();
         UpdateSharpPixelsUi();
+        UpdateCrtScanlinesUi();
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
@@ -895,6 +900,23 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
+    private void OnCrtScanlinesToggle(object? sender, RoutedEventArgs e)
+    {
+        _crtScanlinesEnabled = CrtScanlinesCheck?.IsChecked == true;
+        UpdateCrtScanlinesUi();
+        SaveSettings();
+    }
+
+    private void OnCrtScanlineStrengthChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_updatingCrtScanlineUi)
+            return;
+        int strength = ClampPercent((int)Math.Round(e.NewValue));
+        _crtScanlineStrengthPercent = strength;
+        UpdateCrtScanlinesUi();
+        SaveSettings();
+    }
+
     private void UpdateSharpPixelsUi()
     {
         if (SharpPixelsCheck != null)
@@ -904,6 +926,27 @@ public partial class MainWindow : Window
         RenderOptions.SetBitmapInterpolationMode(
             ScreenImage,
             _sharpPixelsEnabled ? BitmapInterpolationMode.None : BitmapInterpolationMode.MediumQuality);
+    }
+
+    private void UpdateCrtScanlinesUi()
+    {
+        _updatingCrtScanlineUi = true;
+        try
+        {
+            if (CrtScanlinesCheck != null)
+                CrtScanlinesCheck.IsChecked = _crtScanlinesEnabled;
+            if (CrtScanlineStrengthSlider != null)
+            {
+                CrtScanlineStrengthSlider.Value = _crtScanlineStrengthPercent;
+                CrtScanlineStrengthSlider.IsEnabled = _crtScanlinesEnabled;
+            }
+            if (CrtScanlineStrengthText != null)
+                CrtScanlineStrengthText.Text = $"{_crtScanlineStrengthPercent}%";
+        }
+        finally
+        {
+            _updatingCrtScanlineUi = false;
+        }
     }
 
     private void UpdateAutoFireMask()
@@ -2968,6 +3011,8 @@ public partial class MainWindow : Window
         public double SpeedScale { get; set; } = 1.0;
         public bool SmsOverscanEnabled { get; set; } = false;
         public bool SharpPixelsEnabled { get; set; } = true;
+        public bool CrtScanlinesEnabled { get; set; } = false;
+        public int CrtScanlineStrengthPercent { get; set; } = DefaultCrtScanlineStrengthPercent;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
         public Dictionary<string, bool>? RomSegaCdRamCartOverrides { get; set; }
@@ -2995,6 +3040,8 @@ public partial class MainWindow : Window
         public double SpeedScale { get; set; } = 1.0;
         public bool SmsOverscanEnabled { get; set; } = false;
         public bool SharpPixelsEnabled { get; set; } = true;
+        public bool CrtScanlinesEnabled { get; set; } = false;
+        public int CrtScanlineStrengthPercent { get; set; } = DefaultCrtScanlineStrengthPercent;
         public string? DefaultRegionOverride { get; set; }
         public Dictionary<string, string>? RomRegionOverrides { get; set; }
         public Dictionary<string, bool>? RomSegaCdRamCartOverrides { get; set; }
@@ -3099,6 +3146,8 @@ public partial class MainWindow : Window
         _speedScale = settings.SpeedScale > 0 ? settings.SpeedScale : 1.0;
         _smsOverscanEnabled = settings.SmsOverscanEnabled;
         _sharpPixelsEnabled = settings.SharpPixelsEnabled;
+        _crtScanlinesEnabled = settings.CrtScanlinesEnabled;
+        _crtScanlineStrengthPercent = ClampPercent(settings.CrtScanlineStrengthPercent);
 
         _defaultRegionOverride = settings.DefaultRegionOverride;
         _romRegionOverrides.Clear();
@@ -3147,6 +3196,7 @@ public partial class MainWindow : Window
         UpdateRenderSkipUi();
         UpdateSpeedUi();
         UpdateSharpPixelsUi();
+        UpdateCrtScanlinesUi();
     }
 
     private static void NormalizeMappingSet(InputMappingSet set, bool includePause)
@@ -3214,6 +3264,8 @@ public partial class MainWindow : Window
             SpeedScale = _speedScale,
             SmsOverscanEnabled = _smsOverscanEnabled,
             SharpPixelsEnabled = _sharpPixelsEnabled,
+            CrtScanlinesEnabled = _crtScanlinesEnabled,
+            CrtScanlineStrengthPercent = _crtScanlineStrengthPercent,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
             RomSegaCdRamCartOverrides = new Dictionary<string, bool>(_romSegaCdRamCartOverrides, StringComparer.OrdinalIgnoreCase),
@@ -3296,6 +3348,8 @@ public partial class MainWindow : Window
             SpeedScale = settings.SpeedScale,
             SmsOverscanEnabled = settings.SmsOverscanEnabled,
             SharpPixelsEnabled = settings.SharpPixelsEnabled,
+            CrtScanlinesEnabled = settings.CrtScanlinesEnabled,
+            CrtScanlineStrengthPercent = settings.CrtScanlineStrengthPercent,
             DefaultRegionOverride = settings.DefaultRegionOverride.ToString(),
             FrameRateMode = settings.FrameRateMode.ToString()
         };
@@ -3376,7 +3430,9 @@ public partial class MainWindow : Window
             RenderSkipEnabled = raw.RenderSkipEnabled,
             SpeedScale = raw.SpeedScale,
             SmsOverscanEnabled = raw.SmsOverscanEnabled,
-            SharpPixelsEnabled = raw.SharpPixelsEnabled
+            SharpPixelsEnabled = raw.SharpPixelsEnabled,
+            CrtScanlinesEnabled = raw.CrtScanlinesEnabled,
+            CrtScanlineStrengthPercent = raw.CrtScanlineStrengthPercent
         };
 
         if (Enum.TryParse<ConsoleRegion>(raw.DefaultRegionOverride ?? string.Empty, out var region))
@@ -4982,6 +5038,9 @@ public partial class MainWindow : Window
             return;
 
         bool forceOpaque = ForceOpaqueCheck?.IsChecked == true;
+        bool applyScanlines = _crtScanlinesEnabled;
+        int scanlineStrength = ClampPercent(_crtScanlineStrengthPercent);
+        int scanlineDarkenFactor = 256 - ((scanlineStrength * 256) / 100);
 
         fixed (byte* pSrc0 = src)
         {
@@ -4994,7 +5053,7 @@ public partial class MainWindow : Window
                 Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} srcPtr=0x{(nint)pSrc0:X} size={w}x{h} stride={srcStride} bytes={src.Length}");
             }
 
-            if (copyBytesPerRow == srcStride && copyBytesPerRow == dstStride && !forceOpaque)
+            if (copyBytesPerRow == srcStride && copyBytesPerRow == dstStride && !forceOpaque && !applyScanlines)
             {
                 long totalBytes = (long)copyBytesPerRow * h;
                 Buffer.MemoryCopy(pSrc0, pDst0, totalBytes, totalBytes);
@@ -5006,15 +5065,28 @@ public partial class MainWindow : Window
                     byte* pSrcRow = pSrc0 + (y * srcStride);
                     byte* pDstRow = pDst0 + (y * dstStride);
 
-                    if (forceOpaque)
+                    bool darkenRow = applyScanlines && ((y & 1) == 1);
+                    if (forceOpaque || darkenRow)
                     {
-                        // Force alpha = 0xFF on every pixel
+                        // Optional CRT-like scanline darkening + optional alpha force.
                         for (int x = 0; x < copyBytesPerRow; x += 4)
                         {
-                            pDstRow[x + 0] = pSrcRow[x + 0]; // B
-                            pDstRow[x + 1] = pSrcRow[x + 1]; // G
-                            pDstRow[x + 2] = pSrcRow[x + 2]; // R
-                            pDstRow[x + 3] = 0xFF;          // Force opaque alpha
+                            byte b = pSrcRow[x + 0];
+                            byte g = pSrcRow[x + 1];
+                            byte r = pSrcRow[x + 2];
+                            byte a = pSrcRow[x + 3];
+
+                            if (darkenRow)
+                            {
+                                b = (byte)((b * scanlineDarkenFactor) >> 8);
+                                g = (byte)((g * scanlineDarkenFactor) >> 8);
+                                r = (byte)((r * scanlineDarkenFactor) >> 8);
+                            }
+
+                            pDstRow[x + 0] = b;
+                            pDstRow[x + 1] = g;
+                            pDstRow[x + 2] = r;
+                            pDstRow[x + 3] = forceOpaque ? (byte)0xFF : a;
                         }
                     }
                     else
