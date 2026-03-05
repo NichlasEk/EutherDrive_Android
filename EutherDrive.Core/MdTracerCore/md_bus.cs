@@ -1146,9 +1146,10 @@ namespace EutherDrive.Core.MdTracerCore
             _z80BusReqAssertFrame = -1;
             _z80BusReqAssertCountInFrame = 0;
             _z80ForceGrant = false;
-            // Match jgenesis startup signal defaults for deterministic audio CPU bring-up:
-            // BUSREQ released, RESET asserted. The game then deasserts RESET via A11200.
-            _z80Reset = md_z80.IsJgenesisCoreEnabled ? true : Z80ResetAssertOnBoot;
+            // Match jgenesis startup defaults in MD mode (RESET asserted until 68K releases it).
+            // In SMS mode there is no 68K reset choreography; asserting RESET here stalls Z80 forever.
+            bool smsMode = md_main.g_masterSystemMode || md_main.g_masterSystemRomSize > 0;
+            _z80Reset = smsMode ? false : (md_z80.IsJgenesisCoreEnabled ? true : Z80ResetAssertOnBoot);
             _sramLock = false;
             if (md_main.g_md_z80 != null)
                 md_main.g_md_z80.g_active = !_z80BusGranted && !_z80Reset;
