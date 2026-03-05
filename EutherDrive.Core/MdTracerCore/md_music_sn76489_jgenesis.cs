@@ -10,8 +10,10 @@ namespace EutherDrive.Core.MdTracerCore
         // Set EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW=0 to force silence-on-underflow.
         private static readonly bool HoldLastSampleOnUnderflow =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_HOLD_LAST_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
+        // Default on: keeps PSG continuous when producer/consumer drift causes short ring underflows.
+        // Set EUTHERDRIVE_PSG_SYNTH_ON_UNDERFLOW=0 to force strict silence-on-underflow behavior.
         private static readonly bool SynthesizeOnUnderflow =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_SYNTH_ON_UNDERFLOW"), "1", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_SYNTH_ON_UNDERFLOW"), "0", StringComparison.Ordinal);
         private static readonly int UnderflowHoldSamples = ParseUnderflowHoldSamples();
         private static readonly int MaxBufferedSamples = ParseMaxBufferedSamples();
         private static readonly bool TracePsgStuck =
@@ -24,7 +26,9 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private static WaveOutput Invert(WaveOutput value) => value == WaveOutput.Negative ? WaveOutput.Positive : WaveOutput.Negative;
-        private static double ToSampleAmplitude(WaveOutput value) => value == WaveOutput.Positive ? 1.0 : 0.0;
+        // SN76489 tone/noise output is bipolar around zero. Using 0/1 injects a large DC
+        // offset that gets perceived as muddy/farty distortion after downstream filtering.
+        private static double ToSampleAmplitude(WaveOutput value) => value == WaveOutput.Positive ? 1.0 : -1.0;
 
         private sealed class SquareWaveGenerator
         {
