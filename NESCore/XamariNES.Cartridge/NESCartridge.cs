@@ -151,6 +151,9 @@ namespace XamariNES.Cartridge
                 case 26:
                     MemoryMapper = new VRC6(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, mapperNumber, _nametableMirroring);
                     break;
+                case 69:
+                    MemoryMapper = new SunsoftFme7(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, _nametableMirroring);
+                    break;
                 default:
                     throw new Exception($"Unsupported Mapper: {mapperNumber}");
             }
