@@ -95,8 +95,10 @@ namespace EutherDrive.Core.MdTracerCore
         private readonly Queue<VdpFifoEntry> _vdpFifoPending = new Queue<VdpFifoEntry>(8);
         private readonly Queue<(uint Addr, ushort Data)> _pendingVdpWrites = new Queue<(uint, ushort)>(64);
         private bool _flushingPendingVdpWrites;
+        private int _pendingVdpWriteDelaySlots;
 
         private const int PendingVdpWriteLimit = 256;
+        private const int PendingVdpWriteDelaySlotsAfterDma = 5;
 
         private struct VdpFifoEntry
         {
@@ -135,6 +137,24 @@ namespace EutherDrive.Core.MdTracerCore
                 write16(addr, data);
             }
             _flushingPendingVdpWrites = false;
+        }
+
+        private void SchedulePendingVdpWritesAfterDma()
+        {
+            if (_pendingVdpWrites.Count == 0)
+                return;
+
+            _pendingVdpWriteDelaySlots = PendingVdpWriteDelaySlotsAfterDma;
+        }
+
+        private void ProcessPendingVdpWriteDelaySlot()
+        {
+            if (_pendingVdpWriteDelaySlots <= 0)
+                return;
+
+            _pendingVdpWriteDelaySlots--;
+            if (_pendingVdpWriteDelaySlots == 0)
+                FlushPendingVdpWrites();
         }
 
         private void EnqueueVdpFifo(ushort word, byte code, ushort address, byte autoinc)
@@ -269,7 +289,10 @@ namespace EutherDrive.Core.MdTracerCore
                 bool inBlankRefresh = blankRefresh[slotIdx];
                 if (!inBlankRefresh)
                 {
-                    if (g_dma_mode != 0 && g_dma_leng > 0 && _vdpFifo.Count == 0)
+                    // DMA progression must not depend on FIFO occupancy.
+                    // If DMA stalls behind a non-empty FIFO, CPU writes can remain buffered too long
+                    // and scroll-table updates (e.g. Contra) may get delayed/dropped.
+                    if (g_dma_mode != 0 && g_dma_leng > 0)
                     {
                         switch (g_dma_mode)
                         {
@@ -364,9 +387,38 @@ namespace EutherDrive.Core.MdTracerCore
             {
                 return SmsReadStatus();
             }
-
-            ushort w = read16(in_address);
-            return ((in_address & 1) == 0) ? (byte)(w >> 8) : (byte)w;
+            // MD VDP byte reads are decoded by low 5-bit port address.
+            // Match jgenesis behavior for the PSG/unused window: 0x0C..0x1F reads as 0xFF.
+            uint port = in_address & 0x1F;
+            switch (port)
+            {
+                case 0x00:
+                case 0x01:
+                case 0x02:
+                case 0x03:
+                {
+                    ushort data = read16(0xC00000 | (port & 0x03));
+                    return (port & 1) == 0 ? (byte)(data >> 8) : (byte)data;
+                }
+                case 0x04:
+                case 0x05:
+                case 0x06:
+                case 0x07:
+                {
+                    ushort status = read16(0xC00004 | (port & 0x03));
+                    return (port & 1) == 0 ? (byte)(status >> 8) : (byte)status;
+                }
+                case 0x08:
+                case 0x09:
+                case 0x0A:
+                case 0x0B:
+                {
+                    ushort hv = read16(0xC00008 | (port & 0x03));
+                    return (port & 1) == 0 ? (byte)(hv >> 8) : (byte)hv;
+                }
+                default:
+                    return 0xFF;
+            }
         }
 
         public ushort read16(uint in_address)
@@ -545,8 +597,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
             if (md_main.g_masterSystemMode)
             {
-                uint port = in_address & 0x00000E;
-                if (port == 0x00)
+                uint smsPort = in_address & 0x00000E;
+                if (smsPort == 0x00)
                 {
                     if (TraceSmsDataPort && _smsDataPortLogCount < 16)
                     {
@@ -557,7 +609,7 @@ namespace EutherDrive.Core.MdTracerCore
                     SmsWriteData(in_data);
                     return;
                 }
-                if (port == 0x04)
+                if (smsPort == 0x04)
                 {
                     if (TraceSmsControlPort && _smsControlPortLogCount < 16)
                     {
@@ -570,31 +622,45 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
 
-            in_address &= 0x00FF_FFFF;
-            if (!md_main.g_masterSystemMode)
-                in_address = NormalizeMdVdpPortAddress(in_address);
-
-            if (in_address <= 0xc00003)
-            {
-                if (TraceVdpData8 && TraceConsoleEnabledMemory)
-                {
-                    uint pc = md_m68k.g_reg_PC;
-                    Console.WriteLine($"[VDP-DATA8] frame={_frameCounter} addr=0x{in_address:X6} val=0x{in_data:X2} pc=0x{pc:X6}");
-                }
-                // MD VDP data port byte writes mirror the byte into a word.
-                ushort mirrored = (ushort)((in_data << 8) | in_data);
-                write16(in_address, mirrored);
+            uint a = in_address & 0x00FF_FFFF;
+            if (a < 0x00C00000u || a > 0x00DFFFFFu)
                 return;
-            }
 
-            // Default: mirror byte to both halves and use 16-bit path.
-            if ((in_address & 0x00FF_FFFF) == 0xC00004 && TraceVdpCtrl8 && TraceConsoleEnabledMemory)
-            {
-                uint pc = md_m68k.g_reg_PC;
-                Console.WriteLine($"[VDP-CTRL8] frame={_frameCounter} addr=0x{in_address:X6} val=0x{in_data:X2} pc=0x{pc:X6}");
-            }
+            // Match jgenesis byte-size decode using low 5-bit mirrored VDP port.
+            uint port = a & 0x1Fu;
             ushort w = (ushort)((in_data << 8) | in_data);
-            write16(in_address, w);
+
+            switch (port)
+            {
+                case 0x00:
+                case 0x01:
+                case 0x02:
+                case 0x03:
+                    if (TraceVdpData8 && TraceConsoleEnabledMemory)
+                    {
+                        uint pc = md_m68k.g_reg_PC;
+                        Console.WriteLine($"[VDP-DATA8] frame={_frameCounter} addr=0x{a:X6} val=0x{in_data:X2} pc=0x{pc:X6}");
+                    }
+                    write16(0x00C00000u | (port & 0x03), w);
+                    return;
+
+                case 0x04:
+                case 0x05:
+                case 0x06:
+                case 0x07:
+                    if ((port == 0x04 || port == 0x05) && TraceVdpCtrl8 && TraceConsoleEnabledMemory)
+                    {
+                        uint pc = md_m68k.g_reg_PC;
+                        Console.WriteLine($"[VDP-CTRL8] frame={_frameCounter} addr=0x{a:X6} val=0x{in_data:X2} pc=0x{pc:X6}");
+                    }
+                    write16(0x00C00004u | (port & 0x03), w);
+                    return;
+
+                // 0x11/13/15/17 (PSG) is handled in md_bus before calling VDP.
+                default:
+                    // Unused byte-write ports are ignored.
+                    return;
+            }
         }
 
         public void write16(uint in_address, ushort in_data)
@@ -770,6 +836,12 @@ namespace EutherDrive.Core.MdTracerCore
 
                 if (!g_command_select)
                 {
+                    // Always latch/decode first control word, even if this word is a register write.
+                    // Matches jgenesis behavior and fixes longword control-write edge cases.
+                    g_command_word = in_data;
+                    g_vdp_reg_dest_address = (ushort)((in_data & 0x3fff) | (g_vdp_reg_dest_address & (3 << 14)));
+                    g_vdp_reg_code = ((in_data >> 14) & 0x3) | (g_vdp_reg_code & 0x3C);
+
                     if ((in_data & 0xc000) == 0x8000)
                     {
                         // register write
@@ -792,9 +864,6 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         // address set (1st word)
                         g_command_select = true;
-                        g_command_word   = in_data;
-                        g_vdp_reg_dest_address = (ushort)((in_data & 0x3fff) | (g_vdp_reg_dest_address & (3 << 14)));
-                        g_vdp_reg_code = ((in_data >> 14) & 0x3) | (g_vdp_reg_code & 0x3C);
                     }
                 }
                 else
@@ -883,7 +952,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             uint a = address & 0x00FF_FFFF;
             // VDP port region is mirrored across 0xC00000-0xDFFFFF.
-            // Fold any mirror hit to 0xC00000-0xC0001E (word aligned).
+            // Fold any mirror hit to word-aligned 0xC00000-0xC0001E for 16/32-bit accesses.
             if (a >= 0x00C00000u && a <= 0x00DFFFFFu)
                 return 0x00C00000u | (a & 0x1Eu);
             return a & 0x00FFFFFE;

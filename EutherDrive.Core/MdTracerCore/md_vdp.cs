@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -45,6 +46,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_NO_MODE4_NAMEBASE_MASK"), "1", StringComparison.Ordinal);
 private static readonly bool SpriteLinkSequential =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SPRITE_LINK_SEQUENTIAL"), "1", StringComparison.Ordinal);
+        private static readonly bool RemoveSpriteLimit =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_REMOVE_SPRITE_LIMIT"), "1", StringComparison.Ordinal);
         private static readonly int Z80VblankIrqPulseCycles = ParseZ80VblankIrqPulseCycles();
         public int g_scanline;
         private int g_hinterrupt_counter;
@@ -212,6 +215,10 @@ private static readonly bool SpriteLinkSequential =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_RANGE_LIMIT", 200);
         private static readonly bool TraceVramRangeSkipFill =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_RANGE_SKIP_FILL"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVramRangeStartFrame =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_RANGE_START_FRAME", -1);
+        private static readonly int TraceVramRangeFrameCount =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_RANGE_FRAME_COUNT", -1);
         private static readonly bool TraceVramName =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VRAM_NAME"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVdpFrameSize =
@@ -233,6 +240,17 @@ private static readonly bool SpriteLinkSequential =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_DUMP_BASE", -1);
         private static readonly int TraceVramDumpWords =
             ParseTraceLimit("EUTHERDRIVE_TRACE_VRAM_DUMP_WORDS", 64);
+        private static readonly string? TraceHScrollWatchEnv =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_HSCROLL_WATCH");
+        private static readonly int[] TraceHScrollWatchAddresses =
+            ParseHexAddressListOrDefault(TraceHScrollWatchEnv, 0xB800, 0xB802);
+        private static readonly bool TraceHScrollWatchEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_HSCROLL_WATCH_ENABLE"), "1", StringComparison.Ordinal)
+            || !string.IsNullOrWhiteSpace(TraceHScrollWatchEnv);
+        private static readonly bool TraceHScrollWatchOnlyChanges =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_HSCROLL_WATCH_ALL"), "1", StringComparison.Ordinal);
+        private static readonly int TraceHScrollWatchLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_HSCROLL_WATCH_LIMIT", 400);
         private static int _traceVramRangeStart;
         private static int _traceVramRangeEnd;
 
@@ -249,6 +267,10 @@ private static readonly bool SpriteLinkSequential =
         private static bool ShowOverscan =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SHOW_OVERSCAN"), "1", StringComparison.Ordinal);
         private static readonly System.Diagnostics.Stopwatch _timingStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        [NonSerialized]
+        private Dictionary<int, ushort>? _traceHScrollLastValues;
+        [NonSerialized]
+        private int _traceHScrollWatchLogCount;
         private long _lastTimingLogFrame = -1;
         private long _lastTimingLogMs;
         private long _lastStateLogFrame = -1;
@@ -620,6 +642,7 @@ private static readonly bool SpriteLinkSequential =
                 for (long slot = slotStart; slot < slotEnd; slot++)
                 {
                     int slotIdx = (int)(slot & 0xFF);
+                    ProcessPendingVdpWriteDelaySlot();
                     bool inBlankRefresh = blank && blankRefresh[slotIdx];
                     if (!inBlankRefresh)
                     {
@@ -974,7 +997,8 @@ private static readonly bool SpriteLinkSequential =
             int addr = hscrollBase;
             switch (hscrollMode)
             {
-                case 2: addr += (line & 0xfff8) << 2; break;
+                case 1: addr += (line & 0x0007) << 2; break;
+                case 2: addr += (line & 0x00F8) << 2; break;
                 case 3: addr += line << 2; break;
             }
             int wordAddr = addr >> 1;
@@ -991,7 +1015,8 @@ private static readonly bool SpriteLinkSequential =
             int addr = hscrollBase;
             switch (hscrollMode)
             {
-                case 2: addr += (line & 0xfff8) << 2; break;
+                case 1: addr += (line & 0x0007) << 2; break;
+                case 2: addr += (line & 0x00F8) << 2; break;
                 case 3: addr += line << 2; break;
             }
             int wordAddr = addr >> 1;
@@ -1117,8 +1142,11 @@ private static readonly bool SpriteLinkSequential =
             g_sprite_cache_base = baseAddr;
             g_sprite_cache_size = size;
             g_sprite_table_cache = new byte[size];
+            int vramLen = g_vram.Length;
+            if (vramLen == 0)
+                return;
             for (int i = 0; i < size; i++)
-                g_sprite_table_cache[i] = g_vram[(baseAddr + i) & 0xffff];
+                g_sprite_table_cache[i] = g_vram[((baseAddr + i) & 0xFFFF) % vramLen];
 
             g_sprite_row_cache_dirty = true;
             g_sprite_row_cache_field = -1;
@@ -1128,9 +1156,12 @@ private static readonly bool SpriteLinkSequential =
         {
             if (g_sprite_cache_base < 0 || g_sprite_cache_size <= 0 || g_sprite_table_cache.Length == 0)
                 return;
+            int vramLen = g_vram.Length;
+            if (vramLen == 0)
+                return;
 
             for (int i = 0; i < g_sprite_cache_size; i++)
-                g_sprite_table_cache[i] = g_vram[(g_sprite_cache_base + i) & 0xffff];
+                g_sprite_table_cache[i] = g_vram[((g_sprite_cache_base + i) & 0xFFFF) % vramLen];
         }
 
         private void InvalidateSpriteRowCache()
@@ -1157,8 +1188,14 @@ private static readonly bool SpriteLinkSequential =
 
         private ushort ReadVramWordAligned(int addr)
         {
+            int vramLen = g_vram.Length;
+            if (vramLen == 0)
+                return 0;
+
             addr &= 0xFFFE;
-            return (ushort)((g_vram[addr] << 8) | g_vram[addr ^ 1]);
+            int hi = (addr & 0xFFFF) % vramLen;
+            int lo = ((addr ^ 1) & 0xFFFF) % vramLen;
+            return (ushort)((g_vram[hi] << 8) | g_vram[lo]);
         }
 
         private void UpdateSpriteRowCacheIfNeeded()
@@ -1532,6 +1569,24 @@ private static readonly bool SpriteLinkSequential =
 
             value &= 0xFFFF;
             return true;
+        }
+
+        private static int[] ParseHexAddressListOrDefault(string? raw, params int[] fallback)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback.Select(v => v & 0xFFFF).Distinct().ToArray();
+
+            string[] parts = raw.Split(new[] { ',', ';', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var values = new List<int>(parts.Length);
+            foreach (string part in parts)
+            {
+                if (TryParseHexU16(part, out int parsed))
+                    values.Add(parsed & 0xFFFF);
+            }
+
+            if (values.Count == 0)
+                return fallback.Select(v => v & 0xFFFF).Distinct().ToArray();
+            return values.Distinct().ToArray();
         }
 
         private void MaybeLogVdpState()
@@ -2058,6 +2113,13 @@ private static readonly bool SpriteLinkSequential =
         {
             if (TraceVramRangeEnabled && address >= _traceVramRangeStart && address <= _traceVramRangeEnd)
             {
+                if (TraceVramRangeStartFrame >= 0)
+                {
+                    int frameCount = TraceVramRangeFrameCount > 0 ? TraceVramRangeFrameCount : 1;
+                    long frameEndExclusive = (long)TraceVramRangeStartFrame + frameCount;
+                    if (_frameCounter < TraceVramRangeStartFrame || _frameCounter >= frameEndExclusive)
+                        return;
+                }
                 if (TraceVramRangeSkipFill && source == "DMA-FILL")
                     return;
                 if (_traceVramRangeLogCount < TraceVramRangeLimit)
@@ -2090,6 +2152,44 @@ private static readonly bool SpriteLinkSequential =
                 //     Console.WriteLine($"[VRAM-WATCH] frame={_frameCounter} {source} write to 0x{address:X4} value=0x{value:X4}");
                 // }
             }
+
+            MaybeTraceHScrollWatch(source, address, value, autoInc, vdpCode);
+        }
+
+        private void MaybeTraceHScrollWatch(string source, int address, ushort value, int autoInc, int vdpCode)
+        {
+            if (!TraceHScrollWatchEnabled || _traceHScrollWatchLogCount >= TraceHScrollWatchLimit)
+                return;
+            _traceHScrollLastValues ??= new Dictionary<int, ushort>();
+
+            int addr = address & 0xFFFF;
+            if (TraceHScrollWatchAddresses.Length == 0 || Array.IndexOf(TraceHScrollWatchAddresses, addr) < 0)
+                return;
+
+            bool hadPrev = _traceHScrollLastValues.TryGetValue(addr, out ushort prevValue);
+            _traceHScrollLastValues[addr] = value;
+            if (TraceHScrollWatchOnlyChanges && hadPrev && prevValue == value)
+                return;
+
+            int hscrollBase = g_vdp_reg_13_hscroll & 0xFC00;
+            int line = ((addr - hscrollBase) & 0xFFFF) >> 2;
+            int siblingAddr = (addr ^ 0x0002) & 0xFFFF;
+            ushort siblingWord = vram_read_w(siblingAddr);
+            uint pc = md_main.g_md_m68k != null ? md_m68k.g_reg_PC : 0u;
+            ushort dmaSrcWord = 0xFFFF;
+            uint a2 = md_main.g_md_m68k != null ? md_m68k.g_reg_addr[2].l : 0u;
+            ushort a2Word = 0xFFFF;
+            if (md_main.g_md_bus != null)
+            {
+                dmaSrcWord = md_main.g_md_bus.read16(g_dma_src_addr);
+                a2Word = md_main.g_md_bus.read16(a2);
+            }
+            Console.WriteLine(
+                $"[HSCROLL-WATCH] frame={_frameCounter} scanline={g_scanline} source={source} pc=0x{pc:X6} " +
+                $"dmaSrc=0x{g_dma_src_addr:X6} addr=0x{addr:X4} line={line} prev={(hadPrev ? $"0x{prevValue:X4}" : "NA")} " +
+                $"new=0x{value:X4} sib@0x{siblingAddr:X4}=0x{siblingWord:X4} srcW=0x{dmaSrcWord:X4} a2=0x{a2:X6} a2W=0x{a2Word:X4} reg11=0x{g_vdp_reg[11]:X2} reg13=0x{g_vdp_reg_13_hscroll:X4} " +
+                $"inc=0x{autoInc:X2} code=0x{vdpCode:X2}");
+            _traceHScrollWatchLogCount++;
         }
 
         private void MaybeDumpVramRange()
@@ -2223,9 +2323,10 @@ private static readonly bool SpriteLinkSequential =
                       int w_addr = hscrollBase;
                       switch (hscrollMode)
                       {
-                          case 2: w_addr += (y & 0xfff8) << 2; break; // per-8-line
+                          case 1: w_addr += (y & 0x0007) << 2; break; // invalid mode
+                          case 2: w_addr += (y & 0x00F8) << 2; break; // cell mode
                           case 3: w_addr += y << 2; break; // per-line
-                          // Mode 0 and 1: full-screen or other, use base address directly
+                          // Mode 0: full-screen, use base address directly
                       }
                       w_addr >>= 1; // Convert to word address
                       

@@ -67,7 +67,7 @@ namespace EutherDrive.Core.MdTracerCore
                     write_dma_src_addr(g_dma_src_addr);
                     break;
             }
-            FlushPendingVdpWrites();
+            SchedulePendingVdpWritesAfterDma();
         }
 
         public int dma_status_update()
@@ -162,16 +162,25 @@ namespace EutherDrive.Core.MdTracerCore
         {
             int writeAddr = g_vdp_reg_dest_address;
             ushort w_val = g_dma_fill_data;
+            byte fillByte = (byte)(w_val >> 8);
             int code = g_vdp_reg_code & 0x0f;
             switch (code)
             {
                 case 1:
-                    vram_write_w(writeAddr, w_val);
-                    pattern_chk(writeAddr, (byte)(w_val >> 8));
-                    pattern_chk(writeAddr ^ 1, (byte)(w_val & 0xff));
-                    this.RecordVramWriteForTracking(writeAddr, w_val);
-                    this.LogVramWrite("DMA-FILL", writeAddr & 0xFFFF, w_val, g_vdp_reg_15_autoinc, g_vdp_reg_code);
+                {
+                    // Match jgenesis/hardware behavior: VRAM fill writes only the MSB byte
+                    // to address^1 for each fill step.
+                    int byteAddr = (writeAddr ^ 1) & 0xFFFF;
+                    g_vram[byteAddr] = fillByte;
+                    pattern_chk(byteAddr, fillByte);
+                    UpdateSpriteCacheByte(byteAddr, fillByte);
+                    int alignedAddr = writeAddr & 0xFFFE;
+                    ushort mergedWord = (ushort)((g_vram[alignedAddr] << 8) | g_vram[alignedAddr ^ 1]);
+                    this.RecordVramWriteForTracking(alignedAddr, mergedWord);
+                    this.TrackScrollRegionWrite(alignedAddr);
+                    this.LogVramWrite("DMA-FILL", alignedAddr, mergedWord, g_vdp_reg_15_autoinc, g_vdp_reg_code);
                     break;
+                }
                 case 3:
                     cram_set((writeAddr >> 1) & 0x3f, w_val);
                     break;
@@ -181,6 +190,7 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
             }
 
+            g_dma_src_addr += 2;
             g_dma_leng--;
             g_vdp_reg_dest_address = (ushort)((writeAddr + g_vdp_reg_15_autoinc) & 0xffff);
         }
@@ -415,21 +425,25 @@ namespace EutherDrive.Core.MdTracerCore
             
             while (true)
             {
-                // Write fill word to destination
+                // Match jgenesis/hardware behavior:
+                // VRAM fill writes only one byte (MSB of fill word) to addr^1 each step.
                 switch (g_vdp_reg_code & 0x0f)
                 {
                     case 1: // VRAM
-                        vram_write_w(currentAddr, g_dma_fill_data);
-                        pattern_chk(currentAddr, (byte)(g_dma_fill_data >> 8));
-                        pattern_chk(currentAddr ^ 1, (byte)(g_dma_fill_data & 0xff));
-                        this.RecordVramWriteForTracking(currentAddr, g_dma_fill_data);
-                        this.TrackScrollRegionWrite(currentAddr & 0xFFFF);
-                        this.LogVramWrite("DMA-FILL", currentAddr, g_dma_fill_data, g_vdp_reg_15_autoinc, g_vdp_reg_code);
+                        int byteAddr = (currentAddr ^ 1) & 0xFFFF;
+                        g_vram[byteAddr] = w_fill_data;
+                        pattern_chk(byteAddr, w_fill_data);
+                        UpdateSpriteCacheByte(byteAddr, w_fill_data);
+                        int alignedAddr = currentAddr & 0xFFFE;
+                        ushort mergedWord = (ushort)((g_vram[alignedAddr] << 8) | g_vram[alignedAddr ^ 1]);
+                        this.RecordVramWriteForTracking(alignedAddr, mergedWord);
+                        this.TrackScrollRegionWrite(alignedAddr);
+                        this.LogVramWrite("DMA-FILL", alignedAddr, mergedWord, g_vdp_reg_15_autoinc, g_vdp_reg_code);
                         
                         // Debug logging for first 8 writes
                         if (TraceDmaDetail && debugWriteCount < 8 && _frameCounter < 100)
                         {
-                            Console.WriteLine($"[DMA-FILL-WRITE-{debugWriteCount}] addr=0x{currentAddr:X4} val=0x{g_dma_fill_data:X4} reg15=0x{g_vdp_reg_15_autoinc:X2} nextAddr=0x{(currentAddr + g_vdp_reg_15_autoinc):X4}");
+                            Console.WriteLine($"[DMA-FILL-WRITE-{debugWriteCount}] addr=0x{currentAddr:X4} byteAddr=0x{byteAddr:X4} fill=0x{w_fill_data:X2} merged=0x{mergedWord:X4} reg15=0x{g_vdp_reg_15_autoinc:X2} nextAddr=0x{(currentAddr + g_vdp_reg_15_autoinc):X4}");
                             debugWriteCount++;
                         }
                         break;
@@ -443,6 +457,9 @@ namespace EutherDrive.Core.MdTracerCore
                         break;
                 }
                 
+                // Source address increments during VRAM fill (hardware-compatible behavior)
+                g_dma_src_addr += 2;
+
                 // Increment address with auto-increment
                 currentAddr = (ushort)((currentAddr + g_vdp_reg_15_autoinc) & 0xffff);
                 
@@ -485,7 +502,8 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.Write($"[DMA-COPY-SRC-DUMP] src=0x{g_dma_src_addr:X4}: ");
                 for (int i = 0; i < 32 && i < g_dma_leng * 2; i += 2)
                 {
-                    ushort val = g_vram[(g_dma_src_addr + i) & 0xFFFF];
+                    int srcAddr = (int)((g_dma_src_addr + (uint)i) & 0xFFFF);
+                    ushort val = (ushort)((g_vram[srcAddr] << 8) | g_vram[(srcAddr + 1) & 0xFFFF]);
                     Console.Write($"{val:X4} ");
                 }
                 Console.WriteLine();
@@ -502,8 +520,9 @@ namespace EutherDrive.Core.MdTracerCore
             
             while (true)
             {
-                // Read from source VRAM
-                ushort w_val = g_vram[currentSrc & 0xFFFF];
+                // Read a full source word from VRAM.
+                // Byte-only reads here can collapse data to 0x00xx and corrupt scroll tables.
+                ushort w_val = (ushort)((g_vram[currentSrc & 0xFFFF] << 8) | g_vram[(currentSrc + 1) & 0xFFFF]);
                 
                 // Write to destination VRAM
                 vram_write_w(currentDest, w_val);
@@ -520,8 +539,9 @@ namespace EutherDrive.Core.MdTracerCore
                     debugWriteCount++;
                 }
                 
-                // Increment source and destination with auto-increment
-                currentSrc = (ushort)((currentSrc + g_vdp_reg_15_autoinc) & 0xffff);
+                // Keep source stepping wordwise (matches existing DmaStepCopy behavior).
+                // Destination still follows VDP auto-increment.
+                currentSrc = (ushort)((currentSrc + 2) & 0xffff);
                 currentDest = (ushort)((currentDest + g_vdp_reg_15_autoinc) & 0xffff);
                 
                 // Decrement and wrap: --length, length &= 0xFFFF
