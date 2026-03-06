@@ -4267,72 +4267,82 @@ public partial class MainWindow : Window
     {
         if (_core == null)
             return;
-        MaybeUpdateStatusText();
-        long tickStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
-
-        if (_tickTraceEnabled && (++_tickTraceCount % 60) == 0)
-            Console.WriteLine("[UI] Tick " + _tickTraceCount);
-
-        // rendera frame
-        var core = _core;
-        if (_renderSkipEnabled)
+        try
         {
-            double emuFps = Volatile.Read(ref _emuActualFps);
-            double targetFps = GetLiveTargetFps();
-            if (emuFps > (targetFps * 1.02))
+            MaybeUpdateStatusText();
+            long tickStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
+
+            if (_tickTraceEnabled && (++_tickTraceCount % 60) == 0)
+                Console.WriteLine("[UI] Tick " + _tickTraceCount);
+
+            // rendera frame
+            var core = _core;
+            if (_renderSkipEnabled)
             {
-                _renderSkipCounter++;
-                if ((_renderSkipCounter & 1) == 1)
-                    return;
+                double emuFps = Volatile.Read(ref _emuActualFps);
+                double targetFps = GetLiveTargetFps();
+                if (emuFps > (targetFps * 1.02))
+                {
+                    _renderSkipCounter++;
+                    if ((_renderSkipCounter & 1) == 1)
+                        return;
+                }
+                else
+                {
+                    _renderSkipCounter = 0;
+                }
+            }
+            if (Dispatcher.UIThread.CheckAccess())
+            {
+                RenderFrame(core);
             }
             else
             {
-                _renderSkipCounter = 0;
+                _pendingPresentCore = core;
+                Dispatcher.UIThread.Post(_presentOnUiAction);
             }
-        }
-        if (Dispatcher.UIThread.CheckAccess())
-        {
-            RenderFrame(core);
-        }
-        else
-        {
-            _pendingPresentCore = core;
-            Dispatcher.UIThread.Post(_presentOnUiAction);
-        }
 
-        if (TracePerf)
-            PerfHotspots.Add(PerfHotspot.UiTick, Stopwatch.GetTimestamp() - tickStart);
+            if (TracePerf)
+                PerfHotspots.Add(PerfHotspot.UiTick, Stopwatch.GetTimestamp() - tickStart);
 
-        // fps
-        _frames++;
-        if (_fpsSw.ElapsedMilliseconds >= 1000)
-        {
-            FpsText.Text = $"FPS: {_frames}";
-            double emuFps = Volatile.Read(ref _emuActualFps);
-            EmuFpsText.Text = $"Emu FPS: {emuFps:0.0}";
-            _frames = 0;
-            _fpsSw.Restart();
-        }
-
-        if (_core is EutherDrive.Core.Savestates.ISavestateCapable savestateCore)
-        {
-            long frame = savestateCore.FrameCounter ?? -1;
-            FrameText.Text = $"Frame: {frame}";
-        }
-
-        if (ResolutionText != null)
-        {
-            if (_lastPresentedWidth > 0 && _lastPresentedHeight > 0)
-                ResolutionText.Text = $"Resolution: {_lastPresentedWidth}x{_lastPresentedHeight}";
-            else if (_core != null)
+            // fps
+            _frames++;
+            if (_fpsSw.ElapsedMilliseconds >= 1000)
             {
-                _ = _core.GetFrameBuffer(out int w, out int h, out _);
-                ResolutionText.Text = w > 0 && h > 0 ? $"Resolution: {w}x{h}" : "Resolution: -";
+                FpsText.Text = $"FPS: {_frames}";
+                double emuFps = Volatile.Read(ref _emuActualFps);
+                EmuFpsText.Text = $"Emu FPS: {emuFps:0.0}";
+                _frames = 0;
+                _fpsSw.Restart();
             }
-            else
+
+            if (_core is EutherDrive.Core.Savestates.ISavestateCapable savestateCore)
             {
-                ResolutionText.Text = "Resolution: -";
+                long frame = savestateCore.FrameCounter ?? -1;
+                FrameText.Text = $"Frame: {frame}";
             }
+
+            if (ResolutionText != null)
+            {
+                if (_lastPresentedWidth > 0 && _lastPresentedHeight > 0)
+                    ResolutionText.Text = $"Resolution: {_lastPresentedWidth}x{_lastPresentedHeight}";
+                else if (_core != null)
+                {
+                    _ = _core.GetFrameBuffer(out int w, out int h, out _);
+                    ResolutionText.Text = w > 0 && h > 0 ? $"Resolution: {w}x{h}" : "Resolution: -";
+                }
+                else
+                {
+                    ResolutionText.Text = "Resolution: -";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("[UI] Tick exception: " + ex);
+            StatusText.Text = $"Tick failed: {ex.GetType().Name}: {ex.Message}";
+            _timer.Stop();
+            _emuRunning = false;
         }
     }
 
@@ -5298,6 +5308,7 @@ public partial class MainWindow : Window
             return;
 
         _emuRunning = true;
+        Console.WriteLine($"[EmuLoop] Starting thread for core={_core.GetType().Name}");
         _emuThread = new Thread(EmuLoop)
         {
             IsBackground = true,
@@ -5319,6 +5330,7 @@ public partial class MainWindow : Window
 
     private void EmuLoop()
     {
+        Console.WriteLine("[EmuLoop] Thread entered");
         double targetFps = GetLiveTargetFps();
         double ticksPerFrame = Stopwatch.Frequency / targetFps;
         double nextTick = Stopwatch.GetTimestamp();
@@ -5355,6 +5367,7 @@ public partial class MainWindow : Window
         int uiVideoStableFrames = 0;
         bool uiVideoHangReported = false;
         bool uiVideoTripwireReported = false;
+        bool emuLoopFirstFrameLogged = false;
         long uiMdTraceFrame = 0;
         int uiMdTraceEvery = 1;
         {
@@ -5493,6 +5506,15 @@ public partial class MainWindow : Window
                         _uiProfileAudioTicks += Stopwatch.GetTimestamp() - audioStart;
                 }
 
+                if (!emuLoopFirstFrameLogged)
+                {
+                    emuLoopFirstFrameLogged = true;
+                    long frame = -1;
+                    if (core is EutherDrive.Core.Savestates.ISavestateCapable sc && sc.FrameCounter.HasValue)
+                        frame = sc.FrameCounter.Value;
+                    Console.WriteLine($"[EmuLoop] First frame completed (frame={frame})");
+                }
+
                 if (core is MdTracerAdapter mdCore)
                 {
                     uint m68kPc = mdCore.GetM68kPc();
@@ -5609,8 +5631,13 @@ public partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                if (TraceUiRender)
-                    Console.WriteLine("[EmuLoop] RunFrame exception: " + ex);
+                Console.WriteLine("[EmuLoop] RunFrame exception: " + ex);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    StatusText.Text = $"EmuLoop failed: {ex.GetType().Name}: {ex.Message}";
+                });
+                _emuRunning = false;
+                break;
             }
 
             ProducePsgForFrame();
@@ -5679,6 +5706,7 @@ public partial class MainWindow : Window
 
         uiMdTraceWriter?.Flush();
         uiMdTraceWriter?.Dispose();
+        Console.WriteLine("[EmuLoop] Thread exiting");
     }
 
     private void CatchUpAudio(IEmulatorCore core)

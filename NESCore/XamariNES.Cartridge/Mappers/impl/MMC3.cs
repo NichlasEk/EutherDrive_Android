@@ -26,6 +26,8 @@ namespace XamariNES.Cartridge.Mappers.impl
         private readonly byte[] _bankRegs = new byte[8];
         private bool _prgMode;
         private bool _chrMode;
+        private bool _prgRamEnabled = true;
+        private bool _prgRamWriteProtect;
 
         private byte _irqLatch;
         private byte _irqCounter;
@@ -34,7 +36,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         private bool _irqPending;
         private bool _lastA12;
         private long _lastA12LowCycle = -100000;
-        private readonly bool _useScanlineClock = true;
+        private readonly bool _useScanlineClock = false;
 
         public enumNametableMirroring NametableMirroring { get; set; }
 
@@ -65,7 +67,11 @@ namespace XamariNES.Cartridge.Mappers.impl
                 return ReadInterceptors.TryGetValue(offset, out currentReadInterceptor) ? currentReadInterceptor(offset) : (byte)0x00;
 
             if (offset >= 0x6000 && offset <= 0x7FFF)
-                return _prgRam[offset - 0x6000];
+            {
+                if (_prgRamEnabled)
+                    return _prgRam[offset - 0x6000];
+                return 0x00;
+            }
 
             if (offset >= 0x8000 && offset <= 0xFFFF)
             {
@@ -96,6 +102,9 @@ namespace XamariNES.Cartridge.Mappers.impl
 
             if (offset >= 0x6000 && offset <= 0x7FFF)
             {
+                if (!_prgRamEnabled || _prgRamWriteProtect)
+                    return;
+
                 int idx = (offset - 0x6000) % _prgRam.Length;
                 if (_prgRam[idx] != data)
                 {
@@ -135,7 +144,8 @@ namespace XamariNES.Cartridge.Mappers.impl
                         : enumNametableMirroring.Vertical;
                     break;
                 case 0xA001:
-                    // PRG RAM protect - ignored for now
+                    _prgRamWriteProtect = data.IsBitSet(6);
+                    _prgRamEnabled = data.IsBitSet(7);
                     break;
                 case 0xC000:
                     _irqLatch = data;
