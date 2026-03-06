@@ -115,8 +115,26 @@ namespace XamariNES.Cartridge
             //Load CHR ROM
             Array.Copy(ROM, prgROMOffset+prgROMSize, _chrRom, 0, chrROMSize);
 
+            // Load mapper number/submapper (supports NES 2.0 submapper for mapper variants).
+            bool isNes2 = (Flags7 & 0x0C) == 0x08;
+            int mapperNumber = Flags7 & 0xF0 | (Flags6 >> 4 & 0xF);
+            int subMapperNumber = 0;
+            if (isNes2 && ROM.Length > 8)
+            {
+                mapperNumber |= (ROM[8] & 0x0F) << 8;
+                subMapperNumber = (ROM[8] >> 4) & 0x0F;
+            }
+
+            // iNES headers usually don't specify mapper 30 CHR RAM size; use 32KB default.
+            if (mapperNumber == 30 && UsesCHRRAM && _chrRom.Length < 32768)
+            {
+                _chrRom = new byte[32768];
+            }
+            _logger.Info($"NES header parsed: isNes2={isNes2} mapper={mapperNumber} subMapper={subMapperNumber}");
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_M16"), "1", StringComparison.Ordinal))
+                Console.WriteLine($"[NES-HDR] isNes2={isNes2} mapper={mapperNumber} subMapper={subMapperNumber}");
+
             //Load Proper Mapper
-            var mapperNumber = Flags7 & 0xF0 | (Flags6 >> 4 & 0xF);
             switch (mapperNumber)
             {
                 case 0:
@@ -144,15 +162,99 @@ namespace XamariNES.Cartridge
                     MemoryMapper = new MMC5(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, _nametableMirroring);
                     break;
                 }
+                case 7:
+                    MemoryMapper = new AxROM(_prgRom, _chrRom);
+                    break;
+                case 9:
+                    MemoryMapper = new MMC2(_prgRom, _chrRom, prgRAMSize, false, _nametableMirroring);
+                    break;
+                case 10:
+                    MemoryMapper = new MMC2(_prgRom, _chrRom, prgRAMSize, true, _nametableMirroring);
+                    break;
+                case 11:
+                case 66:
+                case 140:
+                    MemoryMapper = new GxROM(_prgRom, _chrRom, mapperNumber, _nametableMirroring);
+                    break;
                 case 16:
-                    MemoryMapper = new BandaiFcg(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, _nametableMirroring);
+                case 153:
+                case 159:
+                    MemoryMapper = new BandaiFcg(
+                        _prgRom,
+                        _chrRom,
+                        UsesCHRRAM,
+                        prgRAMSize,
+                        batteryBacked,
+                        _nametableMirroring,
+                        mapperNumber,
+                        subMapperNumber);
+                    break;
+                case 19:
+                    MemoryMapper = new Namco163(
+                        _prgRom,
+                        _chrRom,
+                        UsesCHRRAM,
+                        prgRAMSize,
+                        batteryBacked,
+                        subMapperNumber,
+                        _nametableMirroring);
+                    break;
+                case 21:
+                case 22:
+                case 23:
+                case 25:
+                    MemoryMapper = new VRC4(
+                        _prgRom,
+                        _chrRom,
+                        UsesCHRRAM,
+                        prgRAMSize,
+                        mapperNumber,
+                        subMapperNumber,
+                        _nametableMirroring);
+                    break;
+                case 30:
+                    MemoryMapper = new Unrom512(
+                        _prgRom,
+                        _chrRom,
+                        batteryBacked,
+                        Flags6.IsFlagSet(Byte6Flags.FourScreenVRAM),
+                        _nametableMirroring);
+                    break;
+                case 34:
+                    MemoryMapper = new BNROM(_prgRom, _chrRom, prgRAMSize, _nametableMirroring);
+                    break;
+                case 71:
+                    MemoryMapper = new UxROM(_prgRom, _prgRomBanks, _chrRom, _nametableMirroring);
                     break;
                 case 24:
                 case 26:
                     MemoryMapper = new VRC6(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, mapperNumber, _nametableMirroring);
                     break;
+                case 76:
+                case 88:
+                case 95:
+                case 154:
+                case 206:
+                    MemoryMapper = new MMC3(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, _nametableMirroring);
+                    break;
                 case 69:
                     MemoryMapper = new SunsoftFme7(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, _nametableMirroring);
+                    break;
+                case 85:
+                    MemoryMapper = new VRC7(
+                        _prgRom,
+                        _chrRom,
+                        UsesCHRRAM,
+                        prgRAMSize,
+                        batteryBacked,
+                        subMapperNumber,
+                        _nametableMirroring);
+                    break;
+                case 210:
+                    MemoryMapper = new Namco175(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, subMapperNumber, _nametableMirroring);
+                    break;
+                case 228:
+                    MemoryMapper = new Action52(_prgRom, _chrRom);
                     break;
                 default:
                     throw new Exception($"Unsupported Mapper: {mapperNumber}");
