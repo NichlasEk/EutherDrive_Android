@@ -36,7 +36,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         private bool _irqPending;
         private bool _lastA12;
         private long _lastA12LowCycle = -100000;
-        private readonly bool _useScanlineClock = false;
+        private readonly bool _useScanlineClock = true;
 
         public enumNametableMirroring NametableMirroring { get; set; }
 
