@@ -235,6 +235,7 @@
         <CheckBox Content="Interlace Test Mode (448px)" IsChecked="False" Name="InterlaceTestCheck" Checked="OnInterlaceTestToggle" Unchecked="OnInterlaceTestToggle"/>
         <CheckBox Content="Static (no flicker)" IsChecked="True" Name="InterlaceStaticCheck" Checked="OnInterlaceStaticToggle" Unchecked="OnInterlaceStaticToggle" IsEnabled="False"/>
         <CheckBox Content="Sharp Pixels" IsChecked="True" Name="SharpPixelsCheck" Checked="OnSharpPixelsToggle" Unchecked="OnSharpPixelsToggle"/>
+        <CheckBox Content="Advanced Pixel Filter" IsChecked="False" Name="AdvancedPixelFilterCheck" Checked="OnAdvancedPixelFilterToggle" Unchecked="OnAdvancedPixelFilterToggle"/>
         <CheckBox Content="CRT Scanlines" IsChecked="False" Name="CrtScanlinesCheck" Checked="OnCrtScanlinesToggle" Unchecked="OnCrtScanlinesToggle"/>
         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
           <TextBlock Text="Scanline Strength" VerticalAlignment="Center"/>

@@ -101,6 +101,7 @@ public partial class MainWindow : Window
     private bool _pad2MirrorEnabled;
     private bool _inputTraceEnabled;
     private bool _sharpPixelsEnabled = true;
+    private bool _advancedPixelFilterEnabled;
     private bool _crtScanlinesEnabled;
     private int _crtScanlineStrengthPercent = DefaultCrtScanlineStrengthPercent;
     private bool _updatingCrtScanlineUi;
@@ -375,6 +376,7 @@ public partial class MainWindow : Window
         UpdateSmsOverscanUi();
         UpdateSegaCdOptionsUi();
         UpdateSharpPixelsUi();
+        UpdateAdvancedPixelFilterUi();
         UpdateCrtScanlinesUi();
 
         // Initialize timer
@@ -897,6 +899,14 @@ public partial class MainWindow : Window
     {
         _sharpPixelsEnabled = SharpPixelsCheck?.IsChecked != false;
         UpdateSharpPixelsUi();
+        UpdateAdvancedPixelFilterUi();
+        SaveSettings();
+    }
+
+    private void OnAdvancedPixelFilterToggle(object? sender, RoutedEventArgs e)
+    {
+        _advancedPixelFilterEnabled = AdvancedPixelFilterCheck?.IsChecked == true;
+        UpdateAdvancedPixelFilterUi();
         SaveSettings();
     }
 
@@ -926,6 +936,15 @@ public partial class MainWindow : Window
         RenderOptions.SetBitmapInterpolationMode(
             ScreenImage,
             _sharpPixelsEnabled ? BitmapInterpolationMode.None : BitmapInterpolationMode.MediumQuality);
+    }
+
+    private void UpdateAdvancedPixelFilterUi()
+    {
+        if (AdvancedPixelFilterCheck != null)
+        {
+            AdvancedPixelFilterCheck.IsChecked = _advancedPixelFilterEnabled;
+            AdvancedPixelFilterCheck.IsEnabled = _sharpPixelsEnabled;
+        }
     }
 
     private void UpdateCrtScanlinesUi()
@@ -3011,6 +3030,7 @@ public partial class MainWindow : Window
         public double SpeedScale { get; set; } = 1.0;
         public bool SmsOverscanEnabled { get; set; } = false;
         public bool SharpPixelsEnabled { get; set; } = true;
+        public bool AdvancedPixelFilterEnabled { get; set; } = false;
         public bool CrtScanlinesEnabled { get; set; } = false;
         public int CrtScanlineStrengthPercent { get; set; } = DefaultCrtScanlineStrengthPercent;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
@@ -3040,6 +3060,7 @@ public partial class MainWindow : Window
         public double SpeedScale { get; set; } = 1.0;
         public bool SmsOverscanEnabled { get; set; } = false;
         public bool SharpPixelsEnabled { get; set; } = true;
+        public bool AdvancedPixelFilterEnabled { get; set; } = false;
         public bool CrtScanlinesEnabled { get; set; } = false;
         public int CrtScanlineStrengthPercent { get; set; } = DefaultCrtScanlineStrengthPercent;
         public string? DefaultRegionOverride { get; set; }
@@ -3146,6 +3167,7 @@ public partial class MainWindow : Window
         _speedScale = settings.SpeedScale > 0 ? settings.SpeedScale : 1.0;
         _smsOverscanEnabled = settings.SmsOverscanEnabled;
         _sharpPixelsEnabled = settings.SharpPixelsEnabled;
+        _advancedPixelFilterEnabled = settings.AdvancedPixelFilterEnabled;
         _crtScanlinesEnabled = settings.CrtScanlinesEnabled;
         _crtScanlineStrengthPercent = ClampPercent(settings.CrtScanlineStrengthPercent);
 
@@ -3196,6 +3218,7 @@ public partial class MainWindow : Window
         UpdateRenderSkipUi();
         UpdateSpeedUi();
         UpdateSharpPixelsUi();
+        UpdateAdvancedPixelFilterUi();
         UpdateCrtScanlinesUi();
     }
 
@@ -3264,6 +3287,7 @@ public partial class MainWindow : Window
             SpeedScale = _speedScale,
             SmsOverscanEnabled = _smsOverscanEnabled,
             SharpPixelsEnabled = _sharpPixelsEnabled,
+            AdvancedPixelFilterEnabled = _advancedPixelFilterEnabled,
             CrtScanlinesEnabled = _crtScanlinesEnabled,
             CrtScanlineStrengthPercent = _crtScanlineStrengthPercent,
             DefaultRegionOverride = _defaultRegionOverride,
@@ -3348,6 +3372,7 @@ public partial class MainWindow : Window
             SpeedScale = settings.SpeedScale,
             SmsOverscanEnabled = settings.SmsOverscanEnabled,
             SharpPixelsEnabled = settings.SharpPixelsEnabled,
+            AdvancedPixelFilterEnabled = settings.AdvancedPixelFilterEnabled,
             CrtScanlinesEnabled = settings.CrtScanlinesEnabled,
             CrtScanlineStrengthPercent = settings.CrtScanlineStrengthPercent,
             DefaultRegionOverride = settings.DefaultRegionOverride.ToString(),
@@ -3431,6 +3456,7 @@ public partial class MainWindow : Window
             SpeedScale = raw.SpeedScale,
             SmsOverscanEnabled = raw.SmsOverscanEnabled,
             SharpPixelsEnabled = raw.SharpPixelsEnabled,
+            AdvancedPixelFilterEnabled = raw.AdvancedPixelFilterEnabled,
             CrtScanlinesEnabled = raw.CrtScanlinesEnabled,
             CrtScanlineStrengthPercent = raw.CrtScanlineStrengthPercent
         };
@@ -5039,6 +5065,7 @@ public partial class MainWindow : Window
 
         bool forceOpaque = ForceOpaqueCheck?.IsChecked == true;
         bool applyScanlines = _crtScanlinesEnabled;
+        bool applyAdvancedPixelFilter = _sharpPixelsEnabled && _advancedPixelFilterEnabled;
         int scanlineStrength = ClampPercent(_crtScanlineStrengthPercent);
         int scanlineDarkenFactor = 256 - ((scanlineStrength * 256) / 100);
 
@@ -5053,10 +5080,23 @@ public partial class MainWindow : Window
                 Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} srcPtr=0x{(nint)pSrc0:X} size={w}x{h} stride={srcStride} bytes={src.Length}");
             }
 
-            if (copyBytesPerRow == srcStride && copyBytesPerRow == dstStride && !forceOpaque && !applyScanlines)
+            if (copyBytesPerRow == srcStride && copyBytesPerRow == dstStride && !forceOpaque && !applyScanlines && !applyAdvancedPixelFilter)
             {
                 long totalBytes = (long)copyBytesPerRow * h;
                 Buffer.MemoryCopy(pSrc0, pDst0, totalBytes, totalBytes);
+            }
+            else if (applyAdvancedPixelFilter)
+            {
+                BlitAdvancedPixelFilter(
+                    pSrc0,
+                    pDst0,
+                    h,
+                    srcStride,
+                    dstStride,
+                    copyBytesPerRow,
+                    forceOpaque,
+                    applyScanlines,
+                    scanlineDarkenFactor);
             }
             else
             {
@@ -5118,6 +5158,98 @@ public partial class MainWindow : Window
         if (TraceUiProfile)
             _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
     }
+
+    private static unsafe void BlitAdvancedPixelFilter(
+        byte* pSrc0,
+        byte* pDst0,
+        int height,
+        int srcStride,
+        int dstStride,
+        int copyBytesPerRow,
+        bool forceOpaque,
+        bool applyScanlines,
+        int scanlineDarkenFactor)
+    {
+        for (int y = 0; y < height; y++)
+        {
+            byte* pSrcRow = pSrc0 + (y * srcStride);
+            byte* pSrcRowUp = pSrc0 + ((y > 0 ? (y - 1) : y) * srcStride);
+            byte* pSrcRowDown = pSrc0 + ((y + 1 < height ? (y + 1) : y) * srcStride);
+            byte* pDstRow = pDst0 + (y * dstStride);
+            bool darkenRow = applyScanlines && ((y & 1) == 1);
+
+            for (int x = 0; x < copyBytesPerRow; x += 4)
+            {
+                int xLeft = x > 0 ? x - 4 : x;
+                int xRight = x + 4 < copyBytesPerRow ? x + 4 : x;
+
+                byte cb = pSrcRow[x + 0];
+                byte cg = pSrcRow[x + 1];
+                byte cr = pSrcRow[x + 2];
+                byte ca = pSrcRow[x + 3];
+
+                byte lb = pSrcRow[xLeft + 0];
+                byte lg = pSrcRow[xLeft + 1];
+                byte lr = pSrcRow[xLeft + 2];
+
+                byte rb = pSrcRow[xRight + 0];
+                byte rg = pSrcRow[xRight + 1];
+                byte rr = pSrcRow[xRight + 2];
+
+                byte ub = pSrcRowUp[x + 0];
+                byte ug = pSrcRowUp[x + 1];
+                byte ur = pSrcRowUp[x + 2];
+
+                byte db = pSrcRowDown[x + 0];
+                byte dg = pSrcRowDown[x + 1];
+                byte dr = pSrcRowDown[x + 2];
+
+                int cY = Luma(cr, cg, cb);
+                int edge = Math.Abs(cY - Luma(lr, lg, lb))
+                    + Math.Abs(cY - Luma(rr, rg, rb))
+                    + Math.Abs(cY - Luma(ur, ug, ub))
+                    + Math.Abs(cY - Luma(dr, dg, db));
+
+                int gain256 = edge > 96 ? 160 : edge > 48 ? 112 : 72;
+
+                byte b = AdaptiveSharpenChannel(cb, lb, rb, ub, db, gain256);
+                byte g = AdaptiveSharpenChannel(cg, lg, rg, ug, dg, gain256);
+                byte r = AdaptiveSharpenChannel(cr, lr, rr, ur, dr, gain256);
+
+                if (darkenRow)
+                {
+                    b = (byte)((b * scanlineDarkenFactor) >> 8);
+                    g = (byte)((g * scanlineDarkenFactor) >> 8);
+                    r = (byte)((r * scanlineDarkenFactor) >> 8);
+                }
+
+                pDstRow[x + 0] = b;
+                pDstRow[x + 1] = g;
+                pDstRow[x + 2] = r;
+                pDstRow[x + 3] = forceOpaque ? (byte)0xFF : ca;
+            }
+        }
+    }
+
+    private static byte AdaptiveSharpenChannel(byte c, byte l, byte r, byte u, byte d, int gain256)
+    {
+        int center = c;
+        int blur = ((center * 4) + l + r + u + d) >> 3;
+        int detail = center - blur;
+        int sharpened = center + ((detail * gain256) >> 8);
+
+        int minN = Math.Min(center, Math.Min(Math.Min(l, r), Math.Min(u, d)));
+        int maxN = Math.Max(center, Math.Max(Math.Max(l, r), Math.Max(u, d)));
+
+        int low = Math.Max(0, minN - 6);
+        int high = Math.Min(255, maxN + 6);
+        if (sharpened < low) sharpened = low;
+        if (sharpened > high) sharpened = high;
+        return (byte)sharpened;
+    }
+
+    private static int Luma(byte r, byte g, byte b)
+        => ((77 * r) + (150 * g) + (29 * b)) >> 8;
 
     private void ApplyPsxAspectIfNeeded(IEmulatorCore core, int width, int height)
     {
