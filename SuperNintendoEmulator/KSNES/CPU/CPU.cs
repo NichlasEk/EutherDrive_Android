@@ -195,13 +195,13 @@ public class CPU : ICPU
         _br[SP] = 0x1FF;
         _n = false;
         _v = false;
-        _m = true;
-        _x = true;
         _d = false;
         _i = true;
         _z = false;
         _c = false;
         _e = !StartInNativeMode;
+        _m = !StartInNativeMode;
+        _x = !StartInNativeMode;
         IrqWanted = false;
         NmiWanted = false;
         _aboWanted = false;
