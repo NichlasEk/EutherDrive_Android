@@ -53,6 +53,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         /// <returns></returns>
         public byte ReadByte(int offset)
         {
+            offset &= 0xFFFF;
             // CHR ROM
             if (offset < 0x2000)
                 return _chrRom[offset];
@@ -83,6 +84,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         /// <param name="data"></param>
         public void WriteByte(int offset, byte data)
         {
+            offset &= 0xFFFF;
             //CHR ROM+RAM Writes
             if (offset < 0x2000)
             {
@@ -103,10 +105,16 @@ namespace XamariNES.Cartridge.Mappers.impl
             if (offset >= 0x6000 && offset <= 0x7FFF)
                 return;
 
+            // Typically open bus / board-specific area; ignore writes.
+            if (offset >= 0x4020 && offset <= 0x5FFF)
+                return;
+
             //Bank Select
-            if (offset >= 0xC000 && offset <= 0xFFFF)
+            if (offset >= 0x8000 && offset <= 0xFFFF)
             {
-                _prgBank0Offset = (data & 0x0F) * 0x4000;
+                int prgBanks16k = Math.Max(1, _prgRom.Length / 0x4000);
+                int bank = (data & 0x0F) % prgBanks16k;
+                _prgBank0Offset = bank * 0x4000;
                 return;
             }
 
