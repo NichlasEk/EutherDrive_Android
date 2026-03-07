@@ -99,11 +99,11 @@ namespace EutherDrive.Core.MdTracerCore
             // Init PC/SP från vektor-tabellen (0=initial SP, 4=initial PC)
             uint initialSpRaw = read32(0);
             uint initialPcRaw = read32(4);
-            uint initialSp = initialSpRaw & 0x00FFFFFF;
+            uint initialSp = initialSpRaw;
             uint initialPc = initialPcRaw & 0x00FFFFFF;
 
             Console.WriteLine($"[m68k-reset] vectors: SP=0x{initialSpRaw:X8} PC=0x{initialPcRaw:X8}");
-            if (initialSp != initialSpRaw || initialPc != initialPcRaw)
+            if (initialPc != initialPcRaw)
                 Console.WriteLine($"[m68k-reset] vectors (24-bit): SP=0x{initialSp:X8} PC=0x{initialPc:X8}");
 
             // Real 68000 behavior is to use the vector as-is, even when it is 0.
