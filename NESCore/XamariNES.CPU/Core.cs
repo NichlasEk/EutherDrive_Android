@@ -75,8 +75,8 @@ namespace XamariNES.CPU
         private int _traceIrqCount;
 
         /// <summary>
-        ///     Used to signal the CPU that an NMI has occured
-        /// </summary>
+         ///     Used to signal the CPU that an NMI has occured
+         /// </summary>
         public bool NMI;
 
         /// <summary>
