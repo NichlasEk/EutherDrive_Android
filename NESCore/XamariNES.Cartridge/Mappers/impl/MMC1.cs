@@ -307,7 +307,7 @@ namespace XamariNES.Cartridge.Mappers.impl
             {
                 case 0:
                     //8K (4K+4K contiguous)
-                    _chrBank0Offset = (((_chrBank0 & 0x1E) >> 1) * 0x1000) % _chrRom.Length;
+                    _chrBank0Offset = ((_chrBank0 & 0x1E) * 0x1000) % _chrRom.Length;
                     _chrBank1Offset = _chrBank0Offset + 0x1000;
                     if (_chrBank1Offset >= _chrRom.Length)
                         _chrBank1Offset %= _chrRom.Length;
