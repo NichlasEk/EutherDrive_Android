@@ -51,7 +51,7 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_DISABLE_NMI_WIRE"), "1", StringComparison.Ordinal);
     private readonly bool _suppressNmiOnPpuStatusRead =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_SUPPRESS_NMI_ON_2002"), "1", StringComparison.Ordinal);
-    private readonly int _nmiInstructionDelay = ParseNonNegativeInt("EUTHERDRIVE_NES_NMI_INSTR_DELAY", 0);
+    private readonly int _nmiInstructionDelay = ParseTraceLimit("EUTHERDRIVE_NES_NMI_INSTR_DELAY", 1);
     private int _pendingNmiDelayCounter = -1;
 
     public string? RomSummary => _romSummary;
@@ -449,16 +449,6 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
             return fallback;
         return value <= 0 ? int.MaxValue : value;
-    }
-
-    private static int ParseNonNegativeInt(string name, int fallback)
-    {
-        string? raw = Environment.GetEnvironmentVariable(name);
-        if (string.IsNullOrWhiteSpace(raw))
-            return fallback;
-        if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
-            return fallback;
-        return value < 0 ? fallback : value;
     }
 
     private static string BuildRomSummary(string path, byte[] data)
