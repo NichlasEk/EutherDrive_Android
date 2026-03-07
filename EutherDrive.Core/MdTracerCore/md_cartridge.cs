@@ -47,6 +47,7 @@ namespace EutherDrive.Core.MdTracerCore
         public int g_smd_header_size;
         public bool g_smd_deinterleaved;
         public bool g_mapper_is_ssf;
+        public bool g_mapper_is_svp;
         public byte[] g_mapper_banks = new byte[8];
 
         public bool load_from_bytes(byte[] data, string sourceName)
@@ -296,6 +297,7 @@ namespace EutherDrive.Core.MdTracerCore
         private void InitMapper()
         {
             g_mapper_is_ssf = ShouldUseSsfMapper();
+            g_mapper_is_svp = ShouldUseSvpMapper();
             if (g_mapper_banks.Length != 8)
                 g_mapper_banks = new byte[8];
             for (int i = 0; i < g_mapper_banks.Length; i++)
@@ -315,6 +317,14 @@ namespace EutherDrive.Core.MdTracerCore
 
             string serial = g_serial_number.Trim();
             return serial == "T-12056" || serial == "MK-12056" || serial == "T-12043";
+        }
+
+        private bool ShouldUseSvpMapper()
+        {
+            // SVP hardware is used by Virtua Racing (regional serial variants).
+            string serial = g_serial_number.Trim();
+            return serial.Contains("MK-1229", StringComparison.OrdinalIgnoreCase)
+                || serial.Contains("G-7001", StringComparison.OrdinalIgnoreCase);
         }
 
         public uint MapRomAddress(uint address)

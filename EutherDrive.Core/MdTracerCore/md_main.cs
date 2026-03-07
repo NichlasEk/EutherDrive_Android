@@ -757,7 +757,18 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             }
             g_md_m68k.run(cycles);
+            TickSvp(cycles);
             AdvanceSystemCycles(cycles);
+        }
+
+        private static void TickSvp(int m68kCycles)
+        {
+            if (m68kCycles <= 0)
+                return;
+            if (g_md_bus?.OverrideBus is SvpBusOverride svp)
+            {
+                svp.Tick((uint)m68kCycles);
+            }
         }
 
         private static void RunM68kEmu(int cycles)
@@ -819,6 +830,7 @@ namespace EutherDrive.Core.MdTracerCore
                         dmaWaitEvents++;
                         dmaWaitCycles += waitStep;
                         AddM68kCycles(waitStep);
+                        TickSvp(waitStep);
                         AdvanceSystemCycles(waitStep);
                         md_m68k.g_clock_now += waitStep;
                         remaining -= waitStep;
@@ -834,6 +846,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _m68kWaitCycles -= waitStep;
                     md_m68k.g_clock_now += waitStep;
                     AddM68kCycles(waitStep);
+                    TickSvp(waitStep);
                     AdvanceSystemCycles(waitStep);
                     remaining -= waitStep;
                     continue;
@@ -851,6 +864,7 @@ namespace EutherDrive.Core.MdTracerCore
                 md_m68k.g_opcode = _m68kEmu.NextOpcode;
 
                 AddM68kCycles((int)used);
+                TickSvp((int)used);
                 AdvanceSystemCycles(used);
                 md_m68k.g_clock_now += (int)used;
                 remaining -= (int)used;

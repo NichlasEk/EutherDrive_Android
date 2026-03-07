@@ -1376,6 +1376,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 _bus = null;
                 md_bus.Current = null;
                 EutherDrive.Core.MdTracerCore.md_bus.Current = null;
+                if (md_main.g_md_bus != null)
+                    md_main.g_md_bus.OverrideBus = null;
                 _cpuReady = false;
                 _cpu = null;
 
@@ -1414,6 +1416,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 _bus = new MegaDriveBus(_rom);
                 md_bus.Current = _bus;
                 EutherDrive.Core.MdTracerCore.md_bus.Current = _bus;
+                if (md_main.g_md_bus != null)
+                {
+                    if (md_main.g_md_cartridge?.g_mapper_is_svp == true)
+                    {
+                        md_main.g_md_bus.OverrideBus = new SvpBusOverride(md_main.g_md_cartridge.g_file);
+                        Console.WriteLine("[MdTracerAdapter] Mapper: SVP override enabled.");
+                    }
+                    else
+                    {
+                        md_main.g_md_bus.OverrideBus = null;
+                    }
+                }
 
                 DumpVectors();
 
