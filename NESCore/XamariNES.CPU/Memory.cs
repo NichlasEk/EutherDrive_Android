@@ -1,8 +1,6 @@
 ﻿using System;
-using System.Globalization;
 using XamariNES.Cartridge.Mappers;
 using XamariNES.Cartridge.Mappers.Enums;
-using XamariNES.Cartridge.Mappers.impl;
 using XamariNES.Controller;
 
 namespace XamariNES.CPU
@@ -24,21 +22,7 @@ namespace XamariNES.CPU
         private readonly byte[] _internalRam;
         [NonSerialized]
         private IApu _apu;
-        [NonSerialized]
-        private readonly bool _traceM16Bus =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_M16_BUS"), "1", StringComparison.Ordinal);
-        [NonSerialized]
-        private readonly int _traceM16BusLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_M16_BUS_LIMIT", 4000);
-        [NonSerialized]
-        private int _traceM16BusCount;
-        [NonSerialized]
-        private readonly bool _tracePpuStatusRead =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_2002"), "1", StringComparison.Ordinal);
-        [NonSerialized]
-        private readonly int _tracePpuStatusReadLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_2002_LIMIT", 4000);
-        [NonSerialized]
-        private int _tracePpuStatusReadCount;
-        public int TracePc { get; set; } = -1;
+        private byte _openBus;
         public bool ReadPpuStatusThisInstruction { get; private set; }
 
         public Memory(IMapper memoryMapper, IController controller, IApu apu = null)
@@ -49,8 +33,6 @@ namespace XamariNES.CPU
             _apu = apu;
             _internalRam = new byte[2048];
         }
-
-        private byte _openBus;
 
         public void AttachApu(IApu apu)
         {
@@ -76,10 +58,7 @@ namespace XamariNES.CPU
         /// <returns></returns>
         public byte ReadByte(int offset)
         {
-            // CPU address bus is 16-bit; wrap any transient overflows.
-            offset &= 0xFFFF;
             byte value;
-
             //2KB internal RAM (+ mirrors)
             if (offset < 0x2000) 
                 value = _internalRam[offset % 0x800];
@@ -88,17 +67,9 @@ namespace XamariNES.CPU
             else if (offset <= 0x3FFF)
             {
                 int ppuRegister = 0x2000 + offset % 8;
-                value = _memoryMapper.ReadByte(ppuRegister);
                 if (ppuRegister == 0x2002)
                     ReadPpuStatusThisInstruction = true;
-                if (_tracePpuStatusRead
-                    && ppuRegister == 0x2002
-                    && _tracePpuStatusReadCount < _tracePpuStatusReadLimit)
-                {
-                    Console.WriteLine($"[NES-2002] pc=0x{TracePc:X4} val=0x{value:X2}");
-                    if (_tracePpuStatusReadCount != int.MaxValue)
-                        _tracePpuStatusReadCount++;
-                }
+                value = _memoryMapper.ReadByte(ppuRegister);
             }
 
             //NES APU & I/O Registers
@@ -146,11 +117,7 @@ namespace XamariNES.CPU
         /// <param name="data"></param>
         public void WriteByte(int offset, byte data)
         {
-            // CPU address bus is 16-bit; wrap any transient overflows.
-            offset &= 0xFFFF;
             _openBus = data;
-            TraceMapper16Write(offset, data);
-
             //2KB internal RAM (+ mirrors)
             if (offset < 0x2000)
             {
@@ -200,29 +167,6 @@ namespace XamariNES.CPU
             }
             
             throw new Exception($"Invalid CPU write to address {offset:X4}");
-        }
-
-        private void TraceMapper16Write(int offset, byte data)
-        {
-            if (!_traceM16Bus || _traceM16BusCount >= _traceM16BusLimit)
-                return;
-            if (!(_memoryMapper is BandaiFcg))
-                return;
-            if (offset < 0x6000)
-                return;
-            Console.WriteLine($"[M16-CPU-W] pc=0x{TracePc:X4} off=0x{offset:X4} val=0x{data:X2}");
-            if (_traceM16BusCount != int.MaxValue)
-                _traceM16BusCount++;
-        }
-
-        private static int ParseTraceLimit(string name, int fallback)
-        {
-            string raw = Environment.GetEnvironmentVariable(name);
-            if (string.IsNullOrWhiteSpace(raw))
-                return fallback;
-            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
-                return fallback;
-            return value <= 0 ? int.MaxValue : value;
         }
     }
 }

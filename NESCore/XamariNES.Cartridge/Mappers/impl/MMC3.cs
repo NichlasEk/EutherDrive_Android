@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using XamariNES.Cartridge.Mappers.Enums;
 using XamariNES.Common.Extensions;
 
@@ -10,17 +9,18 @@ namespace XamariNES.Cartridge.Mappers.impl
     ///
     ///     More Info: https://www.nesdev.org/wiki/MMC3
     /// </summary>
-    public class MMC3 : MapperBase, IMapper, IMapperOpenBusRead, IMapperIrqProvider, IPpuA12Observer, IMapperScanlineCounter, ISaveRamProvider
+    public class MMC3 : MapperBase, IMapper, IMapperIrqProvider, IPpuA12Observer, IMapperScanlineCounter, ISaveRamProvider
     {
         [NonSerialized]
         private readonly byte[] _prgRom;
         [NonSerialized]
         private readonly byte[] _chrRom;
         private readonly byte[] _prgRam;
-        private readonly bool _hasPrgRam;
         private bool _saveRamDirty;
         public bool BatteryBacked { get; }
         private readonly bool _useChrRam;
+        private readonly bool _isTqrom;
+        private readonly byte[] _tqromChrRam;
         private readonly int _prgBankCount8k;
         private readonly int _chrBankCount1k;
 
@@ -28,7 +28,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         private readonly byte[] _bankRegs = new byte[8];
         private bool _prgMode;
         private bool _chrMode;
-        private bool _prgRamEnabled;
+        private bool _prgRamEnabled = true;
         private bool _prgRamWriteProtect;
 
         private byte _irqLatch;
@@ -39,54 +39,48 @@ namespace XamariNES.Cartridge.Mappers.impl
         private bool _lastA12;
         private long _lastA12LowCycle = -100000;
         private readonly bool _useScanlineClock = true;
-        [NonSerialized]
-        private readonly bool _traceMmc3 =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_MMC3"), "1", StringComparison.Ordinal);
-        [NonSerialized]
-        private readonly int _traceMmc3Limit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_MMC3_LIMIT", 4000);
-        [NonSerialized]
-        private int _traceMmc3Count;
 
         public enumNametableMirroring NametableMirroring { get; set; }
 
         public bool IrqPending => _irqPending;
 
         public MMC3(byte[] prgRom, byte[] chrRom, bool useChrRam, int prgRamSize, bool batteryBacked,
-            enumNametableMirroring mirroring = enumNametableMirroring.Horizontal)
+            enumNametableMirroring mirroring = enumNametableMirroring.Horizontal, int mapperNumber = 4)
         {
             _prgRom = prgRom;
             _chrRom = chrRom;
             _useChrRam = useChrRam;
+            _isTqrom = mapperNumber == 119;
+            _tqromChrRam = _isTqrom ? new byte[0x2000] : Array.Empty<byte>();
             _prgRam = new byte[Math.Max(1, prgRamSize)];
-            _hasPrgRam = prgRamSize > 0;
-            if (_hasPrgRam)
-            {
-                for (int i = 0; i < _prgRam.Length; i++)
-                    _prgRam[i] = 0xFF;
-            }
             _prgBankCount8k = Math.Max(1, _prgRom.Length / 0x2000);
             _chrBankCount1k = Math.Max(1, _chrRom.Length / 0x0400);
             NametableMirroring = mirroring;
             BatteryBacked = batteryBacked;
-            // MMC3 power-on: bank register 7 defaults to 1, others 0.
-            _bankRegs[7] = 1;
-        }
-
-        public byte ReadByte(int offset, byte cpuOpenBus)
-        {
-            if (offset >= 0x6000 && offset <= 0x7FFF && (!_hasPrgRam || !_prgRamEnabled))
-                return cpuOpenBus;
-            if (offset >= 0x4020 && offset <= 0x5FFF)
-                return cpuOpenBus;
-            return ReadByte(offset);
         }
 
         public byte ReadByte(int offset)
         {
             if (offset <= 0x1FFF)
             {
-                int chrIndex = ResolveChrAddress(offset);
-                return _chrRom[chrIndex];
+                if (_isTqrom)
+                {
+                    int rawBank = ResolveChrBankRaw(offset);
+                    int bankOffset = offset & 0x03FF;
+                    if ((rawBank & 0x40) != 0)
+                    {
+                        int ramBank = rawBank & 0x07;
+                        return _tqromChrRam[(ramBank * 0x0400) + bankOffset];
+                    }
+
+                    int romBank = (rawBank & 0x3F) % _chrBankCount1k;
+                    return _chrRom[(romBank * 0x0400) + bankOffset];
+                }
+                else
+                {
+                    int chrIndex = ResolveChrAddress(offset);
+                    return _chrRom[chrIndex];
+                }
             }
 
             if (offset <= 0x3FFF)
@@ -94,9 +88,9 @@ namespace XamariNES.Cartridge.Mappers.impl
 
             if (offset >= 0x6000 && offset <= 0x7FFF)
             {
-                if (_hasPrgRam && _prgRamEnabled)
+                if (_prgRamEnabled)
                     return _prgRam[offset - 0x6000];
-                return 0xFF;
+                return 0x00;
             }
 
             if (offset >= 0x8000 && offset <= 0xFFFF)
@@ -112,7 +106,18 @@ namespace XamariNES.Cartridge.Mappers.impl
         {
             if (offset <= 0x1FFF)
             {
-                // CHR ROM is read-only; many games still perform writes here and expect them to be ignored.
+                if (_isTqrom)
+                {
+                    int rawBank = ResolveChrBankRaw(offset);
+                    if ((rawBank & 0x40) == 0)
+                        return; // CHR ROM selected
+
+                    int bankOffset = offset & 0x03FF;
+                    int ramBank = rawBank & 0x07;
+                    _tqromChrRam[(ramBank * 0x0400) + bankOffset] = data;
+                    return;
+                }
+
                 if (!_useChrRam)
                     return;
                 int chrIndex = ResolveChrAddress(offset);
@@ -129,7 +134,7 @@ namespace XamariNES.Cartridge.Mappers.impl
 
             if (offset >= 0x6000 && offset <= 0x7FFF)
             {
-                if (!_hasPrgRam || !_prgRamEnabled || _prgRamWriteProtect)
+                if (!_prgRamEnabled || _prgRamWriteProtect)
                     return;
 
                 int idx = (offset - 0x6000) % _prgRam.Length;
@@ -141,12 +146,8 @@ namespace XamariNES.Cartridge.Mappers.impl
                 return;
             }
 
-            if (offset >= 0x4020 && offset <= 0x5FFF)
-                return;
-
             if (offset >= 0x8000 && offset <= 0xFFFF)
             {
-                TraceMmc3($"[MMC3-W] off=0x{offset:X4} val=0x{data:X2}");
                 WriteRegister(offset, data);
                 return;
             }
@@ -226,6 +227,14 @@ namespace XamariNES.Cartridge.Mappers.impl
 
         private int ResolveChrAddress(int offset)
         {
+            int bankIndex = ResolveChrBankRaw(offset);
+            bankIndex %= _chrBankCount1k;
+            int bankOffset = offset & 0x03FF;
+            return bankIndex * 0x0400 + bankOffset;
+        }
+
+        private int ResolveChrBankRaw(int offset)
+        {
             int bankIndex;
             if (!_chrMode)
             {
@@ -258,9 +267,7 @@ namespace XamariNES.Cartridge.Mappers.impl
                     bankIndex = (_bankRegs[1] & 0xFE) + ((offset - 0x1800) / 0x0400);
             }
 
-            bankIndex %= _chrBankCount1k;
-            int bankOffset = offset & 0x03FF;
-            return bankIndex * 0x0400 + bankOffset;
+            return bankIndex;
         }
 
         public void NotifyPpuA12(int ppuAddress, long ppuCycle)
@@ -321,25 +328,6 @@ namespace XamariNES.Cartridge.Mappers.impl
         public void ClearSaveRamDirty()
         {
             _saveRamDirty = false;
-        }
-
-        private void TraceMmc3(string line)
-        {
-            if (!_traceMmc3 || _traceMmc3Count >= _traceMmc3Limit)
-                return;
-            Console.WriteLine(line);
-            if (_traceMmc3Count != int.MaxValue)
-                _traceMmc3Count++;
-        }
-
-        private static int ParseTraceLimit(string name, int fallback)
-        {
-            string raw = Environment.GetEnvironmentVariable(name);
-            if (string.IsNullOrWhiteSpace(raw))
-                return fallback;
-            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
-                return fallback;
-            return value <= 0 ? int.MaxValue : value;
         }
     }
 }
