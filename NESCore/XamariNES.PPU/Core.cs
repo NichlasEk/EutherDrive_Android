@@ -98,6 +98,7 @@ namespace XamariNES.PPU
         }
         private bool _nmiLine;
         private bool _nmiPending;
+        private bool _ppuStatusReadPending;
 
         /// <summary>
         ///     PPU Memory Space
@@ -123,6 +124,13 @@ namespace XamariNES.PPU
         private readonly int _traceVblankLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_VBLANK_LIMIT", 2000);
         [NonSerialized]
         private int _traceVblankCount;
+        [NonSerialized]
+        private readonly bool _trace2002Reads =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_PPU_2002_READS"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _trace2002ReadsLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_PPU_2002_READS_LIMIT", 4000);
+        [NonSerialized]
+        private int _trace2002ReadsCount;
 
         /// <summary>
         ///     PPU Constructor
@@ -176,8 +184,23 @@ namespace XamariNES.PPU
             memoryMapper.RegisterReadInterceptor(delegate
             {
                 var output = _registerPPUSTATUS;
-                SetVerticalBlank(false);
-                _writeOrderToggle = 0;
+                // Instruction-granular CPU stepping can sample $2002 a few PPU ticks earlier than
+                // real hardware. When read occurs at the very end of post-render (scanline 240),
+                // expose the imminent vblank edge in the returned value to avoid missing the
+                // canonical wait loop used by many games.
+                if ((output & PPUStatusFlags.VerticalBlankStarted) == 0 &&
+                    _currentScanline == 240 &&
+                    _currentCycle >= 332)
+                {
+                    output |= PPUStatusFlags.VerticalBlankStarted;
+                }
+                if (_trace2002Reads && _trace2002ReadsCount < _trace2002ReadsLimit)
+                {
+                    Console.WriteLine($"[NES-PPU-2002] ppu_cycles={Cycles} scanline={_currentScanline} cycle={_currentCycle} status=0x{output:X2}");
+                    if (_trace2002ReadsCount != int.MaxValue)
+                        _trace2002ReadsCount++;
+                }
+                _ppuStatusReadPending = true;
                 return output;
 
             }, 0x2002);
@@ -355,8 +378,9 @@ namespace XamariNES.PPU
             _registerPPUSTATUS |= PPUStatusFlags.VerticalBlankStarted;
             _nmiLine = false;
             _nmiPending = false;
-            _currentCycle = 340;
-            _currentScanline = 240;
+            _ppuStatusReadPending = false;
+            _currentCycle = 0;
+            _currentScanline = 261;
             RefreshNmiOutput();
         }
 
@@ -365,6 +389,13 @@ namespace XamariNES.PPU
         /// </summary>
         public void Tick()
         {
+            if (_ppuStatusReadPending)
+            {
+                _ppuStatusReadPending = false;
+                SetVerticalBlank(false);
+                _writeOrderToggle = 0;
+            }
+
             UpdateInternalCounters();
 
             //---------------------------------
@@ -401,7 +432,7 @@ namespace XamariNES.PPU
                 _cycleState |= CycleStateFlags.Visible;
 
                 //Reset NMIOccurred on Prerender of Scanline 1
-                if (_currentCycle == 2 && _scanLineState.IsFlagSet(ScanLineStateFlags.PreRender))
+                if (_currentCycle == 1 && _scanLineState.IsFlagSet(ScanLineStateFlags.PreRender))
                 {
                     SetVerticalBlank(false);
                     _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.SpriteOverflow);
@@ -563,7 +594,7 @@ namespace XamariNES.PPU
             Cycles++;
 
             // Trigger an NMI at the start of _scanline 241 if VBLANK NMI's are enabled
-            if (_currentScanline == 241 && _currentCycle == 2)
+            if (_currentScanline == 241 && _currentCycle == 1)
             {
                 SetVerticalBlank(true);
             }
