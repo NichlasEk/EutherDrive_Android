@@ -91,6 +91,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         /// <returns></returns>
         public byte ReadByte(int offset)
         {
+            offset &= 0xFFFF;
             // CHR Bank 0 == $0000-$0FFF
             // CHR Bank 1 == $1000-$1FFF
             if (offset <= 0x1FFF)
@@ -103,6 +104,10 @@ namespace XamariNES.Cartridge.Mappers.impl
             //PPU Registers
             if (offset <= 0x3FFF)
                 return ReadInterceptors.TryGetValue(offset, out currentReadInterceptor) ? currentReadInterceptor(offset) : (byte) 0x0;
+
+            // Normally-disabled APU/I/O range ($4020-$5FFF) is open bus/board-specific; ignore for now.
+            if (offset <= 0x5FFF)
+                return 0x00;
 
             // PRG RAM Bank == $6000-$7FFF
             if (offset >= 0x6000 && offset <= 0x7FFF)
@@ -135,6 +140,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         /// <param name="data"></param>
         public void WriteByte(int offset, byte data)
         {
+            offset &= 0xFFFF;
             // CHR Bank 0 == $0000-$0FFF
             // CHR Bank 1 == $1000-$1FFF
             if (offset <= 0x1FFF)
@@ -156,6 +162,10 @@ namespace XamariNES.Cartridge.Mappers.impl
 
                 return;
             }
+
+            // Normally-disabled APU/I/O range ($4020-$5FFF) is board-specific; ignore writes.
+            if (offset <= 0x5FFF)
+                return;
 
             // PRG RAM Bank == $6000-$7FFF
             if (offset >= 0x6000 && offset <= 0x7FFF)
@@ -278,17 +288,22 @@ namespace XamariNES.Cartridge.Mappers.impl
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void UpdateBankOffsets()
         {
+            int chrBanks4k = Math.Max(1, _chrRom.Length / 0x1000);
+            int prgBanks16k = Math.Max(1, _prgRom.Length / 0x4000);
+
             switch (_currentChrMode)
             {
                 case 0:
                     //8K (4K+4K contiguous)
-                    _chrBank0Offset = ((_chrBank0 & 0x1E) >> 1) * 0x1000;
+                    _chrBank0Offset = (((_chrBank0 & 0x1E) >> 1) * 0x1000) % _chrRom.Length;
                     _chrBank1Offset = _chrBank0Offset + 0x1000;
+                    if (_chrBank1Offset >= _chrRom.Length)
+                        _chrBank1Offset %= _chrRom.Length;
                     break;
                 case 1:
                     //4K Switched + 4K Switched
-                    _chrBank0Offset = _chrBank0 * 0x1000;
-                    _chrBank1Offset = _chrBank1 * 0x1000;
+                    _chrBank0Offset = (_chrBank0 % chrBanks4k) * 0x1000;
+                    _chrBank1Offset = (_chrBank1 % chrBanks4k) * 0x1000;
                     break;
                 default:
                     throw new ArgumentException("Invalid CHR Mode Specified");
@@ -298,20 +313,22 @@ namespace XamariNES.Cartridge.Mappers.impl
             {
                 case 0:
                 case 1: //32KB (16KB+16KB contiguous) Switched
-                    _prgBank0Offset = ((_prgBank & 0xE) >> 1) * 0x4000;
+                    _prgBank0Offset = (((_prgBank & 0xE) >> 1) % Math.Max(1, prgBanks16k / 2)) * 0x4000;
                     _prgBank1Offset = _prgBank0Offset + 0x4000;
+                    if (_prgBank1Offset >= _prgRom.Length)
+                        _prgBank1Offset %= _prgRom.Length;
                     break;
                 case 2: //16KB Fixed (First) + 16KB Switched
                     //Fixed first bank at $8000
                     _prgBank0Offset = 0;
                     //Switched 16KB bank at $C000
-                    _prgBank1Offset = (_prgBank & 0xF) * 0x4000;
+                    _prgBank1Offset = ((_prgBank & 0xF) % prgBanks16k) * 0x4000;
                     break;
                 case 3: //16KB Switched + 16KB Fixed (Last)
                     //Switched 16 KB bank at $8000
-                    _prgBank0Offset = (_prgBank & 0xF) * 0x4000;
+                    _prgBank0Offset = ((_prgBank & 0xF) % prgBanks16k) * 0x4000;
                     //Fixed last bank at $C000
-                    _prgBank1Offset = (_prgRomBanks - 1) * 0x4000;
+                    _prgBank1Offset = (prgBanks16k - 1) * 0x4000;
                     break;
                 default:
                     throw new ArgumentException("Invalid PRG Mode Specified");
