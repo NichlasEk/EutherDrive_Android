@@ -1,5 +1,4 @@
 ﻿using System;
-using NLog.Filters;
 using XamariNES.Cartridge.Mappers.Enums;
 
 namespace XamariNES.Cartridge.Mappers.impl
@@ -26,6 +25,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         /// </summary>
         [NonSerialized]
         private readonly byte[] _chrRom;
+        private readonly int _chrBankCount;
 
         /// <summary>
         ///     Offset of our Switched Bank in CHR ROM
@@ -42,6 +42,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         public CNROM(byte[] prgRom, int prgRomBanks, byte[] chrRom, enumNametableMirroring nametableMirroring)
         {
             _chrRom = chrRom;
+            _chrBankCount = Math.Max(1, _chrRom.Length / 0x2000);
             NametableMirroring = nametableMirroring;
 
             //Copy over all of PRG ROM (16KB or 32KB)
@@ -60,6 +61,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         /// <returns></returns>
         public byte ReadByte(int offset)
         {
+            offset &= 0xFFFF;
             // CHR ROM
             if (offset < 0x2000)
                 return _chrRom[_chrRomOffset + offset];
@@ -87,10 +89,13 @@ namespace XamariNES.Cartridge.Mappers.impl
         /// <param name="data"></param>
         public void WriteByte(int offset, byte data)
         {
+            offset &= 0xFFFF;
             //CHR ROM+RAM Writes
             if (offset < 0x2000)
             {
-                _chrRom[_chrRomOffset + offset] = data;
+                // CNROM cartridges typically use CHR ROM; tolerate writes as no-op unless backing exists.
+                if (_chrRomOffset + offset < _chrRom.Length)
+                    _chrRom[_chrRomOffset + offset] = data;
                 return;
             }
 
@@ -106,7 +111,10 @@ namespace XamariNES.Cartridge.Mappers.impl
             //CHR Bank Select
             if (offset >= 0x8000 && offset <= 0xFFFF)
             {
-                _chrRomOffset = (data & 0x03) * 0x2000;
+                // Select bank within actual CHR ROM size (some ROMs expose fewer than 4 banks).
+                int bank = data & 0x03;
+                bank %= _chrBankCount;
+                _chrRomOffset = bank * 0x2000;
                 return;
             }
 

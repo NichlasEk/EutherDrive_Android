@@ -45,6 +45,12 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_FRAME_PC"), "1", StringComparison.Ordinal);
     private readonly int _traceFramePcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_FRAME_PC_LIMIT", 1200);
     private int _traceFramePcCount;
+    private readonly bool _disableApuIrqWire =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_DISABLE_APU_IRQ_WIRE"), "1", StringComparison.Ordinal);
+    private readonly bool _disableNmiWire =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_DISABLE_NMI_WIRE"), "1", StringComparison.Ordinal);
+    private readonly int _nmiInstructionDelay = ParseTraceLimit("EUTHERDRIVE_NES_NMI_INSTR_DELAY", 1);
+    private int _pendingNmiDelayCounter = -1;
 
     public string? RomSummary => _romSummary;
     public RomIdentity? RomIdentity => _romIdentity;
@@ -115,7 +121,7 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
             int cpuTicks;
             if (_cpuIdleCycles == 0)
             {
-                _cpu.NMI = _latchedNmi;
+                _cpu.NMI = !_disableNmiWire && _latchedNmi;
                 _latchedNmi = false;
                 cpuTicks = _cpu.Tick();
             }
@@ -135,9 +141,37 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
             if (_ppu.NMI)
             {
                 _ppu.NMI = false;
-                // If this instruction read $2002, allow PPUSTATUS read to suppress pending NMI.
-                if (!_cpu.CPUMemory.ReadPpuStatusThisInstruction)
+                // Approximate the $2002 race: a status read in the same CPU instruction can suppress NMI delivery.
+                if (!_disableNmiWire && !_cpu.CPUMemory.ReadPpuStatusThisInstruction)
+                {
+                    if (_nmiInstructionDelay > 0)
+                    {
+                        if (_pendingNmiDelayCounter < 0)
+                            _pendingNmiDelayCounter = _nmiInstructionDelay;
+                    }
+                    else
+                    {
+                        _latchedNmi = true;
+                    }
+                }
+            }
+
+            if (_pendingNmiDelayCounter >= 0)
+            {
+                // If PPUSTATUS was read during this CPU instruction, suppress queued NMI.
+                if (_cpu.CPUMemory.ReadPpuStatusThisInstruction)
+                {
+                    _pendingNmiDelayCounter = -1;
+                }
+                else if (_pendingNmiDelayCounter == 0)
+                {
                     _latchedNmi = true;
+                    _pendingNmiDelayCounter = -1;
+                }
+                else
+                {
+                    _pendingNmiDelayCounter--;
+                }
             }
 
             if (_apu != null)
@@ -147,6 +181,8 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
 
             bool mapperIrq = _irqProvider != null && _irqProvider.IrqPending;
             bool apuIrq = _apu != null && _apu.IrqPending;
+            if (_disableApuIrqWire)
+                apuIrq = false;
             if (_traceIrqWire && _traceIrqWireCount < _traceIrqWireLimit && (mapperIrq || apuIrq))
             {
                 Console.WriteLine($"[NES-IRQ-WIRE] frame={_frameCounter} pc=0x{_cpu.PC:X4} mapper={(mapperIrq ? 1 : 0)} apu={(apuIrq ? 1 : 0)} I={( _cpu.Status.InterruptDisable ? 1 : 0)}");
