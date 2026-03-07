@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Globalization;
 using XamariNES.Cartridge;
 using XamariNES.Controller;
 using XamariNES.Controller.Enums;
@@ -27,6 +28,7 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
     private byte[] _frameBuffer = new byte[DefaultHeight * DefaultStride];
     private short[] _audioBuffer = Array.Empty<short>();
     private int _cpuIdleCycles;
+    private bool _latchedNmi;
     private string? _romSummary;
     private string? _romPath;
     private string? _saveRamPath;
@@ -35,6 +37,14 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
     private readonly object _stateLock = new();
     private long _frameCounter;
     private RomIdentity? _romIdentity;
+    private readonly bool _traceIrqWire =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_IRQ_WIRE"), "1", StringComparison.Ordinal);
+    private readonly int _traceIrqWireLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_IRQ_WIRE_LIMIT", 4000);
+    private int _traceIrqWireCount;
+    private readonly bool _traceFramePc =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_FRAME_PC"), "1", StringComparison.Ordinal);
+    private readonly int _traceFramePcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_FRAME_PC_LIMIT", 1200);
+    private int _traceFramePcCount;
 
     public string? RomSummary => _romSummary;
     public RomIdentity? RomIdentity => _romIdentity;
@@ -90,6 +100,7 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         _ppu.Reset();
         _cpu.Cycles = 4;
         _cpuIdleCycles = 0;
+        _latchedNmi = false;
         _frameCounter = 0;
         _apu?.ConsumeAudioBuffer();
     }
@@ -104,6 +115,8 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
             int cpuTicks;
             if (_cpuIdleCycles == 0)
             {
+                _cpu.NMI = _latchedNmi;
+                _latchedNmi = false;
                 cpuTicks = _cpu.Tick();
             }
             else
@@ -122,23 +135,43 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
             if (_ppu.NMI)
             {
                 _ppu.NMI = false;
-                _cpu.NMI = true;
+                // If this instruction read $2002, allow PPUSTATUS read to suppress pending NMI.
+                if (!_cpu.CPUMemory.ReadPpuStatusThisInstruction)
+                    _latchedNmi = true;
             }
-
-            bool mapperIrq = _irqProvider != null && _irqProvider.IrqPending;
-            bool apuIrq = _apu != null && _apu.IrqPending;
-            _cpu.IRQ = mapperIrq || apuIrq;
 
             if (_apu != null)
                 _apu.TickCpu(cpuTicks);
             if (_cpuTickProvider != null)
                 _cpuTickProvider.TickCpu(cpuTicks);
 
+            bool mapperIrq = _irqProvider != null && _irqProvider.IrqPending;
+            bool apuIrq = _apu != null && _apu.IrqPending;
+            if (_traceIrqWire && _traceIrqWireCount < _traceIrqWireLimit && (mapperIrq || apuIrq))
+            {
+                Console.WriteLine($"[NES-IRQ-WIRE] frame={_frameCounter} pc=0x{_cpu.PC:X4} mapper={(mapperIrq ? 1 : 0)} apu={(apuIrq ? 1 : 0)} I={( _cpu.Status.InterruptDisable ? 1 : 0)}");
+                if (_traceIrqWireCount != int.MaxValue)
+                    _traceIrqWireCount++;
+            }
+            _cpu.IRQ = mapperIrq || apuIrq;
+
             if (_ppu.FrameReady)
             {
                 ConvertFrameBuffer(_ppu.FrameBuffer, _frameBuffer);
                 _ppu.FrameReady = false;
                 _frameCounter++;
+                if (_traceFramePc && _traceFramePcCount < _traceFramePcLimit)
+                {
+                    bool mapperIrqNow = _irqProvider != null && _irqProvider.IrqPending;
+                    bool apuIrqNow = _apu != null && _apu.IrqPending;
+                    byte op = _cpu.CPUMemory.ReadByte(_cpu.PC);
+                    byte b1 = _cpu.CPUMemory.ReadByte((_cpu.PC + 1) & 0xFFFF);
+                    byte b2 = _cpu.CPUMemory.ReadByte((_cpu.PC + 2) & 0xFFFF);
+                    Console.WriteLine(
+                        $"[NES-FRAME] frame={_frameCounter} pc=0x{_cpu.PC:X4} op={op:X2} b1={b1:X2} b2={b2:X2} A={_cpu.A:X2} X={_cpu.X:X2} Y={_cpu.Y:X2} SP={_cpu.SP:X2} P={_cpu.Status.ToByte():X2} mapper_irq={(mapperIrqNow ? 1 : 0)} apu_irq={(apuIrqNow ? 1 : 0)} I={( _cpu.Status.InterruptDisable ? 1 : 0)}");
+                    if (_traceFramePcCount != int.MaxValue)
+                        _traceFramePcCount++;
+                }
                 if (_apu != null)
                 {
                     _audioBuffer = _apu.ConsumeAudioBuffer();
@@ -367,6 +400,16 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
             dst[o + 2] = PaletteBgra[color + 2];
             dst[o + 3] = 0xFF;
         }
+    }
+
+    private static int ParseTraceLimit(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+            return fallback;
+        return value <= 0 ? int.MaxValue : value;
     }
 
     private static string BuildRomSummary(string path, byte[] data)

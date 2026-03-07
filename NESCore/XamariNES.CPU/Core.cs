@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using XamariNES.Cartridge.Mappers;
 using XamariNES.Common.Extensions;
@@ -64,6 +65,14 @@ namespace XamariNES.CPU
         ///     Current Instruction being executed
         /// </summary>
         public CPUInstruction Instruction;
+
+        [NonSerialized]
+        private readonly bool _traceIrq =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_IRQ"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceIrqLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_IRQ_LIMIT", 2000);
+        [NonSerialized]
+        private int _traceIrqCount;
 
         /// <summary>
         ///     Used to signal the CPU that an NMI has occured
@@ -2509,22 +2518,39 @@ namespace XamariNES.CPU
         /// </summary>
         public int Tick()
         {
+            CPUMemory.BeginInstruction();
+            CPUMemory.TracePc = PC;
+            long startCycles = Cycles;
+            bool handledInterrupt = false;
+
             //Check for NMI Interrupt
             if (NMI)
             {
+                int fromPc = PC;
                 Push((ushort)PC);
-                Push(Status.ToByte());
+                Push((byte)(Status.ToByte() & 0b1110_1111));
                 PC = BitConverter.ToUInt16(new[] { CPUMemory.ReadByte(0xFFFA), CPUMemory.ReadByte(0xFFFB) }, 0);
                 Status.InterruptDisable = true;
                 NMI = false;
+                handledInterrupt = true;
+                TraceIrq($"[NES-NMI] from=0x{fromPc:X4} to=0x{PC:X4} cyc={Cycles}");
             }
             else if (IRQ && !Status.InterruptDisable)
             {
+                int fromPc = PC;
                 Push((ushort)PC);
                 Push((byte)(Status.ToByte() & 0b1110_1111));
                 PC = BitConverter.ToUInt16(new[] { CPUMemory.ReadByte(0xFFFE), CPUMemory.ReadByte(0xFFFF) }, 0);
                 Status.InterruptDisable = true;
                 IRQ = false;
+                handledInterrupt = true;
+                TraceIrq($"[NES-IRQ] from=0x{fromPc:X4} to=0x{PC:X4} cyc={Cycles}");
+            }
+
+            if (handledInterrupt)
+            {
+                Cycles += 7;
+                return 7;
             }
 
             //Decode
@@ -2537,7 +2563,26 @@ namespace XamariNES.CPU
             PC += Instruction.Length;
             Cycles += Instruction.Cycles;
 
-            return Instruction.Cycles;
+            return (int)(Cycles - startCycles);
+        }
+
+        private void TraceIrq(string line)
+        {
+            if (!_traceIrq || _traceIrqCount >= _traceIrqLimit)
+                return;
+            Console.WriteLine(line);
+            if (_traceIrqCount != int.MaxValue)
+                _traceIrqCount++;
+        }
+
+        private static int ParseTraceLimit(string name, int fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value <= 0 ? int.MaxValue : value;
         }
 
         /// <summary>
@@ -3679,23 +3724,17 @@ namespace XamariNES.CPU
                 case EnumAddressingMode.Relative:
                     if (Instruction.PageBoundaryCheck)
                         CheckBoundary(GetOperandSByte() + PC, PC);
-                    return  GetOperandSByte() + PC;
+                    return (ushort)(GetOperandSByte() + PC);
                 case EnumAddressingMode.AbsoluteX:
                     if (Instruction.PageBoundaryCheck)
                         CheckBoundary(GetOperandWord() + X, GetOperandWord());
-                    return  GetOperandWord() + X;
+                    return (ushort)(GetOperandWord() + X);
                 case EnumAddressingMode.AbsoluteY:
                     if (Instruction.PageBoundaryCheck)
                         CheckBoundary(GetOperandWord() + Y, GetOperandWord());
 
                     var targetAbsoluteYOffset = GetOperandWord();
-                    //Check special case where 0xFFFF wraps back to 0x0000
-                    if (targetAbsoluteYOffset == 0xFFFF)
-                    {
-                        return Y - 1;
-                    }
-
-                    return targetAbsoluteYOffset + Y;
+                    return (ushort)(targetAbsoluteYOffset + Y);
                 case EnumAddressingMode.Indirect:
                     return GetWord(GetOperandWord());
                 case EnumAddressingMode.IndexedIndirect:
@@ -3711,13 +3750,7 @@ namespace XamariNES.CPU
                         CheckBoundary( GetWord(GetOperandByte(), true) + Y, GetWord(GetOperandByte(), true));
 
                     var targetOffset = GetWord(GetOperandByte(), true);
-                    //Check special case where 0xFFFF wraps back to 0x0000
-                    if (targetOffset == 0xFFFF)
-                    {
-                        return Y-1;
-                    }
-
-                    return targetOffset + Y;
+                    return (ushort)(targetOffset + Y);
                     
                 default:
                     throw new Exception("Unknown Addressing Mode");
