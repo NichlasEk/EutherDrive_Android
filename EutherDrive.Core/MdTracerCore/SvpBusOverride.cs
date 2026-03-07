@@ -4,6 +4,9 @@ internal sealed class SvpBusOverride : IM68kBusOverride
 {
     private readonly SvpCore _svp = new();
     private byte[] _romBytes;
+    private static readonly bool TraceSvp =
+        string.Equals(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SVP"), "1", System.StringComparison.Ordinal);
+    private int _traceBudget = 64;
 
     public SvpBusOverride(byte[] romBytes)
     {
@@ -48,6 +51,11 @@ internal sealed class SvpBusOverride : IM68kBusOverride
         }
 
         value = _svp.M68kReadWord(address & ~1U, _romBytes);
+        if (TraceSvp && _traceBudget > 0 && address >= 0x00A1_5000 && address <= 0x00A1_5007)
+        {
+            _traceBudget--;
+            System.Console.WriteLine($"[SVP-BUS] R16 0x{address:X6} -> 0x{value:X4}");
+        }
         return true;
     }
 
@@ -80,6 +88,11 @@ internal sealed class SvpBusOverride : IM68kBusOverride
             return false;
 
         _svp.M68kWriteWord(address & ~1U, value);
+        if (TraceSvp && _traceBudget > 0 && address >= 0x00A1_5000 && address <= 0x00A1_5007)
+        {
+            _traceBudget--;
+            System.Console.WriteLine($"[SVP-BUS] W16 0x{address:X6} <- 0x{value:X4}");
+        }
         return true;
     }
 

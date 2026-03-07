@@ -234,6 +234,12 @@ internal sealed class SvpCore
 
     internal bool Halted;
     internal bool DramDirty;
+    private static readonly bool TraceSvp =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SVP"), "1", StringComparison.Ordinal);
+    private int _traceBudget = 64;
+    private bool _loggedEntryGate;
+    private bool _loggedXstWrite;
+    private bool _loggedIdleWait;
 
     public bool Enabled => true;
 
@@ -251,6 +257,12 @@ internal sealed class SvpCore
             {
                 if (!DramDirty)
                 {
+                    if (TraceSvp && !_loggedIdleWait && _traceBudget > 0)
+                    {
+                        _loggedIdleWait = true;
+                        _traceBudget--;
+                        Console.WriteLine($"[SVP] idle wait loop at PC=0x{RegistersState.Pc:X4}, waiting DRAM mailbox write");
+                    }
                     return;
                 }
 
@@ -259,6 +271,12 @@ internal sealed class SvpCore
 
             if (RegistersState.Pc == SvpEntryPoint && !RegistersState.Xst.M68kWritten)
             {
+                if (TraceSvp && !_loggedEntryGate && _traceBudget > 0)
+                {
+                    _loggedEntryGate = true;
+                    _traceBudget--;
+                    Console.WriteLine("[SVP] waiting at entry PC=0x0400 for XST write from 68k");
+                }
                 return;
             }
 
@@ -332,9 +350,20 @@ internal sealed class SvpCore
             case 0xA1_5000:
             case 0xA1_5002:
                 RegistersState.Xst.M68kWrite(value);
+                if (TraceSvp && !_loggedXstWrite && _traceBudget > 0)
+                {
+                    _loggedXstWrite = true;
+                    _traceBudget--;
+                    Console.WriteLine($"[SVP] XST write by 68k: 0x{value:X4}");
+                }
                 break;
             case 0xA1_5006:
                 Halted = value == 0x000A;
+                if (TraceSvp && _traceBudget > 0)
+                {
+                    _traceBudget--;
+                    Console.WriteLine($"[SVP] HALT write by 68k: 0x{value:X4} halted={Halted}");
+                }
                 break;
         }
     }
