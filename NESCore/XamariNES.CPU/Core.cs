@@ -71,6 +71,9 @@ namespace XamariNES.CPU
         private readonly int _traceIllegalStoresLimit = ParseOptionalLimit("EUTHERDRIVE_TRACE_NES_ILLEGAL_STORES_LIMIT", 4000);
         [NonSerialized]
         private int _traceIllegalStoresCount;
+        [NonSerialized]
+        private readonly bool _strictKil =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_STRICT_KIL"), "1", StringComparison.Ordinal);
 
         /// <summary>
          ///     Used to signal the CPU that an NMI has occured
@@ -3334,7 +3337,15 @@ namespace XamariNES.CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void KIL()
         {
-            // Halt by keeping PC on the same opcode (Length=0 in decode table).
+            if (!_strictKil)
+            {
+                // Compatibility default: treat JAM/KIL as a 1-byte NOP.
+                // Set EUTHERDRIVE_NES_STRICT_KIL=1 for hardware-accurate lock behavior.
+                Instruction.Length = 1;
+                return;
+            }
+
+            // Strict mode: halt by keeping PC on the same opcode (Length=0 in decode table).
         }
 
         /// <summary>
@@ -3646,28 +3657,27 @@ namespace XamariNES.CPU
         public void AHX()
         {
             ushort baseAddress;
-            ushort address;
-            bool overflowed;
+            byte index;
 
             if (Instruction.AddressingMode == EnumAddressingMode.AbsoluteY)
             {
                 baseAddress = GetOperandWord();
-                address = (ushort)(baseAddress + Y);
-                overflowed = ((baseAddress & 0x00FF) + Y) > 0x00FF;
+                index = Y;
             }
             else
             {
                 byte zpAddress = GetOperandByte();
                 baseAddress = GetWord(zpAddress, true);
-                address = (ushort)(baseAddress + Y);
-                overflowed = ((baseAddress & 0x00FF) + Y) > 0x00FF;
+                index = Y;
             }
 
-            byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
-            byte value = (byte)(A & X & highMask);
-            TraceIllegalStore("AHX", baseAddress, address, value, overflowed);
-            if (!overflowed)
-                CPUMemory.WriteByte(address, value);
+            // AHX/TAS are highly unstable on real hardware.
+            // Match jgenesis compatibility behavior: wrapped indexed address, read, then write same byte back.
+            byte wrappedLow = (byte)(((byte)(baseAddress & 0x00FF)) + index);
+            ushort address = (ushort)((baseAddress & 0xFF00) | wrappedLow);
+            byte value = CPUMemory.ReadByte(address);
+            TraceIllegalStore("AHX", baseAddress, address, value, false);
+            CPUMemory.WriteByte(address, value);
         }
 
         /// <summary>
@@ -3678,13 +3688,11 @@ namespace XamariNES.CPU
         {
             SP = (byte)(A & X);
             ushort baseAddress = GetOperandWord();
-            bool overflowed = ((baseAddress & 0x00FF) + Y) > 0x00FF;
-            ushort address = (ushort)(baseAddress + Y);
-            byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
-            byte value = (byte)(SP & highMask);
-            TraceIllegalStore("TAS", baseAddress, address, value, overflowed);
-            if (!overflowed)
-                CPUMemory.WriteByte(address, value);
+            byte wrappedLow = (byte)(((byte)(baseAddress & 0x00FF)) + Y);
+            ushort address = (ushort)((baseAddress & 0xFF00) | wrappedLow);
+            byte value = CPUMemory.ReadByte(address);
+            TraceIllegalStore("TAS", baseAddress, address, value, false);
+            CPUMemory.WriteByte(address, value);
         }
 
         private void TraceIllegalStore(string op, ushort baseAddress, ushort address, byte value, bool skipped)

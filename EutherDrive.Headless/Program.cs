@@ -173,6 +173,8 @@ class Program
         try
         {
             string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
+            bool useNes = string.Equals(coreOverride, "nes", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsNesRomPath(romPath));
             bool useSnes = string.Equals(coreOverride, "snes", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsSnesRomPath(romPath));
             bool useN64 = string.Equals(coreOverride, "n64", StringComparison.OrdinalIgnoreCase)
@@ -185,10 +187,46 @@ class Program
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase);
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
+                useNes = false;
                 useSnes = false;
                 useN64 = false;
                 useSegaCd = false;
                 usePce = false;
+            }
+
+            if (useNes)
+            {
+                Console.WriteLine("[HEADLESS] Using NES core");
+                var nes = new NesAdapter();
+                nes.LoadRom(romPath);
+
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> fbIn = nes.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                Console.WriteLine($"[HEADLESS] NES fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY})");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    nes.RunFrame();
+                    ReadOnlySpan<byte> fb = nes.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    Console.WriteLine($"[HEADLESS] Frame {frame}: nes_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                    if (frame == 0 || frame == 5 || frame == 10)
+                    {
+                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                        DumpBgraToPpm(fb, w, h, s, ppmPath);
+                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                    }
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> fbOut = nes.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] NES fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
             }
 
             if (useSnes)
@@ -789,6 +827,12 @@ class Program
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
         return ext is ".smc" or ".sfc";
+    }
+
+    private static bool IsNesRomPath(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".nes";
     }
 
     private static bool IsSegaCdRomPath(string path)
