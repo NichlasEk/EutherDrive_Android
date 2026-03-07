@@ -49,8 +49,6 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_DISABLE_APU_IRQ_WIRE"), "1", StringComparison.Ordinal);
     private readonly bool _disableNmiWire =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_DISABLE_NMI_WIRE"), "1", StringComparison.Ordinal);
-    private readonly bool _suppressNmiOnPpuStatusRead =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_SUPPRESS_NMI_ON_2002"), "1", StringComparison.Ordinal);
     private readonly int _nmiInstructionDelay = ParseTraceLimit("EUTHERDRIVE_NES_NMI_INSTR_DELAY", 1);
     private int _pendingNmiDelayCounter = -1;
 
@@ -144,8 +142,7 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
             {
                 _ppu.NMI = false;
                 // Approximate the $2002 race: a status read in the same CPU instruction can suppress NMI delivery.
-                bool suppressNow = _suppressNmiOnPpuStatusRead && _cpu.CPUMemory.ReadPpuStatusThisInstruction;
-                if (!_disableNmiWire && !suppressNow)
+                if (!_disableNmiWire && !_cpu.CPUMemory.ReadPpuStatusThisInstruction)
                 {
                     if (_nmiInstructionDelay > 0)
                     {
@@ -161,8 +158,8 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
 
             if (_pendingNmiDelayCounter >= 0)
             {
-                // Optional coarse approximation of the $2002 race.
-                if (_suppressNmiOnPpuStatusRead && _cpu.CPUMemory.ReadPpuStatusThisInstruction)
+                // If PPUSTATUS was read during this CPU instruction, suppress queued NMI.
+                if (_cpu.CPUMemory.ReadPpuStatusThisInstruction)
                 {
                     _pendingNmiDelayCounter = -1;
                 }

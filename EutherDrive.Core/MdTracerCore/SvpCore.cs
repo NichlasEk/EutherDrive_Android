@@ -334,7 +334,7 @@ internal sealed class SvpCore
 
         if (masked >= 0x30_0000 && masked <= 0x37_FFFF)
         {
-            uint wordAddress = (masked & 0x1_FFFF) >> 1;
+            int wordAddress = (int)((masked & 0x1_FFFF) >> 1);
             Dram[wordAddress] = value;
 
             if (wordAddress is 0x7F03 or 0x7F04)

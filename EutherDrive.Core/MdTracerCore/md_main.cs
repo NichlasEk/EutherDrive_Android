@@ -276,6 +276,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static bool _mbxInjectEnvLogged;
         private static bool _mbxInjectConfigLoaded;
         private static bool _forceSeegaDone;
+        private static bool _svpTickLogged;
         private static ushort _injectMbxAddr;
         private static byte _injectMbxValue;
         private static long _injectMbxFrame;
@@ -767,6 +768,11 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             if (g_md_bus?.OverrideBus is SvpBusOverride svp)
             {
+                if (!_svpTickLogged)
+                {
+                    _svpTickLogged = true;
+                    Console.WriteLine("[SVP] tick active (md_main -> SvpBusOverride)");
+                }
                 svp.Tick((uint)m68kCycles);
             }
         }
@@ -942,6 +948,7 @@ namespace EutherDrive.Core.MdTracerCore
             _mbxInjectArmedLogged = false;
             _mbxInjectEnvLogged = false;
             _mbxInjectConfigLoaded = false;
+            _svpTickLogged = false;
             ResetZ80WaitState();
 
             g_hard_reset_req  = false;
@@ -984,6 +991,7 @@ namespace EutherDrive.Core.MdTracerCore
                 _mbxInjectArmedLogged = false;
                 _mbxInjectEnvLogged = false;
                 _mbxInjectConfigLoaded = false;
+                _svpTickLogged = false;
             }
 
             int lines = g_md_vdp.g_vertical_line_max;
