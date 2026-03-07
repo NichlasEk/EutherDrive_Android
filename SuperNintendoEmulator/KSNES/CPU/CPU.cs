@@ -200,8 +200,8 @@ public class CPU : ICPU
         _z = false;
         _c = false;
         _e = !StartInNativeMode;
-        _m = !StartInNativeMode;
-        _x = !StartInNativeMode;
+        _m = true;
+        _x = true;
         IrqWanted = false;
         NmiWanted = false;
         _aboWanted = false;

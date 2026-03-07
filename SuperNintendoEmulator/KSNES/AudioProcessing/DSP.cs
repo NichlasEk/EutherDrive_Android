@@ -309,8 +309,8 @@ public sealed class DSP : IDSP
 
         private void Restart(DspRegisters registers, byte[] audioRam)
         {
-            int tableAddr = registers.SampleTableAddress + (InstrumentNumber << 2);
-            ushort startAddr = (ushort)(audioRam[tableAddr] | (audioRam[tableAddr + 1] << 8));
+            int tableAddr = (registers.SampleTableAddress + (InstrumentNumber << 2)) & 0xFFFF;
+            ushort startAddr = (ushort)(audioRam[tableAddr] | (audioRam[(tableAddr + 1) & 0xFFFF] << 8));
             BrrBlockAddress = startAddr;
             PitchCounter = 0;
             RestartDelayRemaining = 5;
@@ -326,8 +326,8 @@ public sealed class DSP : IDSP
                 if (endFlag)
                 {
                     EndFlagSeen = true;
-                    int tableAddr = sampleTableAddress + (InstrumentNumber << 2);
-                    ushort loopAddr = (ushort)(audioRam[tableAddr + 2] | (audioRam[tableAddr + 3] << 8));
+                    int tableAddr = (sampleTableAddress + (InstrumentNumber << 2)) & 0xFFFF;
+                    ushort loopAddr = (ushort)(audioRam[(tableAddr + 2) & 0xFFFF] | (audioRam[(tableAddr + 3) & 0xFFFF] << 8));
                     BrrBlockAddress = loopAddr;
                 }
                 else
@@ -352,7 +352,7 @@ public sealed class DSP : IDSP
             int decoderIdx = BrrDecoderIdx;
             for (int i = 0; i < 2; i++)
             {
-                int sampleAddr = BrrBlockAddress + 1 + (decoderIdx >> 1) + i;
+                int sampleAddr = (BrrBlockAddress + 1 + (decoderIdx >> 1) + i) & 0xFFFF;
                 byte pair = audioRam[sampleAddr];
                 sbyte first = (sbyte)pair;
                 first >>= 4;
