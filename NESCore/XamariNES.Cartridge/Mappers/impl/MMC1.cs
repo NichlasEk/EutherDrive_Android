@@ -10,7 +10,7 @@ namespace XamariNES.Cartridge.Mappers.impl
     ///
     ///     More Info: https://wiki.nesdev.com/w/index.php/MMC1
     /// </summary>
-    public class MMC1 : MapperBase, IMapper, ISaveRamProvider
+    public class MMC1 : MapperBase, IMapper, IMapperOpenBusRead, ISaveRamProvider
     {
         /// <summary>
         ///     PRG ROM
@@ -62,7 +62,8 @@ namespace XamariNES.Cartridge.Mappers.impl
 
         //Toggles for RAM
         private readonly bool _useChrRam;
-        private bool _usePrgRam;
+        private readonly bool _hasPrgRam;
+        private bool _prgRamEnabled;
 
         public enumNametableMirroring NametableMirroring { get; set; }
 
@@ -74,13 +75,23 @@ namespace XamariNES.Cartridge.Mappers.impl
             _prgRom = prgRom;
             NametableMirroring = mirroring;
             _useChrRam = useChrRam;
-            _usePrgRam = usePrgRam;
+            _hasPrgRam = usePrgRam;
+            _prgRamEnabled = usePrgRam;
             _prgRam = new byte[Math.Max(1, prgRamSize)];
             BatteryBacked = batteryBacked;
 
             //Set Startup Values
             _registerShift = 0x0C;
             _prgBank1Offset = (_prgRomBanks - 1) * 0x4000;
+        }
+
+        public byte ReadByte(int offset, byte cpuOpenBus)
+        {
+            if (offset >= 0x4020 && offset <= 0x5FFF)
+                return cpuOpenBus;
+            if (offset >= 0x6000 && offset <= 0x7FFF && (!_hasPrgRam || !_prgRamEnabled))
+                return cpuOpenBus;
+            return ReadByte(offset);
         }
 
         /// <summary>
@@ -112,10 +123,10 @@ namespace XamariNES.Cartridge.Mappers.impl
             // PRG RAM Bank == $6000-$7FFF
             if (offset >= 0x6000 && offset <= 0x7FFF)
             {
-                if(!_usePrgRam)
-                    throw new AccessViolationException($"Attempt to read PRG RAM when disabled. Offset ${offset:X4}");
+                if (!_hasPrgRam || !_prgRamEnabled)
+                    return 0x00;
 
-                return _prgRam[offset - 0x6000];
+                return _prgRam[(offset - 0x6000) % _prgRam.Length];
             }
 
             // PRG Bank 0 == $8000-$BFFF
@@ -170,8 +181,8 @@ namespace XamariNES.Cartridge.Mappers.impl
             // PRG RAM Bank == $6000-$7FFF
             if (offset >= 0x6000 && offset <= 0x7FFF)
             {
-                if (!_usePrgRam)
-                    throw new AccessViolationException($"Attempt to write PRG RAM when disabled. Offset ${offset:X4}");
+                if (!_hasPrgRam || !_prgRamEnabled)
+                    return;
 
                 int idx = (offset - 0x6000) % _prgRam.Length;
                 if (_prgRam[idx] != data)
@@ -274,7 +285,8 @@ namespace XamariNES.Cartridge.Mappers.impl
             else
             {
                 _prgBank = _registerShift;
-                _usePrgRam = _registerShift >> 4 == 0;
+                // MMC1 PRG register bit 4 disables PRG RAM when set.
+                _prgRamEnabled = (_registerShift & 0x10) == 0;
             }
 
             //Based off this write, update the offsets of the PRG and CHR Banks
