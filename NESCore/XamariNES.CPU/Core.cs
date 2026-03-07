@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Runtime.CompilerServices;
 using XamariNES.Cartridge.Mappers;
 using XamariNES.Common.Extensions;
@@ -65,14 +64,13 @@ namespace XamariNES.CPU
         ///     Current Instruction being executed
         /// </summary>
         public CPUInstruction Instruction;
-
         [NonSerialized]
-        private readonly bool _traceIrq =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_IRQ"), "1", StringComparison.Ordinal);
+        private readonly bool _traceIllegalStores =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_ILLEGAL_STORES"), "1", StringComparison.Ordinal);
         [NonSerialized]
-        private readonly int _traceIrqLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_IRQ_LIMIT", 2000);
+        private readonly int _traceIllegalStoresLimit = ParseOptionalLimit("EUTHERDRIVE_TRACE_NES_ILLEGAL_STORES_LIMIT", 4000);
         [NonSerialized]
-        private int _traceIrqCount;
+        private int _traceIllegalStoresCount;
 
         /// <summary>
          ///     Used to signal the CPU that an NMI has occured
@@ -2329,6 +2327,51 @@ namespace XamariNES.CPU
                 Cycles = 6,
                 OpCodeExecution = STA
             });
+            output.Add(0x93, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.AHX,
+                AddressingMode = EnumAddressingMode.IndirectIndexed,
+                PageBoundaryCheck = false,
+                Length = 2,
+                Cycles = 6,
+                OpCodeExecution = AHX
+            });
+            output.Add(0x9B, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.TAS,
+                AddressingMode = EnumAddressingMode.AbsoluteY,
+                PageBoundaryCheck = false,
+                Length = 3,
+                Cycles = 5,
+                OpCodeExecution = TAS
+            });
+            output.Add(0x9C, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.SHY,
+                AddressingMode = EnumAddressingMode.AbsoluteX,
+                PageBoundaryCheck = false,
+                Length = 3,
+                Cycles = 5,
+                OpCodeExecution = SHY
+            });
+            output.Add(0x9E, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.SHX,
+                AddressingMode = EnumAddressingMode.AbsoluteY,
+                PageBoundaryCheck = false,
+                Length = 3,
+                Cycles = 5,
+                OpCodeExecution = SHX
+            });
+            output.Add(0x9F, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.AHX,
+                AddressingMode = EnumAddressingMode.AbsoluteY,
+                PageBoundaryCheck = false,
+                Length = 3,
+                Cycles = 5,
+                OpCodeExecution = AHX
+            });
 
             /********************
              *       STX
@@ -2469,6 +2512,95 @@ namespace XamariNES.CPU
                 Cycles = 2,
                 OpCodeExecution = TYA
             });
+
+            /********************
+             * Missing unofficial opcodes
+             *******************/
+            output.Add(0x0B, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.ANC,
+                AddressingMode = EnumAddressingMode.Immediate,
+                PageBoundaryCheck = false,
+                Length = 2,
+                Cycles = 2,
+                OpCodeExecution = ANC
+            });
+            output.Add(0x2B, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.ANC,
+                AddressingMode = EnumAddressingMode.Immediate,
+                PageBoundaryCheck = false,
+                Length = 2,
+                Cycles = 2,
+                OpCodeExecution = ANC
+            });
+            output.Add(0x4B, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.ALR,
+                AddressingMode = EnumAddressingMode.Immediate,
+                PageBoundaryCheck = false,
+                Length = 2,
+                Cycles = 2,
+                OpCodeExecution = ALR
+            });
+            output.Add(0x6B, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.ARR,
+                AddressingMode = EnumAddressingMode.Immediate,
+                PageBoundaryCheck = false,
+                Length = 2,
+                Cycles = 2,
+                OpCodeExecution = ARR
+            });
+            output.Add(0x8B, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.XAA,
+                AddressingMode = EnumAddressingMode.Immediate,
+                PageBoundaryCheck = false,
+                Length = 2,
+                Cycles = 2,
+                OpCodeExecution = XAA
+            });
+            output.Add(0xAB, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.LAX,
+                AddressingMode = EnumAddressingMode.Immediate,
+                PageBoundaryCheck = false,
+                Length = 2,
+                Cycles = 2,
+                OpCodeExecution = LAX
+            });
+            output.Add(0xBB, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.LAS,
+                AddressingMode = EnumAddressingMode.AbsoluteY,
+                PageBoundaryCheck = true,
+                Length = 3,
+                Cycles = 4,
+                OpCodeExecution = LAS
+            });
+            output.Add(0xCB, new CPUInstruction()
+            {
+                Opcode = EnumOpcode.AXS,
+                AddressingMode = EnumAddressingMode.Immediate,
+                PageBoundaryCheck = false,
+                Length = 2,
+                Cycles = 2,
+                OpCodeExecution = AXS
+            });
+
+            output.Add(0x02, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0x12, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0x22, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0x32, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0x42, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0x52, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0x62, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0x72, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0x92, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0xB2, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0xD2, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
+            output.Add(0xF2, new CPUInstruction() { Opcode = EnumOpcode.KIL, AddressingMode = EnumAddressingMode.Implicit, PageBoundaryCheck = false, Length = 0, Cycles = 2, OpCodeExecution = KIL });
             #endregion
 
             return output;
@@ -2519,46 +2651,30 @@ namespace XamariNES.CPU
         public int Tick()
         {
             CPUMemory.BeginInstruction();
-            CPUMemory.TracePc = PC;
-            long startCycles = Cycles;
-            bool handledInterrupt = false;
-
             //Check for NMI Interrupt
             if (NMI)
             {
-                int fromPc = PC;
                 Push((ushort)PC);
-                Push((byte)(Status.ToByte() & 0b1110_1111));
+                Push(Status.ToByte());
                 PC = BitConverter.ToUInt16(new[] { CPUMemory.ReadByte(0xFFFA), CPUMemory.ReadByte(0xFFFB) }, 0);
                 Status.InterruptDisable = true;
                 NMI = false;
-                handledInterrupt = true;
-                TraceIrq($"[NES-NMI] from=0x{fromPc:X4} to=0x{PC:X4} cyc={Cycles}");
             }
             else if (IRQ && !Status.InterruptDisable)
             {
-                int fromPc = PC;
                 Push((ushort)PC);
                 Push((byte)(Status.ToByte() & 0b1110_1111));
                 PC = BitConverter.ToUInt16(new[] { CPUMemory.ReadByte(0xFFFE), CPUMemory.ReadByte(0xFFFF) }, 0);
                 Status.InterruptDisable = true;
                 IRQ = false;
-                handledInterrupt = true;
-                TraceIrq($"[NES-IRQ] from=0x{fromPc:X4} to=0x{PC:X4} cyc={Cycles}");
-            }
-
-            if (handledInterrupt)
-            {
-                Cycles += 7;
-                return 7;
             }
 
             //Decode
             byte opcode = CPUMemory.ReadByte(PC);
             if (!_cpuInstructions.TryGetValue(opcode, out CPUInstruction decoded))
             {
-                // Treat unknown opcodes as 1-byte NOP to avoid hard crashes in games that hit
-                // undocumented opcodes or transient bad fetches.
+                // Keep running on undocumented/unimplemented opcodes.
+                // Treat as 1-byte NOP for compatibility until full opcode coverage is in place.
                 PC = (PC + 1) & 0xFFFF;
                 Cycles += 2;
                 return 2;
@@ -2572,26 +2688,7 @@ namespace XamariNES.CPU
             PC += Instruction.Length;
             Cycles += Instruction.Cycles;
 
-            return (int)(Cycles - startCycles);
-        }
-
-        private void TraceIrq(string line)
-        {
-            if (!_traceIrq || _traceIrqCount >= _traceIrqLimit)
-                return;
-            Console.WriteLine(line);
-            if (_traceIrqCount != int.MaxValue)
-                _traceIrqCount++;
-        }
-
-        private static int ParseTraceLimit(string name, int fallback)
-        {
-            string raw = Environment.GetEnvironmentVariable(name);
-            if (string.IsNullOrWhiteSpace(raw))
-                return fallback;
-            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
-                return fallback;
-            return value <= 0 ? int.MaxValue : value;
+            return Instruction.Cycles;
         }
 
         /// <summary>
@@ -3153,6 +3250,94 @@ namespace XamariNES.CPU
         }
 
         /// <summary>
+        ///     LAS - Undocumented Opcode (aka LAR)
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void LAS()
+        {
+            byte value = CPUMemory.ReadByte(ResolveAddress());
+            byte result = (byte)(SP & value);
+            A = result;
+            X = result;
+            SP = result;
+            Status.Zero = result == 0;
+            Status.Negative = result.IsNegative();
+        }
+
+        /// <summary>
+        ///     ANC - Undocumented Opcode
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ANC()
+        {
+            A &= GetOperandByte();
+            Status.Zero = A == 0;
+            Status.Negative = A.IsNegative();
+            Status.Carry = A.IsNegative();
+        }
+
+        /// <summary>
+        ///     ALR - Undocumented Opcode
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ALR()
+        {
+            A &= GetOperandByte();
+            Status.Carry = (A & 0x01) != 0;
+            A >>= 1;
+            Status.Zero = A == 0;
+            Status.Negative = A.IsNegative();
+        }
+
+        /// <summary>
+        ///     ARR - Undocumented Opcode
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ARR()
+        {
+            A &= GetOperandByte();
+            int carryIn = Status.Carry ? 0x80 : 0x00;
+            A = (byte)((A >> 1) | carryIn);
+            Status.Zero = A == 0;
+            Status.Negative = A.IsNegative();
+            Status.Carry = (A & 0x40) != 0;
+            Status.Overflow = ((A >> 6) & 0x01) != ((A >> 5) & 0x01);
+        }
+
+        /// <summary>
+        ///     XAA - Undocumented Opcode
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void XAA()
+        {
+            A = (byte)(X & GetOperandByte());
+            Status.Zero = A == 0;
+            Status.Negative = A.IsNegative();
+        }
+
+        /// <summary>
+        ///     AXS - Undocumented Opcode (aka SBX)
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void AXS()
+        {
+            int result = (A & X) - GetOperandByte();
+            Status.Carry = result >= 0;
+            X = (byte)result;
+            Status.Zero = X == 0;
+            Status.Negative = X.IsNegative();
+        }
+
+        /// <summary>
+        ///     KIL/JAM - Undocumented CPU lock opcode.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void KIL()
+        {
+            // Halt by keeping PC on the same opcode (Length=0 in decode table).
+        }
+
+        /// <summary>
         ///     LDA - Load Accumulator
         /// 
         ///     A,Z,N = M
@@ -3421,6 +3606,105 @@ namespace XamariNES.CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SAX() =>
             CPUMemory.WriteByte(ResolveAddress(), (byte) (A & X));
+
+        /// <summary>
+        ///     SHX - Undocumented Opcode (aka SXA)
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SHX()
+        {
+            ushort baseAddress = GetOperandWord();
+            bool overflowed = ((baseAddress & 0x00FF) + Y) > 0x00FF;
+            ushort address = (ushort)(baseAddress + Y);
+            byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
+            byte value = (byte)(X & highMask);
+            TraceIllegalStore("SHX", baseAddress, address, value, overflowed);
+            if (!overflowed)
+                CPUMemory.WriteByte(address, value);
+        }
+
+        /// <summary>
+        ///     SHY - Undocumented Opcode (aka SYA)
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SHY()
+        {
+            ushort baseAddress = GetOperandWord();
+            bool overflowed = ((baseAddress & 0x00FF) + X) > 0x00FF;
+            ushort address = (ushort)(baseAddress + X);
+            byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
+            byte value = (byte)(Y & highMask);
+            TraceIllegalStore("SHY", baseAddress, address, value, overflowed);
+            if (!overflowed)
+                CPUMemory.WriteByte(address, value);
+        }
+
+        /// <summary>
+        ///     AHX - Undocumented Opcode (aka AXA)
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void AHX()
+        {
+            ushort baseAddress;
+            ushort address;
+            bool overflowed;
+
+            if (Instruction.AddressingMode == EnumAddressingMode.AbsoluteY)
+            {
+                baseAddress = GetOperandWord();
+                address = (ushort)(baseAddress + Y);
+                overflowed = ((baseAddress & 0x00FF) + Y) > 0x00FF;
+            }
+            else
+            {
+                byte zpAddress = GetOperandByte();
+                baseAddress = GetWord(zpAddress, true);
+                address = (ushort)(baseAddress + Y);
+                overflowed = ((baseAddress & 0x00FF) + Y) > 0x00FF;
+            }
+
+            byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
+            byte value = (byte)(A & X & highMask);
+            TraceIllegalStore("AHX", baseAddress, address, value, overflowed);
+            if (!overflowed)
+                CPUMemory.WriteByte(address, value);
+        }
+
+        /// <summary>
+        ///     TAS - Undocumented Opcode (aka SHS)
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void TAS()
+        {
+            SP = (byte)(A & X);
+            ushort baseAddress = GetOperandWord();
+            bool overflowed = ((baseAddress & 0x00FF) + Y) > 0x00FF;
+            ushort address = (ushort)(baseAddress + Y);
+            byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
+            byte value = (byte)(SP & highMask);
+            TraceIllegalStore("TAS", baseAddress, address, value, overflowed);
+            if (!overflowed)
+                CPUMemory.WriteByte(address, value);
+        }
+
+        private void TraceIllegalStore(string op, ushort baseAddress, ushort address, byte value, bool skipped)
+        {
+            if (!_traceIllegalStores || _traceIllegalStoresCount >= _traceIllegalStoresLimit)
+                return;
+            Console.WriteLine($"[NES-ILL] op={op} pc=0x{PC & 0xFFFF:X4} base=0x{baseAddress:X4} addr=0x{address:X4} val=0x{value:X2} skip={(skipped ? 1 : 0)} a=0x{A:X2} x=0x{X:X2} y=0x{Y:X2}");
+            if (_traceIllegalStoresCount != int.MaxValue)
+                _traceIllegalStoresCount++;
+        }
+
+        private static int ParseOptionalLimit(string name, int fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), out int value))
+                return fallback;
+            return value <= 0 ? int.MaxValue : value;
+        }
 
         /// <summary>
         ///     SBC - Subtract with Carry
@@ -3733,17 +4017,23 @@ namespace XamariNES.CPU
                 case EnumAddressingMode.Relative:
                     if (Instruction.PageBoundaryCheck)
                         CheckBoundary(GetOperandSByte() + PC, PC);
-                    return (ushort)(GetOperandSByte() + PC);
+                    return  GetOperandSByte() + PC;
                 case EnumAddressingMode.AbsoluteX:
                     if (Instruction.PageBoundaryCheck)
                         CheckBoundary(GetOperandWord() + X, GetOperandWord());
-                    return (ushort)(GetOperandWord() + X);
+                    return  GetOperandWord() + X;
                 case EnumAddressingMode.AbsoluteY:
                     if (Instruction.PageBoundaryCheck)
                         CheckBoundary(GetOperandWord() + Y, GetOperandWord());
 
                     var targetAbsoluteYOffset = GetOperandWord();
-                    return (ushort)(targetAbsoluteYOffset + Y);
+                    //Check special case where 0xFFFF wraps back to 0x0000
+                    if (targetAbsoluteYOffset == 0xFFFF)
+                    {
+                        return Y - 1;
+                    }
+
+                    return targetAbsoluteYOffset + Y;
                 case EnumAddressingMode.Indirect:
                     return GetWord(GetOperandWord());
                 case EnumAddressingMode.IndexedIndirect:
@@ -3759,7 +4049,13 @@ namespace XamariNES.CPU
                         CheckBoundary( GetWord(GetOperandByte(), true) + Y, GetWord(GetOperandByte(), true));
 
                     var targetOffset = GetWord(GetOperandByte(), true);
-                    return (ushort)(targetOffset + Y);
+                    //Check special case where 0xFFFF wraps back to 0x0000
+                    if (targetOffset == 0xFFFF)
+                    {
+                        return Y-1;
+                    }
+
+                    return targetOffset + Y;
                     
                 default:
                     throw new Exception("Unknown Addressing Mode");
