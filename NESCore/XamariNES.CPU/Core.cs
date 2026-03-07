@@ -2554,7 +2554,16 @@ namespace XamariNES.CPU
             }
 
             //Decode
-            Instruction = _cpuInstructions[CPUMemory.ReadByte(PC)];
+            byte opcode = CPUMemory.ReadByte(PC);
+            if (!_cpuInstructions.TryGetValue(opcode, out CPUInstruction decoded))
+            {
+                // Treat unknown opcodes as 1-byte NOP to avoid hard crashes in games that hit
+                // undocumented opcodes or transient bad fetches.
+                PC = (PC + 1) & 0xFFFF;
+                Cycles += 2;
+                return 2;
+            }
+            Instruction = decoded;
 
             //Execute
             Instruction.OpCodeExecution.Invoke();
