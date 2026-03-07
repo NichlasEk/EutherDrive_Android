@@ -73,6 +73,23 @@ namespace XamariNES.CPU
         private readonly int _traceIrqLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_IRQ_LIMIT", 2000);
         [NonSerialized]
         private int _traceIrqCount;
+        [NonSerialized]
+        private readonly bool _tracePcRangeEnabled;
+        [NonSerialized]
+        private readonly int _tracePcRangeStart;
+        [NonSerialized]
+        private readonly int _tracePcRangeEnd;
+        [NonSerialized]
+        private readonly int _tracePcRangeLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_PC_RANGE_LIMIT", 20000);
+        [NonSerialized]
+        private int _tracePcRangeCount;
+        [NonSerialized]
+        private readonly bool _traceCpuInstr =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_CPU_INSTR"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceCpuInstrLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_CPU_INSTR_LIMIT", 200000);
+        [NonSerialized]
+        private int _traceCpuInstrCount;
 
         /// <summary>
         ///     Used to signal the CPU that an NMI has occured
@@ -99,6 +116,7 @@ namespace XamariNES.CPU
             Status = new CPUStatus();
             Instruction = new CPUInstruction();
             CPUMemory = new Memory(memoryMapper, controller, apu);
+            (_tracePcRangeEnabled, _tracePcRangeStart, _tracePcRangeEnd) = ParsePcRangeEnv("EUTHERDRIVE_TRACE_NES_PC_RANGE");
 
             //Setup the Instructions
             _cpuInstructions = DeclareInstructions();
@@ -2557,13 +2575,14 @@ namespace XamariNES.CPU
             byte opcode = CPUMemory.ReadByte(PC);
             if (!_cpuInstructions.TryGetValue(opcode, out CPUInstruction decoded))
             {
-                // Treat unknown opcodes as 1-byte NOP to avoid hard crashes in games that hit
-                // undocumented opcodes or transient bad fetches.
+                // Keep execution alive on undocumented/bad opcodes so games can continue.
                 PC = (PC + 1) & 0xFFFF;
                 Cycles += 2;
                 return 2;
             }
             Instruction = decoded;
+            TraceCpuInstruction(opcode);
+            TracePcRange(opcode);
 
             //Execute
             Instruction.OpCodeExecution.Invoke();
@@ -2582,6 +2601,64 @@ namespace XamariNES.CPU
             Console.WriteLine(line);
             if (_traceIrqCount != int.MaxValue)
                 _traceIrqCount++;
+        }
+
+        private void TracePcRange(byte opcode)
+        {
+            if (!_tracePcRangeEnabled || _tracePcRangeCount >= _tracePcRangeLimit)
+                return;
+
+            int pc16 = PC & 0xFFFF;
+            if (pc16 < _tracePcRangeStart || pc16 > _tracePcRangeEnd)
+                return;
+
+            byte b1 = CPUMemory.ReadByte((PC + 1) & 0xFFFF);
+            byte b2 = CPUMemory.ReadByte((PC + 2) & 0xFFFF);
+            Console.WriteLine(
+                $"[NES-PC-RANGE] pc=0x{pc16:X4} op={opcode:X2} b1={b1:X2} b2={b2:X2} A={A:X2} X={X:X2} Y={Y:X2} SP={SP:X2} P={Status.ToByte():X2} cyc={Cycles}");
+            if (_tracePcRangeCount != int.MaxValue)
+                _tracePcRangeCount++;
+        }
+
+        private void TraceCpuInstruction(byte opcode)
+        {
+            if (!_traceCpuInstr || _traceCpuInstrCount >= _traceCpuInstrLimit)
+                return;
+
+            int pc16 = PC & 0xFFFF;
+            byte b1 = CPUMemory.ReadByte((PC + 1) & 0xFFFF);
+            byte b2 = CPUMemory.ReadByte((PC + 2) & 0xFFFF);
+            Console.WriteLine(
+                $"[ED-NES-INSN] idx={_traceCpuInstrCount} cyc={Cycles} pc=0x{pc16:X4} op={opcode:X2} b1={b1:X2} b2={b2:X2} A={A:X2} X={X:X2} Y={Y:X2} SP={SP:X2} P={Status.ToByte():X2}");
+            if (_traceCpuInstrCount != int.MaxValue)
+                _traceCpuInstrCount++;
+        }
+
+        private static (bool enabled, int start, int end) ParsePcRangeEnv(string name)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return (false, 0, 0);
+
+            string[] parts = raw.Split(new[] { '-' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 2)
+                return (false, 0, 0);
+
+            string startRaw = parts[0].Trim().Replace("0x", "").Replace("0X", "");
+            string endRaw = parts[1].Trim().Replace("0x", "").Replace("0X", "");
+
+            bool okStart = int.TryParse(startRaw,
+                NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int start);
+            bool okEnd = int.TryParse(endRaw,
+                NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int end);
+            if (!okStart || !okEnd)
+                return (false, 0, 0);
+
+            start &= 0xFFFF;
+            end &= 0xFFFF;
+            if (end < start)
+                (start, end) = (end, start);
+            return (true, start, end);
         }
 
         private static int ParseTraceLimit(string name, int fallback)
@@ -2606,16 +2683,16 @@ namespace XamariNES.CPU
         private void ADC()
         {
             var value = Instruction.AddressingMode == EnumAddressingMode.Immediate ? GetOperandByte() : CPUMemory.ReadByte(ResolveAddress());
+            int carryIn = Status.Carry ? 1 : 0;
+            int sum = A + value + carryIn;
+            byte result = (byte)sum;
 
-            unchecked
-            {
-                var newA = (sbyte)A + (sbyte)value + (Status.Carry ? 1 : 0);
-                Status.Zero = (byte)newA == 0;
-                Status.Negative = ((byte)newA).IsNegative();
-                Status.Carry = A + value + (Status.Carry ? 1 : 0) > byte.MaxValue;
-                Status.Overflow = newA > 127 || newA < -128;
-                A = (byte)newA;
-            }
+            // NMOS 6502/NES uses binary arithmetic regardless of decimal flag.
+            Status.Carry = sum > 0xFF;
+            Status.Overflow = (((A ^ result) & (value ^ result) & 0x80) != 0);
+            A = result;
+            Status.Zero = A == 0;
+            Status.Negative = A.IsNegative();
         }
 
         /// <summary>
@@ -3434,17 +3511,15 @@ namespace XamariNES.CPU
         public void SBC()
         {
             var value = Instruction.AddressingMode == EnumAddressingMode.Immediate ? GetOperandByte() : CPUMemory.ReadByte(ResolveAddress());
+            int carryIn = Status.Carry ? 1 : 0;
+            int diff = A - value - (1 - carryIn);
+            byte result = (byte)diff;
 
-            unchecked
-            {
-                var newA = (sbyte)A - (sbyte)value - (1- (Status.Carry ? 1 : 0));
-
-                Status.Zero = (byte)newA == 0;
-                Status.Negative = ((byte)newA).IsNegative();
-                Status.Carry = A - value - (1 - (Status.Carry ? 1 : 0)) >=  byte.MinValue && A - value - (1 - (Status.Carry ? 1 : 0)) <= byte.MaxValue ;
-                Status.Overflow = newA > 127 || newA < -128;
-                A = (byte)newA;
-            }
+            Status.Carry = diff >= 0;
+            Status.Overflow = (((A ^ value) & (A ^ result) & 0x80) != 0);
+            A = result;
+            Status.Zero = A == 0;
+            Status.Negative = A.IsNegative();
         }
 
         /// <summary>
