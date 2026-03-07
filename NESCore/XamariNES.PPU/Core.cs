@@ -401,7 +401,7 @@ namespace XamariNES.PPU
                 _cycleState |= CycleStateFlags.Visible;
 
                 //Reset NMIOccurred on Prerender of Scanline 1
-                if (_currentCycle == 1 && _scanLineState.IsFlagSet(ScanLineStateFlags.PreRender))
+                if (_currentCycle == 2 && _scanLineState.IsFlagSet(ScanLineStateFlags.PreRender))
                 {
                     SetVerticalBlank(false);
                     _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.SpriteOverflow);
@@ -563,7 +563,7 @@ namespace XamariNES.PPU
             Cycles++;
 
             // Trigger an NMI at the start of _scanline 241 if VBLANK NMI's are enabled
-            if (_currentScanline == 241 && _currentCycle == 1)
+            if (_currentScanline == 241 && _currentCycle == 2)
             {
                 SetVerticalBlank(true);
             }
