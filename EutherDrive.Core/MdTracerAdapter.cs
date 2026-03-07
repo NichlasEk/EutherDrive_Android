@@ -2626,6 +2626,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                         while (remaining > 0)
                         {
                             int slice = Math.Min(svpSliceCycles, remaining);
+                            int beforeCycles = md_m68k.g_clock_now;
                             if (TracePerf)
                             {
                                 long cpuStart = Stopwatch.GetTimestamp();
@@ -2637,9 +2638,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                                 _cpu.RunSome(budget: slice);
                             }
 
-                            svpOverride.Tick((uint)slice);
-                            md_main.AdvanceSystemCycles(slice);
-                            md_main.AddM68kCycles(slice);
+                            int ranCycles = md_m68k.g_clock_now - beforeCycles;
+                            if (ranCycles <= 0)
+                                ranCycles = slice;
+
+                            svpOverride.Tick((uint)ranCycles);
+                            md_main.AdvanceSystemCycles(ranCycles);
+                            md_main.AddM68kCycles(ranCycles);
                             remaining -= slice;
                         }
                     }
