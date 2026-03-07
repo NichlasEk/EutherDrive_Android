@@ -2595,6 +2595,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 int z80Budget = md_main.GetZ80CyclesPerLine();
                 int cpuBudget = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
                 bool useCycleCounterZ80Scheduling = md_main.IsCycleCounterZ80SchedulingEnabled();
+                bool svpActive = md_main.g_md_bus?.OverrideBus is SvpBusOverride;
 
                 for (int v = 0; v < vlines; v++)
                 {
@@ -2612,30 +2613,56 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                         }
                     }
 
-                    if (TracePerf)
-                    {
-                        long cpuStart = Stopwatch.GetTimestamp();
-                        _cpu.RunSome(budget: cpuBudget);
-                        cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
-                    }
-                    else
-                    {
-                        _cpu.RunSome(budget: cpuBudget);
-                    }
-                    // Captain America can wedge in semaphore wait loops mid-frame;
-                    // detect/recover in slice-time instead of only frame boundaries.
-                    MaybeCaptainAmericaMailboxRecovery(frame);
-                    if (md_main.g_md_bus?.OverrideBus is SvpBusOverride svpOverride)
+                    if (svpActive && md_main.g_md_bus?.OverrideBus is SvpBusOverride svpOverride)
                     {
                         if (!_svpTickLoggedInAdapter)
                         {
                             _svpTickLoggedInAdapter = true;
                             Console.WriteLine("[SVP] tick active (MdTracerAdapter slice path)");
                         }
-                        svpOverride.Tick((uint)cpuBudget);
+
+                        int remaining = cpuBudget;
+                        const int svpSliceCycles = 32;
+                        while (remaining > 0)
+                        {
+                            int slice = Math.Min(svpSliceCycles, remaining);
+                            if (TracePerf)
+                            {
+                                long cpuStart = Stopwatch.GetTimestamp();
+                                _cpu.RunSome(budget: slice);
+                                cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+                            }
+                            else
+                            {
+                                _cpu.RunSome(budget: slice);
+                            }
+
+                            svpOverride.Tick((uint)slice);
+                            md_main.AdvanceSystemCycles(slice);
+                            md_main.AddM68kCycles(slice);
+                            remaining -= slice;
+                        }
                     }
-                    md_main.AdvanceSystemCycles(cpuBudget);
-                    md_main.AddM68kCycles(cpuBudget);
+                    else
+                    {
+                        if (TracePerf)
+                        {
+                            long cpuStart = Stopwatch.GetTimestamp();
+                            _cpu.RunSome(budget: cpuBudget);
+                            cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+                        }
+                        else
+                        {
+                            _cpu.RunSome(budget: cpuBudget);
+                        }
+
+                        md_main.AdvanceSystemCycles(cpuBudget);
+                        md_main.AddM68kCycles(cpuBudget);
+                    }
+
+                    // Captain America can wedge in semaphore wait loops mid-frame;
+                    // detect/recover in slice-time instead of only frame boundaries.
+                    MaybeCaptainAmericaMailboxRecovery(frame);
 
                     if (allowZ80)
                     {
