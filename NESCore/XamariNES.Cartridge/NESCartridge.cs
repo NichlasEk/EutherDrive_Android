@@ -105,7 +105,30 @@ namespace XamariNES.Cartridge
             //Set Flags7
             Flags7 = ROM[7];
 
-            var prgRAMSize = ROM[8] == 0 ? 8192 : ROM[8] * 8192; //0 denoted default 8k
+            bool isNes2Header = (Flags7 & 0x0C) == 0x08;
+            int mapperNumberForRam = Flags7 & 0xF0 | (Flags6 >> 4 & 0xF);
+            if (isNes2Header && ROM.Length > 8)
+                mapperNumberForRam |= (ROM[8] & 0x0F) << 8;
+
+            int prgRAMSize;
+            if (isNes2Header && ROM.Length > 10)
+            {
+                // NES 2.0: byte 10 encodes PRG-RAM/NVRAM sizes as 64 << shift, 0 means none.
+                int volatileShift = ROM[10] & 0x0F;
+                int nonVolatileShift = (ROM[10] >> 4) & 0x0F;
+                int volatileRam = volatileShift > 0 ? (64 << volatileShift) : 0;
+                int nonVolatileRam = nonVolatileShift > 0 ? (64 << nonVolatileShift) : 0;
+                prgRAMSize = volatileRam + nonVolatileRam;
+
+                // Keep MMC5 compatibility with headers that omit RAM size.
+                if (mapperNumberForRam == 5 && prgRAMSize == 0)
+                    prgRAMSize = 65536;
+            }
+            else
+            {
+                // iNES 1.0: byte 8 units are 8KB; 0 implies default 8KB.
+                prgRAMSize = ROM[8] == 0 ? 8192 : ROM[8] * 8192;
+            }
             _prgRam = new byte[prgRAMSize];
             bool usePrgRam = prgRAMSize > 0;
 
@@ -233,8 +256,14 @@ namespace XamariNES.Cartridge
                 case 76:
                 case 88:
                 case 95:
+                case 148:
                 case 154:
                 case 206:
+                    if (mapperNumber == 148)
+                    {
+                        MemoryMapper = new Mapper148(_prgRom, _chrRom, UsesCHRRAM, _nametableMirroring);
+                        break;
+                    }
                     MemoryMapper = new MMC3(_prgRom, _chrRom, UsesCHRRAM, prgRAMSize, batteryBacked, _nametableMirroring);
                     break;
                 case 69:
