@@ -13,7 +13,7 @@ internal sealed class SvpCore
     private const int StackLen = 6;
 
     private const uint ExternalMemoryMask = (1u << 21) - 1;
-    private static readonly int SvpInstructionsPerM68kCycle = ParsePositiveIntEnv("EUTHERDRIVE_SVP_INSNS_PER_M68K", 2);
+    private static readonly int SvpInstructionsPerM68kCycle = ParsePositiveIntEnv("EUTHERDRIVE_SVP_INSNS_PER_M68K", 3);
 
     internal enum PmcWaitingFor
     {

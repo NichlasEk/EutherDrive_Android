@@ -186,7 +186,7 @@ internal static class Ssp1601
     {
         var r = svp.RegistersState;
         ushort operand = svp.ReadProgramMemory(r.Pc, romBytes);
-        r.Pc++;
+        r.Pc = unchecked((ushort)(r.Pc + 1));
         return operand;
     }
 
@@ -783,7 +783,7 @@ internal static class Ssp1601
             case 0:
                 return;
             case 1:
-                register++;
+                register = unchecked((byte)(register + 1));
                 return;
             case 2:
                 register = ModuloDecrement(register, loopModulo);
@@ -799,13 +799,13 @@ internal static class Ssp1601
     private static byte ModuloIncrement(byte value, byte modulo)
     {
         byte mask = unchecked((byte)(modulo - 1));
-        return (byte)((value & ~mask) | ((value + 1) & mask));
+        return unchecked((byte)((value & ~mask) | ((value + 1) & mask)));
     }
 
     private static byte ModuloDecrement(byte value, byte modulo)
     {
         byte mask = unchecked((byte)(modulo - 1));
-        return (byte)((value & ~mask) | ((value - 1) & mask));
+        return unchecked((byte)((value & ~mask) | ((value - 1) & mask)));
     }
 
     private static bool TryAluOpFromOpcode(ushort opcode, out AluOp aluOp)
