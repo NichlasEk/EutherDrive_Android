@@ -2622,7 +2622,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                         }
 
                         int remaining = cpuBudget;
-                        const int svpSliceCycles = 32;
+                        const int svpSliceCycles = 16;
                         while (remaining > 0)
                         {
                             int slice = Math.Min(svpSliceCycles, remaining);

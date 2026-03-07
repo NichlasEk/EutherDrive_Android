@@ -13,6 +13,7 @@ internal sealed class SvpCore
     private const int StackLen = 6;
 
     private const uint ExternalMemoryMask = (1u << 21) - 1;
+    private static readonly int SvpInstructionsPerM68kCycle = ParsePositiveIntEnv("EUTHERDRIVE_SVP_INSNS_PER_M68K", 2);
 
     internal enum PmcWaitingFor
     {
@@ -250,7 +251,7 @@ internal sealed class SvpCore
             return;
         }
 
-        uint instructionCount = 3u * m68kCycles;
+        uint instructionCount = (uint)SvpInstructionsPerM68kCycle * m68kCycles;
         for (uint i = 0; i < instructionCount; i++)
         {
             if (RegistersState.Pc is 0x0425 or 0x2789)
@@ -429,6 +430,14 @@ internal sealed class SvpCore
     private static bool Bit(ushort value, int bit)
     {
         return ((value >> bit) & 1) != 0;
+    }
+
+    private static int ParsePositiveIntEnv(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+        return fallback;
     }
 
     internal static ushort ReadRomWordByWordAddress(ReadOnlySpan<byte> romBytes, int wordAddress)
