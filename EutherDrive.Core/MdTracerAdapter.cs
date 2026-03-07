@@ -2644,7 +2644,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
                             svpOverride.Tick((uint)ranCycles);
                             md_main.AdvanceSystemCycles(ranCycles);
-                            md_main.AddM68kCycles(ranCycles);
                             remaining -= slice;
                         }
                     }
@@ -2662,7 +2661,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                         }
 
                         md_main.AdvanceSystemCycles(cpuBudget);
-                        md_main.AddM68kCycles(cpuBudget);
                     }
 
                     // Captain America can wedge in semaphore wait loops mid-frame;

@@ -1375,6 +1375,12 @@ private static readonly bool SpriteLinkSequential =
 
         private static InterlaceOutputPolicy ParseInterlaceOutputPolicy(string? raw)
         {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                Console.WriteLine("[VDP-INTERLACE] Parsed InterlaceOutputPolicy: SingleField (default)");
+                return InterlaceOutputPolicy.SingleField;
+            }
+
             if (string.Equals(raw, "single_field", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(raw, "single", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(raw, "bob", StringComparison.OrdinalIgnoreCase))
@@ -1382,8 +1388,17 @@ private static readonly bool SpriteLinkSequential =
                 Console.WriteLine($"[VDP-INTERLACE] Parsed InterlaceOutputPolicy: SingleField (raw='{raw}')");
                 return InterlaceOutputPolicy.SingleField;
             }
-            Console.WriteLine($"[VDP-INTERLACE] Parsed InterlaceOutputPolicy: DoubleField (raw='{raw}')");
-            return InterlaceOutputPolicy.DoubleField;
+
+            if (string.Equals(raw, "double_field", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "double", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "weave", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"[VDP-INTERLACE] Parsed InterlaceOutputPolicy: DoubleField (raw='{raw}')");
+                return InterlaceOutputPolicy.DoubleField;
+            }
+
+            Console.WriteLine($"[VDP-INTERLACE] Unknown policy '{raw}', using SingleField");
+            return InterlaceOutputPolicy.SingleField;
         }
 
         private static bool TryParseVramRange(string? raw, out int start, out int end)

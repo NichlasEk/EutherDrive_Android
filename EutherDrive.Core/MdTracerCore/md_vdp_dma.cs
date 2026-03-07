@@ -589,6 +589,15 @@ namespace EutherDrive.Core.MdTracerCore
                 _dmaOpenBus = value;
                 value = delayed;
             }
+
+            // SVP (Virtua Racing): memory-to-VRAM DMA reads are also delayed by one word.
+            // jgenesis does this at physical-medium level for all cart-space DMA reads.
+            if (bus?.OverrideBus is SvpBusOverride && address <= 0x3FFFFF)
+            {
+                ushort delayed = _dmaOpenBus;
+                _dmaOpenBus = value;
+                value = delayed;
+            }
             if (TraceDmaSourceReads && _traceDmaSourceRemaining > 0)
             {
                 if (_traceDmaSourceRemaining != int.MaxValue)
