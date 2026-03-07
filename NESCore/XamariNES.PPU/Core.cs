@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using XamariNES.Cartridge.Mappers;
 using XamariNES.Common.Extensions;
@@ -88,9 +89,15 @@ namespace XamariNES.PPU
         public long Cycles;
 
         /// <summary>
-        ///     Signals if an NMI has occured
+        ///     Signals if an NMI edge has been latched and is pending CPU delivery
         /// </summary>
-        public bool NMI;
+        public bool NMI
+        {
+            get => _nmiPending;
+            set => _nmiPending = value;
+        }
+        private bool _nmiLine;
+        private bool _nmiPending;
 
         /// <summary>
         ///     PPU Memory Space
@@ -99,6 +106,23 @@ namespace XamariNES.PPU
 
         [NonSerialized]
         private readonly IMapper _memoryMapper;
+        [NonSerialized]
+        private readonly bool _tracePpuRegs =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_PPU_REGS"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _tracePpuRegsLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_PPU_REGS_LIMIT", 4000);
+        [NonSerialized]
+        private int _tracePpuRegsCount;
+        [NonSerialized]
+        private readonly bool _tracePpuRegsIncludeData =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_PPU_REGS_INCLUDE_DATA"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly bool _traceVblank =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_VBLANK"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceVblankLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_VBLANK_LIMIT", 2000);
+        [NonSerialized]
+        private int _traceVblankCount;
 
         /// <summary>
         ///     PPU Constructor
@@ -128,11 +152,13 @@ namespace XamariNES.PPU
 
                 //Update Register
                 _registerPPUCTRL = value;
+                TracePpuReg("PPUCTRL", value);
                 if (memoryMapper is IPpuCtrlObserver ctrlObserver)
                     ctrlObserver.OnPpuCtrlWrite(value);
 
                 //Cache the new value here
                 _registerPPUSCROLL = (_registerPPUSCROLL & 0xF3FF) | ((value & 0x03) << 10);
+                RefreshNmiOutput();
             }, 0x2000);
 
             //PPUMASK ($2001, WRITE)
@@ -141,6 +167,7 @@ namespace XamariNES.PPU
                 UpdatePPUSTATUSRegister(value);
 
                 _registerPPUMASK = value;
+                TracePpuReg("PPUMASK", value);
                 if (memoryMapper is IPpuMaskObserver maskObserver)
                     maskObserver.OnPpuMaskWrite(value);
             }, 0x2001);
@@ -149,7 +176,7 @@ namespace XamariNES.PPU
             memoryMapper.RegisterReadInterceptor(delegate
             {
                 var output = _registerPPUSTATUS;
-                _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.VerticalBlankStarted);
+                SetVerticalBlank(false);
                 _writeOrderToggle = 0;
                 return output;
 
@@ -188,6 +215,7 @@ namespace XamariNES.PPU
                     _registerPPUSCROLL = (_registerPPUSCROLL & 0xFFE0) | (value >> 3);
                     _X = (byte) (value & 0x07);
                     _writeOrderToggle = 1;
+                    TracePpuReg("PPUSCROLL-X", value);
                 }
                 else
                 {
@@ -195,6 +223,7 @@ namespace XamariNES.PPU
                     _registerPPUSCROLL |= (value & 0x07) << 12; // CBA
                     _registerPPUSCROLL |= (value & 0xF8) << 2; // HG FED
                     _writeOrderToggle = 0;
+                    TracePpuReg("PPUSCROLL-Y", value);
                 }
             }, 0x2005);
 
@@ -208,12 +237,14 @@ namespace XamariNES.PPU
                 {
                     _registerPPUSCROLL = (_registerPPUSCROLL & 0x00FF) | (value << 8);
                     _writeOrderToggle = 1;
+                    TracePpuReg("PPUADDR-H", value);
                 }
                 else
                 {
                     _registerPPUSCROLL = (_registerPPUSCROLL & 0xFF00) | value;
                     _registerPPUADDR = _registerPPUSCROLL;
                     _writeOrderToggle = 0;
+                    TracePpuReg("PPUADDR-L", value);
                 }
             }, 0x2006);
 
@@ -257,6 +288,7 @@ namespace XamariNES.PPU
                     dataObserver.OnPpuDataAccess();
 
                 PPUMemory.WriteByte(_registerPPUADDR, value);
+                TracePpuReg("PPUDATA", value);
 
                 //Increment PPU VRAM Address depending on VRAMAddressIncrement Flag
                 _registerPPUADDR +=
@@ -273,6 +305,27 @@ namespace XamariNES.PPU
                     UpdatePPUSTATUSRegister(value);
                     _oamData = dmaWriteDelegate(_oamData, _registerOAMADDR, value << 8);
                 }, 0x4014);
+        }
+
+        private void TracePpuReg(string reg, byte value)
+        {
+            if (!_tracePpuRegs || _tracePpuRegsCount >= _tracePpuRegsLimit)
+                return;
+            if (!_tracePpuRegsIncludeData && string.Equals(reg, "PPUDATA", StringComparison.Ordinal))
+                return;
+            Console.WriteLine($"[NES-PPU-W] cyc={Cycles} scan={_currentScanline} dot={_currentCycle} reg={reg} val=0x{value:X2} mask=0x{_registerPPUMASK:X2} ctrl=0x{_registerPPUCTRL:X2}");
+            if (_tracePpuRegsCount != int.MaxValue)
+                _tracePpuRegsCount++;
+        }
+
+        private static int ParseTraceLimit(string name, int fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value <= 0 ? int.MaxValue : value;
         }
 
         /// <summary>
@@ -300,8 +353,11 @@ namespace XamariNES.PPU
 
             //Set Startup Status
             _registerPPUSTATUS |= PPUStatusFlags.VerticalBlankStarted;
+            _nmiLine = false;
+            _nmiPending = false;
             _currentCycle = 340;
             _currentScanline = 240;
+            RefreshNmiOutput();
         }
 
         /// <summary>
@@ -347,7 +403,7 @@ namespace XamariNES.PPU
                 //Reset NMIOccurred on Prerender of Scanline 1
                 if (_currentCycle == 1 && _scanLineState.IsFlagSet(ScanLineStateFlags.PreRender))
                 {
-                    _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.VerticalBlankStarted);
+                    SetVerticalBlank(false);
                     _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.SpriteOverflow);
                     _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.SpriteZeroHit);
                 }
@@ -509,8 +565,7 @@ namespace XamariNES.PPU
             // Trigger an NMI at the start of _scanline 241 if VBLANK NMI's are enabled
             if (_currentScanline == 241 && _currentCycle == 1)
             {
-                _registerPPUSTATUS |= PPUStatusFlags.VerticalBlankStarted;
-                NMI = _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.NMIEnabled);
+                SetVerticalBlank(true);
             }
 
             // Skip last cycle of prerender scanline on odd frames
@@ -972,5 +1027,38 @@ namespace XamariNES.PPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void UpdatePPUSTATUSRegister(byte value) =>
             _registerPPUSTATUS = (byte) ((_registerPPUSTATUS & 0xE0) | (value & 0x1F));
+
+        private void SetVerticalBlank(bool enabled)
+        {
+            bool wasVblank = _registerPPUSTATUS.IsFlagSet(PPUStatusFlags.VerticalBlankStarted);
+            if (enabled)
+                _registerPPUSTATUS |= PPUStatusFlags.VerticalBlankStarted;
+            else
+            {
+                _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.VerticalBlankStarted);
+                // Reading $2002 before the CPU handles a pending NMI suppresses that NMI.
+                _nmiPending = false;
+            }
+
+            if (_traceVblank && wasVblank != enabled && _traceVblankCount < _traceVblankLimit)
+            {
+                Console.WriteLine(
+                    $"[NES-VBLANK] {(enabled ? "set" : "clear")} scanline={_currentScanline} cycle={_currentCycle} ppu_cycles={Cycles}");
+                if (_traceVblankCount != int.MaxValue)
+                    _traceVblankCount++;
+            }
+
+            RefreshNmiOutput();
+        }
+
+        private void RefreshNmiOutput()
+        {
+            bool nmiEnabled = _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.NMIEnabled);
+            bool vblank = _registerPPUSTATUS.IsFlagSet(PPUStatusFlags.VerticalBlankStarted);
+            bool line = nmiEnabled && vblank;
+            if (line && !_nmiLine)
+                _nmiPending = true;
+            _nmiLine = line;
+        }
     }
 }

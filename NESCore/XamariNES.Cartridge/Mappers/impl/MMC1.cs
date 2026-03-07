@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using XamariNES.Cartridge.Mappers.Enums;
 using XamariNES.Common.Extensions;
@@ -10,7 +11,7 @@ namespace XamariNES.Cartridge.Mappers.impl
     ///
     ///     More Info: https://wiki.nesdev.com/w/index.php/MMC1
     /// </summary>
-    public class MMC1 : MapperBase, IMapper, IMapperOpenBusRead, ISaveRamProvider
+    public class MMC1 : MapperBase, IMapper, IMapperOpenBusRead, IMapperCpuTick, ISaveRamProvider
     {
         /// <summary>
         ///     PRG ROM
@@ -44,7 +45,6 @@ namespace XamariNES.Cartridge.Mappers.impl
 
         //Registers
         private int _registerShift;
-        private int _registerShiftOffset;
         private int _registerControl;
         private int _chrBank0;
         private int _chrBank1;
@@ -64,6 +64,24 @@ namespace XamariNES.Cartridge.Mappers.impl
         private readonly bool _useChrRam;
         private readonly bool _hasPrgRam;
         private bool _prgRamEnabled;
+        private long _cpuCycle;
+        private long _lastPrgRegisterWriteCycle = long.MinValue;
+        [NonSerialized]
+        private readonly bool _traceMmc1 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_MMC1"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceMmc1Limit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_MMC1_LIMIT", 400);
+        [NonSerialized]
+        private int _traceMmc1Count;
+        [NonSerialized]
+        private readonly bool _disableConsecutiveWriteFilter =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_MMC1_DISABLE_CONSEC_WRITE_FILTER"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly bool _reverseShiftValue =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_MMC1_REVERSE_SHIFT"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly bool _ignorePrgRamDisableBit =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_MMC1_IGNORE_PRGRAM_DISABLE"), "1", StringComparison.Ordinal);
 
         public enumNametableMirroring NametableMirroring { get; set; }
 
@@ -80,9 +98,16 @@ namespace XamariNES.Cartridge.Mappers.impl
             _prgRam = new byte[Math.Max(1, prgRamSize)];
             BatteryBacked = batteryBacked;
 
-            //Set Startup Values
-            _registerShift = 0x0C;
-            _prgBank1Offset = (_prgRomBanks - 1) * 0x4000;
+            // Set power-on startup state (control=$0C => PRG mode 3, CHR mode 0).
+            _registerShift = 0x10;
+            _registerControl = 0x0C;
+            _currentPrgMode = 0x03;
+            _currentChrMode = 0x00;
+            _prgBank = 0;
+            _chrBank0 = 0;
+            _chrBank1 = 0;
+            UpdateBankOffsets();
+            TraceState("poweron");
         }
 
         public byte ReadByte(int offset, byte cpuOpenBus)
@@ -156,8 +181,9 @@ namespace XamariNES.Cartridge.Mappers.impl
             // CHR Bank 1 == $1000-$1FFF
             if (offset <= 0x1FFF)
             {
-                if(!_useChrRam)
-                    throw new AccessViolationException($"Invalid write to CHR ROM (CHR RAM not enabled). Offset: {offset:X4}");
+                // CHR ROM is read-only; writes are ignored unless CHR RAM is present.
+                if (!_useChrRam)
+                    return;
 
                 var chrOffset = (offset / 0x1000) == 0 ? _chrBank0Offset : _chrBank1Offset;
                 chrOffset += offset % 0x1000;
@@ -196,6 +222,15 @@ namespace XamariNES.Cartridge.Mappers.impl
             //Writes to this range are handled by the Load Register
             if (offset >= 0x8000 && offset <= 0xFFFF)
             {
+                // MMC1 ignores back-to-back writes on consecutive CPU cycles.
+                if (!_disableConsecutiveWriteFilter && _cpuCycle == _lastPrgRegisterWriteCycle + 1)
+                {
+                    Trace($"[MMC1] ignore-consecutive cyc={_cpuCycle} off=0x{offset:X4} data=0x{data:X2}");
+                    _lastPrgRegisterWriteCycle = _cpuCycle;
+                    return;
+                }
+
+                _lastPrgRegisterWriteCycle = _cpuCycle;
                 WriteLoadRegister(offset, data);
                 return;
             }
@@ -216,26 +251,25 @@ namespace XamariNES.Cartridge.Mappers.impl
         {
             if (data.IsBitSet(7))
             {
-                //Write Control with (Control OR $0C),
-                //locking PRG ROM at $C000-$FFFF to the last bank.
-                _registerShift = _registerControl | 0x0C;
+                // Reset shift register and force control PRG mode bits high.
+                _registerControl |= 0x0C;
+                _registerShift = _registerControl & 0x1F;
                 WriteInternalRegister(0x0);
-
-                //Reset Shift Register
-                _registerShiftOffset = 0;
-                _registerShift = 0;
+                _registerShift = 0x10;
+                Trace($"[MMC1] reset-shift cyc={_cpuCycle} off=0x{offset:X4} data=0x{data:X2}");
                 return;
             }
 
-            _registerShift |= (data & 1) << _registerShiftOffset;
-            _registerShiftOffset++;
+            bool commit = (_registerShift & 0x01) != 0;
+            _registerShift >>= 1;
+            _registerShift |= (data & 0x01) << 4;
 
-            //5th write gets written to the internal registers
-            if (_registerShiftOffset == 5)
+            if (commit)
             {
-                _registerShiftOffset = 0;
+                _registerShift &= 0x1F;
+                Trace($"[MMC1] commit-shift cyc={_cpuCycle} off=0x{offset:X4} val=0x{_registerShift:X2}");
                 WriteInternalRegister(offset);
-                _registerShift = 0;
+                _registerShift = 0x10;
             }
         }
 
@@ -252,12 +286,13 @@ namespace XamariNES.Cartridge.Mappers.impl
         /// <param name="offset"></param>
         private void WriteInternalRegister(int offset)
         {
+            int value = _reverseShiftValue ? Reverse5(_registerShift) : _registerShift;
             if (offset <= 0x9FFF)
             {
-                _registerControl = _registerShift;
+                _registerControl = value;
 
-                _currentPrgMode = (_registerShift >> 2) & 0x03;
-                _currentChrMode = (_registerShift >> 4) & 0x01;
+                _currentPrgMode = (value >> 2) & 0x03;
+                _currentChrMode = (value >> 4) & 0x01;
                 switch (_registerControl & 0x03)
                 {
                     case 0:
@@ -276,21 +311,23 @@ namespace XamariNES.Cartridge.Mappers.impl
             }
             else if (offset <= 0xBFFF)
             {
-                _chrBank0 = _registerShift;
+                _chrBank0 = value;
             }
             else if (offset <= 0xDFFF)
             {
-                _chrBank1 = _registerShift;
+                _chrBank1 = value;
             }
             else
             {
-                _prgBank = _registerShift;
-                // MMC1 PRG register bit 4 disables PRG RAM when set.
-                _prgRamEnabled = (_registerShift & 0x10) == 0;
+                _prgBank = value;
+                // MMC1 PRG register bit 4 disables PRG RAM on boards that implement it.
+                // Keep a compatibility escape hatch for edge-case boards/headers.
+                _prgRamEnabled = _hasPrgRam && (_ignorePrgRamDisableBit || (value & 0x10) == 0);
             }
 
             //Based off this write, update the offsets of the PRG and CHR Banks
             UpdateBankOffsets();
+            TraceState($"write-reg off=0x{offset:X4}");
         }
 
         /// <summary>
@@ -307,7 +344,8 @@ namespace XamariNES.Cartridge.Mappers.impl
             {
                 case 0:
                     //8K (4K+4K contiguous)
-                    _chrBank0Offset = (((_chrBank0 & 0x1E) >> 1) * 0x1000) % _chrRom.Length;
+                    // In 8KB mode, bit 0 is ignored; bank number is still encoded in 4KB units.
+                    _chrBank0Offset = ((_chrBank0 & 0x1E) * 0x1000) % _chrRom.Length;
                     _chrBank1Offset = _chrBank0Offset + 0x1000;
                     if (_chrBank1Offset >= _chrRom.Length)
                         _chrBank1Offset %= _chrRom.Length;
@@ -325,7 +363,8 @@ namespace XamariNES.Cartridge.Mappers.impl
             {
                 case 0:
                 case 1: //32KB (16KB+16KB contiguous) Switched
-                    _prgBank0Offset = (((_prgBank & 0xE) >> 1) % Math.Max(1, prgBanks16k / 2)) * 0x4000;
+                    // In 32KB mode, bit 0 is ignored; bank number is still encoded in 16KB units.
+                    _prgBank0Offset = ((_prgBank & 0x0E) % prgBanks16k) * 0x4000;
                     _prgBank1Offset = _prgBank0Offset + 0x4000;
                     if (_prgBank1Offset >= _prgRom.Length)
                         _prgBank1Offset %= _prgRom.Length;
@@ -351,9 +390,54 @@ namespace XamariNES.Cartridge.Mappers.impl
 
         public byte[] GetSaveRam() => _prgRam;
 
+        public void TickCpu(int cycles)
+        {
+            _cpuCycle += cycles;
+        }
+
         public void ClearSaveRamDirty()
         {
             _saveRamDirty = false;
+        }
+
+        private void TraceState(string reason)
+        {
+            if (!_traceMmc1 || _traceMmc1Count >= _traceMmc1Limit)
+                return;
+            Trace(
+                $"[MMC1] {reason} ctrl=0x{_registerControl:X2} chr0=0x{_chrBank0:X2} chr1=0x{_chrBank1:X2} prg=0x{_prgBank:X2} " +
+                $"cm={_currentChrMode} pm={_currentPrgMode} mir={NametableMirroring} off(chr0=0x{_chrBank0Offset:X5},chr1=0x{_chrBank1Offset:X5},prg0=0x{_prgBank0Offset:X5},prg1=0x{_prgBank1Offset:X5})");
+        }
+
+        private void Trace(string line)
+        {
+            if (!_traceMmc1 || _traceMmc1Count >= _traceMmc1Limit)
+                return;
+            Console.WriteLine(line);
+            if (_traceMmc1Count != int.MaxValue)
+                _traceMmc1Count++;
+        }
+
+        private static int ParseTraceLimit(string name, int fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value <= 0 ? int.MaxValue : value;
+        }
+
+        private static int Reverse5(int value)
+        {
+            value &= 0x1F;
+            int reversed = 0;
+            for (int i = 0; i < 5; i++)
+            {
+                reversed = (reversed << 1) | (value & 0x01);
+                value >>= 1;
+            }
+            return reversed & 0x1F;
         }
     }
 }
