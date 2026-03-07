@@ -22,8 +22,7 @@ internal sealed class SvpBusOverride : IM68kBusOverride
 
     private static bool Handles(uint address)
     {
-        return address <= 0x001F_FFFF
-            || (address >= 0x0030_0000 && address <= 0x0037_FFFF)
+        return (address >= 0x0030_0000 && address <= 0x0037_FFFF)
             || (address >= 0x00A1_5000 && address <= 0x00A1_5007);
     }
 
