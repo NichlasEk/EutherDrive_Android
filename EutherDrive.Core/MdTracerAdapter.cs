@@ -239,6 +239,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private bool _ymResampleLinear;
     private bool _psgResampleLinear;
     private bool _audioSystemReady = false;
+    private bool _svpTickLoggedInAdapter;
     private int _audioWarmupFrames = ParseAudioWarmupFrames();
     private readonly SimpleHighPassFilter _ymDcFilterL = new(OutputSampleRate, 5.0);
     private readonly SimpleHighPassFilter _ymDcFilterR = new(OutputSampleRate, 5.0);
@@ -2624,6 +2625,15 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     // Captain America can wedge in semaphore wait loops mid-frame;
                     // detect/recover in slice-time instead of only frame boundaries.
                     MaybeCaptainAmericaMailboxRecovery(frame);
+                    if (md_main.g_md_bus?.OverrideBus is SvpBusOverride svpOverride)
+                    {
+                        if (!_svpTickLoggedInAdapter)
+                        {
+                            _svpTickLoggedInAdapter = true;
+                            Console.WriteLine("[SVP] tick active (MdTracerAdapter slice path)");
+                        }
+                        svpOverride.Tick((uint)cpuBudget);
+                    }
                     md_main.AdvanceSystemCycles(cpuBudget);
                     md_main.AddM68kCycles(cpuBudget);
 
