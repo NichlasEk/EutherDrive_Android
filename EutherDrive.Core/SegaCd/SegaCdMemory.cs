@@ -288,8 +288,6 @@ public sealed class SegaCdMemory
 
         for (int i = 0; i < Registers.CommunicationCommands.Length; i++)
             Registers.CommunicationStatuses[i] = Registers.CommunicationCommands[i];
-
-        Registers.SubCpuCommunicationFlags = Registers.MainCpuCommunicationFlags;
     }
 
     public void FlushBufferedSubWrites()
@@ -700,15 +698,10 @@ public sealed class SegaCdMemory
         switch (address)
         {
             case 0xA12000:
-                Registers.SoftwareInterruptEnabled = (value & 0x80) != 0;
                 bool nextPend = (value & 0x01) != 0;
                 if (nextPend != Registers.SubSoftwareInterruptPending)
                     Console.WriteLine($"[COMM-DEBUG] MAIN W 0xA12000 = 0x{value:X2} (pend={nextPend}) PC=0x{MainPcProvider?.Invoke():X6}");
                 Registers.SubSoftwareInterruptPending = nextPend;
-                if ((value & 0x02) == 0)
-                {
-                    Registers.MainSoftwareInterruptPending = false;
-                }
                 break;
             case 0xA12001:
                 Registers.SubCpuBusReq = (value & 0x02) != 0;
@@ -861,12 +854,11 @@ public sealed class SegaCdMemory
             case 0x0000:
                 return (byte)(((Registers.LedGreen ? 1 : 0) << 1) | (Registers.LedRed ? 1 : 0));
             case 0x0001:
-                // Bit 0: INT2 pending from Main CPU (IFL2). Bit 1: INT1/Subcode pending (IFL1).
-                byte res = (byte)(((Cdd.SubcodeInterruptPending ? 1 : 0) << 1) | (Registers.SubSoftwareInterruptPending ? 1 : 0));
+                byte res = 0x01;
                 if (_subRegProbeRemaining > 0)
                 {
                     _subRegProbeRemaining--;
-                    Console.WriteLine($"[COMM-LOG] SUB R 0x8001 = 0x{res:X2} (pend={Registers.SubSoftwareInterruptPending})");
+                    Console.WriteLine($"[COMM-LOG] SUB R 0x8001 = 0x{res:X2}");
                 }
                 return res;
             case 0x0002:
@@ -1066,11 +1058,7 @@ public sealed class SegaCdMemory
                 if (LogCddReset && _cddResetLogRemaining-- > 0)
                     Console.WriteLine($"[SCD-CDD-RESET] W8 0x0001 = 0x{value:X2}");
                 {
-                    // Bit 0: IEN2 (Software Interrupt to Main CPU)
-                    Registers.MainSoftwareInterruptPending = (value & 0x01) != 0;
-
-                    // Bit 2: CDD Reset
-                    bool lineHigh = (value & 0x04) != 0;
+                    bool lineHigh = (value & 0x01) != 0;
                     if (_cddResetLineHigh && !lineHigh)
                     {
                         if (LogCddResetEdge)
@@ -1246,7 +1234,7 @@ public sealed class SegaCdMemory
                 WriteSubRegisterByte(reg | 1, (byte)value);
                 break;
             case 0x0034:
-                Cdd.SetFaderVolume((ushort)((value >> 4) & 0x7FF));
+                Cdd.SetFaderVolume(value);
                 break;
             case 0x0036:
                 WriteSubRegisterByte(reg | 1, (byte)value);
@@ -1446,10 +1434,6 @@ public sealed class SegaCdMemory
 
     private void LogFirstSubRegAccess(uint reg, bool isWrite)
     {
-        if (reg <= 0x0001 && isWrite)
-        {
-            Registers.SubSoftwareInterruptPending = false;
-        }
         if (_subRegAccessLogged)
             return;
         _subRegAccessLogged = true;
@@ -1458,10 +1442,6 @@ public sealed class SegaCdMemory
 
     public byte GetSubInterruptLevel()
     {
-        if (Registers.SubcodeInterruptEnabled && Cdd.SubcodeInterruptPending)
-        {
-            return 6;
-        }
         if (Registers.CdcInterruptEnabled && Cdc.InterruptPending)
         {
             return 5;
