@@ -73,7 +73,7 @@ public sealed class SegaCdCdcStub
     private static readonly bool CompatCdcForceWrrq = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_FORCE_WRRQ", defaultValue: false);
     // Keep this enabled by default: several BIOS flows set DOUTEN before explicitly
     // writing destination bits, and otherwise stall with DEST=None0.
-    private static readonly bool CompatCdcAutoDest = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_DEST", defaultValue: true);
+    private static readonly bool CompatCdcAutoDest = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_DEST", defaultValue: false);
     private static readonly bool CompatCdcAutoXfer = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_XFER", defaultValue: false);
     private static readonly long TraceStartTicks = Stopwatch.GetTimestamp();
 

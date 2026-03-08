@@ -28,6 +28,7 @@ public sealed class SegaCdMemory
     private int _mainRegProbeRemaining = 64;
     private int _mainPrgReadProbeRemaining = 0;
     private int _subPrgWriteProbeRemaining = 64;
+    private int _prgLowWriteRemaining = 512;
     private int _prgFlagMainRemaining = 64;
     private int _prgFlagSubRemaining = 64;
     private int _prg2eLogRemaining = 32;
@@ -72,6 +73,10 @@ public sealed class SegaCdMemory
     private bool _cddResetLineHigh = true;
     private static readonly bool LogPrgRamWatch = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_WATCH"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool LogPrgLowWrites = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_LOW"),
         "1",
         StringComparison.Ordinal);
     private static readonly bool LogPrg2e = string.Equals(
@@ -592,6 +597,14 @@ public sealed class SegaCdMemory
         uint boundary = (uint)Registers.PrgRamWriteProtect * 0x200;
         if (cpu == ScdCpu.Main || address >= boundary)
         {
+            if (LogPrgLowWrites && _prgLowWriteRemaining > 0 && address < 0x0200)
+            {
+                _prgLowWriteRemaining--;
+                uint pc = cpu == ScdCpu.Main ? (MainPcProvider?.Invoke() ?? 0) : (SubPcProvider?.Invoke() ?? 0);
+                Console.WriteLine(
+                    $"[SCD-PRG-LOW] cpu={cpu} addr=0x{address:X6} val=0x{value:X2} " +
+                    $"pc=0x{pc:X6} bank=0x{Registers.PrgRamBank:X2} wp=0x{Registers.PrgRamWriteProtect:X2}");
+            }
             _prgRam[address] = value;
             if (LogPrgFlag && address == PrgFlagAddr)
                 Console.WriteLine($"[SCD-PRG-FLAG] W8 {cpu} addr=0x{address:X6} val=0x{value:X2}");
@@ -1097,8 +1110,10 @@ public sealed class SegaCdMemory
             case 0x000E:
             case 0x000F:
                 // Hardware-compatible behavior: both byte addresses update sub CPU flags.
-                if (Registers.SubCpuCommunicationFlags != value)
-                    Console.WriteLine($"[COMM-DEBUG] SUB  W 0x800F = 0x{value:X2} PC=0x{SubPcProvider?.Invoke():X6}");
+                if (LogCommFlags || Registers.SubCpuCommunicationFlags != value)
+                    Console.WriteLine(
+                        $"[COMM-DEBUG] SUB  W 0x800F = 0x{value:X2} prev=0x{Registers.SubCpuCommunicationFlags:X2} " +
+                        $"PC=0x{SubPcProvider?.Invoke():X6}");
                 Registers.SubCpuCommunicationFlags = value;
                 if (LogCommFlags)
                     Console.WriteLine($"[SCD-COMM] SUB W8 0x{reg:X4} = 0x{value:X2}");
@@ -1468,7 +1483,7 @@ public sealed class SegaCdMemory
     public void AcknowledgeSubInterrupt(byte level)
     {
         if (LogSubInt)
-            Console.WriteLine($"[SCD-SUBINT] ack level={level}");
+            Console.WriteLine($"[SCD-SUBINT] ack level={level} pc=0x{SubPcProvider?.Invoke():X6}");
         if (level == 4 && !_subAckCddLogged)
         {
             _subAckCddLogged = true;

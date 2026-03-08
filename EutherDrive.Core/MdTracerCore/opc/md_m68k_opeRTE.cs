@@ -38,7 +38,7 @@ internal partial class md_m68k
         }
 
         // Trace (headless: bara om flaggan är på; stubben är no-op ändå)
-        if (g_form_code_trace)
-            CPU_Trace_pop(g_reg_PC, oldPc, g_reg_addr[7].l);
+        if (md_main.g_form_code_trace != null)
+            md_main.g_form_code_trace.CPU_Trace_pop(g_reg_PC, oldPc, g_reg_addr[7].l);
     }
 }
