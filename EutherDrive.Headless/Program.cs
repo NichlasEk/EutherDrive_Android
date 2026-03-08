@@ -1017,14 +1017,156 @@ class Program
         try
         {
             string dumpDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_DIR")
-                ?? Path.GetDirectoryName(romPath)
-                ?? ".";
+                ?? Path.Combine(Directory.GetCurrentDirectory(), "logs");
             Directory.CreateDirectory(dumpDir);
 
             string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
+            bool useNes = string.Equals(coreOverride, "nes", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsNesRomPath(romPath));
+            bool useSnes = string.Equals(coreOverride, "snes", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsSnesRomPath(romPath));
             bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase);
+
+            if (useNes)
+            {
+                var nes = new NesAdapter();
+                nes.LoadRom(romPath);
+
+                int? slotOverrideNes = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadNes = TryLoadSavestatePayload(savestatePath, nes.RomIdentity, slotOverrideNes, out var nesError);
+                if (payloadNes == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {nesError}");
+                    return 1;
+                }
+
+                using (var nesStateStream = new MemoryStream(payloadNes, writable: false))
+                using (var nesStateReader = new BinaryReader(nesStateStream))
+                    nes.LoadState(nesStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (NES)");
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> nesFbIn = nes.GetFrameBuffer(out int nesWIn, out int nesHIn, out int nesSIn);
+                var nesStatsIn = GetFrameStats(nesFbIn, nesWIn, nesHIn, nesSIn);
+                Console.WriteLine($"[HEADLESS] NES fb_has_content={nesStatsIn.HasContent} nonzero_pixels={nesStatsIn.NonZeroPixels} first_nonzero=({nesStatsIn.FirstX},{nesStatsIn.FirstY})");
+                DumpBgraToPpm(nesFbIn, nesWIn, nesHIn, nesSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    nes.RunFrame();
+                    ReadOnlySpan<byte> fb = nes.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    Console.WriteLine($"[HEADLESS] Frame {frame}: nes_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> nesFbOut = nes.GetFrameBuffer(out int nesWOut, out int nesHOut, out int nesSOut);
+                var nesStatsOut = GetFrameStats(nesFbOut, nesWOut, nesHOut, nesSOut);
+                Console.WriteLine($"[HEADLESS] NES fb_has_content={nesStatsOut.HasContent} nonzero_pixels={nesStatsOut.NonZeroPixels} first_nonzero=({nesStatsOut.FirstX},{nesStatsOut.FirstY})");
+                DumpBgraToPpm(nesFbOut, nesWOut, nesHOut, nesSOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useSnes)
+            {
+                var snes = new SnesAdapter();
+                snes.LoadRom(romPath);
+
+                int? slotOverrideSnes = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadSnes = TryLoadSavestatePayload(savestatePath, snes.RomIdentity, slotOverrideSnes, out var snesError);
+                if (payloadSnes == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {snesError}");
+                    return 1;
+                }
+
+                using (var snesStateStream = new MemoryStream(payloadSnes, writable: false))
+                using (var snesStateReader = new BinaryReader(snesStateStream))
+                    snes.LoadState(snesStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (SNES)");
+
+                HeadlessAudioSink? snesAudioSink = null;
+                bool enableSnesAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
+                if (enableSnesAudio)
+                    snesAudioSink = new HeadlessAudioSink();
+
+                bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                StreamWriter? snesTraceWriter = null;
+                if (traceSnesFrames)
+                {
+                    string tracePath = Path.Combine(dumpDir, "headless_snes_trace.log");
+                    snesTraceWriter = new StreamWriter(tracePath, append: false, Encoding.UTF8)
+                    {
+                        AutoFlush = true
+                    };
+                }
+
+                void Trace(string message)
+                {
+                    Console.WriteLine(message);
+                    snesTraceWriter?.WriteLine(message);
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_frame0.ppm"), traceSnesFrames);
+
+                bool prevHasContent = false;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    snes.RunFrame();
+
+                    if (traceSnesFrames)
+                    {
+                        var state = snes.GetPpuState();
+                        Trace($"[HEADLESS] Frame {frame}: ppu forcedBlank={state.ForcedBlank} bright={state.Brightness} mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} overscan={state.OverscanEnabled} frameOverscan={state.FrameOverscan} pseudoHires={state.PseudoHires} interlace={state.Interlace} objInterlace={state.ObjInterlace} vblank={state.InVblank} hblank={state.InHblank} nmi={state.InNmi} xy=({state.XPos},{state.YPos})");
+                        ReadOnlySpan<byte> fb = snes.GetFrameBuffer(out int width, out int height, out int stride);
+                        var stats = GetFrameStats(fb, width, height, stride);
+                        Trace($"[HEADLESS] Frame {frame}: snes_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        if (prevHasContent && !stats.HasContent)
+                        {
+                            Trace($"[HEADLESS] Frame {frame}: transition to BLACK (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
+                        }
+                        if (!prevHasContent && stats.HasContent)
+                        {
+                            Trace($"[HEADLESS] Frame {frame}: transition to CONTENT (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
+                        }
+                        prevHasContent = stats.HasContent;
+                    }
+
+                    if (snesAudioSink != null)
+                    {
+                        var audio = snes.GetAudioBuffer(out int rate, out int channels);
+                        if (frame == 0)
+                            snesAudioSink.Start(rate, channels);
+                        if (!audio.IsEmpty)
+                            snesAudioSink.Submit(audio);
+                    }
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpSnesFrame(snes, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"), traceSnesFrames);
+
+                    if (snes.System.CPU is KSNES.CPU.CPU cpu)
+                    {
+                        string sa1Pc = snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1 && sa1.GetCpu() is KSNES.CPU.CPU sa1Cpu
+                            ? $" SA1 PC=0x{sa1Cpu.ProgramCounter24:X6}"
+                            : "";
+                        Console.WriteLine($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}");
+                    }
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"), traceSnesFrames);
+                snesAudioSink?.Dispose();
+                snesTraceWriter?.Dispose();
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
 
             if (usePce)
             {
@@ -1388,8 +1530,7 @@ class Program
         try
         {
             string dumpDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_DIR")
-                ?? Path.GetDirectoryName(romPath)
-                ?? ".";
+                ?? Path.Combine(Directory.GetCurrentDirectory(), "logs");
             Directory.CreateDirectory(dumpDir);
 
             var adapter = new MdTracerAdapter();
