@@ -70,12 +70,17 @@ public sealed class SegaCdCdcStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_DECODE"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool LogPrgDmaLow = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_DMA_LOW"),
+        "1",
+        StringComparison.Ordinal);
     private static readonly bool CompatCdcForceWrrq = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_FORCE_WRRQ", defaultValue: false);
     // Keep this enabled by default: several BIOS flows set DOUTEN before explicitly
     // writing destination bits, and otherwise stall with DEST=None0.
     private static readonly bool CompatCdcAutoDest = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_DEST", defaultValue: false);
     private static readonly bool CompatCdcAutoXfer = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_XFER", defaultValue: false);
     private static readonly long TraceStartTicks = Stopwatch.GetTimestamp();
+    private int _prgDmaLowRemaining = 256;
 
     public bool EndOfDataTransfer => _endOfDataTransfer;
     public bool DataReady => _dataTransferInProgress;
@@ -609,6 +614,13 @@ public sealed class SegaCdCdcStub
 
             if (_destination == SegaCdDeviceDestination.PrgRam)
             {
+                if (LogPrgDmaLow && _prgDmaLowRemaining > 0 && addr < 0x0200)
+                {
+                    _prgDmaLowRemaining--;
+                    Console.WriteLine(
+                        $"[SCD-PRG-DMA] addr=0x{addr:X6} msb=0x{msb:X2} lsb=0x{lsb:X2} " +
+                        $"dac=0x{_dataAddressCounter:X4} dbc=0x{_dataByteCounter:X4}");
+                }
                 prgRam[addr] = msb;
                 prgRam[(addr + 1) & dmaAddressMask] = lsb;
             }

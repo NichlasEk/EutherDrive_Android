@@ -53,6 +53,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private int _subPcAfterExitRemaining;
     private bool _subIrqHandlerLogged;
     private bool _subPhase1f6eLogged;
+    private bool _subPhase70b2Logged;
+    private bool _subPhase7130Logged;
     private byte _subLastIntMask = 0xFF;
     private static readonly bool TraceSubPcAfterExit =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SUBPC_AFTER_EXIT"),
@@ -1004,6 +1006,28 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                     $"cddPend={(_memory.Cdd.InterruptPending ? 1 : 0)} cddEn={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} hostClk={(_memory.Registers.CddHostClockOn ? 1 : 0)} " +
                                     $"commands=[{cmdHex}] statuses=[{stsHex}] cdd=[{string.Join(" ", _memory.Cdd.Status.Select(static b => b.ToString("X2")))}] " +
                                     $"mem@0x{baseAddr:X6}={codeHex} src@0x{subState.Address[0]:X6}={srcHex} dst@0x{subState.Address[1]:X6}={dstHex}");
+                            }
+                            if (!_subPhase70b2Logged && subPc >= 0x0070B2 && subPc <= 0x00712E)
+                            {
+                                _subPhase70b2Logged = true;
+                                var subState = _subCpu.GetState();
+                                Console.WriteLine(
+                                    $"[SCD-SUB-70B2] pc=0x{subPc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{subState.Sr:X4} " +
+                                    $"d0=0x{subState.Data[0]:X8} d1=0x{subState.Data[1]:X8} d2=0x{subState.Data[2]:X8} " +
+                                    $"a0=0x{subState.Address[0]:X8} a1=0x{subState.Address[1]:X8} fp=0x{subState.Address[6]:X8} " +
+                                    $"flags=0x{_memory.Registers.MainCpuCommunicationFlags:X2}/0x{_memory.Registers.SubCpuCommunicationFlags:X2} " +
+                                    $"swPend={(_memory.Registers.SubSoftwareInterruptPending ? 1 : 0)} swEn={(_memory.Registers.SoftwareInterruptEnabled ? 1 : 0)} " +
+                                    $"cddPend={(_memory.Cdd.InterruptPending ? 1 : 0)} cddEn={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} hostClk={(_memory.Registers.CddHostClockOn ? 1 : 0)}");
+                            }
+                            if (!_subPhase7130Logged && subPc >= 0x007130 && subPc <= 0x007134)
+                            {
+                                _subPhase7130Logged = true;
+                                var subState = _subCpu.GetState();
+                                Console.WriteLine(
+                                    $"[SCD-SUB-7130] pc=0x{subPc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{subState.Sr:X4} " +
+                                    $"d0=0x{subState.Data[0]:X8} d1=0x{subState.Data[1]:X8} d2=0x{subState.Data[2]:X8} " +
+                                    $"flags=0x{_memory.Registers.MainCpuCommunicationFlags:X2}/0x{_memory.Registers.SubCpuCommunicationFlags:X2} " +
+                                    $"swPend={(_memory.Registers.SubSoftwareInterruptPending ? 1 : 0)} swEn={(_memory.Registers.SoftwareInterruptEnabled ? 1 : 0)}");
                             }
                             if (ForcePrgChecksum && !_subChecksumComputed && subPc >= 0x0002E0 && subPc <= 0x0002E2)
                             {

@@ -278,6 +278,9 @@ public sealed class SegaCdMemory
 
     public void Tick(uint masterClockCycles)
     {
+        bool prgRamAccessible = !(Registers.SubCpuBusReq || Registers.SubCpuReset);
+        _cdController.Tick(masterClockCycles, WordRam, _prgRam, prgRamAccessible, Pcm);
+
         uint cycles = masterClockCycles;
         while (cycles >= _timerDivider)
         {
@@ -287,8 +290,6 @@ public sealed class SegaCdMemory
         }
         _timerDivider -= cycles;
 
-        bool prgRamAccessible = !(Registers.SubCpuBusReq || Registers.SubCpuReset);
-        _cdController.Tick(masterClockCycles, WordRam, _prgRam, prgRamAccessible, Pcm);
         Graphics.Tick(masterClockCycles, WordRam, Registers.GraphicsInterruptEnabled);
     }
 
@@ -603,7 +604,7 @@ public sealed class SegaCdMemory
         uint boundary = (uint)Registers.PrgRamWriteProtect * 0x200;
         if (cpu == ScdCpu.Main || address >= boundary)
         {
-            if (LogPrgLowWrites && _prgLowWriteRemaining > 0 && address < 0x0200)
+            if (LogPrgLowWrites && _prgLowWriteRemaining > 0 && address < 0x0200 && value != 0)
             {
                 _prgLowWriteRemaining--;
                 uint pc = cpu == ScdCpu.Main ? (MainPcProvider?.Invoke() ?? 0) : (SubPcProvider?.Invoke() ?? 0);
