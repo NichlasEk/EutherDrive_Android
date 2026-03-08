@@ -210,11 +210,48 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private BiquadLowPass? _cdLowPass;
     private SincResampler _pcmResampler = new(PcmSampleRate, 44100.0);
 
+    private bool _enableRamCartridge = true;
+    private bool _loadCdIntoRam;
+    private bool _forceNoDisc;
+
     public SegaCdDiscInfo? DiscInfo => _discInfo;
     public ConsoleRegion RegionHint { get; private set; } = ConsoleRegion.Auto;
-    public bool EnableRamCartridge { get; set; } = true;
-    public bool LoadCdIntoRam { get; set; }
-    public bool ForceNoDisc { get; set; }
+    public bool EnableRamCartridge
+    {
+        get => _enableRamCartridge;
+        set
+        {
+            _enableRamCartridge = value;
+            if (_memory != null)
+                _memory.EnableRamCartridge = value;
+        }
+    }
+
+    public bool LoadCdIntoRam
+    {
+        get => _loadCdIntoRam;
+        set
+        {
+            if (_loadCdIntoRam == value)
+                return;
+
+            _loadCdIntoRam = value;
+            ReapplyMountedDisc();
+        }
+    }
+
+    public bool ForceNoDisc
+    {
+        get => _forceNoDisc;
+        set
+        {
+            if (_forceNoDisc == value)
+                return;
+
+            _forceNoDisc = value;
+            ReapplyMountedDisc();
+        }
+    }
 
     public void LoadRom(string path)
     {
@@ -232,8 +269,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
         TryDumpBootSector(disc, path);
         _ymResamplePhase = 0;
         _ymResampleHasCarry = false;
-        bool forceNoDisc = ForceNoDisc
-            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_FORCE_NO_DISC"), "1", StringComparison.Ordinal);
+        bool forceNoDisc = ShouldForceNoDisc();
         if (forceNoDisc)
             _memory.SetDisc(null);
         if (_useM68kEmu)
@@ -305,6 +341,28 @@ public sealed class SegaCdAdapter : IEmulatorCore
         _pcmResampler = new SincResampler(PcmSampleRate, 44100.0);
         _scdMclkCycleProduct = 0;
         _scdMclkCycles = 0;
+    }
+
+    private bool ShouldForceNoDisc()
+    {
+        return ForceNoDisc
+            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_FORCE_NO_DISC"), "1", StringComparison.Ordinal);
+    }
+
+    private void ReapplyMountedDisc()
+    {
+        if (_memory == null || string.IsNullOrWhiteSpace(_romPath))
+            return;
+
+        if (ShouldForceNoDisc())
+        {
+            _memory.SetDisc(null);
+            return;
+        }
+
+        var disc = CdRom.Open(_romPath, LoadCdIntoRam);
+        _memory.SetDisc(disc);
+        TryDumpBootSector(disc, _romPath);
     }
 
     public void Reset()

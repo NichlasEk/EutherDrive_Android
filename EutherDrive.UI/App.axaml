@@ -92,6 +92,20 @@
             <Setter Property="BoxShadow" Value="0 18 50 0 #44000000" />
         </Style>
 
+        <Style Selector="Border.subpanel">
+            <Setter Property="Background" Value="#B8142230" />
+            <Setter Property="BorderBrush" Value="#35506A" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="14" />
+        </Style>
+
+        <Style Selector="Border.option-card">
+            <Setter Property="Background" Value="#D0132030" />
+            <Setter Property="BorderBrush" Value="#304355" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="12" />
+        </Style>
+
         <Style Selector="Border.hero">
             <Setter Property="Background" Value="{StaticResource EdHeroBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrightBrush}" />
@@ -224,6 +238,16 @@
 
         <Style Selector="CheckBox">
             <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+        </Style>
+
+        <Style Selector="CheckBox.option-check">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0" />
+        </Style>
+
+        <Style Selector="CheckBox.option-check /template/ ContentPresenter">
+            <Setter Property="Margin" Value="8,0,0,0" />
         </Style>
 
         <Style Selector="Slider">

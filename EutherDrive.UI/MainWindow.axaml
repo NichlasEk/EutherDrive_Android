@@ -217,11 +217,39 @@
             <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
             <TextBlock x:Name="RomInfoText" Classes="muted" FontSize="12" TextWrapping="Wrap"/>
             <Separator/>
-            <TextBlock Text="Sega CD" FontWeight="Bold"/>
-            <CheckBox Name="SegaCdRamCartCheck" Content="Enable RAM cartridge" Checked="OnSegaCdRamCartToggle" Unchecked="OnSegaCdRamCartToggle"/>
-            <CheckBox Name="SegaCdLoadCdToRamCheck" Content="Load CD-ROM into RAM at startup" Checked="OnSegaCdLoadCdToRamToggle" Unchecked="OnSegaCdLoadCdToRamToggle"/>
-            <CheckBox Name="SegaCdForceNoDiscCheck" Content="Force no disc (BIOS only)" Checked="OnSegaCdForceNoDiscToggle" Unchecked="OnSegaCdForceNoDiscToggle"/>
-            <TextBlock Name="SegaCdOptionsInfo" Classes="muted" FontSize="11" TextWrapping="Wrap" Text="Applies per Sega CD disc."/>
+            <Border Classes="subpanel" Padding="10" Margin="0,2,0,0">
+              <StackPanel Spacing="8">
+                <StackPanel Spacing="2">
+                  <TextBlock Classes="deck-label" Text="SEGA CD BAY"/>
+                  <TextBlock Name="SegaCdOptionsInfo"
+                             Classes="muted"
+                             FontSize="11"
+                             TextWrapping="Wrap"
+                             Text="Boot and media overrides for the mounted Mega-CD / Sega CD disc."/>
+                </StackPanel>
+                <Border Classes="option-card" Padding="8,7">
+                  <CheckBox Classes="option-check"
+                            Name="SegaCdRamCartCheck"
+                            Content="Enable RAM cartridge"
+                            Checked="OnSegaCdRamCartToggle"
+                            Unchecked="OnSegaCdRamCartToggle"/>
+                </Border>
+                <Border Classes="option-card" Padding="8,7">
+                  <CheckBox Classes="option-check"
+                            Name="SegaCdLoadCdToRamCheck"
+                            Content="Load CD-ROM into RAM at startup"
+                            Checked="OnSegaCdLoadCdToRamToggle"
+                            Unchecked="OnSegaCdLoadCdToRamToggle"/>
+                </Border>
+                <Border Classes="option-card" Padding="8,7">
+                  <CheckBox Classes="option-check"
+                            Name="SegaCdForceNoDiscCheck"
+                            Content="Force no disc (BIOS only)"
+                            Checked="OnSegaCdForceNoDiscToggle"
+                            Unchecked="OnSegaCdForceNoDiscToggle"/>
+                </Border>
+              </StackPanel>
+            </Border>
             <Separator/>
             <TextBlock Text="PCE BIOS" FontWeight="Bold"/>
             <TextBlock Name="PceBiosPathText" Text="(auto: ./bios/syscard*.pce|.bin)" TextWrapping="Wrap"/>

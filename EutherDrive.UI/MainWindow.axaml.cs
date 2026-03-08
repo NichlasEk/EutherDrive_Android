@@ -2009,9 +2009,13 @@ public partial class MainWindow : Window
         _romSegaCdKey = GetSegaCdRomKey(info, romPath);
         if (!string.IsNullOrWhiteSpace(_romSegaCdKey))
         {
-            _segaCdRamCartEnabled = _romSegaCdRamCartOverrides.TryGetValue(_romSegaCdKey, out var ramCart) && ramCart;
-            _segaCdLoadCdToRam = _romSegaCdLoadCdToRamOverrides.TryGetValue(_romSegaCdKey, out var loadCd) && loadCd;
-            _segaCdForceNoDisc = _romSegaCdForceNoDiscOverrides.TryGetValue(_romSegaCdKey, out var forceNoDisc) && forceNoDisc;
+            _segaCdRamCartEnabled = _romSegaCdRamCartOverrides.TryGetValue(_romSegaCdKey, out var ramCart)
+                ? ramCart
+                : true;
+            _segaCdLoadCdToRam = _romSegaCdLoadCdToRamOverrides.TryGetValue(_romSegaCdKey, out var loadCd)
+                && loadCd;
+            _segaCdForceNoDisc = _romSegaCdForceNoDiscOverrides.TryGetValue(_romSegaCdKey, out var forceNoDisc)
+                && forceNoDisc;
         }
         else
         {
