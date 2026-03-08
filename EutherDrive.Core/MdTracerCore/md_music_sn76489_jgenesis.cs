@@ -373,8 +373,9 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static int ParseUnderflowRefillSamples()
         {
-            // Keep refill burst modest: enough to hide jitter, not enough to add large latency.
-            const int fallback = 12;
+            // The PSG internal sample rate is very high, so tiny refills can still
+            // hit audible starvation when the UI consumes audio in chunky bursts.
+            const int fallback = 96;
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_UNDERFLOW_REFILL_SAMPLES");
             if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 1)
                 return value;
@@ -383,7 +384,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static int ParseUnderflowLowWatermark()
         {
-            int fallback = Math.Max(1, UnderflowRefillSamples / 3);
+            int fallback = Math.Max(32, UnderflowRefillSamples / 2);
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_UNDERFLOW_LOW_WATERMARK");
             if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 0)
                 return value;
@@ -392,9 +393,10 @@ namespace EutherDrive.Core.MdTracerCore
 
         private static int ParseMaxBufferedSamples()
         {
-            // Keep PSG low-latency. If producer/consumer drift, drop oldest samples
-            // rather than letting stale SFX play far too late.
-            const int fallback = 1024;
+            // PSG runs at a much higher internal rate than the 44.1 kHz output path.
+            // 1024 samples is less than one 60 Hz frame of internal PSG on Genesis/SMS,
+            // which makes normal frame-latency look like overflow and causes audible trims.
+            const int fallback = 8192;
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_MAX_BUFFERED_SAMPLES");
             if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value >= 16)
                 return value;
