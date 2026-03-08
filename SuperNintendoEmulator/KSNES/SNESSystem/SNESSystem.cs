@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
 
 namespace KSNES.SNESSystem;
 
@@ -96,6 +98,8 @@ public class SNESSystem : ISNESSystem
     private int _tracePpuBusCount;
     private readonly bool _traceWramWrites =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_WRAM"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly HashSet<int> _traceWramAddrs = ParseTraceWramAddrs(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_WRAM_ADDRS"));
     private readonly bool _traceDma =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_DMA"), "1", StringComparison.Ordinal);
     private readonly bool _traceInidisp =
@@ -278,7 +282,7 @@ public class SNESSystem : ISNESSystem
         if (bank == 0x7e || bank == 0x7f)
         {
             _ram[((bank & 0x1) << 16) | adr] = (byte) value;
-            if (_traceWramWrites && (adr == 0x0028 || adr == 0x002A || adr == 0x002B || adr == 0x00AD || adr < 0x0400))
+            if (_traceWramWrites && (adr == 0x0028 || adr == 0x002A || adr == 0x002B || adr == 0x00AD || adr < 0x0400 || _traceWramAddrs.Contains(((bank & 0x1) << 16) | adr)))
             {
                 int pc = -1;
                 if (CPU is KSNES.CPU.CPU cpu)
@@ -298,7 +302,7 @@ public class SNESSystem : ISNESSystem
             if (adr < 0x2000)
             {
                 _ram[adr & 0x1fff] = (byte) value;
-                if (_traceWramWrites && (adr == 0x0028 || adr == 0x002A || adr == 0x002B || adr == 0x00AD || adr < 0x0400))
+                if (_traceWramWrites && (adr == 0x0028 || adr == 0x002A || adr == 0x002B || adr == 0x00AD || adr < 0x0400 || _traceWramAddrs.Contains(adr)))
                 {
                     int pc = -1;
                     if (CPU is KSNES.CPU.CPU cpu)
@@ -544,7 +548,6 @@ public class SNESSystem : ISNESSystem
         }
         ROM.RunCoprocessor(Cycles);
         XPos += 2;
-        Cycles += 2;
         if (XPos == 1364)
         {
             XPos = 0;
@@ -1179,7 +1182,7 @@ public class SNESSystem : ISNESSystem
         if (bank == 0x7e || bank == 0x7f)
         {
             int val = _ram[((bank & 0x1) << 16) | adr];
-            if (_traceWramWrites && (adr == 0x002E || adr == 0x002F || adr == 0x004C || adr == 0x004E || adr == 0x1F4E))
+            if (_traceWramWrites && (adr == 0x002E || adr == 0x002F || adr == 0x004C || adr == 0x004E || adr == 0x1F4E || _traceWramAddrs.Contains(((bank & 0x1) << 16) | adr)))
             {
                 int pc = -1;
                 if (CPU is KSNES.CPU.CPU cpu)
@@ -1193,7 +1196,7 @@ public class SNESSystem : ISNESSystem
             if (adr < 0x2000)
             {
                 int val = _ram[adr & 0x1fff];
-                if (_traceWramWrites && (adr == 0x002E || adr == 0x002F || adr == 0x004C || adr == 0x004E || adr == 0x1F4E))
+                if (_traceWramWrites && (adr == 0x002E || adr == 0x002F || adr == 0x004C || adr == 0x004E || adr == 0x1F4E || _traceWramAddrs.Contains(adr)))
                 {
                     int pc = -1;
                     if (CPU is KSNES.CPU.CPU cpu)
@@ -1346,5 +1349,21 @@ public class SNESSystem : ISNESSystem
         if (maker == 0x33 || data[baseOff + 0x14] == 0)
             return data[baseOff - 1];
         return 0;
+    }
+
+    private static HashSet<int> ParseTraceWramAddrs(string? raw)
+    {
+        var result = new HashSet<int>();
+        if (string.IsNullOrWhiteSpace(raw))
+            return result;
+
+        foreach (string part in raw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string token = part.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? part[2..] : part;
+            if (int.TryParse(token, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int value))
+                result.Add(value & 0x1FFFF);
+        }
+
+        return result;
     }
 }

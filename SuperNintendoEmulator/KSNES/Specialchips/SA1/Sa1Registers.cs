@@ -34,7 +34,7 @@ internal static class DmaSourceDeviceExtensions
             0x00 => DmaSourceDevice.Rom,
             0x01 => DmaSourceDevice.Bwram,
             0x02 => DmaSourceDevice.Iram,
-            _ => DmaSourceDevice.Iram
+            _ => DmaSourceDevice.Rom
         };
     }
 }
@@ -80,7 +80,7 @@ internal enum CharacterConversionType
 
 internal static class CharacterConversionTypeExtensions
 {
-    public static CharacterConversionType FromBit(bool bit) => bit ? CharacterConversionType.Two : CharacterConversionType.One;
+    public static CharacterConversionType FromBit(bool bit) => bit ? CharacterConversionType.One : CharacterConversionType.Two;
 }
 
 internal enum CharacterConversionColorBits
@@ -230,7 +230,7 @@ internal sealed class Sa1Registers
 
     public uint VarlenBitStartAddress;
     public ulong VarlenBitData;
-    public int VarlenBitsRemaining;
+    public byte VarlenBitsRemaining;
 
     public DmaState DmaState = DmaState.Idle;
     public bool CcdmaTransferInProgress;
@@ -238,37 +238,16 @@ internal sealed class Sa1Registers
     public bool Sa1DmaIrq;
 
     private DmaState _lastDmaState = DmaState.Idle;
+    private bool _bwramProtectionConfigured;
+    private bool _resetInitializing;
 
     public byte? SnesRead(uint address, Sa1Timer timer, Sa1Mmc mmc, byte[] rom)
     {
-        uint addr = address & 0xFFFF;
-        if (addr < 0x2300 || addr > 0x230F)
+        if ((address & 0xFFFF) != 0x2300)
             return null;
-
-        byte value = addr switch
-        {
-            0x2300 => ReadSfr(),
-            0x2301 => ReadCfr(timer),
-            0x2302 => timer.ReadHcrLow(),
-            0x2303 => timer.ReadHcrHigh(),
-            0x2304 => timer.ReadVcrLow(),
-            0x2305 => timer.ReadVcrHigh(),
-            >= 0x2306 and <= 0x230A => ReadMr(address),
-            0x230B => ReadOf(),
-            0x230C => ReadVdpLow(),
-            0x230D => ReadVdpHigh(mmc, rom),
-            _ => 0
-        };
-
+        byte value = ReadSfr();
         if (Sa1Trace.IsEnabled)
-        {
-            string name = addr switch {
-                0x2300 => "SFR", 0x2301 => "CFR", 0x2302 => "HCRL", 0x2303 => "HCRH",
-                0x2304 => "VCRL", 0x2305 => "VCRH", 0x230B => "OF", 0x230C => "VDPL", 0x230D => "VDPH",
-                >= 0x2306 and <= 0x230A => "MR", _ => "REG"
-            };
-            Sa1Trace.Log("SNES", 0, -1, address & 0xFFFFFF, "R", value, $"REG-{name}", null);
-        }
+            Sa1Trace.Log("SNES", 0, -1, address & 0xFFFFFF, "R", value, "REG-SFR", null);
         return value;
     }
 
@@ -437,37 +416,8 @@ internal sealed class Sa1Registers
 
     private byte ReadOf() => (byte)(ArithmeticOverflow ? 0x80 : 0x00);
 
-    public byte VarlenBitControl;
-
     private byte ReadVdpLow() => ((ushort)VarlenBitData).Lsb();
-    private byte ReadVdpHigh(Sa1Mmc mmc, byte[] rom)
-    {
-        byte value = ((ushort)VarlenBitData).Msb();
-        if (!VarlenBitControl.Bit(7))
-        {
-            ShiftVbd(mmc, rom);
-        }
-        return value;
-    }
-
-    private void ShiftVbd(Sa1Mmc mmc, byte[] rom)
-    {
-        int shift = (VarlenBitControl & 0x0F) == 0 ? 16 : (VarlenBitControl & 0x0F);
-        VarlenBitData >>= shift;
-        VarlenBitsRemaining -= shift;
-
-        while (VarlenBitsRemaining <= 16)
-        {
-            uint romAddr = mmc.MapRomAddress(VarlenBitStartAddress) ?? 0;
-            byte lsb = romAddr < rom.Length ? rom[romAddr] : (byte)0;
-            byte msb = romAddr + 1 < rom.Length ? rom[romAddr + 1] : (byte)0;
-            ushort word = (ushort)(lsb | (msb << 8));
-
-            VarlenBitData |= (ulong)word << VarlenBitsRemaining;
-            VarlenBitStartAddress = (VarlenBitStartAddress + 2) & 0xFFFFFF;
-            VarlenBitsRemaining += 16;
-        }
-    }
+    private byte ReadVdpHigh(Sa1Mmc mmc, byte[] rom) => ((ushort)VarlenBitData).Msb();
 
     private void WriteCcnt(byte value)
     {
@@ -592,21 +542,51 @@ internal sealed class Sa1Registers
     private void WriteSbwe(byte value)
     {
         bool enabled = value.Bit(7);
-        SnesBwramWritesEnabled = enabled;
-        Sa1BwramWritesEnabled = enabled;
+        if (!_resetInitializing && !_bwramProtectionConfigured)
+            _bwramProtectionConfigured = true;
+
+        if (_resetInitializing || !_bwramProtectionConfigured)
+        {
+            SnesBwramWritesEnabled = enabled;
+            Sa1BwramWritesEnabled = enabled;
+        }
+        else
+        {
+            SnesBwramWritesEnabled = enabled;
+        }
     }
 
     private void WriteCbwe(byte value)
     {
         bool enabled = value.Bit(7);
-        SnesBwramWritesEnabled = enabled;
-        Sa1BwramWritesEnabled = enabled;
+        if (!_resetInitializing && !_bwramProtectionConfigured)
+            _bwramProtectionConfigured = true;
+
+        if (_resetInitializing || !_bwramProtectionConfigured)
+        {
+            SnesBwramWritesEnabled = enabled;
+            Sa1BwramWritesEnabled = enabled;
+        }
+        else
+        {
+            Sa1BwramWritesEnabled = enabled;
+        }
     }
 
     private void WriteBwpa(byte value)
     {
-        byte sizeCode = (byte)(value & 0x0F);
-        BwramWriteProtectionSize = sizeCode == 0 ? 0 : (uint)(0x100 << (sizeCode - 1));
+        if (!_resetInitializing && !_bwramProtectionConfigured)
+            _bwramProtectionConfigured = true;
+
+        if (_resetInitializing || !_bwramProtectionConfigured)
+        {
+            BwramWriteProtectionSize = 1u << (8 + (value & 0x0F));
+        }
+        else
+        {
+            byte sizeCode = (byte)(value & 0x0F);
+            BwramWriteProtectionSize = sizeCode == 0 ? 0 : (uint)(0x100 << (sizeCode - 1));
+        }
     }
 
     private void WriteSiwp(byte value)
@@ -764,10 +744,23 @@ internal sealed class Sa1Registers
 
     private void WriteVbd(byte value, Sa1Mmc mmc, byte[] rom)
     {
-        VarlenBitControl = value;
-        if (value.Bit(7))
+        if (VarlenBitsRemaining == 0)
+            return;
+
+        int shift = (value & 0x0F) == 0 ? 16 : (value & 0x0F);
+        VarlenBitData >>= shift;
+        VarlenBitsRemaining -= (byte)shift;
+
+        if (VarlenBitsRemaining <= 16)
         {
-            ShiftVbd(mmc, rom);
+            uint romAddr = mmc.MapRomAddress(VarlenBitStartAddress) ?? 0;
+            byte lsb = romAddr < rom.Length ? rom[romAddr] : (byte)0;
+            byte msb = romAddr + 1 < rom.Length ? rom[romAddr + 1] : (byte)0;
+            ushort word = (ushort)(lsb | (msb << 8));
+
+            VarlenBitData |= (ulong)word << VarlenBitsRemaining;
+            VarlenBitStartAddress = (VarlenBitStartAddress + 2) & 0xFFFFFF;
+            VarlenBitsRemaining += 16;
         }
     }
 
@@ -776,19 +769,29 @@ internal sealed class Sa1Registers
     private void WriteVdaHigh(byte value, Sa1Mmc mmc, byte[] rom)
     {
         Sa1Utils.SetHighByte(ref VarlenBitStartAddress, value);
-        VarlenBitData = 0;
-        VarlenBitsRemaining = 0;
-        ShiftVbd(mmc, rom);
+        uint? romAddr = mmc.MapRomAddress(VarlenBitStartAddress);
+        if (romAddr.HasValue)
+        {
+            uint addr = romAddr.Value;
+            byte lsb = addr < rom.Length ? rom[addr] : (byte)0;
+            byte msb = addr + 1 < rom.Length ? rom[addr + 1] : (byte)0;
+            VarlenBitData = (ushort)(lsb | (msb << 8));
+            VarlenBitStartAddress = (VarlenBitStartAddress + 2) & 0xFFFFFF;
+            VarlenBitsRemaining = 16;
+        }
     }
 
     public bool CanWriteBwram(uint bwramAddr, bool isSnes)
     {
-        bool writeEnabled = SnesBwramWritesEnabled || Sa1BwramWritesEnabled;
+        bool writeEnabled = _bwramProtectionConfigured
+            ? (isSnes ? SnesBwramWritesEnabled : Sa1BwramWritesEnabled)
+            : (SnesBwramWritesEnabled || Sa1BwramWritesEnabled);
         return writeEnabled || bwramAddr >= BwramWriteProtectionSize;
     }
 
     public void Reset(Sa1Timer timer, Sa1Mmc mmc)
     {
+        _resetInitializing = true;
         WriteCcnt(0x20);
         WriteSie(0x00);
         WriteSic(0x00);
@@ -799,11 +802,13 @@ internal sealed class Sa1Registers
         WriteSbwe(0x00);
         WriteCbwe(0x00);
         WriteBwpa(0x00);
-        WriteSiwp(0xFF);
-        WriteCiwp(0xFF);
+        WriteSiwp(0x00);
+        WriteCiwp(0x00);
         WriteDcnt(0x00);
         WriteCdma(0x80);
         WriteMcnt(0x00);
+        _resetInitializing = false;
+        _bwramProtectionConfigured = false;
 
         ArithmeticParamA = 0;
         ArithmeticParamB = 0;
