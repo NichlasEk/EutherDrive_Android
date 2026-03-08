@@ -29,6 +29,7 @@ public sealed class SegaCdMemory
     private int _mainPrgReadProbeRemaining = 0;
     private int _subPrgWriteProbeRemaining = 64;
     private int _prgLowWriteRemaining = 512;
+    private int _prgBootWriteRemaining = 512;
     private int _prgFlagMainRemaining = 64;
     private int _prgFlagSubRemaining = 64;
     private int _prg2eLogRemaining = 32;
@@ -77,6 +78,10 @@ public sealed class SegaCdMemory
         StringComparison.Ordinal);
     private static readonly bool LogPrgLowWrites = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_LOW"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool LogPrgBootWrites = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_BOOT"),
         "1",
         StringComparison.Ordinal);
     private static readonly bool LogPrg2e = string.Equals(
@@ -188,6 +193,7 @@ public sealed class SegaCdMemory
         if (bios.Length != BiosLen)
             throw new InvalidOperationException($"BIOS must be {BiosLen} bytes.");
         _bios = bios;
+        Array.Fill(_prgRam, (byte)0xFF);
         InitializeBackupRam(_backupRam, BackupRamFooter);
         InitializeBackupRam(_ramCart, RamCartFooter);
         _logA12001Pc = string.Equals(
@@ -266,6 +272,7 @@ public sealed class SegaCdMemory
     public void Reset()
     {
         Registers.Reset();
+        Array.Fill(_prgRam, (byte)0xFF);
         _cdController.Reset();
         WordRam.Reset();
     }
@@ -605,9 +612,20 @@ public sealed class SegaCdMemory
                     $"[SCD-PRG-LOW] cpu={cpu} addr=0x{address:X6} val=0x{value:X2} " +
                     $"pc=0x{pc:X6} bank=0x{Registers.PrgRamBank:X2} wp=0x{Registers.PrgRamWriteProtect:X2}");
             }
+            if (LogPrgBootWrites && _prgBootWriteRemaining > 0 && address >= 0x0180 && address < 0x0240)
+            {
+                _prgBootWriteRemaining--;
+                uint pc = cpu == ScdCpu.Main ? (MainPcProvider?.Invoke() ?? 0) : (SubPcProvider?.Invoke() ?? 0);
+                Console.WriteLine(
+                    $"[SCD-PRG-BOOT] cpu={cpu} addr=0x{address:X6} val=0x{value:X2} " +
+                    $"pc=0x{pc:X6} bank=0x{Registers.PrgRamBank:X2} wp=0x{Registers.PrgRamWriteProtect:X2}");
+            }
             _prgRam[address] = value;
             if (LogPrgFlag && address == PrgFlagAddr)
-                Console.WriteLine($"[SCD-PRG-FLAG] W8 {cpu} addr=0x{address:X6} val=0x{value:X2}");
+            {
+                uint pc = cpu == ScdCpu.Main ? (MainPcProvider?.Invoke() ?? 0) : (SubPcProvider?.Invoke() ?? 0);
+                Console.WriteLine($"[SCD-PRG-FLAG] W8 {cpu} addr=0x{address:X6} val=0x{value:X2} pc=0x{pc:X6}");
+            }
             if (cpu == ScdCpu.Main && LogPrgRamWatch && _prgProbeRemaining > 0 && address < 0x0400)
             {
                 _prgProbeRemaining--;
@@ -713,7 +731,9 @@ public sealed class SegaCdMemory
             case 0xA12000:
                 bool nextPend = (value & 0x01) != 0;
                 if (nextPend != Registers.SubSoftwareInterruptPending)
-                    Console.WriteLine($"[COMM-DEBUG] MAIN W 0xA12000 = 0x{value:X2} (pend={nextPend}) PC=0x{MainPcProvider?.Invoke():X6}");
+                    Console.WriteLine(
+                        $"[COMM-DEBUG] MAIN W 0xA12000 = 0x{value:X2} (pend={nextPend}) " +
+                        $"PC=0x{MainPcProvider?.Invoke():X6} SUBPC=0x{SubPcProvider?.Invoke():X6}");
                 Registers.SubSoftwareInterruptPending = nextPend;
                 break;
             case 0xA12001:
@@ -1497,6 +1517,7 @@ public sealed class SegaCdMemory
                 Graphics.AcknowledgeInterrupt();
                 break;
             case 2:
+                Console.WriteLine($"[SCD-SUBINT-ACK2] pc=0x{SubPcProvider?.Invoke():X6}");
                 Registers.SubSoftwareInterruptPending = false;
                 break;
             case 3:
