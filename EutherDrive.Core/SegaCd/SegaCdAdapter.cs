@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using EutherDrive.Core.Cpu.M68000Emu;
@@ -51,6 +52,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private bool _subPcLoggedExit;
     private int _subPcAfterExitRemaining;
     private bool _subIrqHandlerLogged;
+    private bool _subPhase1f6eLogged;
     private byte _subLastIntMask = 0xFF;
     private static readonly bool TraceSubPcAfterExit =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SUBPC_AFTER_EXIT"),
@@ -965,6 +967,43 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                     $"[SCD-SUB-IRQ2] pc=0x{subPc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{subState.Sr:X4} " +
                                     $"ssp=0x{subState.Ssp:X8} usp=0x{subState.Usp:X8} a7=0x{subState.Ssp:X8} flag=0x{waitFlag:X2} " +
                                     $"d0=0x{subState.Data[0]:X8} d1=0x{subState.Data[1]:X8}");
+                            }
+                            if (!_subPhase1f6eLogged && subPc >= 0x001F6E && subPc <= 0x001F72)
+                            {
+                                _subPhase1f6eLogged = true;
+                                var subState = _subCpu.GetState();
+                                uint baseAddr = 0x001F60;
+                                Span<byte> bytes = stackalloc byte[32];
+                                Span<byte> srcBytes = stackalloc byte[32];
+                                Span<byte> dstBytes = stackalloc byte[32];
+                                Span<ushort> statuses = stackalloc ushort[8];
+                                Span<ushort> commands = stackalloc ushort[8];
+                                for (int i = 0; i < bytes.Length; i++)
+                                    bytes[i] = _memory.ReadSubByte(baseAddr + (uint)i);
+                                for (int i = 0; i < srcBytes.Length; i++)
+                                {
+                                    srcBytes[i] = _memory.ReadSubByte(subState.Address[0] + (uint)i);
+                                    dstBytes[i] = _memory.ReadSubByte(subState.Address[1] + (uint)i);
+                                }
+                                for (int i = 0; i < 8; i++)
+                                {
+                                    commands[i] = _memory.ReadSubWord(0x00FF8010u + (uint)(i * 2));
+                                    statuses[i] = _memory.ReadSubWord(0x00FF8020u + (uint)(i * 2));
+                                }
+                                string codeHex = BitConverter.ToString(bytes.ToArray()).Replace("-", " ");
+                                string srcHex = BitConverter.ToString(srcBytes.ToArray()).Replace("-", " ");
+                                string dstHex = BitConverter.ToString(dstBytes.ToArray()).Replace("-", " ");
+                                string cmdHex = string.Join(" ", commands.ToArray().Select(static w => $"{w:X4}"));
+                                string stsHex = string.Join(" ", statuses.ToArray().Select(static w => $"{w:X4}"));
+                                Console.WriteLine(
+                                    $"[SCD-SUB-PHASE] pc=0x{subPc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{subState.Sr:X4} " +
+                                    $"d0=0x{subState.Data[0]:X8} d1=0x{subState.Data[1]:X8} d2=0x{subState.Data[2]:X8} " +
+                                    $"a0=0x{subState.Address[0]:X8} a1=0x{subState.Address[1]:X8} a6=0x{subState.Address[6]:X8} " +
+                                    $"flags=0x{_memory.Registers.MainCpuCommunicationFlags:X2}/0x{_memory.Registers.SubCpuCommunicationFlags:X2} " +
+                                    $"swPend={(_memory.Registers.SubSoftwareInterruptPending ? 1 : 0)} swEn={(_memory.Registers.SoftwareInterruptEnabled ? 1 : 0)} " +
+                                    $"cddPend={(_memory.Cdd.InterruptPending ? 1 : 0)} cddEn={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} hostClk={(_memory.Registers.CddHostClockOn ? 1 : 0)} " +
+                                    $"commands=[{cmdHex}] statuses=[{stsHex}] cdd=[{string.Join(" ", _memory.Cdd.Status.Select(static b => b.ToString("X2")))}] " +
+                                    $"mem@0x{baseAddr:X6}={codeHex} src@0x{subState.Address[0]:X6}={srcHex} dst@0x{subState.Address[1]:X6}={dstHex}");
                             }
                             if (ForcePrgChecksum && !_subChecksumComputed && subPc >= 0x0002E0 && subPc <= 0x0002E2)
                             {

@@ -193,7 +193,6 @@ public sealed class SegaCdMemory
         if (bios.Length != BiosLen)
             throw new InvalidOperationException($"BIOS must be {BiosLen} bytes.");
         _bios = bios;
-        Array.Fill(_prgRam, (byte)0xFF);
         InitializeBackupRam(_backupRam, BackupRamFooter);
         InitializeBackupRam(_ramCart, RamCartFooter);
         _logA12001Pc = string.Equals(
@@ -272,7 +271,7 @@ public sealed class SegaCdMemory
     public void Reset()
     {
         Registers.Reset();
-        Array.Fill(_prgRam, (byte)0xFF);
+        Array.Clear(_prgRam, 0, _prgRam.Length);
         _cdController.Reset();
         WordRam.Reset();
     }
@@ -1269,7 +1268,7 @@ public sealed class SegaCdMemory
                 WriteSubRegisterByte(reg | 1, (byte)value);
                 break;
             case 0x0034:
-                Cdd.SetFaderVolume(value);
+                Cdd.SetFaderVolume((ushort)((value >> 4) & 0x07FF));
                 break;
             case 0x0036:
                 WriteSubRegisterByte(reg | 1, (byte)value);
