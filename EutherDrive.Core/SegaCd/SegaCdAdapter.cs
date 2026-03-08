@@ -632,6 +632,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 int subSlice = (int)baseSubSlice;
                 if (ScdCpuCycleScale != 1.0)
                     subSlice = ScaleCycleCount(subSlice, ScdCpuCycleScale);
+                int subCyclesInterleaved = 0;
 
                 EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
                 if (_useM68kEmu)
@@ -813,6 +814,65 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)cycles;
                             mainCyclesConsumed += cycles;
 
+                            if (_useM68kEmu && subSlice > 0)
+                            {
+                                long mainCyclesDone = mainSlice - remaining;
+                                int desiredSubCycles = (int)((mainCyclesDone * (long)subSlice) / Math.Max(1, mainSlice));
+                                while (subCyclesInterleaved < desiredSubCycles)
+                                {
+                                    if (_memory.SubCpuHalt || _memory.SubCpuReset)
+                                        break;
+                                    if (!EnsureSubVectorsReady(_memory))
+                                        break;
+                                    if (_subCpuNeedsReset)
+                                    {
+                                        _subCpu.Reset(_subCpuBus!);
+                                        _subCpuNeedsReset = false;
+                                    }
+
+                                    if (_subCpu.Pc == 0x0003D4 && frameCounter % 60 == 0)
+                                    {
+                                        Console.WriteLine($"[SUB-STUCK] PC=3D4 OP={_subCpu.NextOpcode:X4}");
+                                    }
+                                    if (_subCpu.Pc == 0x0003DA && frameCounter % 60 == 0)
+                                    {
+                                        var state = _subCpu.GetState();
+                                        uint w1 = _subCpuBus!.ReadWord(0x03D4);
+                                        uint w2 = _subCpuBus.ReadWord(0x03D6);
+                                        uint w3 = _subCpuBus.ReadWord(0x03D8);
+                                        Console.WriteLine($"[SUB-STUCK] PC=3DA OP={_subCpu.NextOpcode:X4} w1={w1:X4} w2={w2:X4} w3={w3:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
+                                    }
+                                    if (_subCpu.Pc == 0x0005EE && frameCounter % 60 == 0)
+                                    {
+                                        var state = _subCpu.GetState();
+                                        byte waitFlag = _memory.ReadSubByte(0x0005EA4);
+                                        byte subLevel = _memory.GetSubInterruptLevel();
+                                        Console.WriteLine(
+                                            $"[SUB-WAIT-5EE] pc=0x{_subCpu.Pc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{state.Sr:X4} " +
+                                            $"mask={(state.Sr >> 8) & 7} irq={subLevel} swPend={(_memory.Registers.SubSoftwareInterruptPending ? 1 : 0)} " +
+                                            $"swEn={(_memory.Registers.SoftwareInterruptEnabled ? 1 : 0)} timerPend={(_memory.Registers.TimerInterruptPending ? 1 : 0)} " +
+                                            $"timerEn={(_memory.Registers.TimerInterruptEnabled ? 1 : 0)} cddPend={(_memory.Cdd.InterruptPending ? 1 : 0)} " +
+                                            $"cddEn={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} hostClk={(_memory.Registers.CddHostClockOn ? 1 : 0)} " +
+                                            $"cdcPend={(_memory.Cdc.InterruptPending ? 1 : 0)} cdcEn={(_memory.Registers.CdcInterruptEnabled ? 1 : 0)} " +
+                                            $"flag=0x{waitFlag:X2}");
+                                    }
+                                    if (!loggedSubWaitOpcodeWindow && _subCpu.Pc >= 0x0005E8 && _subCpu.Pc <= 0x0005F0)
+                                    {
+                                        loggedSubWaitOpcodeWindow = true;
+                                        uint baseAddr = 0x0005E8;
+                                        Span<byte> bytes = stackalloc byte[16];
+                                        for (int i = 0; i < bytes.Length; i++)
+                                            bytes[i] = _memory.ReadSubByte(baseAddr + (uint)i);
+                                        string hex = BitConverter.ToString(bytes.ToArray()).Replace("-", " ");
+                                        Console.WriteLine($"[SCD-SUB-WAIT-BYTES] pc=0x{_subCpu.Pc:X6} op=0x{_subCpu.NextOpcode:X4} mem@0x{baseAddr:X6}={hex}");
+                                    }
+
+                                    _memory.FlushBufferedSubWrites();
+                                    uint subInstrCycles = _subCpu.ExecuteInstruction(_subCpuBus!);
+                                    subCyclesInterleaved += (int)subInstrCycles;
+                                }
+                            }
+
                         }
 
                         SyncLegacyMain68kView(_mainCpu);
@@ -889,7 +949,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             if (subSlice > 0)
                             {
                                 if (ProfileScd) _profileCpuTicks -= Stopwatch.GetTimestamp();
-                                int remaining = subSlice;
+                                int remaining = Math.Max(0, subSlice - subCyclesInterleaved);
                                 while (remaining > 0)
                                 {
                                     if (_subCpu.Pc == 0x0003D4 && frameCounter % 60 == 0)
