@@ -591,18 +591,21 @@ internal sealed class Sa1Registers
 
     private void WriteSbwe(byte value)
     {
-        SnesBwramWritesEnabled = value.Bit(7);
+        bool enabled = value.Bit(7);
+        SnesBwramWritesEnabled = enabled;
+        Sa1BwramWritesEnabled = enabled;
     }
 
     private void WriteCbwe(byte value)
     {
-        Sa1BwramWritesEnabled = value.Bit(7);
+        bool enabled = value.Bit(7);
+        SnesBwramWritesEnabled = enabled;
+        Sa1BwramWritesEnabled = enabled;
     }
 
     private void WriteBwpa(byte value)
     {
-        byte sizeCode = (byte)(value & 0x0F);
-        BwramWriteProtectionSize = sizeCode == 0 ? 0 : (uint)(0x100 << (sizeCode - 1));
+        BwramWriteProtectionSize = 1u << (8 + (value & 0x0F));
     }
 
     private void WriteSiwp(byte value)
@@ -779,7 +782,7 @@ internal sealed class Sa1Registers
 
     public bool CanWriteBwram(uint bwramAddr, bool isSnes)
     {
-        bool writeEnabled = isSnes ? SnesBwramWritesEnabled : Sa1BwramWritesEnabled;
+        bool writeEnabled = SnesBwramWritesEnabled || Sa1BwramWritesEnabled;
         return writeEnabled || bwramAddr >= BwramWriteProtectionSize;
     }
 
@@ -794,9 +797,9 @@ internal sealed class Sa1Registers
         timer.WriteTmc(0x00);
         WriteSbwe(0x00);
         WriteCbwe(0x00);
-        WriteBwpa(0x00);
-        WriteSiwp(0xFF);
-        WriteCiwp(0xFF);
+        WriteBwpa(0xFF);
+        WriteSiwp(0x00);
+        WriteCiwp(0x00);
         WriteDcnt(0x00);
         WriteCdma(0x80);
         WriteMcnt(0x00);

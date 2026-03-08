@@ -66,6 +66,20 @@ class Program
 {
     private const int DefaultFrames = 120;
 
+    private static bool ShouldPressStartPulse(int frame, int delay, int pulse, int period, int count)
+    {
+        if (frame < delay || pulse <= 0 || period <= 0 || count <= 0)
+            return false;
+
+        int rel = frame - delay;
+        int window = rel / period;
+        if (window < 0 || window >= count)
+            return false;
+
+        int slot = rel % period;
+        return slot < pulse;
+    }
+
     private static void LogEnv(string name)
     {
         string? value = Environment.GetEnvironmentVariable(name);
@@ -145,8 +159,8 @@ class Program
             Console.Error.WriteLine("  --test-interlace2: Run interlace mode 2 pattern test");
             Console.Error.WriteLine("  --load-savestate: Load savestate and run frames");
             Console.Error.WriteLine("  --load-raw-state: Load raw MdTracer state and run frames");
-        Console.Error.WriteLine("  --m68k-tests <path> [--log]: Run 68000 JSON tests (ProcessorTests)");
-        return 1;
+            Console.Error.WriteLine("  --m68k-tests <path> [--log]: Run 68000 JSON tests (ProcessorTests)");
+            return 1;
         }
 
         string romPath = args[0];
@@ -242,6 +256,14 @@ class Program
                     snesAudioSink = new HeadlessAudioSink();
                 }
 
+                bool autoStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_AUTO_START") == "1";
+                int autoStartDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_DELAY_FRAMES") ?? 0;
+                int autoStartPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PULSE_FRAMES") ?? 1;
+                int autoStartPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PERIOD_FRAMES") ?? 60;
+                int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PULSE_COUNT") ?? 1;
+                bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_LOG") == "1";
+                bool lastStartPressed = false;
+
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 StreamWriter? snesTraceWriter = null;
                 if (traceSnesFrames)
@@ -263,6 +285,26 @@ class Program
                 bool prevHasContent = false;
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
+                    bool startPressed = autoStart &&
+                        ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount);
+                    snes.SetInputState(
+                        up: false,
+                        down: false,
+                        left: false,
+                        right: false,
+                        a: false,
+                        b: false,
+                        x: false,
+                        y: false,
+                        z: false,
+                        c: false,
+                        start: startPressed,
+                        mode: false,
+                        padType: PadType.SixButton);
+                    if (autoStartLog && startPressed != lastStartPressed)
+                        Console.WriteLine($"[HEADLESS] SNES auto-start start={(startPressed ? 1 : 0)} frame={frame}");
+                    lastStartPressed = startPressed;
+
                     snes.RunFrame();
 
                     if (traceSnesFrames)
@@ -1090,11 +1132,18 @@ class Program
                     snes.LoadState(snesStateReader);
 
                 Console.WriteLine("[HEADLESS] Savestate loaded successfully (SNES)");
-
                 HeadlessAudioSink? snesAudioSink = null;
                 bool enableSnesAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
                 if (enableSnesAudio)
                     snesAudioSink = new HeadlessAudioSink();
+
+                bool autoStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_AUTO_START") == "1";
+                int autoStartDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_DELAY_FRAMES") ?? 0;
+                int autoStartPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PULSE_FRAMES") ?? 1;
+                int autoStartPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PERIOD_FRAMES") ?? 60;
+                int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PULSE_COUNT") ?? 1;
+                bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_LOG") == "1";
+                bool lastStartPressed = false;
 
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 StreamWriter? snesTraceWriter = null;
@@ -1119,6 +1168,26 @@ class Program
                 bool prevHasContent = false;
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
+                    bool startPressed = autoStart &&
+                        ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount);
+                    snes.SetInputState(
+                        up: false,
+                        down: false,
+                        left: false,
+                        right: false,
+                        a: false,
+                        b: false,
+                        x: false,
+                        y: false,
+                        z: false,
+                        c: false,
+                        start: startPressed,
+                        mode: false,
+                        padType: PadType.SixButton);
+                    if (autoStartLog && startPressed != lastStartPressed)
+                        Console.WriteLine($"[HEADLESS] SNES auto-start start={(startPressed ? 1 : 0)} frame={frame}");
+                    lastStartPressed = startPressed;
+
                     snes.RunFrame();
 
                     if (traceSnesFrames)
