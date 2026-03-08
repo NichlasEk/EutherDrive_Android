@@ -108,11 +108,12 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
         int samplesPerFrame = GetSamplesPerFrame();
         _audioHandler.EnsureCapacity(samplesPerFrame);
         _system.RunFrameForExternal();
+        int[] pixels = _system.PPU.GetPixels();
         if (_system.PPU is PPU ppu)
         {
             if (!_sawBrightFrame)
             {
-                if (ppu.Brightness == 0)
+                if (ppu.Brightness == 0 && !HasVisiblePixels(pixels))
                 {
                     EnsureFrameBuffer();
                     Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
@@ -124,13 +125,23 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
                 _sawBrightFrame = true;
             }
         }
-        int[] pixels = _system.PPU.GetPixels();
         EnsureFrameBuffer();
         ConvertArgbToBgra(pixels, _frameBuffer);
         EnsureAudioBuffer(samplesPerFrame);
         ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
         TraceAudioIfEnabled();
         _frameCounter++;
+    }
+
+    private static bool HasVisiblePixels(int[] pixels)
+    {
+        foreach (int pixel in pixels)
+        {
+            if ((pixel & 0x00FFFFFF) != 0)
+                return true;
+        }
+
+        return false;
     }
 
     public void SaveState(BinaryWriter writer)
