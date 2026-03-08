@@ -104,6 +104,7 @@ public class SNESSystem : ISNESSystem
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_DMA"), "1", StringComparison.Ordinal);
     private readonly bool _traceInidisp =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_INIDISP"), "1", StringComparison.Ordinal);
+    private bool HasExplicitWramTraceFilter => _traceWramAddrs.Count > 0;
 
     private int[] _dmaMode = [];
     private bool[] _dmaFixed = [];
@@ -282,14 +283,14 @@ public class SNESSystem : ISNESSystem
         if (bank == 0x7e || bank == 0x7f)
         {
             _ram[((bank & 0x1) << 16) | adr] = (byte) value;
-            if (_traceWramWrites && (adr == 0x0028 || adr == 0x002A || adr == 0x002B || adr == 0x00AD || adr < 0x0400 || _traceWramAddrs.Contains(((bank & 0x1) << 16) | adr)))
+            if (_traceWramWrites && ShouldTraceWramWrite(((bank & 0x1) << 16) | adr, adr))
             {
                 int pc = -1;
                 if (CPU is KSNES.CPU.CPU cpu)
                     pc = cpu.ProgramCounter24;
                 Console.WriteLine($"[WRAM-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
             }
-            if (dma && _traceWramWrites && adr < 0x2000)
+            if (dma && _traceWramWrites && ShouldTraceWramPortAccess(((bank & 0x1) << 16) | adr, adr))
             {
                 int pc = -1;
                 if (CPU is KSNES.CPU.CPU cpu)
@@ -302,14 +303,14 @@ public class SNESSystem : ISNESSystem
             if (adr < 0x2000)
             {
                 _ram[adr & 0x1fff] = (byte) value;
-                if (_traceWramWrites && (adr == 0x0028 || adr == 0x002A || adr == 0x002B || adr == 0x00AD || adr < 0x0400 || _traceWramAddrs.Contains(adr)))
+                if (_traceWramWrites && ShouldTraceWramWrite(adr, adr))
                 {
                     int pc = -1;
                     if (CPU is KSNES.CPU.CPU cpu)
                         pc = cpu.ProgramCounter24;
                     Console.WriteLine($"[WRAM-WR] adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
                 }
-                if (_traceWramWrites && adr >= 0x1F00 && adr < 0x2100)
+                if (_traceWramWrites && ShouldTraceWramPortAccess(adr, adr))
                 {
                     int pc = -1;
                     if (CPU is KSNES.CPU.CPU cpu)
@@ -1057,7 +1058,7 @@ public class SNESSystem : ISNESSystem
             int addr = _ramAdr;
             int val = _ram[addr];
             _ramAdr = (addr + 1) & 0x1ffff;
-            if (_traceWramWrites && (addr < 0x0400 || (addr >= 0x1F00 && addr < 0x2000)))
+            if (_traceWramWrites && ShouldTraceWramPortAccess(addr, addr))
             {
                 int pc = -1;
                 if (CPU is KSNES.CPU.CPU cpu)
@@ -1097,7 +1098,7 @@ public class SNESSystem : ISNESSystem
         switch (adr)
         {
             case 0x80:
-                if (_traceWramWrites && (_ramAdr < 0x0400 || (_ramAdr >= 0x1F00 && _ramAdr < 0x2000)))
+                if (_traceWramWrites && ShouldTraceWramPortAccess(_ramAdr, _ramAdr))
                 {
                     int pc = -1;
                     if (CPU is KSNES.CPU.CPU cpu)
@@ -1182,7 +1183,7 @@ public class SNESSystem : ISNESSystem
         if (bank == 0x7e || bank == 0x7f)
         {
             int val = _ram[((bank & 0x1) << 16) | adr];
-            if (_traceWramWrites && (adr == 0x002E || adr == 0x002F || adr == 0x004C || adr == 0x004E || adr == 0x1F4E || _traceWramAddrs.Contains(((bank & 0x1) << 16) | adr)))
+            if (_traceWramWrites && ShouldTraceWramRead(((bank & 0x1) << 16) | adr, adr))
             {
                 int pc = -1;
                 if (CPU is KSNES.CPU.CPU cpu)
@@ -1196,7 +1197,7 @@ public class SNESSystem : ISNESSystem
             if (adr < 0x2000)
             {
                 int val = _ram[adr & 0x1fff];
-                if (_traceWramWrites && (adr == 0x002E || adr == 0x002F || adr == 0x004C || adr == 0x004E || adr == 0x1F4E || _traceWramAddrs.Contains(adr)))
+                if (_traceWramWrites && ShouldTraceWramRead(adr, adr))
                 {
                     int pc = -1;
                     if (CPU is KSNES.CPU.CPU cpu)
@@ -1231,7 +1232,7 @@ public class SNESSystem : ISNESSystem
         return ROM.Read(bank, adr);
     }
 
-    internal int Peek(int adr)
+    public int Peek(int adr)
     {
         return Rread(adr);
     }
@@ -1365,5 +1366,29 @@ public class SNESSystem : ISNESSystem
         }
 
         return result;
+    }
+
+    private bool ShouldTraceWramWrite(int fullAddr, int adr)
+    {
+        if (HasExplicitWramTraceFilter)
+            return _traceWramAddrs.Contains(fullAddr);
+
+        return adr == 0x0028 || adr == 0x002A || adr == 0x002B || adr == 0x00AD || adr < 0x0400;
+    }
+
+    private bool ShouldTraceWramRead(int fullAddr, int adr)
+    {
+        if (HasExplicitWramTraceFilter)
+            return _traceWramAddrs.Contains(fullAddr);
+
+        return adr == 0x002E || adr == 0x002F || adr == 0x004C || adr == 0x004E || adr == 0x1F4E;
+    }
+
+    private bool ShouldTraceWramPortAccess(int fullAddr, int adr)
+    {
+        if (HasExplicitWramTraceFilter)
+            return _traceWramAddrs.Contains(fullAddr);
+
+        return adr < 0x0400 || (adr >= 0x1F00 && adr < 0x2000);
     }
 }

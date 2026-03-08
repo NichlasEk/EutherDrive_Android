@@ -535,14 +535,17 @@ public class PPU : IPPU
                 _tilemapWider[adr - 7] = (value & 0x1) > 0;
                 _tilemapHigher[adr - 7] = (value & 0x2) > 0;
                 _tilemapAdr[adr - 7] = (value & 0xfc) << 8;
+                TracePpuWrite($"[PPU] BG{adr - 6}SC=0x{value:X2} map=0x{_tilemapAdr[adr - 7]:X4} wide={_tilemapWider[adr - 7]} high={_tilemapHigher[adr - 7]}");
                 return;
             case 0x0b:
                 _tileAdr[0] = (value & 0xf) << 12;
                 _tileAdr[1] = (value & 0xf0) << 8;
+                TracePpuWrite($"[PPU] BG12NBA=0x{value:X2} bg1Tile=0x{_tileAdr[0]:X4} bg2Tile=0x{_tileAdr[1]:X4}");
                 return;
             case 0x0c:
                 _tileAdr[2] = (value & 0xf) << 12;
                 _tileAdr[3] = (value & 0xf0) << 8;
+                TracePpuWrite($"[PPU] BG34NBA=0x{value:X2} bg3Tile=0x{_tileAdr[2]:X4} bg4Tile=0x{_tileAdr[3]:X4}");
                 return;
             case 0x0d:
                 _mode7Hoff = Get13Signed((value << 8) | _mode7Prev);
@@ -584,20 +587,24 @@ public class PPU : IPPU
                 {
                     _vramInc = 128;
                 }
-                _vramRemap = (value & 0xc0) >> 2;
+                _vramRemap = (value & 0x0c) >> 2;
                 _vramIncOnHigh = (value & 0x80) > 0;
+                TracePpuWrite($"[PPU] VMAIN=0x{value:X2} inc={_vramInc} remap={_vramRemap} incOnHigh={_vramIncOnHigh}");
                 return;
             case 0x16:
                 _vramAdr = (_vramAdr & 0xff00) | value;
                 _vramReadBuffer = _vram[GetVramRemap()];
+                TracePpuWrite($"[PPU] VMADDL=0x{value:X2} vramAdr=0x{_vramAdr:X4} remapAdr=0x{GetVramRemap():X4}");
                 return;
             case 0x17:
                 _vramAdr = (_vramAdr & 0xff) | (value << 8);
                 _vramReadBuffer = _vram[GetVramRemap()];
+                TracePpuWrite($"[PPU] VMADDH=0x{value:X2} vramAdr=0x{_vramAdr:X4} remapAdr=0x{GetVramRemap():X4}");
                 return;
             case 0x18:
                 int adr2 = GetVramRemap();
                 _vram[adr2] = (ushort) ((_vram[adr2] & 0xff00) | value);
+                TracePpuWrite($"[PPU] VMDATAL adr=0x{adr2:X4} val=0x{value:X2} word=0x{_vram[adr2]:X4}");
                 if (!_vramIncOnHigh)
                 {
                     _vramAdr += _vramInc;
@@ -607,6 +614,7 @@ public class PPU : IPPU
             case 0x19:
                 int adr3 = GetVramRemap();
                 _vram[adr3] = (ushort) ((_vram[adr3] & 0xff) | (value << 8));
+                TracePpuWrite($"[PPU] VMDATAH adr=0x{adr3:X4} val=0x{value:X2} word=0x{_vram[adr3]:X4}");
                 if (_vramIncOnHigh)
                 {
                     _vramAdr += _vramInc;
@@ -795,6 +803,67 @@ public class PPU : IPPU
     public int[] GetPixels()
     {
         return _pixelOutput;
+    }
+
+    public string GetDebugSnapshot()
+    {
+        int bg1MapAddr = _tilemapAdr.Length > 0 ? _tilemapAdr[0] & 0x7fff : 0;
+        int bg1TileAddr = _tileAdr.Length > 0 ? _tileAdr[0] & 0x7fff : 0;
+        int bg1Hoff = _bgHoff.Length > 0 ? _bgHoff[0] : 0;
+        int bg1Voff = _bgVoff.Length > 0 ? _bgVoff[0] : 0;
+        ushort tilemap0 = _vram.Length > 0 ? _vram[bg1MapAddr & 0x7fff] : (ushort)0;
+        int tileNum0 = tilemap0 & 0x03ff;
+        int bits = _bitPerMode[_mode * 4];
+        int tileWordBase = (bg1TileAddr + tileNum0 * 4 * bits) & 0x7fff;
+
+        return string.Join(
+            Environment.NewLine,
+            new[]
+            {
+                $"ppu mode={_mode} tm=0x{_tmRaw:X2} ts=0x{_tsRaw:X2} forcedBlank={_forcedBlank} bright={_brightness}",
+                $"bg1 map=0x{bg1MapAddr:X4} tile=0x{bg1TileAddr:X4} hoff=0x{bg1Hoff:X4} voff=0x{bg1Voff:X4} bits={bits}",
+                $"cgram[0]=0x{_cgram[0]:X4} cgramFrame[0]=0x{_cgramFrame[0]:X4} cgram[1]=0x{_cgram[1]:X4} cgramFrame[1]=0x{_cgramFrame[1]:X4}",
+                $"bg1 tilemap[0..7]=[{GetVramWindow(bg1MapAddr, 8)}]",
+                $"bg1 tile0 word=0x{tilemap0:X4} num=0x{tileNum0:X3} pal={(tilemap0 >> 10) & 0x7} prio={((tilemap0 >> 13) & 0x1)} xflip={((tilemap0 >> 14) & 0x1)} yflip={((tilemap0 >> 15) & 0x1)}",
+                $"bg1 tiledata[{tileNum0:X3}]=[{GetVramWindow(tileWordBase, Math.Min(bits << 2, 8))}]",
+                $"obj sprAdr1=0x{_sprAdr1:X4} sprAdr2=0x{_sprAdr2:X4} objSize={_objSize}",
+                $"oam[0..7]=[{GetOamWindow(0, 8)}]",
+                $"highOam[0..7]=[{GetHighOamWindow(0, 8)}]"
+            });
+    }
+
+    private string GetVramWindow(int start, int count)
+    {
+        if (_vram.Length == 0 || count <= 0)
+            return string.Empty;
+
+        string[] values = new string[Math.Min(count, 8)];
+        int limit = values.Length;
+        for (int i = 0; i < limit; i++)
+            values[i] = _vram[(start + i) & 0x7fff].ToString("X4");
+        return string.Join(' ', values);
+    }
+
+    private string GetOamWindow(int start, int count)
+    {
+        if (_oam.Length == 0 || count <= 0)
+            return string.Empty;
+
+        string[] values = new string[Math.Min(count, 8)];
+        for (int i = 0; i < values.Length; i++)
+            values[i] = _oam[(start + i) & 0xff].ToString("X4");
+        return string.Join(' ', values);
+    }
+
+    private string GetHighOamWindow(int start, int count)
+    {
+        if (_highOam.Length == 0 || count <= 0)
+            return string.Empty;
+
+        string[] values = new string[Math.Min(count, 8)];
+        for (int i = 0; i < values.Length; i++)
+            values[i] = _highOam[(start + i) & 0x0f].ToString("X4");
+        return string.Join(' ', values);
     }
 
     private static int GetTracePpuLimit()

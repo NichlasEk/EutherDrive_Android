@@ -239,6 +239,11 @@ class Program
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
                 Console.WriteLine($"[HEADLESS] NES fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_NES_SNAPSHOT") == "1")
+                {
+                    string snapPrefix = nes.CaptureDebugSnapshot(dumpDir);
+                    Console.WriteLine($"[HEADLESS] NES snapshot captured: {snapPrefix}");
+                }
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -263,8 +268,11 @@ class Program
                 int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PULSE_COUNT") ?? 1;
                 bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_LOG") == "1";
                 bool lastStartPressed = false;
+                int[] snesPeekAddrs = ParseOptionalHexAddrEnv("EUTHERDRIVE_TRACE_SNES_PEEK_ADDRS");
+                int? sa1SnapshotFrameSavestate = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_SA1_SNAPSHOT_FRAME");
 
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
                 StreamWriter? snesTraceWriter = null;
                 if (traceSnesFrames)
                 {
@@ -279,8 +287,19 @@ class Program
                     Console.WriteLine(message);
                     snesTraceWriter?.WriteLine(message);
                 }
+                void TraceFrameEnd(string message)
+                {
+                    Console.WriteLine(message);
+                    snesTraceWriter?.WriteLine(message);
+                }
+                void TracePeek(string label)
+                {
+                    if (snesPeekAddrs.Length > 0)
+                        Trace(DumpSnesPeek(snes, label, snesPeekAddrs));
+                }
                 Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_frame0.ppm"), traceSnesFrames);
+                TracePeek("before");
 
                 bool prevHasContent = false;
                 for (int frame = 0; frame < framesToRun; frame++)
@@ -321,6 +340,13 @@ class Program
                         if (!prevHasContent && stats.HasContent)
                         {
                             Trace($"[HEADLESS] Frame {frame}: transition to CONTENT (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
+                            if (traceSnesPpuSnapshot)
+                            {
+                                string? snapshot = snes.GetPpuDebugSnapshot();
+                                if (!string.IsNullOrEmpty(snapshot))
+                                    Trace($"[HEADLESS] Frame {frame}: ppu-snapshot{Environment.NewLine}{snapshot}");
+                            }
+                            TracePeek($"frame {frame} content");
                         }
                         prevHasContent = stats.HasContent;
                     }
@@ -340,13 +366,23 @@ class Program
                     }
                     if (snes.System.CPU is KSNES.CPU.CPU cpu)
                     {
+                        if (sa1SnapshotFrameSavestate == frame && snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 snapshotSa1)
+                        {
+                            string snapshotPath = Path.Combine(dumpDir, $"sa1_snapshot_frame{frame}.txt");
+                            string snapshot = snapshotSa1.GetKirbyDebugSnapshot();
+                            Console.WriteLine($"[HEADLESS] SA1 snapshot frame={frame}");
+                            Console.WriteLine(snapshot);
+                            File.WriteAllText(snapshotPath, snapshot);
+                        }
                         string sa1Pc = snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1 && sa1.GetCpu() is KSNES.CPU.CPU sa1Cpu ? $" SA1 PC=0x{sa1Cpu.ProgramCounter24:X6}" : "";
-                        Console.WriteLine($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}");
+                        TraceFrameEnd($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}");
                     }
                 }
 
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"), traceSnesFrames);
+                if (snesPeekAddrs.Length > 0)
+                    Console.WriteLine(DumpSnesPeek(snes, "after", snesPeekAddrs));
                 snesAudioSink?.Dispose();
                 snesTraceWriter?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
@@ -917,6 +953,12 @@ class Program
         Console.WriteLine($"[HEADLESS] Dumped frame to {path}");
     }
 
+    private static string DumpSnesPeek(SnesAdapter snes, string label, IReadOnlyList<int> addresses)
+    {
+        string values = string.Join(' ', addresses.Select(addr => $"{addr:X6}=0x{snes.System.Peek(addr):X2}"));
+        return $"[HEADLESS] Peek {label}: {values}";
+    }
+
     private static bool FrameBufferHasContent(ReadOnlySpan<byte> fb)
     {
         for (int i = 0; i + 3 < fb.Length; i += 4)
@@ -1144,8 +1186,11 @@ class Program
                 int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PULSE_COUNT") ?? 1;
                 bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_LOG") == "1";
                 bool lastStartPressed = false;
+                int? sa1SnapshotFrame = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_SA1_SNAPSHOT_FRAME");
+                int[] snesPeekAddrs = ParseOptionalHexAddrEnv("EUTHERDRIVE_TRACE_SNES_PEEK_ADDRS");
 
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
                 StreamWriter? snesTraceWriter = null;
                 if (traceSnesFrames)
                 {
@@ -1161,9 +1206,15 @@ class Program
                     Console.WriteLine(message);
                     snesTraceWriter?.WriteLine(message);
                 }
+                void TracePeek(string label)
+                {
+                    if (snesPeekAddrs.Length > 0)
+                        Trace(DumpSnesPeek(snes, label, snesPeekAddrs));
+                }
 
                 Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_frame0.ppm"), traceSnesFrames);
+                TracePeek("before");
 
                 bool prevHasContent = false;
                 for (int frame = 0; frame < framesToRun; frame++)
@@ -1204,6 +1255,13 @@ class Program
                         if (!prevHasContent && stats.HasContent)
                         {
                             Trace($"[HEADLESS] Frame {frame}: transition to CONTENT (mode={state.Mode} tm=0x{state.MainScreenMask:X2} ts=0x{state.SubScreenMask:X2} forcedBlank={state.ForcedBlank} bright={state.Brightness})");
+                            if (traceSnesPpuSnapshot)
+                            {
+                                string? snapshot = snes.GetPpuDebugSnapshot();
+                                if (!string.IsNullOrEmpty(snapshot))
+                                    Trace($"[HEADLESS] Frame {frame}: ppu-snapshot{Environment.NewLine}{snapshot}");
+                            }
+                            TracePeek($"frame {frame} content");
                         }
                         prevHasContent = stats.HasContent;
                     }
@@ -1222,6 +1280,14 @@ class Program
 
                     if (snes.System.CPU is KSNES.CPU.CPU cpu)
                     {
+                        if (sa1SnapshotFrame == frame && snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 snapshotSa1)
+                        {
+                            string snapshotPath = Path.Combine(dumpDir, $"sa1_snapshot_frame{frame}.txt");
+                            string snapshot = snapshotSa1.GetKirbyDebugSnapshot();
+                            Console.WriteLine($"[HEADLESS] SA1 snapshot frame={frame}");
+                            Console.WriteLine(snapshot);
+                            File.WriteAllText(snapshotPath, snapshot);
+                        }
                         string sa1Pc = snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1 && sa1.GetCpu() is KSNES.CPU.CPU sa1Cpu
                             ? $" SA1 PC=0x{sa1Cpu.ProgramCounter24:X6}"
                             : "";
@@ -1231,6 +1297,8 @@ class Program
 
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"), traceSnesFrames);
+                if (snesPeekAddrs.Length > 0)
+                    Console.WriteLine(DumpSnesPeek(snes, "after", snesPeekAddrs));
                 snesAudioSink?.Dispose();
                 snesTraceWriter?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
@@ -1794,6 +1862,23 @@ class Program
         if (int.TryParse(raw.Trim(), out int value))
             return value;
         return null;
+    }
+
+    private static int[] ParseOptionalHexAddrEnv(string name)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return Array.Empty<int>();
+
+        var result = new List<int>();
+        foreach (string part in raw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string token = part.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? part[2..] : part;
+            if (int.TryParse(token, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int value))
+                result.Add(value & 0xFFFFFF);
+        }
+
+        return result.ToArray();
     }
 
     private static string GetSavestateRoot()

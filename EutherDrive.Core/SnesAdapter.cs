@@ -295,6 +295,11 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
             YPos: _system.YPos);
     }
 
+    public string? GetPpuDebugSnapshot()
+    {
+        return _system.PPU is PPU ppu ? ppu.GetDebugSnapshot() : null;
+    }
+
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
     {
         sampleRate = SnesAudioHandler.SampleRate;

@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using KSNES.CPU;
 using KSNES.SNESSystem;
 using KSNES.PictureProcessing;
@@ -11,9 +13,24 @@ namespace KSNES.Specialchips.SA1;
 
 public sealed class Sa1
 {
+    private readonly struct PendingBwramWrite(uint address, byte value)
+    {
+        public uint Address { get; } = address;
+        public byte Value { get; } = value;
+    }
+
     private const int IramLen = 2 * 1024;
     private const uint IramWatchOffset = 0x64E;
     private const uint BwramWatchOffset = 0x004E;
+    private const int DefaultPcBreakLogInstructions = 128;
+    private const int DefaultPcRangeLogInstructions = 256;
+    private const int TargetHistoryLength = 128;
+    private static readonly uint[] ExtraIramWatchOffsets =
+    [
+        0x0105, 0x0106, 0x0107, 0x0108,
+        0x06D0, 0x06D1, 0x06D2, 0x06D3,
+        0x06DE, 0x06DF, 0x06E0
+    ];
 
     [NonSerialized]
     private readonly byte[] _rom;
@@ -27,38 +44,139 @@ public sealed class Sa1
     private ulong _lastSnesCycles;
     [NonSerialized]
     private readonly Sa1System _system;
+    [NonSerialized]
     private readonly bool _traceIramWatch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_IRAM_WATCH"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly bool _traceIramWriteOnly =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_IRAM_WRITE_ONLY"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly HashSet<uint> _traceIramOffsets = ParseTraceOffsets(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_IRAM_ADDRS"));
+    [NonSerialized]
     private readonly bool _traceBwramWatch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly bool _traceBwramWriteOnly =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WRITE_ONLY"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly HashSet<uint> _traceBwramOffsets = ParseTraceOffsets(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_ADDRS"));
+    [NonSerialized]
+    private readonly bool _traceBwramBlockedWrites =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_BLOCKS"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly bool _traceBadDispatchPointer =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BAD_PTR"), "1", StringComparison.Ordinal);
     private bool _inReset = true;
     private bool _lastSa1Reset;
     private bool _lastSa1Wait;
     private bool _lastSa1Nmi;
+    [NonSerialized]
+    private bool _badDispatchPointerLogged;
+    [NonSerialized]
+    private readonly bool _tracePcBreakEnabled;
+    [NonSerialized]
+    private readonly int _tracePcBreakStart;
+    [NonSerialized]
+    private readonly int _tracePcBreakEnd;
+    [NonSerialized]
+    private int _tracePcBreakRemaining;
+    [NonSerialized]
+    private bool _tracePcBreakTriggered;
+    [NonSerialized]
+    private readonly bool _tracePcRangeEnabled;
+    [NonSerialized]
+    private readonly int _tracePcRangeStart;
+    [NonSerialized]
+    private readonly int _tracePcRangeEnd;
+    [NonSerialized]
+    private int _tracePcRangeRemaining;
+    [NonSerialized]
+    private readonly bool _tracePcTargetEnabled;
+    [NonSerialized]
+    private readonly int _tracePcTarget;
+    [NonSerialized]
+    private int _tracePcTargetRemaining;
+    [NonSerialized]
+    private readonly Queue<string> _tracePcTargetHistory = new(TargetHistoryLength);
+    [NonSerialized]
+    private int _traceBwramBlockedWritesRemaining = ParseTraceLimit("EUTHERDRIVE_TRACE_SA1_BWRAM_BLOCKS_LIMIT", 256);
+    [NonSerialized]
+    private readonly List<PendingBwramWrite> _pendingSa1BwramWrites = [];
 
     public Sa1(byte[] rom, byte[] bwram, bool isPal)
     {
         _rom = rom;
-        if (bwram.Length < 256 * 1024)
+        if (bwram.Length == 0)
         {
-            byte[] newBwram = new byte[256 * 1024];
-            if (bwram.Length > 0)
-                Buffer.BlockCopy(bwram, 0, newBwram, 0, bwram.Length);
+            byte[] newBwram = new byte[64 * 1024];
             bwram = newBwram;
         }
         _bwram = bwram;
         _cpu = new CPU.CPU();
-        _cpu.StartInNativeMode = true;
+        _cpu.StartInNativeMode = false;
         _timer = new Sa1Timer(isPal);
         _system = new Sa1System(this, _cpu);
         _cpu.SetSystem(_system);
         _lastSa1Reset = _registers.Sa1Reset;
         _lastSa1Wait = _registers.Sa1Wait;
+        if (TryParseTraceRange(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_PC_BREAK"), out int breakStart, out int breakEnd))
+        {
+            _tracePcBreakEnabled = true;
+            _tracePcBreakStart = breakStart;
+            _tracePcBreakEnd = breakEnd;
+            _tracePcBreakRemaining = ParseTraceLimit("EUTHERDRIVE_TRACE_SA1_PC_BREAK_LIMIT", DefaultPcBreakLogInstructions);
+        }
+        if (TryParseTraceRange(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_PC_RANGE"), out int rangeStart, out int rangeEnd))
+        {
+            _tracePcRangeEnabled = true;
+            _tracePcRangeStart = rangeStart;
+            _tracePcRangeEnd = rangeEnd;
+            _tracePcRangeRemaining = ParseTraceLimit("EUTHERDRIVE_TRACE_SA1_PC_RANGE_LIMIT", DefaultPcRangeLogInstructions);
+        }
+        if (TryParseTraceAddress(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_PC_TARGET"), out int targetPc))
+        {
+            _tracePcTargetEnabled = true;
+            _tracePcTarget = targetPc;
+            _tracePcTargetRemaining = ParseTraceLimit("EUTHERDRIVE_TRACE_SA1_PC_TARGET_LIMIT", 4);
+        }
     }
 
     public byte[] Bwram => _bwram;
 
     public ICPU GetCpu() => _cpu;
+
+    public string GetDebugState()
+    {
+        string cpuState = _cpu.GetDebugStateWithStack();
+        return
+            $"pc=0x{_cpu.ProgramCounter24:X6} {cpuState} " +
+            $"wait={(_registers.Sa1Wait ? 1 : 0)} reset={(_registers.Sa1Reset ? 1 : 0)} nmi={( _registers.Sa1Nmi ? 1 : 0)} " +
+            $"irqFromSnes={(_registers.Sa1IrqFromSnes ? 1 : 0)} timerIrq={(_timer.IrqPending ? 1 : 0)} dmaIrq={(_registers.Sa1DmaIrq ? 1 : 0)} " +
+            $"dmaState={_registers.DmaState} dmaEnabled={(_registers.DmaEnabled ? 1 : 0)} src={_registers.DmaSource} dst={_registers.DmaDestination} " +
+            $"CRV=0x{_registers.Sa1ResetVector:X4} CNV=0x{_registers.Sa1NmiVector:X4} CIV=0x{_registers.Sa1IrqVector:X4} " +
+            $"BMAP=0x{_mmc.Sa1BwramBaseAddr:X5} BMAPS=0x{_mmc.SnesBwramBaseAddr:X5}";
+    }
+
+    public string GetKirbyDebugSnapshot()
+    {
+        return string.Join(Environment.NewLine, new[]
+        {
+            $"state={GetDebugState()}",
+            $"iram36D0=[{GetByteWindow(0x0036D0, 16)}]",
+            $"iram36D8=[{GetByteWindow(0x0036D8, 16)}]",
+            $"bwram00A0=[{GetBwramWindow(0x00A0, 32)}]",
+            $"bwram01A0=[{GetBwramWindow(0x01A0, 32)}]",
+            $"bwram02A0=[{GetBwramWindow(0x02A0, 32)}]",
+            $"bwram0520=[{GetBwramWindow(0x0520, 32)}]",
+            $"bwram05A0=[{GetBwramWindow(0x05A0, 32)}]",
+            $"bwram3220=[{GetBwramWindow(0x3220, 32)}]",
+            $"bwram3520=[{GetBwramWindow(0x3520, 32)}]",
+            $"bwram3620=[{GetBwramWindow(0x3620, 32)}]",
+            $"bwram3320=[{GetBwramWindow(0x3320, 32)}]",
+            $"bwram3420=[{GetBwramWindow(0x3420, 32)}]",
+            $"bwram72A0=[{GetBwramWindow(0x72A0, 16)}]"
+        });
+    }
 
     public static bool HasBattery(byte[] rom, int bwramLen)
     {
@@ -83,95 +201,85 @@ public sealed class Sa1
         ulong delta = snesCycles - _lastSnesCycles;
         ulong sa1Cycles = delta / 2;
         _lastSnesCycles += sa1Cycles * 2;
+        ulong spentWait = Math.Min(sa1Cycles, _bwramWaitCycles);
+        ulong cpuCycles = sa1Cycles - spentWait;
+        _bwramWaitCycles -= spentWait;
 
-        for (ulong i = 0; i < sa1Cycles; i++)
+        if (_registers.Sa1Reset != _lastSa1Reset)
         {
-            if (_registers.Sa1Reset)
-            {
-                _inReset = true;
-            }
-            else if (_inReset)
-            {
-                _cpu.StartInNativeMode = true;
-                _cpu.Reset();
-                _cpu.ProgramCounter = _registers.Sa1ResetVector;
-                _cpu.ProgramBank = 0;
-                _inReset = false;
-                TraceState("RESET-RELEASE");
-            }
+            _lastSa1Reset = _registers.Sa1Reset;
+            TraceState(_registers.Sa1Reset ? "RESET-ASSERT" : "RESET-DEASSERT");
+        }
+        if (_registers.Sa1Wait != _lastSa1Wait)
+        {
+            _lastSa1Wait = _registers.Sa1Wait;
+            TraceState(_registers.Sa1Wait ? "WAIT-ASSERT" : "WAIT-DEASSERT");
+        }
 
-            if (_registers.Sa1Wait)
+        if (!_registers.CpuHalted())
+        {
+            for (ulong i = 0; i < cpuCycles; i++)
             {
-                bool irqPending = (_registers.Sa1IrqFromSnesEnabled && _registers.Sa1IrqFromSnes)
-                                  || (_registers.TimerIrqEnabled && _timer.IrqPending)
-                                  || (_registers.DmaIrqEnabled && _registers.Sa1DmaIrq);
-                bool nmiPending = _registers.Sa1NmiEnabled && _registers.Sa1Nmi;
-                
-                if (irqPending || nmiPending)
+                if (_registers.Sa1Reset)
                 {
-                    _registers.Sa1Wait = false;
+                    _inReset = true;
+                    continue;
                 }
-            }
 
-            if (_registers.Sa1Reset != _lastSa1Reset)
-            {
-                _lastSa1Reset = _registers.Sa1Reset;
-                TraceState(_registers.Sa1Reset ? "RESET-ASSERT" : "RESET-DEASSERT");
-            }
-            if (_registers.Sa1Wait != _lastSa1Wait)
-            {
-                _lastSa1Wait = _registers.Sa1Wait;
-                TraceState(_registers.Sa1Wait ? "WAIT-ASSERT" : "WAIT-DEASSERT");
-            }
+                if (_inReset)
+                {
+                    _cpu.Reset();
+                    _inReset = false;
+                    TraceState("RESET-RELEASE");
+                    continue;
+                }
 
-            bool cpuHalted = _registers.CpuHalted();
-            bool cpuActive = !cpuHalted && !_registers.Sa1Wait && !_registers.Sa1Reset;
+                if (_registers.Sa1Wait)
+                    continue;
 
-            if (_bwramWaitCycles > 0)
-            {
-                _bwramWaitCycles--;
-            }
-            else if (cpuActive)
-            {
                 _cpu.IrqWanted = (_registers.Sa1IrqFromSnesEnabled && _registers.Sa1IrqFromSnes)
                                  || (_registers.TimerIrqEnabled && _timer.IrqPending)
                                  || (_registers.DmaIrqEnabled && _registers.Sa1DmaIrq);
 
                 bool currentNmi = _registers.Sa1NmiEnabled && _registers.Sa1Nmi;
                 if (currentNmi && !_lastSa1Nmi)
-                {
                     _cpu.NmiWanted = true;
-                }
                 _lastSa1Nmi = currentNmi;
 
                 _tracePc = _cpu.ProgramCounter24;
                 _traceOp = TryGetSa1OpByte(_tracePc);
+                int pcBefore = _tracePc;
                 _cpu.Cycle();
-                _bwramWaitCycles += _system.BwramWaitCycles;
-                _system.BwramWaitCycles = 0;
+                if (_cpu.CyclesLeft == 0)
+                    FlushPendingSa1BwramWrites();
+                int pcAfter = _cpu.ProgramCounter24;
+                TracePcTargetIfNeeded(pcBefore, pcAfter);
+                TracePcRangeIfNeeded(pcBefore, pcAfter);
+                TracePcBreakIfNeeded(pcBefore, pcAfter);
             }
-
-            if (_registers.DmaState != DmaState.Idle)
-            {
-                _registers.TickDma(_mmc, _rom, _iram, _bwram);
-            }
-
-            _timer.Tick();
-            if (_timer.IrqPending)
-                _registers.SnesIrqFromTimer = true;
+            _bwramWaitCycles += _system.BwramWaitCycles;
+            _system.BwramWaitCycles = 0;
         }
+
+        if (_registers.DmaState != DmaState.Idle)
+        {
+            for (ulong i = 0; i < sa1Cycles; i++)
+                _registers.TickDma(_mmc, _rom, _iram, _bwram);
+        }
+
+        for (ulong i = 0; i < sa1Cycles; i++)
+            _timer.Tick();
     }
 
     public bool SnesIrq()
     {
         return (_registers.SnesIrqFromSa1Enabled && _registers.SnesIrqFromSa1)
-               || (_registers.SnesIrqFromDmaEnabled && _registers.CharacterConversionIrq)
-               || (_registers.SnesIrqFromTimerEnabled && _registers.SnesIrqFromTimer);
+               || (_registers.SnesIrqFromDmaEnabled && _registers.CharacterConversionIrq);
     }
 
     public bool SnesNmi()
     {
-        return _registers.SnesNmiEnabled && _registers.SnesNmiFromSa1;
+        return false;
     }
 
     public void Reset()
@@ -183,6 +291,7 @@ public sealed class Sa1
         _lastSa1Reset = _registers.Sa1Reset;
         _lastSa1Wait = _registers.Sa1Wait;
         _lastSa1Nmi = false;
+        _pendingSa1BwramWrites.Clear();
     }
 
     public void NotifyDmaStart(uint sourceAddress)
@@ -205,6 +314,26 @@ public sealed class Sa1
         {
             return _iram[offset & 0x7FF];
         }
+        if ((bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF)) && offset >= 0x6000 && offset <= 0x7FFF)
+        {
+            if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
+            {
+                uint bwramAddr = ResolveSa1BwramWindowAddress(address);
+                return _bwram[(int)bwramAddr];
+            }
+
+            uint bitmapAddr = _mmc.Sa1BwramBaseAddr | (address & 0x1FFF);
+            return ReadBwramBitmap(bitmapAddr);
+        }
+        if (bank >= 0x40 && bank <= 0x4F)
+        {
+            uint bwramAddr = address & (uint)(_bwram.Length - 1);
+            return _bwram[(int)bwramAddr];
+        }
+        if (bank >= 0x60 && bank <= 0x6F)
+        {
+            return ReadBwramBitmap(address);
+        }
         uint? romAddr = _mmc.MapRomAddress(address);
         if (romAddr.HasValue && romAddr.Value < _rom.Length)
             return _rom[(int)romAddr.Value];
@@ -213,6 +342,171 @@ public sealed class Sa1
 
     private int _tracePc;
     private int _traceOp;
+
+    private void TracePcBreakIfNeeded(int pcBefore, int pcAfter)
+    {
+        if (!_tracePcBreakEnabled || _tracePcBreakRemaining <= 0)
+            return;
+
+        bool beforeInRange = pcBefore >= _tracePcBreakStart && pcBefore <= _tracePcBreakEnd;
+        bool afterInRange = pcAfter >= _tracePcBreakStart && pcAfter <= _tracePcBreakEnd;
+        if (!_tracePcBreakTriggered)
+        {
+            if (!beforeInRange || afterInRange)
+                return;
+
+            _tracePcBreakTriggered = true;
+            Console.WriteLine($"[SA1-PC-BREAK] trigger before=0x{pcBefore:X6} after=0x{pcAfter:X6} state={GetDebugState()}");
+        }
+
+        _tracePcBreakRemaining--;
+        string beforeBytes = GetOpWindow(pcBefore);
+        string afterBytes = GetOpWindow(pcAfter);
+        Console.WriteLine($"[SA1-PC-BREAK] pc=0x{pcBefore:X6}->0x{pcAfter:X6} before=[{beforeBytes}] after=[{afterBytes}] state={GetDebugState()}");
+    }
+
+    private void TracePcRangeIfNeeded(int pcBefore, int pcAfter)
+    {
+        if (!_tracePcRangeEnabled || _tracePcRangeRemaining <= 0)
+            return;
+
+        if (pcBefore < _tracePcRangeStart || pcBefore > _tracePcRangeEnd)
+            return;
+
+        _tracePcRangeRemaining--;
+        string beforeBytes = GetOpWindow(pcBefore);
+        string afterBytes = GetOpWindow(pcAfter);
+        Console.WriteLine($"[SA1-PC-RANGE] pc=0x{pcBefore:X6}->0x{pcAfter:X6} before=[{beforeBytes}] after=[{afterBytes}] state={GetDebugState()}");
+    }
+
+    private void TracePcTargetIfNeeded(int pcBefore, int pcAfter)
+    {
+        if (!_tracePcTargetEnabled)
+            return;
+
+        string entry = $"pc=0x{pcBefore:X6}->0x{pcAfter:X6} before=[{GetOpWindow(pcBefore)}] after=[{GetOpWindow(pcAfter)}]";
+        if (_tracePcTargetHistory.Count == TargetHistoryLength)
+            _tracePcTargetHistory.Dequeue();
+        _tracePcTargetHistory.Enqueue(entry);
+
+        if (_tracePcTargetRemaining <= 0 || pcAfter != _tracePcTarget)
+            return;
+
+        _tracePcTargetRemaining--;
+        Console.WriteLine($"[SA1-PC-TARGET] hit pc=0x{pcAfter:X6} state={GetDebugState()}");
+        Console.WriteLine($"[SA1-PC-TARGET] iram0100=[{GetByteWindow(0x000100, 16)}]");
+        Console.WriteLine($"[SA1-PC-TARGET] iram36DE=[{GetByteWindow(0x0036DE, 8)}]");
+        Console.WriteLine($"[SA1-PC-TARGET] bwram5FF8=[{GetByteWindow(0x005FF8, 16)}]");
+        Console.WriteLine($"[SA1-PC-TARGET] bwram6000=[{GetByteWindow(0x006000, 16)}]");
+        foreach (string history in _tracePcTargetHistory)
+            Console.WriteLine($"[SA1-PC-TARGET] {history}");
+    }
+
+    private string GetOpWindow(int pc)
+    {
+        return string.Join(" ", Enumerable.Range(0, 4).Select(i =>
+        {
+            int op = TryGetSa1OpByte((pc + i) & 0xFFFFFF);
+            return op < 0 ? "--" : $"{op:X2}";
+        }));
+    }
+
+    private string GetByteWindow(int address, int count)
+    {
+        return string.Join(" ", Enumerable.Range(0, count).Select(i =>
+        {
+            int op = TryGetSa1OpByte((address + i) & 0xFFFFFF);
+            return op < 0 ? "--" : $"{op:X2}";
+        }));
+    }
+
+    private string GetBwramWindow(int offset, int count)
+    {
+        return string.Join(" ", Enumerable.Range(0, count).Select(i =>
+        {
+            int idx = (offset + i) & (_bwram.Length - 1);
+            return $"{_bwram[idx]:X2}";
+        }));
+    }
+
+    private void TraceBadDispatchPointerIfNeeded()
+    {
+        if (!_traceBadDispatchPointer || _badDispatchPointerLogged)
+            return;
+
+        if (_iram[0x6DE] != 0x05 || _iram[0x6DF] != 0x01 || _iram[0x6E0] != 0x00)
+            return;
+
+        _badDispatchPointerLogged = true;
+        Console.WriteLine($"[SA1-BAD-PTR] state={GetDebugState()}");
+        Console.WriteLine($"[SA1-BAD-PTR] op=[{GetOpWindow(_cpu.ProgramCounter24)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] iram36D8=[{GetByteWindow(0x0036D8, 16)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram00A0=[{GetBwramWindow(0x00A0, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram0120=[{GetBwramWindow(0x0120, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram02A0=[{GetBwramWindow(0x02A0, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram04A0=[{GetBwramWindow(0x04A0, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram05A0=[{GetBwramWindow(0x05A0, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram3220=[{GetBwramWindow(0x3220, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram3520=[{GetBwramWindow(0x3520, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram3620=[{GetBwramWindow(0x3620, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram3320=[{GetBwramWindow(0x3320, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram3420=[{GetBwramWindow(0x3420, 32)}]");
+        Console.WriteLine($"[SA1-BAD-PTR] bwram72A0=[{GetBwramWindow(0x72A0, 16)}]");
+    }
+
+    private static bool TryParseTraceRange(string? raw, out int start, out int end)
+    {
+        start = 0;
+        end = 0;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        string[] parts = raw.Split('-', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length != 2)
+            return false;
+
+        if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out start) ||
+            !int.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out end))
+        {
+            return false;
+        }
+
+        if (end < start)
+            (start, end) = (end, start);
+        return true;
+    }
+
+    private static bool TryParseTraceAddress(string? raw, out int address)
+    {
+        address = 0;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        return int.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out address);
+    }
+
+    private static int ParseTraceLimit(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        return int.TryParse(raw, out int value) && value > 0 ? value : fallback;
+    }
+
+    private static HashSet<uint> ParseTraceOffsets(string? raw)
+    {
+        var offsets = new HashSet<uint>();
+        if (string.IsNullOrWhiteSpace(raw))
+            return offsets;
+
+        foreach (string part in raw.Split(new[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (uint.TryParse(part, System.Globalization.NumberStyles.HexNumber, null, out uint value))
+                offsets.Add(value & 0xFFFF);
+        }
+
+        return offsets;
+    }
 
     private void TraceSa1(string rw, uint address, byte value, string region, uint? resolved = null)
     {
@@ -236,9 +530,18 @@ public sealed class Sa1
     {
         if (!_traceIramWatch)
             return;
-        uint offset = address & 0x7FF;
-        if (offset != IramWatchOffset)
+        if (_traceIramWriteOnly && rw != "W")
             return;
+        uint offset = address & 0x7FF;
+        if (_traceIramOffsets.Count > 0)
+        {
+            if (!_traceIramOffsets.Contains(offset))
+                return;
+        }
+        else if (offset != IramWatchOffset && Array.IndexOf(ExtraIramWatchOffsets, offset) < 0)
+        {
+            return;
+        }
         Console.WriteLine($"[I-RAM-WATCH] src={source} rw={rw} addr=0x{address:X6} off=0x{offset:X3} val=0x{value:X2} pc=0x{pc:X6}");
     }
 
@@ -246,11 +549,42 @@ public sealed class Sa1
     {
         if (!_traceBwramWatch)
             return;
+        if (_traceBwramWriteOnly && rw != "W")
+            return;
         uint offset = bwramAddr & 0xFFFF;
         uint adr16 = address & 0xFFFF;
-        if (offset != 0x72A4 && offset != 0x604C && adr16 != 0x604C && adr16 != 0x604D && adr16 != 0x604E && adr16 != 0x604F && offset != 0x004C && offset != 0x004D)
+        if (_traceBwramOffsets.Count > 0)
+        {
+            if (!_traceBwramOffsets.Contains(offset) && !_traceBwramOffsets.Contains(adr16))
+                return;
+        }
+        else if (offset != 0x72A4 &&
+                 offset != 0x72AC &&
+                 offset != 0x72AD &&
+                 offset != 0x72AE &&
+                 offset != 0x604C &&
+                 adr16 != 0x604C &&
+                 adr16 != 0x604D &&
+                 adr16 != 0x604E &&
+                 adr16 != 0x604F &&
+                 offset != 0x004C &&
+                 offset != 0x004D)
+        {
             return;
+        }
         Console.WriteLine($"[BW-RAM-WATCH] src={source} rw={rw} addr=0x{address:X6} bwram=0x{bwramAddr:X6} val=0x{value:X2} pc=0x{pc:X6}");
+    }
+
+    private void TraceBwramBlockedWrite(string source, uint address, uint bwramAddr, byte value, int pc)
+    {
+        if (!_traceBwramBlockedWrites || _traceBwramBlockedWritesRemaining <= 0)
+            return;
+
+        _traceBwramBlockedWritesRemaining--;
+        Console.WriteLine(
+            $"[BW-RAM-BLOCK] src={source} addr=0x{address:X6} bwram=0x{bwramAddr:X6} val=0x{value:X2} pc=0x{pc:X6} " +
+            $"writeEnabledSNES={(_registers.SnesBwramWritesEnabled ? 1 : 0)} writeEnabledSA1={(_registers.Sa1BwramWritesEnabled ? 1 : 0)} " +
+            $"bwpa=0x{_registers.BwramWriteProtectionSize:X6}");
     }
 
     public bool TryResolveSnesAccess(uint address, out string region, out uint? resolved)
@@ -277,7 +611,7 @@ public sealed class Sa1
             case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
             case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
                 region = "BW-RAM-WIN";
-                resolved = (_mmc.SnesBwramBaseAddr + (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
+                resolved = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
                 return true;
             case (>= 0x40 and <= 0x5F, _):
                 region = _registers.CcdmaTransferInProgress ? "CCDMA" : "BW-RAM";
@@ -308,7 +642,7 @@ public sealed class Sa1
         Sa1Trace.Log("SA1", pc, op, address, "R", value, region, resolved, regs);
     }
 
-    public byte? SnesRead(uint address)
+    public byte? SnesRead(uint address, int snesPc = -1)
     {
         uint bank = (address >> 16) & 0xFF;
         uint offset = address & 0xFFFF;
@@ -340,28 +674,25 @@ public sealed class Sa1
             case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
                 {
                     byte value = _iram[(int)(address & 0x7FF)];
-                    TraceIramWatch("SNES", "R", address, value, -1);
+                    TraceIramWatch("SNES", "R", address, value, snesPc);
                     return value;
                 }
             case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
             case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
                 {
-                    if (_registers.DmaEnabled && _registers.DmaType == DmaType.CharacterConversion && _registers.CharacterConversionType == CharacterConversionType.One && _registers.DmaState == DmaState.CharacterConversion1Active)
-                        return _registers.NextCcdmaByte(_iram, _bwram);
-
-                    uint bwramAddr = (_mmc.SnesBwramBaseAddr + (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
+                    uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
                     byte value = _bwram[(int)bwramAddr];
-                    TraceBwramWatch("SNES", "R", address, bwramAddr, value, -1);
+                    TraceBwramWatch("SNES", "R", address, bwramAddr, value, snesPc);
                     return value;
                 }
             case (>= 0x40 and <= 0x5F, _):
-                if (_registers.DmaEnabled && _registers.DmaType == DmaType.CharacterConversion && _registers.CharacterConversionType == CharacterConversionType.One && _registers.DmaState == DmaState.CharacterConversion1Active)
+                if (_registers.CcdmaTransferInProgress)
                     return _registers.NextCcdmaByte(_iram, _bwram);
                 else
                 {
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
                     byte value = _bwram[(int)bwramAddr];
-                    TraceBwramWatch("SNES", "R", address, bwramAddr, value, -1);
+                    TraceBwramWatch("SNES", "R", address, bwramAddr, value, snesPc);
                     return value;
                 }
         }
@@ -369,7 +700,7 @@ public sealed class Sa1
         return null;
     }
 
-    public void SnesWrite(uint address, byte value)
+    public void SnesWrite(uint address, byte value, int snesPc = -1)
     {
         uint bank = (address >> 16) & 0xFF;
         uint offset = address & 0xFFFF;
@@ -387,23 +718,24 @@ public sealed class Sa1
                     int writeProtectIdx = (int)(iramAddr >> 8);
                     if (_registers.SnesIramWritesEnabled[writeProtectIdx])
                         _iram[(int)iramAddr] = value;
-                    TraceIramWatch("SNES", "W", address, value, -1);
+                    TraceIramWatch("SNES", "W", address, value, snesPc);
                     break;
                 }
             case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
             case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
                 {
-                    uint bwramAddr = (_mmc.SnesBwramBaseAddr + (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
+                    uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
                     if (bwramAddr == 0x72A4)
                         _registers.LogReg($"[KIRBY-DEBUG] SNES W BWRAM 0x72A4 val=0x{value:X2}");
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
                     {
                         _bwram[(int)bwramAddr] = value;
-                        TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
+                        TraceBwramWatch("SNES", "W", address, bwramAddr, value, snesPc);
                     }
                     else
                     {
-                        TraceBwramWatch("SNES", "W(BLOCKED)", address, bwramAddr, value, -1);
+                        TraceBwramWatch("SNES", "W(BLOCKED)", address, bwramAddr, value, snesPc);
+                        TraceBwramBlockedWrite("SNES", address, bwramAddr, value, snesPc);
                     }
                     break;
                 }
@@ -415,11 +747,12 @@ public sealed class Sa1
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
                     {
                         _bwram[(int)bwramAddr] = value;
-                        TraceBwramWatch("SNES", "W", address, bwramAddr, value, -1);
+                        TraceBwramWatch("SNES", "W", address, bwramAddr, value, snesPc);
                     }
                     else
                     {
-                        TraceBwramWatch("SNES", "W(BLOCKED)", address, bwramAddr, value, -1);
+                        TraceBwramWatch("SNES", "W(BLOCKED)", address, bwramAddr, value, snesPc);
+                        TraceBwramBlockedWrite("SNES", address, bwramAddr, value, snesPc);
                     }
                     break;
                 }
@@ -500,7 +833,7 @@ public sealed class Sa1
                 bwramWait = true;
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
-                    uint bwramAddr = (_mmc.Sa1BwramBaseAddr + (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
+                    uint bwramAddr = ResolveSa1BwramWindowAddress(address);
                     byte value = _bwram[(int)bwramAddr];
                     TraceSa1("R", address, value, "BW-RAM-WIN", bwramAddr);
                     TraceBwramWatch("SA1", "R", address, bwramAddr, value, _cpu.ProgramCounter24);
@@ -561,6 +894,7 @@ public sealed class Sa1
                         _iram[(int)iramAddr] = value;
                     TraceSa1("W", address, value, "I-RAM", address & 0x7FF);
                     TraceIramWatch("SA1", "W", address, value, (_cpu.ProgramBank << 16) | _cpu.ProgramCounter);
+                    TraceBadDispatchPointerIfNeeded();
                     handled = true;
                     break;
                 }
@@ -569,18 +903,18 @@ public sealed class Sa1
                 bwramWait = true;
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
-                    uint bwramAddr = (_mmc.Sa1BwramBaseAddr + (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
+                    uint bwramAddr = ResolveSa1BwramWindowAddress(address);
                     if (bwramAddr == 0x72A4)
                         _registers.LogReg($"[KIRBY-DEBUG] SA1 W BWRAM 0x72A4 val=0x{value:X2} PC=0x{(_cpu.ProgramBank << 16) | _cpu.ProgramCounter:X6}");
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
-                        _bwram[(int)bwramAddr] = value;
+                        QueuePendingSa1BwramWrite(bwramAddr, value);
                     TraceSa1("W", address, value, "BW-RAM-WIN", bwramAddr);
                     TraceBwramWatch("SA1", "W", address, bwramAddr, value, (_cpu.ProgramBank << 16) | _cpu.ProgramCounter);
                 }
                 else
                 {
-                    WriteBwramBitmap(_mmc.Sa1BwramBaseAddr + (address & 0x1FFF), value);
-                    TraceSa1("W", address, value, "BW-RAM-BITMAP", _mmc.Sa1BwramBaseAddr + (address & 0x1FFF));
+                    WriteBwramBitmap(_mmc.Sa1BwramBaseAddr | (address & 0x1FFF), value);
+                    TraceSa1("W", address, value, "BW-RAM-BITMAP", _mmc.Sa1BwramBaseAddr | (address & 0x1FFF));
                 }
                 handled = true;
                 break;
@@ -591,7 +925,7 @@ public sealed class Sa1
                     if (bwramAddr == 0x72A4)
                         _registers.LogReg($"[KIRBY-DEBUG] SA1 W BWRAM 0x72A4 val=0x{value:X2} PC=0x{(_cpu.ProgramBank << 16) | _cpu.ProgramCounter:X6}");
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
-                        _bwram[(int)bwramAddr] = value;
+                        QueuePendingSa1BwramWrite(bwramAddr, value);
                     TraceSa1("W", address, value, "BW-RAM", bwramAddr);
                     TraceBwramWatch("SA1", "W", address, bwramAddr, value, (_cpu.ProgramBank << 16) | _cpu.ProgramCounter);
                 }
@@ -607,6 +941,16 @@ public sealed class Sa1
 
         if (!handled)
             TraceSa1("W", address, value, "UNMAPPED");
+    }
+
+    private void QueuePendingSa1BwramWrite(uint bwramAddr, byte value)
+    {
+        _bwram[(int)bwramAddr] = value;
+    }
+
+    private void FlushPendingSa1BwramWrites()
+    {
+        _pendingSa1BwramWrites.Clear();
     }
 
     private byte ReadBwramBitmap(uint address)
@@ -645,6 +989,11 @@ public sealed class Sa1
             byte newValue = (byte)((existing & ~(0x0F << shift)) | ((value & 0x0F) << shift));
             _bwram[(int)bwramAddr] = newValue;
         }
+    }
+
+    private uint ResolveSa1BwramWindowAddress(uint address)
+    {
+        return (_mmc.Sa1BwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
     }
 
     private sealed class Sa1System : ISNESSystem

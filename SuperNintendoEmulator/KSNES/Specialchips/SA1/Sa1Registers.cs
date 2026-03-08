@@ -324,9 +324,6 @@ internal sealed class Sa1Registers
             case 0x2235: WriteDdaLow(value); break;
             case 0x2236: WriteDdaMid(value); break;
             case 0x2237: WriteDdaHigh(value); break;
-            case 0x2238: WriteDtcLow(value); break;
-            case 0x2239: WriteDtcHigh(value); break;
-            case 0x223F: mmc.WriteBbf(value); break;
         }
     }
 
@@ -339,7 +336,7 @@ internal sealed class Sa1Registers
             {
                 0x2209 => "SCNT", 0x220A => "CIE", 0x220B => "CIC",
                 0x220C => "SNV-L", 0x220D => "SNV-H", 0x220E => "SIV-L", 0x220F => "SIV-H",
-                0x2225 => "BMAPS", 0x2230 => "DCNT", 0x2231 => "CDMA",
+                0x2225 => "BMAPS", 0x2227 => "CBWE", 0x222A => "CIWP", 0x2230 => "DCNT", 0x2231 => "CDMA",
                 0x223F => "BBF", 0x2250 => "MCNT", 0x2258 => "VDA-L",
                 _ => null
             };
@@ -391,12 +388,11 @@ internal sealed class Sa1Registers
 
     private byte ReadSfr()
     {
-        byte value = (byte)(MessageToSnes & 0x0F);
-        if (SnesIrqFromSa1) value |= 0x80;
-        if (SnesIrqFromTimer) value |= 0x40;
-        if (CharacterConversionIrq) value |= 0x20;
-        if (SnesNmiFromSa1) value |= 0x10;
-        return value;
+        return (byte)((SnesIrqFromSa1 ? 0x80 : 0)
+            | (SnesIrqVectorSource.ToBit() ? 0x40 : 0)
+            | (CharacterConversionIrq ? 0x20 : 0)
+            | (SnesNmiVectorSource.ToBit() ? 0x10 : 0)
+            | (MessageToSnes & 0x0F));
     }
 
     private byte ReadCfr(Sa1Timer timer)
@@ -439,21 +435,15 @@ internal sealed class Sa1Registers
     private void WriteSie(byte value)
     {
         SnesIrqFromSa1Enabled = value.Bit(7);
-        SnesIrqFromTimerEnabled = value.Bit(6);
         SnesIrqFromDmaEnabled = value.Bit(5);
-        SnesNmiEnabled = value.Bit(4);
     }
 
     private void WriteSic(byte value)
     {
         if (value.Bit(7))
             SnesIrqFromSa1 = false;
-        if (value.Bit(6))
-            SnesIrqFromTimer = false;
         if (value.Bit(5))
             CharacterConversionIrq = false;
-        if (value.Bit(4))
-            SnesNmiFromSa1 = false;
     }
 
     private void WriteCie(byte value)
@@ -529,14 +519,12 @@ internal sealed class Sa1Registers
     {
         if (value.Bit(7))
             SnesIrqFromSa1 = true;
-        if (value.Bit(4))
-            SnesNmiFromSa1 = true;
         SnesIrqVectorSource = InterruptVectorSourceExtensions.FromBit(value.Bit(6));
         SnesNmiVectorSource = InterruptVectorSourceExtensions.FromBit(value.Bit(4));
 
         MessageToSnes = (byte)(value & 0x0F);
         if (TraceSa1Regs)
-            LogReg($"[SA1-REGS] SCNT=0x{value:X2} snes_irq={(SnesIrqFromSa1 ? 1 : 0)} snes_nmi={(SnesNmiFromSa1 ? 1 : 0)} msg=0x{MessageToSnes:X2}");
+            LogReg($"[SA1-REGS] SCNT=0x{value:X2} snes_irq={(SnesIrqFromSa1 ? 1 : 0)} msg=0x{MessageToSnes:X2}");
     }
 
     private void WriteSbwe(byte value)
@@ -554,6 +542,8 @@ internal sealed class Sa1Registers
         {
             SnesBwramWritesEnabled = enabled;
         }
+        if (TraceSa1Regs)
+            LogReg($"[SA1-REGS] SBWE=0x{value:X2} snes_bwram_we={(SnesBwramWritesEnabled ? 1 : 0)} sa1_bwram_we={(Sa1BwramWritesEnabled ? 1 : 0)} bwpa=0x{BwramWriteProtectionSize:X6}");
     }
 
     private void WriteCbwe(byte value)
@@ -571,6 +561,8 @@ internal sealed class Sa1Registers
         {
             Sa1BwramWritesEnabled = enabled;
         }
+        if (TraceSa1Regs)
+            LogReg($"[SA1-REGS] CBWE=0x{value:X2} snes_bwram_we={(SnesBwramWritesEnabled ? 1 : 0)} sa1_bwram_we={(Sa1BwramWritesEnabled ? 1 : 0)} bwpa=0x{BwramWriteProtectionSize:X6}");
     }
 
     private void WriteBwpa(byte value)
@@ -587,6 +579,8 @@ internal sealed class Sa1Registers
             byte sizeCode = (byte)(value & 0x0F);
             BwramWriteProtectionSize = sizeCode == 0 ? 0 : (uint)(0x100 << (sizeCode - 1));
         }
+        if (TraceSa1Regs)
+            LogReg($"[SA1-REGS] BWPA=0x{value:X2} bwpa=0x{BwramWriteProtectionSize:X6} snes_bwram_we={(SnesBwramWritesEnabled ? 1 : 0)} sa1_bwram_we={(Sa1BwramWritesEnabled ? 1 : 0)}");
     }
 
     private void WriteSiwp(byte value)
@@ -722,8 +716,11 @@ internal sealed class Sa1Registers
     private void WriteMcnt(byte value)
     {
         ArithmeticOp = ArithmeticOpExtensions.FromByte(value);
-        if (value.Bit(1))
+        if (ArithmeticOp == ArithmeticOp.MultiplyAccumulate)
+        {
+            ArithmeticResult = 0;
             ArithmeticOverflow = false;
+        }
     }
 
     private void WriteMaLow(byte value) => Sa1Utils.SetLsb(ref ArithmeticParamA, value);
@@ -751,7 +748,7 @@ internal sealed class Sa1Registers
         VarlenBitData >>= shift;
         VarlenBitsRemaining -= (byte)shift;
 
-        if (VarlenBitsRemaining <= 16)
+        if (VarlenBitsRemaining < 16)
         {
             uint romAddr = mmc.MapRomAddress(VarlenBitStartAddress) ?? 0;
             byte lsb = romAddr < rom.Length ? rom[romAddr] : (byte)0;
@@ -783,9 +780,7 @@ internal sealed class Sa1Registers
 
     public bool CanWriteBwram(uint bwramAddr, bool isSnes)
     {
-        bool writeEnabled = _bwramProtectionConfigured
-            ? (isSnes ? SnesBwramWritesEnabled : Sa1BwramWritesEnabled)
-            : (SnesBwramWritesEnabled || Sa1BwramWritesEnabled);
+        bool writeEnabled = SnesBwramWritesEnabled || Sa1BwramWritesEnabled;
         return writeEnabled || bwramAddr >= BwramWriteProtectionSize;
     }
 
@@ -830,6 +825,8 @@ internal sealed class Sa1Registers
         mmc.WriteBmaps(0x00);
         mmc.WriteBmap(0x00);
         mmc.WriteBbf(0x00);
+        if (TraceSa1Regs)
+            LogReg($"[SA1-REGS] RESET bwpa=0x{BwramWriteProtectionSize:X6} snes_bwram_we={(SnesBwramWritesEnabled ? 1 : 0)} sa1_bwram_we={(Sa1BwramWritesEnabled ? 1 : 0)}");
     }
 
     public bool CpuHalted()
@@ -863,6 +860,7 @@ internal sealed class Sa1Registers
             {
                 (short quotient, ushort remainder) = Divide(ArithmeticParamA, ArithmeticParamB);
                 ArithmeticResult = (ushort)quotient | ((ulong)remainder << 16);
+                ArithmeticParamA = 0;
                 break;
             }
             case ArithmeticOp.MultiplyAccumulate:
@@ -875,6 +873,8 @@ internal sealed class Sa1Registers
                 break;
             }
         }
+
+        ArithmeticParamB = 0;
     }
 
     private static long Multiply(ushort a, ushort b)
@@ -886,13 +886,18 @@ internal sealed class Sa1Registers
     {
         if (b == 0)
         {
-            return ((short)-1, a);
+            return a.SignBit() ? ((short)1, (ushort)(~a + 1)) : ((short)-1, a);
         }
 
         int dividend = (short)a;
-        int divisor = (short)b;
+        int divisor = b;
         int quotient = dividend / divisor;
         int remainder = dividend % divisor;
+        if (remainder < 0)
+        {
+            quotient--;
+            remainder += divisor;
+        }
         return ((short)quotient, (ushort)remainder);
     }
 
