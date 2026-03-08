@@ -1091,6 +1091,8 @@ public partial class MainWindow : Window
             return;
 
         TopControlsPanel.IsVisible = !fullScreen;
+        if (TopControlsPanel.Parent is Avalonia.Controls.Control parentControl)
+            parentControl.IsVisible = !fullScreen;
         InfoPanel.IsVisible = !fullScreen;
 
         RootGrid.Margin = fullScreen ? new Thickness(0) : new Thickness(12);

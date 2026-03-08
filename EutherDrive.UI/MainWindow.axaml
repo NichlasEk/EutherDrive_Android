@@ -6,274 +6,315 @@
         xmlns:savestates="clr-namespace:EutherDrive.UI.Savestates"
         mc:Ignorable="d"
         x:Class="EutherDrive.UI.MainWindow">
+  <Grid>
+    <Border Background="{StaticResource EdBgBrush}"/>
+    <Border Margin="-160,-120,0,0"
+            Width="520"
+            Height="520"
+            HorizontalAlignment="Left"
+            VerticalAlignment="Top"
+            CornerRadius="260"
+            Background="#182A3D"
+            Opacity="0.18"/>
+    <Border Margin="0,120,-180,0"
+            Width="460"
+            Height="460"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Top"
+            CornerRadius="230"
+            Background="#2A1B24"
+            Opacity="0.16"/>
 
+    <Grid Name="RootGrid" RowDefinitions="Auto,*" ColumnDefinitions="Auto,*" Margin="12" RowSpacing="12" ColumnSpacing="12">
 
-  <Grid Name="RootGrid" RowDefinitions="Auto,*" ColumnDefinitions="Auto,*" Margin="12" RowSpacing="12" ColumnSpacing="12">
+      <Border Grid.Row="0" Grid.ColumnSpan="2" Classes="panel" Padding="6">
+        <StackPanel Name="TopControlsPanel" Orientation="Horizontal" Spacing="6">
+          <Button Classes="action compact" Content="Open ROM…" Click="OnOpenRom"/>
+          <Border Classes="panel" Padding="6,5">
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Classes="kicker" Text="Recent"/>
+              <ComboBox Name="RecentRomCombo" Width="180" SelectionChanged="OnRecentRomSelected"/>
+            </StackPanel>
+          </Border>
+          <Button Classes="action compact" Content="Start" Click="OnStart"/>
+          <Button Classes="compact" Content="Stop" Click="OnStop"/>
+          <Button Classes="ghost compact" Content="About" Click="OnAbout"/>
+          <Button Classes="compact" Content="Input Settings" Click="OnInputSettings"/>
+          <Expander ExpandDirection="Down" IsExpanded="False" VerticalAlignment="Top">
+            <Expander.Header>
+              <Border Classes="panel" Padding="10,5">
+                <TextBlock Classes="deck-label" Text="SAVESTATES"/>
+              </Border>
+            </Expander.Header>
+            <Border Name="SavestatePanel" Classes="panel" Padding="6" Margin="0,6,0,0" x:DataType="savestates:SavestateViewModel">
+              <StackPanel Spacing="4">
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <TextBlock Text="{Binding Slot1Label}" Width="128" FontSize="10" VerticalAlignment="Center"/>
+                  <Button Classes="small" Content="Save" Command="{Binding SaveSlot1Command}"/>
+                  <Button Classes="small" Content="Load" Command="{Binding LoadSlot1Command}"/>
+                  <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot1Command}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <TextBlock Text="{Binding Slot2Label}" Width="128" FontSize="10" VerticalAlignment="Center"/>
+                  <Button Classes="small" Content="Save" Command="{Binding SaveSlot2Command}"/>
+                  <Button Classes="small" Content="Load" Command="{Binding LoadSlot2Command}"/>
+                  <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot2Command}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <TextBlock Text="{Binding Slot3Label}" Width="128" FontSize="10" VerticalAlignment="Center"/>
+                  <Button Classes="small" Content="Save" Command="{Binding SaveSlot3Command}"/>
+                  <Button Classes="small" Content="Load" Command="{Binding LoadSlot3Command}"/>
+                  <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot3Command}"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+          </Expander>
+          <Border Classes="panel" Padding="6,5">
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Classes="deck-label" Text="MASTER VOL"/>
+              <Slider Name="MasterVolumeSlider"
+                      Minimum="0"
+                      Maximum="100"
+                      Width="100"
+                      Value="50"
+                      ValueChanged="OnMasterVolumeChanged"/>
+              <TextBlock Name="MasterVolumeValueText" Width="36" Text="50%" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Border>
+          <Border Classes="panel" Padding="8,5" MinWidth="300">
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Classes="deck-label" Text="AUTOFIRE"/>
+              <ToggleButton Name="AutoFireAButton" Content="A" Width="32" IsChecked="False"
+                            Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
+              <ToggleButton Name="AutoFireBButton" Content="B" Width="32" IsChecked="False"
+                            Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
+              <ToggleButton Name="AutoFireCButton" Content="C" Width="32" IsChecked="False"
+                            Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
+              <Slider Name="AutoFireRateSlider"
+                      Minimum="5"
+                      Maximum="30"
+                      Width="90"
+                      Value="12"
+                      ValueChanged="OnAutoFireRateChanged"/>
+              <TextBlock Name="AutoFireRateText" Width="34" Text="12Hz" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Border>
+          <Border Classes="panel" Padding="6,5">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+              <TextBlock Classes="kicker" Text="Status"/>
+              <TextBox Name="StatusText"
+                       Classes="status-inline"
+                       IsReadOnly="True"
+                       BorderThickness="0"
+                       Background="Transparent"
+                       TextWrapping="NoWrap"
+                       SelectionBrush="#3A7BD5"
+                       Width="220"/>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </Border>
 
-    <!-- Controls -->
-    <StackPanel Name="TopControlsPanel" Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10">
-      <Button Content="Open ROM…" Click="OnOpenRom"/>
-      <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-        <TextBlock Text="Recent" VerticalAlignment="Center"/>
-        <ComboBox Name="RecentRomCombo" Width="220" SelectionChanged="OnRecentRomSelected"/>
-      </StackPanel>
-      <Button Content="Start" Click="OnStart"/>
-      <Button Content="Stop" Click="OnStop"/>
-      <Button Content="About" Click="OnAbout"/>
-      <Button Content="Input Settings" Click="OnInputSettings"/>
-      <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-        <TextBlock Text="Master vol" VerticalAlignment="Center"/>
-        <Slider Name="MasterVolumeSlider"
-                Minimum="0"
-                Maximum="100"
-                Width="120"
-                Value="50"
-                ValueChanged="OnMasterVolumeChanged"/>
-        <TextBlock Name="MasterVolumeValueText" Width="36" Text="50%" VerticalAlignment="Center"/>
-      </StackPanel>
-      <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-        <TextBlock Text="Autofire" VerticalAlignment="Center"/>
-        <ToggleButton Name="AutoFireAButton" Content="A" Width="28" IsChecked="False"
-                      Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
-        <ToggleButton Name="AutoFireBButton" Content="B" Width="28" IsChecked="False"
-                      Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
-        <ToggleButton Name="AutoFireCButton" Content="C" Width="28" IsChecked="False"
-                      Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
-        <Slider Name="AutoFireRateSlider"
-                Minimum="5"
-                Maximum="30"
-                Width="90"
-                Value="12"
-                ValueChanged="OnAutoFireRateChanged"/>
-        <TextBlock Name="AutoFireRateText" Width="34" Text="12Hz" VerticalAlignment="Center"/>
-      </StackPanel>
-      <StackPanel Spacing="6">
-        <Border Name="SavestatePanel" Padding="6,4" BorderBrush="#2E3844" BorderThickness="1" CornerRadius="6" Background="#161B21"
-                x:DataType="savestates:SavestateViewModel">
-          <StackPanel Spacing="4">
-            <StackPanel Orientation="Horizontal" Spacing="4">
-              <TextBlock Text="{Binding Slot1Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
-              <Button Content="Save" Command="{Binding SaveSlot1Command}" Padding="6,2" FontSize="11"/>
-              <Button Content="Load" Command="{Binding LoadSlot1Command}" Padding="6,2" FontSize="11"/>
-              <Button Content="Clear" Command="{Binding ClearSlot1Command}" Padding="6,2" FontSize="11"/>
+      <Border Name="InfoPanel" Grid.Row="1" Grid.Column="0" Classes="panel" Padding="10">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="8" Width="240">
+            <TextBlock Classes="deck-label" Text="MACHINE ROOM"/>
+            <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
+            <CheckBox Content="Use 6-button pad" IsChecked="False" Name="SixButtonPadCheck"/>
+            <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Text="YM resample" VerticalAlignment="Center"/>
+              <ComboBox Name="YmResampleCombo" Width="140" SelectionChanged="OnYmResampleChanged">
+                <ComboBoxItem Tag="cubic">Cubic (smooth)</ComboBoxItem>
+                <ComboBoxItem Tag="linear">Linear (fast)</ComboBoxItem>
+              </ComboBox>
+            </StackPanel>
+            <Separator/>
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+              <TextBlock Text="Audio Debug" FontWeight="Bold" VerticalAlignment="Center"/>
+              <CheckBox Name="AudioDebugCheck" Content="Enabled" VerticalAlignment="Center"/>
+            </StackPanel>
+            <TextBlock Text="Audio Mix (exp)" FontWeight="Bold" Margin="0,6,0,0"/>
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Text="PSG" Width="32" VerticalAlignment="Center"/>
+              <Slider Name="PsgMixSlider"
+                      Minimum="0"
+                      Maximum="200"
+                      Width="140"
+                      Value="100"
+                      ValueChanged="OnPsgMixChanged"/>
+              <TextBlock Name="PsgMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Text="YM" Width="32" VerticalAlignment="Center"/>
+              <Slider Name="YmMixSlider"
+                      Minimum="0"
+                      Maximum="200"
+                      Width="140"
+                      Value="100"
+                      ValueChanged="OnYmMixChanged"/>
+              <TextBlock Name="YmMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Text="Noise" Width="32" VerticalAlignment="Center"/>
+              <Slider Name="NoiseMixSlider"
+                      Minimum="0"
+                      Maximum="200"
+                      Width="140"
+                      Value="100"
+                      ValueChanged="OnNoiseMixChanged"/>
+              <TextBlock Name="NoiseMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
+            </StackPanel>
+            <Border Padding="6,4" CornerRadius="10" Background="#1A2B1E" BorderBrush="#2E5A3A" BorderThickness="1">
+              <TextBox Name="AudioDebugText"
+                       Classes="log-view"
+                       IsReadOnly="True"
+                       Background="Transparent"
+                       BorderThickness="0"
+                       MinHeight="54"
+                       FontSize="12"
+                       Foreground="#BFE9C8"
+                       FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
+                       TextWrapping="Wrap"
+                       ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                       ScrollViewer.VerticalScrollBarVisibility="Auto"
+                       AcceptsReturn="True"/>
+            </Border>
+            <CheckBox Name="Pad2MirrorCheck" Content="Mirror P1 → P2" Margin="0,6,0,0"/>
+            <CheckBox Name="InputTraceCheck" Content="Input Trace" Margin="0,2,0,0"/>
+            <TextBlock Text="Input Debug" FontWeight="Bold" Margin="0,6,0,0"/>
+            <Border Padding="6,4" CornerRadius="10" Background="#1A1E2B" BorderBrush="#2E3A5A" BorderThickness="1">
+              <TextBox Name="InputDebugText"
+                       Classes="log-view"
+                       IsReadOnly="True"
+                       Background="Transparent"
+                       BorderThickness="0"
+                       MinHeight="54"
+                       FontSize="12"
+                       Foreground="#C7D7FF"
+                       FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
+                       TextWrapping="Wrap"
+                       ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                       ScrollViewer.VerticalScrollBarVisibility="Auto"
+                       AcceptsReturn="True"/>
+            </Border>
+            <Separator/>
+            <TextBlock Text="Region" FontWeight="Bold"/>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <TextBlock VerticalAlignment="Center" Text="Override:"/>
+              <ComboBox Name="RegionOverrideCombo" Width="120" SelectionChanged="OnRegionOverrideChanged">
+                <ComboBoxItem Tag="Auto">Auto</ComboBoxItem>
+                <ComboBoxItem Tag="JP">JP</ComboBoxItem>
+                <ComboBoxItem Tag="US">US</ComboBoxItem>
+                <ComboBoxItem Tag="EU">EU</ComboBoxItem>
+              </ComboBox>
+            </StackPanel>
+            <TextBlock x:Name="RomRegionHintText" Classes="muted" FontSize="12"/>
+            <Button Content="Use ROM region" Click="OnUseRomRegion" HorizontalAlignment="Left"/>
+            <Button Classes="ghost" Content="Controls..." Click="OnShowControls" HorizontalAlignment="Left"/>
+            <Separator/>
+            <TextBlock Text="ROM" FontWeight="Bold"/>
+            <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
+            <TextBlock x:Name="RomInfoText" Classes="muted" FontSize="12" TextWrapping="Wrap"/>
+            <Separator/>
+            <TextBlock Text="Sega CD" FontWeight="Bold"/>
+            <CheckBox Name="SegaCdRamCartCheck" Content="Enable RAM cartridge" Checked="OnSegaCdRamCartToggle" Unchecked="OnSegaCdRamCartToggle"/>
+            <CheckBox Name="SegaCdLoadCdToRamCheck" Content="Load CD-ROM into RAM at startup" Checked="OnSegaCdLoadCdToRamToggle" Unchecked="OnSegaCdLoadCdToRamToggle"/>
+            <CheckBox Name="SegaCdForceNoDiscCheck" Content="Force no disc (BIOS only)" Checked="OnSegaCdForceNoDiscToggle" Unchecked="OnSegaCdForceNoDiscToggle"/>
+            <TextBlock Name="SegaCdOptionsInfo" Classes="muted" FontSize="11" TextWrapping="Wrap" Text="Applies per Sega CD disc."/>
+            <Separator/>
+            <TextBlock Text="PCE BIOS" FontWeight="Bold"/>
+            <TextBlock Name="PceBiosPathText" Text="(auto: ./bios/syscard*.pce|.bin)" TextWrapping="Wrap"/>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Select BIOS…" Click="OnSelectPceBios"/>
+              <Button Classes="ghost" Content="Clear" Click="OnClearPceBios"/>
+            </StackPanel>
+            <Separator/>
+            <TextBlock Text="PSX BIOS" FontWeight="Bold"/>
+            <TextBlock Name="PsxBiosPathText" Text="(none)" TextWrapping="Wrap"/>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Select BIOS…" Click="OnSelectPsxBios"/>
+              <Button Classes="ghost" Content="Clear" Click="OnClearPsxBios"/>
+            </StackPanel>
+            <CheckBox Content="SMS overscan (debug)" IsChecked="False" Name="SmsOverscanCheck" Checked="OnSmsOverscanToggle" Unchecked="OnSmsOverscanToggle"/>
+            <Separator/>
+            <TextBlock Text="Perf" FontWeight="Bold"/>
+            <TextBlock Name="FpsText" Text="FPS: -"/>
+            <TextBlock Name="EmuFpsText" Text="Emu FPS: -"/>
+            <TextBlock Name="FrameText" Text="Frame: -"/>
+            <TextBlock Name="ResolutionText" Text="Resolution: -"/>
+            <CheckBox Content="Speed lock (real-time)" IsChecked="True" Name="SpeedLockCheck" Checked="OnSpeedLockToggle" Unchecked="OnSpeedLockToggle"/>
+            <CheckBox Content="Render skip when fast" IsChecked="False" Name="RenderSkipCheck" Checked="OnRenderSkipToggle" Unchecked="OnRenderSkipToggle"/>
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Text="Speed" VerticalAlignment="Center"/>
+              <Slider Name="SpeedSlider" Minimum="0.5" Maximum="2.0" Value="1.0" Width="140" TickFrequency="0.1" IsSnapToTickEnabled="True" ValueChanged="OnSpeedSliderChanged"/>
+              <TextBlock Name="SpeedValueText" Text="100%" VerticalAlignment="Center"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="4">
-              <TextBlock Text="{Binding Slot2Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
-              <Button Content="Save" Command="{Binding SaveSlot2Command}" Padding="6,2" FontSize="11"/>
-              <Button Content="Load" Command="{Binding LoadSlot2Command}" Padding="6,2" FontSize="11"/>
-              <Button Content="Clear" Command="{Binding ClearSlot2Command}" Padding="6,2" FontSize="11"/>
+              <TextBlock VerticalAlignment="Center" Text="Rate:"/>
+              <ComboBox Name="FrameRateCombo" SelectedIndex="0" SelectionChanged="OnFrameRateChanged">
+                <ComboBoxItem Tag="Auto">Auto (detect)</ComboBoxItem>
+                <ComboBoxItem Tag="Hz60">60 Hz</ComboBoxItem>
+                <ComboBoxItem Tag="Hz50">50 Hz</ComboBoxItem>
+              </ComboBox>
             </StackPanel>
-            <StackPanel Orientation="Horizontal" Spacing="4">
-              <TextBlock Text="{Binding Slot3Label}" Width="150" FontSize="11" VerticalAlignment="Center"/>
-              <Button Content="Save" Command="{Binding SaveSlot3Command}" Padding="6,2" FontSize="11"/>
-              <Button Content="Load" Command="{Binding LoadSlot3Command}" Padding="6,2" FontSize="11"/>
-              <Button Content="Clear" Command="{Binding ClearSlot3Command}" Padding="6,2" FontSize="11"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBox Name="CpuCyclesTextBox" Width="80" Text="488"/>
+              <Button Content="Set cycles/line" Click="OnApplyCpuCycles"/>
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBox Name="Z80CyclesMultTextBox" Width="80" Text="1.0"/>
+              <Button Content="Set Z80 mult" Click="OnApplyZ80CyclesMult"/>
+            </StackPanel>
+            <Separator/>
+            <TextBlock Text="Dev / Test" FontWeight="Bold"/>
+            <CheckBox Content="Interlace Test Mode (448px)" IsChecked="False" Name="InterlaceTestCheck" Checked="OnInterlaceTestToggle" Unchecked="OnInterlaceTestToggle"/>
+            <CheckBox Content="Static (no flicker)" IsChecked="True" Name="InterlaceStaticCheck" Checked="OnInterlaceStaticToggle" Unchecked="OnInterlaceStaticToggle" IsEnabled="False"/>
+            <CheckBox Content="Sharp Pixels" IsChecked="True" Name="SharpPixelsCheck" Checked="OnSharpPixelsToggle" Unchecked="OnSharpPixelsToggle"/>
+            <CheckBox Content="Advanced Pixel Filter" IsChecked="False" Name="AdvancedPixelFilterCheck" Checked="OnAdvancedPixelFilterToggle" Unchecked="OnAdvancedPixelFilterToggle"/>
+            <CheckBox Content="CRT Scanlines" IsChecked="False" Name="CrtScanlinesCheck" Checked="OnCrtScanlinesToggle" Unchecked="OnCrtScanlinesToggle"/>
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Text="Scanline Strength" VerticalAlignment="Center"/>
+              <Slider Name="CrtScanlineStrengthSlider"
+                      Minimum="0"
+                      Maximum="100"
+                      Width="120"
+                      Value="22"
+                      ValueChanged="OnCrtScanlineStrengthChanged"/>
+              <TextBlock Name="CrtScanlineStrengthText" Width="42" Text="22%" VerticalAlignment="Center"/>
+            </StackPanel>
+            <CheckBox Content="Force Opaque Pixels" IsChecked="False" Name="ForceOpaqueCheck"/>
+            <CheckBox Content="ASCII Stream (for viewer)" IsChecked="False" Name="AsciiStreamCheck" Checked="OnAsciiStreamToggle" Unchecked="OnAsciiStreamToggle"/>
+            <CheckBox Content="Preserve FB on Display Off" IsChecked="True" Name="PreserveFbCheck" Checked="OnPreserveFbToggle" Unchecked="OnPreserveFbToggle"/>
+            <TextBlock Name="InterlaceTestInfo" Classes="muted" FontSize="11" TextWrapping="Wrap"/>
           </StackPanel>
-        </Border>
-        <TextBox Name="StatusText"
-                 IsReadOnly="True"
-                 BorderThickness="0"
-                 Background="Transparent"
-                 TextWrapping="Wrap"
-                 SelectionBrush="#3A7BD5"
-                 MinWidth="320"/>
-      </StackPanel>
-    </StackPanel>
+        </ScrollViewer>
+      </Border>
 
-    <!-- Left: info (scrollable) -->
-    <Border Name="InfoPanel" Grid.Row="1" Grid.Column="0" Padding="10" CornerRadius="8" Background="#181C22" BorderBrush="#2A313B" BorderThickness="1">
-      <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-        <StackPanel Spacing="8" Width="240">
-        <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
-        <CheckBox Content="Use 6-button pad" IsChecked="False" Name="SixButtonPadCheck"/>
-        <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
-        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="YM resample" VerticalAlignment="Center"/>
-          <ComboBox Name="YmResampleCombo" Width="140" SelectionChanged="OnYmResampleChanged">
-            <ComboBoxItem Tag="cubic">Cubic (smooth)</ComboBoxItem>
-            <ComboBoxItem Tag="linear">Linear (fast)</ComboBoxItem>
-          </ComboBox>
-        </StackPanel>
-        <Separator/>
-        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-          <TextBlock Text="Audio Debug" FontWeight="Bold" VerticalAlignment="Center"/>
-          <CheckBox Name="AudioDebugCheck" Content="Enabled" VerticalAlignment="Center"/>
-        </StackPanel>
-        <TextBlock Text="Audio Mix (exp)" FontWeight="Bold" Margin="0,6,0,0"/>
-        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="PSG" Width="32" VerticalAlignment="Center"/>
-          <Slider Name="PsgMixSlider"
-                  Minimum="0"
-                  Maximum="200"
-                  Width="140"
-                  Value="100"
-                  ValueChanged="OnPsgMixChanged"/>
-          <TextBlock Name="PsgMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
-        </StackPanel>
-        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="YM" Width="32" VerticalAlignment="Center"/>
-          <Slider Name="YmMixSlider"
-                  Minimum="0"
-                  Maximum="200"
-                  Width="140"
-                  Value="100"
-                  ValueChanged="OnYmMixChanged"/>
-          <TextBlock Name="YmMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
-        </StackPanel>
-        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="Noise" Width="32" VerticalAlignment="Center"/>
-          <Slider Name="NoiseMixSlider"
-                  Minimum="0"
-                  Maximum="200"
-                  Width="140"
-                  Value="100"
-                  ValueChanged="OnNoiseMixChanged"/>
-          <TextBlock Name="NoiseMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
-        </StackPanel>
-        <Border Padding="6,4" CornerRadius="4" Background="#1A2B1E" BorderBrush="#2E5A3A" BorderThickness="1">
-          <TextBox Name="AudioDebugText"
-                   IsReadOnly="True"
-                   Background="Transparent"
-                   BorderThickness="0"
-                   MinHeight="54"
-                   FontSize="12"
-                   Foreground="#BFE9C8"
-                   FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
-                   TextWrapping="Wrap"
-                   ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                   ScrollViewer.VerticalScrollBarVisibility="Auto"
-                   AcceptsReturn="True"/>
-        </Border>
-        <CheckBox Name="Pad2MirrorCheck" Content="Mirror P1 → P2" Margin="0,6,0,0"/>
-        <CheckBox Name="InputTraceCheck" Content="Input Trace" Margin="0,2,0,0"/>
-        <TextBlock Text="Input Debug" FontWeight="Bold" Margin="0,6,0,0"/>
-        <Border Padding="6,4" CornerRadius="4" Background="#1A1E2B" BorderBrush="#2E3A5A" BorderThickness="1">
-          <TextBox Name="InputDebugText"
-                   IsReadOnly="True"
-                   Background="Transparent"
-                   BorderThickness="0"
-                   MinHeight="54"
-                   FontSize="12"
-                   Foreground="#C7D7FF"
-                   FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
-                   TextWrapping="Wrap"
-                   ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                   ScrollViewer.VerticalScrollBarVisibility="Auto"
-                   AcceptsReturn="True"/>
-        </Border>
-        <Separator/>
-        <TextBlock Text="Region" FontWeight="Bold"/>
-        <StackPanel Orientation="Horizontal" Spacing="6">
-          <TextBlock VerticalAlignment="Center" Text="Override:"/>
-          <ComboBox Name="RegionOverrideCombo" Width="120" SelectionChanged="OnRegionOverrideChanged">
-            <ComboBoxItem Tag="Auto">Auto</ComboBoxItem>
-            <ComboBoxItem Tag="JP">JP</ComboBoxItem>
-            <ComboBoxItem Tag="US">US</ComboBoxItem>
-            <ComboBoxItem Tag="EU">EU</ComboBoxItem>
-          </ComboBox>
-        </StackPanel>
-        <TextBlock x:Name="RomRegionHintText" Opacity="0.85" FontSize="12"/>
-        <Button Content="Use ROM region" Click="OnUseRomRegion" HorizontalAlignment="Left"/>
-        <Button Content="Controls..." Click="OnShowControls" HorizontalAlignment="Left"/>
-        <Separator/>
-        <TextBlock Text="ROM" FontWeight="Bold"/>
-        <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
-        <TextBlock x:Name="RomInfoText" Opacity="0.85" FontSize="12" TextWrapping="Wrap"/>
-        <Separator/>
-        <TextBlock Text="Sega CD" FontWeight="Bold"/>
-        <CheckBox Name="SegaCdRamCartCheck" Content="Enable RAM cartridge" Checked="OnSegaCdRamCartToggle" Unchecked="OnSegaCdRamCartToggle"/>
-        <CheckBox Name="SegaCdLoadCdToRamCheck" Content="Load CD-ROM into RAM at startup" Checked="OnSegaCdLoadCdToRamToggle" Unchecked="OnSegaCdLoadCdToRamToggle"/>
-        <CheckBox Name="SegaCdForceNoDiscCheck" Content="Force no disc (BIOS only)" Checked="OnSegaCdForceNoDiscToggle" Unchecked="OnSegaCdForceNoDiscToggle"/>
-        <TextBlock Name="SegaCdOptionsInfo" Opacity="0.7" FontSize="11" TextWrapping="Wrap" Text="Applies per Sega CD disc."/>
-        <Separator/>
-        <TextBlock Text="PCE BIOS" FontWeight="Bold"/>
-        <TextBlock Name="PceBiosPathText" Text="(auto: ./bios/syscard*.pce|.bin)" TextWrapping="Wrap"/>
-        <StackPanel Orientation="Horizontal" Spacing="6">
-          <Button Content="Select BIOS…" Click="OnSelectPceBios"/>
-          <Button Content="Clear" Click="OnClearPceBios"/>
-        </StackPanel>
-        <Separator/>
-        <TextBlock Text="PSX BIOS" FontWeight="Bold"/>
-        <TextBlock Name="PsxBiosPathText" Text="(none)" TextWrapping="Wrap"/>
-        <StackPanel Orientation="Horizontal" Spacing="6">
-          <Button Content="Select BIOS…" Click="OnSelectPsxBios"/>
-          <Button Content="Clear" Click="OnClearPsxBios"/>
-        </StackPanel>
-        <CheckBox Content="SMS overscan (debug)" IsChecked="False" Name="SmsOverscanCheck" Checked="OnSmsOverscanToggle" Unchecked="OnSmsOverscanToggle"/>
-        <Separator/>
-        <TextBlock Text="Perf" FontWeight="Bold"/>
-        <TextBlock Name="FpsText" Text="FPS: -"/>
-        <TextBlock Name="EmuFpsText" Text="Emu FPS: -"/>
-        <TextBlock Name="FrameText" Text="Frame: -"/>
-        <TextBlock Name="ResolutionText" Text="Resolution: -"/>
-        <CheckBox Content="Speed lock (real-time)" IsChecked="True" Name="SpeedLockCheck" Checked="OnSpeedLockToggle" Unchecked="OnSpeedLockToggle"/>
-        <CheckBox Content="Render skip when fast" IsChecked="False" Name="RenderSkipCheck" Checked="OnRenderSkipToggle" Unchecked="OnRenderSkipToggle"/>
-        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="Speed" VerticalAlignment="Center"/>
-          <Slider Name="SpeedSlider" Minimum="0.5" Maximum="2.0" Value="1.0" Width="140" TickFrequency="0.1" IsSnapToTickEnabled="True" ValueChanged="OnSpeedSliderChanged"/>
-          <TextBlock Name="SpeedValueText" Text="100%" VerticalAlignment="Center"/>
-        </StackPanel>
-        <StackPanel Orientation="Horizontal" Spacing="4">
-          <TextBlock VerticalAlignment="Center" Text="Rate:"/>
-          <ComboBox Name="FrameRateCombo" SelectedIndex="0" SelectionChanged="OnFrameRateChanged">
-            <ComboBoxItem Tag="Auto">Auto (detect)</ComboBoxItem>
-            <ComboBoxItem Tag="Hz60">60 Hz</ComboBoxItem>
-            <ComboBoxItem Tag="Hz50">50 Hz</ComboBoxItem>
-          </ComboBox>
-        </StackPanel>
-        <StackPanel Orientation="Horizontal" Spacing="8">
-          <TextBox Name="CpuCyclesTextBox" Width="80" Text="488"/>
-          <Button Content="Set cycles/line" Click="OnApplyCpuCycles"/>
-        </StackPanel>
-        <StackPanel Orientation="Horizontal" Spacing="8">
-          <TextBox Name="Z80CyclesMultTextBox" Width="80" Text="1.0"/>
-          <Button Content="Set Z80 mult" Click="OnApplyZ80CyclesMult"/>
-        </StackPanel>
-        <Separator/>
-        <TextBlock Text="Dev / Test" FontWeight="Bold"/>
-        <CheckBox Content="Interlace Test Mode (448px)" IsChecked="False" Name="InterlaceTestCheck" Checked="OnInterlaceTestToggle" Unchecked="OnInterlaceTestToggle"/>
-        <CheckBox Content="Static (no flicker)" IsChecked="True" Name="InterlaceStaticCheck" Checked="OnInterlaceStaticToggle" Unchecked="OnInterlaceStaticToggle" IsEnabled="False"/>
-        <CheckBox Content="Sharp Pixels" IsChecked="True" Name="SharpPixelsCheck" Checked="OnSharpPixelsToggle" Unchecked="OnSharpPixelsToggle"/>
-        <CheckBox Content="Advanced Pixel Filter" IsChecked="False" Name="AdvancedPixelFilterCheck" Checked="OnAdvancedPixelFilterToggle" Unchecked="OnAdvancedPixelFilterToggle"/>
-        <CheckBox Content="CRT Scanlines" IsChecked="False" Name="CrtScanlinesCheck" Checked="OnCrtScanlinesToggle" Unchecked="OnCrtScanlinesToggle"/>
-        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="Scanline Strength" VerticalAlignment="Center"/>
-          <Slider Name="CrtScanlineStrengthSlider"
-                  Minimum="0"
-                  Maximum="100"
-                  Width="120"
-                  Value="22"
-                  ValueChanged="OnCrtScanlineStrengthChanged"/>
-          <TextBlock Name="CrtScanlineStrengthText" Width="42" Text="22%" VerticalAlignment="Center"/>
-        </StackPanel>
-        <CheckBox Content="Force Opaque Pixels" IsChecked="False" Name="ForceOpaqueCheck"/>
-        <CheckBox Content="ASCII Stream (for viewer)" IsChecked="False" Name="AsciiStreamCheck" Checked="OnAsciiStreamToggle" Unchecked="OnAsciiStreamToggle"/>
-        <CheckBox Content="Preserve FB on Display Off" IsChecked="True" Name="PreserveFbCheck" Checked="OnPreserveFbToggle" Unchecked="OnPreserveFbToggle"/>
-        <TextBlock Name="InterlaceTestInfo" Opacity="0.7" FontSize="11" TextWrapping="Wrap"/>
-        </StackPanel>
-      </ScrollViewer>
-    </Border>
-
-<!-- Right: framebuffer -->
-  <Border Name="ScreenBorder" Grid.Row="1" Grid.Column="1" Background="#0B0D10" BorderBrush="#1E242C" BorderThickness="1" CornerRadius="8" Padding="10">
-    <Border Name="InputSurface" Background="Transparent" Focusable="True">
-      <Viewbox Stretch="Uniform">
-        <Grid Name="ScreenGrid" Width="320" Height="224">
-          <Image Name="ScreenImage"
-                 Width="320" Height="224"
-                 Stretch="Fill"/>
-          <Image Name="SplashImage"
-                 Source="avares://EutherDrive.UI/Assets/logo_crop.jpeg"
-                 Stretch="Uniform"/>
+      <Border Name="ScreenBorder"
+              Grid.Row="1"
+              Grid.Column="1"
+              Padding="10"
+              CornerRadius="8"
+              Background="#081018"
+              BorderBrush="{StaticResource EdStrokeBrightBrush}"
+              BorderThickness="1">
+        <Grid>
+          <Border Background="{StaticResource EdScreenGlowBrush}" CornerRadius="6" Opacity="0.28"/>
+          <Border Name="InputSurface" Background="Transparent" Focusable="True">
+            <Viewbox Stretch="Uniform">
+              <Grid Name="ScreenGrid" Width="320" Height="224">
+                <Image Name="ScreenImage"
+                       Width="320" Height="224"
+                       Stretch="Fill"/>
+                <Image Name="SplashImage"
+                       Source="avares://EutherDrive.UI/Assets/logo_crop.jpeg"
+                       Stretch="Uniform"/>
+              </Grid>
+            </Viewbox>
+          </Border>
         </Grid>
-      </Viewbox>
-    </Border>
-  </Border>
-
-
-
-
-
+      </Border>
+    </Grid>
   </Grid>
 </Window>

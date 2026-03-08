@@ -4,62 +4,238 @@
              RequestedThemeVariant="Default">
              <!-- "Default" ThemeVariant follows system theme variant. "Dark" or "Light" are other available options. -->
 
+    <Application.Resources>
+        <Color x:Key="EdBg">#091119</Color>
+        <Color x:Key="EdBgSoft">#0F1923</Color>
+        <Color x:Key="EdPanel">#121C27</Color>
+        <Color x:Key="EdPanelRaised">#172433</Color>
+        <Color x:Key="EdPanelGlass">#CC162330</Color>
+        <Color x:Key="EdStroke">#324356</Color>
+        <Color x:Key="EdStrokeBright">#4E6B86</Color>
+        <Color x:Key="EdText">#EEF6FF</Color>
+        <Color x:Key="EdTextMuted">#91A8BD</Color>
+        <Color x:Key="EdAccent">#5EEAD4</Color>
+        <Color x:Key="EdAccentWarm">#F59E0B</Color>
+        <Color x:Key="EdAccentHot">#FB7185</Color>
+
+        <SolidColorBrush x:Key="EdBgBrush" Color="{StaticResource EdBg}" />
+        <SolidColorBrush x:Key="EdBgSoftBrush" Color="{StaticResource EdBgSoft}" />
+        <SolidColorBrush x:Key="EdPanelBrush" Color="{StaticResource EdPanel}" />
+        <SolidColorBrush x:Key="EdPanelRaisedBrush" Color="{StaticResource EdPanelRaised}" />
+        <SolidColorBrush x:Key="EdPanelGlassBrush" Color="{StaticResource EdPanelGlass}" />
+        <SolidColorBrush x:Key="EdStrokeBrush" Color="{StaticResource EdStroke}" />
+        <SolidColorBrush x:Key="EdStrokeBrightBrush" Color="{StaticResource EdStrokeBright}" />
+        <SolidColorBrush x:Key="EdTextBrush" Color="{StaticResource EdText}" />
+        <SolidColorBrush x:Key="EdTextMutedBrush" Color="{StaticResource EdTextMuted}" />
+        <SolidColorBrush x:Key="EdAccentBrush" Color="{StaticResource EdAccent}" />
+        <SolidColorBrush x:Key="EdAccentWarmBrush" Color="{StaticResource EdAccentWarm}" />
+        <SolidColorBrush x:Key="EdAccentHotBrush" Color="{StaticResource EdAccentHot}" />
+
+        <LinearGradientBrush x:Key="EdHeroBrush" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#183249" Offset="0.0" />
+            <GradientStop Color="#111F2D" Offset="0.42" />
+            <GradientStop Color="#271A2A" Offset="1.0" />
+        </LinearGradientBrush>
+
+        <LinearGradientBrush x:Key="EdScreenGlowBrush" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#6626C6DA" Offset="0.0" />
+            <GradientStop Color="#0026C6DA" Offset="0.7" />
+            <GradientStop Color="#44F59E0B" Offset="1.0" />
+        </LinearGradientBrush>
+    </Application.Resources>
+
     <Application.Styles>
         <FluentTheme />
 
         <Style Selector="Window">
-            <Setter Property="Background" Value="#0F1216" />
+            <Setter Property="Background" Value="{StaticResource EdBgBrush}" />
             <Setter Property="FontFamily" Value="Inter" />
+            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
         </Style>
 
         <Style Selector="TextBlock">
-            <Setter Property="Foreground" Value="#E6EBF0" />
+            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+        </Style>
+
+        <Style Selector="TextBlock.muted">
+            <Setter Property="Foreground" Value="{StaticResource EdTextMutedBrush}" />
+        </Style>
+
+        <Style Selector="TextBlock.kicker">
+            <Setter Property="Foreground" Value="{StaticResource EdAccentBrush}" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Opacity" Value="0.9" />
+        </Style>
+
+        <Style Selector="TextBlock.deck-label">
+            <Setter Property="Foreground" Value="{StaticResource EdAccentBrush}" />
+            <Setter Property="FontFamily" Value="Noto Sans, Inter" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="Black" />
+            <Setter Property="FontStyle" Value="Italic" />
+            <Setter Property="LetterSpacing" Value="1.1" />
+            <Setter Property="Opacity" Value="0.96" />
+        </Style>
+
+        <Style Selector="TextBlock.display">
+            <Setter Property="FontSize" Value="28" />
+            <Setter Property="FontWeight" Value="Black" />
+            <Setter Property="LetterSpacing" Value="0.4" />
+        </Style>
+
+        <Style Selector="Border.panel">
+            <Setter Property="Background" Value="{StaticResource EdPanelGlassBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="18" />
+            <Setter Property="BoxShadow" Value="0 18 50 0 #44000000" />
+        </Style>
+
+        <Style Selector="Border.hero">
+            <Setter Property="Background" Value="{StaticResource EdHeroBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrightBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="22" />
+            <Setter Property="BoxShadow" Value="0 24 70 0 #66000000" />
+        </Style>
+
+        <Style Selector="Border.screen-shell">
+            <Setter Property="Background" Value="#0A0F14" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrightBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="24" />
+            <Setter Property="BoxShadow" Value="0 24 80 0 #77000000" />
         </Style>
 
         <Style Selector="Button">
-            <Setter Property="Background" Value="#26303A" />
-            <Setter Property="BorderBrush" Value="#3A4450" />
+            <Setter Property="Background" Value="{StaticResource EdPanelRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="4" />
-            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="12,8" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="RenderTransform" Value="scale(1)" />
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="Background" Duration="0:0:0.18"/>
+                    <BrushTransition Property="BorderBrush" Duration="0:0:0.18"/>
+                    <TransformOperationsTransition Property="RenderTransform" Duration="0:0:0.18"/>
+                </Transitions>
+            </Setter>
         </Style>
 
         <Style Selector="Button:pointerover">
-            <Setter Property="Background" Value="#2D3844" />
+            <Setter Property="Background" Value="#1D3143" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdAccentBrush}" />
+            <Setter Property="RenderTransform" Value="scale(1.025)" />
         </Style>
 
         <Style Selector="Button:pressed">
-            <Setter Property="Background" Value="#1F2932" />
+            <Setter Property="Background" Value="#12202C" />
+            <Setter Property="RenderTransform" Value="scale(0.985)" />
+        </Style>
+
+        <Style Selector="Button.action">
+            <Setter Property="Background" Value="#163B41" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdAccentBrush}" />
+        </Style>
+
+        <Style Selector="Button.action:pointerover">
+            <Setter Property="Background" Value="#1A4B53" />
+        </Style>
+
+        <Style Selector="Button.ghost">
+            <Setter Property="Background" Value="#22131D" />
+            <Setter Property="BorderBrush" Value="#6E4758" />
+        </Style>
+
+        <Style Selector="Button.small">
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="CornerRadius" Value="10" />
+        </Style>
+
+        <Style Selector="Button.compact">
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="FontSize" Value="13" />
         </Style>
 
         <Style Selector="ToggleButton">
-            <Setter Property="Background" Value="#26303A" />
-            <Setter Property="BorderBrush" Value="#3A4450" />
+            <Setter Property="Background" Value="#14202C" />
+            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="4" />
-            <Setter Property="Padding" Value="6,2" />
+            <Setter Property="CornerRadius" Value="999" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="RenderTransform" Value="scale(1)" />
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="Background" Duration="0:0:0.16"/>
+                    <BrushTransition Property="BorderBrush" Duration="0:0:0.16"/>
+                    <TransformOperationsTransition Property="RenderTransform" Duration="0:0:0.16"/>
+                </Transitions>
+            </Setter>
+        </Style>
+
+        <Style Selector="ToggleButton:pointerover">
+            <Setter Property="RenderTransform" Value="scale(1.04)" />
         </Style>
 
         <Style Selector="ToggleButton:checked">
-            <Setter Property="Background" Value="#314055" />
-            <Setter Property="BorderBrush" Value="#48607A" />
+            <Setter Property="Background" Value="#1D454C" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdAccentBrush}" />
         </Style>
 
         <Style Selector="ComboBox">
-            <Setter Property="Background" Value="#1F2730" />
-            <Setter Property="BorderBrush" Value="#3A4450" />
+            <Setter Property="Background" Value="#101B26" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
             <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="8,6" />
         </Style>
 
         <Style Selector="TextBox">
-            <Setter Property="Background" Value="#1A2128" />
-            <Setter Property="BorderBrush" Value="#3A4450" />
+            <Setter Property="Background" Value="#0E1822" />
+            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
             <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="8,6" />
+        </Style>
+
+        <Style Selector="TextBox.log-view">
+            <Setter Property="Background" Value="#00000000" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+
+        <Style Selector="TextBox.status-inline">
+            <Setter Property="Background" Value="#00000000" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
         </Style>
 
         <Style Selector="Separator">
-            <Setter Property="Background" Value="#2A323C" />
+            <Setter Property="Background" Value="#2A3847" />
             <Setter Property="Height" Value="1" />
+            <Setter Property="Opacity" Value="0.65" />
+        </Style>
+
+        <Style Selector="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+        </Style>
+
+        <Style Selector="Slider">
+            <Setter Property="Background" Value="#00000000" />
+        </Style>
+
+        <Style Selector="ScrollViewer">
+            <Setter Property="Background" Value="#00000000" />
+        </Style>
+
+        <Style Selector="Expander">
+            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
         </Style>
     </Application.Styles>
 </Application>
