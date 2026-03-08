@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Globalization;
+using System.Linq;
 
 namespace KSNES.CPU;
 
@@ -66,20 +67,42 @@ public class CPU : ICPU
         return $"A=0x{_br[A]:X4} X=0x{_br[X]:X4} Y=0x{_br[Y]:X4} SP=0x{_br[SP]:X4} D=0x{_br[DPR]:X4} DBR=0x{_r[DBR]:X2} PB=0x{_r[K]:X2} P=0x{p:X2} E={(_e ? 1 : 0)} M={(_m ? 1 : 0)} Xf={(_x ? 1 : 0)}";
     }
 
-    private readonly bool _tracePc =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_PC"), "1", StringComparison.Ordinal);
-    private readonly int _tracePcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_CPU_PC_LIMIT", 200);
+    internal string GetDebugStateWithStack(int byteCount = 6)
+    {
+        string regs = GetTraceState();
+        if (_snes == null || byteCount <= 0)
+            return regs;
+
+        int sp = _br[SP];
+        byte[] stack = new byte[byteCount];
+        for (int i = 0; i < byteCount; i++)
+        {
+            int address = _e
+                ? (0x0100 | ((sp + 1 + i) & 0xFF))
+                : ((sp + 1 + i) & 0xFFFF);
+            stack[i] = (byte)_snes.Read(address);
+        }
+
+        return $"{regs} STACK=[{string.Join(' ', stack.Select(static b => $"{b:X2}"))}]";
+    }
+
+    private bool _tracePc;
+    private int _tracePcLimit;
     private int _tracePcCount;
-    private readonly bool _tracePcRange;
-    private readonly int _tracePcRangeStart;
-    private readonly int _tracePcRangeEnd;
-    private readonly int _tracePcRangeLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE_LIMIT", 200);
+    private bool _tracePcRange;
+    private int _tracePcRangeStart;
+    private int _tracePcRangeEnd;
+    private int _tracePcRangeLimit;
     private int _tracePcRangeCount;
-    private readonly bool _traceWramPc =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_WRAM_PC"), "1", StringComparison.Ordinal);
+    private bool _traceWramPc;
     private bool _traceWramPcLogged;
     private static readonly bool TraceLdaWatch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_LDA_WATCH"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceIndexWatch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_INDEX_WATCH"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceStackSet =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_STACK_SET"), "1", StringComparison.Ordinal) ||
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_STACK_SET"), "1", StringComparison.Ordinal);
 
     [JsonIgnore]
     private readonly int[] _modes = [
@@ -174,13 +197,32 @@ public class CPU : ICPU
             Abo, Nmi, Irq
         ];
 
+        InitTraceConfig();
+    }
+
+    private void InitTraceConfig()
+    {
+        _tracePc = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_PC"), "1", StringComparison.Ordinal);
+        _tracePcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_CPU_PC_LIMIT", 200);
+        _tracePcCount = 0;
+
+        _tracePcRange = false;
+        _tracePcRangeStart = 0;
+        _tracePcRangeEnd = 0;
+        _tracePcRangeLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE_LIMIT", 200);
+        _tracePcRangeCount = 0;
         if (TryParseTraceRange("EUTHERDRIVE_TRACE_SNES_CPU_PC_RANGE", out int start, out int end))
         {
             _tracePcRange = true;
             _tracePcRangeStart = start;
             _tracePcRangeEnd = end;
         }
+
+        _traceWramPc = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_WRAM_PC"), "1", StringComparison.Ordinal);
+        _traceWramPcLogged = false;
     }
+
+    internal void RefreshTraceConfig() => InitTraceConfig();
 
     public void SetSystem(ISNESSystem system)
     {
@@ -240,7 +282,7 @@ public class CPU : ICPU
                         int b0 = snes.Peek(pcAddr);
                         int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
                         int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
-                        string regs = GetTraceState();
+                        string regs = GetDebugStateWithStack();
                         Console.WriteLine($"[CPU-PC] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
                         _tracePcCount++;
                     }
@@ -252,7 +294,7 @@ public class CPU : ICPU
                         int b0 = snes.Peek(pcAddr);
                         int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
                         int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
-                        string regs = GetTraceState();
+                        string regs = GetDebugStateWithStack();
                         Console.WriteLine($"[CPU-PC-RANGE] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
                         _tracePcRangeCount++;
                     }
@@ -1444,12 +1486,20 @@ public class CPU : ICPU
         if (_x)
         {
             _br[X] = (ushort) _snes.Read(adr);
+            if (TraceIndexWatch && adr >= 0x36D0 && adr <= 0x36DF)
+            {
+                Console.WriteLine($"[LDX-WATCH] adr=0x{adr:X4} val=0x{_br[X]:X2} pc=0x{ProgramCounter24:X6} x=1 D=0x{_br[DPR]:X4}");
+            }
             SetZAndN(_br[X], _x);
         }
         else
         {
             CyclesLeft++;
             _br[X] = (ushort) ReadWord(adr, adrh);
+            if (TraceIndexWatch && adr >= 0x36D0 && adr <= 0x36DF)
+            {
+                Console.WriteLine($"[LDX-WATCH] adr=0x{adr:X4} adrh=0x{adrh:X4} val=0x{_br[X]:X4} pc=0x{ProgramCounter24:X6} x=0 D=0x{_br[DPR]:X4}");
+            }
             SetZAndN(_br[X], _x);
         }
     }
@@ -1459,12 +1509,20 @@ public class CPU : ICPU
         if (_x)
         {
             _br[Y] = (ushort) _snes.Read(adr);
+            if (TraceIndexWatch && adr >= 0x36D0 && adr <= 0x36DF)
+            {
+                Console.WriteLine($"[LDY-WATCH] adr=0x{adr:X4} val=0x{_br[Y]:X2} pc=0x{ProgramCounter24:X6} x=1 D=0x{_br[DPR]:X4}");
+            }
             SetZAndN(_br[Y], _x);
         }
         else
         {
             CyclesLeft++;
             _br[Y] = (ushort) ReadWord(adr, adrh);
+            if (TraceIndexWatch && adr >= 0x36D0 && adr <= 0x36DF)
+            {
+                Console.WriteLine($"[LDY-WATCH] adr=0x{adr:X4} adrh=0x{adrh:X4} val=0x{_br[Y]:X4} pc=0x{ProgramCounter24:X6} x=0 D=0x{_br[DPR]:X4}");
+            }
             SetZAndN(_br[Y], _x);
         }
     }
@@ -1755,11 +1813,13 @@ public class CPU : ICPU
 
     private void Txs(int adr, int adrh) 
     {
+        ushort oldSp = _br[SP];
         _br[SP] = _br[X];
         if (_e)
         {
             _br[SP] = (ushort) (0x0100 | (_br[SP] & 0xff));
         }
+        TraceStackPointerSet("TXS", oldSp);
     }
 
     private void Txy(int adr, int adrh)
@@ -1812,7 +1872,9 @@ public class CPU : ICPU
 
     private void Tcs(int adr, int adrh) 
     {
+        ushort oldSp = _br[SP];
         _br[SP] = _br[A];
+        TraceStackPointerSet("TCS", oldSp);
     }
 
     private void Tdc(int adr, int adrh)
@@ -1850,6 +1912,14 @@ public class CPU : ICPU
             _br[X] &= 0xff;
             _br[Y] &= 0xff;
         }
+    }
+
+    private void TraceStackPointerSet(string opName, ushort oldSp)
+    {
+        if (!TraceStackSet)
+            return;
+
+        Console.WriteLine($"[CPU-SP-SET] op={opName} pc=0x{ProgramCounter24:X6} sp=0x{oldSp:X4}->0x{_br[SP]:X4} regs=[{GetDebugStateWithStack()}]");
     }
 
     private static int ParseTraceLimit(string name, int fallback)

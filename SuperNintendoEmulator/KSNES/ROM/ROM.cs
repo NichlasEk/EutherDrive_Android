@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using KSNES.Tracing;
 
 namespace KSNES.ROM;
@@ -41,6 +42,9 @@ public class ROM : IROM
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_VECTORS"), "1", StringComparison.Ordinal);
     private readonly bool _traceSa1BwramWatch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly HashSet<uint> _traceSa1BwramOffsets =
+        ParseTraceOffsets(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_ADDRS"));
 
     [NonSerialized]
     private Timer? _sRAMTimer;
@@ -180,7 +184,10 @@ public class ROM : IROM
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             if (_sa1.TryResolveSnesAccess(address, out string region, out uint? resolved))
             {
-                byte? sa1Value = _sa1.SnesRead(address);
+                int snesPc = -1;
+                int snesOp = -1;
+                TryGetSnesPc(out snesPc, out snesOp);
+                byte? sa1Value = _sa1.SnesRead(address, snesPc);
                 if (sa1Value.HasValue)
                 {
                     if (Sa1Trace.IsEnabled && (region.StartsWith("I-RAM", StringComparison.Ordinal) || region.StartsWith("BW-RAM", StringComparison.Ordinal)))
@@ -193,14 +200,11 @@ public class ROM : IROM
                         uint off = resolved ?? 0;
                         if (adr16 == 0x604E || adr16 == 0x604F || (off & 0xFFFF) == 0x004E || (off & 0xFFFF) == 0x004F)
                         {
-                            int pc2 = -1;
-                            if (TryGetSnesPc(out int snesPc, out _))
-                                pc2 = snesPc;
-                            Console.WriteLine($"[SNES-BWRAM-RD] addr=0x{address:X6} bwram=0x{off:X6} val=0x{sa1Value.Value:X2} pc=0x{pc2:X6}");
+                            Console.WriteLine($"[SNES-BWRAM-RD] addr=0x{address:X6} bwram=0x{off:X6} val=0x{sa1Value.Value:X2} pc=0x{snesPc:X6}");
                         }
                     }
-                    if (Sa1Trace.IsEnabled && TryGetSnesPc(out int pc, out int op))
-                        Sa1Trace.Log("SNES", pc, op, address, "R", sa1Value.Value, region, resolved);
+                    if (Sa1Trace.IsEnabled && snesPc >= 0)
+                        Sa1Trace.Log("SNES", snesPc, snesOp, address, "R", sa1Value.Value, region, resolved);
                     return sa1Value.Value;
                 }
             }
@@ -273,9 +277,17 @@ public class ROM : IROM
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             if (_sa1.TryResolveSnesAccess(address, out string region, out uint? resolved))
             {
-                _sa1.SnesWrite(address, value);
-                if (Sa1Trace.IsEnabled && TryGetSnesPc(out int pc, out int op))
-                    Sa1Trace.Log("SNES", pc, op, address, "W", value, region, resolved);
+                int snesPc = -1;
+                int snesOp = -1;
+                TryGetSnesPc(out snesPc, out snesOp);
+                _sa1.SnesWrite(address, value, snesPc);
+                if (ShouldTraceBwramContext(address, region, resolved) &&
+                    TryGetSnesContext(out int ctxPc, out string regs, out string opBytes))
+                {
+                    Console.WriteLine($"[SNES-BWRAM-CTX] pc=0x{ctxPc:X6} op=[{opBytes}] regs=[{regs}] addr=0x{address:X6} bwram=0x{(resolved ?? 0):X6} val=0x{value:X2}");
+                }
+                if (Sa1Trace.IsEnabled && snesPc >= 0)
+                    Sa1Trace.Log("SNES", snesPc, snesOp, address, "W", value, region, resolved);
                 if (_hasSram && region.StartsWith("BW-RAM", StringComparison.Ordinal))
                     _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
                 return;
@@ -517,6 +529,54 @@ public class ROM : IROM
             return false;
         pc = cpu.ProgramCounter24;
         return true;
+    }
+
+    private bool TryGetSnesContext(out int pc, out string regs, out string opBytes)
+    {
+        pc = 0;
+        regs = string.Empty;
+        opBytes = string.Empty;
+        if (_system is not KSNES.SNESSystem.SNESSystem snes)
+            return false;
+        if (snes.CPU is not KSNES.CPU.CPU cpu)
+            return false;
+        pc = cpu.ProgramCounter24;
+        regs = cpu.GetTraceState();
+        int b0 = snes.Peek(pc);
+        int b1 = snes.Peek((pc + 1) & 0xFFFFFF);
+        int b2 = snes.Peek((pc + 2) & 0xFFFFFF);
+        int b3 = snes.Peek((pc + 3) & 0xFFFFFF);
+        opBytes = $"{b0:X2} {b1:X2} {b2:X2} {b3:X2}";
+        return true;
+    }
+
+    private bool ShouldTraceBwramContext(uint address, string region, uint? resolved)
+    {
+        if (!_traceSa1BwramWatch || !region.StartsWith("BW-RAM", StringComparison.Ordinal))
+            return false;
+
+        if (_traceSa1BwramOffsets.Count == 0)
+            return true;
+
+        uint adr16 = address & 0xFFFF;
+        uint off16 = (resolved ?? 0) & 0xFFFF;
+        return _traceSa1BwramOffsets.Contains(adr16) || _traceSa1BwramOffsets.Contains(off16);
+    }
+
+    private static HashSet<uint> ParseTraceOffsets(string? raw)
+    {
+        var offsets = new HashSet<uint>();
+        if (string.IsNullOrWhiteSpace(raw))
+            return offsets;
+
+        string[] parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (string part in parts)
+        {
+            if (uint.TryParse(part, System.Globalization.NumberStyles.HexNumber, null, out uint value))
+                offsets.Add(value);
+        }
+
+        return offsets;
     }
 
     private byte ReadHiRom(int bank, int adr)

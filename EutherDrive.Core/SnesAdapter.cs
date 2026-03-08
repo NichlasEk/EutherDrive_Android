@@ -216,6 +216,8 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
 
             _system.ROM.SetSystem(_system);
             _system.CPU.SetSystem(_system);
+            if (_system.CPU is CPU cpu)
+                cpu.RefreshTraceConfig();
             _system.PPU.SetSystem(_system);
             _system.APU.Attach();
         }
