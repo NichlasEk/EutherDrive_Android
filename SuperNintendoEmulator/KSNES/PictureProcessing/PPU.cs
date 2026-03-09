@@ -1088,7 +1088,10 @@ public class PPU : IPPU
             }
         }
         layer = j == count ? 5 : layer;
-        ushort color = _cgramFrame[pixel & 0xff];
+        // Use live CGRAM so mid-frame palette changes (for example via HDMA) affect
+        // the lines they are meant to. Frame-latching the palette breaks games like
+        // Kirby's Dream Land 3 that update HUD/scene colors during active display.
+        ushort color = _cgram[pixel & 0xff];
         if (_directColor && layer < 4 && _bitPerMode[_mode * 4 + layer] == 8)
         {
             int r = ((pixel & 0x7) << 2) | ((pixel & 0x100) >> 7);
