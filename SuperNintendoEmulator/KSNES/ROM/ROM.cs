@@ -26,6 +26,16 @@ public class ROM : IROM
     private KSNES.Specialchips.SuperFX.SuperFx? _superFx;
     [NonSerialized]
     private KSNES.Specialchips.SA1.Sa1? _sa1;
+    [NonSerialized]
+    private KSNES.Specialchips.SDD1.Sdd1? _sdd1;
+    [NonSerialized]
+    private KSNES.Specialchips.ST010.St010? _st010;
+    [NonSerialized]
+    private KSNES.Specialchips.ST011.St011? _st011;
+    [NonSerialized]
+    private KSNES.Specialchips.ST018.St018? _st018;
+    [NonSerialized]
+    private KSNES.Specialchips.OBC1.Obc1? _obc1;
     private bool _superFxHasBattery;
     private ulong _superFxOverclock = 1;
     private Dsp1PortMapping _dsp1PortMapping;
@@ -102,6 +112,16 @@ public class ROM : IROM
             _sa1 = null;
         }
 
+        if (IsSdd1Chipset(header.MapMode, header.ChipsetByte))
+        {
+            _sdd1 = new KSNES.Specialchips.SDD1.Sdd1(_data, _sram);
+            _hasSram = _sram.Length > 0;
+        }
+        else
+        {
+            _sdd1 = null;
+        }
+
         bool hasDsp1 = header.ExCoprocessor == 0 && header.Chips >= 3 && header.Chips <= 5;
         if (hasDsp1)
         {
@@ -146,12 +166,103 @@ public class ROM : IROM
             _dsp1BroadMap = false;
             _dsp1SwapPorts = false;
         }
+
+        // ST010 support (chip ID 0x0A)
+        bool hasSt010 = header.ExCoprocessor == 0 && header.Chips == 0x0A;
+        if (hasSt010)
+        {
+            if (_system == null)
+                throw new InvalidOperationException("ROM system not set.");
+
+            byte[]? st010Rom = TryLoadSt010Rom();
+            if (st010Rom == null)
+            {
+                Console.WriteLine("[ST010] ROM not found; ST-010 disabled.");
+                _st010 = null;
+            }
+            else
+            {
+                _st010 = new KSNES.Specialchips.ST010.St010(st010Rom, _sram, _system);
+                _st010.Reset();
+                Console.WriteLine("[ST010] Initialized successfully.");
+            }
+        }
+        else
+        {
+            _st010 = null;
+        }
+
+        // ST011 support (chip ID 0x05)
+        bool hasSt011 = header.ExCoprocessor == 0 && header.Chips == 5;
+        if (hasSt011)
+        {
+            if (_system == null)
+                throw new InvalidOperationException("ROM system not set.");
+
+            byte[]? st011Rom = TryLoadSt011Rom();
+            if (st011Rom == null)
+            {
+                Console.WriteLine("[ST011] ROM not found; ST-011 disabled.");
+                _st011 = null;
+            }
+            else
+            {
+                _st011 = new KSNES.Specialchips.ST011.St011(st011Rom, _sram, _system);
+                _st011.Reset();
+                Console.WriteLine("[ST011] Initialized successfully.");
+            }
+        }
+        else
+        {
+            _st011 = null;
+        }
+
+        // ST018 support (chip ID 0x05 with specific chipset byte)
+        bool isSt018 = header.ChipsetByte == 0xF5 && header.Chips == 5;
+        if (isSt018)
+        {
+            if (_system == null)
+                throw new InvalidOperationException("ROM system not set.");
+
+            byte[]? st018Rom = TryLoadSt018Rom();
+            if (st018Rom == null)
+            {
+                Console.WriteLine("[ST018] ROM not found; ST-018 disabled.");
+                _st018 = null;
+            }
+            else
+            {
+                _st018 = new KSNES.Specialchips.ST018.St018(st018Rom, _system);
+                _st018.Reset();
+                Console.WriteLine("[ST018] Initialized successfully.");
+            }
+        }
+        else
+        {
+            _st018 = null;
+        }
+
+        // OBC1 support
+        bool isObc1 = header.ChipsetByte == 0x00 && header.Chips == 0x02;
+        if (isObc1)
+        {
+            _obc1 = new KSNES.Specialchips.OBC1.Obc1(_data, _sram);
+            Console.WriteLine("[OBC1] Initialized successfully.");
+        }
+        else
+        {
+            _obc1 = null;
+        }
     }
 
     public int RomLength => _data.Length;
     internal KSNES.Specialchips.CX4.Cx4? Cx4 => _cx4;
-    internal KSNES.Specialchips.DSP1.Dsp1? Dsp1 => _dsp1;
+        internal KSNES.Specialchips.DSP1.Dsp1? Dsp1 => _dsp1;
     internal KSNES.Specialchips.SuperFX.SuperFx? SuperFx => _superFx;
+    internal KSNES.Specialchips.ST010.St010? St010 => _st010;
+    internal KSNES.Specialchips.ST011.St011? St011 => _st011;
+    internal KSNES.Specialchips.ST018.St018? St018 => _st018;
+    internal KSNES.Specialchips.OBC1.Obc1? Obc1 => _obc1;
     public object? Sa1 => _sa1;
 
     public void LoadSRAM()
@@ -217,6 +328,13 @@ public class ROM : IROM
                 return value;
         }
 
+        if (_sdd1 != null)
+        {
+            uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+            if (_sdd1.Read(address, out byte value))
+                return value;
+        }
+
         if (_cx4 != null)
         {
             if ((bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
@@ -241,6 +359,26 @@ public class ROM : IROM
         if (TryReadDsp1(bank, adr, out byte dsp1Value))
         {
             return dsp1Value;
+        }
+
+        if (TryReadSt010(bank, adr, out byte st010Value))
+        {
+            return st010Value;
+        }
+
+        if (TryReadSt011(bank, adr, out byte st011Value))
+        {
+            return st011Value;
+        }
+
+        if (TryReadSt018(bank, adr, out byte st018Value))
+        {
+            return st018Value;
+        }
+
+        if (TryReadObc1(bank, adr, out byte obc1Value))
+        {
+            return obc1Value;
         }
 
         if (Header.IsHiRom)
@@ -305,6 +443,17 @@ public class ROM : IROM
             }
         }
 
+        if (_sdd1 != null)
+        {
+            uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+            if (_sdd1.Write(address, value, out bool wroteRam))
+            {
+                if (wroteRam && _hasSram)
+                    _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                return;
+            }
+        }
+
         if (_cx4 != null)
         {
             if ((bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
@@ -324,6 +473,26 @@ public class ROM : IROM
         }
 
         if (TryWriteDsp1(bank, adr, value))
+        {
+            return;
+        }
+
+        if (TryWriteSt010(bank, adr, value))
+        {
+            return;
+        }
+
+        if (TryWriteSt011(bank, adr, value))
+        {
+            return;
+        }
+
+        if (TryWriteSt018(bank, adr, value))
+        {
+            return;
+        }
+
+        if (TryWriteObc1(bank, adr, value))
         {
             return;
         }
@@ -402,6 +571,174 @@ public class ROM : IROM
         return false;
     }
 
+    private bool TryReadSt010(int bank, int adr, out byte value)
+    {
+        value = 0;
+        if (_st010 == null)
+        {
+            return false;
+        }
+
+        // ST010 uses similar mapping to DSP-1/ST011 but with different addresses
+        // Based on research: ST010 maps to $6000-$7FFF in banks $00-$3F/$80-$BF
+        if ((bank & 0x7F) <= 0x3F && adr >= 0x6000 && adr < 0x8000)
+        {
+            // $6000-$6FFF: Data port, $7000-$7FFF: Status port
+            if (adr < 0x7000)
+            {
+                value = _st010.ReadData();
+            }
+            else
+            {
+                value = _st010.ReadStatus();
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryReadSt011(int bank, int adr, out byte value)
+    {
+        value = 0;
+        if (_st011 == null)
+        {
+            return false;
+        }
+
+        // ST011 uses similar mapping to DSP-1 but with different addresses
+        // Based on research: ST011 maps to $6000-$7FFF in banks $00-$3F/$80-$BF
+        if ((bank & 0x7F) <= 0x3F && adr >= 0x6000 && adr < 0x8000)
+        {
+            // $6000-$6FFF: Data port, $7000-$7FFF: Status port
+            if (adr < 0x7000)
+            {
+                value = _st011.ReadData();
+            }
+            else
+            {
+                value = _st011.ReadStatus();
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryReadSt018(int bank, int adr, out byte value)
+    {
+        value = 0;
+        if (_st018 == null)
+        {
+            return false;
+        }
+
+        // ST018 maps to $3800-$3807 in banks $00-$3F/$80-$BF
+        if ((bank & 0x7F) <= 0x3F && adr >= 0x3800 && adr < 0x3808)
+        {
+            uint address = (uint)((bank << 16) | adr);
+            value = _st018.Read(address);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryWriteSt018(int bank, int adr, byte value)
+    {
+        if (_st018 == null)
+        {
+            return false;
+        }
+
+        // ST018 maps to $3800-$3807 in banks $00-$3F/$80-$BF
+        if ((bank & 0x7F) <= 0x3F && adr >= 0x3800 && adr < 0x3808)
+        {
+            uint address = (uint)((bank << 16) | adr);
+            _st018.Write(address, value);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryWriteSt010(int bank, int adr, byte value)
+    {
+        if (_st010 == null)
+        {
+            return false;
+        }
+
+        // ST010 uses similar mapping to DSP-1/ST011 but with different addresses
+        // Based on research: ST010 maps to $6000-$7FFF in banks $00-$3F/$80-$BF
+        if ((bank & 0x7F) <= 0x3F && adr >= 0x6000 && adr < 0x8000)
+        {
+            // $6000-$6FFF: Data port, $7000-$7FFF: Status port
+            if (adr < 0x7000)
+            {
+                _st010.WriteData(value);
+            }
+            // Status port is read-only for writes
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryWriteSt011(int bank, int adr, byte value)
+    {
+        if (_st011 == null)
+        {
+            return false;
+        }
+
+        // ST011 uses similar mapping to DSP-1 but with different addresses
+        if ((bank & 0x7F) <= 0x3F && adr >= 0x6000 && adr < 0x8000)
+        {
+            // $6000-$6FFF: Data port, $7000-$7FFF: Status port
+            if (adr < 0x7000)
+            {
+                _st011.WriteData(value);
+            }
+            // Status port is read-only for writes
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryReadObc1(int bank, int adr, out byte value)
+    {
+        value = 0;
+        if (_obc1 == null)
+        {
+            return false;
+        }
+
+        uint address = (uint)((bank << 16) | adr);
+        byte? result = _obc1.Read(address);
+        
+        if (result.HasValue)
+        {
+            value = result.Value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryWriteObc1(int bank, int adr, byte value)
+    {
+        if (_obc1 == null)
+        {
+            return false;
+        }
+
+        uint address = (uint)((bank << 16) | adr);
+        _obc1.Write(address, value);
+        return true;
+    }
+
     private bool TryWriteDsp1(int bank, int adr, byte value)
     {
         if (_dsp1 == null)
@@ -454,26 +791,35 @@ public class ROM : IROM
     {
         _cx4?.Reset();
         _dsp1?.Reset();
+        _st010?.Reset();
+        _st011?.Reset();
+        _st018?.Reset();
         _superFx?.Reset();
         _sa1?.Reset();
+        _sdd1?.Reset();
     }
 
     public void RunCoprocessor(ulong snesCycles)
     {
         _cx4?.RunTo(snesCycles);
         _dsp1?.RunTo(snesCycles);
+        _st010?.RunTo(snesCycles);
+        _st011?.RunTo(snesCycles);
+        _st018?.RunTo(snesCycles);
         _superFx?.Tick(snesCycles);
         _sa1?.Tick(snesCycles);
     }
 
-    public void NotifyDmaStart(uint sourceAddress)
+    public void NotifyDmaStart(byte channel, uint sourceAddress)
     {
         _sa1?.NotifyDmaStart(sourceAddress);
+        _sdd1?.NotifyDmaStart(channel, sourceAddress);
     }
 
-    public void NotifyDmaEnd()
+    public void NotifyDmaEnd(byte channel)
     {
         _sa1?.NotifyDmaEnd();
+        _sdd1?.NotifyDmaEnd(channel);
     }
 
     public bool IrqWanted => (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);
@@ -517,6 +863,11 @@ public class ROM : IROM
     private static bool IsSa1Chipset(int chipsetByte)
     {
         return chipsetByte == 0x32 || chipsetByte == 0x34 || chipsetByte == 0x35;
+    }
+
+    private static bool IsSdd1Chipset(int mapMode, int chipsetByte)
+    {
+        return (mapMode == 0x22 || mapMode == 0x32) && chipsetByte >= 0x43 && chipsetByte <= 0x45;
     }
 
     private bool TryGetSnesPc(out int pc, out int op)
@@ -603,6 +954,75 @@ public class ROM : IROM
         string defaultPath = "/home/nichlas/roms/DSP1 (World) (Enhancement Chip).bin";
         if (File.Exists(defaultPath))
             return File.ReadAllBytes(defaultPath);
+
+        return null;
+    }
+
+    private static byte[]? TryLoadSt010Rom()
+    {
+        string? fromEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_ST010_ROM");
+        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
+            return File.ReadAllBytes(fromEnv);
+
+        // Try common ST010 ROM filenames
+        string[] possiblePaths = [
+            "/home/nichlas/roms/ST-010.bin",
+            "/home/nichlas/roms/ST010.bin",
+            "/home/nichlas/roms/ST010 (Enhancement Chip).bin",
+            "/home/nichlas/roms/ST-010 (Enhancement Chip).bin"
+        ];
+
+        foreach (string path in possiblePaths)
+        {
+            if (File.Exists(path))
+                return File.ReadAllBytes(path);
+        }
+
+        return null;
+    }
+
+    private static byte[]? TryLoadSt011Rom()
+    {
+        string? fromEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_ST011_ROM");
+        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
+            return File.ReadAllBytes(fromEnv);
+
+        // Try common ST011 ROM filenames
+        string[] possiblePaths = [
+            "/home/nichlas/roms/ST-011.bin",
+            "/home/nichlas/roms/ST011.bin",
+            "/home/nichlas/roms/ST011 (Enhancement Chip).bin",
+            "/home/nichlas/roms/ST-010 (Enhancement Chip).bin"
+        ];
+
+        foreach (string path in possiblePaths)
+        {
+            if (File.Exists(path))
+                return File.ReadAllBytes(path);
+        }
+
+        return null;
+    }
+
+    private static byte[]? TryLoadSt018Rom()
+    {
+        string? fromEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_ST018_ROM");
+        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
+            return File.ReadAllBytes(fromEnv);
+
+        // Try common ST018 ROM filenames
+        string[] possiblePaths = [
+            "/home/nichlas/roms/ST-018.bin",
+            "/home/nichlas/roms/ST018.bin",
+            "/home/nichlas/roms/ST018 (Enhancement Chip).bin",
+            "/home/nichlas/roms/ST-018 (Enhancement Chip).bin"
+        ];
+
+        foreach (string path in possiblePaths)
+        {
+            if (File.Exists(path))
+                return File.ReadAllBytes(path);
+        }
 
         return null;
     }
