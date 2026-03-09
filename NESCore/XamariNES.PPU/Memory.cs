@@ -17,6 +17,15 @@ namespace XamariNES.PPU
         private readonly IMapper _memoryMapper;
         private readonly byte[] _ppuVram;
         private readonly byte[] _paletteMemory;
+        [NonSerialized]
+        private readonly bool _tracePatternReads =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_PATTERN_READS"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _tracePatternReadsLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_PATTERN_READS_LIMIT", 2048);
+        [NonSerialized]
+        private readonly long _tracePatternReadsStartCycle = ParseTraceStartCycle("EUTHERDRIVE_TRACE_NES_PATTERN_READS_START_CYCLE");
+        [NonSerialized]
+        private int _tracePatternReadsCount;
 
         public Memory(IMapper memoryMapper)
         {
@@ -46,9 +55,19 @@ namespace XamariNES.PPU
 
         public byte ReadByteRender(int offset, bool sprite)
         {
+            return ReadByteRender(offset, sprite, -1);
+        }
+
+        public byte ReadByteRender(int offset, bool sprite, long ppuCycle)
+        {
+            offset &= 0x3FFF;
+
+            if (_memoryMapper is IPpuA12Observer observer && ppuCycle >= 0)
+                observer.NotifyPpuA12(offset, ppuCycle);
+
             if (_memoryMapper is IPpuMemoryMapperEx ppuMapper)
                 return ppuMapper.ReadPpuRender(offset, _ppuVram, sprite);
-            return ReadByteInternal(offset, -1, false);
+            return ReadByteInternal(offset, ppuCycle, false);
         }
 
         public void ClockMapperScanline()
@@ -59,8 +78,21 @@ namespace XamariNES.PPU
 
         private byte ReadByteInternal(int offset, long ppuCycle, bool notifyA12)
         {
+            // PPU address bus is 14-bit; $4000+ mirrors back into $0000-$3FFF.
+            offset &= 0x3FFF;
+
             if (notifyA12 && _memoryMapper is IPpuA12Observer observer && ppuCycle >= 0)
                 observer.NotifyPpuA12(offset, ppuCycle);
+
+            if (_tracePatternReads &&
+                offset < 0x2000 &&
+                ppuCycle >= _tracePatternReadsStartCycle &&
+                _tracePatternReadsCount < _tracePatternReadsLimit)
+            {
+                Console.WriteLine($"[NES-PATTERN-READ] ppu=0x{offset:X4} cycle={ppuCycle}");
+                if (_tracePatternReadsCount != int.MaxValue)
+                    _tracePatternReadsCount++;
+            }
 
             if (offset >= 0x3F00 && offset <= 0x3FFF) // Palette RAM
                 return _paletteMemory[GetPaletteRamOffsetIndex(offset)];
@@ -86,6 +118,9 @@ namespace XamariNES.PPU
         /// <param name="data">the byte to write to the specified address</param>
         public void WriteByte(int offset, byte data)
         {
+            // PPU address bus is 14-bit; $4000+ mirrors back into $0000-$3FFF.
+            offset &= 0x3FFF;
+
             if (offset < 0x2000)
             {
                 if (_memoryMapper is IPpuMemoryMapper ppuMapper)
@@ -156,7 +191,7 @@ namespace XamariNES.PPU
                     if (index >= 0x800) index -= 0x800;
                     break;
                 case enumNametableMirroring.Horizontal:
-                    if (index > 0x800) index = (index - 0x800) % 0x400 + 0x400; // In the 2 B regions
+                    if (index >= 0x800) index = (index - 0x800) % 0x400 + 0x400; // In the 2 B regions
                     else index %= 0x400; // In one of the 2 A regions
                     break;
                 case enumNametableMirroring.SingleLower:
@@ -169,6 +204,26 @@ namespace XamariNES.PPU
                     throw new ArgumentOutOfRangeException();
             }
             return index;
+        }
+
+        private static int ParseTraceLimit(string envName, int fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+
+            return int.TryParse(raw.Trim(), out int value)
+                ? (value <= 0 ? int.MaxValue : value)
+                : fallback;
+        }
+
+        private static long ParseTraceStartCycle(string envName)
+        {
+            string raw = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(raw))
+                return long.MinValue;
+
+            return long.TryParse(raw.Trim(), out long value) ? value : long.MinValue;
         }
     }
 }

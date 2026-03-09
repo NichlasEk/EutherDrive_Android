@@ -1,6 +1,8 @@
 using System;
 using System.IO;
 using System.Globalization;
+using System.Reflection;
+using System.Text;
 using XamariNES.Cartridge;
 using XamariNES.Controller;
 using XamariNES.Controller.Enums;
@@ -44,12 +46,18 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
     private readonly bool _traceFramePc =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_FRAME_PC"), "1", StringComparison.Ordinal);
     private readonly int _traceFramePcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_FRAME_PC_LIMIT", 1200);
+    private readonly long _traceFramePcStartFrame = ParseIntEnv("EUTHERDRIVE_TRACE_NES_FRAME_PC_START_FRAME", 0, minValue: 0);
     private int _traceFramePcCount;
+    private readonly string? _traceFramePcFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_FRAME_PC_FILE");
     private readonly bool _disableApuIrqWire =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_DISABLE_APU_IRQ_WIRE"), "1", StringComparison.Ordinal);
     private readonly bool _disableNmiWire =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_DISABLE_NMI_WIRE"), "1", StringComparison.Ordinal);
-    private readonly int _nmiInstructionDelay = ParseTraceLimit("EUTHERDRIVE_NES_NMI_INSTR_DELAY", 1);
+    private readonly bool _traceOamDma =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_OAM_DMA"), "1", StringComparison.Ordinal);
+    private readonly int _traceOamDmaLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_OAM_DMA_LIMIT", 64);
+    private int _traceOamDmaCount;
+    private readonly int _nmiInstructionDelay = ParseIntEnv("EUTHERDRIVE_NES_NMI_INSTR_DELAY", 1, minValue: 0);
     private int _pendingNmiDelayCounter = -1;
 
     public string? RomSummary => _romSummary;
@@ -138,6 +146,8 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
                 _ppu.Tick();
             }
 
+            _cpu.CPUMemory.FlushDeferredWrites();
+
             if (_ppu.NMI)
             {
                 _ppu.NMI = false;
@@ -196,15 +206,35 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
                 ConvertFrameBuffer(_ppu.FrameBuffer, _frameBuffer);
                 _ppu.FrameReady = false;
                 _frameCounter++;
-                if (_traceFramePc && _traceFramePcCount < _traceFramePcLimit)
+                if (_traceFramePc &&
+                    _frameCounter >= _traceFramePcStartFrame &&
+                    _traceFramePcCount < _traceFramePcLimit)
                 {
                     bool mapperIrqNow = _irqProvider != null && _irqProvider.IrqPending;
                     bool apuIrqNow = _apu != null && _apu.IrqPending;
                     byte op = _cpu.CPUMemory.ReadByte(_cpu.PC);
                     byte b1 = _cpu.CPUMemory.ReadByte((_cpu.PC + 1) & 0xFFFF);
                     byte b2 = _cpu.CPUMemory.ReadByte((_cpu.PC + 2) & 0xFFFF);
-                    Console.WriteLine(
-                        $"[NES-FRAME] frame={_frameCounter} pc=0x{_cpu.PC:X4} op={op:X2} b1={b1:X2} b2={b2:X2} A={_cpu.A:X2} X={_cpu.X:X2} Y={_cpu.Y:X2} SP={_cpu.SP:X2} P={_cpu.Status.ToByte():X2} mapper_irq={(mapperIrqNow ? 1 : 0)} apu_irq={(apuIrqNow ? 1 : 0)} I={( _cpu.Status.InterruptDisable ? 1 : 0)}");
+                    string line =
+                        $"[NES-FRAME] frame={_frameCounter} pc=0x{_cpu.PC:X4} op={op:X2} b1={b1:X2} b2={b2:X2} A={_cpu.A:X2} X={_cpu.X:X2} Y={_cpu.Y:X2} SP={_cpu.SP:X2} P={_cpu.Status.ToByte():X2} mapper_irq={(mapperIrqNow ? 1 : 0)} apu_irq={(apuIrqNow ? 1 : 0)} I={(_cpu.Status.InterruptDisable ? 1 : 0)}";
+                    if (!string.IsNullOrWhiteSpace(_traceFramePcFile))
+                    {
+                        try
+                        {
+                            string? directory = Path.GetDirectoryName(_traceFramePcFile);
+                            if (!string.IsNullOrEmpty(directory))
+                                Directory.CreateDirectory(directory);
+                            File.AppendAllText(_traceFramePcFile, line + Environment.NewLine);
+                        }
+                        catch
+                        {
+                            Console.WriteLine(line);
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine(line);
+                    }
                     if (_traceFramePcCount != int.MaxValue)
                         _traceFramePcCount++;
                 }
@@ -232,6 +262,25 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         sampleRate = _apu != null ? _apu.SampleRate : 44100;
         channels = 2;
         return _audioBuffer;
+    }
+
+    public string CaptureDebugSnapshot(string? directory = null)
+    {
+        string dir = directory ?? Path.Combine(Directory.GetCurrentDirectory(), "logs");
+        Directory.CreateDirectory(dir);
+
+        string prefix = $"nes_{DateTime.UtcNow:yyyyMMdd_HHmmss}";
+        if (_ppu != null)
+        {
+            DumpPpuRange(Path.Combine(dir, $"{prefix}_pattern.bin"), 0x0000, 0x2000);
+            DumpPpuRange(Path.Combine(dir, $"{prefix}_nametables.bin"), 0x2000, 0x1000);
+            DumpPpuRange(Path.Combine(dir, $"{prefix}_palette.bin"), 0x3F00, 0x20);
+            DumpPrivateByteArray(_ppu, "_oamData", Path.Combine(dir, $"{prefix}_oam.bin"));
+        }
+
+        DumpMapperBinaryRegions(dir, prefix);
+        File.WriteAllText(Path.Combine(dir, $"{prefix}_mapper.txt"), BuildMapperDebugReport());
+        return prefix;
     }
 
     public void SetMasterVolumePercent(int percent)
@@ -369,9 +418,21 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         if (_cpu == null)
             return oam;
 
+        byte[] preview = _traceOamDma && _traceOamDmaCount < _traceOamDmaLimit ? new byte[8] : Array.Empty<byte>();
         for (int i = 0; i < 256; i++)
         {
-            oam[(oamOffset + i) % 256] = _cpu.CPUMemory.ReadByte(offset + i);
+            byte value = _cpu.CPUMemory.ReadByte(offset + i);
+            oam[(oamOffset + i) % 256] = value;
+            if (i < preview.Length)
+                preview[i] = value;
+        }
+
+        if (_traceOamDma && _traceOamDmaCount < _traceOamDmaLimit)
+        {
+            Console.WriteLine(
+                $"[NES-OAMDMA] frame={_frameCounter} pc=0x{_cpu.PC:X4} src=0x{offset:X4} oamAddr=0x{oamOffset:X2} bytes={BitConverter.ToString(preview)}");
+            if (_traceOamDmaCount != int.MaxValue)
+                _traceOamDmaCount++;
         }
 
         _cpuIdleCycles = 513;
@@ -421,6 +482,104 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         }
     }
 
+    private void DumpPpuRange(string path, int startAddress, int length)
+    {
+        if (_ppu == null)
+            return;
+
+        byte[] data = new byte[length];
+        for (int i = 0; i < length; i++)
+            data[i] = _ppu.PPUMemory.ReadByte((startAddress + i) & 0x3FFF);
+
+        File.WriteAllBytes(path, data);
+    }
+
+    private string BuildMapperDebugReport()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"rom={_romPath ?? string.Empty}");
+        sb.AppendLine($"frame={_frameCounter}");
+        if (_ppu != null)
+        {
+            Type ppuType = _ppu.GetType();
+            AppendField(sb, _ppu, ppuType, "_registerPPUCTRL");
+            AppendField(sb, _ppu, ppuType, "_registerPPUMASK");
+            AppendField(sb, _ppu, ppuType, "_registerPPUSTATUS");
+            AppendField(sb, _ppu, ppuType, "_registerPPUADDR");
+            AppendField(sb, _ppu, ppuType, "_registerPPUSCROLL");
+            AppendField(sb, _ppu, ppuType, "_X");
+        }
+
+        if (_cartridge?.MemoryMapper == null)
+            return sb.ToString();
+
+        object mapper = _cartridge.MemoryMapper;
+        Type type = mapper.GetType();
+        sb.AppendLine($"mapperType={type.FullName}");
+        sb.AppendLine($"nametableMirroring={_cartridge.MemoryMapper.NametableMirroring}");
+        AppendField(sb, mapper, type, "_bankSelect");
+        AppendField(sb, mapper, type, "_prgMode");
+        AppendField(sb, mapper, type, "_chrMode");
+        AppendField(sb, mapper, type, "_irqLatch");
+        AppendField(sb, mapper, type, "_irqCounter");
+        AppendField(sb, mapper, type, "_irqReload");
+        AppendField(sb, mapper, type, "_irqEnabled");
+        AppendField(sb, mapper, type, "_irqPending");
+        AppendField(sb, mapper, type, "_isTqrom");
+        AppendArrayField(sb, mapper, type, "_bankRegs");
+        AppendArrayField(sb, mapper, type, "_tqromChrRam", 64);
+        return sb.ToString();
+    }
+
+    private void DumpMapperBinaryRegions(string dir, string prefix)
+    {
+        if (_cartridge?.MemoryMapper == null)
+            return;
+
+        object mapper = _cartridge.MemoryMapper;
+        Type type = mapper.GetType();
+        FieldInfo? tqromChrRamField = type.GetField("_tqromChrRam", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (tqromChrRamField?.GetValue(mapper) is byte[] tqromChrRam && tqromChrRam.Length != 0)
+            File.WriteAllBytes(Path.Combine(dir, $"{prefix}_tqrom_chr_ram.bin"), tqromChrRam);
+    }
+
+    private static void DumpPrivateByteArray(object instance, string fieldName, string path)
+    {
+        Type type = instance.GetType();
+        FieldInfo? field = type.GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field?.GetValue(instance) is byte[] data && data.Length != 0)
+            File.WriteAllBytes(path, data);
+    }
+
+    private static void AppendField(StringBuilder sb, object instance, Type type, string fieldName)
+    {
+        FieldInfo? field = type.GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field == null)
+            return;
+
+        sb.AppendLine($"{fieldName}={FormatDebugValue(field.GetValue(instance))}");
+    }
+
+    private static void AppendArrayField(StringBuilder sb, object instance, Type type, string fieldName, int previewBytes = -1)
+    {
+        FieldInfo? field = type.GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field?.GetValue(instance) is not Array array)
+            return;
+
+        sb.AppendLine($"{fieldName}.length={array.Length}");
+        if (array is byte[] bytes)
+        {
+            int count = previewBytes >= 0 ? Math.Min(previewBytes, bytes.Length) : bytes.Length;
+            sb.AppendLine($"{fieldName}.preview={BitConverter.ToString(bytes, 0, count)}");
+            return;
+        }
+
+        var items = new string[array.Length];
+        for (int i = 0; i < array.Length; i++)
+            items[i] = FormatDebugValue(array.GetValue(i));
+        sb.AppendLine($"{fieldName}=[{string.Join(", ", items)}]");
+    }
+
     private static void ConvertFrameBuffer(byte[] src, byte[] dst)
     {
         int count = DefaultWidth * DefaultHeight;
@@ -446,6 +605,37 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
             return fallback;
         return value <= 0 ? int.MaxValue : value;
+    }
+
+    private static int ParseIntEnv(string name, int fallback, int minValue = int.MinValue, int maxValue = int.MaxValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+            return fallback;
+        if (value < minValue)
+            return minValue;
+        if (value > maxValue)
+            return maxValue;
+        return value;
+    }
+
+    private static string FormatDebugValue(object? value)
+    {
+        return value switch
+        {
+            null => "<null>",
+            byte b => $"0x{b:X2}",
+            sbyte sb => $"0x{(byte)sb:X2}",
+            ushort us => $"0x{us:X4}",
+            short s => $"0x{(ushort)s:X4}",
+            uint ui => $"0x{ui:X8}",
+            int i => $"0x{i:X8}",
+            long l => $"0x{l:X16}",
+            bool flag => flag ? "1" : "0",
+            _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? value.ToString() ?? string.Empty,
+        };
     }
 
     private static string BuildRomSummary(string path, byte[] data)

@@ -9,7 +9,7 @@ namespace XamariNES.Cartridge.Mappers.impl
     ///
     ///     More Info: https://www.nesdev.org/wiki/MMC3
     /// </summary>
-    public class MMC3 : MapperBase, IMapper, IMapperIrqProvider, IPpuA12Observer, IMapperScanlineCounter, ISaveRamProvider
+    public class MMC3 : MapperBase, IMapper, IMapperOpenBusRead, IMapperIrqProvider, IPpuA12Observer, IMapperScanlineCounter, ISaveRamProvider
     {
         [NonSerialized]
         private readonly byte[] _prgRom;
@@ -23,7 +23,6 @@ namespace XamariNES.Cartridge.Mappers.impl
         private readonly byte[] _tqromChrRam;
         private readonly int _prgBankCount8k;
         private readonly int _chrBankCount1k;
-
         private byte _bankSelect;
         private readonly byte[] _bankRegs = new byte[8];
         private bool _prgMode;
@@ -38,7 +37,32 @@ namespace XamariNES.Cartridge.Mappers.impl
         private bool _irqPending;
         private bool _lastA12;
         private long _lastA12LowCycle = -100000;
-        private readonly bool _useScanlineClock = true;
+        private readonly bool _useScanlineClock;
+        [NonSerialized]
+        private readonly bool _traceTqromChrRamWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_TQROM_CHR_RAM"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceTqromChrRamWritesLimit = 4000;
+        [NonSerialized]
+        private int _traceTqromChrRamWritesCount;
+        [NonSerialized]
+        private readonly bool _traceMmc3Banks =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_MMC3_BANKS"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceMmc3BanksLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_MMC3_BANKS_LIMIT", 512);
+        [NonSerialized]
+        private int _traceMmc3BanksCount;
+        [NonSerialized]
+        private readonly bool _traceTqromChrReads =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_TQROM_CHR_READS"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceTqromChrReadsLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_TQROM_CHR_READS_LIMIT", 2048);
+        [NonSerialized]
+        private readonly long _traceTqromChrReadsStartCycle = ParseTraceStartCycle("EUTHERDRIVE_TRACE_NES_TQROM_CHR_READS_START_CYCLE");
+        [NonSerialized]
+        private int _traceTqromChrReadsCount;
+        [NonSerialized]
+        private long _lastPpuCycleObserved = long.MinValue;
 
         public enumNametableMirroring NametableMirroring { get; set; }
 
@@ -55,8 +79,20 @@ namespace XamariNES.Cartridge.Mappers.impl
             _prgRam = new byte[Math.Max(1, prgRamSize)];
             _prgBankCount8k = Math.Max(1, _prgRom.Length / 0x2000);
             _chrBankCount1k = Math.Max(1, _chrRom.Length / 0x0400);
+            _useScanlineClock = !_isTqrom;
             NametableMirroring = mirroring;
             BatteryBacked = batteryBacked;
+        }
+
+        public byte ReadByte(int offset, byte cpuOpenBus)
+        {
+            if (offset >= 0x4020 && offset <= 0x5FFF)
+                return cpuOpenBus;
+
+            if (offset >= 0x6000 && offset <= 0x7FFF && !_prgRamEnabled)
+                return cpuOpenBus;
+
+            return ReadByte(offset);
         }
 
         public byte ReadByte(int offset)
@@ -67,6 +103,7 @@ namespace XamariNES.Cartridge.Mappers.impl
                 {
                     int rawBank = ResolveChrBankRaw(offset);
                     int bankOffset = offset & 0x03FF;
+                    TraceTqromChrRead(offset, rawBank, bankOffset);
                     if ((rawBank & 0x40) != 0)
                     {
                         int ramBank = rawBank & 0x07;
@@ -112,6 +149,12 @@ namespace XamariNES.Cartridge.Mappers.impl
                     if ((rawBank & 0x40) == 0)
                         return; // CHR ROM selected
 
+                    if (_traceTqromChrRamWrites && _traceTqromChrRamWritesCount < _traceTqromChrRamWritesLimit && data != 0)
+                    {
+                        Console.WriteLine($"[NES-TQROM-RAM] {DebugTraceContext.FormatCpu()} ppu=0x{offset:X4} raw=0x{rawBank:X2} data=0x{data:X2}");
+                        if (_traceTqromChrRamWritesCount != int.MaxValue)
+                            _traceTqromChrRamWritesCount++;
+                    }
                     int bankOffset = offset & 0x03FF;
                     int ramBank = rawBank & 0x07;
                     _tqromChrRam[(ramBank * 0x0400) + bankOffset] = data;
@@ -131,6 +174,11 @@ namespace XamariNES.Cartridge.Mappers.impl
                     currentWriteInterceptor(offset, data);
                 return;
             }
+
+            // Cartridge expansion area ($4020-$5FFF) is mapper/board-specific.
+            // Treat unmapped writes as no-op instead of throwing.
+            if (offset >= 0x4020 && offset <= 0x5FFF)
+                return;
 
             if (offset >= 0x6000 && offset <= 0x7FFF)
             {
@@ -163,21 +211,25 @@ namespace XamariNES.Cartridge.Mappers.impl
                     _bankSelect = data;
                     _prgMode = data.IsBitSet(6);
                     _chrMode = data.IsBitSet(7);
+                    TraceMmc3BankWrite(offset, data, "sel");
                     break;
                 case 0x8001:
                 {
                     int reg = _bankSelect & 0x07;
                     _bankRegs[reg] = data;
+                    TraceMmc3BankWrite(offset, data, $"r{reg}");
                     break;
                 }
                 case 0xA000:
                     NametableMirroring = data.IsBitSet(0)
                         ? enumNametableMirroring.Horizontal
                         : enumNametableMirroring.Vertical;
+                    TraceMmc3BankWrite(offset, data, "mir");
                     break;
                 case 0xA001:
                     _prgRamWriteProtect = data.IsBitSet(6);
                     _prgRamEnabled = data.IsBitSet(7);
+                    TraceMmc3BankWrite(offset, data, "ram");
                     break;
                 case 0xC000:
                     _irqLatch = data;
@@ -272,6 +324,7 @@ namespace XamariNES.Cartridge.Mappers.impl
 
         public void NotifyPpuA12(int ppuAddress, long ppuCycle)
         {
+            _lastPpuCycleObserved = ppuCycle;
             if (_useScanlineClock)
                 return;
             UpdateA12(ppuAddress, ppuCycle);
@@ -280,32 +333,24 @@ namespace XamariNES.Cartridge.Mappers.impl
         private void UpdateA12(int ppuAddress, long ppuCycle)
         {
             bool a12 = (ppuAddress & 0x1000) != 0;
-            if (!a12)
+            if (!a12 && _lastA12)
                 _lastA12LowCycle = ppuCycle;
 
-            if (!_lastA12 && a12)
-            {
-                if (ppuCycle - _lastA12LowCycle >= 12)
-                {
-                    if (_irqCounter == 0 || _irqReload)
-                    {
-                        _irqCounter = _irqLatch;
-                        _irqReload = false;
-                    }
-                    else
-                    {
-                        _irqCounter--;
-                    }
-
-                    if (_irqCounter == 0 && _irqEnabled)
-                        _irqPending = true;
-                }
-            }
+            if (!_lastA12 && a12 && ppuCycle - _lastA12LowCycle >= 12)
+                ClockIrqCounter();
 
             _lastA12 = a12;
         }
 
         public void ClockScanline()
+        {
+            if (!_useScanlineClock)
+                return;
+
+            ClockIrqCounter();
+        }
+
+        private void ClockIrqCounter()
         {
             if (_irqCounter == 0 || _irqReload)
             {
@@ -328,6 +373,50 @@ namespace XamariNES.Cartridge.Mappers.impl
         public void ClearSaveRamDirty()
         {
             _saveRamDirty = false;
+        }
+
+        private void TraceMmc3BankWrite(int offset, byte data, string kind)
+        {
+            if (!_traceMmc3Banks || _traceMmc3BanksCount >= _traceMmc3BanksLimit)
+                return;
+
+            Console.WriteLine(
+                $"[NES-MMC3] {DebugTraceContext.FormatCpu()} kind={kind} addr=0x{offset:X4} data=0x{data:X2} chrMode={(_chrMode ? 1 : 0)} prgMode={(_prgMode ? 1 : 0)} regs={_bankRegs[0]:X2},{_bankRegs[1]:X2},{_bankRegs[2]:X2},{_bankRegs[3]:X2},{_bankRegs[4]:X2},{_bankRegs[5]:X2},{_bankRegs[6]:X2},{_bankRegs[7]:X2}");
+            if (_traceMmc3BanksCount != int.MaxValue)
+                _traceMmc3BanksCount++;
+        }
+
+        private void TraceTqromChrRead(int offset, int rawBank, int bankOffset)
+        {
+            if (!_traceTqromChrReads ||
+                _lastPpuCycleObserved < _traceTqromChrReadsStartCycle ||
+                _traceTqromChrReadsCount >= _traceTqromChrReadsLimit)
+                return;
+
+            Console.WriteLine(
+                $"[NES-TQROM-READ] {DebugTraceContext.FormatCpu()} ppu=0x{offset:X4} cycle={_lastPpuCycleObserved} raw=0x{rawBank:X2} slot={(offset >> 10) & 0x07} offs=0x{bankOffset:X3} src={(((rawBank & 0x40) != 0) ? "ram" : "rom")} chrMode={(_chrMode ? 1 : 0)} regs={_bankRegs[0]:X2},{_bankRegs[1]:X2},{_bankRegs[2]:X2},{_bankRegs[3]:X2},{_bankRegs[4]:X2},{_bankRegs[5]:X2}");
+            if (_traceTqromChrReadsCount != int.MaxValue)
+                _traceTqromChrReadsCount++;
+        }
+
+        private static int ParseTraceLimit(string envName, int fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+
+            return int.TryParse(raw.Trim(), out int value)
+                ? (value <= 0 ? int.MaxValue : value)
+                : fallback;
+        }
+
+        private static long ParseTraceStartCycle(string envName)
+        {
+            string raw = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(raw))
+                return long.MinValue;
+
+            return long.TryParse(raw.Trim(), out long value) ? value : long.MinValue;
         }
     }
 }

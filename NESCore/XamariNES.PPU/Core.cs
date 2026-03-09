@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using XamariNES.Cartridge.Mappers;
 using XamariNES.Common.Extensions;
@@ -29,6 +30,7 @@ namespace XamariNES.PPU
         private byte _X; // Fine X scroll (3 bits)
         private byte _writeOrderToggle;
         private byte _frameOrderToggle;
+        private byte _spriteZeroHitDelay;
 
         //PPU Registers
         //More Info: https://wiki.nesdev.com/w/index.php/PPU_registers
@@ -60,6 +62,8 @@ namespace XamariNES.PPU
         private byte[] _oamData;
         private readonly byte[] _sprites;
         private readonly int[] _spriteIndices;
+        private readonly byte[] _spritePatternLow;
+        private readonly byte[] _spritePatternHigh;
         private int _spriteIndex;
         private int _countedSprites; //Sprites Counted During Evaluation
 
@@ -99,6 +103,30 @@ namespace XamariNES.PPU
 
         [NonSerialized]
         private readonly IMapper _memoryMapper;
+        [NonSerialized]
+        private readonly bool _tracePpuDataWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_PPU_DATA_WRITES"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly bool _tracePpuDataWritesNonZeroOnly =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_PPU_DATA_ALL"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _tracePpuDataWritesLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_PPU_DATA_WRITES_LIMIT", 4000);
+        [NonSerialized]
+        private int _tracePpuDataWritesCount;
+        [NonSerialized]
+        private readonly bool _traceSpriteZeroHit =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_SPRITE0_HIT"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceSpriteZeroHitLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_SPRITE0_HIT_LIMIT", 256);
+        [NonSerialized]
+        private int _traceSpriteZeroHitCount;
+        [NonSerialized]
+        private readonly bool _traceSpriteZeroEval =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_SPRITE0_EVAL"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceSpriteZeroEvalLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_NES_SPRITE0_EVAL_LIMIT", 256);
+        [NonSerialized]
+        private int _traceSpriteZeroEvalCount;
 
         /// <summary>
         ///     PPU Constructor
@@ -112,6 +140,8 @@ namespace XamariNES.PPU
             _oamData = new byte[256];
             _sprites = new byte[32];
             _spriteIndices = new int[8];
+            _spritePatternLow = new byte[8];
+            _spritePatternHigh = new byte[8];
 
             PPUMemory = new Memory(memoryMapper);
 
@@ -203,16 +233,17 @@ namespace XamariNES.PPU
             {
                 UpdatePPUSTATUSRegister(value);
 
-                _registerPPUADDR = value;
                 if (_writeOrderToggle == 0)
                 {
-                    _registerPPUSCROLL = (_registerPPUSCROLL & 0x00FF) | (value << 8);
+                    // PPUADDR high write uses only 6 bits (bits 8-13 of t).
+                    _registerPPUSCROLL = (_registerPPUSCROLL & 0x00FF) | ((value & 0x3F) << 8);
                     _writeOrderToggle = 1;
                 }
                 else
                 {
                     _registerPPUSCROLL = (_registerPPUSCROLL & 0xFF00) | value;
-                    _registerPPUADDR = _registerPPUSCROLL;
+                    _registerPPUADDR = _registerPPUSCROLL & 0x7FFF;
+                    TracePpuData($"[NES-PPU-ADDR] addr=0x{(_registerPPUADDR & 0x3FFF):X4}");
                     _writeOrderToggle = 0;
                 }
             }, 0x2006);
@@ -223,11 +254,12 @@ namespace XamariNES.PPU
                 if (memoryMapper is IPpuDataObserver dataObserver)
                     dataObserver.OnPpuDataAccess();
 
-                var data = PPUMemory.ReadByte(_registerPPUADDR);
+                int ppuAddr = _registerPPUADDR & 0x3FFF;
+                var data = PPUMemory.ReadByte(ppuAddr);
 
                 // Buffered read emulation
                 // https://wiki.nesdev.com/w/index.php/PPU_registers#The_PPUDATA_read_buffer_.28post-fetch.29
-                if (_registerPPUADDR < 0x3F00)
+                if (ppuAddr < 0x3F00)
                 {
                     var bufferedData = _registerPPUDATABuffer;
                     _registerPPUDATABuffer = data;
@@ -235,14 +267,14 @@ namespace XamariNES.PPU
                 }
                 else
                 {
-                    _registerPPUDATABuffer = PPUMemory.ReadByte(_registerPPUADDR - 0x1000);
+                    _registerPPUDATABuffer = PPUMemory.ReadByte((ppuAddr - 0x1000) & 0x3FFF);
                 }
 
-                //Increment PPU VRAM Address depending on VRAMAddressIncrement Flag
                 _registerPPUADDR +=
                     _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.VRAMAddressIncrement)
                         ? 32
                         : 1;
+                _registerPPUADDR &= 0x7FFF;
 
                 return data;
 
@@ -256,13 +288,16 @@ namespace XamariNES.PPU
                 if (memoryMapper is IPpuDataObserver dataObserver)
                     dataObserver.OnPpuDataAccess();
 
-                PPUMemory.WriteByte(_registerPPUADDR, value);
+                int ppuAddr = _registerPPUADDR & 0x3FFF;
+                if (!_tracePpuDataWritesNonZeroOnly || value != 0)
+                    TracePpuData($"[NES-PPU-DATA] addr=0x{ppuAddr:X4} data=0x{value:X2}");
+                PPUMemory.WriteByte(ppuAddr, value);
 
-                //Increment PPU VRAM Address depending on VRAMAddressIncrement Flag
                 _registerPPUADDR +=
                     _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.VRAMAddressIncrement)
                         ? 32
                         : 1;
+                _registerPPUADDR &= 0x7FFF;
 
             }, 0x2007);
 
@@ -275,6 +310,18 @@ namespace XamariNES.PPU
                 }, 0x4014);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void TracePpuData(string message)
+        {
+            if (!_tracePpuDataWrites || _tracePpuDataWritesCount >= _tracePpuDataWritesLimit)
+                return;
+
+            Console.WriteLine(
+                $"{message} {DebugTraceContext.FormatCpu()} scanline={_currentScanline} dot={_currentCycle} mask=0x{_registerPPUMASK:X2}");
+            if (_tracePpuDataWritesCount != int.MaxValue)
+                _tracePpuDataWritesCount++;
+        }
+
         /// <summary>
         ///     Resets the PPU and internal values to a startup state
         /// </summary>
@@ -285,6 +332,8 @@ namespace XamariNES.PPU
             Array.Clear(_oamData, 0, _oamData.Length);
             Array.Clear(_sprites, 0, _sprites.Length);
             Array.Clear(_spriteIndices, 0, _spriteIndices.Length);
+            Array.Clear(_spritePatternLow, 0, _spritePatternLow.Length);
+            Array.Clear(_spritePatternHigh, 0, _spritePatternHigh.Length);
 
             //Clear PPU Memory
             PPUMemory.Reset();
@@ -297,8 +346,8 @@ namespace XamariNES.PPU
             _registerPPUADDR = 0;
             _registerPPUSCROLL = 0;
             _registerPPUDATABuffer = 0;
+            _spriteZeroHitDelay = 0;
 
-            //Set Startup Status
             _registerPPUSTATUS |= PPUStatusFlags.VerticalBlankStarted;
             _currentCycle = 340;
             _currentScanline = 240;
@@ -310,6 +359,14 @@ namespace XamariNES.PPU
         public void Tick()
         {
             UpdateInternalCounters();
+            DebugTraceContext.SetPpu(_currentScanline, _currentCycle);
+
+            if (_spriteZeroHitDelay != 0)
+            {
+                _spriteZeroHitDelay--;
+                if (_spriteZeroHitDelay == 0)
+                    _registerPPUSTATUS |= PPUStatusFlags.SpriteZeroHit;
+            }
 
             //---------------------------------
             // Set our Current Scan Line Status
@@ -350,6 +407,7 @@ namespace XamariNES.PPU
                     _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.VerticalBlankStarted);
                     _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.SpriteOverflow);
                     _registerPPUSTATUS = _registerPPUSTATUS.RemoveFlag(PPUStatusFlags.SpriteZeroHit);
+                    _spriteZeroHitDelay = 0;
                 }
             }
             else if (_currentCycle >= 321 && _currentCycle <= 336)
@@ -358,16 +416,27 @@ namespace XamariNES.PPU
             if (_cycleState.IsFlagSet(CycleStateFlags.Visible) || _cycleState.IsFlagSet(CycleStateFlags.Prefetch))
                 _cycleState |= CycleStateFlags.Fetch;
 
-            //------------------------------------
-            // If we're not rendering anything this cycle, we're done for now
-            //------------------------------------
-            if (!_registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowSprites) &&
-                !_registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowBackground)) return;
+            bool renderingEnabled =
+                _registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowSprites) ||
+                _registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowBackground);
+
+            if (!renderingEnabled)
+            {
+                if (_scanLineState.IsFlagSet(ScanLineStateFlags.Visible) &&
+                    _cycleState.IsFlagSet(CycleStateFlags.Visible))
+                {
+                    // With rendering disabled, the PPU outputs the universal backdrop color.
+                    FrameBuffer[(_currentScanline * MaxWidth) + (_currentCycle - 1)] = PPUMemory.ReadByte(0x3F00);
+                }
+
+                return;
+            }
 
             //We evaluate Sprites on cycle # 257
             if (_currentCycle == 257)
             {
-                if (_scanLineState.IsFlagSet(ScanLineStateFlags.Visible))
+                if (_scanLineState.IsFlagSet(ScanLineStateFlags.Visible) ||
+                    _scanLineState.IsFlagSet(ScanLineStateFlags.PreRender))
                     EvalSprites();
                 else
                     _countedSprites = 0;
@@ -440,8 +509,6 @@ namespace XamariNES.PPU
 
             if (_currentCycle == 1 && _memoryMapper is IPpuScanlineObserver scanlineObserver)
             {
-                bool renderingEnabled = _registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowSprites) ||
-                                        _registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowBackground);
                 scanlineObserver.OnPpuScanline(_currentScanline, renderingEnabled);
             }
 
@@ -456,10 +523,12 @@ namespace XamariNES.PPU
             if (_currentCycle == 257 && (_scanLineState.IsFlagSet(ScanLineStateFlags.Visible) ||
                                          _scanLineState.IsFlagSet(ScanLineStateFlags.PreRender)))
                 _registerPPUADDR = (_registerPPUADDR & 0x7BE0) | (_registerPPUSCROLL & 0x041F);
+            _registerPPUADDR &= 0x7FFF;
 
             // Copy vertical position data from t to v repeatedly from cycle 280 to 304 (if rendering is enabled)
             if (_currentCycle >= 280 && _currentCycle <= 304 && _currentScanline == 261)
                 _registerPPUADDR = (_registerPPUADDR & 0x041F) | (_registerPPUSCROLL & 0x7BE0);
+            _registerPPUADDR &= 0x7FFF;
         }
 
         /// <summary>
@@ -469,18 +538,21 @@ namespace XamariNES.PPU
         {
             Array.Clear(_sprites, 0, _sprites.Length);
             Array.Clear(_spriteIndices, 0, _spriteIndices.Length);
+            Array.Clear(_spritePatternLow, 0, _spritePatternLow.Length);
+            Array.Clear(_spritePatternHigh, 0, _spritePatternHigh.Length);
 
             // 8x8 or 8x16 sprites
             var h = _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.SpriteSize) ? 15 : 7;
 
             _countedSprites = 0;
-            int yPos = _currentScanline;
+            // Cycle 257 evaluates sprites for the next visible scanline.
+            int targetScanline = GetNextVisibleScanline();
 
-            // Sprite evaluation starts at the current Data address and goes to the end of Data (256 bytes)
-            for (int i = _registerOAMADDR; i < 256; i += 4)
+            // During rendering, sprite evaluation walks primary OAM from the start.
+            for (int i = 0; i < 256; i += 4)
             {
                 var spriteYTop = _oamData[i];
-                var offset = yPos - spriteYTop;
+                var offset = targetScanline - spriteYTop - 1;
 
                 // If this sprite is on the next scanline, copy it to the _sprites array for rendering
                 if (offset <= h && offset >= 0)
@@ -492,7 +564,9 @@ namespace XamariNES.PPU
                     }
 
                     Array.Copy(_oamData, i, _sprites, _countedSprites * 4, 4);
-                    _spriteIndices[_countedSprites] = (i - _registerOAMADDR) / 4;
+                    _spriteIndices[_countedSprites] = i / 4;
+                    if (i == 0)
+                        TraceSpriteZeroEval(spriteYTop, _oamData[i + 1], _oamData[i + 2], _oamData[i + 3], offset);
                     _countedSprites++;
                 }
             }
@@ -580,8 +654,14 @@ namespace XamariNES.PPU
                     // Both pixels opaque, choose depending on sprite priority
 
                     // Set sprite zero hit flag
-                    if (_spriteIndices[_spriteIndex] == 0)
-                        _registerPPUSTATUS |= PPUStatusFlags.SpriteZeroHit;
+                    if (_spriteIndices[_spriteIndex] == 0 && (_currentCycle - 1) < 255)
+                    {
+                        if (_spriteZeroHitDelay == 0)
+                        {
+                            _spriteZeroHitDelay = 2;
+                            TraceSpriteZeroHit();
+                        }
+                    }
 
                     // Get sprite priority
                     var priority = (_sprites[_spriteIndex * 4 + 2] >> 5) & 1;
@@ -676,18 +756,12 @@ namespace XamariNES.PPU
         private byte GetSpritePixelData()
         {
             var xPos = _currentCycle - 1;
-            var yPos = _currentScanline - 1;
 
             _spriteIndex = 0;
 
             //Bail if the PPUMASK flags are set to not show sprites
             if (!_registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowSprites)) return 0;
             if (!_registerPPUMASK.IsFlagSet(PPUMaskFlags.ShowSpritesInLeftMost) && xPos < 8) return 0;
-
-            // 8x8 sprites all come from the same pattern table as specified by a write to PPUCTRL
-            // 8x16 sprites come from a pattern table defined in their Data data
-            var currentSpritePatternTableOffset =
-                _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.SpriteTableAddress) ? 0x1000 : 0x0000;
 
             // Get sprite pattern bitfield
             for (var i = 0; i < _countedSprites * 4; i += 4)
@@ -697,27 +771,9 @@ namespace XamariNES.PPU
                 //Check if the sprite intersects 
                 if (offset <= 7 && offset >= 0)
                 {
-                    var yOffset = yPos - _sprites[i];
-
-                    byte patternIndex;
-
-                    // Set the pattern table and index according to whether or not sprites
-                    // ar 8x8 or 8x16
-                    if (_registerPPUCTRL.IsFlagSet(PPUCtrlFlags.SpriteSize))
-                    {
-                        currentSpritePatternTableOffset = (_sprites[i + 1] & 1) * 0x1000;
-                        patternIndex = (byte) (_sprites[i + 1] & 0xFE);
-                    }
-                    else
-                    {
-                        patternIndex = _sprites[i + 1];
-                    }
-
-                    var patternAddress = currentSpritePatternTableOffset + (patternIndex * 16);
-
                     var flipHorizontal = (_sprites[i + 2] & 0x40) != 0;
-                    var flipVertical = (_sprites[i + 2] & 0x80) != 0;
-                    var colorNum = GetSpritePatternPixel(patternAddress, offset, yOffset, flipHorizontal, flipVertical);
+                    int spriteFineX = flipHorizontal ? offset : 7 - offset;
+                    var colorNum = GetSpritePatternPixel(_spritePatternLow[i / 4], _spritePatternHigh[i / 4], spriteFineX);
 
                     // Handle transparent sprites
                     if (colorNum == 0)
@@ -736,34 +792,13 @@ namespace XamariNES.PPU
         /// <summary>
         ///     Looks up the color of the Pixel at the specific location in a sprite
         /// </summary>
-        /// <param name="patternAddr">Address of the Sprite we're looking up</param>
         /// <param name="xPos">X position of the Pixel in the Sprite</param>
-        /// <param name="yPos">Y position of the Pixel in the Sprite</param>
-        /// <param name="flipHoriz">Is the Sprite flipped horizontally?</param>
-        /// <param name="flipVert">Is the Sprite flipped vertically?</param>
         /// <returns></returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        int GetSpritePatternPixel(int patternAddr, int xPos, int yPos, bool flipHoriz = false, bool flipVert = false)
+        int GetSpritePatternPixel(byte patternLow, byte patternHigh, int xPos)
         {
-            var h = _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.SpriteSize) ? 15 : 7;
-
-            // Flip x and y if needed
-            xPos = flipHoriz ? 7 - xPos : xPos;
-            yPos = flipVert ? h - yPos : yPos;
-
-            // First byte in bitfield, wrapping accordingly for y > 7 (8x16 sprites)
-            int yAddr;
-            if (yPos <= 7) yAddr = patternAddr + yPos;
-            else yAddr = patternAddr + 16 + (yPos - 8); // Go to next tile for 8x16 sprites
-
-            // Read the 2 bytes in the bitfield for the y coordinate
-            var pattern = new byte[2];
-            pattern[0] = PPUMemory.ReadByteRender(yAddr, true);
-            pattern[1] = PPUMemory.ReadByteRender(yAddr + 8, true);
-
-            // Extract correct bits based on x coordinate
-            var loBit = (pattern[0] >> (7 - xPos)) & 1;
-            var hiBit = (pattern[1] >> (7 - xPos)) & 1;
+            var loBit = (patternLow >> xPos) & 1;
+            var hiBit = (patternHigh >> xPos) & 1;
 
             return ((hiBit << 1) | loBit) & 0x03;
         }
@@ -815,6 +850,7 @@ namespace XamariNES.PPU
             {
                 _registerPPUADDR++; // Increment Coarse X
             }
+            _registerPPUADDR &= 0x7FFF;
         }
 
 
@@ -853,6 +889,7 @@ namespace XamariNES.PPU
 
                 _registerPPUADDR = (_registerPPUADDR & ~0x03E0) | (y << 5); // Put coarse Y back into v
             }
+            _registerPPUADDR &= 0x7FFF;
         }
 
         /// <summary>
@@ -892,7 +929,7 @@ namespace XamariNES.PPU
             byte tileIndex = _sprites[spriteOffset + 1];
             byte attributes = _sprites[spriteOffset + 2];
 
-            int yOffset = (_currentScanline - 1) - y;
+            int yOffset = GetNextVisibleScanline() - y - 1;
             int h = _registerPPUCTRL.IsFlagSet(PPUCtrlFlags.SpriteSize) ? 15 : 7;
             if (yOffset < 0 || yOffset > h)
             {
@@ -923,7 +960,11 @@ namespace XamariNES.PPU
             }
 
             int patternAddress = patternBase + (tileIndex * 16) + yOffset + (sub == 4 ? 8 : 0);
-            PPUMemory.ReadByteWithA12(patternAddress, Cycles);
+            byte patternByte = PPUMemory.ReadByteWithA12(patternAddress, Cycles);
+            if (sub == 2)
+                _spritePatternLow[spriteIndex] = patternByte;
+            else
+                _spritePatternHigh[spriteIndex] = patternByte;
         }
 
         /*---------------------------
@@ -943,6 +984,11 @@ namespace XamariNES.PPU
         /// <returns></returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int CoarseX() => _registerPPUADDR & 0x1f;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int GetNextVisibleScanline() => _scanLineState.IsFlagSet(ScanLineStateFlags.PreRender)
+            ? 0
+            : _currentScanline + 1;
 
         /// <summary>
         ///     Retrieve Coarse Y
@@ -972,5 +1018,40 @@ namespace XamariNES.PPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void UpdatePPUSTATUSRegister(byte value) =>
             _registerPPUSTATUS = (byte) ((_registerPPUSTATUS & 0xE0) | (value & 0x1F));
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void TraceSpriteZeroHit()
+        {
+            if (!_traceSpriteZeroHit || _traceSpriteZeroHitCount >= _traceSpriteZeroHitLimit)
+                return;
+
+            Console.WriteLine(
+                $"[NES-SPR0] {DebugTraceContext.FormatCpu()} scanline={_currentScanline} dot={_currentCycle} x={_currentCycle - 1} y={_currentScanline} spriteIndex={_spriteIndices[_spriteIndex]}");
+            if (_traceSpriteZeroHitCount != int.MaxValue)
+                _traceSpriteZeroHitCount++;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void TraceSpriteZeroEval(byte y, byte tile, byte attributes, byte x, int offset)
+        {
+            if (!_traceSpriteZeroEval || _traceSpriteZeroEvalCount >= _traceSpriteZeroEvalLimit)
+                return;
+
+            Console.WriteLine(
+                $"[NES-SPR0-EVAL] {DebugTraceContext.FormatCpu()} scanline={_currentScanline} dot={_currentCycle} y=0x{y:X2} tile=0x{tile:X2} attr=0x{attributes:X2} x=0x{x:X2} row={offset}");
+            if (_traceSpriteZeroEvalCount != int.MaxValue)
+                _traceSpriteZeroEvalCount++;
+        }
+
+        private static int ParseTraceLimit(string envName, int fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+
+            return int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
+                ? (value <= 0 ? int.MaxValue : value)
+                : fallback;
+        }
     }
 }

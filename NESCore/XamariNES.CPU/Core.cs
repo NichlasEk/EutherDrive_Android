@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text;
 using XamariNES.Cartridge.Mappers;
 using XamariNES.Common.Extensions;
 using XamariNES.Controller;
@@ -15,6 +18,12 @@ namespace XamariNES.CPU
     /// </summary>
     public class Core
     {
+        private struct TraceAddressRange
+        {
+            public int Start;
+            public int End;
+        }
+
         /// <summary>
         ///     X Index Register
         /// </summary>
@@ -74,6 +83,34 @@ namespace XamariNES.CPU
         [NonSerialized]
         private readonly bool _strictKil =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_STRICT_KIL"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _illegalStoreMode = ParseOptionalMode("EUTHERDRIVE_NES_ILLEGAL_STORE_MODE", 0);
+        [NonSerialized]
+        private readonly bool _traceUnknownOps =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_UNKNOWN_OPS"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceUnknownOpsLimit = ParseOptionalLimit("EUTHERDRIVE_TRACE_NES_UNKNOWN_OPS_LIMIT", 4000);
+        [NonSerialized]
+        private int _traceUnknownOpsCount;
+        [NonSerialized]
+        private readonly HashSet<int> _tracePcWatch = ParsePcWatch("EUTHERDRIVE_TRACE_NES_PC_WATCH");
+        [NonSerialized]
+        private readonly int _tracePcWatchLimit = ParseOptionalLimit("EUTHERDRIVE_TRACE_NES_PC_WATCH_LIMIT", 4000);
+        [NonSerialized]
+        private int _tracePcWatchCount;
+        [NonSerialized]
+        private readonly long _tracePcWatchStartCycle = ParseOptionalLong("EUTHERDRIVE_TRACE_NES_PC_WATCH_START_CYCLE", long.MinValue);
+        [NonSerialized]
+        private readonly string _tracePcWatchFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_PC_WATCH_FILE");
+        [NonSerialized]
+        private readonly List<TraceAddressRange> _tracePcWatchRamRanges = ParseAddressRanges("EUTHERDRIVE_TRACE_NES_PC_WATCH_RAM");
+        [NonSerialized]
+        private readonly bool _traceInterrupts =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_NES_INTERRUPTS"), "1", StringComparison.Ordinal);
+        [NonSerialized]
+        private readonly int _traceInterruptsLimit = ParseOptionalLimit("EUTHERDRIVE_TRACE_NES_INTERRUPTS_LIMIT", 4000);
+        [NonSerialized]
+        private int _traceInterruptsCount;
 
         /// <summary>
          ///     Used to signal the CPU that an NMI has occured
@@ -2654,28 +2691,47 @@ namespace XamariNES.CPU
         public int Tick()
         {
             CPUMemory.BeginInstruction();
+
             //Check for NMI Interrupt
             if (NMI)
             {
+                int oldPc = PC & 0xFFFF;
                 Push((ushort)PC);
                 Push(Status.ToByte());
                 PC = BitConverter.ToUInt16(new[] { CPUMemory.ReadByte(0xFFFA), CPUMemory.ReadByte(0xFFFB) }, 0);
                 Status.InterruptDisable = true;
+                TraceInterrupt("NMI", oldPc, PC & 0xFFFF);
                 NMI = false;
+                Cycles += 7;
+                return 7;
             }
             else if (IRQ && !Status.InterruptDisable)
             {
+                int oldPc = PC & 0xFFFF;
                 Push((ushort)PC);
                 Push((byte)(Status.ToByte() & 0b1110_1111));
                 PC = BitConverter.ToUInt16(new[] { CPUMemory.ReadByte(0xFFFE), CPUMemory.ReadByte(0xFFFF) }, 0);
                 Status.InterruptDisable = true;
+                TraceInterrupt("IRQ", oldPc, PC & 0xFFFF);
                 IRQ = false;
+                Cycles += 7;
+                return 7;
             }
+
+            DebugTraceContext.SetCpu(PC, Cycles);
+            TraceWatchedPc();
 
             //Decode
             byte opcode = CPUMemory.ReadByte(PC);
             if (!_cpuInstructions.TryGetValue(opcode, out CPUInstruction decoded))
             {
+                if (_traceUnknownOps && _traceUnknownOpsCount < _traceUnknownOpsLimit)
+                {
+                    Console.WriteLine(
+                        $"[NES-UNK] pc=0x{PC & 0xFFFF:X4} op=0x{opcode:X2} a=0x{A:X2} x=0x{X:X2} y=0x{Y:X2} p=0x{Status.ToByte():X2} sp=0x{SP:X2}");
+                    if (_traceUnknownOpsCount != int.MaxValue)
+                        _traceUnknownOpsCount++;
+                }
                 // Keep running on undocumented/unimplemented opcodes.
                 // Treat as 1-byte NOP for compatibility until full opcode coverage is in place.
                 PC = (PC + 1) & 0xFFFF;
@@ -3624,13 +3680,20 @@ namespace XamariNES.CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SHX()
         {
+            if (_illegalStoreMode == 1)
+            {
+                // Compatibility mode: disable unstable illegal stores.
+                return;
+            }
+
             ushort baseAddress = GetOperandWord();
             bool overflowed = ((baseAddress & 0x00FF) + Y) > 0x00FF;
             ushort address = (ushort)(baseAddress + Y);
             byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
             byte value = (byte)(X & highMask);
-            TraceIllegalStore("SHX", baseAddress, address, value, overflowed);
-            if (!overflowed)
+            bool skipped = _illegalStoreMode == 2 ? false : overflowed;
+            TraceIllegalStore("SHX", baseAddress, address, value, skipped);
+            if (!skipped)
                 CPUMemory.WriteByte(address, value);
         }
 
@@ -3640,13 +3703,20 @@ namespace XamariNES.CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SHY()
         {
+            if (_illegalStoreMode == 1)
+            {
+                // Compatibility mode: disable unstable illegal stores.
+                return;
+            }
+
             ushort baseAddress = GetOperandWord();
             bool overflowed = ((baseAddress & 0x00FF) + X) > 0x00FF;
             ushort address = (ushort)(baseAddress + X);
             byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
             byte value = (byte)(Y & highMask);
-            TraceIllegalStore("SHY", baseAddress, address, value, overflowed);
-            if (!overflowed)
+            bool skipped = _illegalStoreMode == 2 ? false : overflowed;
+            TraceIllegalStore("SHY", baseAddress, address, value, skipped);
+            if (!skipped)
                 CPUMemory.WriteByte(address, value);
         }
 
@@ -3656,6 +3726,12 @@ namespace XamariNES.CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void AHX()
         {
+            if (_illegalStoreMode == 1)
+            {
+                // Compatibility mode: disable unstable illegal stores.
+                return;
+            }
+
             ushort baseAddress;
             byte index;
 
@@ -3671,8 +3747,21 @@ namespace XamariNES.CPU
                 index = Y;
             }
 
-            // AHX/TAS are highly unstable on real hardware.
-            // Match jgenesis compatibility behavior: wrapped indexed address, read, then write same byte back.
+            if (_illegalStoreMode == 3)
+            {
+                // Alternate compatibility mode: explicit AXA-style write.
+                ushort fullAddress = (ushort)(baseAddress + index);
+                bool overflowed = ((baseAddress & 0x00FF) + index) > 0x00FF;
+                byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
+                byte explicitValue = (byte)(A & X & highMask);
+                bool skippedExplicit = overflowed;
+                TraceIllegalStore("AHX", baseAddress, fullAddress, explicitValue, skippedExplicit);
+                if (!skippedExplicit)
+                    CPUMemory.WriteByte(fullAddress, explicitValue);
+                return;
+            }
+
+            // Default mode: wrapped indexed address, read, then write same byte back.
             byte wrappedLow = (byte)(((byte)(baseAddress & 0x00FF)) + index);
             ushort address = (ushort)((baseAddress & 0xFF00) | wrappedLow);
             byte value = CPUMemory.ReadByte(address);
@@ -3687,7 +3776,25 @@ namespace XamariNES.CPU
         public void TAS()
         {
             SP = (byte)(A & X);
+            if (_illegalStoreMode == 1)
+            {
+                // Compatibility mode: disable unstable illegal stores.
+                return;
+            }
+
             ushort baseAddress = GetOperandWord();
+            if (_illegalStoreMode == 3)
+            {
+                bool overflowed = ((baseAddress & 0x00FF) + Y) > 0x00FF;
+                ushort explicitAddress = (ushort)(baseAddress + Y);
+                byte highMask = (byte)(((baseAddress >> 8) + 1) & 0xFF);
+                byte explicitValue = (byte)(SP & highMask);
+                TraceIllegalStore("TAS", baseAddress, explicitAddress, explicitValue, overflowed);
+                if (!overflowed)
+                    CPUMemory.WriteByte(explicitAddress, explicitValue);
+                return;
+            }
+
             byte wrappedLow = (byte)(((byte)(baseAddress & 0x00FF)) + Y);
             ushort address = (ushort)((baseAddress & 0xFF00) | wrappedLow);
             byte value = CPUMemory.ReadByte(address);
@@ -3712,6 +3819,26 @@ namespace XamariNES.CPU
             if (!int.TryParse(raw.Trim(), out int value))
                 return fallback;
             return value <= 0 ? int.MaxValue : value;
+        }
+
+        private static int ParseOptionalMode(string name, int fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!int.TryParse(raw.Trim(), out int value))
+                return fallback;
+            return value;
+        }
+
+        private static long ParseOptionalLong(string name, long fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            if (!long.TryParse(raw.Trim(), out long value))
+                return fallback;
+            return value;
         }
 
         /// <summary>
@@ -4001,7 +4128,7 @@ namespace XamariNES.CPU
                 case EnumAddressingMode.Absolute:
                     return GetOperandWord();
                 case EnumAddressingMode.Immediate:
-                    return PC + 1;
+                    return (PC + 1) & 0xFFFF;
                 case EnumAddressingMode.Accumulator:
                     return A;
                 case EnumAddressingMode.ZeroPage:
@@ -4023,25 +4150,22 @@ namespace XamariNES.CPU
                     }
                     return zeroPageYAddress;
                 case EnumAddressingMode.Relative:
+                    int relativeTarget = (GetOperandSByte() + PC) & 0xFFFF;
                     if (Instruction.PageBoundaryCheck)
-                        CheckBoundary(GetOperandSByte() + PC, PC);
-                    return  GetOperandSByte() + PC;
+                        CheckBoundary(relativeTarget, PC);
+                    return relativeTarget;
                 case EnumAddressingMode.AbsoluteX:
+                    int absoluteXBase = GetOperandWord();
+                    int absoluteXTarget = (absoluteXBase + X) & 0xFFFF;
                     if (Instruction.PageBoundaryCheck)
-                        CheckBoundary(GetOperandWord() + X, GetOperandWord());
-                    return  GetOperandWord() + X;
+                        CheckBoundary(absoluteXTarget, absoluteXBase);
+                    return absoluteXTarget;
                 case EnumAddressingMode.AbsoluteY:
+                    int absoluteYBase = GetOperandWord();
+                    int absoluteYTarget = (absoluteYBase + Y) & 0xFFFF;
                     if (Instruction.PageBoundaryCheck)
-                        CheckBoundary(GetOperandWord() + Y, GetOperandWord());
-
-                    var targetAbsoluteYOffset = GetOperandWord();
-                    //Check special case where 0xFFFF wraps back to 0x0000
-                    if (targetAbsoluteYOffset == 0xFFFF)
-                    {
-                        return Y - 1;
-                    }
-
-                    return targetAbsoluteYOffset + Y;
+                        CheckBoundary(absoluteYTarget, absoluteYBase);
+                    return absoluteYTarget;
                 case EnumAddressingMode.Indirect:
                     return GetWord(GetOperandWord());
                 case EnumAddressingMode.IndexedIndirect:
@@ -4053,17 +4177,11 @@ namespace XamariNES.CPU
                     }
                     return GetWord(address, true);
                 case EnumAddressingMode.IndirectIndexed:
+                    int indirectIndexedBase = GetWord(GetOperandByte(), true);
+                    int indirectIndexedTarget = (indirectIndexedBase + Y) & 0xFFFF;
                     if (Instruction.PageBoundaryCheck)
-                        CheckBoundary( GetWord(GetOperandByte(), true) + Y, GetWord(GetOperandByte(), true));
-
-                    var targetOffset = GetWord(GetOperandByte(), true);
-                    //Check special case where 0xFFFF wraps back to 0x0000
-                    if (targetOffset == 0xFFFF)
-                    {
-                        return Y-1;
-                    }
-
-                    return targetOffset + Y;
+                        CheckBoundary(indirectIndexedTarget, indirectIndexedBase);
+                    return indirectIndexedTarget;
                     
                 default:
                     throw new Exception("Unknown Addressing Mode");
@@ -4098,7 +4216,7 @@ namespace XamariNES.CPU
                     0);
             }
 
-            return BitConverter.ToUInt16(new[] { CPUMemory.ReadByte(address), CPUMemory.ReadByte(address +1) }, 0);
+            return BitConverter.ToUInt16(new[] { CPUMemory.ReadByte(address & 0xFFFF), CPUMemory.ReadByte((address + 1) & 0xFFFF) }, 0);
         }
 
         /// <summary>
@@ -4113,6 +4231,181 @@ namespace XamariNES.CPU
             {
                 return (sbyte)CPUMemory.ReadByte(address);
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void TraceWatchedPc()
+        {
+            if (_tracePcWatch.Count == 0 || _tracePcWatchCount >= _tracePcWatchLimit)
+                return;
+
+            if (Cycles < _tracePcWatchStartCycle)
+                return;
+
+            int pc = PC & 0xFFFF;
+            if (!_tracePcWatch.Contains(pc))
+                return;
+
+            byte[] ram = CPUMemory.GetInternalRam();
+            string line =
+                $"[NES-PCWATCH] pc=0x{pc:X4} cyc={Cycles} A={A:X2} X={X:X2} Y={Y:X2} SP={SP:X2} P={Status.ToByte():X2} " +
+                $"nmi={(NMI ? 1 : 0)} irq={(IRQ ? 1 : 0)} " +
+                FormatWatchedRam(ram);
+
+            if (!string.IsNullOrWhiteSpace(_tracePcWatchFile))
+            {
+                try
+                {
+                    string directory = Path.GetDirectoryName(_tracePcWatchFile);
+                    if (!string.IsNullOrEmpty(directory))
+                        Directory.CreateDirectory(directory);
+
+                    File.AppendAllText(_tracePcWatchFile, line + Environment.NewLine);
+                }
+                catch
+                {
+                    Console.WriteLine(line);
+                }
+            }
+            else
+            {
+                Console.WriteLine(line);
+            }
+
+            if (_tracePcWatchCount != int.MaxValue)
+                _tracePcWatchCount++;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void TraceInterrupt(string kind, int fromPc, int toPc)
+        {
+            if (!_traceInterrupts || _traceInterruptsCount >= _traceInterruptsLimit)
+                return;
+
+            byte[] ram = CPUMemory.GetInternalRam();
+            string line =
+                $"[NES-INT] kind={kind} from=0x{fromPc:X4} to=0x{toPc:X4} cyc={Cycles} A={A:X2} X={X:X2} Y={Y:X2} SP={SP:X2} P={Status.ToByte():X2} " +
+                FormatWatchedRam(ram);
+
+            if (!string.IsNullOrWhiteSpace(_tracePcWatchFile))
+            {
+                try
+                {
+                    string directory = Path.GetDirectoryName(_tracePcWatchFile);
+                    if (!string.IsNullOrEmpty(directory))
+                        Directory.CreateDirectory(directory);
+
+                    File.AppendAllText(_tracePcWatchFile, line + Environment.NewLine);
+                }
+                catch
+                {
+                    Console.WriteLine(line);
+                }
+            }
+            else
+            {
+                Console.WriteLine(line);
+            }
+
+            if (_traceInterruptsCount != int.MaxValue)
+                _traceInterruptsCount++;
+        }
+
+        private string FormatWatchedRam(byte[] ram)
+        {
+            if (_tracePcWatchRamRanges.Count == 0)
+            {
+                return
+                    $"zp2f={ram[0x2F]:X2} zp30={ram[0x30]:X2} zp31={ram[0x31]:X2} zp32={ram[0x32]:X2} zp34={ram[0x34]:X2} " +
+                    $"zp41={ram[0x41]:X2} zp42={ram[0x42]:X2} zp43={ram[0x43]:X2} zp44={ram[0x44]:X2} zp47={ram[0x47]:X2}";
+            }
+
+            var builder = new StringBuilder();
+            for (int i = 0; i < _tracePcWatchRamRanges.Count; i++)
+            {
+                TraceAddressRange range = _tracePcWatchRamRanges[i];
+                int start = range.Start < 0 ? 0 : range.Start;
+                int end = range.End >= ram.Length ? ram.Length - 1 : range.End;
+                if (end < start)
+                    continue;
+
+                if (builder.Length > 0)
+                    builder.Append(' ');
+
+                builder.AppendFormat(CultureInfo.InvariantCulture, "ram[{0:X4}-{1:X4}]=", start, end);
+                for (int addr = start; addr <= end; addr++)
+                {
+                    if (addr > start)
+                        builder.Append('-');
+                    builder.Append(ram[addr].ToString("X2", CultureInfo.InvariantCulture));
+                }
+            }
+
+            return builder.Length == 0
+                ? "ram=none"
+                : builder.ToString();
+        }
+
+        private static HashSet<int> ParsePcWatch(string envName)
+        {
+            string raw = Environment.GetEnvironmentVariable(envName);
+            var pcs = new HashSet<int>();
+            if (string.IsNullOrWhiteSpace(raw))
+                return pcs;
+
+            foreach (string rawPiece in raw.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string piece = rawPiece.Trim();
+                string token = piece.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? piece.Substring(2) : piece;
+                if (int.TryParse(token, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int value))
+                    pcs.Add(value & 0xFFFF);
+            }
+
+            return pcs;
+        }
+
+        private static List<TraceAddressRange> ParseAddressRanges(string envName)
+        {
+            string raw = Environment.GetEnvironmentVariable(envName);
+            var ranges = new List<TraceAddressRange>();
+            if (string.IsNullOrWhiteSpace(raw))
+                return ranges;
+
+            foreach (string rawPiece in raw.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string piece = rawPiece.Trim();
+                int dash = piece.IndexOf('-');
+                if (dash >= 0)
+                {
+                    if (TryParseAddress(piece.Substring(0, dash), out int start) &&
+                        TryParseAddress(piece.Substring(dash + 1), out int end))
+                    {
+                        if (end < start)
+                        {
+                            int temp = start;
+                            start = end;
+                            end = temp;
+                        }
+
+                        ranges.Add(new TraceAddressRange { Start = start, End = end });
+                    }
+
+                    continue;
+                }
+
+                if (TryParseAddress(piece, out int address))
+                    ranges.Add(new TraceAddressRange { Start = address, End = address });
+            }
+
+            return ranges;
+        }
+
+        private static bool TryParseAddress(string raw, out int value)
+        {
+            string token = raw.Trim();
+            if (token.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                token = token.Substring(2);
+            return int.TryParse(token, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
         }
     }
 }
