@@ -97,6 +97,8 @@ public sealed class Sa1
     [NonSerialized]
     private int _tracePcTargetRemaining;
     [NonSerialized]
+    private readonly bool _hasPcTraceHooks;
+    [NonSerialized]
     private readonly Queue<string> _tracePcTargetHistory = new(TargetHistoryLength);
     [NonSerialized]
     private int _traceBwramBlockedWritesRemaining = ParseTraceLimit("EUTHERDRIVE_TRACE_SA1_BWRAM_BLOCKS_LIMIT", 256);
@@ -139,6 +141,7 @@ public sealed class Sa1
             _tracePcTarget = targetPc;
             _tracePcTargetRemaining = ParseTraceLimit("EUTHERDRIVE_TRACE_SA1_PC_TARGET_LIMIT", 4);
         }
+        _hasPcTraceHooks = _tracePcBreakEnabled || _tracePcRangeEnabled || _tracePcTargetEnabled;
     }
 
     public byte[] Bwram => _bwram;
@@ -253,9 +256,12 @@ public sealed class Sa1
                 if (_cpu.CyclesLeft == 0)
                     FlushPendingSa1BwramWrites();
                 int pcAfter = _cpu.ProgramCounter24;
-                TracePcTargetIfNeeded(pcBefore, pcAfter);
-                TracePcRangeIfNeeded(pcBefore, pcAfter);
-                TracePcBreakIfNeeded(pcBefore, pcAfter);
+                if (_hasPcTraceHooks)
+                {
+                    TracePcTargetIfNeeded(pcBefore, pcAfter);
+                    TracePcRangeIfNeeded(pcBefore, pcAfter);
+                    TracePcBreakIfNeeded(pcBefore, pcAfter);
+                }
             }
             _bwramWaitCycles += _system.BwramWaitCycles;
             _system.BwramWaitCycles = 0;
@@ -714,7 +720,6 @@ public sealed class Sa1
             case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
                 {
                     uint iramAddr = address & 0x7FF;
-                    _registers.LogReg($"[KIRBY-DEBUG] SNES W IRAM 0x{iramAddr+0x3000:X4} val=0x{value:X2}");
                     int writeProtectIdx = (int)(iramAddr >> 8);
                     if (_registers.SnesIramWritesEnabled[writeProtectIdx])
                         _iram[(int)iramAddr] = value;
@@ -725,8 +730,6 @@ public sealed class Sa1
             case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
                 {
                     uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
-                    if (bwramAddr == 0x72A4)
-                        _registers.LogReg($"[KIRBY-DEBUG] SNES W BWRAM 0x72A4 val=0x{value:X2}");
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
                     {
                         _bwram[(int)bwramAddr] = value;
@@ -742,8 +745,6 @@ public sealed class Sa1
             case (>= 0x40 and <= 0x5F, _):
                 {
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
-                    if (bwramAddr == 0x72A4)
-                        _registers.LogReg($"[KIRBY-DEBUG] SNES W BWRAM 0x72A4 val=0x{value:X2}");
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
                     {
                         _bwram[(int)bwramAddr] = value;
@@ -887,14 +888,13 @@ public sealed class Sa1
             case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
                 {
                     uint iramAddr = address & 0x7FF;
-                    if (iramAddr == 0)
-                        _registers.LogReg($"[KIRBY-DEBUG] SA1 W IRAM 0x3000 val=0x{value:X2} PC=0x{(_cpu.ProgramBank << 16) | _cpu.ProgramCounter:X6}");
                     int writeProtectIdx = (int)(iramAddr >> 8);
                     if (_registers.Sa1IramWritesEnabled[writeProtectIdx])
                         _iram[(int)iramAddr] = value;
                     TraceSa1("W", address, value, "I-RAM", address & 0x7FF);
                     TraceIramWatch("SA1", "W", address, value, (_cpu.ProgramBank << 16) | _cpu.ProgramCounter);
-                    TraceBadDispatchPointerIfNeeded();
+                    if (_traceBadDispatchPointer)
+                        TraceBadDispatchPointerIfNeeded();
                     handled = true;
                     break;
                 }
@@ -904,8 +904,6 @@ public sealed class Sa1
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
                     uint bwramAddr = ResolveSa1BwramWindowAddress(address);
-                    if (bwramAddr == 0x72A4)
-                        _registers.LogReg($"[KIRBY-DEBUG] SA1 W BWRAM 0x72A4 val=0x{value:X2} PC=0x{(_cpu.ProgramBank << 16) | _cpu.ProgramCounter:X6}");
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
                         QueuePendingSa1BwramWrite(bwramAddr, value);
                     TraceSa1("W", address, value, "BW-RAM-WIN", bwramAddr);
@@ -922,8 +920,6 @@ public sealed class Sa1
                 bwramWait = true;
                 {
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
-                    if (bwramAddr == 0x72A4)
-                        _registers.LogReg($"[KIRBY-DEBUG] SA1 W BWRAM 0x72A4 val=0x{value:X2} PC=0x{(_cpu.ProgramBank << 16) | _cpu.ProgramCounter:X6}");
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
                         QueuePendingSa1BwramWrite(bwramAddr, value);
                     TraceSa1("W", address, value, "BW-RAM", bwramAddr);

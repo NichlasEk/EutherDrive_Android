@@ -28,6 +28,8 @@ internal sealed class Sa1Mmc
     private const uint DefaultBankDAddr = 0x100000;
     private const uint DefaultBankEAddr = 0x200000;
     private const uint DefaultBankFAddr = 0x300000;
+    private static readonly bool TraceBwramWatch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal);
 
     public uint BankCBaseAddr = DefaultBankCAddr;
     public bool BankCLoRomMapped;
@@ -95,7 +97,7 @@ internal sealed class Sa1Mmc
     public void WriteBmaps(byte value)
     {
         SnesBwramBaseAddr = (uint)(value & 0x1F) << 13;
-        if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal))
+        if (TraceBwramWatch)
         {
             Console.WriteLine($"[BMAPS] val=0x{value:X2} snes_bwram_base=0x{SnesBwramBaseAddr:X5}");
         }
@@ -105,7 +107,7 @@ internal sealed class Sa1Mmc
     {
         Sa1BwramBaseAddr = (uint)(value & 0x7F) << 13;
         Sa1BwramSource = BwramMapSourceExtensions.FromBit(value.Bit(7));
-        if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal))
+        if (TraceBwramWatch)
         {
             Console.WriteLine($"[BMAP] val=0x{value:X2} sa1_bwram_base=0x{Sa1BwramBaseAddr:X5} src={Sa1BwramSource}");
         }
