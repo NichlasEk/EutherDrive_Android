@@ -1012,7 +1012,12 @@ namespace EutherDrive.Core.MdTracerCore
             };
 
             int rate = r == 0 ? 0 : Math.Min(63, 2 * r + KeyScaleRate);
+            // Match jgenesis `11_u8.saturating_sub(rate >> 2)`.
+            // A plain subtraction here goes negative for high rates (e.g. RR=15 -> rate 63),
+            // which turns the later bit shifts into effectively random huge shifts in C#.
             int updateFrequencyShift = 11 - (rate >> 2);
+            if (updateFrequencyShift < 0)
+                updateFrequencyShift = 0;
             if ((_cycleCount & ((1 << updateFrequencyShift) - 1)) == 0)
             {
                 int incrementIdx = (_cycleCount >> updateFrequencyShift) & 7;
