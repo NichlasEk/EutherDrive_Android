@@ -213,6 +213,13 @@ class Program
                 Console.WriteLine("[HEADLESS] Using NES core");
                 var nes = new NesAdapter();
                 nes.LoadRom(romPath);
+                bool autoStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_HEADLESS_AUTO_START") == "1";
+                int autoStartDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_NES_HEADLESS_AUTO_START_DELAY_FRAMES") ?? 90;
+                int autoStartPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_NES_HEADLESS_AUTO_START_PULSE_FRAMES") ?? 2;
+                int autoStartPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_NES_HEADLESS_AUTO_START_PERIOD_FRAMES") ?? 90;
+                int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_NES_HEADLESS_AUTO_START_PULSE_COUNT") ?? 4;
+                bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_NES_HEADLESS_AUTO_START_LOG") == "1";
+                bool lastStartPressed = false;
 
                 Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
                 ReadOnlySpan<byte> fbIn = nes.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
@@ -222,6 +229,26 @@ class Program
 
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
+                    bool startPressed = autoStart &&
+                        ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount);
+                    nes.SetInputState(
+                        up: false,
+                        down: false,
+                        left: false,
+                        right: false,
+                        a: false,
+                        b: false,
+                        c: false,
+                        start: startPressed,
+                        x: false,
+                        y: false,
+                        z: false,
+                        mode: false,
+                        padType: PadType.SixButton);
+                    if (autoStartLog && startPressed != lastStartPressed)
+                        Console.WriteLine($"[HEADLESS] NES auto-start start={(startPressed ? 1 : 0)} frame={frame}");
+                    lastStartPressed = startPressed;
+
                     nes.RunFrame();
                     ReadOnlySpan<byte> fb = nes.GetFrameBuffer(out int w, out int h, out int s);
                     var stats = GetFrameStats(fb, w, h, s);

@@ -1740,9 +1740,19 @@ namespace EutherDrive.Core.MdTracerCore
             // 0xA04000–0xA04003   | YM2612 (read)
             if (in_address >= 0xA04000 && in_address <= 0xA04003)
             {
-                byte val = _ymEnabled && md_main.g_md_music != null
-                    ? md_main.g_md_music.YmRead(in_address)
-                    : (byte)0xFF;
+                byte val;
+                if (!CanAccessZ80BusRange(in_address, 1))
+                {
+                    // Match jgenesis: 68K can only see the Z80/YM window while BUSACK is active.
+                    val = (byte)(_openBus >> 8);
+                }
+                else
+                {
+                    md_main.AddM68kWaitCycles(1);
+                    val = _ymEnabled && md_main.g_md_music != null
+                        ? md_main.g_md_music.YmRead(in_address)
+                        : (byte)0xFF;
+                }
                 LogBusWatch(in_address, 1, write: false, value: val);
                 SetOpenBusFromByte(val);
                 return val;
@@ -2230,6 +2240,10 @@ namespace EutherDrive.Core.MdTracerCore
             // 0xA04000–0xA04003 YM2612
             if (in_address >= 0xA04000 && in_address <= 0xA04003)
             {
+                if (!CanAccessZ80BusRange(in_address, 1))
+                    return;
+
+                md_main.AddM68kWaitCycles(1);
                 if (_ymEnabled)
                 {
                     md_main.g_md_music?.YmWrite(in_address, in_data, "M68K");
@@ -3281,11 +3295,10 @@ namespace EutherDrive.Core.MdTracerCore
                 {
                     if (jgenesisCore)
                     {
-                        // In this integration the Z80 core does not observe RESET line transitions
-                        // unless we explicitly reset it here. QuackShot and similar drivers pulse
-                        // A11200 and expect a real Z80 reset edge.
+                        // Match jgenesis reset-line semantics: only apply the CPU-side reset-line
+                        // effects, not a full legacy register wipe.
                         md_main.BeginZ80ResetCycle();
-                        md_main.g_md_z80.reset();
+                        md_main.g_md_z80.ApplyJgenesisResetLine();
                         md_main.g_md_music?.YmFullReset();
                     }
                     else

@@ -273,6 +273,7 @@ public partial class MainWindow : Window
     private bool _segaCdRamCartEnabled;
     private bool _segaCdLoadCdToRam;
     private bool _segaCdForceNoDisc;
+    private bool _segaCdOptionsUiUpdating;
     private bool _regionOverrideUpdating;
     private bool _frameRateUpdating;
     private const string SettingsFileName = "eutherdrive_settings.toml";
@@ -2028,23 +2029,31 @@ public partial class MainWindow : Window
     private void UpdateSegaCdOptionsUi()
     {
         bool enabled = _core is EutherDrive.Core.SegaCd.SegaCdAdapter;
-        if (SegaCdRamCartCheck != null)
+        _segaCdOptionsUiUpdating = true;
+        try
         {
-            SegaCdRamCartCheck.IsEnabled = enabled;
-            SegaCdRamCartCheck.IsChecked = enabled && _segaCdRamCartEnabled;
+            if (SegaCdRamCartCheck != null)
+            {
+                SegaCdRamCartCheck.IsEnabled = enabled;
+                SegaCdRamCartCheck.IsChecked = enabled && _segaCdRamCartEnabled;
+            }
+            if (SegaCdLoadCdToRamCheck != null)
+            {
+                SegaCdLoadCdToRamCheck.IsEnabled = enabled;
+                SegaCdLoadCdToRamCheck.IsChecked = enabled && _segaCdLoadCdToRam;
+            }
+            if (SegaCdForceNoDiscCheck != null)
+            {
+                SegaCdForceNoDiscCheck.IsEnabled = enabled;
+                SegaCdForceNoDiscCheck.IsChecked = enabled && _segaCdForceNoDisc;
+            }
+            if (SegaCdOptionsInfo != null)
+                SegaCdOptionsInfo.IsVisible = enabled;
         }
-        if (SegaCdLoadCdToRamCheck != null)
+        finally
         {
-            SegaCdLoadCdToRamCheck.IsEnabled = enabled;
-            SegaCdLoadCdToRamCheck.IsChecked = enabled && _segaCdLoadCdToRam;
+            _segaCdOptionsUiUpdating = false;
         }
-        if (SegaCdForceNoDiscCheck != null)
-        {
-            SegaCdForceNoDiscCheck.IsEnabled = enabled;
-            SegaCdForceNoDiscCheck.IsChecked = enabled && _segaCdForceNoDisc;
-        }
-        if (SegaCdOptionsInfo != null)
-            SegaCdOptionsInfo.IsVisible = enabled;
     }
 
     private void ApplySegaCdOptionsToCore(EutherDrive.Core.SegaCd.SegaCdAdapter adapter)
@@ -2052,6 +2061,28 @@ public partial class MainWindow : Window
         adapter.EnableRamCartridge = _segaCdRamCartEnabled;
         adapter.LoadCdIntoRam = _segaCdLoadCdToRam;
         adapter.ForceNoDisc = _segaCdForceNoDisc;
+    }
+
+    private bool CanApplySegaCdOptionsLive()
+    {
+        return _core is EutherDrive.Core.SegaCd.SegaCdAdapter
+            && !_emuRunning
+            && (_emuThread == null || !_emuThread.IsAlive);
+    }
+
+    private void ApplySegaCdOptionLiveOrDefer(Action<EutherDrive.Core.SegaCd.SegaCdAdapter> apply)
+    {
+        if (_core is not EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
+            return;
+
+        if (CanApplySegaCdOptionsLive())
+        {
+            apply(segaCd);
+            return;
+        }
+
+        if (StatusText != null)
+            StatusText.Text = "Sega CD option saved; restart to apply";
     }
 
     private static string? GetSegaCdRomKey(EutherDrive.Core.SegaCd.SegaCdDiscInfo? info, string? romPath)
@@ -2075,6 +2106,8 @@ public partial class MainWindow : Window
 
     private void OnSegaCdRamCartToggle(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
+        if (_segaCdOptionsUiUpdating)
+            return;
         bool enabled = SegaCdRamCartCheck?.IsChecked == true;
         _segaCdRamCartEnabled = enabled;
         if (!string.IsNullOrWhiteSpace(_romSegaCdKey))
@@ -2084,13 +2117,14 @@ public partial class MainWindow : Window
             else
                 _romSegaCdRamCartOverrides.Remove(_romSegaCdKey);
         }
-        if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
-            segaCd.EnableRamCartridge = enabled;
+        ApplySegaCdOptionLiveOrDefer(segaCd => segaCd.EnableRamCartridge = enabled);
         SaveSettings();
     }
 
     private void OnSegaCdLoadCdToRamToggle(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
+        if (_segaCdOptionsUiUpdating)
+            return;
         bool enabled = SegaCdLoadCdToRamCheck?.IsChecked == true;
         _segaCdLoadCdToRam = enabled;
         if (!string.IsNullOrWhiteSpace(_romSegaCdKey))
@@ -2100,13 +2134,14 @@ public partial class MainWindow : Window
             else
                 _romSegaCdLoadCdToRamOverrides.Remove(_romSegaCdKey);
         }
-        if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
-            segaCd.LoadCdIntoRam = enabled;
+        ApplySegaCdOptionLiveOrDefer(segaCd => segaCd.LoadCdIntoRam = enabled);
         SaveSettings();
     }
 
     private void OnSegaCdForceNoDiscToggle(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
+        if (_segaCdOptionsUiUpdating)
+            return;
         bool enabled = SegaCdForceNoDiscCheck?.IsChecked == true;
         _segaCdForceNoDisc = enabled;
         if (!string.IsNullOrWhiteSpace(_romSegaCdKey))
@@ -2116,8 +2151,7 @@ public partial class MainWindow : Window
             else
                 _romSegaCdForceNoDiscOverrides.Remove(_romSegaCdKey);
         }
-        if (_core is EutherDrive.Core.SegaCd.SegaCdAdapter segaCd)
-            segaCd.ForceNoDisc = enabled;
+        ApplySegaCdOptionLiveOrDefer(segaCd => segaCd.ForceNoDisc = enabled);
         SaveSettings();
     }
 
@@ -5313,6 +5347,7 @@ public partial class MainWindow : Window
         if (_emuRunning)
             return;
 
+        _ymStopDumpIssued = false;
         _emuRunning = true;
         Console.WriteLine($"[EmuLoop] Starting thread for core={_core.GetType().Name}");
         _emuThread = new Thread(EmuLoop)
@@ -5328,10 +5363,42 @@ public partial class MainWindow : Window
     {
         _emuRunning = false;
         if (_emuThread == null)
+        {
+            MaybeDumpMdYmStateOnStop("stop-no-thread");
             return;
+        }
         if (!_emuThread.Join(1000))
             _emuThread.Interrupt();
         _emuThread = null;
+        MaybeDumpMdYmStateOnStop("stop");
+    }
+
+    private bool _ymStopDumpIssued;
+
+    private void MaybeDumpMdYmStateOnStop(string reason)
+    {
+        string? dumpEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_YM_ON_STOP");
+        string? detectEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_DETECT_YM_STUCK");
+        bool shouldDump =
+            dumpEnabled == "1" ||
+            string.Equals(dumpEnabled, "true", StringComparison.OrdinalIgnoreCase) ||
+            detectEnabled == "1" ||
+            string.Equals(detectEnabled, "true", StringComparison.OrdinalIgnoreCase);
+        if (!shouldDump)
+            return;
+        if (_ymStopDumpIssued)
+            return;
+        if (_core is not MdTracerAdapter md)
+            return;
+
+        int recentWriteCount = 64;
+        string? rawLimit = Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_YM_ON_STOP_LIMIT");
+        if (!string.IsNullOrWhiteSpace(rawLimit) && int.TryParse(rawLimit, out int parsed) && parsed > 0)
+            recentWriteCount = parsed;
+
+        _ymStopDumpIssued = true;
+        Console.WriteLine($"[YM-DUMP-REQUEST] reason={reason} limit={recentWriteCount}");
+        md.DumpYmDebugState(reason, recentWriteCount);
     }
 
     private void EmuLoop()
@@ -5712,6 +5779,7 @@ public partial class MainWindow : Window
 
         uiMdTraceWriter?.Flush();
         uiMdTraceWriter?.Dispose();
+        MaybeDumpMdYmStateOnStop("thread-exit");
         Console.WriteLine("[EmuLoop] Thread exiting");
     }
 
@@ -5782,6 +5850,7 @@ public partial class MainWindow : Window
     {
         if (_audioEngine == null || core is not MdTracerAdapter adapter)
             return;
+
         if (AudioClockFrame)
         {
             GenerateAudioForEmuFrame(adapter, GetLiveTargetFps());

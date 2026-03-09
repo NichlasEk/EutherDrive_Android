@@ -304,20 +304,25 @@ namespace EutherDrive.Core.Cpu.Z80Emu
 
         private const uint MinimumTCycles = 4;
 
+        public void ApplyResetLine()
+        {
+            _registers.I = 0;
+            _registers.R = 0;
+            _registers.Pc = 0;
+            _registers.Iff1 = false;
+            _registers.Iff2 = false;
+            _registers.InterruptMode = InterruptMode.Mode0;
+            _registers.InterruptDelay = false;
+            _registers.LastNmi = InterruptLine.High;
+            _registers.Halted = false;
+            _stalled = false;
+        }
+
         public uint ExecuteInstruction(IBusInterface bus)
         {
             if (bus.Reset())
             {
-                _registers.I = 0;
-                _registers.R = 0;
-                _registers.Pc = 0;
-                _registers.Iff1 = false;
-                _registers.Iff2 = false;
-                _registers.InterruptMode = InterruptMode.Mode0;
-                _registers.InterruptDelay = false;
-                _registers.LastNmi = InterruptLine.High;
-                _registers.Halted = false;
-                _stalled = false;
+                ApplyResetLine();
                 return MinimumTCycles;
             }
 

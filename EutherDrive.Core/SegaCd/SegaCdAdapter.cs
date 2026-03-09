@@ -673,43 +673,37 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 int z80Slice = z80PerLine + (line < z80Remainder ? 1 : 0);
                 int baseMainSlice = baseMainPerLine + (line < baseMainRemainder ? 1 : 0);
 
-                ulong genesisMclkElapsed = (ulong)baseMainSlice * 7u;
-                _scdMclkCycleProduct += genesisMclkElapsed * SegaCdMclkHz;
-                ulong scdMclkElapsed = _scdMclkCycleProduct / GenesisMasterClockHz;
-                _scdMclkCycleProduct -= scdMclkElapsed * GenesisMasterClockHz;
+                int subSlice;
+                if (_useM68kEmu)
+                {
+                    subSlice = 0;
+                }
+                else
+                {
+                    ulong genesisMclkElapsed = (ulong)baseMainSlice * 7u;
+                    _scdMclkCycleProduct += genesisMclkElapsed * SegaCdMclkHz;
+                    ulong scdMclkElapsed = _scdMclkCycleProduct / GenesisMasterClockHz;
+                    _scdMclkCycleProduct -= scdMclkElapsed * GenesisMasterClockHz;
 
-                ulong prevScdMclkCycles = _scdMclkCycles;
-                _scdMclkCycles += scdMclkElapsed;
-                uint baseSubSlice = (uint)(_scdMclkCycles / 4u - prevScdMclkCycles / 4u);
+                    ulong prevScdMclkCycles = _scdMclkCycles;
+                    _scdMclkCycles += scdMclkElapsed;
+                    uint baseSubSlice = (uint)(_scdMclkCycles / 4u - prevScdMclkCycles / 4u);
 
-                if (scdMclkElapsed > 0)
-                    _memory.Tick((uint)scdMclkElapsed);
-                if (baseSubSlice > 0)
-                    _memory.Pcm.Tick(baseSubSlice);
+                    if (scdMclkElapsed > 0)
+                        _memory.Tick((uint)scdMclkElapsed);
+                    if (baseSubSlice > 0)
+                        _memory.Pcm.Tick(baseSubSlice);
 
-                int subSlice = (int)baseSubSlice;
-                if (ScdCpuCycleScale != 1.0)
-                    subSlice = ScaleCycleCount(subSlice, ScdCpuCycleScale);
+                    subSlice = (int)baseSubSlice;
+                    if (ScdCpuCycleScale != 1.0)
+                        subSlice = ScaleCycleCount(subSlice, ScdCpuCycleScale);
+                }
                 int subCyclesInterleaved = 0;
 
                 EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
                 if (_useM68kEmu)
                     SyncLegacyMain68kView(_mainCpu);
-
-                if (ProfileScd) _profileVdpTicks -= Stopwatch.GetTimestamp();
-                vdp.run(line);
-                if (ProfileScd) _profileVdpTicks += Stopwatch.GetTimestamp();
-
-                if (!_useM68kEmu)
-                {
-                    // Capture VDP-driven interrupt requests into the main CPU context before executing.
-                    _mainContext!.InterruptVReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req;
-                    _mainContext.InterruptHReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req;
-                    _mainContext.InterruptExtReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req;
-                    _mainContext.InterruptVAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act;
-                    _mainContext.InterruptHAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act;
-                    _mainContext.InterruptExtAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act;
-                }
+                vdp.BeginLineTiming(line);
 
                 if (TraceMainPcFrame)
                 {
@@ -808,128 +802,133 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             SyncLegacyMain68kView(_mainCpu);
 
                             int dmaWait = vdp.dma_status_update();
+                            int mainStepCycles = 0;
                             if (dmaWait > 0)
                             {
                                 int waitStep = Math.Min(remaining, dmaWait);
                                 remaining -= waitStep;
                                 EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)waitStep;
                                 mainCyclesConsumed += waitStep;
-                                continue;
-                            }
-
-                            if (TraceMainRamJump && !_mainRamJumpLogged)
-                            {
-                                uint pc = _mainCpu.Pc;
-                                if (pc >= 0xFF0000)
-                                {
-                                    _mainRamJumpLogged = true;
-                                    Console.WriteLine(
-                                        $"[SCD-MAIN-RAMJUMP] pc=0x{pc:X6} op=0x{_mainCpu.NextOpcode:X4} " +
-                                        $"prev_pc=0x{_lastMainPc:X6} prev_op=0x{_lastMainOp:X4}");
-                                }
-                                _lastMainPc = pc;
-                                _lastMainOp = _mainCpu.NextOpcode;
-                            }
-                            if (_mainCpu.Pc == 0x000B3B)
-                            {
-                                _mainPcB3bStreak++;
-                                if (_mainPcB3bStreak >= 1024 && (_mainPcB3bStreak - _mainPcB3bLogStreakMark) >= 1024)
-                                {
-                                    _mainPcB3bLogStreakMark = _mainPcB3bStreak;
-                                    long frame = vdp?.FrameCounter ?? -1;
-                                    byte mainIrq = _mainCpuBus!.InterruptLevel();
-                                    byte subIrq = _memory.GetSubInterruptLevel();
-                                    byte commMain = _memory.Registers.MainCpuCommunicationFlags;
-                                    byte commSub = _memory.Registers.SubCpuCommunicationFlags;
-                                    Console.Error.WriteLine(
-                                        $"[SCD-STALL-B3B] frame={frame} line={line} streak={_mainPcB3bStreak} " +
-                                        $"main_pc=0x{_mainCpu.Pc:X6} main_op=0x{_mainCpu.NextOpcode:X4} " +
-                                        $"sub_pc=0x{_subCpu.Pc:X6} sub_op=0x{_subCpu.NextOpcode:X4} " +
-                                        $"busreq={(_memory.Registers.SubCpuBusReq ? 1 : 0)} reset={(_memory.Registers.SubCpuReset ? 1 : 0)} halt={(_memory.SubCpuHalt ? 1 : 0)} " +
-                                        $"main_irq={mainIrq} sub_irq={subIrq} " +
-                                        $"cdc_int={( _memory.Cdc.InterruptPending ? 1 : 0)} cdd_int={(_memory.Cdd.InterruptPending ? 1 : 0)} " +
-                                        $"cdc_en={(_memory.Registers.CdcInterruptEnabled ? 1 : 0)} cdd_en={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} " +
-                                        $"comm[m=0x{commMain:X2},s=0x{commSub:X2}]");
-                                }
+                                mainStepCycles = waitStep;
                             }
                             else
                             {
-                                _mainPcB3bStreak = 0;
-                                _mainPcB3bLogStreakMark = 0;
-                            }
-
-                            if (_mainCpu.Pc == 0x00132C && frameCounter % 60 == 0)
-                            {
-                                var state = _mainCpu.GetState();
-                                uint w1 = _mainCpuBus!.ReadWord(_mainCpu.Pc + 2);
-                                uint w2 = _mainCpuBus!.ReadWord(_mainCpu.Pc + 4);
-                                uint w3 = _mainCpuBus!.ReadWord(_mainCpu.Pc + 6);
-                                Console.WriteLine($"[MAIN-STUCK] PC=132C OP={_mainCpu.NextOpcode:X4} w1={w1:X4} w2={w2:X4} w3={w3:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
-                            }
-
-                            uint cycles = _mainCpu.ExecuteInstruction(_mainCpuBus!);
-                            remaining -= (int)cycles;
-                            EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)cycles;
-                            mainCyclesConsumed += cycles;
-
-                            if (_useM68kEmu && subSlice > 0)
-                            {
-                                long mainCyclesDone = mainSlice - remaining;
-                                int desiredSubCycles = (int)((mainCyclesDone * (long)subSlice) / Math.Max(1, mainSlice));
-                                while (subCyclesInterleaved < desiredSubCycles)
+                                if (TraceMainRamJump && !_mainRamJumpLogged)
                                 {
-                                    if (_memory.SubCpuHalt || _memory.SubCpuReset)
-                                        break;
-                                    if (!EnsureSubVectorsReady(_memory))
-                                        break;
-                                    if (_subCpuNeedsReset)
+                                    uint pc = _mainCpu.Pc;
+                                    if (pc >= 0xFF0000)
                                     {
-                                        _subCpu.Reset(_subCpuBus!);
-                                        _subCpuNeedsReset = false;
-                                    }
-
-                                    if (_subCpu.Pc == 0x0003D4 && frameCounter % 60 == 0)
-                                    {
-                                        Console.WriteLine($"[SUB-STUCK] PC=3D4 OP={_subCpu.NextOpcode:X4}");
-                                    }
-                                    if (_subCpu.Pc == 0x0003DA && frameCounter % 60 == 0)
-                                    {
-                                        var state = _subCpu.GetState();
-                                        uint w1 = _subCpuBus!.ReadWord(0x03D4);
-                                        uint w2 = _subCpuBus.ReadWord(0x03D6);
-                                        uint w3 = _subCpuBus.ReadWord(0x03D8);
-                                        Console.WriteLine($"[SUB-STUCK] PC=3DA OP={_subCpu.NextOpcode:X4} w1={w1:X4} w2={w2:X4} w3={w3:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
-                                    }
-                                    if (_subCpu.Pc == 0x0005EE && frameCounter % 60 == 0)
-                                    {
-                                        var state = _subCpu.GetState();
-                                        byte waitFlag = _memory.ReadSubByte(0x0005EA4);
-                                        byte subLevel = _memory.GetSubInterruptLevel();
+                                        _mainRamJumpLogged = true;
                                         Console.WriteLine(
-                                            $"[SUB-WAIT-5EE] pc=0x{_subCpu.Pc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{state.Sr:X4} " +
-                                            $"mask={(state.Sr >> 8) & 7} irq={subLevel} swPend={(_memory.Registers.SubSoftwareInterruptPending ? 1 : 0)} " +
-                                            $"swEn={(_memory.Registers.SoftwareInterruptEnabled ? 1 : 0)} timerPend={(_memory.Registers.TimerInterruptPending ? 1 : 0)} " +
-                                            $"timerEn={(_memory.Registers.TimerInterruptEnabled ? 1 : 0)} cddPend={(_memory.Cdd.InterruptPending ? 1 : 0)} " +
-                                            $"cddEn={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} hostClk={(_memory.Registers.CddHostClockOn ? 1 : 0)} " +
-                                            $"cdcPend={(_memory.Cdc.InterruptPending ? 1 : 0)} cdcEn={(_memory.Registers.CdcInterruptEnabled ? 1 : 0)} " +
-                                            $"flag=0x{waitFlag:X2}");
+                                            $"[SCD-MAIN-RAMJUMP] pc=0x{pc:X6} op=0x{_mainCpu.NextOpcode:X4} " +
+                                            $"prev_pc=0x{_lastMainPc:X6} prev_op=0x{_lastMainOp:X4}");
                                     }
-                                    if (!loggedSubWaitOpcodeWindow && _subCpu.Pc >= 0x0005E8 && _subCpu.Pc <= 0x0005F0)
-                                    {
-                                        loggedSubWaitOpcodeWindow = true;
-                                        uint baseAddr = 0x0005E8;
-                                        Span<byte> bytes = stackalloc byte[16];
-                                        for (int i = 0; i < bytes.Length; i++)
-                                            bytes[i] = _memory.ReadSubByte(baseAddr + (uint)i);
-                                        string hex = BitConverter.ToString(bytes.ToArray()).Replace("-", " ");
-                                        Console.WriteLine($"[SCD-SUB-WAIT-BYTES] pc=0x{_subCpu.Pc:X6} op=0x{_subCpu.NextOpcode:X4} mem@0x{baseAddr:X6}={hex}");
-                                    }
-
-                                    _memory.FlushBufferedSubWrites();
-                                    uint subInstrCycles = _subCpu.ExecuteInstruction(_subCpuBus!);
-                                    subCyclesInterleaved += (int)subInstrCycles;
+                                    _lastMainPc = pc;
+                                    _lastMainOp = _mainCpu.NextOpcode;
                                 }
+
+                                if (_mainCpu.Pc == 0x000B3B)
+                                {
+                                    _mainPcB3bStreak++;
+                                    if (_mainPcB3bStreak >= 1024 && (_mainPcB3bStreak - _mainPcB3bLogStreakMark) >= 1024)
+                                    {
+                                        _mainPcB3bLogStreakMark = _mainPcB3bStreak;
+                                        long frame = vdp?.FrameCounter ?? -1;
+                                        byte mainIrq = _mainCpuBus!.InterruptLevel();
+                                        byte subIrq = _memory.GetSubInterruptLevel();
+                                        byte commMain = _memory.Registers.MainCpuCommunicationFlags;
+                                        byte commSub = _memory.Registers.SubCpuCommunicationFlags;
+                                        Console.Error.WriteLine(
+                                            $"[SCD-STALL-B3B] frame={frame} line={line} streak={_mainPcB3bStreak} " +
+                                            $"main_pc=0x{_mainCpu.Pc:X6} main_op=0x{_mainCpu.NextOpcode:X4} " +
+                                            $"sub_pc=0x{_subCpu.Pc:X6} sub_op=0x{_subCpu.NextOpcode:X4} " +
+                                            $"busreq={(_memory.Registers.SubCpuBusReq ? 1 : 0)} reset={(_memory.Registers.SubCpuReset ? 1 : 0)} halt={(_memory.SubCpuHalt ? 1 : 0)} " +
+                                            $"main_irq={mainIrq} sub_irq={subIrq} " +
+                                            $"cdc_int={( _memory.Cdc.InterruptPending ? 1 : 0)} cdd_int={(_memory.Cdd.InterruptPending ? 1 : 0)} " +
+                                            $"cdc_en={(_memory.Registers.CdcInterruptEnabled ? 1 : 0)} cdd_en={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} " +
+                                            $"comm[m=0x{commMain:X2},s=0x{commSub:X2}]");
+                                    }
+                                }
+                                else
+                                {
+                                    _mainPcB3bStreak = 0;
+                                    _mainPcB3bLogStreakMark = 0;
+                                }
+
+                                if (_mainCpu.Pc == 0x00132C && frameCounter % 60 == 0)
+                                {
+                                    var state = _mainCpu.GetState();
+                                    uint w1 = _mainCpuBus!.ReadWord(_mainCpu.Pc + 2);
+                                    uint w2 = _mainCpuBus!.ReadWord(_mainCpu.Pc + 4);
+                                    uint w3 = _mainCpuBus!.ReadWord(_mainCpu.Pc + 6);
+                                    Console.WriteLine($"[MAIN-STUCK] PC=132C OP={_mainCpu.NextOpcode:X4} w1={w1:X4} w2={w2:X4} w3={w3:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
+                                }
+
+                                uint cycles = _mainCpu.ExecuteInstruction(_mainCpuBus!);
+                                remaining -= (int)cycles;
+                                EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)cycles;
+                                mainCyclesConsumed += cycles;
+                                mainStepCycles = (int)cycles;
                             }
+
+                            if (mainStepCycles > 0)
+                                subSlice += AdvanceSegaCdTimingFromMainCycles(mainStepCycles);
+
+                            while (subCyclesInterleaved < subSlice)
+                            {
+                                if (_memory.SubCpuHalt || _memory.SubCpuReset)
+                                    break;
+                                if (!EnsureSubVectorsReady(_memory))
+                                    break;
+                                if (_subCpuNeedsReset)
+                                {
+                                    _subCpu.Reset(_subCpuBus!);
+                                    _subCpuNeedsReset = false;
+                                }
+
+                                if (_subCpu.Pc == 0x0003D4 && frameCounter % 60 == 0)
+                                {
+                                    Console.WriteLine($"[SUB-STUCK] PC=3D4 OP={_subCpu.NextOpcode:X4}");
+                                }
+                                if (_subCpu.Pc == 0x0003DA && frameCounter % 60 == 0)
+                                {
+                                    var state = _subCpu.GetState();
+                                    uint w1 = _subCpuBus!.ReadWord(0x03D4);
+                                    uint w2 = _subCpuBus.ReadWord(0x03D6);
+                                    uint w3 = _subCpuBus.ReadWord(0x03D8);
+                                    Console.WriteLine($"[SUB-STUCK] PC=3DA OP={_subCpu.NextOpcode:X4} w1={w1:X4} w2={w2:X4} w3={w3:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
+                                }
+                                if (_subCpu.Pc == 0x0005EE && frameCounter % 60 == 0)
+                                {
+                                    var state = _subCpu.GetState();
+                                    byte waitFlag = _memory.ReadSubByte(0x0005EA4);
+                                    byte subLevel = _memory.GetSubInterruptLevel();
+                                    Console.WriteLine(
+                                        $"[SUB-WAIT-5EE] pc=0x{_subCpu.Pc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{state.Sr:X4} " +
+                                        $"mask={(state.Sr >> 8) & 7} irq={subLevel} swPend={(_memory.Registers.SubSoftwareInterruptPending ? 1 : 0)} " +
+                                        $"swEn={(_memory.Registers.SoftwareInterruptEnabled ? 1 : 0)} timerPend={(_memory.Registers.TimerInterruptPending ? 1 : 0)} " +
+                                        $"timerEn={(_memory.Registers.TimerInterruptEnabled ? 1 : 0)} cddPend={(_memory.Cdd.InterruptPending ? 1 : 0)} " +
+                                        $"cddEn={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} hostClk={(_memory.Registers.CddHostClockOn ? 1 : 0)} " +
+                                        $"cdcPend={(_memory.Cdc.InterruptPending ? 1 : 0)} cdcEn={(_memory.Registers.CdcInterruptEnabled ? 1 : 0)} " +
+                                        $"flag=0x{waitFlag:X2}");
+                                }
+                                if (!loggedSubWaitOpcodeWindow && _subCpu.Pc >= 0x0005E8 && _subCpu.Pc <= 0x0005F0)
+                                {
+                                    loggedSubWaitOpcodeWindow = true;
+                                    uint baseAddr = 0x0005E8;
+                                    Span<byte> bytes = stackalloc byte[16];
+                                    for (int i = 0; i < bytes.Length; i++)
+                                        bytes[i] = _memory.ReadSubByte(baseAddr + (uint)i);
+                                    string hex = BitConverter.ToString(bytes.ToArray()).Replace("-", " ");
+                                    Console.WriteLine($"[SCD-SUB-WAIT-BYTES] pc=0x{_subCpu.Pc:X6} op=0x{_subCpu.NextOpcode:X4} mem@0x{baseAddr:X6}={hex}");
+                                }
+
+                                _memory.FlushBufferedSubWrites();
+                                uint subInstrCycles = _subCpu.ExecuteInstruction(_subCpuBus!);
+                                subCyclesInterleaved += (int)subInstrCycles;
+                            }
+
+                            _memory.FlushBufferedMainWrites();
 
                         }
 
@@ -1052,6 +1051,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                     uint cycles = _subCpu.ExecuteInstruction(_subCpuBus!);
                                     remaining -= (int)cycles;
                                 }
+                                _memory.FlushBufferedMainWrites();
                                 if (ProfileScd) _profileCpuTicks += Stopwatch.GetTimestamp();
                             }
 
@@ -1199,6 +1199,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                 }
                             }
                             _memory.FlushBufferedSubWrites();
+                            _memory.FlushBufferedMainWrites();
                         }
                     }
                 }
@@ -1363,6 +1364,21 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     {
                         _memory.EmulateSubCpuHandshake();
                     }
+                }
+
+                if (ProfileScd) _profileVdpTicks -= Stopwatch.GetTimestamp();
+                vdp.CompleteLineTiming();
+                if (ProfileScd) _profileVdpTicks += Stopwatch.GetTimestamp();
+
+                if (!_useM68kEmu)
+                {
+                    // Present completed scanline interrupt state to the legacy 68k runner on the next slice.
+                    _mainContext!.InterruptVReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req;
+                    _mainContext.InterruptHReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_req;
+                    _mainContext.InterruptExtReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_req;
+                    _mainContext.InterruptVAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_act;
+                    _mainContext.InterruptHAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_H_act;
+                    _mainContext.InterruptExtAct = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_EXT_act;
                 }
 
                 EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
@@ -1723,6 +1739,31 @@ public sealed class SegaCdAdapter : IEmulatorCore
         if (whole <= 0)
             return 1;
         return whole;
+    }
+
+    private int AdvanceSegaCdTimingFromMainCycles(int mainCycles)
+    {
+        if (mainCycles <= 0)
+            return 0;
+
+        ulong genesisMclkElapsed = (ulong)mainCycles * 7u;
+        _scdMclkCycleProduct += genesisMclkElapsed * SegaCdMclkHz;
+        ulong scdMclkElapsed = _scdMclkCycleProduct / GenesisMasterClockHz;
+        _scdMclkCycleProduct -= scdMclkElapsed * GenesisMasterClockHz;
+
+        ulong prevScdMclkCycles = _scdMclkCycles;
+        _scdMclkCycles += scdMclkElapsed;
+        uint baseSubCycles = (uint)(_scdMclkCycles / 4u - prevScdMclkCycles / 4u);
+
+        if (scdMclkElapsed > 0)
+            _memory!.Tick((uint)scdMclkElapsed);
+        if (baseSubCycles > 0)
+            _memory!.Pcm.Tick(baseSubCycles);
+
+        int scaledSubCycles = (int)baseSubCycles;
+        if (ScdCpuCycleScale != 1.0)
+            scaledSubCycles = ScaleCycleCount(scaledSubCycles, ScdCpuCycleScale);
+        return scaledSubCycles;
     }
 
     private sealed class BiquadLowPass

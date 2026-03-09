@@ -163,6 +163,16 @@ namespace EutherDrive.Core.MdTracerCore
             _jgZ80.SetSp(g_reg_SP);
         }
 
+        internal void ApplyJgenesisResetLine()
+        {
+            EnsureJgZ80();
+            if (_jgZ80 == null)
+                return;
+
+            _jgZ80.ApplyResetLine();
+            SyncLegacyRegsFromJg();
+        }
+
         private void RunJgenesis(int in_clock)
         {
             EnsureJgZ80();

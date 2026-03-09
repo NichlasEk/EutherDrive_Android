@@ -534,9 +534,8 @@ private static readonly bool SpriteLinkSequential =
             EnsureFrameBuffer();
         }
 
-        public void run(int in_vline)
+        internal void BeginLineTiming(int in_vline)
         {
-
             g_scanline = in_vline;
             _fifoMclkPhase = 0;
             _fifoLastPixel = 0;
@@ -548,6 +547,13 @@ private static readonly bool SpriteLinkSequential =
                 _smsBeWritesThisFrame = 0;
                 _smsBfWritesThisFrame = 0;
                 ClearVBlank();
+            }
+        }
+
+        internal void CompleteLineTiming()
+        {
+            if (g_scanline == 0)
+            {
                 if (md_main.g_masterSystemMode)
                 {
                     _smsLineCounter = _smsLineCounterReload;
@@ -613,6 +619,12 @@ private static readonly bool SpriteLinkSequential =
             // Detta säkerställer att varje frame-växling kan toggla fältet exakt en gång,
             // även när rendering_frame() anropas två gånger (vid scanline 224 och via run(0)).
             _interlaceFieldAdvanced = false;
+        }
+
+        public void run(int in_vline)
+        {
+            BeginLineTiming(in_vline);
+            CompleteLineTiming();
         }
 
         internal void ProcessVdpFifoForM68kCycles(int m68kCycles)

@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.Serialization;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -11,6 +12,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly bool HoldLastSampleOnUnderflow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_HOLD_LAST_ON_UNDERFLOW"), "1", StringComparison.Ordinal);
         private static readonly int UnderflowHoldFrames = ParseUnderflowHoldFrames();
+        private static readonly int MaxBufferedFrames = ParseNonNegativeInt("EUTHERDRIVE_YM_MAX_BUFFERED_FRAMES", 2048);
         private static readonly bool TraceDacRate =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DACRATE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceJgYmWrites =
@@ -19,7 +21,19 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_RUNTIME"), "1", StringComparison.Ordinal);
         private static readonly bool TraceYmKeyOnOff =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_KEYONOFF"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceYmChannel3State =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_YM_CH3_STATE"), "1", StringComparison.Ordinal);
+        private static readonly bool DetectYmStuck =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DETECT_YM_STUCK"), "1", StringComparison.Ordinal);
+        private static readonly int TraceYmChannel3StateLimit = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_CH3_STATE_LIMIT", 240);
         private static readonly int TraceYmKeyOnOffLimit = ParseNonNegativeInt("EUTHERDRIVE_TRACE_YM_KEYONOFF_LIMIT", 512);
+        private static readonly int DetectYmStuckOutputThreshold =
+            ParseNonNegativeInt("EUTHERDRIVE_DETECT_YM_STUCK_OUTPUT_THRESHOLD", 3000);
+        private static readonly int DetectYmStuckFrames =
+            ParseNonNegativeInt("EUTHERDRIVE_DETECT_YM_STUCK_FRAMES", 24);
+        private static readonly int DetectYmStuckLimit =
+            ParseNonNegativeInt("EUTHERDRIVE_DETECT_YM_STUCK_LIMIT", 8);
+        private const int RecentYmWriteCapacity = 256;
         private readonly Ym2612 _ym;
         private byte _lastYmAddr;
         private byte _lastYmVal;
@@ -55,7 +69,18 @@ namespace EutherDrive.Core.MdTracerCore
         private int _rtUnderflowBurstMax;
         private int _rtWritesTotal;
         private int _rtWritesDac;
-        private int _traceYmKeyOnOffRemaining = TraceYmKeyOnOffLimit;
+        [NonSerialized] private int _traceYmKeyOnOffRemaining = TraceYmKeyOnOffLimit;
+        [NonSerialized] private int _traceYmChannel3StateRemaining = TraceYmChannel3StateLimit;
+        [NonSerialized] private readonly byte[] _recentYmAddr = new byte[RecentYmWriteCapacity];
+        [NonSerialized] private readonly byte[] _recentYmVal = new byte[RecentYmWriteCapacity];
+        [NonSerialized] private readonly byte[] _recentYmPort = new byte[RecentYmWriteCapacity];
+        [NonSerialized] private readonly string[] _recentYmSource = new string[RecentYmWriteCapacity];
+        [NonSerialized] private int _recentYmHead;
+        [NonSerialized] private int _recentYmCount;
+        [NonSerialized] private readonly int[] _stuckCandidateFrames = new int[6];
+        [NonSerialized] private readonly int[,] _stuckLastRawAttenuation = new int[6, 4];
+        [NonSerialized] private readonly int[] _stuckSameEnvelopeFrames = new int[6];
+        [NonSerialized] private int _detectYmStuckRemaining = DetectYmStuckLimit;
 
         public JgYm2612()
         {
@@ -84,6 +109,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _lastYmVal = value;
                     _lastYmSource = source;
                     _ym.WriteData1(value);
+                    RecordRecentYmWrite(_lastYmAddr, value, port, source);
                     _rtWritesTotal++;
                     MaybeTraceKeyOnOff(port, value, source);
                     RecordWriteRate();
@@ -112,6 +138,7 @@ namespace EutherDrive.Core.MdTracerCore
                     _lastYmVal = value;
                     _lastYmSource = source;
                     _ym.WriteData2(value);
+                    RecordRecentYmWrite(_lastYmAddr, value, port, source);
                     _rtWritesTotal++;
                     MaybeTraceKeyOnOff(port, value, source);
                     RecordWriteRate();
@@ -153,6 +180,13 @@ namespace EutherDrive.Core.MdTracerCore
             _rtWritesTotal = 0;
             _rtWritesDac = 0;
             _traceYmKeyOnOffRemaining = TraceYmKeyOnOffLimit;
+            _traceYmChannel3StateRemaining = TraceYmChannel3StateLimit;
+            _recentYmHead = 0;
+            _recentYmCount = 0;
+            Array.Clear(_stuckCandidateFrames, 0, _stuckCandidateFrames.Length);
+            Array.Clear(_stuckLastRawAttenuation, 0, _stuckLastRawAttenuation.Length);
+            Array.Clear(_stuckSameEnvelopeFrames, 0, _stuckSameEnvelopeFrames.Length);
+            _detectYmStuckRemaining = DetectYmStuckLimit;
             if (!_timingConfigLogged)
             {
                 _timingConfigLogged = true;
@@ -191,6 +225,13 @@ namespace EutherDrive.Core.MdTracerCore
             _rtWritesTotal = 0;
             _rtWritesDac = 0;
             _traceYmKeyOnOffRemaining = TraceYmKeyOnOffLimit;
+            _traceYmChannel3StateRemaining = TraceYmChannel3StateLimit;
+            _recentYmHead = 0;
+            _recentYmCount = 0;
+            Array.Clear(_stuckCandidateFrames, 0, _stuckCandidateFrames.Length);
+            Array.Clear(_stuckLastRawAttenuation, 0, _stuckLastRawAttenuation.Length);
+            Array.Clear(_stuckSameEnvelopeFrames, 0, _stuckSameEnvelopeFrames.Length);
+            _detectYmStuckRemaining = DetectYmStuckLimit;
         }
 
         private void MaybeTraceKeyOnOff(int port, byte value, string source)
@@ -291,6 +332,8 @@ namespace EutherDrive.Core.MdTracerCore
         {
             _ = frame;
             MaybeLogDacRate(force: false);
+            MaybeTraceChannel3State(frame);
+            MaybeDetectStuckChannels(frame);
         }
 
         public void ConsumeAudStatCounters(
@@ -359,8 +402,50 @@ namespace EutherDrive.Core.MdTracerCore
 
         public void DumpRecentYmWrites(string tag, int limit)
         {
-            _ = tag;
-            _ = limit;
+            if (limit <= 0)
+                limit = 32;
+            int count = Math.Min(limit, _recentYmCount);
+            Console.WriteLine($"[JGYM-DUMP] tag={tag} count={count} total={_recentYmCount}");
+            for (int i = 0; i < count; i++)
+            {
+                int idx = (_recentYmHead - count + i + RecentYmWriteCapacity) % RecentYmWriteCapacity;
+                Console.WriteLine(
+                    $"[JGYM-DUMP] tag={tag} idx={i + 1}/{count} port=0x{_recentYmPort[idx]:X2} " +
+                    $"addr=0x{_recentYmAddr[idx]:X2} val=0x{_recentYmVal[idx]:X2} src={_recentYmSource[idx]}");
+            }
+        }
+
+        public void DumpChannel3State(string tag)
+        {
+            FmChannel channel = _ym.DebugChannel(2);
+            Console.Write(
+                $"[YM-CH3-DUMP] tag={tag} csm={(_ym.DebugCsmEnabled ? 1 : 0)} " +
+                $"mode={channel.Mode} out={channel.CurrentOutput} ");
+            for (int i = 0; i < channel.Operators.Length; i++)
+            {
+                var op = channel.Operators[i];
+                Console.Write(
+                    $"op{i + 1}=on:{(op.Envelope.IsKeyOn ? 1 : 0)}/att:{op.Envelope.CurrentAttenuation()} ");
+            }
+            Console.WriteLine();
+        }
+
+        public void DumpAllChannelStates(string tag)
+        {
+            for (int channelIdx = 0; channelIdx < 6; channelIdx++)
+            {
+                FmChannel channel = _ym.DebugChannel(channelIdx);
+                Console.Write(
+                    $"[YM-CH-DUMP] tag={tag} ch={channelIdx + 1} csm={(_ym.DebugCsmEnabled ? 1 : 0)} " +
+                    $"mode={channel.Mode} out={channel.CurrentOutput} ");
+                for (int opIdx = 0; opIdx < channel.Operators.Length; opIdx++)
+                {
+                    var op = channel.Operators[opIdx];
+                    Console.Write(
+                        $"op{opIdx + 1}=on:{(op.Envelope.IsKeyOn ? 1 : 0)}/att:{op.Envelope.CurrentAttenuation()} ");
+                }
+                Console.WriteLine();
+            }
         }
 
         public bool AudStatEnabled => false;
@@ -453,6 +538,19 @@ namespace EutherDrive.Core.MdTracerCore
             else
             {
                 _ringCountFrames++;
+            }
+
+            // Keep YM transport latency bounded.
+            // If emulation runs ahead of audio consumption, stale FM samples can linger for hundreds
+            // of milliseconds and sound like "stuck" notes even though the core has already keyed
+            // the channel off. Prefer dropping oldest queued YM samples over preserving excessive lag.
+            if (MaxBufferedFrames > 0 && _ringCountFrames > MaxBufferedFrames)
+            {
+                int trim = _ringCountFrames - MaxBufferedFrames;
+                _ringRead += trim;
+                while (_ringRead >= RingFramesCapacity)
+                    _ringRead -= RingFramesCapacity;
+                _ringCountFrames = MaxBufferedFrames;
             }
         }
 
@@ -556,6 +654,25 @@ namespace EutherDrive.Core.MdTracerCore
             MaybeLogWriteRate(now, force: false);
         }
 
+        private void MaybeTraceChannel3State(long frame)
+        {
+            if (!TraceYmChannel3State || _traceYmChannel3StateRemaining <= 0)
+                return;
+
+            _traceYmChannel3StateRemaining--;
+            FmChannel channel = _ym.DebugChannel(2);
+            Console.Write(
+                $"[YM-CH3] frame={frame} rem={_traceYmChannel3StateRemaining} csm={(_ym.DebugCsmEnabled ? 1 : 0)} " +
+                $"mode={channel.Mode} out={channel.CurrentOutput} ");
+            for (int i = 0; i < channel.Operators.Length; i++)
+            {
+                var op = channel.Operators[i];
+                Console.Write(
+                    $"op{i + 1}=on:{(op.Envelope.IsKeyOn ? 1 : 0)}/att:{op.Envelope.CurrentAttenuation()} ");
+            }
+            Console.WriteLine();
+        }
+
         private void MaybeLogWriteRate(long nowTicks, bool force)
         {
             if (!TraceJgYmWrites || _writeRateWindowStartTicks == 0)
@@ -580,6 +697,93 @@ namespace EutherDrive.Core.MdTracerCore
             _writeRateDacDataWrites = 0;
             _writeRateNonDacDataWrites = 0;
             _writeRateDacEnableWrites = 0;
+        }
+
+        private void RecordRecentYmWrite(byte addr, byte value, int port, string source)
+        {
+            _recentYmAddr[_recentYmHead] = addr;
+            _recentYmVal[_recentYmHead] = value;
+            _recentYmPort[_recentYmHead] = (byte)port;
+            _recentYmSource[_recentYmHead] = source;
+            _recentYmHead = (_recentYmHead + 1) % RecentYmWriteCapacity;
+            if (_recentYmCount < RecentYmWriteCapacity)
+                _recentYmCount++;
+        }
+
+        private void MaybeDetectStuckChannels(long frame)
+        {
+            if (!DetectYmStuck || _detectYmStuckRemaining <= 0)
+                return;
+
+            for (int channelIdx = 0; channelIdx < 6; channelIdx++)
+            {
+                FmChannel channel = _ym.DebugChannel(channelIdx);
+                bool allKeyOff = true;
+                bool sameEnvelopeAsLastFrame = true;
+                for (int opIdx = 0; opIdx < channel.Operators.Length; opIdx++)
+                {
+                    var envelope = channel.Operators[opIdx].Envelope;
+                    if (envelope.IsKeyOn)
+                    {
+                        allKeyOff = false;
+                    }
+
+                    int rawAttenuation = envelope.DebugRawAttenuation;
+                    if (_stuckLastRawAttenuation[channelIdx, opIdx] != rawAttenuation)
+                        sameEnvelopeAsLastFrame = false;
+                    _stuckLastRawAttenuation[channelIdx, opIdx] = rawAttenuation;
+                }
+
+                int output = Math.Abs(channel.CurrentOutput);
+                if (allKeyOff && output >= 512)
+                {
+                    _stuckSameEnvelopeFrames[channelIdx] =
+                        sameEnvelopeAsLastFrame ? (_stuckSameEnvelopeFrames[channelIdx] + 1) : 0;
+
+                    if (_stuckSameEnvelopeFrames[channelIdx] == 24)
+                    {
+                        Console.Write(
+                            $"[YM-REL-FROZEN?] frame={frame} ch={channelIdx + 1} out={channel.CurrentOutput} " +
+                            $"sameEnvFrames={_stuckSameEnvelopeFrames[channelIdx]} csm={(_ym.DebugCsmEnabled ? 1 : 0)} mode={channel.Mode} ");
+                        for (int opIdx = 0; opIdx < channel.Operators.Length; opIdx++)
+                        {
+                            var op = channel.Operators[opIdx];
+                            Console.Write(
+                                $"op{opIdx + 1}=phase:{op.Envelope.DebugPhase}/on:{(op.Envelope.IsKeyOn ? 1 : 0)}/raw:{op.Envelope.DebugRawAttenuation}/att:{op.Envelope.CurrentAttenuation()}/rr:{op.Envelope.ReleaseRate}/sr:{op.Envelope.SustainRate}/tl:{op.Envelope.TotalLevel} ");
+                        }
+                        Console.WriteLine();
+                        DumpRecentYmWrites($"rel-frozen-ch{channelIdx + 1}", 48);
+                    }
+                }
+                else
+                {
+                    _stuckSameEnvelopeFrames[channelIdx] = 0;
+                }
+
+                if (allKeyOff && output >= DetectYmStuckOutputThreshold)
+                {
+                    _stuckCandidateFrames[channelIdx]++;
+                    if (_stuckCandidateFrames[channelIdx] == DetectYmStuckFrames)
+                    {
+                        _detectYmStuckRemaining--;
+                        Console.Write(
+                            $"[YM-STUCK?] frame={frame} ch={channelIdx + 1} out={channel.CurrentOutput} " +
+                            $"frames={_stuckCandidateFrames[channelIdx]} csm={(_ym.DebugCsmEnabled ? 1 : 0)} mode={channel.Mode} ");
+                        for (int opIdx = 0; opIdx < channel.Operators.Length; opIdx++)
+                        {
+                            var op = channel.Operators[opIdx];
+                            Console.Write(
+                                $"op{opIdx + 1}=on:{(op.Envelope.IsKeyOn ? 1 : 0)}/att:{op.Envelope.CurrentAttenuation()} ");
+                        }
+                        Console.WriteLine();
+                        DumpRecentYmWrites($"stuck-ch{channelIdx + 1}", 48);
+                    }
+                }
+                else
+                {
+                    _stuckCandidateFrames[channelIdx] = 0;
+                }
+            }
         }
     }
 
@@ -1090,6 +1294,8 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         public bool IsKeyOn => _phase != EnvelopePhase.Release;
+        public int DebugRawAttenuation => _attenuation;
+        public string DebugPhase => _phase.ToString();
 
         public void KeyOn()
         {
@@ -1780,6 +1986,8 @@ namespace EutherDrive.Core.MdTracerCore
 
         public bool DacEnabled => _dacChannelEnabled;
         public byte DacSample => _dacChannelSample;
+        public bool DebugCsmEnabled => _csmEnabled;
+        public FmChannel DebugChannel(int index) => _channels[index];
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static byte ComputeKeyCode(ushort fNumber, byte block)

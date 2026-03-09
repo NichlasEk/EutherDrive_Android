@@ -286,6 +286,7 @@ namespace EutherDrive.Core.MdTracerCore
         // timebase for YM2612 busy checks that doesn't depend on per-frame budgets.
         // We use M68K cycles as the base unit (VDL_LINE_RENDER_MC68_CLOCK per line).
         private static long _systemCycles;
+        private static long _pendingAudioM68kCycles;
         private static long _mainHintReqCount;
         private static long _mainVintReqCount;
         private static long _mainExtReqCount;
@@ -295,16 +296,35 @@ namespace EutherDrive.Core.MdTracerCore
         internal static long SystemCycles => _systemCycles;
         internal static bool MainM68kEmuConfigured => UseM68kEmuMain;
         internal static bool MainM68kEmuReady => UseM68kEmuMain && _m68kEmu != null && _m68kEmuBus != null;
-        internal static void AdvanceSystemCycles(long cycles)
+        internal static void AdvanceSystemCycles(long cycles, bool flushAudio = true)
         {
             if (cycles <= 0)
                 return;
             _systemCycles += cycles;
             AdvanceCycleCounters(cycles);
             g_md_vdp?.ProcessVdpFifoForM68kCycles((int)Math.Min(cycles, int.MaxValue));
+            _pendingAudioM68kCycles += cycles;
+            if (flushAudio)
+                FlushScheduledAudio();
+        }
+
+        internal static void FlushScheduledAudio()
+        {
+            if (g_md_music == null)
+            {
+                _pendingAudioM68kCycles = 0;
+                return;
+            }
+
             int ymTicks = IsCycleCounterYmDriveEnabled() ? TakeYmTicksForScheduling() : -1;
             int psgTicks = IsCycleCounterPsgDriveEnabled() ? TakePsgTicksForScheduling() : -1;
-            g_md_music?.YmAdvanceSystemCycles(cycles, ymTicks, psgTicks);
+            long pendingCycles = _pendingAudioM68kCycles;
+            _pendingAudioM68kCycles = 0;
+
+            if (pendingCycles <= 0 && ymTicks <= 0 && psgTicks <= 0)
+                return;
+
+            g_md_music.YmAdvanceSystemCycles(pendingCycles, ymTicks, psgTicks);
         }
 
         internal static void AddM68kWaitCycles(int cycles)

@@ -65,6 +65,7 @@ namespace XamariNES.Cartridge.Mappers.impl
         private readonly bool _useChrRam;
         private readonly bool _hasPrgRam;
         private bool _prgRamEnabled;
+        [NonSerialized]
         private bool _loadWriteSeenThisInstruction;
         [NonSerialized]
         private readonly bool _traceMmc1 =
@@ -89,9 +90,16 @@ namespace XamariNES.Cartridge.Mappers.impl
             _prgRam = new byte[Math.Max(1, prgRamSize)];
             BatteryBacked = batteryBacked;
 
-            //Set Startup Values
-            _registerShift = 0x0C;
-            _prgBank1Offset = (_prgRomBanks - 1) * 0x4000;
+            // MMC1 power-on: control defaults to $0C while shift register starts empty.
+            _registerShift = 0x00;
+            _registerShiftOffset = 0;
+            _registerControl = 0x0C;
+            _currentPrgMode = 3;
+            _currentChrMode = 0;
+            _chrBank0 = 0;
+            _chrBank1 = 0;
+            _prgBank = 0;
+            UpdateBankOffsets();
         }
 
         public byte ReadByte(int offset, byte cpuOpenBus)
@@ -309,8 +317,9 @@ namespace XamariNES.Cartridge.Mappers.impl
             else
             {
                 _prgBank = _registerShift;
-                // MMC1 PRG register bit 4 disables PRG RAM when set.
-                _prgRamEnabled = (_registerShift & 0x10) == 0;
+                // Compatibility: many MMC1 boards ignore/repurpose bit 4.
+                // Keep PRG RAM enabled when the cartridge has PRG RAM.
+                _prgRamEnabled = _hasPrgRam;
             }
 
             //Based off this write, update the offsets of the PRG and CHR Banks

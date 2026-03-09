@@ -2643,7 +2643,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                                 ranCycles = slice;
 
                             svpOverride.Tick((uint)ranCycles);
-                            md_main.AdvanceSystemCycles(ranCycles);
+                            md_main.AdvanceSystemCycles(ranCycles, flushAudio: false);
                             remaining -= slice;
                         }
                     }
@@ -2660,7 +2660,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                             _cpu.RunSome(budget: cpuBudget);
                         }
 
-                        md_main.AdvanceSystemCycles(cpuBudget);
+                        md_main.AdvanceSystemCycles(cpuBudget, flushAudio: false);
                     }
 
                     // Captain America can wedge in semaphore wait loops mid-frame;
@@ -2682,6 +2682,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                             md_main.AddZ80Cycles(z80CyclesToRun);
                         }
                     }
+
+                    md_main.FlushScheduledAudio();
                 }
 
                 if (TracePerf)
@@ -3030,6 +3032,21 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     public void ForceDumpZ80(string reason, bool extra, string? dumpPath)
     {
         md_main.g_md_z80?.ForceDumpRam(reason, extra, dumpPath);
+    }
+
+    public void DumpYmDebugState(string reason, int recentWriteCount = 64)
+    {
+        var music = md_main.g_md_music;
+        if (music == null)
+            return;
+
+        Console.WriteLine(
+            $"[YM-DUMP] reason={reason} m68kPc=0x{MdTracerCore.md_m68k.g_reg_PC:X6} z80Pc=0x{GetZ80Pc():X4} " +
+            $"dacEn=0x{music.DebugDacEnabled:X2} dac=0x{music.DebugDacData:X2} " +
+            $"lastAddr=0x{music.DebugLastYmAddr:X2} lastVal=0x{music.DebugLastYmVal:X2} src={music.DebugLastYmSource}");
+        music.DumpChannel3State(reason);
+        music.DumpAllChannelStates(reason);
+        music.DumpRecentYmWrites(reason, recentWriteCount);
     }
 
     public void SaveState(BinaryWriter writer)

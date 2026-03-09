@@ -57,6 +57,10 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_CDDSTATUS"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceCddRegAccess = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDD_REGS"),
+        "1",
+        StringComparison.Ordinal);
     private static readonly bool LogCddReset = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_CDDRESET"),
         "1",
@@ -92,7 +96,13 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_FLAG"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool LogPrgWaitWindow = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_WAIT_WINDOW"),
+        "1",
+        StringComparison.Ordinal);
     private const uint PrgFlagAddr = 0x005EA4;
+    private const uint PrgWaitWindowStart = 0x0005E0;
+    private const uint PrgWaitWindowEnd = 0x0005EF;
     private static readonly bool LogMainRegs = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_MAINREG"),
         "1",
@@ -129,7 +139,9 @@ public sealed class SegaCdMemory
     private const uint SubRegisterAddressMask = 0x01FF;
 
     private readonly BufferedWrite[] _bufferedSubWrites = new BufferedWrite[128];
+    private readonly BufferedWrite[] _bufferedMainWrites = new BufferedWrite[256];
     private int _bufferedSubWriteCount;
+    private int _bufferedMainWriteCount;
     public Func<uint>? MainPcProvider { get; set; }
     public Func<uint>? SubPcProvider { get; set; }
 
@@ -200,6 +212,7 @@ public sealed class SegaCdMemory
             "1",
             StringComparison.Ordinal);
         Cdc = new SegaCdCdcStub();
+        Cdc.SubPcProvider = () => SubPcProvider?.Invoke() ?? 0;
         Cdd = new SegaCdCddStub();
         Cdd.SetModel(ParseCdModel(bios));
         Pcm = new SegaCdPcmStub();
@@ -290,7 +303,8 @@ public sealed class SegaCdMemory
         }
         _timerDivider -= cycles;
 
-        Graphics.Tick(masterClockCycles, WordRam, Registers.GraphicsInterruptEnabled);
+        if (!WordRam.IsSubAccessBlocked())
+            Graphics.Tick(masterClockCycles, WordRam, Registers.GraphicsInterruptEnabled);
     }
 
     public void EmulateSubCpuHandshake()
@@ -316,6 +330,22 @@ public sealed class SegaCdMemory
                 WriteSubRegisterWord(write.Address, write.Value);
         }
         _bufferedSubWriteCount = 0;
+    }
+
+    public void FlushBufferedMainWrites()
+    {
+        if (_bufferedMainWriteCount == 0)
+            return;
+
+        for (int i = 0; i < _bufferedMainWriteCount; i++)
+        {
+            var write = _bufferedMainWrites[i];
+            if (write.Kind == BufferedWriteKind.Byte)
+                ApplyMainWriteByte(write.Address, (byte)write.Value);
+            else
+                ApplyMainWriteWord(write.Address, write.Value);
+        }
+        _bufferedMainWriteCount = 0;
     }
 
     private void ClockTimers()
@@ -483,6 +513,16 @@ public sealed class SegaCdMemory
 
     public void WriteMainByte(uint address, byte value)
     {
+        BufferMainWrite(BufferedWriteKind.Byte, address, value);
+    }
+
+    public void WriteMainWord(uint address, ushort value)
+    {
+        BufferMainWrite(BufferedWriteKind.Word, address, value);
+    }
+
+    private void ApplyMainWriteByte(uint address, byte value)
+    {
         if (address <= 0x1FFFFF)
         {
             if ((address & 0x20000) != 0)
@@ -512,7 +552,7 @@ public sealed class SegaCdMemory
         }
     }
 
-    public void WriteMainWord(uint address, ushort value)
+    private void ApplyMainWriteWord(uint address, ushort value)
     {
         if (address <= 0x1FFFFF)
         {
@@ -625,6 +665,13 @@ public sealed class SegaCdMemory
             {
                 uint pc = cpu == ScdCpu.Main ? (MainPcProvider?.Invoke() ?? 0) : (SubPcProvider?.Invoke() ?? 0);
                 Console.WriteLine($"[SCD-PRG-FLAG] W8 {cpu} addr=0x{address:X6} val=0x{value:X2} pc=0x{pc:X6}");
+            }
+            if (LogPrgWaitWindow && (address == PrgFlagAddr || (address >= PrgWaitWindowStart && address <= PrgWaitWindowEnd)))
+            {
+                uint pc = cpu == ScdCpu.Main ? (MainPcProvider?.Invoke() ?? 0) : (SubPcProvider?.Invoke() ?? 0);
+                Console.WriteLine(
+                    $"[SCD-PRG-WAIT] W8 {cpu} addr=0x{address:X6} val=0x{value:X2} pc=0x{pc:X6} " +
+                    $"flag=0x{_prgRam[PrgFlagAddr]:X2}");
             }
             if (cpu == ScdCpu.Main && LogPrgRamWatch && _prgProbeRemaining > 0 && address < 0x0400)
             {
@@ -856,6 +903,11 @@ public sealed class SegaCdMemory
     {
         uint reg = address & SubRegisterAddressMask;
         LogFirstSubRegAccess(reg, isWrite: false);
+        if (TraceCddRegAccess && (reg >= 0x0038 && reg <= 0x004B))
+        {
+            uint pc = SubPcProvider?.Invoke() ?? 0;
+            Console.WriteLine($"[SCD-CDD-REG] R8 reg=0x{reg:X4} pc=0x{pc:X6}");
+        }
         if (LogSubReads && reg is 0x0001 or 0x0002 or 0x0003 or 0x0004 or 0x0005 or 0x0007 or 0x0008 or 0x0009
             or 0x000E or 0x000F or (>= 0x0010 and <= 0x002F)
             or 0x0036 or 0x0037 or (>= 0x0038 and <= 0x004B))
@@ -1465,6 +1517,18 @@ public sealed class SegaCdMemory
         if (_bufferedSubWriteCount >= _bufferedSubWrites.Length)
             return;
         _bufferedSubWrites[_bufferedSubWriteCount++] = new BufferedWrite(kind, address, value);
+    }
+
+    private void BufferMainWrite(BufferedWriteKind kind, uint address, ushort value)
+    {
+        if (_bufferedMainWriteCount >= _bufferedMainWrites.Length)
+        {
+            FlushBufferedMainWrites();
+            if (_bufferedMainWriteCount >= _bufferedMainWrites.Length)
+                return;
+        }
+
+        _bufferedMainWrites[_bufferedMainWriteCount++] = new BufferedWrite(kind, address, value);
     }
 
     private void LogFirstSubRegAccess(uint reg, bool isWrite)

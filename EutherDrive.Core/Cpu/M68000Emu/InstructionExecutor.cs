@@ -94,7 +94,7 @@ internal sealed partial class InstructionExecutor
             Console.WriteLine(
                 $"[M68K-PC] cpu={_name} pc=0x{pcBefore:X8} op=0x{_opcode:X4} inst={traceInst.Kind} size={traceInst.Size} " +
                 $"src={FormatMode(traceInst.Source)} dst={FormatMode(traceInst.Dest)} " +
-                $"A0=0x{_registers.Address[0]:X8} A2=0x{_registers.Address[2]:X8} A4=0x{_registers.Address[4]:X8} A5=0x{_registers.Address[5]:X8} " +
+                $"A0=0x{_registers.Address[0]:X8} A1=0x{_registers.Address[1]:X8} A2=0x{_registers.Address[2]:X8} A4=0x{_registers.Address[4]:X8} A5=0x{_registers.Address[5]:X8} " +
                 $"D0=0x{_registers.Data[0]:X8} D1=0x{_registers.Data[1]:X8} D5=0x{_registers.Data[5]:X8}");
         }
 

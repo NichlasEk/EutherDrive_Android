@@ -70,6 +70,10 @@ public sealed class SegaCdCdcStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_DECODE"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceBootProbe = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_BOOT"),
+        "1",
+        StringComparison.Ordinal);
     private static readonly bool LogPrgDmaLow = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_DMA_LOW"),
         "1",
@@ -88,6 +92,7 @@ public sealed class SegaCdCdcStub
     public byte DeviceDestinationBits => _destinationBits;
     public byte RegisterAddress => _registerAddress;
     public uint DmaAddress => _dmaAddress;
+    public Func<uint>? SubPcProvider { get; set; }
 
     private static bool ReadCompatFlag(string key, bool defaultValue)
     {
@@ -178,7 +183,10 @@ public sealed class SegaCdCdcStub
         if (!_dataTransferInProgress || !IsHostDataForCpu(cpu))
             return _hostDataBuffer ?? 0;
 
-        ushort hostData = _hostDataBuffer ?? 0;
+        if (_hostDataBuffer is null)
+            return 0;
+
+        ushort hostData = _hostDataBuffer.Value;
         if (TraceCdcTimeline)
             Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} HOSTRD cpu={cpu} data=0x{hostData:X4}");
         _hostDataBuffer = null;
@@ -301,6 +309,7 @@ public sealed class SegaCdCdcStub
             Console.WriteLine($"[SCD-CDC] R REG=0x{reg:X2} -> 0x{value:X2}");
         if (TraceCdcTimeline)
             Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} R reg=0x{reg:X2} val=0x{value:X2}");
+        TraceBootAccess("R", reg, value);
         return value;
     }
 
@@ -311,6 +320,7 @@ public sealed class SegaCdCdcStub
             Console.WriteLine($"[SCD-CDC] W REG=0x{reg:X2} = 0x{value:X2}");
         if (TraceCdcTimeline)
             Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} W reg=0x{reg:X2} val=0x{value:X2}");
+        TraceBootAccess("W", reg, value);
         switch (reg)
         {
             case 0:
@@ -559,6 +569,42 @@ public sealed class SegaCdCdcStub
         long ticks = Stopwatch.GetTimestamp() - TraceStartTicks;
         double ms = ticks * 1000.0 / Stopwatch.Frequency;
         return ms.ToString("0.000", CultureInfo.InvariantCulture);
+    }
+
+    private void TraceBootAccess(string rw, byte reg, byte value)
+    {
+        if (!TraceBootProbe)
+            return;
+
+        uint pc = SubPcProvider?.Invoke() ?? 0;
+        bool interestingPc =
+            (pc >= 0x0005E0 && pc <= 0x000620) ||
+            (pc >= 0x001EE0 && pc <= 0x002000) ||
+            (pc >= 0x0021A0 && pc <= 0x0021D0);
+        if (!interestingPc)
+            return;
+
+        bool interestingReg = reg == 0x01 || (reg >= 0x04 && reg <= 0x07) || (reg >= 0x0C && reg <= 0x0F);
+        if (!interestingReg)
+            return;
+
+        Console.WriteLine(
+            $"[SCD-CDC-BOOT] {rw} reg=0x{reg:X2} val=0x{value:X2} pc=0x{pc:X6} " +
+            $"ifstat=0x{BuildIfStat():X2} dbc=0x{_dataByteCounter:X4} dac=0x{_dataAddressCounter:X4} " +
+            $"pt=0x{_blockPointer:X4} wa=0x{_writeAddress:X4} dout={(_dataOutEnabled ? 1 : 0)} " +
+            $"dt={(_dataTransferInProgress ? 1 : 0)} eod={(_endOfDataTransfer ? 1 : 0)} " +
+            $"deciP={(_decoderInterruptPending ? 1 : 0)} deciE={(_decoderInterruptEnabled ? 1 : 0)} " +
+            $"dteiP={(_transferEndInterruptPending ? 1 : 0)} dteiE={(_transferEndInterruptEnabled ? 1 : 0)} " +
+            $"dest={_destination} bits=0x{_destinationBits:X2}");
+    }
+
+    private byte BuildIfStat()
+    {
+        return (byte)(0x95
+            | ((_transferEndInterruptPending ? 0 : 1) << 6)
+            | ((_decoderInterruptPending ? 0 : 1) << 5)
+            | ((_dataTransferInProgress ? 0 : 1) << 3)
+            | ((_dataTransferInProgress ? 0 : 1) << 1));
     }
 
     private void ProgressDma(WordRam wordRam, byte[] prgRam, bool prgRamAccessible, SegaCdPcmStub pcm)

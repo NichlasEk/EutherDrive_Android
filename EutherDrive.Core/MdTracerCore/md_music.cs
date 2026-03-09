@@ -102,6 +102,16 @@ namespace EutherDrive.Core.MdTracerCore
             JgYm.DumpRecentYmWrites(tag, limit);
         }
 
+        public void DumpChannel3State(string tag)
+        {
+            JgYm.DumpChannel3State(tag);
+        }
+
+        public void DumpAllChannelStates(string tag)
+        {
+            JgYm.DumpAllChannelStates(tag);
+        }
+
         public void ConsumeAudStatCounters(
             out int keyOn,
             out int fnum,

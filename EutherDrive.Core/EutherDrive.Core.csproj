@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IncludeOptionalCores Condition="'$(IncludeOptionalCores)' == ''">true</IncludeOptionalCores>
 
   </PropertyGroup>
 
@@ -29,6 +30,9 @@
     <Compile Remove="MdTracerCore/md_m68k_missing_globals.cs" />
     <Compile Remove="MdTracerCore/md_vdp.IO.cs" />
     <Compile Remove="MdTracerCore/VdpHeadless.cs" />
+    <Compile Remove="SnesAdapter.cs" Condition="'$(IncludeOptionalCores)' != 'true'" />
+    <Compile Remove="PsxAdapter.cs" Condition="'$(IncludeOptionalCores)' != 'true'" />
+    <Compile Remove="N64Adapter.cs" Condition="'$(IncludeOptionalCores)' != 'true'" />
 
 </ItemGroup>
 
@@ -41,10 +45,10 @@
   </ItemGroup>
   
   <ItemGroup>
-    <ProjectReference Include="..\SuperNintendoEmulator\KSNES\KSNES.csproj" Condition="Exists('..\SuperNintendoEmulator\KSNES\KSNES.csproj')" />
+    <ProjectReference Include="..\SuperNintendoEmulator\KSNES\KSNES.csproj" Condition="'$(IncludeOptionalCores)' == 'true' and Exists('..\SuperNintendoEmulator\KSNES\KSNES.csproj')" />
     <ProjectReference Include="..\NESCore\XamariNES.Emulator\XamariNES.Emulator.csproj" Condition="Exists('..\NESCore\XamariNES.Emulator\XamariNES.Emulator.csproj')" />
-    <ProjectReference Include="..\ProjectPSX\ProjectPSX.csproj" Condition="Exists('..\ProjectPSX\ProjectPSX.csproj')" />
-    <ProjectReference Include="..\Ryu64\Ryu64Core\Ryu64Core.csproj" Condition="Exists('..\Ryu64\Ryu64Core\Ryu64Core.csproj')" />
+    <ProjectReference Include="..\ProjectPSX\ProjectPSX.csproj" Condition="'$(IncludeOptionalCores)' == 'true' and Exists('..\ProjectPSX\ProjectPSX.csproj')" />
+    <ProjectReference Include="..\Ryu64\Ryu64Core\Ryu64Core.csproj" Condition="'$(IncludeOptionalCores)' == 'true' and Exists('..\Ryu64\Ryu64Core\Ryu64Core.csproj')" />
   </ItemGroup>
 
 </Project>

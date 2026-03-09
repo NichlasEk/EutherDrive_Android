@@ -32,7 +32,6 @@ internal sealed class SegaCdCdController
     {
         _cdd.Reset();
         _cdc.Reset();
-        _driveCycleProduct = 0;
         _audioBuffer.Clear();
     }
 
