@@ -63,6 +63,18 @@ If you want to override it, set:
 EUTHERDRIVE_ST018_ROM=/full/path/to/st018.rom
 ```
 
+## ST010 BIOS
+ST010 support expects the coprocessor ROM to be present in the repository BIOS folder.
+
+- Default file:
+  - `EutherDrive/bios/st010.bin`
+
+If you want to override it, set:
+
+```bash
+EUTHERDRIVE_ST010_ROM=/full/path/to/st010.bin
+```
+
 ## Keyboard Shortcuts (UI)
 - `F1`: Fullscreen
 - `F5`: Save Slot 1

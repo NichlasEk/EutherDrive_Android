@@ -167,8 +167,17 @@ public class ROM : IROM
             _dsp1SwapPorts = false;
         }
 
-        // ST010 support (chip ID 0x0A)
-        bool hasSt010 = header.ExCoprocessor == 0 && header.Chips == 0x0A;
+        bool isSt01x = IsSt01xChipset(header.ChipsetByte, header.ExCoprocessor);
+        bool hasSt010 = false;
+        bool hasSt011 = false;
+        if (isSt01x)
+        {
+            if (GuessSt01xVariant(data) == St01xVariant.St011)
+                hasSt011 = true;
+            else
+                hasSt010 = true;
+        }
+
         if (hasSt010)
         {
             if (_system == null)
@@ -192,8 +201,6 @@ public class ROM : IROM
             _st010 = null;
         }
 
-        // ST011 support (chip ID 0x05)
-        bool hasSt011 = header.ExCoprocessor == 0 && header.Chips == 5;
         if (hasSt011)
         {
             if (_system == null)
@@ -579,19 +586,23 @@ public class ROM : IROM
             return false;
         }
 
-        // ST010 uses similar mapping to DSP-1/ST011 but with different addresses
-        // Based on research: ST010 maps to $6000-$7FFF in banks $00-$3F/$80-$BF
-        if ((bank & 0x7F) <= 0x3F && adr >= 0x6000 && adr < 0x8000)
+        // jgenesis maps ST010/ST011 ports at $60-$67:0000-$0001 and RAM at $68-$6F:0000-$0FFF.
+        if (bank is >= 0x60 and <= 0x67 && adr == 0x0000)
         {
-            // $6000-$6FFF: Data port, $7000-$7FFF: Status port
-            if (adr < 0x7000)
-            {
-                value = _st010.ReadData();
-            }
-            else
-            {
-                value = _st010.ReadStatus();
-            }
+            value = _st010.ReadData();
+            return true;
+        }
+
+        if (bank is >= 0x60 and <= 0x67 && adr == 0x0001)
+        {
+            value = _st010.ReadStatus();
+            return true;
+        }
+
+        if (bank is >= 0x68 and <= 0x6F && adr >= 0x0000 && adr <= 0x0FFF)
+        {
+            uint sramAddr = (uint)(((bank & 0x7) << 12) | (adr & 0x0FFF));
+            value = _st010.ReadRam(sramAddr);
             return true;
         }
 
@@ -669,16 +680,16 @@ public class ROM : IROM
             return false;
         }
 
-        // ST010 uses similar mapping to DSP-1/ST011 but with different addresses
-        // Based on research: ST010 maps to $6000-$7FFF in banks $00-$3F/$80-$BF
-        if ((bank & 0x7F) <= 0x3F && adr >= 0x6000 && adr < 0x8000)
+        if (bank is >= 0x60 and <= 0x67 && adr == 0x0000)
         {
-            // $6000-$6FFF: Data port, $7000-$7FFF: Status port
-            if (adr < 0x7000)
-            {
-                _st010.WriteData(value);
-            }
-            // Status port is read-only for writes
+            _st010.WriteData(value);
+            return true;
+        }
+
+        if (bank is >= 0x68 and <= 0x6F && adr >= 0x0000 && adr <= 0x0FFF)
+        {
+            uint sramAddr = (uint)(((bank & 0x7) << 12) | (adr & 0x0FFF));
+            _st010.WriteRam(sramAddr, value);
             return true;
         }
 
@@ -870,6 +881,48 @@ public class ROM : IROM
         return (mapMode == 0x22 || mapMode == 0x32) && chipsetByte >= 0x43 && chipsetByte <= 0x45;
     }
 
+    private static bool IsSt01xChipset(int chipsetByte, int exCoprocessor)
+    {
+        return chipsetByte == 0xF6 && exCoprocessor == 0x01;
+    }
+
+    private static St01xVariant GuessSt01xVariant(byte[] rom)
+    {
+        uint checksum = ComputeCrc32(rom);
+        // Hayazashi Nidan Morita Shougi (J)
+        return checksum == 0x81E822AD ? St01xVariant.St011 : St01xVariant.St010;
+    }
+
+    private enum St01xVariant
+    {
+        St010,
+        St011
+    }
+
+    private static readonly uint[] Crc32Table = BuildCrc32Table();
+
+    private static uint[] BuildCrc32Table()
+    {
+        uint[] table = new uint[256];
+        for (uint i = 0; i < table.Length; i++)
+        {
+            uint crc = i;
+            for (int bit = 0; bit < 8; bit++)
+                crc = (crc & 1) != 0 ? 0xEDB88320u ^ (crc >> 1) : (crc >> 1);
+            table[i] = crc;
+        }
+
+        return table;
+    }
+
+    private static uint ComputeCrc32(byte[] data)
+    {
+        uint crc = 0xFFFFFFFFu;
+        foreach (byte b in data)
+            crc = Crc32Table[(crc ^ b) & 0xFF] ^ (crc >> 8);
+        return ~crc;
+    }
+
     private bool TryGetSnesPc(out int pc, out int op)
     {
         pc = 0;
@@ -964,8 +1017,10 @@ public class ROM : IROM
         if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
             return File.ReadAllBytes(fromEnv);
 
-        // Try common ST010 ROM filenames
+        // Search repo-local BIOS paths first, then compatibility fallbacks.
         string[] possiblePaths = [
+            .. EnumerateRepoRelativeBiosPaths("st010.bin"),
+            .. EnumerateRepoRelativeBiosPaths("st-010.bin"),
             "/home/nichlas/roms/ST-010.bin",
             "/home/nichlas/roms/ST010.bin",
             "/home/nichlas/roms/ST010 (Enhancement Chip).bin",
