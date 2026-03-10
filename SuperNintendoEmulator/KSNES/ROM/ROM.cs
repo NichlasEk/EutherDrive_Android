@@ -1010,9 +1010,14 @@ public class ROM : IROM
         if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
             return File.ReadAllBytes(fromEnv);
 
-        // Search for the repository-local BIOS folder first, then a few compatibility fallbacks.
+        byte[]? splitRom = TryLoadSplitSt018Rom();
+        if (splitRom is not null)
+            return splitRom;
+
+        // Fall back to pre-concatenated blobs and a few compatibility paths.
         string[] possiblePaths = [
-            .. EnumerateRepoRelativeBiosPaths("st018.program.rom"),
+            .. EnumerateRepoRelativeBiosPaths("st018.rom"),
+            .. EnumerateRepoRelativeBiosPaths("st018.bin"),
             "/home/nichlas/roms/ST-018.bin",
             "/home/nichlas/roms/ST018.bin",
             "/home/nichlas/roms/ST018 (Enhancement Chip).bin",
@@ -1023,6 +1028,34 @@ public class ROM : IROM
         {
             if (File.Exists(path))
                 return File.ReadAllBytes(path);
+        }
+
+        return null;
+    }
+
+    private static byte[]? TryLoadSplitSt018Rom()
+    {
+        foreach (string programPath in EnumerateRepoRelativeBiosPaths("st018.program.rom"))
+        {
+            string dataPath = Path.Combine(Path.GetDirectoryName(programPath) ?? string.Empty, "st018.data.rom");
+            bool hasProgram = File.Exists(programPath);
+            bool hasData = File.Exists(dataPath);
+
+            if (!hasProgram && !hasData)
+                continue;
+
+            if (hasProgram && hasData)
+            {
+                byte[] programRom = File.ReadAllBytes(programPath);
+                byte[] dataRom = File.ReadAllBytes(dataPath);
+                byte[] combined = new byte[programRom.Length + dataRom.Length];
+                Buffer.BlockCopy(programRom, 0, combined, 0, programRom.Length);
+                Buffer.BlockCopy(dataRom, 0, combined, programRom.Length, dataRom.Length);
+                return combined;
+            }
+
+            throw new FileNotFoundException(
+                $"ST018 BIOS set incomplete in '{Path.GetDirectoryName(programPath)}'; expected both st018.program.rom and st018.data.rom.");
         }
 
         return null;

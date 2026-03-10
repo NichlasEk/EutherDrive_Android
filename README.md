@@ -48,14 +48,19 @@ You can set the PC Engine CD BIOS in two ways:
 Note: explicit Arcade Card emulation is not implemented yet.
 
 ## ST018 BIOS
-ST018 support expects the enhancement-chip ROM to be present in the repository BIOS folder.
+ST018 support expects the enhancement-chip ROM set to be present in the repository BIOS folder.
 
-- Default path: `EutherDrive/bios/st018.program.rom`
+- Default files:
+  - `EutherDrive/bios/st018.program.rom`
+  - `EutherDrive/bios/st018.data.rom`
+
+The loader will combine those two files automatically. A pre-concatenated blob is also accepted if
+you point `EUTHERDRIVE_ST018_ROM` at it.
 
 If you want to override it, set:
 
 ```bash
-EUTHERDRIVE_ST018_ROM=/full/path/to/st018.program.rom
+EUTHERDRIVE_ST018_ROM=/full/path/to/st018.rom
 ```
 
 ## Keyboard Shortcuts (UI)
