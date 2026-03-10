@@ -5,6 +5,19 @@ namespace KSNES.AudioProcessing;
 public class APU : IAPU
 {
     [NonSerialized]
+    private readonly bool _tracePorts =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_APU_PORTS"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private int _tracePortsCount;
+    [NonSerialized]
+    private readonly int _tracePortsLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_APU_PORTS_LIMIT", 256);
+    [NonSerialized]
+    private readonly bool _traceSpcPortReads =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_APU_SPC_READS"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly byte[] _lastTracedSpcPortRead = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+
+    [NonSerialized]
     private readonly ISPC700 _spc;
     [NonSerialized]
     private readonly IDSP _dsp;
@@ -23,6 +36,8 @@ public class APU : IAPU
     public byte[] SpcReadPorts { get; set; } = new byte[6];
     private byte _dspAdr;
     private bool _dspRomReadable = true;
+    private bool _port01ResetThisCycle;
+    private bool _port23ResetThisCycle;
 
     private int _cycles;
 
@@ -75,6 +90,8 @@ public class APU : IAPU
         SpcReadPorts = new byte[6];
         _dspAdr = 0;
         _dspRomReadable = true;
+        _port01ResetThisCycle = false;
+        _port23ResetThisCycle = false;
         _spc.Reset();
         _dsp.Reset();
         _cycles = 0;
@@ -101,6 +118,8 @@ public class APU : IAPU
 
     public void Cycle()
     {
+        _port01ResetThisCycle = false;
+        _port23ResetThisCycle = false;
         _spc.Cycle();
         if ((_cycles & 0x1f) == 0)
         {
@@ -158,6 +177,20 @@ public class APU : IAPU
         _cycles++;
     }
 
+    public bool TryWriteMainCpuPort(int portIndex, byte value)
+    {
+        if ((portIndex <= 1 && _port01ResetThisCycle) ||
+            (portIndex >= 2 && _port23ResetThisCycle))
+        {
+            TracePort($"[APU-PORT-CPU-DROP] port={portIndex} val=0x{value:X2} cycle={_cycles}");
+            return false;
+        }
+
+        SpcReadPorts[portIndex] = value;
+        TracePort($"[APU-PORT-CPU-WR] port={portIndex} val=0x{value:X2} cycle={_cycles}");
+        return true;
+    }
+
     public byte Read(int adr)
     {
         adr &= 0xffff;
@@ -179,6 +212,7 @@ public class APU : IAPU
             case 0xf7:
             case 0xf8:
             case 0xf9:
+                TraceSpcRead(adr - 0xf4, SpcReadPorts[adr - 0xf4]);
                 return SpcReadPorts[adr - 0xf4];
             case 0xfd:
                 byte val = _timer1counter;
@@ -208,6 +242,7 @@ public class APU : IAPU
             case 0xf0:
                 break;
             case 0xf1:
+                TracePort($"[APU-F1-WR] val=0x{value:X2} cycle={_cycles}");
                 if (!_timer1enabled && (value & 0x01) > 0)
                 {
                     _timer1div = 0;
@@ -234,12 +269,16 @@ public class APU : IAPU
                 {
                     SpcReadPorts[0] = 0;
                     SpcReadPorts[1] = 0;
+                    _port01ResetThisCycle = true;
+                    TracePort($"[APU-PORT-SPC-RST] group=01 cycle={_cycles}");
                 }
 
                 if ((value & 0x20) > 0)
                 {
                     SpcReadPorts[2] = 0;
                     SpcReadPorts[3] = 0;
+                    _port23ResetThisCycle = true;
+                    TracePort($"[APU-PORT-SPC-RST] group=23 cycle={_cycles}");
                 }
                 break;
             case 0xf2:
@@ -256,6 +295,7 @@ public class APU : IAPU
             case 0xf6:
             case 0xf7:
                 SpcWritePorts[adr - 0xf4] = value;
+                TracePort($"[APU-PORT-SPC-WR] port={adr - 0xf4} val=0x{value:X2} cycle={_cycles}");
                 break;
             case 0xf8:
             case 0xf9:
@@ -365,5 +405,33 @@ public class APU : IAPU
         }
         _resampleRead = (_resampleRead + count) % ResampleRingSize;
         _resampleCount -= count;
+    }
+
+    private static int ParseTraceLimit(string envName, int defaultValue)
+    {
+        return int.TryParse(Environment.GetEnvironmentVariable(envName), out int limit) && limit > 0
+            ? limit
+            : defaultValue;
+    }
+
+    private void TracePort(string message)
+    {
+        if (!_tracePorts || _tracePortsCount >= _tracePortsLimit)
+            return;
+
+        _tracePortsCount++;
+        Console.WriteLine(message);
+    }
+
+    private void TraceSpcRead(int port, byte value)
+    {
+        if (!_traceSpcPortReads)
+            return;
+
+        if (_lastTracedSpcPortRead[port] == value)
+            return;
+
+        _lastTracedSpcPortRead[port] = value;
+        TracePort($"[APU-PORT-SPC-RD] port={port} val=0x{value:X2} cycle={_cycles}");
     }
 }

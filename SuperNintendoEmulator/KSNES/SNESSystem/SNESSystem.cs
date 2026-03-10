@@ -69,6 +69,7 @@ public class SNESSystem : ISNESSystem
     private bool _autoJoyRead;
     private bool _autoJoyBusy;
     private int _autoJoyTimer;
+    private bool _autoJoyPendingStart;
     public bool PPULatch { get; private set; }
 
     private int _joypad1Val;
@@ -104,6 +105,9 @@ public class SNESSystem : ISNESSystem
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_DMA"), "1", StringComparison.Ordinal);
     private readonly bool _traceInidisp =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_INIDISP"), "1", StringComparison.Ordinal);
+    private readonly bool _traceApuPorts =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_APU_PORTS"), "1", StringComparison.Ordinal);
+    private int _traceApuPortsCount;
     private bool HasExplicitWramTraceFilter => _traceWramAddrs.Count > 0;
 
     private int[] _dmaMode = [];
@@ -378,6 +382,7 @@ public class SNESSystem : ISNESSystem
         _autoJoyRead = false;
         _autoJoyBusy = false;
         _autoJoyTimer = 0;
+        _autoJoyPendingStart = false;
         PPULatch = true;
         _joypad1Val = 0;
         _joypad2Val = 0;
@@ -457,6 +462,51 @@ public class SNESSystem : ISNESSystem
             _joypad1Val = _joypad1State;
             _joypad2Val = _joypad2State;
         }
+        int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
+        if (XPos == 0)
+        {
+            // HVBJOY reports HBlank during the first 4 master cycles of each scanline.
+            _inHblank = true;
+            PPU.CheckOverscan(YPos);
+
+            if (YPos == vBlankStart)
+            {
+                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
+                {
+                    Console.WriteLine($"[VBLANK-START] Y={YPos} IsPal={IsPal} Overscan={PPU.FrameOverscan} Start={vBlankStart}");
+                }
+                _inNmi = true;
+                _inVblank = true;
+                if (_autoJoyRead)
+                {
+                    _autoJoyPendingStart = true;
+                }
+                if (_nmiEnabled)
+                {
+                    CPU.NmiWanted = true;
+                }
+            }
+            else if (YPos == 0)
+            {
+                if (_inVblank && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
+                {
+                    Console.WriteLine($"[VBLANK-END] Y={YPos} X={XPos}");
+                }
+                _inNmi = false;
+                _inVblank = false;
+                _autoJoyPendingStart = false;
+                InitHdma();
+            }
+        }
+        else if (XPos == 4)
+        {
+            _inHblank = false;
+        }
+        else if (XPos == 1096)
+        {
+            _inHblank = true;
+        }
+
         if (_hdmaTimer > 0)
         {
             _hdmaTimer -= 2;
@@ -492,52 +542,23 @@ public class SNESSystem : ISNESSystem
         }
         
         CPU.IrqWanted = _inIrq || ROM.IrqWanted;
-        if (XPos == 1024)
+        if (XPos == 512 && !noPpu)
         {
-            _inHblank = true;
+            PPU.RenderLine(YPos);
+        }
+        else if (XPos == 1096)
+        {
             if (!_inVblank)
             {
                 HandleHdma();
             }
         }
-        else if (XPos == 0)
+        if (_autoJoyPendingStart && YPos == vBlankStart && XPos == 130)
         {
-            _inHblank = false;
-            PPU.CheckOverscan(YPos);
-        }
-        else if (XPos == 512 && !noPpu)
-        {
-            PPU.RenderLine(YPos);
-        }
-        int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
-        if (YPos == vBlankStart && XPos == 0)
-        {
-            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
-            {
-                Console.WriteLine($"[VBLANK-START] Y={YPos} IsPal={IsPal} Overscan={PPU.FrameOverscan} Start={vBlankStart}");
-            }
-            _inNmi = true;
-            _inVblank = true;
-            if (_autoJoyRead)
-            {
-                _autoJoyBusy = true;
-                _autoJoyTimer = 4224;
-                DoAutoJoyRead();
-            }
-            if (_nmiEnabled)
-            {
-                CPU.NmiWanted = true;
-            }
-        }
-        else if (YPos == 0 && XPos == 0)
-        {
-            if (_inVblank && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
-            {
-                Console.WriteLine($"[VBLANK-END] Y={YPos} X={XPos}");
-            }
-            _inNmi = false;
-            _inVblank = false;
-            InitHdma();
+            _autoJoyPendingStart = false;
+            _autoJoyBusy = true;
+            _autoJoyTimer = 4224;
+            DoAutoJoyRead();
         }
         if (_autoJoyBusy)
         {
@@ -548,6 +569,7 @@ public class SNESSystem : ISNESSystem
             }
         }
         ROM.RunCoprocessor(Cycles);
+        CatchUpApu();
         XPos += 2;
         if (XPos == 1364)
         {
@@ -556,7 +578,6 @@ public class SNESSystem : ISNESSystem
             int maxV = IsPal ? 312 : 262;
             if (YPos == maxV)
             {
-                CatchUpApu();
                 YPos = 0;
             }
         }
@@ -635,13 +656,9 @@ public class SNESSystem : ISNESSystem
         if (!_dmaFromB[i] && !_dmaNotifyActive[i])
         {
             uint sourceAddress = (uint)((_dmaAadrBank[i] << 16) | _dmaAadr[i]);
-            bool isBwRamBank = sourceAddress >= 0x400000 && sourceAddress < 0x600000;
-            bool isBwRamWindow = ((sourceAddress >> 16) <= 0x3F || ((sourceAddress >> 16) >= 0x80 && (sourceAddress >> 16) <= 0xBF)) 
-                                 && (sourceAddress & 0xFFFF) >= 0x6000 && (sourceAddress & 0xFFFF) < 0x8000;
-
-            if ((isBwRamBank || isBwRamWindow) && ROM is KSNES.ROM.ROM rom)
+            if (ROM is KSNES.ROM.ROM rom)
             {
-                rom.NotifyDmaStart(sourceAddress);
+                rom.NotifyDmaStart((byte)i, sourceAddress);
                 _dmaNotifyActive[i] = true;
                 _dmaNotifyCount++;
             }
@@ -678,10 +695,8 @@ public class SNESSystem : ISNESSystem
             {
                 _dmaNotifyActive[i] = false;
                 _dmaNotifyCount--;
-                if (_dmaNotifyCount == 0 && ROM is KSNES.ROM.ROM rom)
-                {
-                    rom.NotifyDmaEnd();
-                }
+                if (ROM is KSNES.ROM.ROM rom)
+                    rom.NotifyDmaEnd((byte)i);
             }
             _dmaTimer += 8;
         }
@@ -1051,7 +1066,13 @@ public class SNESSystem : ISNESSystem
         if (adr >= 0x40 && adr < 0x80)
         {
             CatchUpApu();
-            return APU.SpcWritePorts[adr & 0x3];
+            int port = adr & 0x3;
+            int val = APU.SpcWritePorts[port];
+            int pc = -1;
+            if (CPU is KSNES.CPU.CPU cpu)
+                pc = cpu.ProgramCounter24;
+            TraceApuPort($"[APU-PORT-CPU-RD] port={port} val=0x{val:X2} pc=0x{pc:X6}");
+            return val;
         }
         if (adr == 0x80)
         {
@@ -1092,7 +1113,12 @@ public class SNESSystem : ISNESSystem
         if (adr >= 0x40 && adr < 0x80)
         {
             CatchUpApu();
-            APU.SpcReadPorts[adr & 0x3] = (byte) value;
+            int port = adr & 0x3;
+            bool accepted = APU.TryWriteMainCpuPort(port, (byte)value);
+            int pc = -1;
+            if (CPU is KSNES.CPU.CPU cpu)
+                pc = cpu.ProgramCounter24;
+            TraceApuPort($"[APU-PORT-CPU-WR] port={port} val=0x{value:X2} accepted={(accepted ? 1 : 0)} pc=0x{pc:X6} dma={(dma ? 1 : 0)}");
             return;
         }
         switch (adr)
@@ -1173,6 +1199,15 @@ public class SNESSystem : ISNESSystem
                 _tracePpuBusCount++;
                 return;
         }
+    }
+
+    private void TraceApuPort(string message)
+    {
+        if (!_traceApuPorts || _traceApuPortsCount >= 256)
+            return;
+
+        _traceApuPortsCount++;
+        Console.WriteLine(message);
     }
 
     private int Rread(int adr) 

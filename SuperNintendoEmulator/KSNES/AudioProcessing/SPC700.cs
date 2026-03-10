@@ -130,6 +130,8 @@ public class SPC700 : ISPC700
         _cyclesLeft = 7;
     }
 
+    public ushort ProgramCounter => _br[PC];
+
     public void SetAPU(IAPU apu)
     {
         _apu = apu;

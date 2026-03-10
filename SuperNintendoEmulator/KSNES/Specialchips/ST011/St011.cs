@@ -1,15 +1,15 @@
 using KSNES.SNESSystem;
 
-namespace KSNES.Specialchips.DSP1;
+namespace KSNES.Specialchips.ST011;
 
-public sealed class Dsp1
+public sealed class St011
 {
     private readonly Upd77c25 _cpu;
     private ulong _lastSnesCycles;
 
-    public Dsp1(byte[] rom, ISNESSystem snes)
+    public St011(byte[] rom, byte[] sram, ISNESSystem snes)
     {
-        _cpu = new Upd77c25(rom, snes?.IsPal ?? false);
+        _cpu = new Upd77c25(rom, sram, snes?.IsPal ?? false);
         _lastSnesCycles = 0;
     }
 
@@ -32,7 +32,9 @@ public sealed class Dsp1
     public byte ReadData() => _cpu.ReadData();
     public byte ReadStatus() => _cpu.ReadStatus();
     public void WriteData(byte value) => _cpu.WriteData(value);
-    public void DumpRecentIo(string tag, int count) => _cpu.DumpRecentIo(tag, count);
-    public void DumpRecentOpcodes(string tag, int count) => _cpu.DumpRecentOpcodes(tag, count);
-    public int SnesWordWritesSeen => _cpu.SnesWordWritesSeen;
+    
+    public byte ReadRam(uint address) => _cpu.ReadRam(address);
+    public void WriteRam(uint address, byte value) => _cpu.WriteRam(address, value);
+    
+    public byte[] GetSram() => _cpu.GetSram();
 }

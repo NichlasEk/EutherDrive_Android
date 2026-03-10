@@ -1066,14 +1066,24 @@ public sealed class Sa1
         private sealed class NullApu : IAPU
         {
             public byte[] RAM { get; } = new byte[0];
+            public ISPC700 Spc { get; } = new NullSpc();
             public void Attach() { }
             public void Cycle() { }
+            public bool TryWriteMainCpuPort(int portIndex, byte value) => true;
             public void Write(int adr, byte value) { }
             public byte Read(int adr) => 0;
             public byte[] SpcWritePorts { get; } = new byte[4];
             public byte[] SpcReadPorts { get; set; } = new byte[4];
             public void Reset() { }
             public void SetSamples(float[] left, float[] right) { }
+        }
+
+        private sealed class NullSpc : ISPC700
+        {
+            public ushort ProgramCounter => 0;
+            public void SetAPU(IAPU apu) { }
+            public void Cycle() { }
+            public void Reset() { }
         }
 
         private sealed class NullRenderer : IRenderer

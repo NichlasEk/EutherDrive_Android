@@ -40,6 +40,53 @@ internal enum HalfwordLoadType
     SignedHalfword,
 }
 
+internal struct ConditionCodes
+{
+    public bool Sign;
+    public bool Zero;
+    public bool Carry;
+    public bool Overflow;
+
+    public static ConditionCodes Logical(uint value, bool shifterOut, bool overflow)
+    {
+        return new ConditionCodes
+        {
+            Sign = (value & 0x80000000) != 0,
+            Zero = value == 0,
+            Carry = shifterOut,
+            Overflow = overflow,
+        };
+    }
+}
+
+internal enum AluOp
+{
+    And = 0x0,
+    ExclusiveOr = 0x1,
+    Subtract = 0x2,
+    ReverseSubtract = 0x3,
+    Add = 0x4,
+    AddCarry = 0x5,
+    SubtractCarry = 0x6,
+    ReverseSubtractCarry = 0x7,
+    Test = 0x8,
+    TestEqual = 0x9,
+    Compare = 0xA,
+    CompareNegate = 0xB,
+    Or = 0xC,
+    Move = 0xD,
+    BitClear = 0xE,
+    MoveNegate = 0xF,
+}
+
+internal enum ShiftType
+{
+    Left = 0,
+    LogicalRight = 1,
+    ArithmeticRight = 2,
+    RotateRight = 3,
+}
+
 internal enum CpuState
 {
     Arm = 0,
@@ -317,103 +364,30 @@ internal sealed class Arm7TdmiEmulator
 
     private void ExecuteDataProcessing(uint instruction)
     {
-        uint opcode = (instruction >> 21) & 0xF;
+        AluOp opcode = (AluOp)((instruction >> 21) & 0xF);
         uint rn = (instruction >> 16) & 0xF;
         uint rd = (instruction >> 12) & 0xF;
         bool setFlags = (instruction & 0x00100000) != 0;
 
-        uint operand2 = GetOperand2(instruction);
-        uint rnValue = ReadRegister(rn);
-
-        uint result = 0;
-        bool carry = false;
-
-        switch (opcode)
+        if ((instruction & 0x02000000) != 0)
         {
-            case 0x0:
-                result = rnValue & operand2;
-                break;
-            case 0x1:
-                result = rnValue ^ operand2;
-                break;
-            case 0x2:
-                result = rnValue - operand2;
-                carry = operand2 <= rnValue;
-                break;
-            case 0x3:
-                result = operand2 - rnValue;
-                carry = rnValue <= operand2;
-                break;
-            case 0x4:
-                result = rnValue + operand2;
-                carry = result < rnValue;
-                break;
-            case 0x5:
-            {
-                uint c = _cpsr.Carry ? 1u : 0u;
-                result = rnValue + operand2 + c;
-                carry = result < rnValue || (c == 1 && result == rnValue);
-                break;
-            }
-            case 0x6:
-            {
-                uint c = _cpsr.Carry ? 0u : 1u;
-                result = rnValue - operand2 - c;
-                carry = rnValue >= operand2 + c;
-                break;
-            }
-            case 0x7:
-            {
-                uint c = _cpsr.Carry ? 0u : 1u;
-                result = operand2 - rnValue - c;
-                carry = operand2 >= rnValue + c;
-                break;
-            }
-            case 0x8:
-                result = rnValue & operand2;
-                UpdateFlags(result, carry);
-                return;
-            case 0x9:
-                result = rnValue ^ operand2;
-                UpdateFlags(result, carry);
-                return;
-            case 0xA:
-                result = rnValue - operand2;
-                carry = rnValue >= operand2;
-                UpdateFlags(result, carry);
-                return;
-            case 0xB:
-                result = rnValue + operand2;
-                carry = result < rnValue;
-                UpdateFlags(result, carry);
-                return;
-            case 0xC:
-                result = rnValue | operand2;
-                break;
-            case 0xD:
-                result = operand2;
-                break;
-            case 0xE:
-                result = rnValue & ~operand2;
-                break;
-            case 0xF:
-                result = ~operand2;
-                break;
+            uint immediate = instruction & 0xFF;
+            uint rotation = ((instruction >> 8) & 0xF) * 2;
+            AluRotatedImmediate(opcode, rn, rd, setFlags, immediate, rotation);
         }
-
-        if (rd == 15)
+        else if ((instruction & 0x10) != 0)
         {
-            _regs[15] = result & ~3u;
-            RefillPrefetch();
+            uint rm = instruction & 0xF;
+            uint rs = (instruction >> 8) & 0xF;
+            ShiftType shiftType = (ShiftType)((instruction >> 5) & 0x3);
+            AluRegisterShift(opcode, rn, rd, setFlags, rm, shiftType, rs);
         }
         else
         {
-            _regs[rd] = result;
-        }
-
-        if (setFlags && rd != 15)
-        {
-            UpdateFlags(result, carry);
+            uint rm = instruction & 0xF;
+            ShiftType shiftType = (ShiftType)((instruction >> 5) & 0x3);
+            uint shift = (instruction >> 7) & 0x1F;
+            AluImmediateShift(opcode, rn, rd, setFlags, rm, shiftType, shift);
         }
     }
 
@@ -779,19 +753,104 @@ internal sealed class Arm7TdmiEmulator
             _fetchCycle = MemoryCycle.N;
     }
 
-    private uint GetOperand2(uint instruction)
+    private void AluRotatedImmediate(AluOp op, uint rn, uint rd, bool setFlags, uint immediate, uint rotation)
     {
-        bool immediate = (instruction & 0x02000000) != 0;
-        if (immediate)
+        (uint operand2, bool shifterOut) = rotation != 0
+            ? (RotateRight(immediate, rotation), ((immediate >> (int)(rotation - 1)) & 1) != 0)
+            : (immediate, _cpsr.Carry);
+
+        Alu(op, ReadRegister(rn), rd, setFlags, operand2, shifterOut);
+    }
+
+    private void AluImmediateShift(AluOp op, uint rn, uint rd, bool setFlags, uint rm, ShiftType shiftType, uint shift)
+    {
+        uint value = ReadRegister(rm);
+        (uint operand2, bool shifterOut) = ApplyImmediateShift(value, shiftType, shift, _cpsr.Carry);
+        Alu(op, ReadRegister(rn), rd, setFlags, operand2, shifterOut);
+    }
+
+    private void AluRegisterShift(AluOp op, uint rn, uint rd, bool setFlags, uint rm, ShiftType shiftType, uint rs)
+    {
+        uint value = _regs[rm];
+        uint shift = _regs[rs] & 0xFF;
+        uint operand2;
+        bool shifterOut;
+
+        if (shift == 0)
         {
-            return ParseRotatedImmediate(instruction);
+            operand2 = value;
+            shifterOut = _cpsr.Carry;
+        }
+        else
+        {
+            switch (shiftType)
+            {
+                case ShiftType.Left:
+                    if (shift < 32)
+                    {
+                        operand2 = value << (int)shift;
+                        shifterOut = ((value >> (int)(32 - shift)) & 1) != 0;
+                    }
+                    else if (shift == 32)
+                    {
+                        operand2 = 0;
+                        shifterOut = (value & 1) != 0;
+                    }
+                    else
+                    {
+                        operand2 = 0;
+                        shifterOut = false;
+                    }
+                    break;
+                case ShiftType.LogicalRight:
+                    if (shift < 32)
+                    {
+                        operand2 = value >> (int)shift;
+                        shifterOut = ((value >> (int)(shift - 1)) & 1) != 0;
+                    }
+                    else if (shift == 32)
+                    {
+                        operand2 = 0;
+                        shifterOut = (value & 0x80000000) != 0;
+                    }
+                    else
+                    {
+                        operand2 = 0;
+                        shifterOut = false;
+                    }
+                    break;
+                case ShiftType.ArithmeticRight:
+                    if (shift < 32)
+                    {
+                        operand2 = unchecked((uint)((int)value >> (int)shift));
+                        shifterOut = ((value >> (int)(shift - 1)) & 1) != 0;
+                    }
+                    else
+                    {
+                        operand2 = unchecked((uint)((int)value >> 31));
+                        shifterOut = (value & 0x80000000) != 0;
+                    }
+                    break;
+                default:
+                    while (shift > 32)
+                        shift -= 32;
+
+                    if (shift == 32)
+                    {
+                        operand2 = value;
+                        shifterOut = (value & 0x80000000) != 0;
+                    }
+                    else
+                    {
+                        operand2 = RotateRight(value, shift);
+                        shifterOut = ((value >> (int)(shift - 1)) & 1) != 0;
+                    }
+                    break;
+            }
         }
 
-        uint rm = instruction & 0xF;
-        uint shiftType = (instruction >> 5) & 0x3;
-        uint shiftAmount = (instruction >> 7) & 0x1F;
-        uint value = ReadRegister(rm);
-        return Shift(value, shiftType, shiftAmount);
+        InternalCycles(1);
+        Alu(op, _regs[rn], rd, setFlags, operand2, shifterOut);
     }
 
     private uint GetLoadStoreOffset(uint instruction)
@@ -801,25 +860,11 @@ internal sealed class Arm7TdmiEmulator
             return instruction & 0xFFF;
 
         uint rm = instruction & 0xF;
-        uint shiftType = (instruction >> 5) & 0x3;
+        ShiftType shiftType = (ShiftType)((instruction >> 5) & 0x3);
         uint shiftAmount = (instruction >> 7) & 0x1F;
         uint value = ReadRegister(rm);
-        return Shift(value, shiftType, shiftAmount);
-    }
-
-    private static uint Shift(uint value, uint type, uint amount)
-    {
-        if (amount == 0)
-            return value;
-
-        return type switch
-        {
-            0 => value << (int)amount,
-            1 => value >> (int)amount,
-            2 => (uint)((int)value >> (int)amount),
-            3 => RotateRight(value, amount),
-            _ => value,
-        };
+        (uint shifted, _) = ApplyImmediateShift(value, shiftType, shiftAmount, _cpsr.Carry);
+        return shifted;
     }
 
     private static uint RotateRight(uint value, uint amount)
@@ -838,11 +883,82 @@ internal sealed class Arm7TdmiEmulator
         return RotateRight(imm, rotate);
     }
 
-    private void UpdateFlags(uint result, bool carry)
+    private void Alu(AluOp op, uint operand1, uint rd, bool setFlags, uint operand2, bool shifterOut)
     {
-        _cpsr.Sign = (result & 0x80000000) != 0;
-        _cpsr.Zero = result == 0;
-        _cpsr.Carry = carry;
+        (uint result, ConditionCodes codes) = op switch
+        {
+            AluOp.And or AluOp.Test => (operand1 & operand2, ConditionCodes.Logical(operand1 & operand2, shifterOut, _cpsr.Overflow)),
+            AluOp.ExclusiveOr or AluOp.TestEqual => (operand1 ^ operand2, ConditionCodes.Logical(operand1 ^ operand2, shifterOut, _cpsr.Overflow)),
+            AluOp.Subtract or AluOp.Compare => AluAdd(operand1, ~operand2, true),
+            AluOp.ReverseSubtract => AluAdd(operand2, ~operand1, true),
+            AluOp.Add or AluOp.CompareNegate => AluAdd(operand1, operand2, false),
+            AluOp.AddCarry => AluAdd(operand1, operand2, _cpsr.Carry),
+            AluOp.SubtractCarry => AluAdd(operand1, ~operand2, _cpsr.Carry),
+            AluOp.ReverseSubtractCarry => AluAdd(operand2, ~operand1, _cpsr.Carry),
+            AluOp.Or => (operand1 | operand2, ConditionCodes.Logical(operand1 | operand2, shifterOut, _cpsr.Overflow)),
+            AluOp.Move => (operand2, ConditionCodes.Logical(operand2, shifterOut, _cpsr.Overflow)),
+            AluOp.BitClear => (operand1 & ~operand2, ConditionCodes.Logical(operand1 & ~operand2, shifterOut, _cpsr.Overflow)),
+            AluOp.MoveNegate => (~operand2, ConditionCodes.Logical(~operand2, shifterOut, _cpsr.Overflow)),
+            _ => (0, default),
+        };
+
+        if (setFlags)
+        {
+            if (rd == 15)
+            {
+                SpsrToCpsr();
+            }
+            else
+            {
+                _cpsr.Sign = codes.Sign;
+                _cpsr.Zero = codes.Zero;
+                _cpsr.Carry = codes.Carry;
+                _cpsr.Overflow = codes.Overflow;
+            }
+        }
+
+        if (op is AluOp.Test or AluOp.TestEqual or AluOp.Compare or AluOp.CompareNegate)
+            return;
+
+        _regs[rd] = result;
+        if (rd == 15)
+            RefillPrefetch();
+    }
+
+    private static (uint Result, ConditionCodes Codes) AluAdd(uint operand1, uint operand2, bool carryIn)
+    {
+        ulong wide = (ulong)operand1 + operand2 + (carryIn ? 1u : 0u);
+        uint sum = (uint)wide;
+        bool carry = (wide >> 32) != 0;
+        bool overflow = ((operand1 ^ sum) & (operand2 ^ sum) & 0x80000000) != 0;
+        return (sum, new ConditionCodes
+        {
+            Sign = (sum & 0x80000000) != 0,
+            Zero = sum == 0,
+            Carry = carry,
+            Overflow = overflow,
+        });
+    }
+
+    private static (uint Value, bool ShifterOut) ApplyImmediateShift(uint value, ShiftType shiftType, uint shift, bool carryIn)
+    {
+        return (shiftType, shift) switch
+        {
+            (ShiftType.Left, 0) => (value, carryIn),
+            (ShiftType.Left, _) => (value << (int)shift, ((value >> (int)(32 - shift)) & 1) != 0),
+            (ShiftType.LogicalRight, 0) => (0, (value & 0x80000000) != 0),
+            (ShiftType.LogicalRight, _) => (value >> (int)shift, ((value >> (int)(shift - 1)) & 1) != 0),
+            (ShiftType.ArithmeticRight, 0) => (unchecked((uint)((int)value >> 31)), (value & 0x80000000) != 0),
+            (ShiftType.ArithmeticRight, _) => (unchecked((uint)((int)value >> (int)shift)), ((value >> (int)(shift - 1)) & 1) != 0),
+            (ShiftType.RotateRight, 0) => (((carryIn ? 1u : 0u) << 31) | (value >> 1), (value & 1) != 0),
+            (ShiftType.RotateRight, _) => (RotateRight(value, shift), ((value >> (int)(shift - 1)) & 1) != 0),
+            _ => (value, carryIn),
+        };
+    }
+
+    private void SpsrToCpsr()
+    {
+        WriteCpsr(ReadSpsrOrCpsr());
     }
 
     private void RefillPrefetch()

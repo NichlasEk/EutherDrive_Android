@@ -46,6 +46,8 @@ public class ROM : IROM
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CX4_BUS"), "1", StringComparison.Ordinal);
     private static readonly bool TraceDsp1Bus =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_BUS"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceDsp1NearMiss =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_NEARMISS"), "1", StringComparison.Ordinal);
     private static readonly int TraceDsp1BusLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_DSP1_BUS_LIMIT", 500);
     private int _traceDsp1BusCount;
     private static readonly bool TraceSnesVectors =
@@ -122,22 +124,24 @@ public class ROM : IROM
             _sdd1 = null;
         }
 
-        bool hasDsp1 = header.ExCoprocessor == 0 && header.Chips >= 3 && header.Chips <= 5;
-        if (hasDsp1)
+        bool hasDsp = header.ExCoprocessor == 0 && header.Chips >= 3 && header.Chips <= 5;
+        if (hasDsp)
         {
             if (_system == null)
                 throw new InvalidOperationException("ROM system not set.");
 
-            byte[]? dspRom = TryLoadDsp1Rom();
+            DspVariant dspVariant = GuessDspVariant(data);
+            byte[]? dspRom = TryLoadDspRom(dspVariant);
             if (dspRom == null)
             {
-                Console.WriteLine("[DSP1] ROM not found; DSP-1 disabled.");
+                Console.WriteLine($"[{FormatDspVariant(dspVariant)}] ROM not found; {FormatDspVariant(dspVariant)} disabled.");
                 _dsp1 = null;
             }
             else
             {
                 _dsp1 = new KSNES.Specialchips.DSP1.Dsp1(dspRom, _system);
                 _dsp1.Reset();
+                Console.WriteLine($"[{FormatDspVariant(dspVariant)}] Initialized successfully.");
             }
             _dsp1IsHiRom = header.IsHiRom;
             string? forceLo = Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_FORCE_LOROM");
@@ -158,7 +162,7 @@ public class ROM : IROM
             _dsp1SwapPorts = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_SWAP_PORTS"), "1", StringComparison.Ordinal);
             if (_dsp1SwapPorts)
                 Console.WriteLine("[DSP1] Swapping data/status port halves.");
-            _dsp1PortMapping = Dsp1PortMapping.FromMetadata(header.RomSize, header.RamSize);
+            _dsp1PortMapping = Dsp1PortMapping.FromVariantAndMetadata(dspVariant, header.RomSize, header.RamSize);
         }
         else
         {
@@ -250,7 +254,7 @@ public class ROM : IROM
         }
 
         // OBC1 support
-        bool isObc1 = header.ChipsetByte == 0x00 && header.Chips == 0x02;
+        bool isObc1 = header.ChipsetByte == 0x25;
         if (isObc1)
         {
             _obc1 = new KSNES.Specialchips.OBC1.Obc1(_data, _sram);
@@ -366,6 +370,10 @@ public class ROM : IROM
         if (TryReadDsp1(bank, adr, out byte dsp1Value))
         {
             return dsp1Value;
+        }
+        if (TraceDsp1NearMiss && _dsp1 != null && IsNearDspPort(bank, adr) && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+        {
+            Console.WriteLine($"[DSP1-BUS-MISS-RD] bank=0x{bank:X2} adr=0x{adr:X4} hirom={_dsp1IsHiRom} broad={_dsp1BroadMap} swap={_dsp1SwapPorts}");
         }
 
         if (TryReadSt010(bank, adr, out byte st010Value))
@@ -483,6 +491,10 @@ public class ROM : IROM
         {
             return;
         }
+        if (TraceDsp1NearMiss && _dsp1 != null && IsNearDspPort(bank, adr) && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
+        {
+            Console.WriteLine($"[DSP1-BUS-MISS-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} hirom={_dsp1IsHiRom} broad={_dsp1BroadMap} swap={_dsp1SwapPorts}");
+        }
 
         if (TryWriteSt010(bank, adr, value))
         {
@@ -521,6 +533,14 @@ public class ROM : IROM
             _sram[SramIndex(idx)] = value;
             _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
         }
+    }
+
+    private bool IsNearDspPort(int bank, int adr)
+    {
+        int bankMasked = bank & 0x7f;
+        if (_dsp1 == null)
+            return false;
+        return bankMasked >= 0x20 && bankMasked < 0x70 && (adr & 0x8000) != 0;
     }
 
     private bool TryReadDsp1(int bank, int adr, out byte value)
@@ -833,6 +853,15 @@ public class ROM : IROM
         _sdd1?.NotifyDmaEnd(channel);
     }
 
+    public void DumpRecentDspIo(string reason, int count)
+    {
+        if (_dsp1 == null)
+            return;
+        Console.WriteLine($"[DSP1-DUMP-META] tag={reason} snesWords={_dsp1.SnesWordWritesSeen}");
+        _dsp1.DumpRecentOpcodes(reason, Math.Min(count, 64));
+        _dsp1.DumpRecentIo(reason, count);
+    }
+
     public bool IrqWanted => (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);
     public bool NmiWanted => _sa1?.SnesNmi() ?? false;
 
@@ -886,6 +915,30 @@ public class ROM : IROM
         return chipsetByte == 0xF6 && exCoprocessor == 0x01;
     }
 
+    private static DspVariant GuessDspVariant(byte[] rom)
+    {
+        uint checksum = ComputeCrc32(rom);
+        return checksum switch
+        {
+            0x0DFD9CEB or 0x7A1BA194 or 0xAA79FA33 or 0x89A67ADF => DspVariant.Dsp2,
+            0x4DC3D903 => DspVariant.Dsp3,
+            0xA20BE998 or 0x493FDB13 or 0xB9B9DF06 => DspVariant.Dsp4,
+            _ => DspVariant.Dsp1
+        };
+    }
+
+    private static string FormatDspVariant(DspVariant variant)
+    {
+        return variant switch
+        {
+            DspVariant.Dsp1 => "DSP1",
+            DspVariant.Dsp2 => "DSP2",
+            DspVariant.Dsp3 => "DSP3",
+            DspVariant.Dsp4 => "DSP4",
+            _ => "DSP1"
+        };
+    }
+
     private static St01xVariant GuessSt01xVariant(byte[] rom)
     {
         uint checksum = ComputeCrc32(rom);
@@ -897,6 +950,14 @@ public class ROM : IROM
     {
         St010,
         St011
+    }
+
+    private enum DspVariant
+    {
+        Dsp1,
+        Dsp2,
+        Dsp3,
+        Dsp4
     }
 
     private static readonly uint[] Crc32Table = BuildCrc32Table();
@@ -998,17 +1059,48 @@ public class ROM : IROM
         return b >= 0x20 && b < 0x40;
     }
 
-    private static byte[]? TryLoadDsp1Rom()
+    private static byte[]? TryLoadDspRom(DspVariant variant)
     {
-        string? fromEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_ROM");
+        string envName = variant switch
+        {
+            DspVariant.Dsp1 => "EUTHERDRIVE_DSP1_ROM",
+            DspVariant.Dsp2 => "EUTHERDRIVE_DSP2_ROM",
+            DspVariant.Dsp3 => "EUTHERDRIVE_DSP3_ROM",
+            DspVariant.Dsp4 => "EUTHERDRIVE_DSP4_ROM",
+            _ => "EUTHERDRIVE_DSP1_ROM"
+        };
+
+        string? fromEnv = Environment.GetEnvironmentVariable(envName);
         if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
             return File.ReadAllBytes(fromEnv);
 
-        string[] possiblePaths = [
-            .. EnumerateRepoRelativeBiosPaths("DSP1.bin"),
-            .. EnumerateRepoRelativeBiosPaths("dsp1.bin"),
-            "/home/nichlas/roms/DSP1 (World) (Enhancement Chip).bin"
-        ];
+        string[] possiblePaths = variant switch
+        {
+            DspVariant.Dsp1 => [
+                .. EnumerateRepoRelativeBiosPaths("DSP1.bin"),
+                .. EnumerateRepoRelativeBiosPaths("dsp1.bin"),
+                "/home/nichlas/roms/DSP1 (World) (Enhancement Chip).bin"
+            ],
+            DspVariant.Dsp2 => [
+                .. EnumerateRepoRelativeBiosPaths("DSP2.bin"),
+                .. EnumerateRepoRelativeBiosPaths("dsp2.bin"),
+                "/home/nichlas/roms/DSP2.bin",
+                "/home/nichlas/roms/DSP2 (Enhancement Chip).bin"
+            ],
+            DspVariant.Dsp3 => [
+                .. EnumerateRepoRelativeBiosPaths("DSP3.bin"),
+                .. EnumerateRepoRelativeBiosPaths("dsp3.bin"),
+                "/home/nichlas/roms/DSP3.bin",
+                "/home/nichlas/roms/DSP3 (Enhancement Chip).bin"
+            ],
+            DspVariant.Dsp4 => [
+                .. EnumerateRepoRelativeBiosPaths("DSP4.bin"),
+                .. EnumerateRepoRelativeBiosPaths("dsp4.bin"),
+                "/home/nichlas/roms/DSP4.bin",
+                "/home/nichlas/roms/DSP4 (Enhancement Chip).bin"
+            ],
+            _ => Array.Empty<string>()
+        };
 
         foreach (string path in possiblePaths)
         {
@@ -1050,12 +1142,16 @@ public class ROM : IROM
         if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
             return File.ReadAllBytes(fromEnv);
 
-        // Try common ST011 ROM filenames
+        // Search repo-local BIOS paths first, then compatibility fallbacks.
         string[] possiblePaths = [
+            .. EnumerateRepoRelativeBiosPaths("st011.bin"),
+            .. EnumerateRepoRelativeBiosPaths("ST011.bin"),
+            .. EnumerateRepoRelativeBiosPaths("st011.rom"),
+            .. EnumerateRepoRelativeBiosPaths("ST011.rom"),
             "/home/nichlas/roms/ST-011.bin",
             "/home/nichlas/roms/ST011.bin",
             "/home/nichlas/roms/ST011 (Enhancement Chip).bin",
-            "/home/nichlas/roms/ST-010 (Enhancement Chip).bin"
+            "/home/nichlas/roms/ST-011 (Enhancement Chip).bin"
         ];
 
         foreach (string path in possiblePaths)
@@ -1169,8 +1265,12 @@ public class ROM : IROM
             _offsetMask = offsetMask;
         }
 
-        public static Dsp1PortMapping FromMetadata(int romSize, int sramSize)
+        public static Dsp1PortMapping FromVariantAndMetadata(DspVariant variant, int romSize, int sramSize)
         {
+            if (variant == DspVariant.Dsp4)
+                return new Dsp1PortMapping(0x30, 0x40, 0x8000);
+            if (variant == DspVariant.Dsp2 || variant == DspVariant.Dsp3)
+                return new Dsp1PortMapping(0x20, 0x40, 0x8000);
             if (romSize > 1024 * 1024)
                 return new Dsp1PortMapping(0x60, 0x70, 0x0000);
             if (sramSize != 0)

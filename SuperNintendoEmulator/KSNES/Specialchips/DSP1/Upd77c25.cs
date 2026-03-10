@@ -4,6 +4,7 @@ namespace KSNES.Specialchips.DSP1;
 
 internal sealed class Upd77c25
 {
+    private const int RecentIoCapacity = 512;
     private const ulong DspClockHz = 8_000_000;
     private const ulong SnesMasterClockNtsc = 21_477_272;
     private const ulong SnesMasterClockPal = 21_281_370;
@@ -26,6 +27,22 @@ internal sealed class Upd77c25
     private static readonly bool TraceIoDsp = GetTraceIoDsp();
     private static readonly int TraceIoLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_DSP1_IO_LIMIT", 2000);
     private int _traceIoCount;
+    private readonly byte[] _recentIoKind = new byte[RecentIoCapacity];
+    private readonly ushort[] _recentIoValue = new ushort[RecentIoCapacity];
+    private readonly byte[] _recentIoStatus = new byte[RecentIoCapacity];
+    private int _recentIoWriteIndex;
+    private int _recentIoCount;
+    private int _consecutiveFfffWrites;
+    private bool _ffffLoopDumped;
+    private int _snesWordWritesSeen;
+    private const int RecentOpcodeCapacity = 128;
+    private readonly ushort[] _recentOpcodePc = new ushort[RecentOpcodeCapacity];
+    private readonly uint[] _recentOpcodeValue = new uint[RecentOpcodeCapacity];
+    private int _recentOpcodeWriteIndex;
+    private int _recentOpcodeCount;
+    private static readonly bool DetectFfffLoop =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DETECT_DSP1_FFFF_LOOP"), "1", StringComparison.Ordinal);
+    private static readonly int DetectFfffLoopThreshold = ParseTraceLimit("EUTHERDRIVE_DETECT_DSP1_FFFF_LOOP_THRESHOLD", 16);
 
     public Upd77c25(byte[] rom, bool isPal)
     {
@@ -52,6 +69,11 @@ internal sealed class Upd77c25
         _registers.Reset();
         _idling = false;
         _masterCyclesProduct = 0;
+        _consecutiveFfffWrites = 0;
+        _ffffLoopDumped = false;
+        _snesWordWritesSeen = 0;
+        _recentOpcodeWriteIndex = 0;
+        _recentOpcodeCount = 0;
     }
 
     public byte ReadData()
@@ -59,6 +81,7 @@ internal sealed class Upd77c25
         byte value = _registers.SnesReadData();
         if (!_registers.Status.RequestForMaster)
             _idling = false;
+        RecordIo(1, value, _registers.Status.ToByte());
         TraceIoRead(value);
         return value;
     }
@@ -66,6 +89,9 @@ internal sealed class Upd77c25
     public void WriteData(byte value)
     {
         bool wordComplete = _registers.SnesWriteData(value, out ushort word);
+        RecordIo((byte)(wordComplete ? 3 : 2), wordComplete ? word : value, _registers.Status.ToByte());
+        if (wordComplete)
+            _snesWordWritesSeen++;
         if (TraceIo && _traceIoCount < TraceIoLimit)
         {
             if (wordComplete)
@@ -78,7 +104,12 @@ internal sealed class Upd77c25
             _idling = false;
     }
 
-    public byte ReadStatus() => _registers.Status.ToByte();
+    public byte ReadStatus()
+    {
+        byte status = _registers.Status.ToByte();
+        RecordIo(4, status, status);
+        return status;
+    }
 
     public void Tick(ulong masterCyclesElapsed)
     {
@@ -95,7 +126,13 @@ internal sealed class Upd77c25
 
     internal uint FetchOpcode()
     {
-        uint opcode = _programRom[_registers.Pc];
+        ushort pc = _registers.Pc;
+        uint opcode = _programRom[pc];
+        _recentOpcodePc[_recentOpcodeWriteIndex] = pc;
+        _recentOpcodeValue[_recentOpcodeWriteIndex] = opcode;
+        _recentOpcodeWriteIndex = (_recentOpcodeWriteIndex + 1) % RecentOpcodeCapacity;
+        if (_recentOpcodeCount < RecentOpcodeCapacity)
+            _recentOpcodeCount++;
         _registers.Pc = (ushort)((_registers.Pc + 1) & _pcMask);
         return opcode;
     }
@@ -109,8 +146,43 @@ internal sealed class Upd77c25
     internal ushort PcMask => _pcMask;
     internal ushort RpMask => _rpMask;
     internal ushort DpMask => _dpMask;
+    public int SnesWordWritesSeen => _snesWordWritesSeen;
 
     internal void SetIdle() => _idling = true;
+
+    public void DumpRecentOpcodes(string tag, int count)
+    {
+        count = Math.Clamp(count, 1, RecentOpcodeCapacity);
+        count = Math.Min(count, _recentOpcodeCount);
+        Console.WriteLine($"[DSP1-OP-DUMP] tag={tag} count={count} total={_recentOpcodeCount}");
+        for (int i = 0; i < count; i++)
+        {
+            int idx = (_recentOpcodeWriteIndex - count + i + RecentOpcodeCapacity) % RecentOpcodeCapacity;
+            Console.WriteLine($"[DSP1-OP-DUMP] tag={tag} idx={i + 1}/{count} pc=0x{_recentOpcodePc[idx]:X4} op=0x{_recentOpcodeValue[idx]:X6}");
+        }
+    }
+
+    public void DumpRecentIo(string tag, int count)
+    {
+        count = Math.Clamp(count, 1, RecentIoCapacity);
+        count = Math.Min(count, _recentIoCount);
+        Console.WriteLine($"[DSP1-DUMP] tag={tag} count={count} total={_recentIoCount}");
+        for (int i = 0; i < count; i++)
+        {
+            int idx = (_recentIoWriteIndex - count + i + RecentIoCapacity) % RecentIoCapacity;
+            string kind = _recentIoKind[idx] switch
+            {
+                1 => "SNES-RD-DATA",
+                2 => "SNES-WR-BYTE",
+                3 => "SNES-WR-WORD",
+                4 => "SNES-RD-STAT",
+                5 => "DSP-WR-WORD",
+                _ => "UNK"
+            };
+            Console.WriteLine(
+                $"[DSP1-DUMP] tag={tag} idx={i + 1}/{count} kind={kind} val=0x{_recentIoValue[idx]:X4} status=0x{_recentIoStatus[idx]:X2}");
+        }
+    }
 
     private void TraceIoRead(byte value)
     {
@@ -123,10 +195,37 @@ internal sealed class Upd77c25
 
     private void OnUpdWriteData(ushort value)
     {
+        byte status = _registers.Status.ToByte();
+        RecordIo(5, value, status);
+        if (value == 0xFFFF)
+        {
+            _consecutiveFfffWrites++;
+            if (DetectFfffLoop && !_ffffLoopDumped && _snesWordWritesSeen > 0 && _consecutiveFfffWrites >= DetectFfffLoopThreshold)
+            {
+                _ffffLoopDumped = true;
+                Console.WriteLine($"[DSP1-FFFF-LOOP?] threshold={DetectFfffLoopThreshold} status=0x{status:X2} snesWords={_snesWordWritesSeen}");
+                DumpRecentOpcodes("ffff-loop", Math.Min(_recentOpcodeCount, 64));
+                DumpRecentIo("ffff-loop", Math.Min(_recentIoCount, 192));
+            }
+        }
+        else
+        {
+            _consecutiveFfffWrites = 0;
+        }
         if (!TraceIo || !TraceIoDsp || _traceIoCount >= TraceIoLimit)
             return;
         Console.WriteLine($"[DSP1-IO] DSP write word=0x{value:X4}");
         _traceIoCount++;
+    }
+
+    private void RecordIo(byte kind, ushort value, byte status)
+    {
+        _recentIoKind[_recentIoWriteIndex] = kind;
+        _recentIoValue[_recentIoWriteIndex] = value;
+        _recentIoStatus[_recentIoWriteIndex] = status;
+        _recentIoWriteIndex = (_recentIoWriteIndex + 1) % RecentIoCapacity;
+        if (_recentIoCount < RecentIoCapacity)
+            _recentIoCount++;
     }
 
     private static int ParseTraceLimit(string envName, int defaultValue)
@@ -177,26 +276,14 @@ internal sealed class Registers
 
     public void Reset()
     {
-        Dp = 0;
-        Rp = 0x3FF;
         Pc = 0;
-        StackIndex = 0;
-        K = 0;
-        L = 0;
-        AccA = 0;
-        AccB = 0;
         FlagsA = new Flags();
         FlagsB = new Flags();
-        Tr = 0;
-        Trb = 0;
         Status = new Status
         {
-            RequestForMaster = true,
-            DrBusy = false,
             DrControl = DataRegisterBits.Sixteen
         };
-        Dr = 0;
-        So = 0;
+        Rp = 0x3FF;
     }
 
     public byte SnesReadData()

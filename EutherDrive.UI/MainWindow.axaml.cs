@@ -5365,15 +5365,18 @@ public partial class MainWindow : Window
         if (_emuThread == null)
         {
             MaybeDumpMdYmStateOnStop("stop-no-thread");
+            MaybeDumpSnesDspStateOnStop("stop-no-thread");
             return;
         }
         if (!_emuThread.Join(1000))
             _emuThread.Interrupt();
         _emuThread = null;
         MaybeDumpMdYmStateOnStop("stop");
+        MaybeDumpSnesDspStateOnStop("stop");
     }
 
     private bool _ymStopDumpIssued;
+    private bool _dspStopDumpIssued;
 
     private void MaybeDumpMdYmStateOnStop(string reason)
     {
@@ -5399,6 +5402,26 @@ public partial class MainWindow : Window
         _ymStopDumpIssued = true;
         Console.WriteLine($"[YM-DUMP-REQUEST] reason={reason} limit={recentWriteCount}");
         md.DumpYmDebugState(reason, recentWriteCount);
+    }
+
+    private void MaybeDumpSnesDspStateOnStop(string reason)
+    {
+        string? dumpEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_DSP1_ON_STOP");
+        if (!(dumpEnabled == "1" || string.Equals(dumpEnabled, "true", StringComparison.OrdinalIgnoreCase)))
+            return;
+        if (_dspStopDumpIssued)
+            return;
+        if (_core is not SnesAdapter snes || snes.System?.ROM is not KSNES.ROM.ROM rom)
+            return;
+
+        int recentIoCount = 128;
+        string? rawLimit = Environment.GetEnvironmentVariable("EUTHERDRIVE_DUMP_DSP1_ON_STOP_LIMIT");
+        if (!string.IsNullOrWhiteSpace(rawLimit) && int.TryParse(rawLimit, out int parsed) && parsed > 0)
+            recentIoCount = parsed;
+
+        _dspStopDumpIssued = true;
+        Console.WriteLine($"[DSP1-DUMP-REQUEST] reason={reason} limit={recentIoCount}");
+        rom.DumpRecentDspIo(reason, recentIoCount);
     }
 
     private void EmuLoop()
@@ -5780,6 +5803,7 @@ public partial class MainWindow : Window
         uiMdTraceWriter?.Flush();
         uiMdTraceWriter?.Dispose();
         MaybeDumpMdYmStateOnStop("thread-exit");
+        MaybeDumpSnesDspStateOnStop("thread-exit");
         Console.WriteLine("[EmuLoop] Thread exiting");
     }
 

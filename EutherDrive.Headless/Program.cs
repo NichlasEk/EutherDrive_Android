@@ -300,6 +300,7 @@ class Program
 
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
+                bool traceSpcWindow = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SPC_WINDOW") == "1";
                 StreamWriter? snesTraceWriter = null;
                 if (traceSnesFrames)
                 {
@@ -402,7 +403,13 @@ class Program
                             File.WriteAllText(snapshotPath, snapshot);
                         }
                         string sa1Pc = snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1 && sa1.GetCpu() is KSNES.CPU.CPU sa1Cpu ? $" SA1 PC=0x{sa1Cpu.ProgramCounter24:X6}" : "";
-                        TraceFrameEnd($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}");
+                        ushort? spcPcValue = snes.System.APU?.Spc?.ProgramCounter;
+                        string spcPc = spcPcValue.HasValue ? $" SPC PC=0x{spcPcValue.Value:X4}" : "";
+                        TraceFrameEnd($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}{spcPc}");
+                        if (traceSpcWindow && spcPcValue.HasValue)
+                        {
+                            TraceFrameEnd($"[HEADLESS] Frame {frame} SPC window {DumpSpcWindow(snes.System.APU, spcPcValue.Value)}");
+                        }
                     }
                 }
 
@@ -984,6 +991,24 @@ class Program
     {
         string values = string.Join(' ', addresses.Select(addr => $"{addr:X6}=0x{snes.System.Peek(addr):X2}"));
         return $"[HEADLESS] Peek {label}: {values}";
+    }
+
+    private static string DumpSpcWindow(KSNES.AudioProcessing.IAPU apu, ushort pc)
+    {
+        byte[] ram = apu.RAM;
+        int start = Math.Max(0, pc - 8);
+        int end = Math.Min(0xFFFF, pc + 7);
+        var bytes = new List<string>(end - start + 1);
+        for (int addr = start; addr <= end; addr++)
+        {
+            string marker = addr == pc ? "*" : "";
+            bytes.Add($"{marker}{ram[addr]:X2}");
+        }
+
+        string portState =
+            $"cpu=({apu.SpcReadPorts[0]:X2},{apu.SpcReadPorts[1]:X2},{apu.SpcReadPorts[2]:X2},{apu.SpcReadPorts[3]:X2}) " +
+            $"spc=({apu.SpcWritePorts[0]:X2},{apu.SpcWritePorts[1]:X2},{apu.SpcWritePorts[2]:X2},{apu.SpcWritePorts[3]:X2})";
+        return $"pc=0x{pc:X4} [{start:X4}-{end:X4}] {string.Join(' ', bytes)} {portState}";
     }
 
     private static bool FrameBufferHasContent(ReadOnlySpan<byte> fb)
