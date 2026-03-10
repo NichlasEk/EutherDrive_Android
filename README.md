@@ -47,6 +47,18 @@ You can set the PC Engine CD BIOS in two ways:
 
 Note: explicit Arcade Card emulation is not implemented yet.
 
+## DSP1 BIOS
+DSP1 support expects the coprocessor ROM to be present in the repository BIOS folder.
+
+- Default file:
+  - `EutherDrive/bios/DSP1.bin`
+
+If you want to override it, set:
+
+```bash
+EUTHERDRIVE_DSP1_ROM=/full/path/to/DSP1.bin
+```
+
 ## ST018 BIOS
 ST018 support expects the enhancement-chip ROM set to be present in the repository BIOS folder.
 

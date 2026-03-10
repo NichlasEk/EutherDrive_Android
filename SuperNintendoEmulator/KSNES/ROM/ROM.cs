@@ -1004,9 +1004,17 @@ public class ROM : IROM
         if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
             return File.ReadAllBytes(fromEnv);
 
-        string defaultPath = "/home/nichlas/roms/DSP1 (World) (Enhancement Chip).bin";
-        if (File.Exists(defaultPath))
-            return File.ReadAllBytes(defaultPath);
+        string[] possiblePaths = [
+            .. EnumerateRepoRelativeBiosPaths("DSP1.bin"),
+            .. EnumerateRepoRelativeBiosPaths("dsp1.bin"),
+            "/home/nichlas/roms/DSP1 (World) (Enhancement Chip).bin"
+        ];
+
+        foreach (string path in possiblePaths)
+        {
+            if (File.Exists(path))
+                return File.ReadAllBytes(path);
+        }
 
         return null;
     }
