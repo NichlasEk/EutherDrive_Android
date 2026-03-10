@@ -1010,8 +1010,9 @@ public class ROM : IROM
         if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
             return File.ReadAllBytes(fromEnv);
 
-        // Try common ST018 ROM filenames
+        // Search for the repository-local BIOS folder first, then a few compatibility fallbacks.
         string[] possiblePaths = [
+            .. EnumerateRepoRelativeBiosPaths("st018.program.rom"),
             "/home/nichlas/roms/ST-018.bin",
             "/home/nichlas/roms/ST018.bin",
             "/home/nichlas/roms/ST018 (Enhancement Chip).bin",
@@ -1025,6 +1026,30 @@ public class ROM : IROM
         }
 
         return null;
+    }
+
+    private static IEnumerable<string> EnumerateRepoRelativeBiosPaths(string fileName)
+    {
+        HashSet<string> yielded = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string root in EnumerateSearchRoots())
+        {
+            string? current = root;
+            while (!string.IsNullOrWhiteSpace(current))
+            {
+                string candidate = Path.Combine(current, "bios", fileName);
+                if (yielded.Add(candidate))
+                    yield return candidate;
+
+                DirectoryInfo? parent = Directory.GetParent(current);
+                current = parent?.FullName;
+            }
+        }
+    }
+
+    private static IEnumerable<string> EnumerateSearchRoots()
+    {
+        yield return AppContext.BaseDirectory;
+        yield return Directory.GetCurrentDirectory();
     }
 
     private static int ParseTraceLimit(string envName, int defaultValue)
