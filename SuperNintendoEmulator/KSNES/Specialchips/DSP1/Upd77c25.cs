@@ -76,6 +76,12 @@ internal sealed class Upd77c25
         _recentOpcodeCount = 0;
     }
 
+    public void PostLoadResync()
+    {
+        _consecutiveFfffWrites = 0;
+        _ffffLoopDumped = false;
+    }
+
     public byte ReadData()
     {
         byte value = _registers.SnesReadData();
@@ -108,6 +114,11 @@ internal sealed class Upd77c25
     {
         byte status = _registers.Status.ToByte();
         RecordIo(4, status, status);
+        if (TraceIo && TraceIoSnes && _traceIoCount < TraceIoLimit)
+        {
+            Console.WriteLine($"[DSP1-IO] SNES read status=0x{status:X2}");
+            _traceIoCount++;
+        }
         return status;
     }
 

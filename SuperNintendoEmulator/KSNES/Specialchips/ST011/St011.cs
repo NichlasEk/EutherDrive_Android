@@ -29,6 +29,12 @@ public sealed class St011
         _cpu.Tick(delta);
     }
 
+    public void ResyncTo(ulong snesCycles)
+    {
+        _lastSnesCycles = snesCycles;
+        _cpu.PostLoadResync();
+    }
+
     public byte ReadData() => _cpu.ReadData();
     public byte ReadStatus() => _cpu.ReadStatus();
     public void WriteData(byte value) => _cpu.WriteData(value);

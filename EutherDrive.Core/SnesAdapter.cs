@@ -105,32 +105,35 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
 
     public void RunFrame()
     {
-        int samplesPerFrame = GetSamplesPerFrame();
-        _audioHandler.EnsureCapacity(samplesPerFrame);
-        _system.RunFrameForExternal();
-        int[] pixels = _system.PPU.GetPixels();
-        if (_system.PPU is PPU ppu)
+        lock (_stateLock)
         {
-            if (!_sawBrightFrame)
+            int samplesPerFrame = GetSamplesPerFrame();
+            _audioHandler.EnsureCapacity(samplesPerFrame);
+            _system.RunFrameForExternal();
+            int[] pixels = _system.PPU.GetPixels();
+            if (_system.PPU is PPU ppu)
             {
-                if (ppu.Brightness == 0 && !HasVisiblePixels(pixels))
+                if (!_sawBrightFrame)
                 {
-                    EnsureFrameBuffer();
-                    Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
-                    EnsureAudioBuffer(samplesPerFrame);
-                    ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
-                    TraceAudioIfEnabled();
-                    return;
+                    if (ppu.Brightness == 0 && !HasVisiblePixels(pixels))
+                    {
+                        EnsureFrameBuffer();
+                        Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
+                        EnsureAudioBuffer(samplesPerFrame);
+                        ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
+                        TraceAudioIfEnabled();
+                        return;
+                    }
+                    _sawBrightFrame = true;
                 }
-                _sawBrightFrame = true;
             }
+            EnsureFrameBuffer();
+            ConvertArgbToBgra(pixels, _frameBuffer);
+            EnsureAudioBuffer(samplesPerFrame);
+            ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
+            TraceAudioIfEnabled();
+            _frameCounter++;
         }
-        EnsureFrameBuffer();
-        ConvertArgbToBgra(pixels, _frameBuffer);
-        EnsureAudioBuffer(samplesPerFrame);
-        ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
-        TraceAudioIfEnabled();
-        _frameCounter++;
     }
 
     private static bool HasVisiblePixels(int[] pixels)
@@ -220,6 +223,7 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
                 cpu.RefreshTraceConfig();
             _system.PPU.SetSystem(_system);
             _system.APU.Attach();
+            rom.ResyncCoprocessors(_system.Cycles);
         }
     }
 

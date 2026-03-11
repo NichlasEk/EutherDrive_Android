@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using KSNES.Tracing;
 
 namespace KSNES.ROM;
@@ -50,6 +51,16 @@ public class ROM : IROM
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_NEARMISS"), "1", StringComparison.Ordinal);
     private static readonly int TraceDsp1BusLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_DSP1_BUS_LIMIT", 500);
     private int _traceDsp1BusCount;
+    private static readonly bool TraceDsp1ExactReads =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_EXACT_READS"), "1", StringComparison.Ordinal);
+    private static readonly int TraceDsp1ExactReadLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_DSP1_EXACT_READ_LIMIT", 64);
+    private int _traceDsp1ExactReadCount;
+    private static readonly bool TraceReadPcWindow =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_READ_PC_WINDOW"), "1", StringComparison.Ordinal);
+    private static readonly int TraceReadPcStart = ParseTraceHex("EUTHERDRIVE_TRACE_SNES_READ_PC_START", 0);
+    private static readonly int TraceReadPcEnd = ParseTraceHex("EUTHERDRIVE_TRACE_SNES_READ_PC_END", 0);
+    private static readonly int TraceReadPcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_READ_PC_LIMIT", 200);
+    private int _traceReadPcCount;
     private static readonly bool TraceSnesVectors =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_VECTORS"), "1", StringComparison.Ordinal);
     private readonly bool _traceSa1BwramWatch =
@@ -143,26 +154,7 @@ public class ROM : IROM
                 _dsp1.Reset();
                 Console.WriteLine($"[{FormatDspVariant(dspVariant)}] Initialized successfully.");
             }
-            _dsp1IsHiRom = header.IsHiRom;
-            string? forceLo = Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_FORCE_LOROM");
-            string? forceHi = Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_FORCE_HIROM");
-            if (string.Equals(forceLo, "1", StringComparison.Ordinal))
-            {
-                _dsp1IsHiRom = false;
-                Console.WriteLine("[DSP1] Forcing LoROM port mapping.");
-            }
-            else if (string.Equals(forceHi, "1", StringComparison.Ordinal))
-            {
-                _dsp1IsHiRom = true;
-                Console.WriteLine("[DSP1] Forcing HiROM port mapping.");
-            }
-            _dsp1BroadMap = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_BROAD_MAP"), "1", StringComparison.Ordinal);
-            if (_dsp1BroadMap)
-                Console.WriteLine("[DSP1] Using broad port mapping (banks 00-3F/80-BF, $6000-$7FFF).");
-            _dsp1SwapPorts = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_SWAP_PORTS"), "1", StringComparison.Ordinal);
-            if (_dsp1SwapPorts)
-                Console.WriteLine("[DSP1] Swapping data/status port halves.");
-            _dsp1PortMapping = Dsp1PortMapping.FromVariantAndMetadata(dspVariant, header.RomSize, header.RamSize);
+            ApplyDspPortConfiguration(dspVariant, header);
         }
         else
         {
@@ -297,6 +289,22 @@ public class ROM : IROM
     public byte Read(int bank, int adr)
     {
         int SramIndex(int idx) => _sramSize <= 0 ? 0 : idx % _sramSize;
+        bool traceExactDspRead =
+            TraceDsp1ExactReads &&
+            _dsp1 != null &&
+            (bank & 0x7f) == 0x30 &&
+            (adr == 0x8000 || adr == 0xC000) &&
+            _traceDsp1ExactReadCount < TraceDsp1ExactReadLimit;
+        int snesPc = -1;
+        int snesOp = -1;
+        if (TraceReadPcWindow)
+        {
+            TryGetSnesPc(out snesPc, out snesOp);
+            if (snesPc >= TraceReadPcStart && snesPc <= TraceReadPcEnd && _traceReadPcCount++ < TraceReadPcLimit)
+            {
+                Console.WriteLine($"[SNES-RD-PC] pc=0x{snesPc:X6} op=0x{snesOp:X2} addr=0x{bank:X2}{adr:X4}");
+            }
+        }
         if (TraceSnesVectors && bank == 0x00 && (adr == 0xFFEA || adr == 0xFFEB || adr == 0xFFEE || adr == 0xFFEF))
         {
             Console.WriteLine($"[SNES-VEC] read bank=0x{bank:X2} adr=0x{adr:X4}");
@@ -306,9 +314,8 @@ public class ROM : IROM
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             if (_sa1.TryResolveSnesAccess(address, out string region, out uint? resolved))
             {
-                int snesPc = -1;
-                int snesOp = -1;
-                TryGetSnesPc(out snesPc, out snesOp);
+                if (snesPc < 0)
+                    TryGetSnesPc(out snesPc, out snesOp);
                 byte? sa1Value = _sa1.SnesRead(address, snesPc);
                 if (sa1Value.HasValue)
                 {
@@ -369,6 +376,11 @@ public class ROM : IROM
 
         if (TryReadDsp1(bank, adr, out byte dsp1Value))
         {
+            if (traceExactDspRead)
+            {
+                _traceDsp1ExactReadCount++;
+                Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=DSP val=0x{dsp1Value:X2} hirom={_dsp1IsHiRom} broad={_dsp1BroadMap} swap={_dsp1SwapPorts}");
+            }
             return dsp1Value;
         }
         if (TraceDsp1NearMiss && _dsp1 != null && IsNearDspPort(bank, adr) && (_traceDsp1BusCount++ < TraceDsp1BusLimit))
@@ -378,21 +390,41 @@ public class ROM : IROM
 
         if (TryReadSt010(bank, adr, out byte st010Value))
         {
+            if (traceExactDspRead)
+            {
+                _traceDsp1ExactReadCount++;
+                Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=ST010 val=0x{st010Value:X2}");
+            }
             return st010Value;
         }
 
         if (TryReadSt011(bank, adr, out byte st011Value))
         {
+            if (traceExactDspRead)
+            {
+                _traceDsp1ExactReadCount++;
+                Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=ST011 val=0x{st011Value:X2}");
+            }
             return st011Value;
         }
 
         if (TryReadSt018(bank, adr, out byte st018Value))
         {
+            if (traceExactDspRead)
+            {
+                _traceDsp1ExactReadCount++;
+                Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=ST018 val=0x{st018Value:X2}");
+            }
             return st018Value;
         }
 
         if (TryReadObc1(bank, adr, out byte obc1Value))
         {
+            if (traceExactDspRead)
+            {
+                _traceDsp1ExactReadCount++;
+                Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=OBC1 val=0x{obc1Value:X2}");
+            }
             return obc1Value;
         }
 
@@ -406,9 +438,21 @@ public class ROM : IROM
 
             if (adr >= 0x8000 || (bank >= 0x40 && (bank & 0x7f) < 0x7e))
             {
-                return ReadHiRom(bank, adr);
+                byte value = ReadHiRom(bank, adr);
+                if (traceExactDspRead)
+                {
+                    _traceDsp1ExactReadCount++;
+                    Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=HiROM val=0x{value:X2}");
+                }
+                return value;
             }
-            return (byte)(_system?.OpenBus ?? 0);
+            byte hiOpenBus = (byte)(_system?.OpenBus ?? 0);
+            if (traceExactDspRead)
+            {
+                _traceDsp1ExactReadCount++;
+                Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=OpenBusHi val=0x{hiOpenBus:X2}");
+            }
+            return hiOpenBus;
         }
 
         if (adr < 0x8000)
@@ -419,7 +463,13 @@ public class ROM : IROM
                 return _sram[SramIndex(idx)];
             }
         }
-        return _data[((bank & (_banks - 1)) << 15) | (adr & 0x7fff)];
+        byte loRomValue = _data[((bank & (_banks - 1)) << 15) | (adr & 0x7fff)];
+        if (traceExactDspRead)
+        {
+            _traceDsp1ExactReadCount++;
+            Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=LoROM val=0x{loRomValue:X2}");
+        }
+        return loRomValue;
     }
 
     public void Write(int bank, int adr, byte value)
@@ -549,6 +599,13 @@ public class ROM : IROM
         if (_dsp1 == null)
         {
             return false;
+        }
+        if (TraceDsp1ExactReads &&
+            (bank & 0x7f) == 0x30 &&
+            (adr == 0x8000 || adr == 0xC000) &&
+            _traceDsp1ExactReadCount < TraceDsp1ExactReadLimit)
+        {
+            Console.WriteLine($"[DSP1-EXACT-CFG] bank=0x{bank:X2} adr=0x{adr:X4} hirom={_dsp1IsHiRom} broad={_dsp1BroadMap} swap={_dsp1SwapPorts} portHit={_dsp1PortMapping.IsDspPort(bank, adr)}");
         }
         bool IsDataPort(int address) => _dsp1SwapPorts ? (address & 0x4000) != 0 : (address & 0x4000) == 0;
 
@@ -839,6 +896,46 @@ public class ROM : IROM
         _st018?.RunTo(snesCycles);
         _superFx?.Tick(snesCycles);
         _sa1?.Tick(snesCycles);
+    }
+
+    public void ResyncCoprocessors(ulong snesCycles)
+    {
+        if (_dsp1 != null)
+        {
+            ApplyDspPortConfiguration(GuessDspVariant(_data), Header);
+        }
+        _dsp1?.ResyncTo(snesCycles);
+        _st010?.ResyncTo(snesCycles);
+        _st011?.ResyncTo(snesCycles);
+        _st018?.ResyncTo(snesCycles);
+        _sa1?.ResyncTo(snesCycles);
+    }
+
+    private void ApplyDspPortConfiguration(DspVariant dspVariant, Header header)
+    {
+        _dsp1IsHiRom = dspVariant == DspVariant.Dsp1 && header.IsHiRom;
+        string? forceLo = Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_FORCE_LOROM");
+        string? forceHi = Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_FORCE_HIROM");
+        if (string.Equals(forceLo, "1", StringComparison.Ordinal))
+        {
+            _dsp1IsHiRom = false;
+            Console.WriteLine("[DSP1] Forcing LoROM port mapping.");
+        }
+        else if (string.Equals(forceHi, "1", StringComparison.Ordinal))
+        {
+            _dsp1IsHiRom = true;
+            Console.WriteLine("[DSP1] Forcing HiROM port mapping.");
+        }
+
+        _dsp1BroadMap = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_BROAD_MAP"), "1", StringComparison.Ordinal);
+        if (_dsp1BroadMap)
+            Console.WriteLine("[DSP1] Using broad port mapping (banks 00-3F/80-BF, $6000-$7FFF).");
+
+        _dsp1SwapPorts = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DSP1_SWAP_PORTS"), "1", StringComparison.Ordinal);
+        if (_dsp1SwapPorts)
+            Console.WriteLine("[DSP1] Swapping data/status port halves.");
+
+        _dsp1PortMapping = Dsp1PortMapping.FromVariantAndMetadata(dspVariant, header.RomSize, header.RamSize);
     }
 
     public void NotifyDmaStart(byte channel, uint sourceAddress)
@@ -1250,6 +1347,21 @@ public class ROM : IROM
         if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int limit) && limit > 0)
             return limit;
         return defaultValue;
+    }
+
+    private static int ParseTraceHex(string envName, int defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(envName);
+        if (string.IsNullOrWhiteSpace(raw))
+            return defaultValue;
+
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            raw = raw[2..];
+
+        return int.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int value)
+            ? value
+            : defaultValue;
     }
 
     private readonly struct Dsp1PortMapping

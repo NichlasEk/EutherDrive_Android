@@ -1332,18 +1332,24 @@ class Program
 
                     if (snes.System.CPU is KSNES.CPU.CPU cpu)
                     {
+                        if (traceSnesFrames)
+                        {
+                            int dbrC000 = snes.System.Read((cpu.DataBank << 16) | 0xC000);
+                            int dbr8000 = snes.System.Read((cpu.DataBank << 16) | 0x8000);
+                            Trace($"[HEADLESS] Frame {frame}: cpu-state DBR=0x{cpu.DataBank:X2} PB=0x{cpu.ProgramBank:X2} DBR:C000=0x{dbrC000:X2} DBR:8000=0x{dbr8000:X2}");
+                        }
                         if (sa1SnapshotFrame == frame && snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 snapshotSa1)
                         {
                             string snapshotPath = Path.Combine(dumpDir, $"sa1_snapshot_frame{frame}.txt");
                             string snapshot = snapshotSa1.GetKirbyDebugSnapshot();
-                            Console.WriteLine($"[HEADLESS] SA1 snapshot frame={frame}");
-                            Console.WriteLine(snapshot);
+                            Trace($"[HEADLESS] SA1 snapshot frame={frame}");
+                            Trace(snapshot);
                             File.WriteAllText(snapshotPath, snapshot);
                         }
                         string sa1Pc = snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1 && sa1.GetCpu() is KSNES.CPU.CPU sa1Cpu
                             ? $" SA1 PC=0x{sa1Cpu.ProgramCounter24:X6}"
                             : "";
-                        Console.WriteLine($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}");
+                        Trace($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}");
                     }
                 }
 

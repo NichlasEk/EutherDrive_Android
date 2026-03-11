@@ -44,6 +44,12 @@ public sealed class St018
         }
     }
 
+    public void ResyncTo(ulong snesCycles)
+    {
+        _lastSnesCycles = snesCycles;
+        _snesCycles = _arm.BusCycles;
+    }
+
     public byte Read(uint address)
     {
         return _registers.SnesRead(address) ?? 0;

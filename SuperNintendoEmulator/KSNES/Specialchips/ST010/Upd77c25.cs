@@ -54,6 +54,11 @@ internal sealed class Upd77c25
         _masterCyclesProduct = 0;
     }
 
+    public void PostLoadResync()
+    {
+        // Preserve serialized DSP runtime state across savestate load.
+    }
+
     public byte ReadData()
     {
         byte value = _registers.SnesReadData();

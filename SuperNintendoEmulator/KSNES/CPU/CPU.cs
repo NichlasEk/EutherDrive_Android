@@ -59,6 +59,8 @@ public class CPU : ICPU
         set => _r[K] = value;
     }
 
+    public byte DataBank => _r[DBR];
+
     public int ProgramCounter24 => (_r[K] << 16) | _br[PC];
 
     internal string GetTraceState()

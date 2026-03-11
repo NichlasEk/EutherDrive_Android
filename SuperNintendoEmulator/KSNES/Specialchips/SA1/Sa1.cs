@@ -277,6 +277,11 @@ public sealed class Sa1
             _timer.Tick();
     }
 
+    public void ResyncTo(ulong snesCycles)
+    {
+        _lastSnesCycles = snesCycles;
+    }
+
     public bool SnesIrq()
     {
         return (_registers.SnesIrqFromSa1Enabled && _registers.SnesIrqFromSa1)
