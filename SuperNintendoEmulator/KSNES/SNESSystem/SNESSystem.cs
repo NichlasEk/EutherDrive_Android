@@ -48,7 +48,7 @@ public class SNESSystem : ISNESSystem
     public int YPos { get; private set; }
     public bool InVblank => _inVblank;
     public bool InHblank => _inHblank;
-    public bool InNmi => _inNmi;
+    public bool InNmi => _vblankNmiFlag;
 
     private int _cpuCyclesLeft;
     private int _cpuMemOps;
@@ -61,7 +61,9 @@ public class SNESSystem : ISNESSystem
     private bool _nmiEnabled;
     private int _hTimer;
     private int _vTimer;
+    // Savestate compatibility: older states serialized this field.
     private bool _inNmi;
+    private bool _vblankNmiFlag;
     private bool _inIrq;
     private bool _inHblank;
     private bool _inVblank;
@@ -376,6 +378,7 @@ public class SNESSystem : ISNESSystem
         _hTimer = 0x1ff;
         _vTimer = 0x1ff;
         _inNmi = false;
+        _vblankNmiFlag = false;
         _inIrq = false;
         _inHblank = false;
         _inVblank = false;
@@ -412,6 +415,29 @@ public class SNESSystem : ISNESSystem
         _dmaOffIndex = 0;
         OpenBus = 0;
         ROM.ResetCoprocessor();
+    }
+
+    public void ResyncAfterLoad()
+    {
+        int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
+
+        _inVblank = YPos >= vBlankStart;
+        _inHblank = XPos < 4 || XPos >= 1096;
+
+        // These are edge/latched signals in hardware; after a savestate we need a coherent
+        // runtime view that matches the current beam position rather than stale mid-transition bits.
+        _vblankNmiFlag = false;
+        _inIrq = false;
+        _autoJoyPendingStart = false;
+
+        if (!_autoJoyBusy)
+            _autoJoyTimer = 0;
+
+        if (CPU is KSNES.CPU.CPU cpu)
+        {
+            cpu.NmiWanted = false;
+            cpu.IrqWanted = ROM.IrqWanted;
+        }
     }
 
     private void LoadRom(byte[] rom)
@@ -476,6 +502,7 @@ public class SNESSystem : ISNESSystem
                     Console.WriteLine($"[VBLANK-START] Y={YPos} IsPal={IsPal} Overscan={PPU.FrameOverscan} Start={vBlankStart}");
                 }
                 _inNmi = true;
+                _vblankNmiFlag = true;
                 _inVblank = true;
                 if (_autoJoyRead)
                 {
@@ -493,6 +520,7 @@ public class SNESSystem : ISNESSystem
                     Console.WriteLine($"[VBLANK-END] Y={YPos} X={XPos}");
                 }
                 _inNmi = false;
+                _vblankNmiFlag = false;
                 _inVblank = false;
                 _autoJoyPendingStart = false;
                 InitHdma();
@@ -579,6 +607,13 @@ public class SNESSystem : ISNESSystem
             if (YPos == maxV)
             {
                 YPos = 0;
+                // The PPU is no longer in VBlank once the frame wraps back to scanline 0.
+                // Keeping the latched state until the next Cycle() leaves $4212 bit 7 high
+                // at the frame boundary, which can strand games that poll HVBJOY for VBlank end.
+                _inNmi = false;
+                _vblankNmiFlag = false;
+                _inVblank = false;
+                _autoJoyPendingStart = false;
             }
         }
     }
@@ -801,7 +836,7 @@ public class SNESSystem : ISNESSystem
         {
             case 0x4210:
                 int val = 0x1;
-                val |= _inNmi ? 0x80 : 0;
+                val |= _vblankNmiFlag ? 0x80 : 0;
                 val |= OpenBus & 0x70;
                 if (_traceDma)
                 {
@@ -811,6 +846,7 @@ public class SNESSystem : ISNESSystem
                     Console.WriteLine($"[INT-STAT] RDNMI read pc=0x{pc:X6} val=0x{val:X2}");
                 }
                 _inNmi = false;
+                _vblankNmiFlag = false;
                 return val;
             case 0x4211:
                 int val2 = _inIrq ? 0x80 : 0;
@@ -907,7 +943,12 @@ public class SNESSystem : ISNESSystem
                 _autoJoyRead = (value & 0x1) > 0;
                 _hIrqEnabled = (value & 0x10) > 0;
                 _vIrqEnabled = (value & 0x20) > 0;
-                _nmiEnabled = (value & 0x80) > 0;
+                bool newNmiEnabled = (value & 0x80) > 0;
+                if (!_nmiEnabled && newNmiEnabled && _vblankNmiFlag)
+                {
+                    CPU.NmiWanted = true;
+                }
+                _nmiEnabled = newNmiEnabled;
                 if (_traceDma)
                 {
                     int pc = -1;
