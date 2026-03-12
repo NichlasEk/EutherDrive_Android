@@ -233,6 +233,8 @@ namespace ePceCD
             else
                 cycles = PPU.CYCLES_PER_LINE / (int)DotClock.MHZ_7;
 
+            int elapsedCycles = cycles;
+
             if (m_TimerCounting)
             {
                 if (cycles >= m_TimerValue)
@@ -259,6 +261,7 @@ namespace ePceCD
                 if (m_DeadClocks > cycles)
                 {
                     m_DeadClocks -= cycles;
+                    CDRom.ClockAudio(elapsedCycles);
                     return 0;
                 }
                 else
@@ -268,6 +271,7 @@ namespace ePceCD
                 }
             }
 
+            CDRom.ClockAudio(elapsedCycles);
             return cycles;
         }
 
