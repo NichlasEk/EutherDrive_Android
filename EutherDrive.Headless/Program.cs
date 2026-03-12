@@ -158,7 +158,7 @@ class Program
             Console.Error.WriteLine($"  frames:   Number of frames to run (default: {DefaultFrames})");
             Console.Error.WriteLine("  --test-interlace2: Run interlace mode 2 pattern test");
             Console.Error.WriteLine("  --load-savestate: Load savestate and run frames");
-            Console.Error.WriteLine("  --load-raw-state: Load raw MdTracer state and run frames");
+            Console.Error.WriteLine("  --load-raw-state: Load raw core state and run frames");
             Console.Error.WriteLine("  --m68k-tests <path> [--log]: Run 68000 JSON tests (ProcessorTests)");
             return 1;
         }
@@ -970,6 +970,12 @@ class Program
         return ext is ".z64" or ".n64" or ".v64";
     }
 
+    private static bool IsPceRomPath(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".pce" or ".cue";
+    }
+
     private static void DumpSnesFrame(SnesAdapter snes, string path, bool logStats)
     {
         ReadOnlySpan<byte> fb = snes.GetFrameBuffer(out int width, out int height, out int stride);
@@ -1727,6 +1733,43 @@ class Program
             string dumpDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_DIR")
                 ?? Path.Combine(Directory.GetCurrentDirectory(), "logs");
             Directory.CreateDirectory(dumpDir);
+
+            string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
+            bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
+
+            if (usePce)
+            {
+                var pce = new PceCdAdapter();
+                pce.LoadRom(romPath);
+
+                using (var fs = new FileStream(rawStatePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var reader = new BinaryReader(fs))
+                {
+                    pce.LoadState(reader);
+                }
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    pce.RunFrame();
+                    Console.WriteLine($"[HEADLESS] Frame {frame} completed");
+                    if (frame == 0 || frame == 5 || frame == 10)
+                    {
+                        ReadOnlySpan<byte> fb = pce.GetFrameBuffer(out int w, out int h, out int s);
+                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                        DumpBgraToPpm(fb, w, h, s, ppmPath);
+                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = pce.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                string outPathPce = Path.Combine(dumpDir, "headless_output.ppm");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, outPathPce);
+                Console.WriteLine($"[HEADLESS] Framebuffer dumped to {outPathPce}");
+                return 0;
+            }
 
             var adapter = new MdTracerAdapter();
             adapter.LoadRom(romPath);

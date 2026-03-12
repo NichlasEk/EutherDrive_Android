@@ -8,6 +8,15 @@ namespace ePceCD
     [Serializable]
     public class BUS : MemoryBank, IDisposable
     {
+        private static readonly bool TraceVdcBusWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_BUS_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceVdcBusLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_BUS_TRACE_LIMIT"), out int vdcBusLim) && vdcBusLim > 0 ? vdcBusLim : 4000;
+        private static readonly string? TraceVdcBusFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_BUS_TRACE_FILE");
+        private static readonly bool TraceVdcBusStdout =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_BUS_TRACE_STDOUT"), "1", StringComparison.Ordinal);
+        private static readonly object TraceVdcBusFileLock = new object();
         [NonSerialized]
         private MemoryBank[] m_BankList = Array.Empty<MemoryBank>();
         [NonSerialized]
@@ -34,8 +43,12 @@ namespace ePceCD
         private bool m_TimerCounting;
 
         private byte m_BusCap;
+        [NonSerialized]
         private int _irqTraceCount;
+        [NonSerialized]
         private bool _irqTraceSuppressed;
+        [NonSerialized]
+        private int _traceVdcBusCount;
 
         private int m_OverFlowCycles;
         private int m_DeadClocks;
@@ -648,11 +661,38 @@ namespace ePceCD
             return 0xFF;
         }
 
+        public byte ReadBlockTransferAt(int address)
+        {
+            if (address <= 0x03FF)      // VDC
+            {
+                LoseCycles(2);
+                return PPU.ReadVDC(address & 0x3);
+            }
+            else if (address <= 0x07FF) // VCE
+            {
+                LoseCycles(1);
+                return PPU.ReadVCE(address & 0x7);
+            }
+            else if (address <= 0x0BFF) // PSG
+                return 0x00;
+            else if (address <= 0x0FFF) // TIMER
+                return 0x00;
+            else if (address <= 0x13FF) // I/O Port
+                return 0x00;
+            else if (address <= 0x17FF) // INTERRUPT CONTROL
+                return 0x00;
+            else if (address <= 0x1BFF) // CDROM
+                return CDRom.ReadAt(address);
+
+            return 0xFF;
+        }
+
         public override void WriteAt(int address, byte data)
         {
             if (address <= 0x03FF)      // VDC
             {
                 LoseCycles(1);
+                TraceVdcBusWrite(address & 0x3, data);
                 PPU.WriteVDC(address & 0x3, data);
             }
             else if (address <= 0x07FF) // VCE
@@ -670,6 +710,60 @@ namespace ePceCD
                 WriteIRQCtrl(address & 3, m_BusCap = data);
             else if (address <= 0x1BFF) // CD-ROM ACCESS
                 CDRom.WriteAt(address, data);
+        }
+
+        public void WriteBlockTransferAt(int address, byte data)
+        {
+            if (address <= 0x03FF)      // VDC
+            {
+                LoseCycles(2);
+                TraceVdcBusWrite(address & 0x3, data);
+                PPU.WriteVDC(address & 0x3, data);
+            }
+            else if (address <= 0x07FF) // VCE
+            {
+                LoseCycles(1);
+                PPU.WriteVCE(address & 0x7, data);
+            }
+            else if (address <= 0x0BFF) // PSG
+                APU.Write(address, m_BusCap = data);
+            else if (address <= 0x0FFF) // TIMER
+                WriteTimer(address & 1, m_BusCap = data);
+            else if (address <= 0x13FF) // I/O Port
+                JoyPort.Write(m_BusCap = data);
+            else if (address <= 0x17FF) // INTERRUPT CONTROL
+                WriteIRQCtrl(address & 3, m_BusCap = data);
+            else if (address <= 0x1BFF) // CD-ROM ACCESS
+                CDRom.WriteAt(address, data);
+        }
+
+        private void TraceVdcBusWrite(int ioAddress, byte data)
+        {
+            if (!TraceVdcBusWrites || _traceVdcBusCount >= TraceVdcBusLimit)
+                return;
+
+            int reg = ioAddress == 0 ? data & 0x1F : PPU.PeekSelectedVdcRegister();
+            if (reg != 0x00 && reg != 0x02 && reg != 0x10 && reg != 0x11 && reg != 0x12 && reg != 0x13)
+                return;
+
+            _traceVdcBusCount++;
+            WriteVdcBusTrace($"[PCE-VDCBUS] pc=0x{CPU.PeekProgramCounter():X4} io=0x{ioAddress:X1} reg=0x{reg:X2} data=0x{data:X2}");
+        }
+
+        private static void WriteVdcBusTrace(string line)
+        {
+            bool wroteFile = false;
+            if (!string.IsNullOrWhiteSpace(TraceVdcBusFile))
+            {
+                lock (TraceVdcBusFileLock)
+                {
+                    File.AppendAllText(TraceVdcBusFile!, line + Environment.NewLine);
+                }
+                wroteFile = true;
+            }
+
+            if (!wroteFile || TraceVdcBusStdout)
+                Console.WriteLine(line);
         }
     }
 }

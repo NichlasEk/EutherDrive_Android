@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Text;
 
 namespace ePceCD
 {
@@ -6,6 +8,29 @@ namespace ePceCD
     [Serializable]
     public class HuC6280
     {
+        private static readonly bool TraceBlockTransfers =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_BLOCK_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceBlockTransferLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_BLOCK_TRACE_LIMIT"), out int btLim) && btLim > 0 ? btLim : 512;
+        private static readonly string? TraceBlockTransferFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_BLOCK_TRACE_FILE");
+        private static readonly bool TraceBlockTransferStdout =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_BLOCK_TRACE_STDOUT"), "1", StringComparison.Ordinal);
+        private static readonly object TraceBlockTransferFileLock = new object();
+        private static readonly bool TraceCpuWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_WRITE_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceCpuWriteLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_WRITE_TRACE_LIMIT"), out int cwLim) && cwLim > 0 ? cwLim : 4000;
+        private static readonly int TraceCpuWriteMin =
+            ParseOptionalHexEnv("EUTHERDRIVE_PCE_CPU_WRITE_MIN", -1);
+        private static readonly int TraceCpuWriteMax =
+            ParseOptionalHexEnv("EUTHERDRIVE_PCE_CPU_WRITE_MAX", -1);
+        private static readonly string? TraceCpuWriteFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_WRITE_TRACE_FILE");
+        private static readonly bool TraceCpuWriteStdout =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_WRITE_TRACE_STDOUT"), "1", StringComparison.Ordinal);
+        private static readonly object TraceCpuWriteFileLock = new object();
+        [NonSerialized]
         private int _traceOpCount;
         public enum InstructionOpcode : byte
         {
@@ -290,14 +315,14 @@ namespace ePceCD
         }
 
         private static int[] InstructionTiming = new int[] {
-            8,  7,  3,  4,  6,  4,  6,  7,  3,  2,  2,  2,  7,  5,  7,  6,
-            2,  7,  7,  4,  6,  4,  6,  7,  2,  5,  2,  2,  7,  5,  7,  6,
-            7,  7,  3,  4,  4,  4,  6,  7,  3,  2,  2,  2,  5,  5,  7,  6,
+            8,  7,  3,  5,  6,  4,  6,  7,  4,  2,  2,  2,  7,  5,  7,  6,
+            2,  7,  7,  5,  6,  4,  6,  7,  2,  5,  2,  2,  7,  5,  7,  6,
+            7,  7,  3,  5,  4,  4,  6,  7,  4,  2,  2,  2,  5,  5,  7,  6,
             2,  7,  7,  2,  4,  4,  6,  7,  2,  5,  2,  2,  5,  5,  7,  6,
-            7,  7,  3,  4,  9,  4,  6,  7,  3,  2,  2,  2,  4,  5,  7,  6,
+            7,  7,  3,  4,  8,  4,  6,  7,  4,  2,  2,  2,  4,  5,  7,  6,
             2,  7,  7,  5,  3,  4,  6,  7,  2,  5,  3,  2,  2,  5,  7,  6,
-            7,  7,  2,  2,  4,  4,  6,  7,  3,  2,  2,  2,  7,  5,  7,  6,
-            2,  7,  7, 17,  4,  4,  6,  7,  2,  5,  3,  2,  7,  5,  7,  6,
+            7,  7,  2,  2,  4,  4,  6,  7,  4,  2,  2,  2,  7,  5,  7,  6,
+            2,  7,  7, 17,  4,  4,  6,  7,  2,  5,  4,  2,  7,  5,  7,  6,
             2,  7,  2,  7,  4,  4,  4,  7,  2,  2,  2,  2,  5,  5,  5,  6,
             2,  7,  7,  8,  4,  4,  4,  7,  2,  5,  2,  2,  5,  5,  5,  6,
             2,  7,  2,  7,  4,  4,  4,  7,  2,  2,  2,  2,  5,  5,  5,  6,
@@ -305,7 +330,7 @@ namespace ePceCD
             2,  7,  2, 17,  4,  4,  6,  7,  2,  2,  2,  2,  5,  5,  7,  6,
             2,  7,  7, 17,  3,  4,  6,  7,  2,  5,  3,  2,  2,  5,  7,  6,
             2,  7,  2, 17,  4,  4,  6,  7,  2,  2,  2,  2,  5,  5,  7,  6,
-            2,  7,  7, 17,  2,  4,  6,  7,  2,  5,  3,  2,  2,  5,  7,  6
+            2,  7,  7, 17,  2,  4,  6,  7,  2,  5,  4,  2,  2,  5,  7,  6
         };
 
         // 6502 Registers
@@ -321,6 +346,10 @@ namespace ePceCD
         private ushort m_TransferSrc;
         private ushort m_TransferDest;
         private ushort m_TransferCount;
+        [NonSerialized]
+        private int _traceBlockTransferCount;
+        [NonSerialized]
+        private int _traceCpuWriteCount;
 
         // Status Flags
         private bool m_NFlag;
@@ -380,6 +409,21 @@ namespace ePceCD
             if (m_ZFlag) p |= 0x02;
             if (m_CFlag) p |= 0x01;
             return p;
+        }
+
+        private static int ParseOptionalHexEnv(string name, int fallback)
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(value))
+                return fallback;
+
+            value = value.Trim();
+            if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                value = value.Substring(2);
+
+            return int.TryParse(value, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int parsed)
+                ? parsed
+                : fallback;
         }
 
         public void RebindBanks()
@@ -467,28 +511,28 @@ namespace ePceCD
                     switch (m_TransferMode)
                     {
                         case BlockTransferMode.DecrementDecrement:
-                            Write8(m_TransferDest--, Read8(m_TransferSrc--));
+                            Write8(m_TransferDest--, Read8(m_TransferSrc--, blockTransfer: true), blockTransfer: true);
                             break;
                         case BlockTransferMode.IncrementConstant:
-                            Write8(m_TransferDest, Read8(m_TransferSrc++));
+                            Write8(m_TransferDest, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
                             break;
                         case BlockTransferMode.IncrementIncrement:
-                            Write8(m_TransferDest++, Read8(m_TransferSrc++));
+                            Write8(m_TransferDest++, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
                             break;
                         case BlockTransferMode.IncrementAlternate_Up:
-                            Write8(m_TransferDest++, Read8(m_TransferSrc++));
+                            Write8(m_TransferDest++, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
                             m_TransferMode = BlockTransferMode.IncrementAlternate_Down;
                             break;
                         case BlockTransferMode.IncrementAlternate_Down:
-                            Write8(m_TransferDest--, Read8(m_TransferSrc++));
+                            Write8(m_TransferDest--, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
                             m_TransferMode = BlockTransferMode.IncrementAlternate_Up;
                             break;
                         case BlockTransferMode.AlternateIncrement_Up:
-                            Write8(m_TransferDest++, Read8(m_TransferSrc++));
+                            Write8(m_TransferDest++, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
                             m_TransferMode = BlockTransferMode.AlternateIncrement_Down;
                             break;
                         case BlockTransferMode.AlternateIncrement_Down:
-                            Write8(m_TransferDest++, Read8(m_TransferSrc--));
+                            Write8(m_TransferDest++, Read8(m_TransferSrc--, blockTransfer: true), blockTransfer: true);
                             m_TransferMode = BlockTransferMode.AlternateIncrement_Up;
                             break;
                     }
@@ -550,11 +594,58 @@ namespace ePceCD
 
         private void Write8(ushort address, byte value)
         {
-            m_Bank[address >> 13].WriteAt(address & 0x1FFF, value);
+            Write8(address, value, blockTransfer: false);
+        }
+
+        private void Write8(ushort address, byte value, bool blockTransfer)
+        {
+            TraceCpuWriteIfNeeded(address, value);
+            if (blockTransfer && m_MPR[address >> 13] == 0xFF)
+                BUS.WriteBlockTransferAt(address & 0x1FFF, value);
+            else
+                m_Bank[address >> 13].WriteAt(address & 0x1FFF, value);
+        }
+
+        private void TraceCpuWriteIfNeeded(ushort address, byte value)
+        {
+            if (!TraceCpuWrites || _traceCpuWriteCount >= TraceCpuWriteLimit)
+                return;
+            if (TraceCpuWriteMin >= 0 && address < TraceCpuWriteMin)
+                return;
+            if (TraceCpuWriteMax >= 0 && address > TraceCpuWriteMax)
+                return;
+
+            _traceCpuWriteCount++;
+            WriteCpuWriteTrace(
+                $"[PCE-CPUW] pc=0x{CurrentPC:X4} addr=0x{address:X4} data=0x{value:X2} mpr={m_MPR[0]:X2},{m_MPR[1]:X2},{m_MPR[2]:X2},{m_MPR[3]:X2},{m_MPR[4]:X2},{m_MPR[5]:X2},{m_MPR[6]:X2},{m_MPR[7]:X2} transfer={m_TransferMode}");
+        }
+
+        private static void WriteCpuWriteTrace(string line)
+        {
+            bool wroteFile = false;
+            if (!string.IsNullOrWhiteSpace(TraceCpuWriteFile))
+            {
+                lock (TraceCpuWriteFileLock)
+                {
+                    File.AppendAllText(TraceCpuWriteFile!, line + Environment.NewLine);
+                }
+                wroteFile = true;
+            }
+
+            if (!wroteFile || TraceCpuWriteStdout)
+                Console.WriteLine(line);
         }
 
         private byte Read8(ushort address)
         {
+            return Read8(address, blockTransfer: false);
+        }
+
+        private byte Read8(ushort address, bool blockTransfer)
+        {
+            if (blockTransfer && m_MPR[address >> 13] == 0xFF)
+                return BUS.ReadBlockTransferAt(address & 0x1FFF);
+
             return m_Bank[address >> 13].ReadAt(address & 0x1FFF);
         }
 
@@ -929,6 +1020,44 @@ namespace ePceCD
             m_TransferSrc = ReadImmediate16();
             m_TransferDest = ReadImmediate16();
             m_TransferCount = ReadImmediate16();
+            TraceBlockTransferIfNeeded(mode, m_TransferSrc, m_TransferDest, m_TransferCount);
+        }
+
+        private void TraceBlockTransferIfNeeded(BlockTransferMode mode, ushort src, ushort dest, ushort count)
+        {
+            if (!TraceBlockTransfers || _traceBlockTransferCount >= TraceBlockTransferLimit)
+                return;
+
+            int destBankSlot = dest >> 13;
+            int destWindow = dest & 0x1FFF;
+            bool ioMapped = (uint)destBankSlot < 8u && m_MPR[destBankSlot] == 0xFF && destWindow <= 0x03FF;
+            int previewLen = Math.Min(count, (ushort)16);
+            var preview = new StringBuilder(previewLen * 3);
+            for (int i = 0; i < previewLen; i++)
+            {
+                if (i > 0)
+                    preview.Append(' ');
+                preview.Append(Read8((ushort)(src + i)).ToString("X2"));
+            }
+            _traceBlockTransferCount++;
+            WriteBlockTransferTrace(
+                $"[PCE-BLOCK] pc=0x{CurrentPC:X4} mode={mode} src=0x{src:X4} dest=0x{dest:X4} count=0x{count:X4} io={(ioMapped ? 1 : 0)} data={preview} mpr={m_MPR[0]:X2},{m_MPR[1]:X2},{m_MPR[2]:X2},{m_MPR[3]:X2},{m_MPR[4]:X2},{m_MPR[5]:X2},{m_MPR[6]:X2},{m_MPR[7]:X2}");
+        }
+
+        private static void WriteBlockTransferTrace(string line)
+        {
+            bool wroteFile = false;
+            if (!string.IsNullOrWhiteSpace(TraceBlockTransferFile))
+            {
+                lock (TraceBlockTransferFileLock)
+                {
+                    File.AppendAllText(TraceBlockTransferFile!, line + Environment.NewLine);
+                }
+                wroteFile = true;
+            }
+
+            if (!wroteFile || TraceBlockTransferStdout)
+                Console.WriteLine(line);
         }
 
         private void OpExecute()
