@@ -1,6 +1,9 @@
 // Headless test harness for EutherDrive core
 // Usage: dotnet run --project EutherDrive.Headless -- /path/to/rom.md [frames]
 //        dotnet run --project EutherDrive.Headless -- --test-interlace2
+//        dotnet run --project EutherDrive.Headless -- --load-savestate /path/to/rom.cue /path/to/state.euthstate [frames]
+//        EUTHERDRIVE_LOAD_SLOT1_ON_BOOT=1 dotnet run --project EutherDrive.Headless -- /path/to/rom.cue [frames]
+//        EUTHERDRIVE_HEADLESS_CORE=pce EUTHERDRIVE_SAVESTATE_SLOT=1 dotnet run --project EutherDrive.Headless -c Release -- --load-savestate /path/to/rom.cue /path/to/state.euthstate [frames]
 // Default: runs 120 frames
 
 using System;

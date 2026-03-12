@@ -31,6 +31,8 @@ namespace ePceCD
         private int _lastRead6ExpectedBytes;
         private int _lastRead6ConsumedBytes;
         private byte _scsiDataLatch;
+        private bool _cdAudioSampleToggle;
+        private short _cdAudioSample;
         private int _statusPollCount;
         private int _progressToken;
         private int _lastStatusProgressToken;
@@ -218,6 +220,8 @@ namespace ePceCD
             AudioCS = 0;
             AudioSS = 0;
             AudioES = 0;
+            _cdAudioSampleToggle = false;
+            _cdAudioSample = 0;
             _cdSectorOffsetBytes = -1;
             _lastRead6ConsumedBytes = 0;
             _lastRead6ExpectedBytes = 0;
@@ -1833,17 +1837,24 @@ namespace ePceCD
                     break;
 
                 case 0x03:
-                    // NitroGrafx CD03_R:
+                    // Geargrafx/CD hardware behavior:
                     // - reading locks BRAM access
-                    // - returns current IRQ request bits
-                    // - toggles bit1 (L/R status bit) for next read
+                    // - bit 4 is always set
+                    // - bit 1 reflects the latched CD-DA sample side rather than mutating IRQ bits
                     bramLocked = true;
-                    ret = ActiveIrqs;
-                    ActiveIrqs ^= 0x02;
+                    ret = (byte)(ActiveIrqs | 0x10 | (_cdAudioSampleToggle ? 0x00 : 0x02));
                     break;
 
                 case 0x04:
                     ret = ResetRegValue;
+                    break;
+
+                case 0x05:
+                    ret = (byte)(_cdAudioSample & 0xFF);
+                    break;
+
+                case 0x06:
+                    ret = (byte)((_cdAudioSample >> 8) & 0xFF);
                     break;
 
                 case 0x07:
@@ -1960,6 +1971,12 @@ namespace ePceCD
                     }
                     break;
 
+                case 0x05:
+                    // Latch current CD-DA sample side for 0x03/0x05/0x06 reads.
+                    _cdAudioSampleToggle = !_cdAudioSampleToggle;
+                    _cdAudioSample = 0;
+                    break;
+
                 case 0x07:
                     bramLocked = (value & 0x80) == 0;
                     Bus.BRAM.WriteProtect(bramLocked);
@@ -1994,6 +2011,8 @@ namespace ePceCD
             // Hardware reset must drop host ACK; preserving ACK across phase changes is only
             // correct during normal command flow, not controller reset.
             Signals[(int)ScsiSignal.Ack] = false;
+            _cdAudioSampleToggle = false;
+            _cdAudioSample = 0;
             SetPhase(ScsiPhase.BusFree);
             currentSector = -1;
             //Console.WriteLine("CD-ROM Controller Reset");

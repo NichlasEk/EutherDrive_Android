@@ -60,6 +60,8 @@ namespace ePceCD
 
         public byte ReadData(int addr)
         {
+            ServiceDma();
+
             switch (addr & 0x0F)
             {
                 case 0x08: // 地址端口低8位
@@ -72,12 +74,16 @@ namespace ePceCD
                     return ReadBuffer();
 
                 case 0x0B: // DMA控制
+                    if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Length == 0)
+                        _dmaControl &= unchecked((byte)~0x01);
                     return _dmaControl;
 
                 case 0x0C: // 状态寄存器
                     byte status = 0;
                     status |= (byte)(_endReached ? STATUS_END_FLAG : 0);
                     status |= (byte)(_isPlaying ? STATUS_PLAYING_FLAG : 0);
+                    status |= (byte)(((_control & 0x08) != 0) ? 0x80 : 0);
+                    status |= (byte)(((_control & 0x02) != 0) ? 0x04 : 0);
                     return status;
 
                 case 0x0D: // 控制寄存器
@@ -110,9 +116,10 @@ namespace ePceCD
                     break;
 
                 case 0x0B: // DMA控制
+                    if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Length == 0)
+                        value &= unchecked((byte)~0x01);
                     _dmaControl = value;
-                    if (_dmaControl != 0)
-                        ProcessDmaRequest();
+                    ServiceDma();
                     break;
 
                 case 0x0D: // 控制寄存器
@@ -141,26 +148,28 @@ namespace ePceCD
         // 处理控制寄存器写入
         private void UpdateControlState(byte value)
         {
-            //Console.WriteLine($"ADPCM DMA UpdateControlState {_control}");
-
             if ((value & 0x02) != 0 && (_control & 0x02) == 0)
             {
-                if (_addressPort > 0)
-                    _writeAddress = (uint)(_addressPort - ((value & 0x01) != 0 ? 0 : 1));
-                else
-                    _writeAddress = 0;
-                //Console.WriteLine("ADPCM Update WRITE addr");
-            }
-            if ((value & 0x08) != 0 && (_control & 0x08) == 0)
-            {
-                if (_addressPort > 0)
-                    _readAddress = (uint)(_addressPort - ((value & 0x04) != 0 ? 0 : 1));
-                else
-                    _readAddress = 0;
-                //Console.WriteLine("ADPCM Update READ addr");
+                _writeAddress = _addressPort > 0
+                    ? (uint)(_addressPort - ((value & 0x01) != 0 ? 0 : 1))
+                    : 0;
             }
 
+            if ((value & 0x08) != 0 && (_control & 0x08) == 0)
+            {
+                _readAddress = _addressPort > 0
+                    ? (uint)(_addressPort - ((value & 0x04) != 0 ? 0 : 1))
+                    : 0;
+            }
+
+            bool startPlayback = (value & 0x20) != 0 && (_control & 0x20) == 0 && !_isPlaying;
             _control = value;
+
+            if ((_control & 0x80) != 0)
+            {
+                SoftReset();
+                return;
+            }
 
             if (IsLengthLatched())
             {
@@ -168,52 +177,34 @@ namespace ePceCD
                 SetEndReached(false);
             }
 
-            // 启动播放（Bit 7）
-            if ((_control & 0x80) != 0 && !_isPlaying)
+            if (startPlayback)
                 StartPlayback();
-
-            // 停止播放（Bit 6）
-            if ((_control & 0x40) != 0 && _isPlaying)
-                StopPlayback();
-
-            if ((_control & 0x20) != 0)
-            {
-            }
-
-            // 长度锁存（Bit 4）
-            if ((_control & 0x10) != 0)
-                LatchAdpcmLength();
         }
 
-        // 启动播放
         private void StartPlayback()
         {
-            _isPlaying = true;
-            _endReached = false;
-            _halfReached = false;
-            _readAddress = _addressPort;
+            _isPlaying = false;
+            SetEndReached(false);
+            SetHalfReached(false);
             ResetDecoderState();
-            //Console.WriteLine("ADPCM Playback Started");
         }
 
-        // 停止播放
-        private void StopPlayback()
+        private void SoftReset()
         {
             _isPlaying = false;
-            //Console.WriteLine("ADPCM Playback Stopped");
+            _dmaControl = 0;
+            _readAddress = 0;
+            _writeAddress = 0;
+            _adpcmLength = 0;
+            SetEndReached(false);
+            SetHalfReached(false);
+            ResetDecoderState();
         }
 
-        // 锁存播放长度
-        private void LatchAdpcmLength()
+        private void ServiceDma()
         {
-            _adpcmLength = _addressPort;
-            //Console.WriteLine($"ADPCM Length Latched: 0x{_adpcmLength:X4}");
-        }
-
-        // 处理DMA请求
-        private void ProcessDmaRequest()
-        {
-            Console.WriteLine("ADPCM DMA Transfer Started");
+            if ((_dmaControl & 0x03) == 0)
+                return;
 
             if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Length == 0)
             {
@@ -221,21 +212,17 @@ namespace ePceCD
                 return;
             }
 
-            int dmasize = 0;
-            while (dmasize < _cdRom.dataBuffer.Length)
+            if (_cdRom.dataBuffer.Position >= _cdRom.dataBuffer.Length)
             {
-                byte data = _cdRom.ReadDataPort();
-                WriteBuffer(data);
-                dmasize++;
+                _dmaControl &= (byte)(~0x01 & 0xFF);
+                return;
             }
 
-            //while (_cdRom.ResponseBufferIndex < _cdRom.ResponseBufferSize)
-            //{
-            //    byte data = _cdRom.ReadDataPort();
-            //    WriteBuffer(data);
-            //}
+            byte data = _cdRom.ReadDataPort();
+            WriteBuffer(data);
 
-            Console.WriteLine($"ADPCM DMA Transfer {dmasize} Bytes");
+            if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Position >= _cdRom.dataBuffer.Length)
+                _dmaControl &= (byte)(~0x01 & 0xFF);
         }
 
         // 从缓冲区读取数据（更新地址和长度）
@@ -252,7 +239,7 @@ namespace ePceCD
                 if (_adpcmLength > 0)
                 {
                     _adpcmLength--;
-                    SetHalfReached(_adpcmLength < 0x8000);
+                    SetHalfReached(_adpcmLength <= 0x8000);
                 }
                 else
                 {
@@ -272,11 +259,9 @@ namespace ePceCD
             _ram[_writeAddress] = data;
             _writeAddress = (_writeAddress + 1) % RAM_SIZE;
 
+            SetHalfReached(_adpcmLength < 0x8000);
             if (_adpcmLength == 0)
-            {
-                SetEndReached(_endReached);
-            }
-            else SetHalfReached(_adpcmLength <= 0x8000);
+                SetEndReached(true);
 
             if (!IsLengthLatched())
                 _adpcmLength = (_adpcmLength + 1) % RAM_SIZE;
@@ -321,21 +306,21 @@ namespace ePceCD
         // 生成音频样本
         public int GetSample()
         {
+            ServiceDma();
+
             if (IsLengthLatched())
             {
                 _adpcmLength = _addressPort;
                 SetEndReached(false);
             }
+
             if ((_control & 0x80) != 0)
             {
-                _isPlaying = (_control & 0x20) != 0;
+                _isPlaying = false;
                 return 0;
             }
-            if ((_control & 0x40) != 0 && _adpcmLength == 0)
-            {
-                _control &= 0x20;
-            }
-            if ((_control & 0x20) == 0)
+
+            if ((_control & 0x20) == 0 || (((_control & 0x40) != 0) && _adpcmLength == 0))
             {
                 _isPlaying = false;
                 return 0;

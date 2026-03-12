@@ -314,6 +314,13 @@ namespace ePceCD
             IncrementConstant
         }
 
+        private enum BlockTransferPhase
+        {
+            Inactive,
+            Running,
+            Finishing
+        }
+
         private static int[] InstructionTiming = new int[] {
             8,  7,  3,  5,  6,  4,  6,  7,  4,  2,  2,  2,  7,  5,  7,  6,
             2,  7,  7,  5,  6,  4,  6,  7,  2,  5,  2,  2,  7,  5,  7,  6,
@@ -322,15 +329,15 @@ namespace ePceCD
             7,  7,  3,  4,  8,  4,  6,  7,  4,  2,  2,  2,  4,  5,  7,  6,
             2,  7,  7,  5,  3,  4,  6,  7,  2,  5,  3,  2,  2,  5,  7,  6,
             7,  7,  2,  2,  4,  4,  6,  7,  4,  2,  2,  2,  7,  5,  7,  6,
-            2,  7,  7, 17,  4,  4,  6,  7,  2,  5,  4,  2,  7,  5,  7,  6,
+            2,  7,  7,  0,  4,  4,  6,  7,  2,  5,  4,  2,  7,  5,  7,  6,
             2,  7,  2,  7,  4,  4,  4,  7,  2,  2,  2,  2,  5,  5,  5,  6,
             2,  7,  7,  8,  4,  4,  4,  7,  2,  5,  2,  2,  5,  5,  5,  6,
             2,  7,  2,  7,  4,  4,  4,  7,  2,  2,  2,  2,  5,  5,  5,  6,
             2,  7,  7,  8,  4,  4,  4,  7,  2,  5,  2,  2,  5,  5,  5,  6,
-            2,  7,  2, 17,  4,  4,  6,  7,  2,  2,  2,  2,  5,  5,  7,  6,
-            2,  7,  7, 17,  3,  4,  6,  7,  2,  5,  3,  2,  2,  5,  7,  6,
-            2,  7,  2, 17,  4,  4,  6,  7,  2,  2,  2,  2,  5,  5,  7,  6,
-            2,  7,  7, 17,  2,  4,  6,  7,  2,  5,  4,  2,  2,  5,  7,  6
+            2,  7,  2,  0,  4,  4,  6,  7,  2,  2,  2,  2,  5,  5,  7,  6,
+            2,  7,  7,  0,  3,  4,  6,  7,  2,  5,  3,  2,  2,  5,  7,  6,
+            2,  7,  2,  0,  4,  4,  6,  7,  2,  2,  2,  2,  5,  5,  7,  6,
+            2,  7,  7,  0,  2,  4,  6,  7,  2,  5,  4,  2,  2,  5,  7,  6
         };
 
         // 6502 Registers
@@ -343,9 +350,11 @@ namespace ePceCD
 
         // Block Transfer Registers
         private BlockTransferMode m_TransferMode;
+        private BlockTransferPhase m_TransferPhase;
         private ushort m_TransferSrc;
         private ushort m_TransferDest;
         private ushort m_TransferCount;
+        private ushort m_TransferLength;
         [NonSerialized]
         private int _traceBlockTransferCount;
         [NonSerialized]
@@ -437,6 +446,8 @@ namespace ePceCD
         public void Reset()
         {
             m_TransferMode = BlockTransferMode.NoTransferActive;
+            m_TransferPhase = BlockTransferPhase.Inactive;
+            m_TransferLength = 0;
             m_HiSpeed = false;
 
             m_NFlag = false;
@@ -506,42 +517,55 @@ namespace ePceCD
             while (m_Clock > 0)
             {
                 m_AdvanceClock = 0;
-                if (m_TransferMode != BlockTransferMode.NoTransferActive)
+                if (m_TransferPhase != BlockTransferPhase.Inactive)
                 {
-                    switch (m_TransferMode)
+                    if (m_TransferPhase == BlockTransferPhase.Finishing)
                     {
-                        case BlockTransferMode.DecrementDecrement:
-                            Write8(m_TransferDest--, Read8(m_TransferSrc--, blockTransfer: true), blockTransfer: true);
-                            break;
-                        case BlockTransferMode.IncrementConstant:
-                            Write8(m_TransferDest, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
-                            break;
-                        case BlockTransferMode.IncrementIncrement:
-                            Write8(m_TransferDest++, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
-                            break;
-                        case BlockTransferMode.IncrementAlternate_Up:
-                            Write8(m_TransferDest++, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
-                            m_TransferMode = BlockTransferMode.IncrementAlternate_Down;
-                            break;
-                        case BlockTransferMode.IncrementAlternate_Down:
-                            Write8(m_TransferDest--, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
-                            m_TransferMode = BlockTransferMode.IncrementAlternate_Up;
-                            break;
-                        case BlockTransferMode.AlternateIncrement_Up:
-                            Write8(m_TransferDest++, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
-                            m_TransferMode = BlockTransferMode.AlternateIncrement_Down;
-                            break;
-                        case BlockTransferMode.AlternateIncrement_Down:
-                            Write8(m_TransferDest++, Read8(m_TransferSrc--, blockTransfer: true), blockTransfer: true);
-                            m_TransferMode = BlockTransferMode.AlternateIncrement_Up;
-                            break;
-                    }
-
-                    m_AdvanceClock += 6;
-
-                    if (--m_TransferCount == 0)
-                    {
+                        m_X = Pop8();
+                        m_A = Pop8();
+                        m_Y = Pop8();
+                        m_PC += 7;
                         m_TransferMode = BlockTransferMode.NoTransferActive;
+                        m_TransferPhase = BlockTransferPhase.Inactive;
+                        m_AdvanceClock += 3;
+                    }
+                    else
+                    {
+                        switch (m_TransferMode)
+                        {
+                            case BlockTransferMode.DecrementDecrement:
+                                Write8(m_TransferDest--, Read8(m_TransferSrc--, blockTransfer: true), blockTransfer: true);
+                                break;
+                            case BlockTransferMode.IncrementConstant:
+                                Write8(m_TransferDest, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
+                                break;
+                            case BlockTransferMode.IncrementIncrement:
+                                Write8(m_TransferDest++, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
+                                break;
+                            case BlockTransferMode.IncrementAlternate_Up:
+                                Write8(m_TransferDest++, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
+                                m_TransferMode = BlockTransferMode.IncrementAlternate_Down;
+                                break;
+                            case BlockTransferMode.IncrementAlternate_Down:
+                                Write8(m_TransferDest--, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
+                                m_TransferMode = BlockTransferMode.IncrementAlternate_Up;
+                                break;
+                            case BlockTransferMode.AlternateIncrement_Up:
+                                Write8(m_TransferDest++, Read8(m_TransferSrc++, blockTransfer: true), blockTransfer: true);
+                                m_TransferMode = BlockTransferMode.AlternateIncrement_Down;
+                                break;
+                            case BlockTransferMode.AlternateIncrement_Down:
+                                Write8(m_TransferDest++, Read8(m_TransferSrc--, blockTransfer: true), blockTransfer: true);
+                                m_TransferMode = BlockTransferMode.AlternateIncrement_Up;
+                                break;
+                        }
+
+                        m_AdvanceClock += 6;
+
+                        m_TransferCount++;
+
+                        if (--m_TransferLength == 0)
+                            m_TransferPhase = BlockTransferPhase.Finishing;
                     }
                 }
                 else
@@ -1016,11 +1040,19 @@ namespace ePceCD
         }
         private void StartBlock(BlockTransferMode mode)
         {
+            Push8(m_Y);
+            Push8(m_A);
+            Push8(m_X);
             m_TransferMode = mode;
             m_TransferSrc = ReadImmediate16();
             m_TransferDest = ReadImmediate16();
-            m_TransferCount = ReadImmediate16();
-            TraceBlockTransferIfNeeded(mode, m_TransferSrc, m_TransferDest, m_TransferCount);
+            ushort transferLength = ReadImmediate16();
+            m_TransferCount = 0;
+            m_TransferLength = transferLength;
+            m_PC -= 7;
+            m_TransferPhase = BlockTransferPhase.Running;
+            TraceBlockTransferIfNeeded(mode, m_TransferSrc, m_TransferDest, transferLength);
+            m_AdvanceClock += 14;
         }
 
         private void TraceBlockTransferIfNeeded(BlockTransferMode mode, ushort src, ushort dest, ushort count)
