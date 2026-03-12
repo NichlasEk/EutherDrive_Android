@@ -302,6 +302,14 @@ public partial class MainWindow : Window
     private DispatcherTimer? _cursorHideTimer;
     private bool _cursorHidden;
     private Point _lastMousePosition;
+    private const double DefaultUiScale = 1.0;
+    private const double HighDensityUiScale = 1.35;
+    private const double UltraDensityUiScale = 1.5;
+    private const int HighDensityWidthThreshold = 3840;
+    private const int HighDensityHeightThreshold = 2160;
+    private const int UltraDensityWidthThreshold = 5120;
+    private const int UltraDensityHeightThreshold = 2880;
+    private double _uiScale = DefaultUiScale;
 
     public MainWindow(string? romPath = null)
     {
@@ -310,6 +318,11 @@ public partial class MainWindow : Window
         ApplyConsoleSilence();
         HookInput();
         HookMouseMovement();
+        Opened += (_, _) => UpdateUiScaleForCurrentScreen();
+        PositionChanged += (_, _) => UpdateUiScaleForCurrentScreen();
+        ScalingChanged += (_, _) => UpdateUiScaleForCurrentScreen();
+        if (Screens != null)
+            Screens.Changed += (_, _) => UpdateUiScaleForCurrentScreen();
 
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
@@ -415,6 +428,7 @@ public partial class MainWindow : Window
         }
         _presentOnUiAction = PresentPendingFrame;
         ApplyFullScreenLayout(WindowState == WindowState.FullScreen);
+        ApplyUiScale();
 
         // Auto-start if ROM was loaded from CLI
         if (!string.IsNullOrEmpty(_romPath))
@@ -1088,13 +1102,18 @@ public partial class MainWindow : Window
 
     private void ApplyFullScreenLayout(bool fullScreen)
     {
-        if (RootGrid == null || ScreenBorder == null || TopControlsPanel == null || InfoPanel == null)
+        if (RootGrid == null || ScreenBorder == null)
             return;
 
-        TopControlsPanel.IsVisible = !fullScreen;
-        if (TopControlsPanel.Parent is Avalonia.Controls.Control parentControl)
-            parentControl.IsVisible = !fullScreen;
-        InfoPanel.IsVisible = !fullScreen;
+        if (TopControlsScaler != null)
+            TopControlsScaler.IsVisible = !fullScreen;
+        else if (TopControlsPanel != null)
+            TopControlsPanel.IsVisible = !fullScreen;
+
+        if (InfoPanelScaler != null)
+            InfoPanelScaler.IsVisible = !fullScreen;
+        else if (InfoPanel != null)
+            InfoPanel.IsVisible = !fullScreen;
 
         RootGrid.Margin = fullScreen ? new Thickness(0) : new Thickness(12);
         RootGrid.RowSpacing = fullScreen ? 0 : 12;
@@ -1106,6 +1125,77 @@ public partial class MainWindow : Window
         Grid.SetColumn(ScreenBorder, fullScreen ? 0 : 1);
         Grid.SetRowSpan(ScreenBorder, fullScreen ? 2 : 1);
         Grid.SetColumnSpan(ScreenBorder, fullScreen ? 2 : 1);
+    }
+
+    private void UpdateUiScaleForCurrentScreen()
+    {
+        double nextScale = DetermineUiScale(GetCurrentScreen());
+        if (Math.Abs(nextScale - _uiScale) < 0.001)
+            return;
+
+        _uiScale = nextScale;
+        ApplyUiScale();
+    }
+
+    private Screen? GetCurrentScreen()
+    {
+        try
+        {
+            return Screens?.ScreenFromWindow(this) ?? Screens?.Primary;
+        }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
+    }
+
+    private static double DetermineUiScale(Screen? screen)
+    {
+        if (screen == null)
+            return DefaultUiScale;
+
+        PixelRect bounds = screen.WorkingArea.Width > 0 && screen.WorkingArea.Height > 0
+            ? screen.WorkingArea
+            : screen.Bounds;
+        int longSide = Math.Max(bounds.Width, bounds.Height);
+        int shortSide = Math.Min(bounds.Width, bounds.Height);
+
+        if (longSide >= UltraDensityWidthThreshold && shortSide >= UltraDensityHeightThreshold)
+            return UltraDensityUiScale;
+        if (longSide >= HighDensityWidthThreshold && shortSide >= HighDensityHeightThreshold)
+            return HighDensityUiScale;
+
+        return DefaultUiScale;
+    }
+
+    private void ApplyUiScale()
+    {
+        ApplyScaleTransform(TopControlsScaler, _uiScale);
+        ApplyScaleTransform(InfoPanelScaler, _uiScale);
+    }
+
+    private static void ApplyScaleTransform(LayoutTransformControl? control, double uiScale)
+    {
+        if (control == null)
+            return;
+
+        control.LayoutTransform = Math.Abs(uiScale - DefaultUiScale) < 0.001
+            ? null
+            : new ScaleTransform(uiScale, uiScale);
+    }
+
+    private static double ScaleDialogSize(double value, double uiScale) => Math.Round(value * uiScale);
+
+    private static Control WrapDialogForUiScale(Control content, double uiScale)
+    {
+        if (Math.Abs(uiScale - DefaultUiScale) < 0.001)
+            return content;
+
+        return new LayoutTransformControl
+        {
+            LayoutTransform = new ScaleTransform(uiScale, uiScale),
+            Child = content
+        };
     }
 
     private async void OnOpenRom(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -1625,11 +1715,11 @@ public partial class MainWindow : Window
         var dialog = new Window
         {
             Title = "About",
-            Width = 420,
-            Height = 420,
+            Width = ScaleDialogSize(420, _uiScale),
+            Height = ScaleDialogSize(420, _uiScale),
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = layout
+            Content = WrapDialogForUiScale(layout, _uiScale)
         };
         dialog.KeyDown += (_, args) => zuulView.InjectKeyDown(args.Key);
         dialog.KeyUp += (_, args) => zuulView.InjectKeyUp(args.Key);
@@ -2759,15 +2849,17 @@ public partial class MainWindow : Window
         private readonly Func<GamepadButton?>? _gamepad2ButtonProvider;
         private DispatcherTimer? _gamepadPollTimer;
         private RecordingDevice _recordingDevice = RecordingDevice.Keyboard;
+        private readonly double _uiScale;
 
-        public InputMappingDialog(InputMappingSettings currentMappings, Func<GamepadButton?>? gamepad1ButtonProvider = null, Func<GamepadButton?>? gamepad2ButtonProvider = null)
+        public InputMappingDialog(InputMappingSettings currentMappings, double uiScale, Func<GamepadButton?>? gamepad1ButtonProvider = null, Func<GamepadButton?>? gamepad2ButtonProvider = null)
         {
             Mappings = currentMappings;
+            _uiScale = uiScale;
             _gamepad1ButtonProvider = gamepad1ButtonProvider;
             _gamepad2ButtonProvider = gamepad2ButtonProvider;
             Title = "Input Settings";
-            Width = 860;
-            Height = 600;
+            Width = ScaleDialogSize(860, _uiScale);
+            Height = ScaleDialogSize(600, _uiScale);
             Background = new SolidColorBrush(Color.Parse("#0F1216"));
             WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
@@ -2836,7 +2928,7 @@ public partial class MainWindow : Window
             buttonPanel.Children.Add(cancelButton);
             stack.Children.Add(buttonPanel);
 
-            Content = new ScrollViewer { Content = stack };
+            Content = WrapDialogForUiScale(new ScrollViewer { Content = stack }, _uiScale);
 
             // Hook global key events
             KeyDown += OnDialogKeyDown;
@@ -3747,13 +3839,13 @@ public partial class MainWindow : Window
         var dialog = new Window
         {
             Title = "Controls",
-            Width = 420,
-            Height = 380,
+            Width = ScaleDialogSize(420, _uiScale),
+            Height = ScaleDialogSize(380, _uiScale),
             Background = new SolidColorBrush(Color.Parse("#0F1216")),
-            Content = new ScrollViewer
+            Content = WrapDialogForUiScale(new ScrollViewer
             {
                 Content = root
-            },
+            }, _uiScale),
             WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
 
@@ -3777,7 +3869,7 @@ public partial class MainWindow : Window
                 return TryConsumeLastGamepad2ButtonPressed();
             }
             : null;
-        var dialog = new InputMappingDialog(_inputMappings, gamepadProvider1, gamepadProvider2);
+        var dialog = new InputMappingDialog(_inputMappings, _uiScale, gamepadProvider1, gamepadProvider2);
         if (await dialog.ShowDialog<bool>(this))
         {
             // Save updated mappings

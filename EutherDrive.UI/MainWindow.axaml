@@ -27,8 +27,9 @@
 
     <Grid Name="RootGrid" RowDefinitions="Auto,*" ColumnDefinitions="Auto,*" Margin="12" RowSpacing="12" ColumnSpacing="12">
 
-      <Border Grid.Row="0" Grid.ColumnSpan="2" Classes="panel" Padding="6">
-        <StackPanel Name="TopControlsPanel" Orientation="Horizontal" Spacing="6">
+      <LayoutTransformControl Name="TopControlsScaler" Grid.Row="0" Grid.ColumnSpan="2">
+        <Border Classes="panel" Padding="6">
+          <StackPanel Name="TopControlsPanel" Orientation="Horizontal" Spacing="6">
           <Button Classes="action compact" Content="Open ROM…" Click="OnOpenRom"/>
           <Border Classes="panel" Padding="6,5">
             <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
@@ -112,12 +113,14 @@
                        Width="220"/>
             </StackPanel>
           </Border>
-        </StackPanel>
-      </Border>
+          </StackPanel>
+        </Border>
+      </LayoutTransformControl>
 
-      <Border Name="InfoPanel" Grid.Row="1" Grid.Column="0" Classes="panel" Padding="10">
-        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-          <StackPanel Spacing="8" Width="240">
+      <LayoutTransformControl Name="InfoPanelScaler" Grid.Row="1" Grid.Column="0">
+        <Border Name="InfoPanel" Classes="panel" Padding="10">
+          <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="8" Width="240">
             <TextBlock Classes="deck-label" Text="MACHINE ROOM"/>
             <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
             <CheckBox Content="Use 6-button pad" IsChecked="False" Name="SixButtonPadCheck"/>
@@ -315,9 +318,10 @@
             <CheckBox Content="ASCII Stream (for viewer)" IsChecked="False" Name="AsciiStreamCheck" Checked="OnAsciiStreamToggle" Unchecked="OnAsciiStreamToggle"/>
             <CheckBox Content="Preserve FB on Display Off" IsChecked="True" Name="PreserveFbCheck" Checked="OnPreserveFbToggle" Unchecked="OnPreserveFbToggle"/>
             <TextBlock Name="InterlaceTestInfo" Classes="muted" FontSize="11" TextWrapping="Wrap"/>
-          </StackPanel>
-        </ScrollViewer>
-      </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+      </LayoutTransformControl>
 
       <Border Name="ScreenBorder"
               Grid.Row="1"
