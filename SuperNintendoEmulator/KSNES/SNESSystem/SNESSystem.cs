@@ -65,6 +65,8 @@ public class SNESSystem : ISNESSystem
     private bool _inNmi;
     private bool _vblankNmiFlag;
     private bool _inIrq;
+    private bool _irqLine;
+    private int _lastIrqHTime;
     private bool _inHblank;
     private bool _inVblank;
 
@@ -380,6 +382,8 @@ public class SNESSystem : ISNESSystem
         _inNmi = false;
         _vblankNmiFlag = false;
         _inIrq = false;
+        _irqLine = false;
+        _lastIrqHTime = 0;
         _inHblank = false;
         _inVblank = false;
         _autoJoyRead = false;
@@ -428,6 +432,8 @@ public class SNESSystem : ISNESSystem
         // runtime view that matches the current beam position rather than stale mid-transition bits.
         _vblankNmiFlag = false;
         _inIrq = false;
+        _irqLine = false;
+        _lastIrqHTime = GetIrqHTime();
         _autoJoyPendingStart = false;
 
         if (!_autoJoyBusy)
@@ -547,27 +553,7 @@ public class SNESSystem : ISNESSystem
         {
             CpuCycle();
         }
-        if (YPos == _vTimer && _vIrqEnabled)
-        {
-            if (!_hIrqEnabled)
-            {
-                if (XPos == 0)
-                {
-                    _inIrq = true;
-                }
-            }
-            else
-            {
-                if (XPos == _hTimer * 4)
-                {
-                    _inIrq = true;
-                }
-            }
-        }
-        else if (XPos == _hTimer * 4 && _hIrqEnabled && !_vIrqEnabled)
-        {
-            _inIrq = true;
-        }
+        UpdateIrqLine();
         
         CPU.IrqWanted = _inIrq || ROM.IrqWanted;
         if (XPos == 512 && !noPpu)
@@ -616,6 +602,95 @@ public class SNESSystem : ISNESSystem
                 _autoJoyPendingStart = false;
             }
         }
+    }
+
+    private int GetIrqVTime()
+    {
+        const int irqOffsetMclks = 10;
+        int maxV = IsPal ? 312 : 262;
+        if (XPos >= irqOffsetMclks)
+            return YPos;
+
+        return YPos == 0 ? maxV - 1 : YPos - 1;
+    }
+
+    private int GetIrqHTime()
+    {
+        const int irqOffsetMclks = 10;
+        int scanlineMclks = XPos >= irqOffsetMclks
+            ? XPos - irqOffsetMclks
+            : 1364 - (irqOffsetMclks - XPos);
+        return scanlineMclks / 4;
+    }
+
+    private static bool RangeContainsExclusiveEnd(int startExclusive, int endExclusive, int value)
+    {
+        return value > startExclusive && value < endExclusive;
+    }
+
+    private static bool RangeContainsInclusiveEnd(int startExclusive, int endInclusive, int value)
+    {
+        return value > startExclusive && value <= endInclusive;
+    }
+
+    private void UpdateIrqLine()
+    {
+        int ppuHTime = GetIrqHTime();
+        int ppuVTime = GetIrqVTime();
+
+        bool CheckH()
+        {
+            if (ppuHTime < _lastIrqHTime)
+            {
+                return _hTimer <= ppuHTime || RangeContainsExclusiveEnd(_lastIrqHTime, 341, _hTimer);
+            }
+
+            return RangeContainsInclusiveEnd(_lastIrqHTime, ppuHTime, _hTimer);
+        }
+
+        bool CheckV() => ppuVTime == _vTimer;
+
+        bool CheckHv()
+        {
+            if (ppuHTime >= _lastIrqHTime)
+            {
+                return RangeContainsInclusiveEnd(_lastIrqHTime, ppuHTime, _hTimer) && CheckV();
+            }
+
+            if (_hTimer <= ppuHTime)
+                return CheckV();
+
+            if (RangeContainsExclusiveEnd(_lastIrqHTime, 341, _hTimer))
+            {
+                int maxV = IsPal ? 312 : 262;
+                int prevVTime = ppuVTime == 0 ? maxV - 1 : ppuVTime - 1;
+                return prevVTime == _vTimer;
+            }
+
+            return false;
+        }
+
+        bool newIrqLine;
+        if (!_hIrqEnabled && !_vIrqEnabled)
+        {
+            newIrqLine = false;
+        }
+        else if (_hIrqEnabled && _vIrqEnabled)
+        {
+            newIrqLine = CheckHv();
+        }
+        else if (_hIrqEnabled)
+        {
+            newIrqLine = CheckH();
+        }
+        else
+        {
+            newIrqLine = CheckV();
+        }
+
+        _lastIrqHTime = ppuHTime;
+        _inIrq |= !_irqLine && newIrqLine;
+        _irqLine = newIrqLine;
     }
 
     private void CpuCycle()
@@ -949,6 +1024,11 @@ public class SNESSystem : ISNESSystem
                     CPU.NmiWanted = true;
                 }
                 _nmiEnabled = newNmiEnabled;
+                if (!_hIrqEnabled && !_vIrqEnabled)
+                {
+                    _inIrq = false;
+                    _irqLine = false;
+                }
                 if (_traceDma)
                 {
                     int pc = -1;
