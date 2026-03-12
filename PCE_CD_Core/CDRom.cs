@@ -1763,6 +1763,9 @@ namespace ePceCD
 
         public byte ReadAt(int address)
         {
+            if (Bus?.ArcadeCard != null && address >= 0x1A00 && address <= 0x1AFF)
+                return Bus.ArcadeCard.ReadHardware(address);
+
             byte ret = 0xFF;
 
             switch (address & 0xFF)
@@ -1917,6 +1920,12 @@ namespace ePceCD
 
         public void WriteAt(int address, byte value)
         {
+            if (Bus?.ArcadeCard != null && address >= 0x1A00 && address <= 0x1AFF)
+            {
+                Bus.ArcadeCard.WriteHardware(address, value);
+                return;
+            }
+
             //Console.WriteLine($"CD-ROM WRITE ACCESS [ 0x{address:X} >> 0x{value:X2} ]");
             RecordCdRegAccess(isWrite: true, reg: address & 0xFF, val: value);
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CDREG_LOG") == "1" && _cdRegLogCount < GetCdRegLogLimit())

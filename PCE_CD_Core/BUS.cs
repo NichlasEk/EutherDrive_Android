@@ -32,6 +32,7 @@ namespace ePceCD
         public APU APU;
         public Controller JoyPort;
         public CDRom CDRom;
+        public ArcadeCard? ArcadeCard;
 
         private bool m_EnableTIMER;
         private bool m_EnableIRQ1;
@@ -116,6 +117,8 @@ namespace ePceCD
 
             if (_romPages != null && _romPages.Length > 0)
                 MapRomPages(_romPages);
+
+            ApplyArcadeCardMappings();
         }
 
         private void RebuildBankList()
@@ -159,6 +162,10 @@ namespace ePceCD
 
                 CDRom.RestoreExternalFilesAfterDeserialize();
             }
+
+            EnsureArcadeCardConfigured();
+            ApplyArcadeCardMappings();
+            CPU.RebindBanks();
         }
 
         private void FixBankMirrors()
@@ -209,6 +216,7 @@ namespace ePceCD
             m_EnableTIMER = true;
             if (string.IsNullOrEmpty(CDfile))
                 CDRom.EnterIdleState();
+            ArcadeCard?.Reset();
 
             PPU.Reset();
             m_DeadClocks = 0;
@@ -516,7 +524,10 @@ namespace ePceCD
         {
             CDRom.LoadCue(file);
             CDfile = Path.GetFileNameWithoutExtension(file);
+            EnsureArcadeCardConfigured();
             m_BankList[0xF7] = BRAM;
+            ApplyArcadeCardMappings();
+            CPU.RebindBanks();
         }
 
         public void AttachBram(SaveMemoryBank bram)
@@ -628,6 +639,50 @@ namespace ePceCD
 
             for (i = 0; i < 0x100; i++)
                 GetBank((byte)i).SetMemoryPage(i);
+
+            ApplyArcadeCardMappings();
+        }
+
+        private void EnsureArcadeCardConfigured()
+        {
+            if (!ShouldEnableArcadeCard())
+            {
+                ArcadeCard = null;
+                return;
+            }
+
+            ArcadeCard ??= new ArcadeCard();
+        }
+
+        private bool ShouldEnableArcadeCard()
+        {
+            if (string.IsNullOrEmpty(CDfile))
+                return false;
+
+            string? env = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ARCADE_CARD");
+            if (string.IsNullOrWhiteSpace(env))
+                return true;
+
+            if (env == "0" || env.Equals("false", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            return true;
+        }
+
+        private void ApplyArcadeCardMappings()
+        {
+            if (m_BankList == null || m_BankList.Length != 0x100)
+                return;
+
+            if (ArcadeCard == null || !ShouldEnableArcadeCard())
+                return;
+
+            for (int i = 0; i < 4; i++)
+            {
+                var bank = new ArcadeCardDataBank(ArcadeCard, i);
+                bank.SetMemoryPage(0x40 + i);
+                m_BankList[0x40 + i] = bank;
+            }
         }
 
         public MemoryBank GetBank(byte bank)
