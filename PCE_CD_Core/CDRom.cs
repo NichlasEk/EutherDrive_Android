@@ -142,7 +142,7 @@ namespace ePceCD
 
         private enum ScsiPhase
         {
-            CMD, DataIn, Status, MessageIn, BusFree
+            CMD, DataIn, Status, MessageIn, BusFree, Busy
         }
         private ScsiPhase _ScsiPhase;
 
@@ -315,12 +315,9 @@ namespace ePceCD
                             _cdSectorOffsetBytes = -1;
                             break;
                         case CDLOOPMODE.IRQ:
-                            ActiveIrqs |= (byte)CdRomIrqSource.Stop;
-                            // Surface the newly latched STOP IRQ immediately.
-                            UpdateScsiIrqs();
-                            if (TraceVerboseEnabled())
-                                Console.WriteLine($"CD-ROM: STOP IRQ latched active=0x{ActiveIrqs:X2} enabled=0x{EnabledIrqs:X2} pending={(IRQPending() ? 1 : 0)}");
                             CdPlaying = false;
+                            _cdSectorOffsetBytes = -1;
+                            SendStatus(0x00);
                             return;
                     }
                 }
@@ -932,6 +929,11 @@ namespace ePceCD
                 case ScsiPhase.BusFree:
                     Signals[(int)ScsiSignal.Bsy] = false;
                     // BusFree is an idle state; REQ must remain low.
+                    Signals[(int)ScsiSignal.Req] = false;
+                    break;
+
+                case ScsiPhase.Busy:
+                    Signals[(int)ScsiSignal.Bsy] = true;
                     Signals[(int)ScsiSignal.Req] = false;
                     break;
             }
@@ -1575,7 +1577,7 @@ namespace ePceCD
             bool Playing = CdPlaying;
             CdPlaying = false;
 
-            currentSector = CdPlaying ? AudioCS : (lastDataSector >= 0 ? lastDataSector : AudioCS);
+            currentSector = Playing ? AudioCS : (lastDataSector >= 0 ? lastDataSector : AudioCS);
 
             var track = tracks.FirstOrDefault(t => t.SectorStart <= currentSector && t.SectorEnd > currentSector);
             if (track == null)
@@ -1665,7 +1667,7 @@ namespace ePceCD
                 }
                 else
                 {
-                    qData[0] = (byte)(Playing ? 0 : 1);
+                    qData[0] = (byte)(Playing ? 0x00 : 0x03);
                     qData[1] = controlAdr;
                     qData[2] = ToBCD(track.Number); // Track
                     qData[3] = ToBCD(1); // Index
@@ -1750,7 +1752,10 @@ namespace ePceCD
             {
                 case 0: CdPlaying = false; break;
                 case 1: CdLoopMode = CDLOOPMODE.LOOP; break;
-                case 2: CdLoopMode = CDLOOPMODE.IRQ; break;
+                case 2:
+                    CdLoopMode = CDLOOPMODE.IRQ;
+                    SetPhase(ScsiPhase.Busy);
+                    return;
                 case 3: CdLoopMode = CDLOOPMODE.STOP; break;
             }
             SendStatus(0x00);
@@ -2059,6 +2064,9 @@ namespace ePceCD
                     // Nitro sendMessage: clear DataTransferDone and drop to BusFree on ACK.
                     ActiveIrqs &= unchecked((byte)~(byte)CdRomIrqSource.DataTransferDone);
                     SetPhase(ScsiPhase.BusFree);
+                    break;
+
+                case ScsiPhase.Busy:
                     break;
             }
 
