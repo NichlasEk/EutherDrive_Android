@@ -53,8 +53,11 @@ namespace ePceCD
         // CD 播放
         private int AudioSS, AudioES, AudioCS;
         private bool CdPlaying;
+        private int _currentMediaSector;
         private CDLOOPMODE CdLoopMode;
         private enum CDLOOPMODE { LOOP, IRQ, STOP };
+        private enum CdAudioState : byte { Playing = 0x00, Idle = 0x01, Paused = 0x02, Stopped = 0x03 }
+        private CdAudioState _cdAudioState;
         byte[] CDSBuffer = new byte[SECTOR_SIZE];
         private int _cdSectorOffsetBytes = -1;
         private int _cdSectorDataOffset = DATA_SECTOR_OFFSET;
@@ -217,9 +220,11 @@ namespace ePceCD
             ActiveIrqs = 0;
             EnabledIrqs = 0;
             CdPlaying = false;
+            _cdAudioState = CdAudioState.Idle;
             AudioCS = 0;
             AudioSS = 0;
             AudioES = 0;
+            _currentMediaSector = 0;
             _cdAudioSampleToggle = false;
             _cdAudioSample = 0;
             _cdSectorOffsetBytes = -1;
@@ -309,13 +314,16 @@ namespace ePceCD
                     {
                         case CDLOOPMODE.STOP:
                             CdPlaying = false;
+                            _cdAudioState = CdAudioState.Stopped;
                             return;
                         case CDLOOPMODE.LOOP:
                             AudioCS = AudioSS;
+                            _currentMediaSector = AudioCS;
                             _cdSectorOffsetBytes = -1;
                             break;
                         case CDLOOPMODE.IRQ:
                             CdPlaying = false;
+                            _cdAudioState = CdAudioState.Stopped;
                             _cdSectorOffsetBytes = -1;
                             SendStatus(0x00);
                             return;
@@ -328,6 +336,7 @@ namespace ePceCD
                     return;
                 if (_cdSectorOffsetBytes < 0 || _cdSectorOffsetBytes >= SECTOR_SIZE)
                 {
+                    _currentMediaSector = AudioCS;
                     long relSector = AudioCS - track.SectorStart;
                     long fileOffset = track.OffsetStart + relSector * SECTOR_SIZE;
                     track.File.Seek(fileOffset, SeekOrigin.Begin);
@@ -367,6 +376,7 @@ namespace ePceCD
                 {
                     _cdSectorOffsetBytes = -1;
                     AudioCS++;
+                    _currentMediaSector = AudioCS;
                 }
             }
         }
@@ -1297,6 +1307,7 @@ namespace ePceCD
                     case ScsiCommand.AudioPause:
                         Console.WriteLine($"CD-ROM: AudioPause");
                         CdPlaying = false;
+                        _cdAudioState = CdAudioState.Paused;
                         _cdSectorOffsetBytes = -1;
                         SendStatus(0);
                         break;
@@ -1428,8 +1439,12 @@ namespace ePceCD
                         break;
                 }
                 currentSector++;
+                _currentMediaSector = currentSector;
                 sectorsToRead--;
             } while (sectorsToRead > 0);
+
+            if (!CdPlaying)
+                _cdAudioState = CdAudioState.Idle;
 
             PrepareResponse(data);
             _lastRead6ExpectedBytes = data.Length;
@@ -1574,117 +1589,79 @@ namespace ePceCD
 
         private void HandleSubChannelQ()
         {
-            bool Playing = CdPlaying;
-            CdPlaying = false;
+            int subqSector = _currentMediaSector >= 0
+                ? _currentMediaSector
+                : (CdPlaying ? AudioCS : (lastDataSector >= 0 ? lastDataSector : 0));
 
-            currentSector = Playing ? AudioCS : (lastDataSector >= 0 ? lastDataSector : AudioCS);
+            if (subqSector < 0)
+                subqSector = 0;
 
-            var track = tracks.FirstOrDefault(t => t.SectorStart <= currentSector && t.SectorEnd > currentSector);
+            if (_subFile != null && subqSector >= 0 && subqSector < _subSectors)
+            {
+                byte[] subFrame = new byte[96];
+                try
+                {
+                    _subFile.Seek((long)subqSector * 96, SeekOrigin.Begin);
+                    int read = _subFile.Read(subFrame, 0, subFrame.Length);
+                    if (read == subFrame.Length)
+                    {
+                        byte[] rawQData = new byte[10];
+                        rawQData[0] = (byte)_cdAudioState;
+                        rawQData[1] = subFrame[12];
+                        rawQData[2] = subFrame[13];
+                        rawQData[3] = subFrame[14];
+                        rawQData[4] = subFrame[15];
+                        rawQData[5] = subFrame[16];
+                        rawQData[6] = subFrame[17];
+                        rawQData[7] = subFrame[19];
+                        rawQData[8] = subFrame[20];
+                        rawQData[9] = subFrame[21];
+
+                        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
+                        {
+                            Console.WriteLine(
+                                $"CD-ROM: SubChannelQ raw sector={subqSector} q={BitConverter.ToString(rawQData)}");
+                        }
+
+                        PrepareResponse(rawQData);
+                        SetPhase(ScsiPhase.DataIn);
+                        return;
+                    }
+                }
+                catch
+                {
+                    // Fall back to synthesized SubQ below.
+                }
+            }
+
+            var track = tracks.FirstOrDefault(t => t.SectorStart <= subqSector && t.SectorEnd > subqSector);
             if (track == null)
             {
                 Console.WriteLine("SubChannelQ Invalid LBA");
                 SendStatus(0x00);
                 return;
             }
-            Console.WriteLine($"CD-ROM: SubChannelQ Track {track.Number} Sector {currentSector}");
+            Console.WriteLine($"CD-ROM: SubChannelQ Track {track.Number} Sector {subqSector}");
 
             byte[] qData = new byte[10];
-            bool usedSub = false;
-            if (_subFile != null && _subSectors > 0 && currentSector >= 0 && currentSector < _subSectors)
-            {
-                byte[] sub = new byte[96];
-                _subFile.Seek(currentSector * 96, SeekOrigin.Begin);
-                int read = _subFile.Read(sub, 0, sub.Length);
-                if (read == 96)
-                {
-                    bool any = false;
-                    for (int i = 12; i < 22; i++)
-                        any |= sub[i] != 0x00 && sub[i] != 0xFF;
-                    if (any)
-                    {
-                        Array.Copy(sub, 12, qData, 0, 10);
-                        usedSub = true;
-                    }
-                }
-            }
+            int relLba = subqSector - (int)track.SectorStart;
+            if (relLba < 0)
+                relLba = 0;
 
-            if (!usedSub)
-            {
-                bool fixQ = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SUBQ_FIXED") == "1";
-                bool negRel = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SUBQ_NEG") == "1";
-                int absLba = currentSector + 150;
-                int relLba;
-                int index = 1;
-                bool relIsNeg = false;
-
-                if (fixQ && track.IsLeadIn && currentSector < track.SectorStart)
-                {
-                    index = 0;
-                    if (negRel)
-                    {
-                        relIsNeg = true;
-                        relLba = (int)(track.SectorStart - currentSector);
-                    }
-                    else
-                    {
-                        relLba = (int)(currentSector - track.LeadInSectorStart);
-                    }
-                }
-                else
-                {
-                    relLba = (int)(currentSector - track.SectorStart);
-                }
-
-                if (relLba < 0)
-                    relLba = 0;
-
-                byte controlAdr = (byte)((track.Type == TrackType.AUDIO) ? 0x01 : 0x41);
-
-                if (fixQ)
-                {
-                    qData[0] = controlAdr;
-                    qData[1] = ToBCD(track.Number);
-                    qData[2] = ToBCD(index);
-                    if (relIsNeg)
-                    {
-                        int rmin = relLba / (60 * 75);
-                        int rsec = (relLba / 75) % 60;
-                        int rfrm = relLba % 75;
-                        qData[3] = (byte)(ToBCD(rmin) | 0x80);
-                        qData[4] = ToBCD(rsec);
-                        qData[5] = ToBCD(rfrm);
-                    }
-                    else
-                    {
-                        qData[3] = ToBCD(relLba / (60 * 75));
-                        qData[4] = ToBCD((relLba / 75) % 60);
-                        qData[5] = ToBCD(relLba % 75);
-                    }
-                    qData[6] = 0x00;
-                    qData[7] = ToBCD(absLba / (60 * 75));
-                    qData[8] = ToBCD((absLba / 75) % 60);
-                    qData[9] = ToBCD(absLba % 75);
-                }
-                else
-                {
-                    qData[0] = (byte)(Playing ? 0x00 : 0x03);
-                    qData[1] = controlAdr;
-                    qData[2] = ToBCD(track.Number); // Track
-                    qData[3] = ToBCD(1); // Index
-                    qData[4] = ToBCD(relLba / (60 * 75));
-                    qData[5] = ToBCD((relLba / 75) % 60);
-                    qData[6] = ToBCD(relLba % 75);
-                    qData[7] = ToBCD(absLba / (60 * 75));
-                    qData[8] = ToBCD((absLba / 75) % 60);
-                    qData[9] = ToBCD(absLba % 75);
-                }
-            }
+            qData[0] = (byte)_cdAudioState;
+            qData[1] = (byte)(track.Type == TrackType.AUDIO ? 0x01 : 0x41);
+            qData[2] = ToBCD(track.Number);
+            qData[3] = 0x01;
+            qData[4] = ToBCD(relLba / (60 * 75));
+            qData[5] = ToBCD((relLba / 75) % 60);
+            qData[6] = ToBCD(relLba % 75);
+            qData[7] = ToBCD(subqSector / (60 * 75));
+            qData[8] = ToBCD((subqSector / 75) % 60);
+            qData[9] = ToBCD(subqSector % 75);
 
             PrepareResponse(qData);
 
             SetPhase(ScsiPhase.DataIn);
-
-            CdPlaying = Playing;
         }
 
         private static int GetTrackSectorSize(CDTrack track)
@@ -1728,15 +1705,18 @@ namespace ePceCD
         {
             AudioSS = AudioGetPos();
             AudioCS = AudioSS;
+            _currentMediaSector = AudioSS;
             _cdSectorOffsetBytes = -1;
             Console.WriteLine($"CD-ROM: AudioStartPos [{AudioSS}]");
             if (CMDBuffer[1] == 0)
             {
                 CdPlaying = false;
+                _cdAudioState = CdAudioState.Paused;
             }
             else
             {
                 CdPlaying = true;
+                _cdAudioState = CdAudioState.Playing;
             }
             SendStatus(0x00);
         }
@@ -1745,12 +1725,16 @@ namespace ePceCD
         {
             AudioES = AudioGetPos();
             CdPlaying = true;
+            _cdAudioState = CdAudioState.Playing;
             Console.WriteLine($"CD-ROM: AudioEndPos [{AudioES}] Mode {CMDBuffer[1]:X1}");
             if (TraceVerboseEnabled())
                 Console.WriteLine($"CD-ROM: AudioEndPos IRQ pre active=0x{ActiveIrqs:X2} enabled=0x{EnabledIrqs:X2}");
             switch (CMDBuffer[1])
             {
-                case 0: CdPlaying = false; break;
+                case 0:
+                    CdPlaying = false;
+                    _cdAudioState = CdAudioState.Stopped;
+                    break;
                 case 1: CdLoopMode = CDLOOPMODE.LOOP; break;
                 case 2:
                     CdLoopMode = CDLOOPMODE.IRQ;
