@@ -465,7 +465,6 @@ public class SNESSystem : ISNESSystem
         _irqLine = false;
         _lastIrqHTime = GetIrqHTime();
         _autoJoyPendingStart = false;
-
         if (!_autoJoyBusy)
             _autoJoyTimer = 0;
 
@@ -570,6 +569,10 @@ public class SNESSystem : ISNESSystem
         else if (XPos == 1096)
         {
             _inHblank = true;
+            if (!_inVblank)
+            {
+                HandleHdma();
+            }
         }
 
         if (_hdmaTimer > 0)
@@ -594,13 +597,6 @@ public class SNESSystem : ISNESSystem
         if (XPos == 512 && !noPpu)
         {
             PPU.RenderLine(YPos);
-        }
-        else if (XPos == 1096)
-        {
-            if (!_inVblank)
-            {
-                HandleHdma();
-            }
         }
         if (_autoJoyPendingStart && YPos == vBlankStart && XPos == 130)
         {
@@ -848,6 +844,8 @@ public class SNESSystem : ISNESSystem
                 return;
             }
 
+            _dmaTimer = 8 + GetDmaStartAlignmentDelay();
+            _gpdmaStartCycles = Cycles + (ulong)_dmaTimer;
             _gpdmaState = GpDmaState.Transfer;
             _gpdmaChannel = 0;
             _gpdmaBytesCopied = 0;
@@ -1288,8 +1286,8 @@ public class SNESSystem : ISNESSystem
                     _gpdmaState = GpDmaState.Pending;
                     _gpdmaChannel = 0;
                     _gpdmaBytesCopied = 0;
-                    _gpdmaStartCycles = Cycles;
-                    _dmaTimer = 8 + GetDmaStartAlignmentDelay();
+                    _gpdmaStartCycles = 0;
+                    _dmaTimer = 0;
                 }
                 else
                 {
