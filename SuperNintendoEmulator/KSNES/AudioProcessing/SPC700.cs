@@ -139,6 +139,8 @@ public class SPC700 : ISPC700
 
     private static readonly bool TraceSpcPc =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPC700_PC"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceSpcExceptions =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SPC700_EXCEPTIONS"), "1", StringComparison.Ordinal);
     private static readonly int TraceSpcPcLimit = 200000;
     private int _traceSpcPcCount;
 
@@ -161,7 +163,10 @@ public class SPC700 : ISPC700
             }
             catch (Exception)
             {
-                // ignored
+                if (TraceSpcExceptions)
+                {
+                    Console.WriteLine($"[SPC700-EX] pc=0x{_br[PC]-1:X4} op=0x{instr:X2} A=0x{_r[A]:X2} X=0x{_r[X]:X2} Y=0x{_r[Y]:X2} SP=0x{_r[SP]:X2}");
+                }
             }
         }
         _cyclesLeft--;
@@ -519,25 +524,38 @@ public class SPC700 : ISPC700
 
     private void Sbc(int adr, int adrh, int instr) 
     {
-        int value = _apu.Read(adr) ^ 0xff;
-        int result = _r[A] + value + (_c ? 1 : 0);
-        _v = (_r[A] & 0x80) == (value & 0x80) && (value & 0x80) != (result & 0x80);
-        _h = (_r[A] & 0xf) + (value & 0xf) + (_c ? 1 : 0) > 0xf;
-        _c = result > 0xff;
-        SetZAndN((byte) result);
-        _r[A] = (byte) result;
+        int lhs = _r[A];
+        int rhs = _apu.Read(adr);
+        int borrow = _c ? 0 : 1;
+        int result = lhs - rhs - borrow;
+        int wrapped = result & 0xff;
+        bool didBorrow = result < 0;
+        bool bit6Borrow = (lhs & 0x7f) < ((rhs & 0x7f) + borrow);
+        bool halfBorrow = (lhs & 0x0f) < ((rhs & 0x0f) + borrow);
+
+        _v = bit6Borrow != didBorrow;
+        _h = !halfBorrow;
+        _c = !didBorrow;
+        SetZAndN((byte) wrapped);
+        _r[A] = (byte) wrapped;
     }
 
     private void Sbcm(int adr, int adrh, int instr)
     {
-        int value = _apu.Read(adr) ^ 0xff;
-        int addedTo = _apu.Read(adrh);
-        int result = addedTo + value + (_c ? 1 : 0);
-        _v = (addedTo & 0x80) == (value & 0x80) && (value & 0x80) != (result & 0x80);
-        _h = (addedTo & 0xf) + (value & 0xf) + (_c ? 1 : 0) > 0xf;
-        _c = result > 0xff;
-        SetZAndN((byte) result);
-        _apu.Write(adrh, (byte) (result & 0xff));
+        int lhs = _apu.Read(adrh);
+        int rhs = _apu.Read(adr);
+        int borrow = _c ? 0 : 1;
+        int result = lhs - rhs - borrow;
+        int wrapped = result & 0xff;
+        bool didBorrow = result < 0;
+        bool bit6Borrow = (lhs & 0x7f) < ((rhs & 0x7f) + borrow);
+        bool halfBorrow = (lhs & 0x0f) < ((rhs & 0x0f) + borrow);
+
+        _v = bit6Borrow != didBorrow;
+        _h = !halfBorrow;
+        _c = !didBorrow;
+        SetZAndN((byte) wrapped);
+        _apu.Write(adrh, (byte) wrapped);
     }
 
     private void Movs(int adr, int adrh, int instr) 
@@ -687,16 +705,20 @@ public class SPC700 : ISPC700
     {
         int value = _apu.Read(adr);
         value |= _apu.Read(adrh) << 8;
-        value ^= 0xffff;
         int addTo = (_r[Y] << 8) | _r[A];
-        int result = addTo + value + 1;
-        _z = (result & 0xffff) == 0;
-        _n = (result & 0x8000) > 0;
-        _c = result > 0xffff;
-        _v = (addTo & 0x8000) == (value & 0x8000) && (value & 0x8000) != (result & 0x8000);
-        _h = (addTo & 0xfff) + (value & 0xfff) + 1 > 0xfff;
-        _r[A] = (byte) (result & 0xff);
-        _r[Y] = (byte) ((result & 0xff00) >> 8);
+        int result = addTo - value;
+        int wrapped = result & 0xffff;
+        bool didBorrow = result < 0;
+        bool bit14Borrow = (addTo & 0x7fff) < (value & 0x7fff);
+        bool halfBorrow = (addTo & 0x0fff) < (value & 0x0fff);
+
+        _z = wrapped == 0;
+        _n = (wrapped & 0x8000) > 0;
+        _c = !didBorrow;
+        _v = bit14Borrow != didBorrow;
+        _h = !halfBorrow;
+        _r[A] = (byte) (wrapped & 0xff);
+        _r[Y] = (byte) ((wrapped & 0xff00) >> 8);
     }
 
     private void Movw(int adr, int adrh, int instr)
@@ -1030,18 +1052,24 @@ public class SPC700 : ISPC700
 
     private void Div(int adr, int adrh, int instr) 
     {
-        int value = _r[A] | (_r[Y] << 8);
-        int result = 0xffff;
-        int mod = value & 0xff;
-        if (_r[X] != 0)
+        // SPC700 DIV YA,X has special overflow semantics; it is not a plain 16/8 divide.
+        int x = _r[X];
+        int y = _r[Y];
+        int ya = _r[A] | (y << 8);
+
+        _v = y >= x;
+        _h = (y & 0x0f) >= (x & 0x0f);
+
+        if (y < (x << 1))
         {
-            result = (value / _r[X]) & 0xffff;
-            mod = value % _r[X];
+            _r[A] = (byte) (ya / x);
+            _r[Y] = (byte) (ya % x);
         }
-        _v = result > 0xff;
-        _h = (_r[X] & 0xf) <= (_r[Y] & 0xf);
-        _r[A] = (byte) result;
-        _r[Y] = (byte) mod;
+        else
+        {
+            _r[A] = (byte) (255 - ((ya - (x << 9)) / (256 - x)));
+            _r[Y] = (byte) (x + ((ya - (x << 9)) % (256 - x)));
+        }
         SetZAndN(_r[A]);
     }
 

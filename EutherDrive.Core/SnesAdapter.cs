@@ -223,6 +223,7 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
                 cpu.RefreshTraceConfig();
             _system.PPU.SetSystem(_system);
             _system.APU.Attach();
+            apu.ResyncAfterLoad();
             if (_system is SNESSystem snesSystem)
                 snesSystem.ResyncAfterLoad();
             rom.ResyncCoprocessors(_system.Cycles);

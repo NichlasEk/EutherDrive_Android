@@ -34,6 +34,14 @@ public class APU : IAPU
 
     public byte[] SpcWritePorts { get; private set; } = new byte[4];
     public byte[] SpcReadPorts { get; set; } = new byte[6];
+    [NonSerialized]
+    private byte[] _pendingMainCpuPorts = new byte[4];
+    [NonSerialized]
+    private bool[] _pendingMainCpuPortDirty = new bool[4];
+    [NonSerialized]
+    private byte _auxIo4;
+    [NonSerialized]
+    private byte _auxIo5;
     private byte _dspAdr;
     private bool _dspRomReadable = true;
     private bool _port01ResetThisCycle;
@@ -88,6 +96,10 @@ public class APU : IAPU
         RAM = new byte[0x10000];
         SpcWritePorts = new byte[4];
         SpcReadPorts = new byte[6];
+        _pendingMainCpuPorts = new byte[4];
+        _pendingMainCpuPortDirty = new bool[4];
+        _auxIo4 = 0;
+        _auxIo5 = 0;
         _dspAdr = 0;
         _dspRomReadable = true;
         _port01ResetThisCycle = false;
@@ -95,17 +107,17 @@ public class APU : IAPU
         _spc.Reset();
         _dsp.Reset();
         _cycles = 0;
-        _timer1int = 0;
+        _timer1int = 128;
         _timer1div = 0;
         _timer1target = 0;
         _timer1counter = 0;
         _timer1enabled = false;
-        _timer2int = 0;
+        _timer2int = 128;
         _timer2div = 0;
         _timer2target = 0;
         _timer2counter = 0;
         _timer2enabled = false;
-        _timer3int = 0;
+        _timer3int = 16;
         _timer3div = 0;
         _timer3target = 0;
         _timer3counter = 0;
@@ -116,65 +128,104 @@ public class APU : IAPU
         _resamplePos = 0;
     }
 
+    public void ResyncAfterLoad()
+    {
+        _pendingMainCpuPorts ??= new byte[4];
+        _pendingMainCpuPortDirty ??= new bool[4];
+        Array.Clear(_pendingMainCpuPorts, 0, _pendingMainCpuPorts.Length);
+        Array.Clear(_pendingMainCpuPortDirty, 0, _pendingMainCpuPortDirty.Length);
+        _auxIo4 = 0;
+        _auxIo5 = 0;
+        _port01ResetThisCycle = false;
+        _port23ResetThisCycle = false;
+
+        if (_timer1int <= 0 || _timer1int > 128)
+            _timer1int = 128;
+        if (_timer2int <= 0 || _timer2int > 128)
+            _timer2int = 128;
+        if (_timer3int <= 0 || _timer3int > 16)
+            _timer3int = 16;
+
+        if (_resampleRead < 0 || _resampleRead >= ResampleRingSize
+            || _resampleWrite < 0 || _resampleWrite >= ResampleRingSize
+            || _resampleCount < 0 || _resampleCount > ResampleRingSize)
+        {
+            _resampleRead = 0;
+            _resampleWrite = 0;
+            _resampleCount = 0;
+            _resamplePos = 0;
+            Array.Clear(_resampleRingL, 0, _resampleRingL.Length);
+            Array.Clear(_resampleRingR, 0, _resampleRingR.Length);
+        }
+
+        _tracePortsCount = 0;
+        Array.Fill(_lastTracedSpcPortRead, (byte)0xFF);
+    }
+
     public void Cycle()
     {
         _port01ResetThisCycle = false;
         _port23ResetThisCycle = false;
-        _spc.Cycle();
-        if ((_cycles & 0x1f) == 0)
+        for (int i = 0; i < 4; i++)
         {
-            _dsp.Cycle();
+            if (_pendingMainCpuPortDirty[i])
+            {
+                SpcReadPorts[i] = _pendingMainCpuPorts[i];
+                _pendingMainCpuPortDirty[i] = false;
+                TracePort($"[APU-PORT-CPU-LATCH] port={i} val=0x{SpcReadPorts[i]:X2} cycle={_cycles}");
+            }
         }
-
+        _spc.Cycle();
+        _timer1int--;
         if (_timer1int == 0)
         {
             _timer1int = 128;
             if (_timer1enabled)
             {
                 _timer1div++;
-                _timer1div &= 0xff;
-                if (_timer1div == _timer1target)
+                int divider = _timer1target == 0 ? 256 : _timer1target;
+                if (_timer1div >= divider)
                 {
                     _timer1div = 0;
-                    _timer1counter++;
-                    _timer1counter &= 0xf;
+                    _timer1counter = (byte)((_timer1counter + 1) & 0x0f);
                 }
             }
         }
-        _timer1int--;
+        _timer2int--;
         if (_timer2int == 0)
         {
             _timer2int = 128;
             if (_timer2enabled)
             {
                 _timer2div++;
-                _timer2div &= 0xff;
-                if (_timer2div == _timer2target)
+                int divider = _timer2target == 0 ? 256 : _timer2target;
+                if (_timer2div >= divider)
                 {
                     _timer2div = 0;
-                    _timer2counter++;
-                    _timer2counter &= 0xf;
+                    _timer2counter = (byte)((_timer2counter + 1) & 0x0f);
                 }
             }
         }
-        _timer2int--;
+        _timer3int--;
         if (_timer3int == 0)
         {
             _timer3int = 16;
             if (_timer3enabled)
             {
                 _timer3div++;
-                _timer3div &= 0xff;
-                if (_timer3div == _timer3target)
+                int divider = _timer3target == 0 ? 256 : _timer3target;
+                if (_timer3div >= divider)
                 {
                     _timer3div = 0;
-                    _timer3counter++;
-                    _timer3counter &= 0xf;
+                    _timer3counter = (byte)((_timer3counter + 1) & 0x0f);
                 }
             }
         }
-        _timer3int--;
         _cycles++;
+        if ((_cycles & 0x1f) == 0)
+        {
+            _dsp.Cycle();
+        }
     }
 
     public bool TryWriteMainCpuPort(int portIndex, byte value)
@@ -186,7 +237,8 @@ public class APU : IAPU
             return false;
         }
 
-        SpcReadPorts[portIndex] = value;
+        _pendingMainCpuPorts[portIndex] = value;
+        _pendingMainCpuPortDirty[portIndex] = true;
         TracePort($"[APU-PORT-CPU-WR] port={portIndex} val=0x{value:X2} cycle={_cycles}");
         return true;
     }
@@ -210,10 +262,12 @@ public class APU : IAPU
             case 0xf5:
             case 0xf6:
             case 0xf7:
-            case 0xf8:
-            case 0xf9:
                 TraceSpcRead(adr - 0xf4, SpcReadPorts[adr - 0xf4]);
                 return SpcReadPorts[adr - 0xf4];
+            case 0xf8:
+                return _auxIo4;
+            case 0xf9:
+                return _auxIo5;
             case 0xfd:
                 byte val = _timer1counter;
                 _timer1counter = 0;
@@ -243,27 +297,31 @@ public class APU : IAPU
                 break;
             case 0xf1:
                 TracePort($"[APU-F1-WR] val=0x{value:X2} cycle={_cycles}");
-                if (!_timer1enabled && (value & 0x01) > 0)
+                bool newTimer1Enabled = (value & 0x01) > 0;
+                bool newTimer2Enabled = (value & 0x02) > 0;
+                bool newTimer3Enabled = (value & 0x04) > 0;
+
+                if (!newTimer1Enabled)
                 {
                     _timer1div = 0;
                     _timer1counter = 0;
                 }
 
-                if (!_timer2enabled && (value & 0x02) > 0)
+                if (!newTimer2Enabled)
                 {
                     _timer2div = 0;
                     _timer2counter = 0;
                 }
 
-                if (!_timer3enabled && (value & 0x04) > 0)
+                if (!newTimer3Enabled)
                 {
                     _timer3div = 0;
                     _timer3counter = 0;
                 }
 
-                _timer1enabled = (value & 0x01) > 0;
-                _timer2enabled = (value & 0x02) > 0;
-                _timer3enabled = (value & 0x04) > 0;
+                _timer1enabled = newTimer1Enabled;
+                _timer2enabled = newTimer2Enabled;
+                _timer3enabled = newTimer3Enabled;
                 _dspRomReadable = (value & 0x80) > 0;
                 if ((value & 0x10) > 0)
                 {
@@ -298,9 +356,10 @@ public class APU : IAPU
                 TracePort($"[APU-PORT-SPC-WR] port={adr - 0xf4} val=0x{value:X2} cycle={_cycles}");
                 break;
             case 0xf8:
+                _auxIo4 = value;
+                break;
             case 0xf9:
-                SpcReadPorts[adr - 0xf4] = value;
-                _timer1target = value;
+                _auxIo5 = value;
                 break;
             case 0xfa:
                 _timer1target = value;

@@ -6,6 +6,13 @@ namespace KSNES.SNESSystem;
 
 public class SNESSystem : ISNESSystem
 {
+    private enum GpDmaState
+    {
+        Idle,
+        Pending,
+        Transfer
+    }
+
     [field: NonSerialized] public ICPU CPU { get; private set; }
     [field: NonSerialized] public IPPU PPU { get; private set; }
     [field: NonSerialized] public IAPU APU { get; private set; }
@@ -31,7 +38,10 @@ public class SNESSystem : ISNESSystem
     [JsonIgnore]
     private readonly int[] _dmaOffLengths = [1, 2, 2, 4, 4, 4, 2, 4];
 
-    private const double _apuCyclesPerMaster = 32040 * 32.0 / (1364.0 * 262 * 60);
+    private const ulong ApuOutputFrequency = 32040;
+    private const ulong ApuMasterClockFrequency = ApuOutputFrequency * 768;
+    private const ulong NtscMasterClockFrequency = 21_477_270;
+    private const ulong PalMasterClockFrequency = 21_281_370;
 
     private byte[] _dmaBadr = [];
     private ushort[] _dmaAadr = [];
@@ -52,7 +62,7 @@ public class SNESSystem : ISNESSystem
 
     private int _cpuCyclesLeft;
     private int _cpuMemOps;
-    private double _apuCatchCycles;
+    private ulong _apuMasterCyclesProduct;
 
     private int _ramAdr;
 
@@ -69,6 +79,7 @@ public class SNESSystem : ISNESSystem
     private int _lastIrqHTime;
     private bool _inHblank;
     private bool _inVblank;
+    private bool _oddFrame;
 
     private bool _autoJoyRead;
     private bool _autoJoyBusy;
@@ -93,9 +104,16 @@ public class SNESSystem : ISNESSystem
 
     private int _dmaTimer;
     private int _hdmaTimer;
-    private bool _dmaBusy;
     private bool[] _dmaActive = [];
     private bool[] _hdmaActive = [];
+    private GpDmaState _gpdmaState;
+    private byte _gpdmaChannel;
+    private ushort _gpdmaBytesCopied;
+    private ulong _gpdmaStartCycles;
+    private bool _pendingDmaWriteValid;
+    private bool _pendingDmaWriteBusB;
+    private int _pendingDmaWriteAddress;
+    private int _pendingDmaWriteValue;
 
     private readonly bool _tracePpuBusWrites =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_BUS"), "1", StringComparison.Ordinal);
@@ -111,7 +129,10 @@ public class SNESSystem : ISNESSystem
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_INIDISP"), "1", StringComparison.Ordinal);
     private readonly bool _traceApuPorts =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_APU_PORTS"), "1", StringComparison.Ordinal);
+    private readonly int _traceApuPortsLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_APU_PORTS_LIMIT", 256);
     private int _traceApuPortsCount;
+    private readonly bool _traceStarOceanApuLoop =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_STAROCEAN_APU_LOOP"), "1", StringComparison.Ordinal);
     private bool HasExplicitWramTraceFilter => _traceWramAddrs.Count > 0;
 
     private int[] _dmaMode = [];
@@ -123,7 +144,6 @@ public class SNESSystem : ISNESSystem
 
     private bool[] _hdmaDoTransfer = [];
     private bool[] _hdmaTerminated = [];
-    private int _dmaOffIndex;
     public int OpenBus { get; private set; }
     public string FileName { get; set; }
 
@@ -372,7 +392,7 @@ public class SNESSystem : ISNESSystem
         Cycles = 0;
         _cpuCyclesLeft = 5 * 8 + 12;
         _cpuMemOps = 0;
-        _apuCatchCycles = 0;
+        _apuMasterCyclesProduct = 0;
         _ramAdr = 0;
         _hIrqEnabled = false;
         _vIrqEnabled = false;
@@ -386,6 +406,7 @@ public class SNESSystem : ISNESSystem
         _lastIrqHTime = 0;
         _inHblank = false;
         _inVblank = false;
+        _oddFrame = false;
         _autoJoyRead = false;
         _autoJoyBusy = false;
         _autoJoyTimer = 0;
@@ -405,9 +426,16 @@ public class SNESSystem : ISNESSystem
         _fastMem = false;
         _dmaTimer = 0;
         _hdmaTimer = 0;
-        _dmaBusy = false;
         _dmaActive = new bool[8];
         _hdmaActive = new bool[8];
+        _gpdmaState = GpDmaState.Idle;
+        _gpdmaChannel = 0;
+        _gpdmaBytesCopied = 0;
+        _gpdmaStartCycles = 0;
+        _pendingDmaWriteValid = false;
+        _pendingDmaWriteBusB = false;
+        _pendingDmaWriteAddress = 0;
+        _pendingDmaWriteValue = 0;
         _dmaMode = new int[8];
         _dmaFixed = new bool[8];
         _dmaDec = new bool[8];
@@ -416,7 +444,6 @@ public class SNESSystem : ISNESSystem
         _dmaUnusedBit = new bool[8];
         _hdmaDoTransfer = new bool[8];
         _hdmaTerminated = new bool[8];
-        _dmaOffIndex = 0;
         OpenBus = 0;
         ROM.ResetCoprocessor();
     }
@@ -488,7 +515,8 @@ public class SNESSystem : ISNESSystem
     private void Cycle(bool noPpu) 
     {
         Cycles += 2;
-        _apuCatchCycles += _apuCyclesPerMaster * 2;
+        _apuMasterCyclesProduct += ApuMasterClockFrequency * 2;
+        int currentLineMclks = GetCurrentLineMclks();
         if (_joypadStrobe)
         {
             _joypad1Val = _joypad1State;
@@ -545,7 +573,11 @@ public class SNESSystem : ISNESSystem
         {
             _hdmaTimer -= 2;
         }
-        else if (_dmaBusy)
+        else if (_dmaTimer > 0)
+        {
+            _dmaTimer -= 2;
+        }
+        else if (_gpdmaState != GpDmaState.Idle)
         {
             HandleDma();
         }
@@ -585,7 +617,7 @@ public class SNESSystem : ISNESSystem
         ROM.RunCoprocessor(Cycles);
         CatchUpApu();
         XPos += 2;
-        if (XPos == 1364)
+        if (XPos == currentLineMclks)
         {
             XPos = 0;
             YPos++;
@@ -593,6 +625,7 @@ public class SNESSystem : ISNESSystem
             if (YPos == maxV)
             {
                 YPos = 0;
+                _oddFrame = !_oddFrame;
                 // The PPU is no longer in VBlank once the frame wraps back to scanline 0.
                 // Keeping the latched state until the next Cycle() leaves $4212 bit 7 high
                 // at the frame boundary, which can strand games that poll HVBJOY for VBlank end.
@@ -619,8 +652,39 @@ public class SNESSystem : ISNESSystem
         const int irqOffsetMclks = 10;
         int scanlineMclks = XPos >= irqOffsetMclks
             ? XPos - irqOffsetMclks
-            : 1364 - (irqOffsetMclks - XPos);
+            : GetPreviousLineMclks() - (irqOffsetMclks - XPos);
         return scanlineMclks / 4;
+    }
+
+    private int GetCurrentLineMclks()
+    {
+        if (!IsPal && !IsInterlacedPpu() && _oddFrame && YPos == 240)
+        {
+            return 1360;
+        }
+
+        return 1364;
+    }
+
+    private int GetPreviousLineMclks()
+    {
+        if (YPos == 0)
+        {
+            return 1364;
+        }
+
+        int previousLine = YPos - 1;
+        if (!IsPal && !IsInterlacedPpu() && _oddFrame && previousLine == 240)
+        {
+            return 1360;
+        }
+
+        return 1364;
+    }
+
+    private bool IsInterlacedPpu()
+    {
+        return PPU is KSNES.PictureProcessing.PPU ppu && ppu.Interlace;
     }
 
     private static bool RangeContainsExclusiveEnd(int startExclusive, int endExclusive, int value)
@@ -693,6 +757,18 @@ public class SNESSystem : ISNESSystem
         _irqLine = newIrqLine;
     }
 
+    private bool GetCurrentHblankFlag()
+    {
+        return XPos < 4 || XPos >= 1096;
+    }
+
+    private bool GetCurrentVblankFlag()
+    {
+        int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
+        int maxV = IsPal ? 312 : 262;
+        return YPos >= vBlankStart && YPos < maxV;
+    }
+
     private void CpuCycle()
     {
         if (_cpuCyclesLeft == 0)
@@ -707,12 +783,13 @@ public class SNESSystem : ISNESSystem
 
     private void CatchUpApu() 
     {
-        long catchUpCycles = (long) _apuCatchCycles & 0xffffffff;
-        for (var i = 0; i < catchUpCycles; i++)
+        ulong mainMasterClockFrequency = IsPal ? PalMasterClockFrequency : NtscMasterClockFrequency;
+        ulong threshold = 24UL * mainMasterClockFrequency;
+        while (_apuMasterCyclesProduct >= threshold)
         {
             APU.Cycle();
+            _apuMasterCyclesProduct -= threshold;
         }
-        _apuCatchCycles -= catchUpCycles;
     }
 
     private void RunFrame(bool noPpu)
@@ -744,72 +821,117 @@ public class SNESSystem : ISNESSystem
 
     private void HandleDma() 
     {
-        if (_dmaTimer > 0)
+        if (_pendingDmaWriteValid)
         {
-            _dmaTimer -= 2;
+            ApplyPendingDmaWrite();
             return;
         }
-        int i;
-        for (i = 0; i < 8; i++)
+
+        if (_gpdmaState == GpDmaState.Pending)
         {
-            if (_dmaActive[i])
+            bool anyActive = false;
+            for (int i = 0; i < 8; i++)
             {
-                break;
+                if (_dmaActive[i])
+                {
+                    anyActive = true;
+                    break;
+                }
             }
-        }
-        if (i == 8)
-        {
-            _dmaBusy = false;
-            _dmaOffIndex = 0;
+
+            if (!anyActive)
+            {
+                _gpdmaState = GpDmaState.Idle;
+                return;
+            }
+
+            _gpdmaState = GpDmaState.Transfer;
+            _gpdmaChannel = 0;
+            _gpdmaBytesCopied = 0;
             return;
         }
-        if (!_dmaFromB[i] && !_dmaNotifyActive[i])
+
+        while (_gpdmaChannel < 8 && !_dmaActive[_gpdmaChannel])
         {
-            uint sourceAddress = (uint)((_dmaAadrBank[i] << 16) | _dmaAadr[i]);
+            _gpdmaChannel++;
+            _gpdmaBytesCopied = 0;
+        }
+
+        if (_gpdmaChannel >= 8)
+        {
+            if (_dmaNotifyCount > 0 && ROM is KSNES.ROM.ROM finalRom)
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    if (!_dmaNotifyActive[i])
+                        continue;
+
+                    _dmaNotifyActive[i] = false;
+                    _dmaNotifyCount--;
+                    finalRom.NotifyDmaEnd((byte)i);
+                }
+            }
+            _gpdmaState = GpDmaState.Idle;
+            _gpdmaChannel = 0;
+            _gpdmaBytesCopied = 0;
+            _dmaTimer = GetDmaEndCpuAlignmentDelay();
+            return;
+        }
+
+        int channel = _gpdmaChannel;
+        if (!_dmaFromB[channel] && !_dmaNotifyActive[channel])
+        {
+            uint sourceAddress = (uint)((_dmaAadrBank[channel] << 16) | _dmaAadr[channel]);
             if (ROM is KSNES.ROM.ROM rom)
             {
-                rom.NotifyDmaStart((byte)i, sourceAddress);
-                _dmaNotifyActive[i] = true;
+                rom.NotifyDmaStart((byte)channel, sourceAddress);
+                _dmaNotifyActive[channel] = true;
                 _dmaNotifyCount++;
             }
         }
-        int tableOff = _dmaMode[i] * 4 + _dmaOffIndex++;
-        _dmaOffIndex &= 0x3;
-        if (_dmaFromB[i])
+
+        int tableOff = _dmaMode[channel] * 4 + (_gpdmaBytesCopied & 0x3);
+        if (_dmaFromB[channel])
         {
-            Write((_dmaAadrBank[i] << 16) | _dmaAadr[i], ReadBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff), true);
+            QueueDmaWriteBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel],
+                ReadBBus((_dmaBadr[channel] + _dmaOffs[tableOff]) & 0xff));
         }
         else
         {
-            WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
-                Read((_dmaAadrBank[i] << 16) | _dmaAadr[i], true), true);
+            QueueDmaWriteBusB((_dmaBadr[channel] + _dmaOffs[tableOff]) & 0xff,
+                DmaReadBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel]));
         }
-        _dmaTimer += 6;
-        if (!_dmaFixed[i])
+
+        _dmaTimer = 8;
+        if (_gpdmaBytesCopied == 0)
+            _dmaTimer += 8;
+
+        if (!_dmaFixed[channel])
         {
-            if (_dmaDec[i])
+            if (_dmaDec[channel])
             {
-                _dmaAadr[i]--;
+                _dmaAadr[channel]--;
             }
             else
             {
-                _dmaAadr[i]++;
+                _dmaAadr[channel]++;
             }
         }
-        _dmaSize[i]--;
-        if (_dmaSize[i] == 0)
+        _dmaSize[channel]--;
+        if (_dmaSize[channel] == 0)
         {
-            _dmaOffIndex = 0;
-            _dmaActive[i] = false;
-            if (_dmaNotifyActive[i])
-            {
-                _dmaNotifyActive[i] = false;
-                _dmaNotifyCount--;
-                if (ROM is KSNES.ROM.ROM rom)
-                    rom.NotifyDmaEnd((byte)i);
-            }
-            _dmaTimer += 8;
+            _dmaActive[channel] = false;
+            _gpdmaChannel++;
+            _gpdmaBytesCopied = 0;
         }
+        else
+        {
+            _gpdmaBytesCopied++;
+        }
+
+        _dmaTimer = 8;
+        if (_gpdmaBytesCopied == 0)
+            _dmaTimer += 8;
     }
 
     private void InitHdma() 
@@ -859,12 +981,13 @@ public class SNESSystem : ISNESSystem
                         {
                             if (_dmaFromB[i])
                             {
-                                Write((_hdmaIndBank[i] << 16) | _dmaSize[i], ReadBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff), true);
+                                QueueDmaWriteBusA((_hdmaIndBank[i] << 16) | _dmaSize[i],
+                                    ReadBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff));
                             }
                             else
                             {
-                                WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
-                                    Read((_hdmaIndBank[i] << 16) | _dmaSize[i], true), true);
+                                QueueDmaWriteBusB((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
+                                    DmaReadBusA((_hdmaIndBank[i] << 16) | _dmaSize[i]));
                             }
                             _dmaSize[i]++;
                         }
@@ -872,12 +995,13 @@ public class SNESSystem : ISNESSystem
                         {
                             if (_dmaFromB[i])
                             {
-                                Write((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i], ReadBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff), true);
+                                QueueDmaWriteBusA((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i],
+                                    ReadBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff));
                             }
                             else
                             {
-                                WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
-                                    Read((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i], true), true);
+                                QueueDmaWriteBusB((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
+                                    DmaReadBusA((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i]));
                             }
                             _hdmaTableAdr[i]++;
                         }
@@ -931,12 +1055,12 @@ public class SNESSystem : ISNESSystem
                 return val2;
             case 0x4212:
                 int val3 = _autoJoyBusy ? 0x1 : 0;
-                val3 |= _inHblank ? 0x40 : 0;
-                val3 |= _inVblank ? 0x80 : 0;
+                val3 |= GetCurrentHblankFlag() ? 0x40 : 0;
+                val3 |= GetCurrentVblankFlag() ? 0x80 : 0;
                 val3 |= OpenBus & 0x3e;
                 if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_4212"), "1", StringComparison.Ordinal))
                 {
-                    Console.WriteLine($"[4212] R val=0x{val3:X2} vblank={_inVblank} hblank={_inHblank} autojoy={_autoJoyBusy} Y={YPos} X={XPos}");
+                    Console.WriteLine($"[4212] R val=0x{val3:X2} vblank={GetCurrentVblankFlag()} hblank={GetCurrentHblankFlag()} autojoy={_autoJoyBusy} Y={YPos} X={XPos}");
                 }
                 return val3;
             case 0x4213:
@@ -1003,6 +1127,66 @@ public class SNESSystem : ISNESSystem
         }
 
         return OpenBus;
+    }
+
+    private static bool IsDmaForbiddenBusAAccess(int address)
+    {
+        int bank = (address >> 16) & 0xff;
+        int adr = address & 0xffff;
+        return (bank < 0x40 || (bank >= 0x80 && bank < 0xc0)) &&
+               (adr is >= 0x2100 and <= 0x21ff || adr is >= 0x4300 and <= 0x43ff);
+    }
+
+    private int DmaReadBusA(int address)
+    {
+        return IsDmaForbiddenBusAAccess(address) ? OpenBus : Read(address, true);
+    }
+
+    private void QueueDmaWriteBusA(int address, int value)
+    {
+        if (IsDmaForbiddenBusAAccess(address))
+            return;
+
+        _pendingDmaWriteValid = true;
+        _pendingDmaWriteBusB = false;
+        _pendingDmaWriteAddress = address;
+        _pendingDmaWriteValue = value;
+    }
+
+    private void QueueDmaWriteBusB(int address, int value)
+    {
+        _pendingDmaWriteValid = true;
+        _pendingDmaWriteBusB = true;
+        _pendingDmaWriteAddress = address & 0xff;
+        _pendingDmaWriteValue = value;
+    }
+
+    private void ApplyPendingDmaWrite()
+    {
+        if (!_pendingDmaWriteValid)
+            return;
+
+        if (_pendingDmaWriteBusB)
+        {
+            WriteBBus(_pendingDmaWriteAddress, _pendingDmaWriteValue, true);
+        }
+        else
+        {
+            Write(_pendingDmaWriteAddress, _pendingDmaWriteValue, true);
+        }
+
+        _pendingDmaWriteValid = false;
+        _pendingDmaWriteBusB = false;
+        _pendingDmaWriteAddress = 0;
+        _pendingDmaWriteValue = 0;
+    }
+
+    private void DmaWriteBusA(int address, int value)
+    {
+        if (IsDmaForbiddenBusAAccess(address))
+            return;
+
+        Write(address, value, true);
     }
 
     private void WriteReg(int adr, int value) 
@@ -1088,8 +1272,21 @@ public class SNESSystem : ISNESSystem
                 _dmaActive[5] = (value & 0x20) > 0;
                 _dmaActive[6] = (value & 0x40) > 0;
                 _dmaActive[7] = (value & 0x80) > 0;
-                _dmaBusy = value > 0;
-                _dmaTimer += _dmaBusy ? 8 : 0;
+                if (value > 0)
+                {
+                    _gpdmaState = GpDmaState.Pending;
+                    _gpdmaChannel = 0;
+                    _gpdmaBytesCopied = 0;
+                    _gpdmaStartCycles = Cycles;
+                    _dmaTimer = 8 + GetDmaStartAlignmentDelay();
+                }
+                else
+                {
+                    _gpdmaState = GpDmaState.Idle;
+                    _gpdmaChannel = 0;
+                    _gpdmaBytesCopied = 0;
+                    _gpdmaStartCycles = 0;
+                }
                 if (_traceDma)
                 {
                     int pc = -1;
@@ -1186,13 +1383,16 @@ public class SNESSystem : ISNESSystem
         }
         if (adr >= 0x40 && adr < 0x80)
         {
-            CatchUpApu();
             int port = adr & 0x3;
-            int val = APU.SpcWritePorts[port];
             int pc = -1;
             if (CPU is KSNES.CPU.CPU cpu)
                 pc = cpu.ProgramCounter24;
+            int val = APU.SpcWritePorts[port];
             TraceApuPort($"[APU-PORT-CPU-RD] port={port} val=0x{val:X2} pc=0x{pc:X6}");
+            if (_traceStarOceanApuLoop && adr == 0x40 && pc >= 0xC00331 && pc <= 0xC0033B)
+            {
+                Console.WriteLine($"[SO-2140] pc=0x{pc:X6} port0=0x{val:X2} wr4A=0x{_ram[0x004A]:X2} spcpc=0x{APU.Spc.ProgramCounter:X4} xy=({XPos},{YPos})");
+            }
             return val;
         }
         if (adr == 0x80)
@@ -1324,7 +1524,7 @@ public class SNESSystem : ISNESSystem
 
     private void TraceApuPort(string message)
     {
-        if (!_traceApuPorts || _traceApuPortsCount >= 256)
+        if (!_traceApuPorts || _traceApuPortsCount >= _traceApuPortsLimit)
             return;
 
         _traceApuPortsCount++;
@@ -1429,9 +1629,39 @@ public class SNESSystem : ISNESSystem
         return _fastMem && bank >= 0x80 ? 6 : 8;
     }
 
+    private int GetDmaStartAlignmentDelay()
+    {
+        int remainder = (int)(Cycles & 0x7);
+        return 8 - remainder;
+    }
+
+    private int GetDmaEndCpuAlignmentDelay()
+    {
+        int nextCpuCycleMclk = 6;
+        if (CPU is KSNES.CPU.CPU cpu)
+            nextCpuCycleMclk = GetAccessTime(cpu.ProgramCounter24);
+
+        ulong dmaElapsed = Cycles - _gpdmaStartCycles;
+        int remainder = (int)(dmaElapsed % (ulong)nextCpuCycleMclk);
+        return nextCpuCycleMclk - remainder;
+    }
+
     public void SetKeyDown(SNESButton button)
     {
         _joypad1State |= 1 << (int) button;
+    }
+
+    private static int ParseTraceLimit(string envName, int defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(envName);
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
+            && parsed >= 0)
+        {
+            return parsed;
+        }
+
+        return defaultValue;
     }
 
     public void SetKeyUp(SNESButton button)
