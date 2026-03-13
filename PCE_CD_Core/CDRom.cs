@@ -236,6 +236,7 @@ namespace ePceCD
             AudioCS = 0;
             AudioSS = 0;
             AudioES = 0;
+            CdLoopMode = CDLOOPMODE.STOP;
             _currentMediaSector = 0;
             _cdAudioSampleToggle = false;
             _cdAudioSample = 0;
@@ -1815,6 +1816,16 @@ namespace ePceCD
             AudioCS = AudioSS;
             _currentMediaSector = AudioSS;
             _cdSectorOffsetBytes = -1;
+            CdLoopMode = CDLOOPMODE.STOP;
+
+            var startTrack = tracks.FirstOrDefault(t => t.SectorStart <= AudioSS && t.SectorEnd >= AudioSS);
+            if (startTrack != null)
+                AudioES = (int)startTrack.SectorEnd;
+            else if (tracks.Count > 0)
+                AudioES = (int)tracks[tracks.Count - 1].SectorEnd;
+            else
+                AudioES = AudioSS;
+
             Console.WriteLine($"CD-ROM: AudioStartPos [{AudioSS}]");
             if (CMDBuffer[1] == 0)
             {
