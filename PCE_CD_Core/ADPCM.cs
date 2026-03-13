@@ -8,7 +8,14 @@ namespace ePceCD
         private const uint RAM_SIZE = 0x10000; // 64KB ADPCM RAM
         private const int AdpcmRamMask = 0xFFFF;
         private const int AdpcmLengthMask = 0x1FFFF;
-        private const int DmaTransferCycles = 36;
+        private const double BusClockHz = 7159090.0;
+        private const int SlotPeriodCycles = 12;
+        private const int SlotWidthCycles = 3;
+        private const int DmaTransferCycles = 12;
+        private static readonly int[] s_ReadLatency = BuildLatencyTable(read: true);
+        private static readonly int[] s_WriteLatency = BuildLatencyTable(read: false);
+        private static readonly short[] s_StepDelta = BuildStepDeltaTable();
+        private static readonly sbyte[] s_IndexShift = { -1, -1, -1, -1, 2, 4, 6, 8 };
         private byte[] _ram = new byte[RAM_SIZE];
         [NonSerialized]
         private CDRom _cdRom;
@@ -34,10 +41,23 @@ namespace ePceCD
         private bool _halfReached;        // 半缓冲区标志
         private double _clocksPerSample;  // 每个样本的时钟周期
         private double _adpcmCycleCounter;
+        private double _audioCycleCounter;
         private int _currentPredictor;    // ADPCM解码预测值
         private int _currentStepIndex;    // ADPCM步长索引
         private bool _nibbleToggle;
         private int _currentOutputSample;
+        [NonSerialized]
+        private short[] _audioQueue = Array.Empty<short>();
+        [NonSerialized]
+        private int _audioQueueRead;
+        [NonSerialized]
+        private int _audioQueueWrite;
+        [NonSerialized]
+        private int _audioQueueCount;
+        private float _filterState;
+        private float _dcPrevX;
+        private float _dcPrevY;
+        private float _gainSmooth;
 
         // 中断标志位掩码
         private const byte STATUS_END_FLAG = 0x01;
@@ -46,12 +66,14 @@ namespace ePceCD
         public ADPCM(CDRom cdRom)
         {
             _cdRom = cdRom;
+            UpdatePlaybackRate();
             ResetDecoderState();
         }
 
         public ADPCM()
         {
             _cdRom = null!;
+            UpdatePlaybackRate();
             ResetDecoderState();
         }
 
@@ -67,6 +89,15 @@ namespace ePceCD
             _nibbleToggle = false;
             _currentOutputSample = 0;
             _adpcmCycleCounter = 0;
+            _audioCycleCounter = 0;
+            _filterState = 0.0f;
+            _dcPrevX = 0.0f;
+            _dcPrevY = 0.0f;
+            _gainSmooth = 1.0f;
+            EnsureAudioQueue();
+            _audioQueueRead = 0;
+            _audioQueueWrite = 0;
+            _audioQueueCount = 0;
         }
 
         public byte ReadData(int addr)
@@ -152,7 +183,7 @@ namespace ePceCD
         {
             int rateCode = _playbackRate & 0x0F;
             double freq = 32000.0 / (16 - rateCode); // 实际采样率
-            _clocksPerSample = 21477270.0 / freq;    // 系统时钟21.47727 MHz
+            _clocksPerSample = BusClockHz / freq;
         }
 
         // 处理控制寄存器写入
@@ -189,7 +220,9 @@ namespace ePceCD
 
         private int NextSlotCycles(bool read)
         {
-            return read ? 27 : 9;
+            long cycles = _cdRom?.Bus?.GetMasterClockCycles() ?? 0;
+            int offset = (int)(cycles % SlotPeriodCycles);
+            return read ? s_ReadLatency[offset] : s_WriteLatency[offset];
         }
 
         public void Clock(int cycles)
@@ -202,6 +235,7 @@ namespace ePceCD
             RunAdpcm(cycles);
             UpdateReadWriteEvents(cycles);
             UpdateDma(cycles);
+            UpdateAudio(cycles);
             CheckLength();
             CheckReset();
         }
@@ -308,41 +342,41 @@ namespace ePceCD
             }
 
             _adpcmCycleCounter += cycles;
-            if (_adpcmCycleCounter < _clocksPerSample)
-                return;
-
-            _adpcmCycleCounter -= _clocksPerSample;
-
-            if (_playPending)
+            while (_adpcmCycleCounter >= _clocksPerSample)
             {
-                _playPending = false;
-                _isPlaying = true;
-                _currentPredictor = 2048;
-                _currentStepIndex = 0;
-                _nibbleToggle = false;
+                _adpcmCycleCounter -= _clocksPerSample;
+
+                if (_playPending)
+                {
+                    _playPending = false;
+                    _isPlaying = true;
+                    _currentPredictor = 2048;
+                    _currentStepIndex = 0;
+                    _nibbleToggle = false;
+                }
+
+                byte ramByte = _ram[_readAddress & AdpcmRamMask];
+                byte nibble;
+                _nibbleToggle = !_nibbleToggle;
+
+                if (_nibbleToggle)
+                {
+                    nibble = (byte)((ramByte >> 4) & 0x0F);
+                }
+                else
+                {
+                    nibble = (byte)(ramByte & 0x0F);
+                    _readAddress = (_readAddress + 1) & AdpcmRamMask;
+                    _adpcmLength = (_adpcmLength - 1) & AdpcmLengthMask;
+
+                    SetHalfReached(_adpcmLength <= 0x8000);
+                    if (_adpcmLength == 0)
+                        SetEndReached(true);
+                }
+
+                int predictor = DecodeAdpcmSample(nibble);
+                _currentOutputSample = (predictor - 2048) * 10;
             }
-
-            byte ramByte = _ram[_readAddress & AdpcmRamMask];
-            byte nibble;
-            _nibbleToggle = !_nibbleToggle;
-
-            if (_nibbleToggle)
-            {
-                nibble = (byte)((ramByte >> 4) & 0x0F);
-            }
-            else
-            {
-                nibble = (byte)(ramByte & 0x0F);
-                _readAddress = (_readAddress + 1) & AdpcmRamMask;
-                _adpcmLength = (_adpcmLength - 1) & AdpcmLengthMask;
-
-                SetHalfReached(_adpcmLength <= 0x8000);
-                if (_adpcmLength == 0)
-                    SetEndReached(true);
-            }
-
-            int predictor = DecodeAdpcmSample(nibble);
-            _currentOutputSample = (predictor - 2048) * 10;
         }
 
         // 检查是否启用长度锁存
@@ -398,66 +432,67 @@ namespace ePceCD
             }
         }
 
+        private void UpdateAudio(int cycles)
+        {
+            _audioCycleCounter += cycles;
+            const double audioCyclesPerSample = BusClockHz / 44100.0;
+
+            while (_audioCycleCounter >= audioCyclesPerSample)
+            {
+                _audioCycleCounter -= audioCyclesPerSample;
+
+                float x = _currentOutputSample;
+                const float dcBlockR = 0.997f;
+                float y = x - _dcPrevX + dcBlockR * _dcPrevY;
+                _dcPrevX = x;
+                _dcPrevY = y;
+
+                const float alphaLpf = 0.4f;
+                _filterState += alphaLpf * (y - _filterState);
+
+                const float gainSmoothing = 0.003f;
+                _gainSmooth += (1.0f - _gainSmooth) * gainSmoothing;
+
+                int out32 = (int)(_filterState * _gainSmooth);
+                short sample = (short)Math.Clamp(out32, short.MinValue, short.MaxValue);
+                EnqueueAudioSample(sample);
+            }
+        }
+
+        private void EnsureAudioQueue()
+        {
+            if (_audioQueue.Length == 0)
+                _audioQueue = new short[8192];
+        }
+
+        private void EnqueueAudioSample(short value)
+        {
+            EnsureAudioQueue();
+
+            if (_audioQueueCount >= _audioQueue.Length)
+            {
+                _audioQueueRead = (_audioQueueRead + 1) % _audioQueue.Length;
+                _audioQueueCount--;
+            }
+
+            _audioQueue[_audioQueueWrite] = value;
+            _audioQueueWrite = (_audioQueueWrite + 1) % _audioQueue.Length;
+            _audioQueueCount++;
+        }
+
         // 生成音频样本
         public int GetSample()
         {
-            return _currentOutputSample;
+            EnsureAudioQueue();
+
+            if (_audioQueueCount <= 0)
+                return 0;
+
+            short sample = _audioQueue[_audioQueueRead];
+            _audioQueueRead = (_audioQueueRead + 1) % _audioQueue.Length;
+            _audioQueueCount--;
+            return sample;
         }
-
-        private int[] _stepSize =
-        {
-        0x0002, 0x0006, 0x000A, 0x000E, 0x0012, 0x0016, 0x001A, 0x001E,
-        0x0002, 0x0006, 0x000A, 0x000E, 0x0013, 0x0017, 0x001B, 0x001F,
-        0x0002, 0x0006, 0x000B, 0x000F, 0x0015, 0x0019, 0x001E, 0x0022,
-        0x0002, 0x0007, 0x000C, 0x0011, 0x0017, 0x001C, 0x0021, 0x0026,
-        0x0002, 0x0007, 0x000D, 0x0012, 0x0019, 0x001E, 0x0024, 0x0029,
-        0x0003, 0x0009, 0x000F, 0x0015, 0x001C, 0x0022, 0x0028, 0x002E,
-        0x0003, 0x000A, 0x0011, 0x0018, 0x001F, 0x0026, 0x002D, 0x0034,
-        0x0003, 0x000A, 0x0012, 0x0019, 0x0022, 0x0029, 0x0031, 0x0038,
-        0x0004, 0x000C, 0x0015, 0x001D, 0x0026, 0x002E, 0x0037, 0x003F,
-        0x0004, 0x000D, 0x0016, 0x001F, 0x0029, 0x0032, 0x003B, 0x0044,
-        0x0005, 0x000F, 0x0019, 0x0023, 0x002E, 0x0038, 0x0042, 0x004C,
-        0x0005, 0x0010, 0x001B, 0x0026, 0x0032, 0x003D, 0x0048, 0x0053,
-        0x0006, 0x0012, 0x001F, 0x002B, 0x0038, 0x0044, 0x0051, 0x005D,
-        0x0006, 0x0013, 0x0021, 0x002E, 0x003D, 0x004A, 0x0058, 0x0065,
-        0x0007, 0x0016, 0x0025, 0x0034, 0x0043, 0x0052, 0x0061, 0x0070,
-        0x0008, 0x0018, 0x0029, 0x0039, 0x004A, 0x005A, 0x006B, 0x007B,
-        0x0009, 0x001B, 0x002D, 0x003F, 0x0052, 0x0064, 0x0076, 0x0088,
-        0x000A, 0x001E, 0x0032, 0x0046, 0x005A, 0x006E, 0x0082, 0x0096,
-        0x000B, 0x0021, 0x0037, 0x004D, 0x0063, 0x0079, 0x008F, 0x00A5,
-        0x000C, 0x0024, 0x003C, 0x0054, 0x006D, 0x0085, 0x009D, 0x00B5,
-        0x000D, 0x0027, 0x0042, 0x005C, 0x0078, 0x0092, 0x00AD, 0x00C7,
-        0x000E, 0x002B, 0x0049, 0x0066, 0x0084, 0x00A1, 0x00BF, 0x00DC,
-        0x0010, 0x0030, 0x0051, 0x0071, 0x0092, 0x00B2, 0x00D3, 0x00F3,
-        0x0011, 0x0034, 0x0058, 0x007B, 0x00A0, 0x00C3, 0x00E7, 0x010A,
-        0x0013, 0x003A, 0x0061, 0x0088, 0x00B0, 0x00D7, 0x00FE, 0x0125,
-        0x0015, 0x0040, 0x006B, 0x0096, 0x00C2, 0x00ED, 0x0118, 0x0143,
-        0x0017, 0x0046, 0x0076, 0x00A5, 0x00D5, 0x0104, 0x0134, 0x0163,
-        0x001A, 0x004E, 0x0082, 0x00B6, 0x00EB, 0x011F, 0x0153, 0x0187,
-        0x001C, 0x0055, 0x008F, 0x00C8, 0x0102, 0x013B, 0x0175, 0x01AE,
-        0x001F, 0x005E, 0x009D, 0x00DC, 0x011C, 0x015B, 0x019A, 0x01D9,
-        0x0022, 0x0067, 0x00AD, 0x00F2, 0x0139, 0x017E, 0x01C4, 0x0209,
-        0x0026, 0x0072, 0x00BF, 0x010B, 0x0159, 0x01A5, 0x01F2, 0x023E,
-        0x002A, 0x007E, 0x00D2, 0x0126, 0x017B, 0x01CF, 0x0223, 0x0277,
-        0x002E, 0x008A, 0x00E7, 0x0143, 0x01A1, 0x01FD, 0x025A, 0x02B6,
-        0x0033, 0x0099, 0x00FF, 0x0165, 0x01CB, 0x0231, 0x0297, 0x02FD,
-        0x0038, 0x00A8, 0x0118, 0x0188, 0x01F9, 0x0269, 0x02D9, 0x0349,
-        0x003D, 0x00B8, 0x0134, 0x01AF, 0x022B, 0x02A6, 0x0322, 0x039D,
-        0x0044, 0x00CC, 0x0154, 0x01DC, 0x0264, 0x02EC, 0x0374, 0x03FC,
-        0x004A, 0x00DF, 0x0175, 0x020A, 0x02A0, 0x0335, 0x03CB, 0x0460,
-        0x0052, 0x00F6, 0x019B, 0x023F, 0x02E4, 0x0388, 0x042D, 0x04D1,
-        0x005A, 0x010F, 0x01C4, 0x0279, 0x032E, 0x03E3, 0x0498, 0x054D,
-        0x0063, 0x012A, 0x01F1, 0x02B8, 0x037F, 0x0446, 0x050D, 0x05D4,
-        0x006D, 0x0148, 0x0223, 0x02FE, 0x03D9, 0x04B4, 0x058F, 0x066A,
-        0x0078, 0x0168, 0x0259, 0x0349, 0x043B, 0x052B, 0x061C, 0x070C,
-        0x0084, 0x018D, 0x0296, 0x039F, 0x04A8, 0x05B1, 0x06BA, 0x07C3,
-        0x0091, 0x01B4, 0x02D8, 0x03FB, 0x051F, 0x0642, 0x0766, 0x0889,
-        0x00A0, 0x01E0, 0x0321, 0x0461, 0x05A2, 0x06E2, 0x0823, 0x0963,
-        0x00B0, 0x0210, 0x0371, 0x04D1, 0x0633, 0x0793, 0x08F4, 0x0A54,
-        0x00C2, 0x0246, 0x03CA, 0x054E, 0x06D2, 0x0856, 0x09DA, 0x0B5E
-        };
-
-        private int[] _stepFactor = { -1, -1, -1, -1, 2, 4, 6, 8 };
 
         //public int Clamp(int value, int min, int max)
         //{
@@ -475,6 +510,34 @@ namespace ePceCD
             if (result < min) return min;
             if (result > max) return max;
             return result;
+        }
+
+        private static int[] BuildLatencyTable(bool read)
+        {
+            int[] table = new int[SlotPeriodCycles];
+            for (int i = 0; i < table.Length; i++)
+                table[i] = ComputeLatency(i, read);
+            return table;
+        }
+
+        private static int ComputeLatency(int offset, bool read)
+        {
+            for (int d = 1; d <= SlotPeriodCycles; d++)
+            {
+                int slot = ((offset + d) / SlotWidthCycles) & 0x03; // 0=refresh, 1=write, 2=write, 3=read
+                if (read)
+                {
+                    if (slot == 3)
+                        return d;
+                }
+                else
+                {
+                    if (slot == 1 || slot == 2)
+                        return d;
+                }
+            }
+
+            return SlotPeriodCycles;
         }
 
         //public int DecodeSample(byte nibble)
@@ -503,15 +566,30 @@ namespace ePceCD
 
         private int DecodeAdpcmSample(byte nibble)
         {
-            bool positive = (nibble & 8) == 0;
-            int mag = nibble & 7;
-            int m = _stepFactor[mag];
-            int adjustment = _stepSize[(_currentStepIndex * 8) + mag];
-            _currentStepIndex = AddClamped(_currentStepIndex, m, 0, 48);
-            if (positive == false) adjustment *= -1;
-            _currentPredictor = AddClamped(_currentPredictor, adjustment, 0, 4095);
-
+            int sign = (nibble & 0x08) != 0 ? -1 : 1;
+            int value = nibble & 0x07;
+            int delta = s_StepDelta[(_currentStepIndex << 3) + value] * sign;
+            _currentPredictor = (_currentPredictor + delta) & 0x0FFF;
+            _currentStepIndex = AddClamped(_currentStepIndex, s_IndexShift[value], 0, 48);
             return _currentPredictor;
+        }
+
+        private static short[] BuildStepDeltaTable()
+        {
+            short[] table = new short[49 * 8];
+            for (int step = 0; step < 49; step++)
+            {
+                int stepValue = (int)Math.Floor(16.0 * Math.Pow(11.0 / 10.0, step));
+                for (int nibble = 0; nibble < 8; nibble++)
+                {
+                    table[(step << 3) + nibble] = (short)(
+                        (stepValue / 8) +
+                        (((nibble & 0x01) != 0) ? (stepValue / 4) : 0) +
+                        (((nibble & 0x02) != 0) ? (stepValue / 2) : 0) +
+                        (((nibble & 0x04) != 0) ? stepValue : 0));
+                }
+            }
+            return table;
         }
     }
 
