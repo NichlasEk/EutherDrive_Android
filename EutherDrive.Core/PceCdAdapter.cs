@@ -12,7 +12,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
     private const int DefaultWidth = 256;
     private const int DefaultHeight = 240;
     private const double DefaultFps = 60.0;
-    private const int MaxTicksPerFrame = 20000;
+    private const int MaxTicksPerFrame = 200000;
 
     private readonly BUS _bus;
     public static string? BiosPath { get; set; }
@@ -107,9 +107,8 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
             int safety = 0;
             while (!_frameReady && safety < maxTicksPerFrame)
             {
-                int cycles = _bus.tick();
-                _bus.CPU.m_Clock += cycles;
-                _bus.CPU.cycle();
+                int cycles = _bus.CPU.Step();
+                _bus.Clock(cycles);
                 safety++;
             }
 

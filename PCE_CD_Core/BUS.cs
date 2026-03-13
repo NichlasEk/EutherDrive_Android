@@ -53,6 +53,7 @@ namespace ePceCD
 
         private int m_OverFlowCycles;
         private int m_DeadClocks;
+        private int m_PpuCycleAccumulator;
 
         public string RomName = "";
         public string CDfile = "";
@@ -220,59 +221,66 @@ namespace ePceCD
 
             PPU.Reset();
             m_DeadClocks = 0;
+            m_PpuCycleAccumulator = 0;
 
             CPU.Reset();
         }
 
         public int tick()
         {
-            int cycles;
+            int cycles = PPU.CYCLES_PER_LINE / (int)DotClock.MHZ_7;
+            Clock(cycles);
+            return cycles;
+        }
 
-            if (m_OverFlowCycles > 0)
-                cycles = m_OverFlowCycles;
-            else
-                cycles = PPU.CYCLES_PER_LINE / (int)DotClock.MHZ_7;
+        public void Clock(int cycles)
+        {
+            if (cycles <= 0)
+                return;
 
-            int elapsedCycles = cycles;
+            ClockTimer(cycles);
+            ClockVideo(cycles);
+            CDRom.ClockAudio(cycles);
 
-            if (m_TimerCounting)
+            if (m_DeadClocks > 0)
+            {
+                if (m_DeadClocks > cycles)
+                    m_DeadClocks -= cycles;
+                else
+                    m_DeadClocks = 0;
+            }
+        }
+
+        private void ClockTimer(int cycles)
+        {
+            if (!m_TimerCounting || cycles <= 0)
+                return;
+
+            while (cycles > 0)
             {
                 if (cycles >= m_TimerValue)
                 {
-                    m_OverFlowCycles = cycles - m_TimerValue;
+                    cycles -= m_TimerValue;
                     m_TimerValue = m_TimerOverflow;
                     m_FiredTIMER = true;
                 }
                 else
                 {
-                    PPU.tick();
-                    m_OverFlowCycles = 0;
                     m_TimerValue -= cycles;
+                    break;
                 }
             }
-            else
+        }
+
+        private void ClockVideo(int cycles)
+        {
+            m_PpuCycleAccumulator += cycles;
+            int cyclesPerLine = PPU.CYCLES_PER_LINE / (int)DotClock.MHZ_7;
+            while (m_PpuCycleAccumulator >= cyclesPerLine)
             {
                 PPU.tick();
-                m_OverFlowCycles = 0;
+                m_PpuCycleAccumulator -= cyclesPerLine;
             }
-
-            if (m_DeadClocks > 0)
-            {
-                if (m_DeadClocks > cycles)
-                {
-                    m_DeadClocks -= cycles;
-                    CDRom.ClockAudio(elapsedCycles);
-                    return 0;
-                }
-                else
-                {
-                    cycles -= m_DeadClocks;
-                    m_DeadClocks = 0;
-                }
-            }
-
-            CDRom.ClockAudio(elapsedCycles);
-            return cycles;
         }
 
         public bool TimerWaiting()
@@ -521,7 +529,7 @@ namespace ePceCD
 
         public void LoseCycles(int cycles)
         {
-            CPU.m_Clock -= cycles;
+            CPU.AddWaitCycles(cycles);
         }
 
         public void LoadCue(string file)
@@ -802,11 +810,12 @@ namespace ePceCD
                 return;
 
             int reg = ioAddress == 0 ? data & 0x1F : PPU.PeekSelectedVdcRegister();
-            if (reg != 0x00 && reg != 0x02 && reg != 0x10 && reg != 0x11 && reg != 0x12 && reg != 0x13)
+            if (reg != 0x00 && reg != 0x02 && reg != 0x05 && reg != 0x07 && reg != 0x08 && reg != 0x09 && reg != 0x0A && reg != 0x0B && reg != 0x0C && reg != 0x0D && reg != 0x10 && reg != 0x11 && reg != 0x12 && reg != 0x13)
                 return;
 
             _traceVdcBusCount++;
-            WriteVdcBusTrace($"[PCE-VDCBUS] pc=0x{CPU.PeekProgramCounter():X4} io=0x{ioAddress:X1} reg=0x{reg:X2} data=0x{data:X2}");
+            WriteVdcBusTrace(
+                $"[PCE-VDCBUS] frame={PPU.PeekFrameCounter()} render={PPU.PeekRenderLine()} pc=0x{CPU.PeekProgramCounter():X4} io=0x{ioAddress:X1} reg=0x{reg:X2} data=0x{data:X2}");
         }
 
         private static void WriteVdcBusTrace(string line)

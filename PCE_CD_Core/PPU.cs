@@ -29,6 +29,8 @@ namespace ePceCD
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_PIXEL_TRACE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceVramWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VRAM_WRITE_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVceWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VCE_WRITE_TRACE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSatFrames =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SAT_FRAME_TRACE"), "1", StringComparison.Ordinal);
         private static readonly bool ForceSatFromVsar =
@@ -63,6 +65,8 @@ namespace ePceCD
             int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_PIXEL_TRACE_LIMIT"), out int plLim) && plLim > 0 ? plLim : 4000;
         private static readonly int TraceVramWriteLimit =
             int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VRAM_WRITE_TRACE_LIMIT"), out int vwLim) && vwLim > 0 ? vwLim : 4000;
+        private static readonly int TraceVceWriteLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VCE_WRITE_TRACE_LIMIT"), out int vcwLim) && vcwLim > 0 ? vcwLim : 4000;
         private static readonly int TraceVramWriteMin =
             ParseOptionalHexEnv("EUTHERDRIVE_PCE_VRAM_WRITE_MIN", -1);
         private static readonly int TraceVramWriteMax =
@@ -97,6 +101,8 @@ namespace ePceCD
         private int _tracePixelLineCount;
         [NonSerialized]
         private int _traceVramWriteCount;
+        [NonSerialized]
+        private int _traceVceWriteCount;
         [NonSerialized]
         private int _traceSatFrameCount;
 
@@ -158,6 +164,18 @@ namespace ePceCD
             bool inDisplay = visibleLine >= 0 && visibleLine < m_LatchedVDW;
             _traceVramWriteCount++;
             WriteSpriteTrace($"[PCE-VRAMW] frame={m_FrameCounter} render={m_RenderLine} dispctr={m_DisplayCounter} vis={visibleLine} in_display={(inDisplay ? 1 : 0)} mawr=0x{address:X4} value=0x{value:X4} reg=0x{m_VDC_Reg:X2}");
+        }
+
+        private void TraceVceWriteIfNeeded(int address, int index, ushort value, byte data)
+        {
+            if (!TraceVceWrites || _traceVceWriteCount >= TraceVceWriteLimit)
+                return;
+
+            int vds = Math.Max(14, m_LatchedVDS);
+            int visibleLine = m_DisplayCounter - vds;
+            bool inDisplay = visibleLine >= 0 && visibleLine < m_LatchedVDW;
+            _traceVceWriteCount++;
+            WriteSpriteTrace($"[PCE-VCEW] frame={m_FrameCounter} render={m_RenderLine} dispctr={m_DisplayCounter} vis={visibleLine} in_display={(inDisplay ? 1 : 0)} addr=0x{address:X1} index=0x{index:X3} data=0x{data:X2} value=0x{value:X4}");
         }
 
         private void TraceSatFrameIfNeeded()
@@ -388,6 +406,14 @@ namespace ePceCD
         private int m_VDC_VCR;
         private int m_LatchedVDS;
         private int m_LatchedVDW;
+        [NonSerialized]
+        private int m_LatchedHDS;
+        [NonSerialized]
+        private int m_LatchedHDE;
+        [NonSerialized]
+        private int m_LatchedHDW;
+        [NonSerialized]
+        private int m_LatchedScreenWidth;
         private int m_DisplayCounter;
 
         private int m_VDC_BAT_Width;
@@ -474,6 +500,10 @@ namespace ePceCD
             m_VDC_BSY = false;
             m_LatchedVDS = 14;
             m_LatchedVDW = 240;
+            m_LatchedHDS = 2;
+            m_LatchedHDE = 4;
+            m_LatchedHDW = 31;
+            m_LatchedScreenWidth = 256;
             m_VDC_VCR = 0x0C;
             m_DisplayCounter = 0;
             m_LatchedMWR = 0;
@@ -514,6 +544,10 @@ namespace ePceCD
             m_VDC_BSY = false;
             m_LatchedVDS = 14;
             m_LatchedVDW = 240;
+            m_LatchedHDS = 2;
+            m_LatchedHDE = 4;
+            m_LatchedHDW = 31;
+            m_LatchedScreenWidth = 256;
             m_VDC_VCR = 0x0C;
             m_DisplayCounter = 0;
             m_LatchedMWR = 0;
@@ -757,6 +791,10 @@ namespace ePceCD
                 }
                 m_LatchedVDS = GetEffectiveVds(GetEffectiveVdw());
                 m_LatchedVDW = GetEffectiveVdw();
+                m_LatchedHDS = m_VDC_HDS;
+                m_LatchedHDE = m_VDC_HDE;
+                m_LatchedHDW = m_VDC_HDW;
+                m_LatchedScreenWidth = (m_LatchedHDW + 1) * 8;
                 m_LatchedMWR = m_VDC_MWR;
                 m_DisplayCounter = 0;
                 RebuildScrollSchedule(0);
@@ -855,7 +893,7 @@ namespace ePceCD
                 //ConvertColor();
                 Marshal.Copy(_screenBufPtr, _screenBuf, 0, _screenBuf.Length);
                 FrameReady = true;
-                host.RenderFrame(_screenBuf, SCREEN_WIDTH, vdw);
+                host.RenderFrame(_screenBuf, m_LatchedScreenWidth, vdw);
             }
         }
 
@@ -956,6 +994,10 @@ namespace ePceCD
             // Keep serialized scanline/DMA timing as-is.
             // Forcing line 0 + SAT DMA here made HuCard savestates resume at the wrong point.
             FrameReady = false;
+            m_LatchedHDS = m_VDC_HDS;
+            m_LatchedHDE = m_VDC_HDE;
+            m_LatchedHDW = m_VDC_HDW;
+            m_LatchedScreenWidth = (m_VDC_HDW + 1) * 8;
             _currentLineSpriteCount = 0;
             _currentLineSpriteVisible = -1;
             _nextLineSpriteCount = 0;
@@ -1112,18 +1154,19 @@ namespace ePceCD
         private unsafe void DrawScanLine(int visibleLine)
         {
             int i;
+            int screenWidth = m_LatchedScreenWidth > 0 ? m_LatchedScreenWidth : SCREEN_WIDTH;
             m_LatchedEnableBackground = m_VDC_EnableBackground;
             m_LatchedEnableSprites = m_VDC_EnableSprites;
             m_LatchedBxr = m_BxrByLine[Math.Clamp(visibleLine, 0, m_BxrByLine.Length - 1)];
             m_BgCounterY = m_ByrByLine[Math.Clamp(visibleLine, 0, m_ByrByLine.Length - 1)];
             m_BgOffsetY = m_BgCounterY;
-            int* ScanLinePtr = (int*)_screenBufPtr.ToPointer() + SCREEN_WIDTH * visibleLine;
+            int* ScanLinePtr = (int*)_screenBufPtr.ToPointer() + screenWidth * visibleLine;
             Span<int> spriteLine = stackalloc int[512];
             Span<int> spritePriorityLine = stackalloc int[512];
             Span<int> spriteOwnerLine = stackalloc int[512];
             Span<int> bgLine = stackalloc int[512];
 
-            for (i = 0; i < SCREEN_WIDTH; i++)
+            for (i = 0; i < screenWidth; i++)
             {
                 ScanLinePtr[i] = 0x000;
                 spriteLine[i] = 0;
@@ -1144,7 +1187,7 @@ namespace ePceCD
                 int palette = 0;
                 int byte1 = 0, byte2 = 0, byte3 = 0, byte4 = 0;
 
-                for (i = 0; i < SCREEN_WIDTH; i++)
+                for (i = 0; i < screenWidth; i++)
                 {
                     int bgX = (m_LatchedBxr + i) & ScreenSizeXPixelsMask[screenReg];
                     int tileCol = bgX >> 3;
@@ -1206,7 +1249,7 @@ namespace ePceCD
                     }
                 }
 
-                for (i = 0; i < SCREEN_WIDTH; i++)
+                for (i = 0; i < screenWidth; i++)
                 {
                     if ((spriteLine[i] & 0x0F) != 0 &&
                         (spritePriorityLine[i] != 0 || (bgLine[i] & 0x0F) == 0))
@@ -1218,8 +1261,8 @@ namespace ePceCD
                 TraceLineSelected(visibleLine, TracePixelLineOnly, TracePixelLineMin, TracePixelLineMax))
             {
                 _tracePixelLineCount++;
-                int xMin = Math.Clamp(TracePixelXMin, 0, SCREEN_WIDTH - 1);
-                int xMax = Math.Clamp(TracePixelXMax, xMin, SCREEN_WIDTH - 1);
+                int xMin = Math.Clamp(TracePixelXMin, 0, screenWidth - 1);
+                int xMax = Math.Clamp(TracePixelXMax, xMin, screenWidth - 1);
                 WriteSpriteTrace($"[PCE-PIX] frame={m_FrameCounter} render={m_RenderLine} line={visibleLine} xrange={xMin}-{xMax} sprites={_currentLineSpriteCount}");
                 for (i = xMin; i <= xMax; i++)
                 {
@@ -1232,7 +1275,7 @@ namespace ePceCD
             //ushort grayscaleBit = (ushort)(Grayscale ? 0x200 : 0);
             int color = 0;
             int* LineWritePtr = ScanLinePtr;
-            for (i = 0; i < SCREEN_WIDTH; i++, ScanLinePtr++)
+            for (i = 0; i < screenWidth; i++, ScanLinePtr++)
             {
                 //color = PALETTE[m_VCE[*ScanLinePtr & 0x1FF] | grayscaleBit];
                 color = PALETTE[m_VCE[*ScanLinePtr & 0x1FF]];
@@ -1243,10 +1286,11 @@ namespace ePceCD
         public unsafe void ConvertColor()
         {
             int color = 0;
+            int screenWidth = m_LatchedScreenWidth > 0 ? m_LatchedScreenWidth : SCREEN_WIDTH;
             for (int y = 0; y < m_VDC_VDW; y++)
             {
-                int* LineWritePtr = (int*)_screenBufPtr.ToPointer() + SCREEN_WIDTH * y;
-                for (int i = 0; i < SCREEN_WIDTH; i++, LineWritePtr++)
+                int* LineWritePtr = (int*)_screenBufPtr.ToPointer() + screenWidth * y;
+                for (int i = 0; i < screenWidth; i++, LineWritePtr++)
                 {
                     color = PALETTE[m_VCE[*LineWritePtr & 0x1FF]];
                     *(LineWritePtr) = color;
@@ -1256,13 +1300,14 @@ namespace ePceCD
 
         public unsafe void DrawSPRTile(Span<int> bgLine, Span<int> spriteLine, Span<int> spritePriorityLine, Span<int> spriteOwnerLine, int satIndex, int palette, int flags, int pos, ushort plane0, ushort plane1, ushort plane2, ushort plane3)
         {
-            if ((pos + 15) < 0 || pos >= SCREEN_WIDTH)
+            int screenWidth = m_LatchedScreenWidth > 0 ? m_LatchedScreenWidth : SCREEN_WIDTH;
+            if ((pos + 15) < 0 || pos >= screenWidth)
                 return;
 
             bool priority = (flags & 0x0080) != 0;
             bool flip = (flags & 0x0800) != 0;
             int startX = pos < 0 ? -pos : 0;
-            int endX = pos + 15 >= SCREEN_WIDTH ? (SCREEN_WIDTH - pos - 1) : 15;
+            int endX = pos + 15 >= screenWidth ? (screenWidth - pos - 1) : 15;
             Span<byte> line = stackalloc byte[16];
 
             int p0Left = (plane0 >> 8) & 0xFF;
@@ -1342,6 +1387,9 @@ namespace ePceCD
         }
 
         public int PeekSelectedVdcRegister() => m_VDC_Reg;
+        public int PeekFrameCounter() => m_FrameCounter;
+        public int PeekRenderLine() => m_RenderLine;
+        public int PeekDisplayCounter() => m_DisplayCounter;
 
         public void WriteVDC(int address, byte data)
         {
@@ -1605,11 +1653,13 @@ namespace ePceCD
                 case 4:
                     // 写入调色板数据低字节
                     m_VCE[m_VCE_Index] = (ushort)((m_VCE[m_VCE_Index] & 0xFF00) | data);
+                    TraceVceWriteIfNeeded(4, m_VCE_Index, m_VCE[m_VCE_Index], data);
                     break;
 
                 case 5:
                     // 写入调色板数据高字节
                     m_VCE[m_VCE_Index] = (ushort)((m_VCE[m_VCE_Index] & 0xFF) | ((data << 8) & 0x100));
+                    TraceVceWriteIfNeeded(5, m_VCE_Index, m_VCE[m_VCE_Index], data);
                     m_VCE_Index = (m_VCE_Index + 1) & 0x1FF;
                     break;
             }

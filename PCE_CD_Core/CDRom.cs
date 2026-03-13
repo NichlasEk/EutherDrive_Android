@@ -342,6 +342,7 @@ namespace ePceCD
             if (cycles <= 0)
                 return;
 
+            _ADPCM.Clock(cycles);
             _cdAudioCycleCounter += cycles;
             double cyclesPerSample = GetCdAudioCyclesPerSample();
 

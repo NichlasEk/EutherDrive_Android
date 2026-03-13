@@ -563,6 +563,21 @@ class Program
                     Console.WriteLine($"[HEADLESS] PCE trace file: {fullPath}");
                 }
 
+                var pceDumpFrames = new HashSet<int>();
+                string? pceDumpFramesRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+                if (!string.IsNullOrWhiteSpace(pceDumpFramesRaw))
+                {
+                    foreach (string part in pceDumpFramesRaw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (int.TryParse(part.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int frameIndex))
+                            pceDumpFrames.Add(frameIndex);
+                    }
+                }
+                int? pceDumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+                if (pceDumpFrameSingle.HasValue)
+                    pceDumpFrames.Add(pceDumpFrameSingle.Value);
+                bool pceSnapshotOnDump = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SNAPSHOT_ON_DUMP") == "1";
+
                 if (autoRun)
                 {
                     Console.WriteLine(
@@ -614,7 +629,7 @@ class Program
                     if (pceTraceWriter != null)
                         pceTraceWriter.WriteLine(pce.BuildDeterminismTraceLine(frame));
 
-                    if (frame == 0 || frame == 5 || frame == 10)
+                    if (frame == 0 || frame == 5 || frame == 10 || pceDumpFrames.Contains(frame))
                     {
                         ReadOnlySpan<byte> fb = pce.GetFrameBuffer(out int w, out int h, out int s);
                         var stats = GetFrameStats(fb, w, h, s);
@@ -622,6 +637,11 @@ class Program
                         string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
                         DumpBgraToPpm(fb, w, h, s, ppmPath);
                         Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                        if (pceSnapshotOnDump)
+                        {
+                            string snapPrefix = pce.CaptureDebugSnapshot(dumpDir);
+                            Console.WriteLine($"[HEADLESS] PCE snapshot captured: {snapPrefix}");
+                        }
                     }
                 }
 
@@ -1418,7 +1438,25 @@ class Program
                     return (rel % period) < pulse;
                 }
 
-                pce.GetFrameBuffer(out int w0, out int h0, out int s0);
+                var pceDumpFrames = new HashSet<int>();
+                string? pceDumpFramesRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+                if (!string.IsNullOrWhiteSpace(pceDumpFramesRaw))
+                {
+                    foreach (string part in pceDumpFramesRaw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (int.TryParse(part.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int frameIndex))
+                            pceDumpFrames.Add(frameIndex);
+                    }
+                }
+                int? pceDumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+                if (pceDumpFrameSingle.HasValue)
+                    pceDumpFrames.Add(pceDumpFrameSingle.Value);
+                bool snapshotOnDump = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SNAPSHOT_ON_DUMP") == "1";
+
+                ReadOnlySpan<byte> fb0 = pce.GetFrameBuffer(out int w0, out int h0, out int s0);
+                var stats0 = GetFrameStats(fb0, w0, h0, s0);
+                Console.WriteLine($"[HEADLESS] Frame 0: fb_has_content={stats0.HasContent} nonzero_pixels={stats0.NonZeroPixels} first_nonzero=({stats0.FirstX},{stats0.FirstY})");
+                DumpBgraToPpm(fb0, w0, h0, s0, Path.Combine(dumpDir, "headless_frame0.ppm"));
                 pce.CaptureDebugSnapshot(dumpDir);
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
@@ -1432,9 +1470,28 @@ class Program
                     pce.RunFrame();
                     if (pceTraceWriter != null)
                         pceTraceWriter.WriteLine(pce.BuildDeterminismTraceLine(frame));
+
+                    if (frame == 0 || frame == 5 || frame == 10 || pceDumpFrames.Contains(frame))
+                    {
+                        ReadOnlySpan<byte> fb = pce.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                        DumpBgraToPpm(fb, w, h, s, ppmPath);
+                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                        if (snapshotOnDump)
+                        {
+                            string snapPrefix = pce.CaptureDebugSnapshot(dumpDir);
+                            Console.WriteLine($"[HEADLESS] PCE snapshot captured: {snapPrefix}");
+                        }
+                    }
                 }
                 pceTraceWriter?.Flush();
                 pceTraceWriter?.Dispose();
+                ReadOnlySpan<byte> fbOut = pce.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] Final: fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 return 0;
             }
 

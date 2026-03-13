@@ -6,6 +6,9 @@ namespace ePceCD
     public class ADPCM
     {
         private const uint RAM_SIZE = 0x10000; // 64KB ADPCM RAM
+        private const int AdpcmRamMask = 0xFFFF;
+        private const int AdpcmLengthMask = 0x1FFFF;
+        private const int DmaTransferCycles = 36;
         private byte[] _ram = new byte[RAM_SIZE];
         [NonSerialized]
         private CDRom _cdRom;
@@ -17,17 +20,24 @@ namespace ePceCD
         private byte _playbackRate;        // 播放速率（0x0E）
 
         // 内部状态
+        private byte _readValue;
+        private byte _writeValue;
+        private int _readCycles;
+        private int _writeCycles;
+        private int _dmaCycles;
         private uint _readAddress;         // 当前读取地址
         private uint _writeAddress;        // 当前写入地址
         private uint _adpcmLength;         // 剩余播放长度
         private bool _isPlaying;          // 是否正在播放
+        private bool _playPending;
         private bool _endReached;         // 播放结束标志
         private bool _halfReached;        // 半缓冲区标志
         private double _clocksPerSample;  // 每个样本的时钟周期
+        private double _adpcmCycleCounter;
         private int _currentPredictor;    // ADPCM解码预测值
         private int _currentStepIndex;    // ADPCM步长索引
-        private byte _currentAdpcmByte;   // 当前处理的ADPCM字节
-        private bool _isHighNibble;       // 当前处理高4位标志
+        private bool _nibbleToggle;
+        private int _currentOutputSample;
 
         // 中断标志位掩码
         private const byte STATUS_END_FLAG = 0x01;
@@ -54,14 +64,13 @@ namespace ePceCD
         {
             _currentPredictor = 2048;
             _currentStepIndex = 0;
-            _currentAdpcmByte = 0;
-            _isHighNibble = true;
+            _nibbleToggle = false;
+            _currentOutputSample = 0;
+            _adpcmCycleCounter = 0;
         }
 
         public byte ReadData(int addr)
         {
-            ServiceDma();
-
             switch (addr & 0x0F)
             {
                 case 0x08: // 地址端口低8位
@@ -71,7 +80,8 @@ namespace ePceCD
                     return (byte)((_addressPort >> 8) & 0x00FF);
 
                 case 0x0A: // 读取数据端口
-                    return ReadBuffer();
+                    _readCycles = NextSlotCycles(read: true);
+                    return _readValue;
 
                 case 0x0B: // DMA控制
                     if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Length == 0)
@@ -82,8 +92,8 @@ namespace ePceCD
                     byte status = 0;
                     status |= (byte)(_endReached ? STATUS_END_FLAG : 0);
                     status |= (byte)(_isPlaying ? STATUS_PLAYING_FLAG : 0);
-                    status |= (byte)(((_control & 0x08) != 0) ? 0x80 : 0);
-                    status |= (byte)(((_control & 0x02) != 0) ? 0x04 : 0);
+                    status |= (byte)(_readCycles > 0 ? 0x80 : 0);
+                    status |= (byte)(_writeCycles > 0 ? 0x04 : 0);
                     return status;
 
                 case 0x0D: // 控制寄存器
@@ -112,14 +122,14 @@ namespace ePceCD
                     break;
 
                 case 0x0A: // 数据写入端口
-                    WriteBuffer(value);
+                    _writeCycles = NextSlotCycles(read: false);
+                    _writeValue = value;
                     break;
 
                 case 0x0B: // DMA控制
                     if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Length == 0)
                         value &= unchecked((byte)~0x01);
                     _dmaControl = value;
-                    ServiceDma();
                     break;
 
                 case 0x0D: // 控制寄存器
@@ -149,126 +159,211 @@ namespace ePceCD
         private void UpdateControlState(byte value)
         {
             if ((value & 0x02) != 0 && (_control & 0x02) == 0)
-            {
-                _writeAddress = _addressPort > 0
-                    ? (uint)(_addressPort - ((value & 0x01) != 0 ? 0 : 1))
-                    : 0;
-            }
+                _writeAddress = (uint)((_addressPort - ((value & 0x01) != 0 ? 0 : 1)) & AdpcmRamMask);
 
             if ((value & 0x08) != 0 && (_control & 0x08) == 0)
+                _readAddress = (uint)((_addressPort - ((value & 0x04) != 0 ? 0 : 1)) & AdpcmRamMask);
+
+            if ((value & 0x20) != 0 && !_isPlaying)
+                _playPending = true;
+
+            _control = value;
+        }
+
+        private void SoftReset()
+        {
+            _readValue = 0;
+            _writeValue = 0;
+            _readCycles = 0;
+            _writeCycles = 0;
+            _readAddress = 0;
+            _writeAddress = 0;
+            _addressPort = 0;
+            _adpcmLength = 0;
+            _playPending = false;
+            SetEndReached(false);
+            SetHalfReached(false);
+            _isPlaying = (_control & 0x20) != 0;
+            ResetDecoderState();
+        }
+
+        private int NextSlotCycles(bool read)
+        {
+            return read ? 27 : 9;
+        }
+
+        public void Clock(int cycles)
+        {
+            if (cycles <= 0)
+                return;
+
+            CheckReset();
+            CheckLength();
+            RunAdpcm(cycles);
+            UpdateReadWriteEvents(cycles);
+            UpdateDma(cycles);
+            CheckLength();
+            CheckReset();
+        }
+
+        private void UpdateReadWriteEvents(int cycles)
+        {
+            if (_readCycles > 0)
             {
-                _readAddress = _addressPort > 0
-                    ? (uint)(_addressPort - ((value & 0x04) != 0 ? 0 : 1))
-                    : 0;
+                _readCycles -= cycles;
+                if (_readCycles <= 0)
+                {
+                    _readCycles = 0;
+                    _readValue = _ram[_readAddress & AdpcmRamMask];
+                    _readAddress = (_readAddress + 1) & AdpcmRamMask;
+
+                    if (!IsLengthLatched())
+                    {
+                        if (_adpcmLength > 0)
+                        {
+                            _adpcmLength--;
+                            SetHalfReached(_adpcmLength < 0x8000);
+                        }
+                        else
+                        {
+                            SetHalfReached(false);
+                            SetEndReached(true);
+                        }
+                    }
+                }
             }
 
-            bool startPlayback = (value & 0x20) != 0 && (_control & 0x20) == 0 && !_isPlaying;
-            _control = value;
-
-            if ((_control & 0x80) != 0)
+            if (_writeCycles > 0)
             {
-                SoftReset();
+                _writeCycles -= cycles;
+                if (_writeCycles <= 0)
+                {
+                    _writeCycles = 0;
+                    _ram[_writeAddress & AdpcmRamMask] = _writeValue;
+                    _writeAddress = (_writeAddress + 1) & AdpcmRamMask;
+
+                    SetHalfReached(_adpcmLength < 0x8000);
+                    if (_adpcmLength == 0)
+                        SetEndReached(true);
+
+                    if (!IsLengthLatched())
+                        _adpcmLength = (_adpcmLength + 1) & AdpcmLengthMask;
+                }
+            }
+        }
+
+        private void UpdateDma(int cycles)
+        {
+            if ((_dmaControl & 0x03) == 0)
+                return;
+
+            if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Length == 0 || _cdRom.dataBuffer.Position >= _cdRom.dataBuffer.Length)
+            {
+                _dmaControl &= unchecked((byte)~0x01);
                 return;
             }
 
+            if (_dmaCycles > 0)
+            {
+                _dmaCycles -= cycles;
+                if (_dmaCycles <= 0)
+                {
+                    _dmaCycles = 0;
+                    if (_writeCycles == 0)
+                    {
+                        _writeCycles = NextSlotCycles(read: false);
+                        _writeValue = _cdRom.ReadDataPort();
+                        if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Position >= _cdRom.dataBuffer.Length)
+                            _dmaControl &= unchecked((byte)~0x01);
+                    }
+                    else
+                    {
+                        _dmaCycles = 1;
+                    }
+                }
+                return;
+            }
+
+            _dmaCycles = DmaTransferCycles;
+        }
+
+        private void RunAdpcm(int cycles)
+        {
+            if ((_control & 0x80) != 0)
+            {
+                _isPlaying = (_control & 0x20) != 0;
+                _playPending = false;
+                return;
+            }
+
+            if (!_isPlaying && !_playPending)
+                return;
+
+            if ((_control & 0x20) == 0 || (((_control & 0x40) != 0) && _adpcmLength == 0))
+            {
+                _playPending = false;
+                _isPlaying = false;
+                _currentOutputSample = 0;
+                return;
+            }
+
+            _adpcmCycleCounter += cycles;
+            if (_adpcmCycleCounter < _clocksPerSample)
+                return;
+
+            _adpcmCycleCounter -= _clocksPerSample;
+
+            if (_playPending)
+            {
+                _playPending = false;
+                _isPlaying = true;
+                _currentPredictor = 2048;
+                _currentStepIndex = 0;
+                _nibbleToggle = false;
+            }
+
+            byte ramByte = _ram[_readAddress & AdpcmRamMask];
+            byte nibble;
+            _nibbleToggle = !_nibbleToggle;
+
+            if (_nibbleToggle)
+            {
+                nibble = (byte)((ramByte >> 4) & 0x0F);
+            }
+            else
+            {
+                nibble = (byte)(ramByte & 0x0F);
+                _readAddress = (_readAddress + 1) & AdpcmRamMask;
+                _adpcmLength = (_adpcmLength - 1) & AdpcmLengthMask;
+
+                SetHalfReached(_adpcmLength <= 0x8000);
+                if (_adpcmLength == 0)
+                    SetEndReached(true);
+            }
+
+            int predictor = DecodeAdpcmSample(nibble);
+            _currentOutputSample = (predictor - 2048) * 10;
+        }
+
+        // 检查是否启用长度锁存
+        private bool IsLengthLatched() => (_control & 0x10) != 0;
+
+        private bool CheckReset()
+        {
+            if ((_control & 0x80) == 0)
+                return false;
+            SoftReset();
+            return true;
+        }
+
+        private void CheckLength()
+        {
             if (IsLengthLatched())
             {
                 _adpcmLength = _addressPort;
                 SetEndReached(false);
             }
-
-            if (startPlayback)
-                StartPlayback();
         }
-
-        private void StartPlayback()
-        {
-            _isPlaying = false;
-            SetEndReached(false);
-            SetHalfReached(false);
-            ResetDecoderState();
-        }
-
-        private void SoftReset()
-        {
-            _isPlaying = false;
-            _dmaControl = 0;
-            _readAddress = 0;
-            _writeAddress = 0;
-            _adpcmLength = 0;
-            SetEndReached(false);
-            SetHalfReached(false);
-            ResetDecoderState();
-        }
-
-        private void ServiceDma()
-        {
-            if ((_dmaControl & 0x03) == 0)
-                return;
-
-            if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Length == 0)
-            {
-                _dmaControl &= (byte)(~0x01 & 0xFF);
-                return;
-            }
-
-            if (_cdRom.dataBuffer.Position >= _cdRom.dataBuffer.Length)
-            {
-                _dmaControl &= (byte)(~0x01 & 0xFF);
-                return;
-            }
-
-            byte data = _cdRom.ReadDataPort();
-            WriteBuffer(data);
-
-            if (_cdRom.dataBuffer == null || _cdRom.dataBuffer.Position >= _cdRom.dataBuffer.Length)
-                _dmaControl &= (byte)(~0x01 & 0xFF);
-        }
-
-        // 从缓冲区读取数据（更新地址和长度）
-        private byte ReadBuffer()
-        {
-
-            if (_readAddress >= RAM_SIZE) _readAddress = 0;
-
-            byte data = _ram[_readAddress];
-            _readAddress = (_readAddress + 1) % RAM_SIZE;
-
-            if (!IsLengthLatched())
-            {
-                if (_adpcmLength > 0)
-                {
-                    _adpcmLength--;
-                    SetHalfReached(_adpcmLength <= 0x8000);
-                }
-                else
-                {
-                    SetEndReached(true);
-                    SetHalfReached(false);
-                }
-            }
-
-            return data;
-        }
-
-        // 写入数据到缓冲区
-        private void WriteBuffer(byte data)
-        {
-            if (_writeAddress >= RAM_SIZE) _writeAddress = 0;
-
-            _ram[_writeAddress] = data;
-            _writeAddress = (_writeAddress + 1) % RAM_SIZE;
-
-            SetHalfReached(_adpcmLength < 0x8000);
-            if (_adpcmLength == 0)
-                SetEndReached(true);
-
-            if (!IsLengthLatched())
-                _adpcmLength = (_adpcmLength + 1) % RAM_SIZE;
-        }
-
-        // 检查是否启用长度锁存
-        private bool IsLengthLatched() => (_control & 0x10) != 0;
 
         private void SetEndReached(bool value)
         {
@@ -306,53 +401,7 @@ namespace ePceCD
         // 生成音频样本
         public int GetSample()
         {
-            ServiceDma();
-
-            if (IsLengthLatched())
-            {
-                _adpcmLength = _addressPort;
-                SetEndReached(false);
-            }
-
-            if ((_control & 0x80) != 0)
-            {
-                _isPlaying = false;
-                return 0;
-            }
-
-            if ((_control & 0x20) == 0 || (((_control & 0x40) != 0) && _adpcmLength == 0))
-            {
-                _isPlaying = false;
-                return 0;
-            }
-            if (!_isPlaying)
-            {
-                _currentPredictor = 2048;
-                _currentStepIndex = 0;
-                _isPlaying = true;
-            }
-
-            byte nibble;
-            if (_isHighNibble)
-            {
-                _currentAdpcmByte = ReadBuffer();
-                nibble = (byte)((_currentAdpcmByte >> 4) & 0x0F);
-                _isHighNibble = false;
-            }
-            else
-            {
-                nibble = (byte)(_currentAdpcmByte & 0x0F);
-                _isHighNibble = true;
-            }
-
-            SetHalfReached(_adpcmLength <= 0x8000);
-            if (_adpcmLength == 0)
-            {
-                SetEndReached(true);
-            }
-
-            //return DecodeSample(nibble);
-            return DecodeAdpcmSample(nibble);
+            return _currentOutputSample;
         }
 
         private int[] _stepSize =
