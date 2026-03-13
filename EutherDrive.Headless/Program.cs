@@ -9,6 +9,7 @@
 using System;
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -69,6 +70,22 @@ class Program
 {
     private const int DefaultFrames = 120;
 
+    private readonly record struct SnesInputScriptWindow(
+        int StartFrame,
+        int EndFrame,
+        bool Up,
+        bool Down,
+        bool Left,
+        bool Right,
+        bool A,
+        bool B,
+        bool X,
+        bool Y,
+        bool L,
+        bool R,
+        bool Start,
+        bool Select);
+
     private static bool ShouldPressStartPulse(int frame, int delay, int pulse, int period, int count)
     {
         if (frame < delay || pulse <= 0 || period <= 0 || count <= 0)
@@ -81,6 +98,105 @@ class Program
 
         int slot = rel % period;
         return slot < pulse;
+    }
+
+    private static List<SnesInputScriptWindow> ParseSnesInputScript(string? raw)
+    {
+        var result = new List<SnesInputScriptWindow>();
+        if (string.IsNullOrWhiteSpace(raw))
+            return result;
+
+        foreach (string item in raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            int colon = item.IndexOf(':');
+            if (colon <= 0 || colon == item.Length - 1)
+                continue;
+
+            string rangePart = item[..colon].Trim();
+            string buttonsPart = item[(colon + 1)..].Trim();
+
+            int dash = rangePart.IndexOf('-');
+            if (dash <= 0 || dash == rangePart.Length - 1)
+                continue;
+
+            if (!int.TryParse(rangePart[..dash], NumberStyles.Integer, CultureInfo.InvariantCulture, out int startFrame))
+                continue;
+            if (!int.TryParse(rangePart[(dash + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out int endFrame))
+                continue;
+            if (endFrame < startFrame)
+                (startFrame, endFrame) = (endFrame, startFrame);
+
+            bool up = false, down = false, left = false, right = false;
+            bool a = false, b = false, x = false, y = false;
+            bool l = false, r = false, start = false, select = false;
+
+            foreach (string buttonToken in buttonsPart.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                switch (buttonToken.ToLowerInvariant())
+                {
+                    case "up": up = true; break;
+                    case "down": down = true; break;
+                    case "left": left = true; break;
+                    case "right": right = true; break;
+                    case "a": a = true; break;
+                    case "b": b = true; break;
+                    case "x": x = true; break;
+                    case "y": y = true; break;
+                    case "l": l = true; break;
+                    case "r": r = true; break;
+                    case "start": start = true; break;
+                    case "select":
+                    case "sel": select = true; break;
+                }
+            }
+
+            result.Add(new SnesInputScriptWindow(
+                startFrame, endFrame,
+                up, down, left, right,
+                a, b, x, y, l, r, start, select));
+        }
+
+        return result;
+    }
+
+    private static (
+        bool Up,
+        bool Down,
+        bool Left,
+        bool Right,
+        bool A,
+        bool B,
+        bool X,
+        bool Y,
+        bool L,
+        bool R,
+        bool Start,
+        bool Select) ResolveSnesInputForFrame(int frame, IReadOnlyList<SnesInputScriptWindow> script)
+    {
+        bool up = false, down = false, left = false, right = false;
+        bool a = false, b = false, x = false, y = false;
+        bool l = false, r = false, start = false, select = false;
+
+        foreach (var window in script)
+        {
+            if (frame < window.StartFrame || frame > window.EndFrame)
+                continue;
+
+            up |= window.Up;
+            down |= window.Down;
+            left |= window.Left;
+            right |= window.Right;
+            a |= window.A;
+            b |= window.B;
+            x |= window.X;
+            y |= window.Y;
+            l |= window.L;
+            r |= window.R;
+            start |= window.Start;
+            select |= window.Select;
+        }
+
+        return (up, down, left, right, a, b, x, y, l, r, start, select);
     }
 
     private static void LogEnv(string name)
@@ -298,6 +414,7 @@ class Program
                 int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PULSE_COUNT") ?? 1;
                 bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_LOG") == "1";
                 bool lastStartPressed = false;
+                var snesInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_INPUT_SCRIPT"));
                 int[] snesPeekAddrs = ParseOptionalHexAddrEnv("EUTHERDRIVE_TRACE_SNES_PEEK_ADDRS");
                 int? sa1SnapshotFrameSavestate = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_SA1_SNAPSHOT_FRAME");
 
@@ -337,19 +454,20 @@ class Program
                 {
                     bool startPressed = autoStart &&
                         ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount);
+                    var scriptInput = ResolveSnesInputForFrame(frame, snesInputScript);
                     snes.SetInputState(
-                        up: false,
-                        down: false,
-                        left: false,
-                        right: false,
-                        a: false,
-                        b: false,
-                        x: false,
-                        y: false,
-                        z: false,
-                        c: false,
-                        start: startPressed,
-                        mode: false,
+                        up: scriptInput.Up,
+                        down: scriptInput.Down,
+                        left: scriptInput.Left,
+                        right: scriptInput.Right,
+                        a: scriptInput.A,
+                        b: scriptInput.B,
+                        x: scriptInput.X,
+                        y: scriptInput.Y,
+                        z: scriptInput.L,
+                        c: scriptInput.R,
+                        start: startPressed || scriptInput.Start,
+                        mode: scriptInput.Select,
                         padType: PadType.SixButton);
                     if (autoStartLog && startPressed != lastStartPressed)
                         Console.WriteLine($"[HEADLESS] SNES auto-start start={(startPressed ? 1 : 0)} frame={frame}");
@@ -1267,6 +1385,7 @@ class Program
                 int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_PULSE_COUNT") ?? 1;
                 bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_AUTO_START_LOG") == "1";
                 bool lastStartPressed = false;
+                var snesInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_INPUT_SCRIPT"));
                 int? sa1SnapshotFrame = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_SA1_SNAPSHOT_FRAME");
                 int[] snesPeekAddrs = ParseOptionalHexAddrEnv("EUTHERDRIVE_TRACE_SNES_PEEK_ADDRS");
 
@@ -1302,19 +1421,20 @@ class Program
                 {
                     bool startPressed = autoStart &&
                         ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount);
+                    var scriptInput = ResolveSnesInputForFrame(frame, snesInputScript);
                     snes.SetInputState(
-                        up: false,
-                        down: false,
-                        left: false,
-                        right: false,
-                        a: false,
-                        b: false,
-                        x: false,
-                        y: false,
-                        z: false,
-                        c: false,
-                        start: startPressed,
-                        mode: false,
+                        up: scriptInput.Up,
+                        down: scriptInput.Down,
+                        left: scriptInput.Left,
+                        right: scriptInput.Right,
+                        a: scriptInput.A,
+                        b: scriptInput.B,
+                        x: scriptInput.X,
+                        y: scriptInput.Y,
+                        z: scriptInput.L,
+                        c: scriptInput.R,
+                        start: startPressed || scriptInput.Start,
+                        mode: scriptInput.Select,
                         padType: PadType.SixButton);
                     if (autoStartLog && startPressed != lastStartPressed)
                         Console.WriteLine($"[HEADLESS] SNES auto-start start={(startPressed ? 1 : 0)} frame={frame}");
@@ -1435,8 +1555,9 @@ class Program
                     int window = rel / period;
                     if (window < 0 || window >= count)
                         return false;
-                    return (rel % period) < pulse;
-                }
+        return (rel % period) < pulse;
+    }
+
 
                 var pceDumpFrames = new HashSet<int>();
                 string? pceDumpFramesRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");

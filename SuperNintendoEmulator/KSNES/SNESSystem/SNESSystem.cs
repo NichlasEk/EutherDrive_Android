@@ -133,6 +133,9 @@ public class SNESSystem : ISNESSystem
     private int _traceApuPortsCount;
     private readonly bool _traceStarOceanApuLoop =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_STAROCEAN_APU_LOOP"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly bool _traceStarOcean4212Loop =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_STAROCEAN_4212_LOOP"), "1", StringComparison.Ordinal);
     private bool HasExplicitWramTraceFilter => _traceWramAddrs.Count > 0;
 
     private int[] _dmaMode = [];
@@ -981,13 +984,13 @@ public class SNESSystem : ISNESSystem
                         {
                             if (_dmaFromB[i])
                             {
-                                QueueDmaWriteBusA((_hdmaIndBank[i] << 16) | _dmaSize[i],
+                                DmaWriteBusA((_hdmaIndBank[i] << 16) | _dmaSize[i],
                                     ReadBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff));
                             }
                             else
                             {
-                                QueueDmaWriteBusB((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
-                                    DmaReadBusA((_hdmaIndBank[i] << 16) | _dmaSize[i]));
+                                WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
+                                    DmaReadBusA((_hdmaIndBank[i] << 16) | _dmaSize[i]), true);
                             }
                             _dmaSize[i]++;
                         }
@@ -995,13 +998,13 @@ public class SNESSystem : ISNESSystem
                         {
                             if (_dmaFromB[i])
                             {
-                                QueueDmaWriteBusA((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i],
+                                DmaWriteBusA((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i],
                                     ReadBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff));
                             }
                             else
                             {
-                                QueueDmaWriteBusB((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
-                                    DmaReadBusA((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i]));
+                                WriteBBus((_dmaBadr[i] + _dmaOffs[tableOff]) & 0xff,
+                                    DmaReadBusA((_dmaAadrBank[i] << 16) | _hdmaTableAdr[i]), true);
                             }
                             _hdmaTableAdr[i]++;
                         }
@@ -1058,6 +1061,14 @@ public class SNESSystem : ISNESSystem
                 val3 |= GetCurrentHblankFlag() ? 0x40 : 0;
                 val3 |= GetCurrentVblankFlag() ? 0x80 : 0;
                 val3 |= OpenBus & 0x3e;
+                if (_traceStarOcean4212Loop && CPU is KSNES.CPU.CPU so4212Cpu)
+                {
+                    int pc = so4212Cpu.ProgramCounter24;
+                    if (pc >= 0xCC0538 && pc <= 0xCC0540)
+                    {
+                        Console.WriteLine($"[SO-4212] pc=0x{pc:X6} val=0x{val3:X2} v={GetCurrentVblankFlag()} h={GetCurrentHblankFlag()} autojoy={_autoJoyBusy} xy=({XPos},{YPos})");
+                    }
+                }
                 if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_4212"), "1", StringComparison.Ordinal))
                 {
                     Console.WriteLine($"[4212] R val=0x{val3:X2} vblank={GetCurrentVblankFlag()} hblank={GetCurrentHblankFlag()} autojoy={_autoJoyBusy} Y={YPos} X={XPos}");
