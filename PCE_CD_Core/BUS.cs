@@ -54,6 +54,7 @@ namespace ePceCD
         private int m_OverFlowCycles;
         private int m_DeadClocks;
         private int m_PpuCycleAccumulator;
+        private long m_MasterClockCycles;
 
         public string RomName = "";
         public string CDfile = "";
@@ -238,6 +239,7 @@ namespace ePceCD
             if (cycles <= 0)
                 return;
 
+            m_MasterClockCycles += cycles;
             ClockTimer(cycles);
             ClockVideo(cycles);
             CDRom.ClockAudio(cycles);
@@ -249,6 +251,11 @@ namespace ePceCD
                 else
                     m_DeadClocks = 0;
             }
+        }
+
+        public long GetMasterClockCycles()
+        {
+            return m_MasterClockCycles;
         }
 
         private void ClockTimer(int cycles)
