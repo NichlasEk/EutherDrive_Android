@@ -38,6 +38,9 @@ namespace ProjectPSX.Devices {
             return IMASK;
         }
 
+        internal uint DebugISTAT => ISTAT;
+        internal uint DebugIMASK => IMASK;
+
         internal bool interruptPending() {
             return (ISTAT & IMASK) != 0;
         }

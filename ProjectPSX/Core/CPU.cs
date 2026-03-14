@@ -1,11 +1,14 @@
-﻿//#define CPU_EXCEPTIONS
-using System;
+﻿using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ProjectPSX.Disassembler;
 
 namespace ProjectPSX {
     internal unsafe class CPU {  //MIPS R3000A-compatible 32-bit RISC CPU MIPS R3051 with 5 KB L1 cache, running at 33.8688 MHz // 33868800
+        private const bool StrictAddressExceptions = true;
+        private static readonly bool ExperimentalInstructionCache =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_DISABLE_ICACHE") != "1"
+            && Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_EXPERIMENTAL_ICACHE") != "0";
 
         private uint PC_Now; // PC on current execution as PC and PC Predictor go ahead after fetch. This is handy on Branch Delay so it dosn't give erronious PC-4
         private uint PC = 0xbfc0_0000; // Bios Entry Point
@@ -31,7 +34,17 @@ namespace ProjectPSX {
         private const int BADA = 8;
         private const int JUMPDEST = 6;
 
-        private bool dontIsolateCache;
+        private bool dontIsolateCache = true;
+        private const int InstructionCacheLineCount = 256;
+        private const int InstructionCacheWordsPerLine = 4;
+        private readonly uint[] _instructionCacheTags = new uint[InstructionCacheLineCount];
+        private readonly bool[] _instructionCacheValid = new bool[InstructionCacheLineCount];
+        private readonly uint[] _instructionCacheData = new uint[InstructionCacheLineCount * InstructionCacheWordsPerLine];
+        private uint _lastObservedMemoryCacheWriteCount;
+        private bool _instructionCacheEnabled;
+        private bool _lastInstructionCacheIsolation;
+        private bool _lastInstructionCacheRuntimeAllowed;
+        private bool _instructionCacheRuntimeAllowed;
 
         private GTE gte;
         private BUS bus;
@@ -72,6 +85,7 @@ namespace ProjectPSX {
 
         //Debug
         public bool debug = false;
+        public static uint TraceCurrentPC;
         public uint CurrentPC => PC_Now;
 
         public CPU(BUS bus) {
@@ -81,6 +95,15 @@ namespace ProjectPSX {
             gte = new GTE();
 
             COP0_GPR[15] = 0x2; //PRID Processor ID
+            FlushInstructionCache();
+        }
+
+        public void ObserveRamWrite(uint physicalAddress, int sizeBytes) {
+            if (!ExperimentalInstructionCache || sizeBytes <= 0) {
+                return;
+            }
+
+            InvalidateInstructionCacheRange(physicalAddress, sizeBytes);
         }
 
         private static delegate*<CPU, void>[] opcodeMainTable = new delegate*<CPU, void>[] {
@@ -125,16 +148,17 @@ namespace ProjectPSX {
             return ticks;
         }
 
+        public void NotifyBiosExited() {
+            if (!ExperimentalInstructionCache) {
+                return;
+            }
+            _instructionCacheRuntimeAllowed = true;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void handleInterrupts() {
             //Executable address space is limited to ram and bios on psx
-            uint maskedPC = PC & 0x1FFF_FFFF;
-            uint load;
-            if (maskedPC < 0x1F00_0000) {
-                load = bus.LoadFromRam(maskedPC);
-            } else {
-                load = bus.LoadFromBios(maskedPC);
-            }
+            uint load = FetchInstructionWord(PC);
 
             //This is actually the "next" opcode if it's a GTE one
             //just postpone the interrupt so it doesn't glitch out
@@ -163,9 +187,8 @@ namespace ProjectPSX {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int fetchDecode() {
             //Executable address space is limited to ram and bios on psx
-            uint maskedPC = PC & 0x1FFF_FFFF;
-
             PC_Now = PC;
+            TraceCurrentPC = PC_Now;
             PC = PC_Predictor;
             PC_Predictor += 4;
 
@@ -174,20 +197,159 @@ namespace ProjectPSX {
             opcodeIsBranch = false;
             opcodeTookBranch = false;
 
-#if CPU_EXCEPTIONS
-            if ((PC_Now & 0x3) != 0) {
+            if (StrictAddressExceptions && (PC_Now & 0x3) != 0) {
                 COP0_GPR[BADA] = PC_Now;
                 EXCEPTION(this, EX.LOAD_ADRESS_ERROR);
                 return 1;
             }
-#endif
 
+            uint maskedPC = PC_Now & 0x1FFF_FFFF;
             if (maskedPC < 0x1F00_0000) {
-                instr.value = bus.LoadFromRam(maskedPC);
+                instr.value = FetchInstructionWord(PC_Now);
                 return 1;
             } else {
                 instr.value = bus.LoadFromBios(maskedPC);
                 return 20;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private uint FetchInstructionWord(uint virtualPc) {
+            if (!ExperimentalInstructionCache) {
+                uint physicalAddress = virtualPc & 0x1FFF_FFFF;
+                return physicalAddress < 0x1F00_0000
+                    ? bus.LoadFromRam(physicalAddress)
+                    : bus.LoadFromBios(physicalAddress);
+            }
+
+            RefreshInstructionCacheControl();
+
+            uint physical = virtualPc & 0x1FFF_FFFF;
+            if (physical >= 0x1F00_0000) {
+                return bus.LoadFromBios(physical);
+            }
+
+            if (!_instructionCacheEnabled || !IsInstructionCacheable(virtualPc)) {
+                return bus.LoadFromRam(physical);
+            }
+
+            return LoadFromInstructionCache(physical);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsInstructionCacheable(uint virtualPc) {
+            uint segment = virtualPc >> 29;
+            return segment <= 4;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private uint LoadFromInstructionCache(uint physicalAddress) {
+            int lineIndex = (int)((physicalAddress >> 4) & (InstructionCacheLineCount - 1));
+            uint tag = physicalAddress & 0x1FFF_F000;
+            int lineOffset = lineIndex * InstructionCacheWordsPerLine;
+
+            if (!_instructionCacheValid[lineIndex] || _instructionCacheTags[lineIndex] != tag) {
+                uint lineBase = physicalAddress & ~0xFu;
+                _instructionCacheTags[lineIndex] = tag;
+                _instructionCacheValid[lineIndex] = true;
+                _instructionCacheData[lineOffset + 0] = bus.LoadFromRam(lineBase + 0);
+                _instructionCacheData[lineOffset + 1] = bus.LoadFromRam(lineBase + 4);
+                _instructionCacheData[lineOffset + 2] = bus.LoadFromRam(lineBase + 8);
+                _instructionCacheData[lineOffset + 3] = bus.LoadFromRam(lineBase + 12);
+            }
+
+            int wordIndex = (int)((physicalAddress >> 2) & 0x3);
+            return _instructionCacheData[lineOffset + wordIndex];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private uint LoadFromInstructionCacheNoFill(uint physicalAddress) {
+            int lineIndex = (int)((physicalAddress >> 4) & (InstructionCacheLineCount - 1));
+            uint tag = physicalAddress & 0x1FFF_F000;
+            if (!_instructionCacheValid[lineIndex] || _instructionCacheTags[lineIndex] != tag) {
+                return 0;
+            }
+
+            int lineOffset = lineIndex * InstructionCacheWordsPerLine;
+            int wordIndex = (int)((physicalAddress >> 2) & 0x3);
+            return _instructionCacheData[lineOffset + wordIndex];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void StoreToInstructionCacheWord(uint physicalAddress, uint value) {
+            int lineIndex = (int)((physicalAddress >> 4) & (InstructionCacheLineCount - 1));
+            uint tag = physicalAddress & 0x1FFF_F000;
+            int lineOffset = lineIndex * InstructionCacheWordsPerLine;
+
+            if (!_instructionCacheValid[lineIndex] || _instructionCacheTags[lineIndex] != tag) {
+                _instructionCacheValid[lineIndex] = true;
+                _instructionCacheTags[lineIndex] = tag;
+                Array.Clear(_instructionCacheData, lineOffset, InstructionCacheWordsPerLine);
+            }
+
+            int wordIndex = (int)((physicalAddress >> 2) & 0x3);
+            _instructionCacheData[lineOffset + wordIndex] = value;
+        }
+
+        private void RefreshInstructionCacheControl() {
+            if (!ExperimentalInstructionCache) {
+                _instructionCacheEnabled = false;
+                return;
+            }
+
+            bool cacheIsolation = (COP0_GPR[SR] & 0x0001_0000) != 0;
+            uint writeCount = bus.MemoryCacheWriteCount;
+            if (writeCount == _lastObservedMemoryCacheWriteCount
+                && cacheIsolation == _lastInstructionCacheIsolation
+                && _instructionCacheRuntimeAllowed == _lastInstructionCacheRuntimeAllowed) {
+                return;
+            }
+
+            uint cacheControl = bus.MemoryCacheControl;
+            bool cacheControlWritten = writeCount != 0;
+            bool instructionCacheEnabled = _instructionCacheRuntimeAllowed
+                && cacheControlWritten
+                && (cacheControl & 0x0000_0800) != 0;
+
+            if (_instructionCacheEnabled && !instructionCacheEnabled) {
+                FlushInstructionCache();
+            }
+
+            if (cacheIsolation && cacheControlWritten && (cacheControl & 0x6) != 0) {
+                FlushInstructionCache();
+            }
+
+            _instructionCacheEnabled = instructionCacheEnabled;
+            _lastObservedMemoryCacheWriteCount = writeCount;
+            _lastInstructionCacheIsolation = cacheIsolation;
+            _lastInstructionCacheRuntimeAllowed = _instructionCacheRuntimeAllowed;
+        }
+
+        private void FlushInstructionCache() {
+            Array.Clear(_instructionCacheValid, 0, _instructionCacheValid.Length);
+        }
+
+        private void InvalidateInstructionCacheRange(uint physicalAddress, int sizeBytes) {
+            if (!_instructionCacheRuntimeAllowed || sizeBytes <= 0) {
+                return;
+            }
+
+            ulong start = physicalAddress & 0x1FFF_FFFFu;
+            ulong endExclusive = start + (uint)sizeBytes;
+            if (endExclusive <= start) {
+                FlushInstructionCache();
+                return;
+            }
+
+            ulong lineBase = start & ~0xFul;
+            ulong lastLine = (endExclusive - 1) & ~0xFul;
+            while (lineBase <= lastLine) {
+                int lineIndex = (int)((lineBase >> 4) & (InstructionCacheLineCount - 1));
+                uint tag = (uint)(lineBase & 0x1FFF_F000u);
+                if (_instructionCacheValid[lineIndex] && _instructionCacheTags[lineIndex] == tag) {
+                    _instructionCacheValid[lineIndex] = false;
+                }
+                lineBase += 0x10;
             }
         }
 
@@ -355,7 +517,7 @@ namespace ProjectPSX {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void RFE(CPU cpu) {
             uint mode = cpu.COP0_GPR[SR] & 0x3F;
-            cpu.COP0_GPR[SR] &= ~(uint)0xF;
+            cpu.COP0_GPR[SR] &= ~(uint)0x3F;
             cpu.COP0_GPR[SR] |= mode >> 2;
         }
 
@@ -389,7 +551,7 @@ namespace ProjectPSX {
                 }
             }
 
-            cpu.PC = ExceptionAdress[cpu.COP0_GPR[SR] & 0x400000 >> 22];
+            cpu.PC = ExceptionAdress[(cpu.COP0_GPR[SR] & 0x400000) >> 22];
             cpu.PC_Predictor = cpu.PC + 4;
         }
 
@@ -422,113 +584,78 @@ namespace ProjectPSX {
         private static void LWC2(CPU cpu) {
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
-#if CPU_EXCEPTIONS
-            if ((addr & 0x3) == 0) {
-                uint value = cpu.bus.load32(addr);
-                cpu.gte.writeData(cpu.instr.rt, value);
-            } else {
+            if (StrictAddressExceptions && (addr & 0x3) != 0) {
                 cpu.COP0_GPR[BADA] = addr;
                 EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
+            } else {
+                uint value = cpu.bus.load32(addr);
+                cpu.gte.writeData(cpu.instr.rt, value);
             }
-#else
-            uint value = cpu.bus.load32(addr);
-            cpu.gte.writeData(cpu.instr.rt, value);
-#endif
         }
 
         private static void SWC2(CPU cpu) {
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
-#if CPU_EXCEPTIONS
-            if ((addr & 0x3) == 0) {
-                cpu.bus.write32(addr, cpu.gte.loadData(cpu.instr.rt));
-            } else {
+            if (StrictAddressExceptions && (addr & 0x3) != 0) {
                 cpu.COP0_GPR[BADA] = addr;
-                EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
+                EXCEPTION(cpu, EX.STORE_ADRESS_ERROR, cpu.instr.id);
+            } else {
+                cpu.bus.write32(addr, cpu.gte.loadData(cpu.instr.rt));
             }
-#else
-            cpu.bus.write32(addr, cpu.gte.loadData(cpu.instr.rt));
-#endif
         }
 
         private static void LB(CPU cpu) { //todo redo this as it unnecesary load32
-            if (cpu.dontIsolateCache) {
-                uint value = (uint)(sbyte)cpu.bus.load32(cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s);
-                delayedLoad(cpu, cpu.instr.rt, value);
-            } //else Console.WriteLine("IsolatedCache: Ignoring Load");
+            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint value = (uint)(sbyte)cpu.LoadData32(addr);
+            delayedLoad(cpu, cpu.instr.rt, value);
         }
 
         private static void LBU(CPU cpu) {
-            if (cpu.dontIsolateCache) {
-                uint value = (byte)cpu.bus.load32(cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s);
-                delayedLoad(cpu, cpu.instr.rt, value);
-            } //else Console.WriteLine("IsolatedCache: Ignoring Load");
+            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint value = (byte)cpu.LoadData32(addr);
+            delayedLoad(cpu, cpu.instr.rt, value);
         }
 
         private static void LH(CPU cpu) {
-            if (cpu.dontIsolateCache) {
-                uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
-#if CPU_EXCEPTIONS
-                if ((addr & 0x1) == 0) {
-                    uint value = (uint)(short)cpu.bus.load32(addr);
-                    delayedLoad(cpu, cpu.instr.rt, value);
-                } else {
-                    cpu.COP0_GPR[BADA] = addr;
-                    EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
-                }
-#else
-                uint value = (uint)(short)cpu.bus.load32(addr);
+            if (StrictAddressExceptions && (addr & 0x1) != 0) {
+                cpu.COP0_GPR[BADA] = addr;
+                EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
+            } else {
+                uint value = (uint)(short)cpu.LoadData32(addr);
                 delayedLoad(cpu, cpu.instr.rt, value);
-#endif
-
-            } //else Console.WriteLine("IsolatedCache: Ignoring Load");
+            }
         }
 
         private static void LHU(CPU cpu) {
-            if (cpu.dontIsolateCache) {
-                uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
-#if CPU_EXCEPTIONS
-                if ((addr & 0x1) == 0) {
-                    uint value = (ushort)cpu.bus.load32(addr);
-                    delayedLoad(cpu, cpu.instr.rt, value);
-                } else {
-                    cpu.COP0_GPR[BADA] = addr;
-                    EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
-                }
-#else
-                uint value = (ushort)cpu.bus.load32(addr);
+            if (StrictAddressExceptions && (addr & 0x1) != 0) {
+                cpu.COP0_GPR[BADA] = addr;
+                EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
+            } else {
+                uint value = (ushort)cpu.LoadData32(addr);
                 delayedLoad(cpu, cpu.instr.rt, value);
-#endif
-
-            } //else Console.WriteLine("IsolatedCache: Ignoring Load");
+            }
         }
 
         private static void LW(CPU cpu) {
-            if (cpu.dontIsolateCache) {
-                uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
-#if CPU_EXCEPTIONS
-                if ((addr & 0x3) == 0) {
-                    uint value = cpu.bus.load32(addr);
-                    delayedLoad(cpu, cpu.instr.rt, value);
-                } else {
-                    cpu.COP0_GPR[BADA] = addr;
-                    EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
-                }
-#else
-                uint value = cpu.bus.load32(addr);
+            if (StrictAddressExceptions && (addr & 0x3) != 0) {
+                cpu.COP0_GPR[BADA] = addr;
+                EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
+            } else {
+                uint value = cpu.LoadData32(addr);
                 delayedLoad(cpu, cpu.instr.rt, value);
-#endif
-
-            } //else Console.WriteLine("IsolatedCache: Ignoring Load");
+            }
         }
 
         private static void LWL(CPU cpu) {
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
-            uint aligned_load = cpu.bus.load32(aligned_addr);
+            uint aligned_load = cpu.LoadData32(aligned_addr);
 
             uint LRValue = cpu.GPR[cpu.instr.rt];
 
@@ -546,7 +673,7 @@ namespace ProjectPSX {
         private static void LWR(CPU cpu) {
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
-            uint aligned_load = cpu.bus.load32(aligned_addr);
+            uint aligned_load = cpu.LoadData32(aligned_addr);
 
             uint LRValue = cpu.GPR[cpu.instr.rt];
 
@@ -562,67 +689,54 @@ namespace ProjectPSX {
         }
 
         private static void SB(CPU cpu) {
-            if (cpu.dontIsolateCache)
-                cpu.bus.write8(cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s, (byte)cpu.GPR[cpu.instr.rt]);
-            //else Console.WriteLine("IsolatedCache: Ignoring Write");
+            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            cpu.StoreData8(addr, (byte)cpu.GPR[cpu.instr.rt]);
         }
 
         private static void SH(CPU cpu) {
-            if (cpu.dontIsolateCache) {
-                uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
-#if CPU_EXCEPTIONS
-                if ((addr & 0x1) == 0) {
-                    cpu.bus.write16(addr, (ushort)cpu.GPR[cpu.instr.rt]);
-                } else {
-                    cpu.COP0_GPR[BADA] = addr;
-                    EXCEPTION(cpu, EX.STORE_ADRESS_ERROR, cpu.instr.id);
-                }
-#else
-                cpu.bus.write16(addr, (ushort)cpu.GPR[cpu.instr.rt]);
-#endif
-            } //else Console.WriteLine("IsolatedCache: Ignoring Write");
+            if (StrictAddressExceptions && (addr & 0x1) != 0) {
+                cpu.COP0_GPR[BADA] = addr;
+                EXCEPTION(cpu, EX.STORE_ADRESS_ERROR, cpu.instr.id);
+            } else {
+                cpu.StoreData16(addr, (ushort)cpu.GPR[cpu.instr.rt]);
+            }
         }
 
         private static void SW(CPU cpu) {
-            if (cpu.dontIsolateCache) {
-                uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
-#if CPU_EXCEPTIONS
-                if ((addr & 0x3) == 0) {
-                    cpu.bus.write32(addr, cpu.GPR[cpu.instr.rt]);
-                } else {
-                    cpu.COP0_GPR[BADA] = addr;
-                    EXCEPTION(cpu, EX.STORE_ADRESS_ERROR, cpu.instr.id);
-                }
-#else
-                cpu.bus.write32(addr, cpu.GPR[cpu.instr.rt]);
-#endif
-            } //else Console.WriteLine("IsolatedCache: Ignoring Write");
+            if (StrictAddressExceptions && (addr & 0x3) != 0) {
+                cpu.COP0_GPR[BADA] = addr;
+                EXCEPTION(cpu, EX.STORE_ADRESS_ERROR, cpu.instr.id);
+            } else {
+                cpu.StoreData32(addr, cpu.GPR[cpu.instr.rt]);
+            }
         }
 
         private static void SWR(CPU cpu) {
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
-            uint aligned_load = cpu.bus.load32(aligned_addr);
+            uint aligned_load = cpu.LoadData32(aligned_addr);
 
             int shift = (int)((addr & 0x3) << 3);
             uint mask = (uint)0x00FF_FFFF >> (24 - shift);
             uint value = (aligned_load & mask) | (cpu.GPR[cpu.instr.rt] << shift);
 
-            cpu.bus.write32(aligned_addr, value);
+            cpu.StoreData32(aligned_addr, value);
         }
 
         private static void SWL(CPU cpu) {
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
-            uint aligned_load = cpu.bus.load32(aligned_addr);
+            uint aligned_load = cpu.LoadData32(aligned_addr);
 
             int shift = (int)((addr & 0x3) << 3);
             uint mask = 0xFFFF_FF00 << shift;
             uint value = (aligned_load & mask) | (cpu.GPR[cpu.instr.rt] >> (24 - shift));
 
-            cpu.bus.write32(aligned_addr, value);
+            cpu.StoreData32(aligned_addr, value);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -781,6 +895,87 @@ namespace ProjectPSX {
         private static bool checkUnderflow(uint a, uint b, uint r) => ((r ^ a) & (a ^ b) & 0x8000_0000) != 0;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private uint LoadData32(uint virtualAddress) {
+            if (!ExperimentalInstructionCache) {
+                if (!dontIsolateCache) {
+                    return 0;
+                }
+
+                return bus.load32(virtualAddress);
+            }
+
+            if (!dontIsolateCache) {
+                return 0;
+            }
+
+            return bus.load32(virtualAddress);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void StoreData32(uint virtualAddress, uint value) {
+            if (!ExperimentalInstructionCache) {
+                if (dontIsolateCache) {
+                    bus.write32(virtualAddress, value);
+                }
+                return;
+            }
+
+            if (!dontIsolateCache) {
+                return;
+            }
+
+            bus.write32(virtualAddress, value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void StoreData16(uint virtualAddress, ushort value) {
+            if (!ExperimentalInstructionCache) {
+                if (dontIsolateCache) {
+                    bus.write16(virtualAddress, value);
+                }
+                return;
+            }
+
+            if (!dontIsolateCache) {
+                return;
+            }
+
+            bus.write16(virtualAddress, value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void StoreData8(uint virtualAddress, byte value) {
+            if (!ExperimentalInstructionCache) {
+                if (dontIsolateCache) {
+                    bus.write8(virtualAddress, value);
+                }
+                return;
+            }
+
+            if (!dontIsolateCache) {
+                return;
+            }
+
+            bus.write8(virtualAddress, value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool UsesCacheIsolatedDataAccess(uint virtualAddress) {
+            if (!ExperimentalInstructionCache) {
+                return false;
+            }
+
+            if (dontIsolateCache) {
+                return false;
+            }
+
+            uint physical = virtualAddress & 0x1FFF_FFFF;
+            return _instructionCacheRuntimeAllowed
+                && physical < 0x1F00_0000
+                && IsInstructionCacheable(virtualAddress);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void setGPR(uint regN, uint value) {
             writeBack.register = regN;
             writeBack.value = value;
@@ -799,6 +994,5 @@ namespace ProjectPSX {
                 Console.ResetColor();
             }
         }
-
     }
 }

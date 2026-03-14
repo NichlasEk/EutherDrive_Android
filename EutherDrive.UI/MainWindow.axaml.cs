@@ -111,6 +111,7 @@ public partial class MainWindow : Window
     private int _frames;
     private long _lastStatusUpdateMs;
     private string _lastStatusKeys = string.Empty;
+    private long _lastStatusFrame = long.MinValue;
     private long _presentedFrames;
     private static readonly bool FrameBufferTraceEnabled =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_FB_TRACE") == "1";
@@ -4423,11 +4424,8 @@ public partial class MainWindow : Window
                 _fpsSw.Restart();
             }
 
-            if (_core is EutherDrive.Core.Savestates.ISavestateCapable savestateCore)
-            {
-                long frame = savestateCore.FrameCounter ?? -1;
-                FrameText.Text = $"Frame: {frame}";
-            }
+            long? frame = _core != null ? TryGetCoreFrameCounter(_core) : null;
+            FrameText.Text = $"Frame: {(frame.HasValue ? frame.Value.ToString() : "-")}";
 
             if (ResolutionText != null)
             {
@@ -4470,12 +4468,25 @@ public partial class MainWindow : Window
                 : string.Join(", ", _keysDown.OrderBy(k => k.ToString()));
         }
 
-        if (keys == _lastStatusKeys && now - _lastStatusUpdateMs < 1000)
+        long frame = TryGetCoreFrameCounter(_core) ?? -1;
+
+        if (keys == _lastStatusKeys && frame == _lastStatusFrame && now - _lastStatusUpdateMs < 1000)
             return;
 
         _lastStatusUpdateMs = now;
         _lastStatusKeys = keys;
-        StatusText.Text = $"Core: {_core.GetType().Name}  Keys: {keys}";
+        _lastStatusFrame = frame;
+        string frameText = frame >= 0 ? frame.ToString() : "-";
+        StatusText.Text = $"Core: {_core.GetType().Name}  Frame: {frameText}  Keys: {keys}";
+    }
+
+    private static long? TryGetCoreFrameCounter(IEmulatorCore core)
+    {
+        if (core is EutherDrive.Core.Savestates.ISavestateCapable sc && sc.FrameCounter.HasValue)
+            return sc.FrameCounter.Value;
+        if (core is PsxAdapter psx && psx.FrameCounter.HasValue)
+            return psx.FrameCounter.Value;
+        return null;
     }
 
     private void UpdateAudioDebugText()
@@ -5138,10 +5149,8 @@ public partial class MainWindow : Window
         ApplyPsxAspectIfNeeded(core, w, h);
 
         // Check if this is actually a new frame
-        long currentFrameId = _presentTickCounter;
-        if (core is EutherDrive.Core.Savestates.ISavestateCapable sc && sc.FrameCounter.HasValue)
-            currentFrameId = sc.FrameCounter.Value;
-        else if (core is InterlaceTestCore itc)
+        long currentFrameId = TryGetCoreFrameCounter(core) ?? _presentTickCounter;
+        if (core is InterlaceTestCore itc)
             currentFrameId = itc.GetFrameId();
 
         bool isNewFrame = currentFrameId != _lastCoreFrameId;
@@ -5678,8 +5687,8 @@ public partial class MainWindow : Window
                 {
                     emuLoopFirstFrameLogged = true;
                     long frame = -1;
-                    if (core is EutherDrive.Core.Savestates.ISavestateCapable sc && sc.FrameCounter.HasValue)
-                        frame = sc.FrameCounter.Value;
+                    if (TryGetCoreFrameCounter(core) is long coreFrame)
+                        frame = coreFrame;
                     Console.WriteLine($"[EmuLoop] First frame completed (frame={frame})");
                 }
 

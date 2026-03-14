@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -38,10 +37,29 @@ namespace ProjectPSX.Devices {
 
         private Queue<ushort> inBuffer = new Queue<ushort>(1024);
 
-        private IMemoryOwner<byte> outBuffer = MemoryPool<byte>.Shared.Rent(0x30000); //wild guess while resumable dmas come...
+        private byte[] outBuffer = new byte[0x40000];
         private int outBufferPos = 0;
 
         private int pendingBytesToTransfer;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool canDmaLoad(int dmaSize) {
+            if (dataOutputDepth == 2) {
+                return pendingBytesToTransfer >= dmaSize * 4;
+            }
+
+            if (dataOutputDepth == 3) {
+                return pendingBytesToTransfer >= dmaSize * 6;
+            }
+
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool canDmaStore(int dmaSize) {
+            _ = dmaSize;
+            return isDataInRequested && remainingDataWords != 0;
+        }
 
         public void write(uint addr, uint value) {
             uint register = addr & 0xF;
@@ -149,7 +167,8 @@ namespace ProjectPSX.Devices {
                     rgb[2] = (byte)B;
 
                     int position = ((x + xx + ((y + yy) * 16)) * 3) + yuvToRgbBlockPos;
-                    var dest = outBuffer.Memory.Span.Slice(position, 3);
+                    EnsureOutBufferCapacity(position + 3);
+                    var dest = outBuffer.AsSpan(position, 3);
                     rgb.CopyTo(dest);
                 }
             }
@@ -259,8 +278,6 @@ namespace ProjectPSX.Devices {
                 yuvToRgbBlockPos = 0;
 
                 inBuffer.Clear();
-                //outBuffer.Memory.Span.Clear();
-
                 blockPointer = 64;
                 q_scale = 0;
                 val = 0;
@@ -277,7 +294,7 @@ namespace ProjectPSX.Devices {
         public uint readMDEC0_Data() { //1F801820h.Read - MDEC Data/Response Register (R)
             if (dataOutputDepth == 2) { //2 24b
                 int size = 4;
-                var span = outBuffer.Memory.Span.Slice(outBufferPos, size);
+                var span = outBuffer.AsSpan(outBufferPos, size);
                 outBufferPos += size;
                 pendingBytesToTransfer -= size;
 
@@ -286,7 +303,7 @@ namespace ProjectPSX.Devices {
                 return Unsafe.ReadUnaligned<uint>(ref MemoryMarshal.GetReference(span));
             } else if (dataOutputDepth == 3) { //3 15b
                 int size = 6; // 6 bytes for 2 packed 15b
-                var span = outBuffer.Memory.Span.Slice(outBufferPos, size);
+                var span = outBuffer.AsSpan(outBufferPos, size);
                 outBufferPos += size;
                 pendingBytesToTransfer -= size;
 
@@ -305,7 +322,11 @@ namespace ProjectPSX.Devices {
         public Span<uint> processDmaLoad(int dmaSize) {
             if (dataOutputDepth == 2) { //2 24b
                 int size = dmaSize * 4; // DMA Size in words to bytes extracting 4 bytes of packed RGB data
-                var byteSpan = outBuffer.Memory.Span.Slice(outBufferPos, size); //4 = RGBR, GBRG, BRGB...
+                if (size > pendingBytesToTransfer) {
+                    size = Math.Max(pendingBytesToTransfer & ~0x3, 0);
+                    dmaSize = size / 4;
+                }
+                var byteSpan = outBuffer.AsSpan(outBufferPos, size); //4 = RGBR, GBRG, BRGB...
                 outBufferPos += size;
                 pendingBytesToTransfer -= size;
 
@@ -314,7 +335,11 @@ namespace ProjectPSX.Devices {
                 return MemoryMarshal.Cast<byte, uint>(byteSpan);
             } else if (dataOutputDepth == 3) { //3 15b
                 int size = dmaSize * 6; // DMA Size in words to bytes as packed 15b data (RGB * 2 => b15|b15)
-                var byteSpan = outBuffer.Memory.Span.Slice(outBufferPos, size);
+                if (size > pendingBytesToTransfer) {
+                    size = Math.Max((pendingBytesToTransfer / 6) * 6, 0);
+                    dmaSize = size / 6;
+                }
+                var byteSpan = outBuffer.AsSpan(outBufferPos, size);
                 outBufferPos += size;
                 pendingBytesToTransfer -= size;
 
@@ -377,6 +402,19 @@ namespace ProjectPSX.Devices {
                 isCommandBusy = false;
                 isDataOutFifoEmpty = true;
             }
+        }
+
+        private void EnsureOutBufferCapacity(int requiredLength) {
+            if (requiredLength <= outBuffer.Length) {
+                return;
+            }
+
+            int newLength = outBuffer.Length;
+            while (newLength < requiredLength) {
+                newLength <<= 1;
+            }
+
+            Array.Resize(ref outBuffer, newLength);
         }
 
         private static ReadOnlySpan<byte> zagzig => new byte[] {

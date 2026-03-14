@@ -43,6 +43,7 @@ namespace ProjectPSX {
             exp2 = new Exp2();
             bus = new BUS(gpu, cdrom, spu, joypad, timers, mdec, interruptController, exp2);
             cpu = new CPU(bus);
+            bus.SetRamWriteObserver(cpu.ObserveRamWrite);
 
             bus.loadBios();
             if (diskFilename.EndsWith(".exe")) {
@@ -55,16 +56,18 @@ namespace ProjectPSX {
             int sync = 0;
             for (int i = 0; i < SYNC_LOOPS; i++) {
                 while (sync < SYNC_CYCLES) {
-                    sync += cpu.Run();
-                    if (!_psxBootBiosExited && (cpu.CurrentPC & 0x1FFF_FFFF) < 0x1FC0_0000) {
+                    int cpuCycles = cpu.Run();
+                    sync += cpuCycles;
+                    uint physicalPc = cpu.CurrentPC & 0x1FFF_FFFF;
+                    if (!_psxBootBiosExited && physicalPc < 0x1FC0_0000 && physicalPc >= 0x0001_0000) {
                         _psxBootBiosExited = true;
                         cdrom.NotifyBiosExited();
+                        cpu.NotifyBiosExited();
                     }
-                    //cpu.handleInterrupts();
+                    bus.tick(cpuCycles * MIPS_UNDERCLOCK);
+                    cpu.handleInterrupts();
                 }
                 sync -= SYNC_CYCLES;
-                bus.tick(SYNC_CYCLES * MIPS_UNDERCLOCK + 1);
-                cpu.handleInterrupts();
             }
         }
 
@@ -83,6 +86,12 @@ namespace ProjectPSX {
 
         public void toggleCdRomLid() {
             cdrom.toggleLid();
+        }
+
+        public uint DebugCurrentPC => cpu.CurrentPC;
+
+        public string DebugStartSummary() {
+            return $"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} {cdrom.DebugSummary()}";
         }
 
     }

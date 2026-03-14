@@ -4,6 +4,7 @@
 //        dotnet run --project EutherDrive.Headless -- --load-savestate /path/to/rom.cue /path/to/state.euthstate [frames]
 //        EUTHERDRIVE_LOAD_SLOT1_ON_BOOT=1 dotnet run --project EutherDrive.Headless -- /path/to/rom.cue [frames]
 //        EUTHERDRIVE_HEADLESS_CORE=pce EUTHERDRIVE_SAVESTATE_SLOT=1 dotnet run --project EutherDrive.Headless -c Release -- --load-savestate /path/to/rom.cue /path/to/state.euthstate [frames]
+//        EUTHERDRIVE_HEADLESS_CORE=psx EUTHERDRIVE_PSX_BIOS=/path/to/scph1001.bin dotnet run --project EutherDrive.Headless -c Release -- /path/to/game.cue [frames]
 // Default: runs 120 frames
 
 using System;
@@ -310,6 +311,10 @@ class Program
                 || (string.IsNullOrEmpty(coreOverride) && IsNesRomPath(romPath));
             bool useSnes = string.Equals(coreOverride, "snes", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsSnesRomPath(romPath));
+            bool usePsx = string.Equals(coreOverride, "psx", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
             bool useN64 = string.Equals(coreOverride, "n64", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsN64RomPath(romPath));
             bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
@@ -322,6 +327,7 @@ class Program
             {
                 useNes = false;
                 useSnes = false;
+                usePsx = false;
                 useN64 = false;
                 useSegaCd = false;
                 usePce = false;
@@ -445,8 +451,12 @@ class Program
                     if (snesPeekAddrs.Length > 0)
                         Trace(DumpSnesPeek(snes, label, snesPeekAddrs));
                 }
+                bool dumpSnesPpuRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_RAW") == "1";
+
                 Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_frame0.ppm"), traceSnesFrames);
+                if (dumpSnesPpuRaw)
+                    DumpSnesPpuRaw(snes, Path.Combine(dumpDir, "snes_ppu_before"));
                 TracePeek("before");
 
                 bool prevHasContent = false;
@@ -536,6 +546,8 @@ class Program
 
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"), traceSnesFrames);
+                if (dumpSnesPpuRaw)
+                    DumpSnesPpuRaw(snes, Path.Combine(dumpDir, "snes_ppu_after"));
                 if (snesPeekAddrs.Length > 0)
                     Console.WriteLine(DumpSnesPeek(snes, "after", snesPeekAddrs));
                 snesAudioSink?.Dispose();
@@ -593,6 +605,121 @@ class Program
                 n64AudioSink?.Dispose();
                 // Stop R4300 thread before exit to avoid background runaway logs after frame loop.
                 n64.Reset();
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (usePsx)
+            {
+                Console.WriteLine("[HEADLESS] Using PSX core");
+                PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
+                PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+
+                var psx = new PsxAdapter();
+                psx.LoadRom(romPath);
+
+                HeadlessAudioSink? psxAudioSink = null;
+                bool enablePsxAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
+                if (enablePsxAudio)
+                    psxAudioSink = new HeadlessAudioSink();
+
+                bool autoStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_HEADLESS_AUTO_START") == "1";
+                int autoStartDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_PSX_HEADLESS_AUTO_START_DELAY_FRAMES") ?? 120;
+                int autoStartPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_PSX_HEADLESS_AUTO_START_PULSE_FRAMES") ?? 2;
+                int autoStartPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_PSX_HEADLESS_AUTO_START_PERIOD_FRAMES") ?? 60;
+                int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_PSX_HEADLESS_AUTO_START_PULSE_COUNT") ?? 4;
+                bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_HEADLESS_AUTO_START_LOG") == "1";
+                bool tracePsxFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                bool tracePsxStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_START") == "1";
+                string? tracePsxStartFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_START_TRACE_FILE");
+                bool holdUp = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_UP");
+                bool holdDown = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_DOWN");
+                bool holdLeft = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_LEFT");
+                bool holdRight = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_RIGHT");
+                bool holdA = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_A");
+                bool holdB = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_B");
+                bool holdC = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_C");
+                bool holdStart = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_START");
+                bool holdX = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_X");
+                bool holdY = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_Y");
+                bool holdZ = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_Z");
+                bool holdMode = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_MODE");
+                bool lastStartPressed = false;
+
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> fb0 = psx.GetFrameBuffer(out int w0, out int h0, out int s0);
+                var stats0 = GetFrameStats(fb0, w0, h0, s0);
+                Console.WriteLine($"[HEADLESS] PSX fb_has_content={stats0.HasContent} nonzero_pixels={stats0.NonZeroPixels} first_nonzero=({stats0.FirstX},{stats0.FirstY})");
+                DumpBgraToPpm(fb0, w0, h0, s0, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    bool startPressed = holdStart || (autoStart &&
+                        ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount));
+                    psx.SetInputState(
+                        up: holdUp,
+                        down: holdDown,
+                        left: holdLeft,
+                        right: holdRight,
+                        a: holdA,
+                        b: holdB,
+                        c: holdC,
+                        start: startPressed,
+                        x: holdX,
+                        y: holdY,
+                        z: holdZ,
+                        mode: holdMode,
+                        padType: PadType.SixButton);
+
+                    if (autoStartLog && startPressed != lastStartPressed)
+                        Console.WriteLine($"[HEADLESS] PSX auto-start start={(startPressed ? 1 : 0)} frame={frame}");
+                    lastStartPressed = startPressed;
+
+                    psx.RunFrame();
+
+                    if (psxAudioSink != null)
+                    {
+                        var audio = psx.GetAudioBuffer(out int rate, out int channels);
+                        if (frame == 0)
+                            psxAudioSink.Start(rate, channels);
+                        if (!audio.IsEmpty)
+                            psxAudioSink.Submit(audio);
+                    }
+
+                    if (tracePsxFrames || frame == 0 || frame == 5 || frame == 10)
+                    {
+                        ReadOnlySpan<byte> fb = psx.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: psx_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        if (frame == 0 || frame == 5 || frame == 10)
+                        {
+                            string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                            DumpBgraToPpm(fb, w, h, s, ppmPath);
+                            Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                        }
+                    }
+
+                    if (tracePsxStart && (frame < 600 || (frame % 60) == 0))
+                    {
+                        if (psx.TryGetDebugState(out string debugState))
+                        {
+                            string line = $"[HEADLESS][PSX-START] frame={frame} {debugState}";
+                            Console.WriteLine(line);
+                            if (!string.IsNullOrWhiteSpace(tracePsxStartFile))
+                            {
+                                Directory.CreateDirectory(Path.GetDirectoryName(tracePsxStartFile) ?? ".");
+                                File.AppendAllText(tracePsxStartFile, line + Environment.NewLine);
+                            }
+                        }
+                    }
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> fbOut = psx.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] PSX fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                psxAudioSink?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -1088,6 +1215,12 @@ class Program
         return ext is ".nes";
     }
 
+    private static bool IsPsxRomPath(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".exe";
+    }
+
     private static bool IsSegaCdRomPath(string path)
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
@@ -1132,6 +1265,29 @@ class Program
         }
         DumpBgraToPpm(fb, width, height, stride, path);
         Console.WriteLine($"[HEADLESS] Dumped frame to {path}");
+    }
+
+    private static void DumpSnesPpuRaw(SnesAdapter snes, string prefix)
+    {
+        if (snes.System.PPU is not KSNES.PictureProcessing.PPU ppu)
+            return;
+
+        WriteU16Array($"{prefix}_vram.bin", ppu.GetVramDebugCopy());
+        WriteU16Array($"{prefix}_cgram.bin", ppu.GetCgramDebugCopy());
+        WriteU16Array($"{prefix}_oam.bin", ppu.GetOamDebugCopy());
+
+        string? snapshot = snes.GetPpuDebugSnapshot();
+        if (!string.IsNullOrEmpty(snapshot))
+            File.WriteAllText($"{prefix}_meta.txt", snapshot);
+
+        Console.WriteLine($"[HEADLESS] Dumped SNES PPU raw state to {prefix}_*.bin");
+    }
+
+    private static void WriteU16Array(string path, ushort[] data)
+    {
+        byte[] bytes = new byte[data.Length * sizeof(ushort)];
+        Buffer.BlockCopy(data, 0, bytes, 0, bytes.Length);
+        File.WriteAllBytes(path, bytes);
     }
 
     private static string DumpSnesPeek(SnesAdapter snes, string label, IReadOnlyList<int> addresses)
@@ -1308,6 +1464,10 @@ class Program
                 || (string.IsNullOrEmpty(coreOverride) && IsNesRomPath(romPath));
             bool useSnes = string.Equals(coreOverride, "snes", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsSnesRomPath(romPath));
+            bool usePsx = string.Equals(coreOverride, "psx", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
             bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase);
@@ -1412,8 +1572,12 @@ class Program
                         Trace(DumpSnesPeek(snes, label, snesPeekAddrs));
                 }
 
+                bool dumpSnesPpuRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_RAW") == "1";
+
                 Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_frame0.ppm"), traceSnesFrames);
+                if (dumpSnesPpuRaw)
+                    DumpSnesPpuRaw(snes, Path.Combine(dumpDir, "snes_ppu_before"));
                 TracePeek("before");
 
                 bool prevHasContent = false;
@@ -1504,12 +1668,20 @@ class Program
 
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"), traceSnesFrames);
+                if (dumpSnesPpuRaw)
+                    DumpSnesPpuRaw(snes, Path.Combine(dumpDir, "snes_ppu_after"));
                 if (snesPeekAddrs.Length > 0)
                     Console.WriteLine(DumpSnesPeek(snes, "after", snesPeekAddrs));
                 snesAudioSink?.Dispose();
                 snesTraceWriter?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
+            }
+
+            if (usePsx)
+            {
+                Console.Error.WriteLine("[HEADLESS-ERROR] PSX savestate loading is not implemented in headless yet.");
+                return 1;
             }
 
             if (usePce)
@@ -1916,10 +2088,20 @@ class Program
             Directory.CreateDirectory(dumpDir);
 
             string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
+            bool usePsx = string.Equals(coreOverride, "psx", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
             bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
+
+            if (usePsx)
+            {
+                Console.Error.WriteLine("[HEADLESS-ERROR] PSX raw-state loading is not implemented in headless.");
+                return 1;
+            }
 
             if (usePce)
             {

@@ -1066,7 +1066,7 @@ namespace ProjectPSX.Devices {
             GP1_04_DMADirection(0);
             GP1_05_DisplayVRAMStart(0);
             GP1_06_DisplayHorizontalRange(0xC00200);
-            GP1_07_DisplayVerticalRange(0x100010);
+            GP1_07_DisplayVerticalRange(0x040010);
             GP1_08_DisplayMode(0);
 
             GP0_E1_SetDrawMode(0);

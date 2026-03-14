@@ -7,7 +7,9 @@ using System.Runtime.InteropServices;
 
 namespace ProjectPSX {
 
-    public class BUS {
+public class BUS {
+        private const uint Sio1StatusDefault = 0x0000_0805;
+        private static readonly bool VerboseBusAccess = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1";
 
         //Memory
         private unsafe byte* ramPtr = (byte*)Marshal.AllocHGlobal(2048 * 1024);
@@ -19,6 +21,8 @@ namespace ProjectPSX {
         private unsafe byte* memoryControl2 = (byte*)Marshal.AllocHGlobal(0x10);
 
         private uint memoryCache;
+        private uint memoryCacheWriteCount;
+        private Action<uint, int>? ramWriteObserver;
 
         //Other Subsystems
         public InterruptController interruptController;
@@ -35,7 +39,7 @@ namespace ProjectPSX {
         private static string bios = "./SCPH1001.BIN"; //SCPH1001 //openbios
         private static string ex1 = "./caetlaEXP.BIN";
 
-        public BUS(GPU gpu, CDROM cdrom, SPU spu, JOYPAD joypad, TIMERS timers, MDEC mdec, InterruptController interruptController, Exp2 exp2) {
+        public unsafe BUS(GPU gpu, CDROM cdrom, SPU spu, JOYPAD joypad, TIMERS timers, MDEC mdec, InterruptController interruptController, Exp2 exp2) {
             dma = new DMA(this);
             this.gpu = gpu;
             this.cdrom = cdrom;
@@ -45,9 +49,31 @@ namespace ProjectPSX {
             this.joypad = joypad;
             this.interruptController = interruptController;
             this.exp2 = exp2;
+            ClearAllocatedMemory();
+            write(0x4, Sio1StatusDefault, sio);
+        }
+
+        private unsafe void ClearAllocatedMemory() {
+            new Span<byte>(ramPtr, 2048 * 1024).Clear();
+            new Span<byte>(ex1Ptr, 512 * 1024).Clear();
+            new Span<byte>(scrathpadPtr, 1024).Clear();
+            new Span<byte>(biosPtr, 512 * 1024).Clear();
+            new Span<byte>(sio, 0x10).Clear();
+            new Span<byte>(memoryControl1, 0x40).Clear();
+            new Span<byte>(memoryControl2, 0x10).Clear();
+            memoryCache = 0;
+            memoryCacheWriteCount = 0;
+        }
+
+        public void SetRamWriteObserver(Action<uint, int> observer) {
+            ramWriteObserver = observer;
         }
 
         public unsafe uint load32(uint address) {
+            if (address == 0xFFFE0130) {
+                return memoryCache;
+            }
+
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
@@ -61,9 +87,7 @@ namespace ProjectPSX {
             } else if (addr < 0x1F80_1050) {
                 return joypad.load(addr);
             } else if (addr < 0x1F80_1060) {
-                //HardCode SIO_STAT
-                if (addr == 0x1F80_1054) return 0x0000_0805;
-                Console.WriteLine($"[BUS] Read Unsupported to SIO address: {addr:x8}");
+                if (addr == 0x1F80_1054) return Sio1StatusDefault;
                 return load<uint>(addr & 0xF, sio);
             } else if (addr < 0x1F80_1070) {
                 return load<uint>(addr & 0xF, memoryControl2);
@@ -89,19 +113,26 @@ namespace ProjectPSX {
                 return exp2.load(addr);
             } else if (addr < 0x1FC8_0000) {
                 return load<uint>(addr & 0x7_FFFF, biosPtr);
-            } else if (addr == 0xFFFE0130) {
-                return memoryCache;
             } else {
-                Console.WriteLine("[BUS] Load32 Unsupported: " + addr.ToString("x8"));
+                if (VerboseBusAccess)
+                    Console.WriteLine($"[BUS] Load32 Unsupported: {addr:x8} pc={CPU.TraceCurrentPC:x8}");
                 return 0xFFFF_FFFF;
             }
         }
 
         public unsafe void write32(uint address, uint value) {
+            if (address == 0xFFFE_0130) {
+                memoryCache = value;
+                memoryCacheWriteCount++;
+                return;
+            }
+
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
-                write(addr & 0x1F_FFFF, value, ramPtr);
+                uint physical = addr & 0x1F_FFFF;
+                write(physical, value, ramPtr);
+                ramWriteObserver?.Invoke(physical, 4);
             } else if (addr < 0x1F80_0000) {
                 write(addr & 0x7_FFFF, value, ex1Ptr);
             } else if (addr < 0x1f80_0400) {
@@ -111,7 +142,6 @@ namespace ProjectPSX {
             } else if (addr < 0x1F80_1050) {
                 joypad.write(addr, value);
             } else if (addr < 0x1F80_1060) {
-                Console.WriteLine($"[BUS] Write Unsupported to SIO address: {addr:x8} : {value:x8}");
                 write(addr & 0xF, value, sio);
             } else if (addr < 0x1F80_1070) {
                 write(addr & 0xF, value, memoryControl2);
@@ -131,18 +161,25 @@ namespace ProjectPSX {
                 spu.write(addr, (ushort)value);
             } else if (addr < 0x1F80_4000) {
                 exp2.write(addr, value);
-            } else if (addr == 0xFFFE_0130) {
-                memoryCache = value;
             } else {
-                Console.WriteLine($"[BUS] Write32 Unsupported: {addr:x8}");
+                if (VerboseBusAccess)
+                    Console.WriteLine($"[BUS] Write32 Unsupported: {addr:x8}");
             }
         }
 
         public unsafe void write16(uint address, ushort value) {
+            if (address == 0xFFFE_0130) {
+                memoryCache = value;
+                memoryCacheWriteCount++;
+                return;
+            }
+
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
-                write(addr & 0x1F_FFFF, value, ramPtr);
+                uint physical = addr & 0x1F_FFFF;
+                write(physical, value, ramPtr);
+                ramWriteObserver?.Invoke(physical, 2);
             } else if (addr < 0x1F80_0000) {
                 write(addr & 0x7_FFFF, value, ex1Ptr);
             } else if (addr < 0x1F80_0400) {
@@ -152,7 +189,6 @@ namespace ProjectPSX {
             } else if (addr < 0x1F80_1050) {
                 joypad.write(addr, value);
             } else if (addr < 0x1F80_1060) {
-                Console.WriteLine($"[BUS] Write Unsupported to SIO address: {addr:x8} : {value:x8}");
                 write(addr & 0xF, value, sio);
             } else if (addr < 0x1F80_1070) {
                 write(addr & 0xF, value, memoryControl2);
@@ -172,18 +208,25 @@ namespace ProjectPSX {
                 spu.write(addr, value);
             } else if (addr < 0x1F80_4000) {
                 exp2.write(addr, value);
-            } else if (addr == 0xFFFE_0130) {
-                memoryCache = value;
             } else {
-                Console.WriteLine($"[BUS] Write16 Unsupported: {addr:x8}");
+                if (VerboseBusAccess)
+                    Console.WriteLine($"[BUS] Write16 Unsupported: {addr:x8}");
             }
         }
 
         public unsafe void write8(uint address, byte value) {
+            if (address == 0xFFFE_0130) {
+                memoryCache = value;
+                memoryCacheWriteCount++;
+                return;
+            }
+
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
-                write(addr & 0x1F_FFFF, value, ramPtr);
+                uint physical = addr & 0x1F_FFFF;
+                write(physical, value, ramPtr);
+                ramWriteObserver?.Invoke(physical, 1);
             } else if (addr < 0x1F80_0000) {
                 write(addr & 0x7_FFFF, value, ex1Ptr);
             } else if (addr < 0x1f80_0400) {
@@ -193,7 +236,6 @@ namespace ProjectPSX {
             } else if (addr < 0x1F80_1050) {
                 joypad.write(addr, value);
             } else if (addr < 0x1F80_1060) {
-                Console.WriteLine($"[BUS] Write Unsupported to SIO address: {addr:x8} : {value:x8}");
                 write(addr & 0xF, value, sio);
             } else if (addr < 0x1F80_1070) {
                 write(addr & 0xF, value, memoryControl2);
@@ -213,10 +255,9 @@ namespace ProjectPSX {
                 spu.write(addr, value);
             } else if (addr < 0x1F80_4000) {
                 exp2.write(addr, value);
-            } else if (addr == 0xFFFE_0130) {
-                memoryCache = value;
             } else {
-                Console.WriteLine($"[BUS] Write8 Unsupported: {addr:x8}");
+                if (VerboseBusAccess)
+                    Console.WriteLine($"[BUS] Write8 Unsupported: {addr:x8}");
             }
         }
 
@@ -327,7 +368,10 @@ namespace ProjectPSX {
 
             Console.WriteLine($"SideLoading PSX EXE: PC {PC:x8} R28 {R28:x8} R29 {R29:x8} R30 {R30:x8}");
 
-            Marshal.Copy(exe, 0x800, (IntPtr)(ramPtr + (DestAdress & 0x1F_FFFF)), exe.Length - 0x800);
+            uint physicalDest = DestAdress & 0x1F_FFFF;
+            int copyLength = exe.Length - 0x800;
+            Marshal.Copy(exe, 0x800, (IntPtr)(ramPtr + physicalDest), copyLength);
+            ramWriteObserver?.Invoke(physicalDest, copyLength);
 
             // Patch Bios LoadRunShell() at 0xBFC06FF0 before the jump to 0x80030000 so we don't poll the address every cycle
             // Instructions are LUI and ORI duos that load to the specified register but PC that loads to R8/Temp0
@@ -411,7 +455,7 @@ namespace ProjectPSX {
         public void tick(int cycles) {
             if (gpu.tick(cycles)) interruptController.set(Interrupt.VBLANK);
             if (cdrom.tick(cycles)) interruptController.set(Interrupt.CDROM);
-            if (dma.tick()) interruptController.set(Interrupt.DMA);
+            if (dma.tick(cycles)) interruptController.set(Interrupt.DMA);
 
             timers.syncGPU(gpu.getBlanksAndDot());
 
@@ -442,6 +486,10 @@ namespace ProjectPSX {
             return *(uint*)(biosPtr + (addr & 0x7_FFFF));
         }
 
+        public uint MemoryCacheControl => memoryCache;
+
+        public uint MemoryCacheWriteCount => memoryCacheWriteCount;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe Span<uint> DmaFromRam(uint addr, uint size) {
             return new Span<uint>(ramPtr + (addr & 0x1F_FFFF), (int)size);
@@ -449,12 +497,17 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaToRam(uint addr, uint value) {
-            *(uint*)(ramPtr + (addr & 0x1F_FFFF)) = value;
+            uint physical = addr & 0x1F_FFFF;
+            *(uint*)(ramPtr + physical) = value;
+            ramWriteObserver?.Invoke(physical, 4);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaToRam(uint addr, byte[] buffer, uint size) {
-            Marshal.Copy(buffer, 0, (IntPtr)(ramPtr + (addr & 0x1F_FFFF)), (int)size * 4);
+            uint physical = addr & 0x1F_FFFF;
+            int byteCount = (int)size * 4;
+            Marshal.Copy(buffer, 0, (IntPtr)(ramPtr + physical), byteCount);
+            ramWriteObserver?.Invoke(physical, byteCount);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -474,8 +527,10 @@ namespace ProjectPSX {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaFromCD(uint address, int size) {
             var dma = cdrom.processDmaLoad(size);
-            var dest = new Span<uint>(ramPtr + (address & 0x1F_FFFC), size);
+            uint physical = address & 0x1F_FFFC;
+            var dest = new Span<uint>(ramPtr + physical, size);
             dma.CopyTo(dest);
+            ramWriteObserver?.Invoke(physical, size * 4);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -487,8 +542,34 @@ namespace ProjectPSX {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaFromMdecOut(uint address, int size) {
             var dma = mdec.processDmaLoad(size);
-            var dest = new Span<uint>(ramPtr + (address & 0x1F_FFFC), size);
+            uint physical = address & 0x1F_FFFC;
+            var dest = new Span<uint>(ramPtr + physical, size);
             dma.CopyTo(dest);
+            ramWriteObserver?.Invoke(physical, dma.Length * 4);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe int DmaFromMdecOutPartial(uint address, int size) {
+            var dma = mdec.processDmaLoad(size);
+            if (dma.Length == 0) {
+                return 0;
+            }
+
+            uint physical = address & 0x1F_FFFC;
+            var dest = new Span<uint>(ramPtr + physical, dma.Length);
+            dma.CopyTo(dest);
+            ramWriteObserver?.Invoke(physical, dma.Length * 4);
+            return dma.Length;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanDmaFromMdecOut(int size) {
+            return mdec.canDmaLoad(size);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanDmaToMdecIn(int size) {
+            return mdec.canDmaStore(size);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -499,8 +580,10 @@ namespace ProjectPSX {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaFromSpu(uint address, int size) {
             var dma = spu.processDmaLoad(size);
-            var dest = new Span<uint>(ramPtr + (address & 0x1F_FFFC), size);
+            uint physical = address & 0x1F_FFFC;
+            var dest = new Span<uint>(ramPtr + physical, size);
             dma.CopyTo(dest);
+            ramWriteObserver?.Invoke(physical, size * 4);
         }
         public unsafe void DmaOTC(uint baseAddress, int size) {
             //uint destAddress = (uint)(baseAddress - ((size - 1) * 4));
@@ -529,7 +612,7 @@ namespace ProjectPSX {
             0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, // KUSEG: 2048MB
             0x7FFF_FFFF,                                        // KSEG0:  512MB
             0x1FFF_FFFF,                                        // KSEG1:  512MB
-            0xFFFF_FFFF, 0xFFFF_FFFF,                           // KSEG2: 1024MB
+            0x1FFF_FFFF, 0x1FFF_FFFF,                           // KSEG2: 1024MB (PSX-style top-bit aliasing except cache control)
         };
     }
 }

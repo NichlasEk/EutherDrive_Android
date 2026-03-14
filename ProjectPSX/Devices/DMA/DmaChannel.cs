@@ -2,7 +2,6 @@
 
 namespace ProjectPSX.Devices;
 public sealed class DmaChannel : Channel {
-
     private uint baseAddress;
     private uint blockSize;
     private uint blockCount;
@@ -24,6 +23,8 @@ public sealed class DmaChannel : Channel {
     private int channelNumber;
 
     private uint pendingBlocks;
+    private uint pendingBlockWords;
+    private int pendingCycleBudget;
 
     public DmaChannel(int channelNumber, InterruptChannel interrupt, BUS bus) {
         this.channelNumber = channelNumber;
@@ -82,7 +83,11 @@ public sealed class DmaChannel : Channel {
         unknownBit29 = value >> 29 & 0x1;
         unknownBit30 = value >> 30 & 0x1;
 
-        if (!enable) pendingBlocks = 0;
+        if (!enable) {
+            pendingBlocks = 0;
+            pendingBlockWords = 0;
+            pendingCycleBudget = 0;
+        }
 
         handleDMA();
     }
@@ -100,8 +105,7 @@ public sealed class DmaChannel : Channel {
         } else if (syncMode == 1) {
             // HACK:
             // GPUIn: Bypass blocks to elude mdec/gpu desync as MDEC is actually too fast decoding blocks
-            // MdecIn: GranTurismo produces some artifacts that still needs to be checked otherwise it's ok on other games i've checked
-            if (channelNumber == 2 && transferDirection == 1 || channelNumber == 0) {
+            if (channelNumber == 2 && transferDirection == 1) {
                 blockCopy(blockSize * blockCount);
                 finishDMA();
                 return;
@@ -109,7 +113,8 @@ public sealed class DmaChannel : Channel {
 
             trigger = false;
             pendingBlocks = blockCount;
-            transferBlockIfPending();
+            pendingBlockWords = blockSize;
+            pendingCycleBudget = 0;
         } else if (syncMode == 2) {
             linkedList();
             finishDMA();
@@ -119,6 +124,7 @@ public sealed class DmaChannel : Channel {
     private void finishDMA() {
         enable = false;
         trigger = false;
+        pendingCycleBudget = 0;
 
         interrupt.handleInterrupt(channelNumber);
     }
@@ -178,10 +184,38 @@ public sealed class DmaChannel : Channel {
     //0  Start immediately and transfer all at once (used for CDROM, OTC) needs TRIGGER
     private bool isActive() => syncMode == 0 ? enable && trigger : enable;
 
-    public void transferBlockIfPending() {
+    public void transferBlockIfPending(int cycles) {
         //TODO: check if device can actually transfer. Here we assume devices are always
         // capable of processing the dmas and never busy.
         if (pendingBlocks > 0) {
+            if (syncMode == 1 && (channelNumber == 0 || channelNumber == 1)) {
+                TransferMdecSyncMode1(cycles);
+                return;
+            }
+
+            if (channelNumber == 1 && transferDirection == 0) {
+                uint wordsRequested = pendingBlockWords == 0 ? blockSize : pendingBlockWords;
+                int transferredWords = bus.DmaFromMdecOutPartial(baseAddress, (int)wordsRequested);
+                if (transferredWords <= 0) {
+                    return;
+                }
+
+                baseAddress += memoryStep * (uint)transferredWords;
+
+                if ((uint)transferredWords < wordsRequested) {
+                    pendingBlockWords = wordsRequested - (uint)transferredWords;
+                    return;
+                }
+
+                pendingBlockWords = blockSize;
+                pendingBlocks--;
+
+                if (pendingBlocks == 0) {
+                    finishDMA();
+                }
+                return;
+            }
+
             pendingBlocks--;
             blockCopy(blockSize);
 
@@ -190,4 +224,67 @@ public sealed class DmaChannel : Channel {
             }
         }
     }
+
+    private void TransferMdecSyncMode1(int cycles) {
+        if (cycles > 0) {
+            pendingCycleBudget += cycles;
+        }
+
+        while (pendingBlocks > 0 && pendingCycleBudget > 0) {
+            uint wordsRequested = pendingBlockWords == 0 ? EffectiveBlockSize() : pendingBlockWords;
+            bool startingNewBlock = pendingBlockWords == 0 || pendingBlockWords == EffectiveBlockSize();
+
+            if (startingNewBlock) {
+                if (channelNumber == 0 && transferDirection == 1 && !bus.CanDmaToMdecIn((int)wordsRequested)) {
+                    return;
+                }
+
+                if (channelNumber == 1 && transferDirection == 0 && !bus.CanDmaFromMdecOut((int)wordsRequested)) {
+                    return;
+                }
+            }
+
+            int wordsBudget = Math.Min((int)wordsRequested, pendingCycleBudget);
+            if (wordsBudget <= 0) {
+                return;
+            }
+
+            int transferredWords;
+            if (channelNumber == 0 && transferDirection == 1) {
+                var dma = bus.DmaFromRam(baseAddress & 0x1F_FFFC, (uint)wordsBudget);
+                bus.DmaToMdecIn(dma);
+                transferredWords = dma.Length;
+            } else if (channelNumber == 1 && transferDirection == 0) {
+                transferredWords = bus.DmaFromMdecOutPartial(baseAddress, wordsBudget);
+                if (transferredWords <= 0) {
+                    return;
+                }
+            } else {
+                pendingBlocks--;
+                blockCopy(wordsRequested);
+                if (pendingBlocks == 0) {
+                    finishDMA();
+                }
+                return;
+            }
+
+            pendingCycleBudget -= transferredWords;
+            baseAddress += memoryStep * (uint)transferredWords;
+
+            if ((uint)transferredWords < wordsRequested) {
+                pendingBlockWords = wordsRequested - (uint)transferredWords;
+                return;
+            }
+
+            pendingBlockWords = EffectiveBlockSize();
+            pendingBlocks--;
+
+            if (pendingBlocks == 0) {
+                finishDMA();
+                return;
+            }
+        }
+    }
+
+    private uint EffectiveBlockSize() => blockSize == 0 ? 0x10_000u : blockSize;
 }

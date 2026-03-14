@@ -32,9 +32,9 @@ public class DMA {
         channels[channel].write(register, value);
     }
 
-    public bool tick() {
+    public bool tick(int cycles) {
         for (var i = 0; i < 7; i++) {
-            ((DmaChannel)channels[i]).transferBlockIfPending();
+            ((DmaChannel)channels[i]).transferBlockIfPending(cycles);
         }
         return ((InterruptChannel)channels[7]).tick();
     }

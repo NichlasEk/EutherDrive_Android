@@ -10,6 +10,7 @@ public sealed class PsxAdapter : IEmulatorCore
     public static string? BiosPath { get; set; }
     public static bool AnalogControllerEnabled { get; set; }
     public static bool FastLoadEnabled { get; set; }
+    public long? FrameCounter => _frameCounter;
     private sealed class PsxHostWindow : IHostWindow
     {
         private const double DefaultAspectRatio = 4.0 / 3.0;
@@ -114,7 +115,7 @@ public sealed class PsxAdapter : IEmulatorCore
                 if (_displayHeight >= 480 && visibleHeight <= 288)
                     visibleHeight *= 2;
                 if (visibleHeight > 0)
-                    sourceHeight = Math.Min(sourceHeight, visibleHeight);
+                    sourceHeight = visibleHeight;
             }
 
             if (sourceWidth <= 0 || sourceHeight <= 0)
@@ -161,7 +162,9 @@ public sealed class PsxAdapter : IEmulatorCore
     private ProjectPSX.ProjectPSX? _core;
     private PsxHostWindow? _host;
     private string? _diskPath;
-    private byte[] _frameBuffer = Array.Empty<byte>();
+    private readonly object _stateLock = new();
+    private byte[] _frameBuffer = new byte[320 * 240 * 4];
+    private byte[] _frameSnapshotBuffer = new byte[320 * 240 * 4];
     private int _frameWidth = 320;
     private int _frameHeight = 240;
     private int _frameStride = 320 * 4;
@@ -193,16 +196,30 @@ public sealed class PsxAdapter : IEmulatorCore
 
     public void RunFrame()
     {
-        _core?.RunFrame();
-        _frameCounter++;
+        lock (_stateLock)
+        {
+            _core?.RunFrame();
+            _frameCounter++;
+        }
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
-        width = _frameWidth;
-        height = _frameHeight;
-        stride = _frameStride;
-        return _frameBuffer;
+        lock (_stateLock)
+        {
+            int required = _frameStride * _frameHeight;
+            if (_frameBuffer.Length != required)
+                _frameBuffer = new byte[Math.Max(required, 0)];
+            if (_frameSnapshotBuffer.Length != required)
+                _frameSnapshotBuffer = new byte[Math.Max(required, 0)];
+
+            Array.Copy(_frameBuffer, _frameSnapshotBuffer, required);
+
+            width = _frameWidth;
+            height = _frameHeight;
+            stride = _frameStride;
+            return _frameSnapshotBuffer;
+        }
     }
 
     public bool TryGetPresentationSize(out double width, out double height)
@@ -255,6 +272,21 @@ public sealed class PsxAdapter : IEmulatorCore
     {
         FastLoadEnabled = enabled;
         _core?.SetFastLoadEnabled(enabled);
+    }
+
+    public bool TryGetDebugState(out string state)
+    {
+        lock (_stateLock)
+        {
+            if (_core == null)
+            {
+                state = string.Empty;
+                return false;
+            }
+
+            state = _core.DebugStartSummary();
+            return true;
+        }
     }
 
     public void SetInputState(
@@ -415,7 +447,6 @@ public sealed class PsxAdapter : IEmulatorCore
             _frameBuffer[o + 3] = 0xFF;
         }
     }
-
 
     private void PushAudio(byte[] samples)
     {

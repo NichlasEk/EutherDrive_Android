@@ -18,56 +18,182 @@ namespace ProjectPSX.Devices.CdRom {
             public int lba { get; private set; }
             public int lbaStart { get; private set; }
             public int lbaEnd { get; private set; }
+            public int fileStartSector { get; private set; }
             public bool isAudio { get; private set; }
 
-            public Track(String file, long size, byte number, int lba, int lbaStart, int lbaEnd, bool isAudio) {
+            public Track(String file, long size, byte number, int lba, int lbaStart, int lbaEnd, int fileStartSector, bool isAudio) {
                 this.file = file;
                 this.size = size;
                 this.number = number;
                 this.lba = lba;
                 this.lbaStart = lbaStart;
                 this.lbaEnd = lbaEnd;
+                this.fileStartSector = fileStartSector;
                 this.isAudio = isAudio;
             }
         }
 
+        private sealed class CueTrackEntry {
+            public string File { get; set; } = string.Empty;
+            public long FileSize { get; set; }
+            public byte Number { get; set; }
+            public bool IsAudio { get; set; }
+            public int Pregap { get; set; }
+            public int Index00 { get; set; } = -1;
+            public int Index01 { get; set; }
+        }
+
         public static List<Track> fromCue(String cue) {
             Console.WriteLine($"[CD Track Builder] Generating CD Tracks from: {cue}");
-            List<Track> tracks = new List<Track>();
-            String dir = Path.GetDirectoryName(cue);
-            String line;
-            int lbaCounter = 0;
-            byte number = 0;
-            using StreamReader cueFile = new StreamReader(cue);
-            while ((line = cueFile.ReadLine()) != null) {
-                if (line.StartsWith("FILE")) {
-                    String[] splittedSring = line.Split("\"");
+            var cueTracks = new List<CueTrackEntry>();
+            string? currentFile = null;
+            long currentFileSize = 0;
+            CueTrackEntry? currentTrack = null;
 
-                    String file = ResolveCueFilePath(cue, splittedSring[1]);
-                    long size = new FileInfo(file).Length;
-                    int lba = (int)(size / BytesPerSectorRaw);
-                    int lbaStart = lbaCounter + 150;
-                    number++;
-                    //hardcoding :P
-                    if (tracks.Count > 0) {
-                        lbaStart += 150;
+            using StreamReader cueFile = new StreamReader(cue);
+            string? line;
+            while ((line = cueFile.ReadLine()) != null) {
+                line = line.Trim();
+                if (string.IsNullOrWhiteSpace(line)) {
+                    continue;
+                }
+
+                if (line.StartsWith("FILE", StringComparison.OrdinalIgnoreCase)) {
+                    string referencedFile = ParseCueFile(line);
+                    currentFile = ResolveCueFilePath(cue, referencedFile);
+                    EnsureSupportedTrackFile(currentFile);
+                    currentFileSize = new FileInfo(currentFile).Length;
+                    currentTrack = null;
+                    continue;
+                }
+
+                if (line.StartsWith("TRACK", StringComparison.OrdinalIgnoreCase)) {
+                    if (currentFile == null) {
+                        throw new InvalidDataException($"TRACK entry without FILE in cue: {cue}");
                     }
 
-                    int lbaEnd = lbaCounter + lba;
+                    string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 3 || !byte.TryParse(parts[1], out byte trackNumber)) {
+                        throw new InvalidDataException($"Invalid TRACK line in cue: {line}");
+                    }
 
-                    lbaCounter += lba;
+                    currentTrack = new CueTrackEntry {
+                        File = currentFile,
+                        FileSize = currentFileSize,
+                        Number = trackNumber,
+                        IsAudio = line.Contains("AUDIO", StringComparison.OrdinalIgnoreCase),
+                        Pregap = 0,
+                        Index01 = 0
+                    };
+                    cueTracks.Add(currentTrack);
+                    continue;
+                }
 
-                    string trackTypeLine = cueFile.ReadLine();
-                    bool isAudio = trackTypeLine.Contains("AUDIO");
+                if (currentTrack == null) {
+                    continue;
+                }
 
-                    tracks.Add(new Track(file, size, number, lba, lbaStart, lbaEnd, isAudio));
+                if (line.StartsWith("PREGAP", StringComparison.OrdinalIgnoreCase)) {
+                    currentTrack.Pregap = ParseMsf(line.Split(' ', StringSplitOptions.RemoveEmptyEntries)[1]);
+                    continue;
+                }
 
-                    Console.WriteLine($"File: {file} Size: {size} Number: {number} LbaStart: {lbaStart} LbaEnd: {lbaEnd} isAudio {isAudio}");
+                if (line.StartsWith("INDEX 00", StringComparison.OrdinalIgnoreCase)) {
+                    currentTrack.Index00 = ParseMsf(line.Split(' ', StringSplitOptions.RemoveEmptyEntries)[2]);
+                    continue;
+                }
+
+                if (line.StartsWith("INDEX 01", StringComparison.OrdinalIgnoreCase)) {
+                    currentTrack.Index01 = ParseMsf(line.Split(' ', StringSplitOptions.RemoveEmptyEntries)[2]);
                 }
             }
 
+            var tracks = new List<Track>(cueTracks.Count);
+            int discCursor = 150;
+            for (int i = 0; i < cueTracks.Count; i++) {
+                CueTrackEntry cueTrack = cueTracks[i];
+                CueTrackEntry? nextTrack = i + 1 < cueTracks.Count ? cueTracks[i + 1] : null;
+
+                ValidateSectorAlignedFile(cueTrack.File, cueTrack.FileSize);
+                int fileSectorCount = checked((int)(cueTrack.FileSize / BytesPerSectorRaw));
+
+                bool hasIndex00 = cueTrack.Index00 >= 0 && cueTrack.Index01 >= cueTrack.Index00;
+                int pregapSectors = hasIndex00
+                    ? cueTrack.Index01 - cueTrack.Index00
+                    : cueTrack.Pregap;
+                int filePregapStartSector = hasIndex00
+                    ? cueTrack.Index00
+                    : Math.Max(0, cueTrack.Index01 - cueTrack.Pregap);
+
+                int nextFileBoundary = fileSectorCount;
+                if (nextTrack is not null && nextTrack.File.Equals(cueTrack.File, StringComparison.OrdinalIgnoreCase)) {
+                    nextFileBoundary = nextTrack.Index00 >= 0 ? nextTrack.Index00 : nextTrack.Index01;
+                }
+
+                int discSpanLba = Math.Max(0, nextFileBoundary - filePregapStartSector);
+                int lbaStart = discCursor + pregapSectors;
+                int lbaEnd = discSpanLba > 0 ? discCursor + discSpanLba - 1 : discCursor - 1;
+
+                tracks.Add(new Track(
+                    cueTrack.File,
+                    cueTrack.FileSize,
+                    cueTrack.Number,
+                    discSpanLba,
+                    lbaStart,
+                    lbaEnd,
+                    cueTrack.Index01,
+                    cueTrack.IsAudio));
+
+                Console.WriteLine($"File: {cueTrack.File} Size: {cueTrack.FileSize} Number: {cueTrack.Number} LbaStart: {lbaStart} LbaEnd: {lbaEnd} fileStartSector: {cueTrack.Index01} isAudio {cueTrack.IsAudio}");
+
+                discCursor += discSpanLba;
+            }
 
             return tracks;
+        }
+
+        private static string ParseCueFile(string line) {
+            int firstQuote = line.IndexOf('"');
+            if (firstQuote >= 0) {
+                int secondQuote = line.IndexOf('"', firstQuote + 1);
+                if (secondQuote > firstQuote) {
+                    return line.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
+                }
+            }
+
+            string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2) {
+                return parts[1];
+            }
+
+            throw new InvalidDataException($"Invalid FILE line in cue: {line}");
+        }
+
+        private static int ParseMsf(string msf) {
+            string[] parts = msf.Split(':', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 3
+                || !int.TryParse(parts[0], out int minutes)
+                || !int.TryParse(parts[1], out int seconds)
+                || !int.TryParse(parts[2], out int frames)) {
+                throw new InvalidDataException($"Invalid MSF value in cue: {msf}");
+            }
+
+            return (minutes * 60 * 75) + (seconds * 75) + frames;
+        }
+
+        private static void EnsureSupportedTrackFile(string file) {
+            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+            Span<byte> header = stackalloc byte[4];
+            int read = stream.Read(header);
+            if (read == 4 && header[0] == (byte)'E' && header[1] == (byte)'C' && header[2] == (byte)'M' && header[3] == 0x00) {
+                throw new InvalidDataException($"ECM-compressed CD image is not supported directly: {file}");
+            }
+        }
+
+        private static void ValidateSectorAlignedFile(string file, long size) {
+            if (size % BytesPerSectorRaw != 0) {
+                throw new InvalidDataException($"CD track file is not sector-aligned raw 2352 data: {file}");
+            }
         }
 
         private static string ResolveCueFilePath(string cuePath, string referencedFile) {
@@ -208,13 +334,14 @@ namespace ProjectPSX.Devices.CdRom {
             List<Track> tracks = new List<Track>();
 
             long size = new FileInfo(file).Length;
+            ValidateSectorAlignedFile(file, size);
             int lba = (int)(size / BytesPerSectorRaw);
             int lbaStart = 150; // 150 frames (2 seconds) offset from track 1
-            int lbaEnd = lba;
+            int lbaEnd = lbaStart + lba - 1;
             byte number = 1;
             bool isAudio = false;
 
-            tracks.Add(new Track(file, size, number, lba, lbaStart, lbaEnd, isAudio));
+            tracks.Add(new Track(file, size, number, lba, lbaStart, lbaEnd, 0, isAudio));
 
             Console.WriteLine($"File: {file} Size: {size} Number: {number} LbaStart: {lbaStart} LbaEnd: {lbaEnd} isAudio {isAudio}");
 

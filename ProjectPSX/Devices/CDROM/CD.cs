@@ -41,10 +41,15 @@ namespace ProjectPSX.Devices.CdRom {
 
             Track currentTrack = getTrackFromLoc(loc);
 
+            if (loc < currentTrack.lbaStart) {
+                Array.Clear(rawSectorBuffer, 0, rawSectorBuffer.Length);
+                return rawSectorBuffer;
+            }
+
             //Console.WriteLine("Loc: " + loc + " TrackLbaStart: " + currentTrack.lbaStart);
             //Console.WriteLine("readPos = " + (loc - currentTrack.lbaStart));
 
-            int position = (loc - currentTrack.lbaStart);
+            int position = currentTrack.fileStartSector + (loc - currentTrack.lbaStart);
             if (position < 0) position = 0;
 
             FileStream currentStream = streams[currentTrack.number - 1];
