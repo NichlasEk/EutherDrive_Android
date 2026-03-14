@@ -477,7 +477,7 @@ public partial class MainWindow : Window
             return true;
         if (ext is ".cue")
         {
-            string? cueTrack = TryGetCueTrackPath(path);
+            string? cueTrack = CueSheetResolver.ResolveFirstReferencedPath(path);
             if (!string.IsNullOrWhiteSpace(cueTrack) && ProbePsxSignature(cueTrack))
                 return true;
             return false;
@@ -537,54 +537,6 @@ public partial class MainWindow : Window
             return false;
         }
         return false;
-    }
-
-    private static string? TryGetCueTrackPath(string cuePath)
-    {
-        try
-        {
-            string baseDir = Path.GetDirectoryName(cuePath) ?? ".";
-            foreach (string line in File.ReadLines(cuePath))
-            {
-                string trimmed = line.Trim();
-                if (!trimmed.StartsWith("FILE", StringComparison.OrdinalIgnoreCase))
-                    continue;
-                int firstQuote = trimmed.IndexOf('"');
-                int lastQuote = trimmed.LastIndexOf('"');
-                if (firstQuote >= 0 && lastQuote > firstQuote)
-                {
-                    string file = trimmed.Substring(firstQuote + 1, lastQuote - firstQuote - 1);
-                    return ResolveCueReferencedPath(baseDir, file);
-                }
-            }
-        }
-        catch
-        {
-            return null;
-        }
-        return null;
-    }
-
-    private static string ResolveCueReferencedPath(string baseDir, string file)
-    {
-        string combined = Path.GetFullPath(Path.Combine(baseDir, file));
-        if (File.Exists(combined))
-            return combined;
-
-        string nameOnly = Path.GetFileName(file);
-        string sibling = Path.GetFullPath(Path.Combine(baseDir, nameOnly));
-        if (File.Exists(sibling))
-            return sibling;
-
-        string extension = Path.GetExtension(file);
-        if (string.IsNullOrWhiteSpace(extension) || !Directory.Exists(baseDir))
-            return combined;
-
-        string[] candidates = Directory.GetFiles(baseDir, $"*{extension}");
-        if (candidates.Length == 1)
-            return Path.GetFullPath(candidates[0]);
-
-        return combined;
     }
 
     private static bool ProbePsxSignature(string path)
@@ -2383,7 +2335,7 @@ public partial class MainWindow : Window
             if (string.IsNullOrWhiteSpace(romPath))
                 return null;
 
-            string path = ResolveCueDataPath(romPath) ?? romPath;
+            string path = CueSheetResolver.ResolveFirstReferencedPath(romPath) ?? romPath;
             string ext = Path.GetExtension(path).ToLowerInvariant();
             if (ext == ".exe")
                 return ReadPsxExe(path);
@@ -2435,45 +2387,6 @@ public partial class MainWindow : Window
                 return null;
             string title = ReadAscii(header, 0x10, 0x3C).Trim();
             return new PsxDiscInfo { VolumeId = title };
-        }
-
-        private static string? ResolveCueDataPath(string path)
-        {
-            if (!path.EndsWith(".cue", StringComparison.OrdinalIgnoreCase))
-                return null;
-
-            string baseDir = Path.GetDirectoryName(path) ?? "";
-            foreach (var rawLine in File.ReadLines(path))
-            {
-                string line = rawLine.Trim();
-                if (!line.StartsWith("FILE", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                int firstQuote = line.IndexOf('"');
-                if (firstQuote >= 0)
-                {
-                    int secondQuote = line.IndexOf('"', firstQuote + 1);
-                    if (secondQuote > firstQuote)
-                    {
-                        string fileName = line.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
-                        string candidate = Path.Combine(baseDir, fileName);
-                        if (File.Exists(candidate))
-                            return candidate;
-                    }
-                }
-                else
-                {
-                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length >= 2)
-                    {
-                        string candidate = Path.Combine(baseDir, parts[1]);
-                        if (File.Exists(candidate))
-                            return candidate;
-                    }
-                }
-            }
-
-            return null;
         }
 
         private static int GuessSectorSize(long length)

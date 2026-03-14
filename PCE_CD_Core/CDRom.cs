@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using EutherDrive.Core;
 
 namespace ePceCD
 {
@@ -597,7 +598,7 @@ namespace ePceCD
         {
             string filename = string.Join(" ", parts.Skip(1).TakeWhile(p => p != "BINARY" && p != "WAVE")).Trim('"');
             string fileType = parts.LastOrDefault() ?? string.Empty;
-            string filePath = Path.Combine(baseDir, filename);
+            string filePath = CueSheetResolver.ResolveReferencedPathFromDirectory(baseDir, filename);
             currentTrack = new CDTrack { File = new FileStream(filePath, FileMode.Open, FileAccess.Read) };
             currentTrack.FileName = filePath;
             string typeLabel = fileType.Equals("WAVE", StringComparison.OrdinalIgnoreCase) ? "WAVE" : "BINARY";

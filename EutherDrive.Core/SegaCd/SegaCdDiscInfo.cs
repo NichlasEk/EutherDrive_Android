@@ -89,39 +89,7 @@ public sealed class SegaCdDiscInfo
     {
         if (!path.EndsWith(".cue", StringComparison.OrdinalIgnoreCase))
             return null;
-
-        string baseDir = Path.GetDirectoryName(path) ?? "";
-        foreach (var rawLine in File.ReadLines(path))
-        {
-            string line = rawLine.Trim();
-            if (!line.StartsWith("FILE", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            int firstQuote = line.IndexOf('"');
-            if (firstQuote >= 0)
-            {
-                int secondQuote = line.IndexOf('"', firstQuote + 1);
-                if (secondQuote > firstQuote)
-                {
-                    string fileName = line.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
-                    string candidate = Path.Combine(baseDir, fileName);
-                    if (File.Exists(candidate))
-                        return candidate;
-                }
-            }
-            else
-            {
-                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2)
-                {
-                    string candidate = Path.Combine(baseDir, parts[1]);
-                    if (File.Exists(candidate))
-                        return candidate;
-                }
-            }
-        }
-
-        return null;
+        return CueSheetResolver.ResolveFirstReferencedPath(path);
     }
 
     private static string ReadAscii(byte[] data, int offset, int length)

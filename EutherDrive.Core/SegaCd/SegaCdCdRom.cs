@@ -257,15 +257,7 @@ internal sealed class CdCue
 
     private static string ResolveCueFilePath(string cuePath, string fileName)
     {
-        string dir = Path.GetDirectoryName(cuePath) ?? string.Empty;
-        string combined = Path.Combine(dir, fileName);
-        if (File.Exists(combined))
-            return Path.GetFullPath(combined);
-
-        // Fallback: try filename only in the same directory
-        string nameOnly = Path.GetFileName(fileName);
-        string fallback = Path.Combine(dir, nameOnly);
-        return Path.GetFullPath(fallback);
+        return CueSheetResolver.ResolveReferencedPath(cuePath, fileName);
     }
 
     private static int GuessSectorSize(string path)
@@ -669,38 +661,7 @@ internal sealed class CdRom
 
     private static string? ResolveCueDataPath(string cuePath)
     {
-        string baseDir = Path.GetDirectoryName(cuePath) ?? "";
-        foreach (var rawLine in File.ReadLines(cuePath))
-        {
-            string line = rawLine.Trim();
-            if (!line.StartsWith("FILE", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            int firstQuote = line.IndexOf('"');
-            if (firstQuote >= 0)
-            {
-                int secondQuote = line.IndexOf('"', firstQuote + 1);
-                if (secondQuote > firstQuote)
-                {
-                    string fileName = line.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
-                    string candidate = Path.Combine(baseDir, fileName);
-                    if (File.Exists(candidate))
-                        return candidate;
-                }
-            }
-            else
-            {
-                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2)
-                {
-                    string candidate = Path.Combine(baseDir, parts[1]);
-                    if (File.Exists(candidate))
-                        return candidate;
-                }
-            }
-        }
-
-        return null;
+        return CueSheetResolver.ResolveFirstReferencedPath(cuePath);
     }
 
     private static byte ToBcd(int value)
