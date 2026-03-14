@@ -1001,9 +1001,9 @@ public class SNESSystem : ISNESSystem
                 DmaReadBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel]));
         }
 
-        _dmaTimer = 8;
+        _dmaTimer = 4;
         if (_gpdmaBytesCopied == 0)
-            _dmaTimer += 8;
+            _dmaTimer += 4;
 
         if (!_dmaFixed[channel])
         {
@@ -1028,9 +1028,9 @@ public class SNESSystem : ISNESSystem
             _gpdmaBytesCopied++;
         }
 
-        _dmaTimer = 8;
+        _dmaTimer = 4;
         if (_gpdmaBytesCopied == 0)
-            _dmaTimer += 8;
+            _dmaTimer += 4;
     }
 
     private void InitHdma() 
@@ -1545,7 +1545,7 @@ public class SNESSystem : ISNESSystem
                 Console.WriteLine($"[INIDISP] write $2100=0x{value:X2} pc=0x{pc:X6} dma={(dma ? 1 : 0)} regs=[{regs}]");
             }
             TracePpuBusWrite(adr, value, dma);
-            PPU.Write(adr, value);
+            PPU.Write(adr, value, dma);
             return;
         }
         if (adr >= 0x40 && adr < 0x80)

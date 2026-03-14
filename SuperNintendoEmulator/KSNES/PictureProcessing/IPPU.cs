@@ -5,7 +5,7 @@ public interface IPPU : IHasAccessToSystem
     void CheckOverscan(int line);
     void RenderLine(int line);
     int Read(int adr);
-    void Write(int adr, int value);
+    void Write(int adr, int value, bool dma = false);
     int[] GetPixels();
     bool FrameOverscan { get; }
     int LatchedHpos { get; set; }

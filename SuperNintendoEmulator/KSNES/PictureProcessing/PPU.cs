@@ -482,7 +482,7 @@ public class PPU : IPPU
         return _snes!.OpenBus;
     }
 
-    public void Write(int adr, int value)
+    public void Write(int adr, int value, bool dma = false)
     {
         switch (adr)
         {
@@ -493,7 +493,7 @@ public class PPU : IPPU
                 return;
             case 0x01:
                 _sprAdr1 = (value & 0x7) << 13;
-                _sprAdr2 = ((value & 0x18) + 8) << 9;
+                _sprAdr2 = (value & 0x18) << 9;
                 _objSize = (value & 0xe0) >> 5;
                 return;
             case 0x02:
@@ -640,7 +640,7 @@ public class PPU : IPPU
                 return;
             case 0x18:
                 int adr2 = GetVramRemap();
-                if (_forcedBlank || GetCurrentVblank())
+                if (dma || _forcedBlank || GetCurrentVblank() || GetCurrentHblank())
                 {
                     _vram[adr2] = (ushort) ((_vram[adr2] & 0xff00) | value);
                     TracePpuWrite($"[PPU] VMDATAL adr=0x{adr2:X4} val=0x{value:X2} word=0x{_vram[adr2]:X4}");
@@ -653,7 +653,7 @@ public class PPU : IPPU
                 return;
             case 0x19:
                 int adr3 = GetVramRemap();
-                if (_forcedBlank || GetCurrentVblank())
+                if (dma || _forcedBlank || GetCurrentVblank() || GetCurrentHblank())
                 {
                     _vram[adr3] = (ushort) ((_vram[adr3] & 0xff) | (value << 8));
                     TracePpuWrite($"[PPU] VMDATAH adr=0x{adr3:X4} val=0x{value:X2} word=0x{_vram[adr3]:X4}");
@@ -1356,7 +1356,9 @@ public class PPU : IPPU
             }
 
             sprRow = _objInterlace ? sprRow * 2 + (_evenFrame ? 1 : 0) : sprRow;
-            int adr = _sprAdr1 + ((ex & 0x1) > 0 ? _sprAdr2 : 0);
+            // OBJSEL selects a base plus an optional second 256-tile block with a programmable gap.
+            // Attribute bit 0 selects that second block, which starts after the first 0x1000-byte OBJ area.
+            int adr = _sprAdr1 + ((ex & 0x1) > 0 ? 0x1000 + _sprAdr2 : 0);
             sprRow = (ex & 0x80) > 0 ? _spriteHeights[spriteSizeIndex] * 8 - 1 - sprRow : sprRow;
             int tileRow = sprRow >> 3;
             sprRow &= 0x7;
@@ -1492,6 +1494,16 @@ public class PPU : IPPU
         int vBlankStart = _snes.IsPal ? 240 : (_overscan ? 240 : 225);
         int maxV = _snes.IsPal ? 312 : 262;
         return _snes.YPos >= vBlankStart && _snes.YPos < maxV;
+    }
+
+    private bool GetCurrentHblank()
+    {
+        if (_snes is null)
+        {
+            return false;
+        }
+
+        return _snes.XPos < 4 || _snes.XPos >= 1096;
     }
 
     private static int Get13Signed(int val)

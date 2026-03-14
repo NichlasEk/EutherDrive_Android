@@ -1058,7 +1058,7 @@ public sealed class Sa1
             public void CheckOverscan(int line) { }
             public void RenderLine(int line) { }
             public int Read(int adr) => 0;
-            public void Write(int adr, int value) { }
+            public void Write(int adr, int value, bool dma = false) { }
             public int[] GetPixels() => Array.Empty<int>();
             public bool FrameOverscan => false;
             public int LatchedHpos { get; set; }
