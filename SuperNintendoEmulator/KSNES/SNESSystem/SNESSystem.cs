@@ -80,6 +80,8 @@ public class SNESSystem : ISNESSystem
     private bool _inIrq;
     private bool _irqLine;
     private int _lastIrqHTime;
+    [NonSerialized]
+    private ulong _irqRaisedAtCycle;
     private bool _inHblank;
     private bool _inVblank;
     private bool _oddFrame;
@@ -139,6 +141,22 @@ public class SNESSystem : ISNESSystem
     [NonSerialized]
     private readonly bool _traceStarOcean4212Loop =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_STAROCEAN_4212_LOOP"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly bool _traceJoypad =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_JOYPAD"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly int _traceJoypadLimit =
+        ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_JOYPAD_LIMIT", 400);
+    [NonSerialized]
+    private int _traceJoypadCount;
+    [NonSerialized]
+    private readonly bool _traceSgngIrqWindow =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SGNG_IRQ_WINDOW"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly int _traceSgngIrqWindowLimit =
+        ParseTraceLimit("EUTHERDRIVE_TRACE_SGNG_IRQ_WINDOW_LIMIT", 128);
+    [NonSerialized]
+    private int _traceSgngIrqWindowCount;
     private bool HasExplicitWramTraceFilter => _traceWramAddrs.Count > 0;
 
     private int[] _dmaMode = [];
@@ -367,7 +385,13 @@ public class SNESSystem : ISNESSystem
             }
             if (adr == 0x4016)
             {
-                _joypadStrobe = (value & 0x1) > 0;
+                bool newStrobe = (value & 0x1) > 0;
+                if (!_joypadStrobe && newStrobe)
+                {
+                    _joypad1Val = _joypad1State;
+                    _joypad2Val = _joypad2State;
+                }
+                _joypadStrobe = newStrobe;
             }
             if (adr >= 0x4200 && adr < 0x4380)
             {
@@ -423,6 +447,7 @@ public class SNESSystem : ISNESSystem
         _vblankNmiFlag = false;
         _inIrq = false;
         _irqLine = false;
+        _irqRaisedAtCycle = 0;
         _lastIrqHTime = 0;
         _inHblank = false;
         _inVblank = false;
@@ -480,6 +505,7 @@ public class SNESSystem : ISNESSystem
         _vblankNmiFlag = false;
         _inIrq = false;
         _irqLine = false;
+        _irqRaisedAtCycle = 0;
         _lastIrqHTime = GetIrqHTime();
         _autoJoyPendingStart = false;
         if (!_autoJoyBusy)
@@ -555,11 +581,6 @@ public class SNESSystem : ISNESSystem
             _apuMasterCyclesProduct += ApuMasterClockFrequency * (ulong)apuStepMclks;
         }
         int currentLineMclks = GetCurrentLineMclks();
-        if (_joypadStrobe)
-        {
-            _joypad1Val = _joypad1State;
-            _joypad2Val = _joypad2State;
-        }
         int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
         if (XPos == 0)
         {
@@ -639,14 +660,15 @@ public class SNESSystem : ISNESSystem
             _autoJoyPendingStart = false;
             _autoJoyBusy = true;
             _autoJoyTimer = 4224;
-            DoAutoJoyRead();
         }
         if (_autoJoyBusy)
         {
             _autoJoyTimer -= 2;
-            if (_autoJoyTimer == 0)
+            if (_autoJoyTimer <= 0)
             {
+                DoAutoJoyRead();
                 _autoJoyBusy = false;
+                _autoJoyTimer = 0;
             }
         }
         ROM.RunCoprocessor(Cycles);
@@ -732,6 +754,11 @@ public class SNESSystem : ISNESSystem
         return value > startExclusive && value <= endInclusive;
     }
 
+    private int GetPreviousLineMaxHTime()
+    {
+        return GetPreviousLineMclks() / 4;
+    }
+
     private void UpdateIrqLine()
     {
         int ppuHTime = GetIrqHTime();
@@ -739,9 +766,10 @@ public class SNESSystem : ISNESSystem
 
         bool CheckH()
         {
+            int previousLineMaxHTime = GetPreviousLineMaxHTime();
             if (ppuHTime < _lastIrqHTime)
             {
-                return _hTimer <= ppuHTime || RangeContainsExclusiveEnd(_lastIrqHTime, 341, _hTimer);
+                return _hTimer <= ppuHTime || RangeContainsExclusiveEnd(_lastIrqHTime, previousLineMaxHTime, _hTimer);
             }
 
             return RangeContainsInclusiveEnd(_lastIrqHTime, ppuHTime, _hTimer);
@@ -759,7 +787,7 @@ public class SNESSystem : ISNESSystem
             if (_hTimer <= ppuHTime)
                 return CheckV();
 
-            if (RangeContainsExclusiveEnd(_lastIrqHTime, 341, _hTimer))
+            if (RangeContainsExclusiveEnd(_lastIrqHTime, GetPreviousLineMaxHTime(), _hTimer))
             {
                 int maxV = IsPal ? 312 : 262;
                 int prevVTime = ppuVTime == 0 ? maxV - 1 : ppuVTime - 1;
@@ -788,7 +816,21 @@ public class SNESSystem : ISNESSystem
         }
 
         _lastIrqHTime = ppuHTime;
-        _inIrq |= !_irqLine && newIrqLine;
+        if (!_irqLine && newIrqLine)
+        {
+            _inIrq = true;
+            _irqRaisedAtCycle = Cycles;
+            if (_traceSgngIrqWindow && _traceSgngIrqWindowCount < _traceSgngIrqWindowLimit && CPU is KSNES.CPU.CPU cpu)
+            {
+                int pc = cpu.ProgramCounter24;
+                if (pc >= 0x028270 && pc <= 0x0282C0)
+                {
+                    Console.WriteLine(
+                        $"[SGNG-IRQ-WINDOW] pc=0x{pc:X6} xy=({XPos},{YPos}) ppuHt={ppuHTime} ppuVt={ppuVTime} hTimer={_hTimer} vTimer={_vTimer} hIrq={(_hIrqEnabled ? 1 : 0)} vIrq={(_vIrqEnabled ? 1 : 0)} regs=[{cpu.GetTraceState()}]");
+                    _traceSgngIrqWindowCount++;
+                }
+            }
+        }
         _irqLine = newIrqLine;
     }
 
@@ -1107,8 +1149,11 @@ public class SNESSystem : ISNESSystem
             case 0x4211:
                 int val2 = _inIrq ? 0x80 : 0;
                 val2 |= OpenBus & 0x7f;
-                _inIrq = false;
-                CPU.IrqWanted = false;
+                if (Cycles - _irqRaisedAtCycle >= 4)
+                {
+                    _inIrq = false;
+                    CPU.IrqWanted = false;
+                }
                 return val2;
             case 0x4212:
                 int val3 = _autoJoyBusy ? 0x1 : 0;
@@ -1139,13 +1184,13 @@ public class SNESSystem : ISNESSystem
             case 0x4217:
                 return (_mulResult & 0xff00) >> 8;
             case 0x4218:
-                return _joypad1AutoRead & 0xff;
+                return TraceJoypadRead(adr, _joypad1AutoRead & 0xff);
             case 0x4219:
-                return (_joypad1AutoRead & 0xff00) >> 8;
+                return TraceJoypadRead(adr, (_joypad1AutoRead & 0xff00) >> 8);
             case 0x421a:
-                return _joypad2AutoRead & 0xff;
+                return TraceJoypadRead(adr, _joypad2AutoRead & 0xff);
             case 0x421b:
-                return (_joypad2AutoRead & 0xff00) >> 8;
+                return TraceJoypadRead(adr, (_joypad2AutoRead & 0xff00) >> 8);
             case 0x421c:
             case 0x421d:
             case 0x421e:
@@ -1362,7 +1407,14 @@ public class SNESSystem : ISNESSystem
                     {
                         if (!_dmaActive[ch])
                             continue;
-                        Console.WriteLine($"[DMA-STATE] ch={ch} mode={_dmaMode[ch]} bbus=0x{_dmaBadr[ch]:X2} aaddr=0x{_dmaAadr[ch]:X4} abank=0x{_dmaAadrBank[ch]:X2} size=0x{_dmaSize[ch]:X4} fromB={_dmaFromB[ch]} fixed={_dmaFixed[ch]} dec={_dmaDec[ch]}");
+                        int sourceAddress = (_dmaAadrBank[ch] << 16) | _dmaAadr[ch];
+                        Span<byte> preview = stackalloc byte[8];
+                        for (int i = 0; i < preview.Length; i++)
+                        {
+                            preview[i] = (byte)DmaReadBusA((sourceAddress + i) & 0xffffff);
+                        }
+                        string previewHex = Convert.ToHexString(preview.ToArray());
+                        Console.WriteLine($"[DMA-STATE] ch={ch} mode={_dmaMode[ch]} bbus=0x{_dmaBadr[ch]:X2} aaddr=0x{_dmaAadr[ch]:X4} abank=0x{_dmaAadrBank[ch]:X2} size=0x{_dmaSize[ch]:X4} fromB={_dmaFromB[ch]} fixed={_dmaFixed[ch]} dec={_dmaDec[ch]} src8={previewHex}");
                     }
                 }
                 return;
@@ -1635,14 +1687,14 @@ public class SNESSystem : ISNESSystem
                 int val = _joypad1Val & 0x1;
                 _joypad1Val >>= 1;
                 _joypad1Val |= 0x8000;
-                return val;
+                return TraceJoypadRead(adr, val | (OpenBus & 0xfc));
             }
             if (adr == 0x4017)
             {
                 int val = _joypad2Val & 0x1;
                 _joypad2Val >>= 1;
                 _joypad2Val |= 0x8000;
-                return val;
+                return TraceJoypadRead(adr, 0x1c | val | (OpenBus & 0xe0));
             }
             if (adr >= 0x4200 && adr < 0x4380)
             {
@@ -1726,6 +1778,21 @@ public class SNESSystem : ISNESSystem
         }
 
         return defaultValue;
+    }
+
+    private int TraceJoypadRead(int adr, int value)
+    {
+        if (_traceJoypad && _traceJoypadCount < _traceJoypadLimit)
+        {
+            int pc = -1;
+            if (CPU is KSNES.CPU.CPU cpu)
+                pc = cpu.ProgramCounter24;
+            Console.WriteLine(
+                $"[JOY] R 0x{adr:X4}=0x{value:X2} pc=0x{pc:X6} strobe={(_joypadStrobe ? 1 : 0)} auto=0x{_joypad1AutoRead:X4} man=0x{_joypad1Val:X4} state=0x{_joypad1State:X3} autoBusy={(_autoJoyBusy ? 1 : 0)} xy=({XPos},{YPos})");
+            _traceJoypadCount++;
+        }
+
+        return value;
     }
 
     public void SetKeyUp(SNESButton button)

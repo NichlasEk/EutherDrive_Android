@@ -212,6 +212,29 @@ public class PPU : IPPU
     private int[] _optVerBuffer = [];
     private int[] _lastOrigTileX = [];
 
+    private int GetCurrentOamAddress()
+    {
+        return _oamAdr | (_oamInHigh ? 0x100 : 0);
+    }
+
+    private void SetCurrentOamAddress(int address)
+    {
+        address &= 0x1ff;
+        _oamAdr = address & 0xff;
+        _oamInHigh = (address & 0x100) != 0;
+    }
+
+    private bool InActiveDisplay()
+    {
+        if (_snes is null)
+        {
+            return false;
+        }
+
+        int visibleLines = _overscan ? 240 : 225;
+        return _snes.YPos < visibleLines;
+    }
+
     public void Reset()
     {
         _vram = new ushort[0x8000];
@@ -346,11 +369,13 @@ public class PPU : IPPU
                 return _snes.OpenBus;
             case 0x38:
                 int val;
+                int oamAddress = GetCurrentOamAddress();
                 if (!_oamSecond)
                 {
-                    if (_oamInHigh)
+                    if (oamAddress >= 0x100)
                     {
-                        val = _highOam[_oamAdr & 0xf] & 0xff;
+                        int highAddress = (oamAddress << 1) & 0x1f;
+                        val = _highOam[highAddress >> 1] & 0xff;
                     }
                     else
                     {
@@ -360,17 +385,16 @@ public class PPU : IPPU
                 }
                 else
                 {
-                    if (_oamInHigh)
+                    if (oamAddress >= 0x100)
                     {
-                        val = _highOam[_oamAdr & 0xf] >> 8;
+                        int highAddress = ((oamAddress << 1) | 1) & 0x1f;
+                        val = _highOam[highAddress >> 1] >> 8;
                     }
                     else
                     {
                         val = _oam[_oamAdr] >> 8;
                     }
-                    _oamAdr++;
-                    _oamAdr &= 0xff;
-                    _oamInHigh = _oamAdr == 0 ? !_oamInHigh : _oamInHigh;
+                    SetCurrentOamAddress(oamAddress + 1);
                     _oamSecond = false;
                 }
                 return val;
@@ -467,25 +491,33 @@ public class PPU : IPPU
                 _objSize = (value & 0xe0) >> 5;
                 return;
             case 0x02:
-                _oamAdr = value;
-                _oamRegAdr = _oamAdr;
-                _oamInHigh = _oamRegInHigh;
+                _oamRegAdr = value;
+                if (!InActiveDisplay())
+                {
+                    _oamAdr = _oamRegAdr;
+                    _oamInHigh = _oamRegInHigh;
+                }
                 _oamSecond = false;
                 return;
             case 0x03:
-                _oamInHigh = (value & 0x1) > 0;
+                _oamRegInHigh = (value & 0x1) > 0;
                 _objPriority = (value & 0x80) > 0;
-                _oamAdr = _oamRegAdr;
-                _oamRegInHigh = _oamInHigh;
+                if (!InActiveDisplay())
+                {
+                    _oamAdr = _oamRegAdr;
+                    _oamInHigh = _oamRegInHigh;
+                }
                 _oamSecond = false;
                 return;
             case 0x04:
+                int oamAddress = GetCurrentOamAddress();
                 if (!_oamSecond)
                 {
-                    if (_oamInHigh)
+                    if (oamAddress >= 0x100)
                     {
-                        var adress = _oamAdr & 0xf;
-                        _highOam[adress] = (ushort) ((_highOam[adress] & 0xff00) | value);
+                        int highAddress = (oamAddress << 1) & 0x1f;
+                        int address = highAddress >> 1;
+                        _highOam[address] = (ushort) ((_highOam[address] & 0xff00) | value);
                     }
                     else
                     {
@@ -495,19 +527,18 @@ public class PPU : IPPU
                 }
                 else
                 {
-                    if (_oamInHigh)
+                    if (oamAddress >= 0x100)
                     {
-                        var adress = _oamAdr & 0xf;
-                        _highOam[adress] = (ushort) ((_highOam[adress] & 0xff) | (value << 8));
+                        int highAddress = ((oamAddress << 1) | 1) & 0x1f;
+                        int address = highAddress >> 1;
+                        _highOam[address] = (ushort) ((_highOam[address] & 0xff) | (value << 8));
                     }
                     else
                     {
                         _oamBuffer = (_oamBuffer & 0xff) | (value << 8);
                         _oam[_oamAdr] = (ushort) _oamBuffer;
                     }
-                    _oamAdr++;
-                    _oamAdr &= 0xff;
-                    _oamInHigh = _oamAdr == 0 ? !_oamInHigh : _oamInHigh;
+                    SetCurrentOamAddress(oamAddress + 1);
                     _oamSecond = false;
                 }
                 return;
@@ -603,8 +634,11 @@ public class PPU : IPPU
                 return;
             case 0x18:
                 int adr2 = GetVramRemap();
-                _vram[adr2] = (ushort) ((_vram[adr2] & 0xff00) | value);
-                TracePpuWrite($"[PPU] VMDATAL adr=0x{adr2:X4} val=0x{value:X2} word=0x{_vram[adr2]:X4}");
+                if (_forcedBlank || GetCurrentVblank())
+                {
+                    _vram[adr2] = (ushort) ((_vram[adr2] & 0xff00) | value);
+                    TracePpuWrite($"[PPU] VMDATAL adr=0x{adr2:X4} val=0x{value:X2} word=0x{_vram[adr2]:X4}");
+                }
                 if (!_vramIncOnHigh)
                 {
                     _vramAdr += _vramInc;
@@ -613,8 +647,11 @@ public class PPU : IPPU
                 return;
             case 0x19:
                 int adr3 = GetVramRemap();
-                _vram[adr3] = (ushort) ((_vram[adr3] & 0xff) | (value << 8));
-                TracePpuWrite($"[PPU] VMDATAH adr=0x{adr3:X4} val=0x{value:X2} word=0x{_vram[adr3]:X4}");
+                if (_forcedBlank || GetCurrentVblank())
+                {
+                    _vram[adr3] = (ushort) ((_vram[adr3] & 0xff) | (value << 8));
+                    TracePpuWrite($"[PPU] VMDATAH adr=0x{adr3:X4} val=0x{value:X2} word=0x{_vram[adr3]:X4}");
+                }
                 if (_vramIncOnHigh)
                 {
                     _vramAdr += _vramInc;
@@ -1230,11 +1267,48 @@ public class PPU : IPPU
 
     private void EvaluateSprites(int line) 
     {
-        var spriteCount = 0;
-        var sliverCount = 0;
-        int index = _objPriority ? ((_oamAdr & 0xfe) - 2) & 0xff : 254;
-        for (var i = 0; i < 128; i++)
+        Span<int> scannedSprites = stackalloc int[32];
+        int spriteCount = 0;
+        int startSprite = _objPriority ? ((_oamAdr >> 1) & 0x7f) : 0;
+
+        // Scan OAM in hardware order first. The first 32 in-range sprites win;
+        // only after selection are tiles rendered in reverse for priority.
+        for (int i = 0; i < 128; i++)
         {
+            int spriteIndex = (startSprite + i) & 0x7f;
+            int index = spriteIndex << 1;
+            int x = _oam[index] & 0xff;
+            int y = (_oam[index] & 0xff00) >> 8;
+            int ex = (_oam[index + 1] & 0xff00) >> 8;
+            x |= (_highOam[index >> 4] >> (index & 0xf) & 0x1) << 8;
+            bool big = (_highOam[index >> 4] >> (index & 0xf) & 0x2) > 0;
+            x = x > 255 ? -(512 - x) : x;
+            int size = _spriteSizes[_objSize + (big ? 8 : 0)];
+            int spriteHeight = size * (_objInterlace ? 4 : 8);
+            int sprRow = line - y;
+            if (sprRow < 0 || sprRow >= spriteHeight)
+            {
+                sprRow = line + (256 - y);
+            }
+
+            if (sprRow < 0 || sprRow >= spriteHeight || x <= -(size * 8))
+            {
+                continue;
+            }
+
+            if (spriteCount == 32)
+            {
+                _rangeOver = true;
+                break;
+            }
+
+            scannedSprites[spriteCount++] = index;
+        }
+
+        int sliverCount = 0;
+        for (int spriteBufferIndex = spriteCount - 1; spriteBufferIndex >= 0; spriteBufferIndex--)
+        {
+            int index = scannedSprites[spriteBufferIndex];
             int x = _oam[index] & 0xff;
             int y = (_oam[index] & 0xff00) >> 8;
             int tile = _oam[index + 1] & 0xff;
@@ -1248,58 +1322,48 @@ public class PPU : IPPU
             {
                 sprRow = line + (256 - y);
             }
-            if (sprRow >= 0 && sprRow < size * (_objInterlace ? 4 : 8) && x > -(size * 8))
+
+            sprRow = _objInterlace ? sprRow * 2 + (_evenFrame ? 1 : 0) : sprRow;
+            int adr = _sprAdr1 + ((ex & 0x1) > 0 ? _sprAdr2 : 0);
+            sprRow = (ex & 0x80) > 0 ? size * 8 - 1 - sprRow : sprRow;
+            int tileRow = sprRow >> 3;
+            sprRow &= 0x7;
+            for (int k = 0; k < size; k++)
             {
-                if (spriteCount == 32)
+                if (x + k * 8 <= -7 || x + k * 8 >= 256)
                 {
-                    _rangeOver = true;
-                    break;
+                    continue;
                 }
-                sprRow = _objInterlace ? sprRow * 2 + (_evenFrame ? 1 : 0) : sprRow;
-                int adr = _sprAdr1 + ((ex & 0x1) > 0 ? _sprAdr2 : 0);
-                sprRow = (ex & 0x80) > 0 ? size * 8 - 1 - sprRow : sprRow;
-                int tileRow = sprRow >> 3;
-                sprRow &= 0x7;
-                for (var k = 0; k < size; k++)
-                {
-                    if (x + k * 8 > -7 && x + k * 8 < 256)
-                    {
-                        if (sliverCount == 34)
-                        {
-                            sliverCount = 35;
-                            break;
-                        }
-                        int tileColumn = (ex & 0x40) > 0 ? size - 1 - k : k;
-                        int tileNum = tile + _spriteTileOffsets[tileRow * 8 + tileColumn];
-                        tileNum &= 0xff;
-                        int tileP1 = _vram[(adr + tileNum * 16 + sprRow) & 0x7fff];
-                        int tileP2 = _vram[(adr + tileNum * 16 + sprRow + 8) & 0x7fff];
-                        for (var j = 0; j < 8; j++)
-                        {
-                            int shift = (ex & 0x40) > 0 ? j : 7 - j;
-                            int tileData = (tileP1 >> shift) & 0x1;
-                            tileData |= ((tileP1 >> (8 + shift)) & 0x1) << 1;
-                            tileData |= ((tileP2 >> shift) & 0x1) << 2;
-                            tileData |= ((tileP2 >> (8 + shift)) & 0x1) << 3;
-                            int color = tileData + 16 * ((ex & 0xe) >> 1);
-                            int xInd = x + k * 8 + j;
-                            if (tileData > 0 && xInd < 256 && xInd >= 0)
-                            {
-                                _spriteLineBuffer[xInd] = (byte) (0x80 + color);
-                                _spritePrioBuffer[xInd] = (byte) ((ex & 0x30) >> 4);
-                            }
-                        }
-                        sliverCount++;
-                    }
-                }
-                if (sliverCount == 35)
+
+                if (sliverCount == 34)
                 {
                     _timeOver = true;
-                    break;
+                    return;
                 }
-                spriteCount++;
+
+                int tileColumn = (ex & 0x40) > 0 ? size - 1 - k : k;
+                int tileNum = tile + _spriteTileOffsets[tileRow * 8 + tileColumn];
+                tileNum &= 0xff;
+                int tileP1 = _vram[(adr + tileNum * 16 + sprRow) & 0x7fff];
+                int tileP2 = _vram[(adr + tileNum * 16 + sprRow + 8) & 0x7fff];
+                for (int j = 0; j < 8; j++)
+                {
+                    int shift = (ex & 0x40) > 0 ? j : 7 - j;
+                    int tileData = (tileP1 >> shift) & 0x1;
+                    tileData |= ((tileP1 >> (8 + shift)) & 0x1) << 1;
+                    tileData |= ((tileP2 >> shift) & 0x1) << 2;
+                    tileData |= ((tileP2 >> (8 + shift)) & 0x1) << 3;
+                    int color = tileData + 16 * ((ex & 0xe) >> 1);
+                    int xInd = x + k * 8 + j;
+                    if (tileData > 0 && xInd < 256 && xInd >= 0)
+                    {
+                        _spriteLineBuffer[xInd] = (byte)(0x80 + color);
+                        _spritePrioBuffer[xInd] = (byte)((ex & 0x30) >> 4);
+                    }
+                }
+
+                sliverCount++;
             }
-            index = (index - 2) & 0xff;
         }
     }
 
@@ -1379,6 +1443,18 @@ public class PPU : IPPU
             adr = (adr & 0xfc00) | ((adr & 0x380) >> 7) | ((adr & 0x7f) << 3);
         }
         return adr;
+    }
+
+    private bool GetCurrentVblank()
+    {
+        if (_snes is null)
+        {
+            return false;
+        }
+
+        int vBlankStart = _snes.IsPal ? 240 : (_overscan ? 240 : 225);
+        int maxV = _snes.IsPal ? 312 : 262;
+        return _snes.YPos >= vBlankStart && _snes.YPos < maxV;
     }
 
     private static int Get13Signed(int val)
