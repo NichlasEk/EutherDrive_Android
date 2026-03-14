@@ -39,6 +39,8 @@ public class ROM : IROM
     private KSNES.Specialchips.OBC1.Obc1? _obc1;
     [NonSerialized]
     private KSNES.Specialchips.SRTC.SRtc? _srtc;
+    [NonSerialized]
+    private KSNES.Specialchips.SPC7110.Spc7110? _spc7110;
     private bool _superFxHasBattery;
     private ulong _superFxOverclock = 1;
     private Dsp1PortMapping _dsp1PortMapping;
@@ -137,7 +139,22 @@ public class ROM : IROM
             _sdd1 = null;
         }
 
+        if (IsSpc7110Chipset(header))
+        {
+            bool hasRtc = header.ChipsetByte == 0xF9;
+            _spc7110 = new KSNES.Specialchips.SPC7110.Spc7110(_data, _sram, hasRtc);
+            _sram = _spc7110.Sram;
+            _sramSize = _sram.Length;
+            _hasSram = _sram.Length > 0;
+            Console.WriteLine($"[SPC7110] Initialized successfully. RTC={(hasRtc ? 1 : 0)}");
+        }
+        else
+        {
+            _spc7110 = null;
+        }
+
         bool hasDsp =
+            _spc7110 == null &&
             !header.IsExHiRom &&
             header.ExCoprocessor == 0 &&
             header.Chips >= 3 &&
@@ -301,6 +318,8 @@ public class ROM : IROM
                 Console.WriteLine($"[SRAM] Loaded size {data.Length} != expected {_sram.Length}. Truncated to {copy}.");
             }
         }
+
+        LoadSpc7110Rtc();
     }
 
     public byte Read(int bank, int adr)
@@ -367,6 +386,13 @@ public class ROM : IROM
         {
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             if (_sdd1.Read(address, out byte value))
+                return value;
+        }
+
+        if (_spc7110 != null)
+        {
+            uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+            if (_spc7110.Read(address, out byte value))
                 return value;
         }
 
@@ -551,6 +577,19 @@ public class ROM : IROM
             {
                 if (wroteRam && _hasSram)
                     _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                return;
+            }
+        }
+
+        if (_spc7110 != null)
+        {
+            uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+            if (_spc7110.Write(address, value, out bool wroteRam))
+            {
+                if (wroteRam && _hasSram)
+                    _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                else if (_spc7110.Rtc != null && ((bank & 0x7F) <= 0x3F) && (adr == 0x4840 || adr == 0x4841))
+                    SaveSpc7110Rtc();
                 return;
             }
         }
@@ -1032,6 +1071,7 @@ public class ROM : IROM
         try
         {
             File.WriteAllBytes(fileName, _sram);
+            SaveSpc7110Rtc();
         }
         catch (UnauthorizedAccessException ex)
         {
@@ -1048,6 +1088,50 @@ public class ROM : IROM
     private string GetSRAMFileName()
     {
         return Path.ChangeExtension(_system!.FileName, ".srm");
+    }
+
+    private string GetSpc7110RtcFileName()
+    {
+        return Path.ChangeExtension(_system!.FileName, ".rtc");
+    }
+
+    private void LoadSpc7110Rtc()
+    {
+        if (_spc7110?.Rtc == null)
+            return;
+
+        string fileName = GetSpc7110RtcFileName();
+        if (!File.Exists(fileName))
+            return;
+
+        try
+        {
+            using var stream = File.OpenRead(fileName);
+            using var reader = new BinaryReader(stream);
+            _spc7110.Rtc.Load(reader);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or EndOfStreamException)
+        {
+            Console.WriteLine($"[RTC] Load failed: {ex.Message}");
+        }
+    }
+
+    private void SaveSpc7110Rtc()
+    {
+        if (_spc7110?.Rtc == null)
+            return;
+
+        string fileName = GetSpc7110RtcFileName();
+        try
+        {
+            using var stream = File.Create(fileName);
+            using var writer = new BinaryWriter(stream);
+            _spc7110.Rtc.Save(writer);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"[RTC] Save failed: {ex.Message}");
+        }
     }
 
     private static bool IsSa1Chipset(int chipsetByte)
@@ -1217,6 +1301,12 @@ public class ROM : IROM
     {
         int b = bank & 0x7f;
         return b >= 0x20 && b < 0x40;
+    }
+
+    private static bool IsSpc7110Chipset(Header header)
+    {
+        return header.ExCoprocessor == 0 &&
+               (header.ChipsetByte == 0xF5 || header.ChipsetByte == 0xF9);
     }
 
     private static bool IsExHiRomSramBank(int bank)
