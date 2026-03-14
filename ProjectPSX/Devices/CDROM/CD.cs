@@ -7,6 +7,7 @@ namespace ProjectPSX.Devices.CdRom {
     public class CD {
 
         private const int BYTES_PER_SECTOR_RAW = 2352;
+        private static readonly bool Verbose = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1";
 
         private byte[] rawSectorBuffer = new byte[BYTES_PER_SECTOR_RAW];
 
@@ -33,7 +34,8 @@ namespace ProjectPSX.Devices.CdRom {
 
             for (int i = 0; i < tracks.Count; i++) {
                 streams[i] = new FileStream(tracks[i].file, FileMode.Open, FileAccess.Read);
-                Console.WriteLine($"Track {i} size: {tracks[i].size} lbaStart: {tracks[i].lbaStart} lbaEnd: {tracks[i].lbaEnd}");
+                if (Verbose)
+                    Console.WriteLine($"Track {i} size: {tracks[i].size} lbaStart: {tracks[i].lbaStart} lbaEnd: {tracks[i].lbaEnd}");
             }
         }
 
@@ -64,7 +66,8 @@ namespace ProjectPSX.Devices.CdRom {
                 //Console.WriteLine(loc + " " + track.number + " " + track.lbaEnd + " " + isTrackChange);
                 if (track.lbaEnd >= loc) return track;
             }
-            Console.WriteLine("[CD] WARNING: LBA beyond tracks!");
+            if (Verbose)
+                Console.WriteLine("[CD] WARNING: LBA beyond tracks!");
             return tracks[0]; //and explode ¯\_(ツ)_/¯ 
         }
 
@@ -74,7 +77,8 @@ namespace ProjectPSX.Devices.CdRom {
             foreach (Track track in tracks) {
                 lba += track.lba;
             }
-            Console.WriteLine($"[CD] LBA: {lba:x8}");
+            if (Verbose)
+                Console.WriteLine($"[CD] LBA: {lba:x8}");
             return lba;
         }
 

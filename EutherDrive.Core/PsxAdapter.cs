@@ -1,5 +1,9 @@
 using System;
+using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
 using ProjectPSX;
 using ProjectPSX.Devices.Input;
 
@@ -7,10 +11,13 @@ namespace EutherDrive.Core;
 
 public sealed class PsxAdapter : IEmulatorCore
 {
+    private const uint OpaqueBlackPixel = 0xFF000000u;
+    private static readonly Vector<uint> OpaqueAlphaVector = new(0xFF000000u);
+
     public static string? BiosPath { get; set; }
     public static bool AnalogControllerEnabled { get; set; }
     public static bool FastLoadEnabled { get; set; }
-    public long? FrameCounter => _frameCounter;
+    public long? FrameCounter => Interlocked.Read(ref _frameCounter);
     private sealed class PsxHostWindow : IHostWindow
     {
         private const double DefaultAspectRatio = 4.0 / 3.0;
@@ -163,11 +170,16 @@ public sealed class PsxAdapter : IEmulatorCore
     private PsxHostWindow? _host;
     private string? _diskPath;
     private readonly object _stateLock = new();
-    private byte[] _frameBuffer = new byte[320 * 240 * 4];
-    private byte[] _frameSnapshotBuffer = new byte[320 * 240 * 4];
-    private int _frameWidth = 320;
-    private int _frameHeight = 240;
-    private int _frameStride = 320 * 4;
+    private readonly object _frameLock = new();
+    private byte[] _workFrameBuffer = new byte[320 * 240 * 4];
+    private byte[] _presentFrameBuffer = new byte[320 * 240 * 4];
+    private byte[] _spareFrameBuffer = new byte[320 * 240 * 4];
+    private int _workFrameWidth = 320;
+    private int _workFrameHeight = 240;
+    private int _workFrameStride = 320 * 4;
+    private int _presentFrameWidth = 320;
+    private int _presentFrameHeight = 240;
+    private int _presentFrameStride = 320 * 4;
     private readonly object _audioLock = new();
     private short[] _audioQueue = Array.Empty<short>();
     private int _audioQueuedCount;
@@ -196,29 +208,31 @@ public sealed class PsxAdapter : IEmulatorCore
 
     public void RunFrame()
     {
-        lock (_stateLock)
+        var core = _core;
+        if (core == null)
+            return;
+
+        core.RunFrame();
+
+        lock (_frameLock)
         {
-            _core?.RunFrame();
-            _frameCounter++;
+            RotateFrameBuffers();
+            _presentFrameWidth = _workFrameWidth;
+            _presentFrameHeight = _workFrameHeight;
+            _presentFrameStride = _workFrameStride;
         }
+
+        Interlocked.Increment(ref _frameCounter);
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
-        lock (_stateLock)
+        lock (_frameLock)
         {
-            int required = _frameStride * _frameHeight;
-            if (_frameBuffer.Length != required)
-                _frameBuffer = new byte[Math.Max(required, 0)];
-            if (_frameSnapshotBuffer.Length != required)
-                _frameSnapshotBuffer = new byte[Math.Max(required, 0)];
-
-            Array.Copy(_frameBuffer, _frameSnapshotBuffer, required);
-
-            width = _frameWidth;
-            height = _frameHeight;
-            stride = _frameStride;
-            return _frameSnapshotBuffer;
+            width = _presentFrameWidth;
+            height = _presentFrameHeight;
+            stride = _presentFrameStride;
+            return _presentFrameBuffer;
         }
     }
 
@@ -226,12 +240,16 @@ public sealed class PsxAdapter : IEmulatorCore
     {
         width = 0;
         height = 0;
-        if (_frameHeight <= 0)
+        int presentHeight;
+        lock (_frameLock)
+            presentHeight = _presentFrameHeight;
+
+        if (presentHeight <= 0)
             return false;
 
         double aspect = _host?.GetPresentationAspectRatio() ?? (4.0 / 3.0);
-        width = Math.Round(_frameHeight * aspect);
-        height = _frameHeight;
+        width = Math.Round(presentHeight * aspect);
+        height = presentHeight;
         return width > 0 && height > 0;
     }
 
@@ -244,12 +262,14 @@ public sealed class PsxAdapter : IEmulatorCore
             if (_audioQueuedCount == 0)
                 return ReadOnlySpan<short>.Empty;
 
-            if (_audioReadBuffer.Length != _audioQueuedCount)
-                _audioReadBuffer = new short[_audioQueuedCount];
+            int count = _audioQueuedCount;
 
-            _audioQueue.AsSpan(0, _audioQueuedCount).CopyTo(_audioReadBuffer);
+            if (_audioReadBuffer.Length < count)
+                _audioReadBuffer = new short[count];
+
+            _audioQueue.AsSpan(0, count).CopyTo(_audioReadBuffer.AsSpan(0, count));
             _audioQueuedCount = 0;
-            return _audioReadBuffer;
+            return _audioReadBuffer.AsSpan(0, count);
         }
     }
 
@@ -339,81 +359,99 @@ public sealed class PsxAdapter : IEmulatorCore
 
         int stride = width * 4;
         int required = stride * height;
-        if (_frameBuffer.Length != required)
-            _frameBuffer = new byte[required];
+        EnsureWorkFrameCapacity(required);
 
-        _frameWidth = width;
-        _frameHeight = height;
-        _frameStride = stride;
+        _workFrameWidth = width;
+        _workFrameHeight = height;
+        _workFrameStride = stride;
 
+        Span<uint> dstPixels = MemoryMarshal.Cast<byte, uint>(_workFrameBuffer.AsSpan(0, required));
         int baseX = vramX;
         int baseY = vramY;
         int vramWidth = 1024;
         int vramHeight = 512;
         if (is24Bit)
         {
-            UpdateFrame24(vram1555, width, height, baseX, baseY, vramWidth, vramHeight);
+            UpdateFrame24(vram1555, dstPixels, width, height, baseX, baseY, vramWidth, vramHeight);
             return;
         }
 
         for (int y = 0; y < height; y++)
         {
-            int dstRow = y * stride;
+            Span<uint> dstRow = dstPixels.Slice(y * width, width);
             int srcY = baseY + y;
             if ((uint)srcY >= (uint)vramHeight)
             {
-                for (int x = 0; x < width; x++)
-                {
-                    int o = dstRow + (x << 2);
-                    _frameBuffer[o + 0] = 0;
-                    _frameBuffer[o + 1] = 0;
-                    _frameBuffer[o + 2] = 0;
-                    _frameBuffer[o + 3] = 0xFF;
-                }
+                dstRow.Fill(OpaqueBlackPixel);
                 continue;
             }
 
             int srcRow = srcY * vramWidth;
-            for (int x = 0; x < width; x++)
+            if (baseX >= vramWidth)
             {
-                int srcX = baseX + x;
-                int color = 0;
-                if ((uint)srcX < (uint)vramWidth)
-                    color = vram[srcRow + srcX];
-                int o = dstRow + (x << 2);
-                _frameBuffer[o + 0] = (byte)(color & 0xFF);
-                _frameBuffer[o + 1] = (byte)((color >> 8) & 0xFF);
-                _frameBuffer[o + 2] = (byte)((color >> 16) & 0xFF);
-                _frameBuffer[o + 3] = 0xFF;
+                dstRow.Fill(OpaqueBlackPixel);
+                continue;
             }
+
+            int copyWidth = Math.Min(width, vramWidth - baseX);
+            if (copyWidth <= 0)
+            {
+                dstRow.Fill(OpaqueBlackPixel);
+                continue;
+            }
+
+            BlitOpaqueBgrx32(
+                MemoryMarshal.Cast<int, uint>(vram.AsSpan(srcRow + baseX, copyWidth)),
+                dstRow.Slice(0, copyWidth));
+
+            if (copyWidth < width)
+                dstRow.Slice(copyWidth).Fill(OpaqueBlackPixel);
         }
     }
 
-    private void UpdateFrame24(ushort[] vram1555, int width, int height, int baseX, int baseY, int vramWidth, int vramHeight)
+    private static void BlitOpaqueBgrx32(ReadOnlySpan<uint> source, Span<uint> destination)
+    {
+        int x = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            int vectorWidth = Vector<uint>.Count;
+            for (; x <= source.Length - vectorWidth; x += vectorWidth)
+            {
+                (new Vector<uint>(source.Slice(x, vectorWidth)) | OpaqueAlphaVector).CopyTo(destination.Slice(x, vectorWidth));
+            }
+        }
+
+        for (; x < source.Length; x++)
+            destination[x] = source[x] | OpaqueBlackPixel;
+    }
+
+    private void UpdateFrame24(ushort[] vram1555, Span<uint> dstPixels, int width, int height, int baseX, int baseY, int vramWidth, int vramHeight)
     {
         for (int y = 0; y < height; y++)
         {
-            int dstRow = y * _frameStride;
+            Span<uint> dstRow = dstPixels.Slice(y * width, width);
             int srcY = baseY + y;
             if ((uint)srcY >= (uint)vramHeight)
             {
-                ClearFrameRow(dstRow, width);
+                ClearFrameRow(dstRow);
                 continue;
             }
 
             int rowBase = srcY * vramWidth;
             int rowByteBase = baseX * 2;
+            int maxBytes = vramWidth * 2;
+            if (rowByteBase >= maxBytes)
+            {
+                ClearFrameRow(dstRow);
+                continue;
+            }
+
             for (int x = 0; x < width; x++)
             {
                 int pixelByteIndex = rowByteBase + (x * 3);
-                int maxBytes = vramWidth * 2;
-                int o = dstRow + (x << 2);
                 if (pixelByteIndex + 2 >= maxBytes)
                 {
-                    _frameBuffer[o + 0] = 0;
-                    _frameBuffer[o + 1] = 0;
-                    _frameBuffer[o + 2] = 0;
-                    _frameBuffer[o + 3] = 0xFF;
+                    dstRow.Slice(x).Fill(OpaqueBlackPixel);
                     continue;
                 }
 
@@ -421,10 +459,7 @@ public sealed class PsxAdapter : IEmulatorCore
                 byte g = ReadVramByte(vram1555, rowBase, pixelByteIndex + 1);
                 byte b = ReadVramByte(vram1555, rowBase, pixelByteIndex + 2);
 
-                _frameBuffer[o + 0] = b;
-                _frameBuffer[o + 1] = g;
-                _frameBuffer[o + 2] = r;
-                _frameBuffer[o + 3] = 0xFF;
+                dstRow[x] = OpaqueBlackPixel | ((uint)r << 16) | ((uint)g << 8) | b;
             }
         }
     }
@@ -436,16 +471,24 @@ public sealed class PsxAdapter : IEmulatorCore
         return (byte)(((byteIndex & 1) == 0) ? (word & 0xFF) : (word >> 8));
     }
 
-    private void ClearFrameRow(int dstRow, int width)
+    private static void ClearFrameRow(Span<uint> row)
     {
-        for (int x = 0; x < width; x++)
-        {
-            int o = dstRow + (x << 2);
-            _frameBuffer[o + 0] = 0;
-            _frameBuffer[o + 1] = 0;
-            _frameBuffer[o + 2] = 0;
-            _frameBuffer[o + 3] = 0xFF;
-        }
+        row.Fill(OpaqueBlackPixel);
+    }
+
+    private void EnsureWorkFrameCapacity(int required)
+    {
+        if (_workFrameBuffer.Length < required)
+            _workFrameBuffer = new byte[required];
+        if (_presentFrameBuffer.Length < required)
+            _presentFrameBuffer = new byte[required];
+        if (_spareFrameBuffer.Length < required)
+            _spareFrameBuffer = new byte[required];
+    }
+
+    private void RotateFrameBuffers()
+    {
+        (_presentFrameBuffer, _spareFrameBuffer, _workFrameBuffer) = (_workFrameBuffer, _presentFrameBuffer, _spareFrameBuffer);
     }
 
     private void PushAudio(byte[] samples)
@@ -465,23 +508,24 @@ public sealed class PsxAdapter : IEmulatorCore
 
             int si = 0;
             int di = _audioQueuedCount;
-            for (int i = 0; i < sampleCount; i++)
+            if (_masterVolumeScale == 1.0f)
             {
-                short raw = (short)(samples[si] | (samples[si + 1] << 8));
-                if (_masterVolumeScale != 1.0f)
+                MemoryMarshal.Cast<byte, short>(samples.AsSpan()).CopyTo(_audioQueue.AsSpan(di, sampleCount));
+                di += sampleCount;
+            }
+            else
+            {
+                for (int i = 0; i < sampleCount; i++)
                 {
+                    short raw = (short)(samples[si] | (samples[si + 1] << 8));
                     int scaled = (int)(raw * _masterVolumeScale);
                     if (scaled > short.MaxValue)
                         scaled = short.MaxValue;
                     else if (scaled < short.MinValue)
                         scaled = short.MinValue;
                     _audioQueue[di++] = (short)scaled;
+                    si += 2;
                 }
-                else
-                {
-                    _audioQueue[di++] = raw;
-                }
-                si += 2;
             }
             _audioQueuedCount = di;
         }

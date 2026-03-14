@@ -1,9 +1,11 @@
 ﻿using System;
+using System.Numerics;
 
 namespace ProjectPSX.Devices; 
 public class DMA {
 
     Channel[] channels = new Channel[8];
+    private uint pendingTransferMask;
 
     public DMA(BUS bus) {
         var interrupt = new InterruptChannel();
@@ -30,13 +32,33 @@ public class DMA {
         //Console.WriteLine("DMA write " + channel + " " + register + ":" + value.ToString("x8"));
 
         channels[channel].write(register, value);
+        if (channel < 7) {
+            RefreshPendingBit((int)channel);
+        }
     }
 
     public bool tick(int cycles) {
-        for (var i = 0; i < 7; i++) {
-            ((DmaChannel)channels[i]).transferBlockIfPending(cycles);
+        uint mask = pendingTransferMask;
+        while (mask != 0) {
+            int channelIndex = BitOperations.TrailingZeroCount(mask);
+            mask &= mask - 1;
+
+            var channel = (DmaChannel)channels[channelIndex];
+            channel.transferBlockIfPending(cycles);
+            if (!channel.HasPendingTransfer) {
+                pendingTransferMask &= ~(1u << channelIndex);
+            }
         }
         return ((InterruptChannel)channels[7]).tick();
+    }
+
+    private void RefreshPendingBit(int channelIndex) {
+        var channel = (DmaChannel)channels[channelIndex];
+        if (channel.HasPendingTransfer) {
+            pendingTransferMask |= 1u << channelIndex;
+        } else {
+            pendingTransferMask &= ~(1u << channelIndex);
+        }
     }
 
 }

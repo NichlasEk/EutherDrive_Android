@@ -25,6 +25,7 @@ public sealed class DmaChannel : Channel {
     private uint pendingBlocks;
     private uint pendingBlockWords;
     private int pendingCycleBudget;
+    public bool HasPendingTransfer => pendingBlocks > 0;
 
     public DmaChannel(int channelNumber, InterruptChannel interrupt, BUS bus) {
         this.channelNumber = channelNumber;

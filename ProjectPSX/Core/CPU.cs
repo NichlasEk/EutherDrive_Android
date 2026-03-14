@@ -37,6 +37,8 @@ namespace ProjectPSX {
         private bool dontIsolateCache = true;
         private const int InstructionCacheLineCount = 256;
         private const int InstructionCacheWordsPerLine = 4;
+        private const int InstructionCacheLineSizeBytes = 16;
+        private const int InstructionCacheTotalBytes = InstructionCacheLineCount * InstructionCacheLineSizeBytes;
         private readonly uint[] _instructionCacheTags = new uint[InstructionCacheLineCount];
         private readonly bool[] _instructionCacheValid = new bool[InstructionCacheLineCount];
         private readonly uint[] _instructionCacheData = new uint[InstructionCacheLineCount * InstructionCacheWordsPerLine];
@@ -157,19 +159,8 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void handleInterrupts() {
-            //Executable address space is limited to ram and bios on psx
-            uint load = FetchInstructionWord(PC);
-
-            //This is actually the "next" opcode if it's a GTE one
-            //just postpone the interrupt so it doesn't glitch out
-            //Crash Bandicoot intro is a good example for this
-            uint instr = load >> 26;
-            if (instr == 0x12) { //COP2 MTC2
-                //Console.WriteLine("WARNING COP2 OPCODE ON INTERRUPT");
-                return;
-            }
-
-            if (bus.interruptController.interruptPending()) {
+            bool interruptPending = bus.interruptController.interruptPending();
+            if (interruptPending) {
                 COP0_GPR[CAUSE] |= 0x400;
             } else {
                 COP0_GPR[CAUSE] &= ~(uint)0x400;
@@ -179,9 +170,22 @@ namespace ProjectPSX {
             byte IM = (byte)((COP0_GPR[SR] >> 8) & 0xFF);
             byte IP = (byte)((COP0_GPR[CAUSE] >> 8) & 0xFF);
 
-            if (IEC && (IM & IP) > 0) {
-                EXCEPTION(this, EX.INTERRUPT);
+            if (!IEC || (IM & IP) == 0) {
+                return;
             }
+
+            //Executable address space is limited to ram and bios on psx
+            uint load = FetchInstructionWord(PC);
+
+            //This is actually the "next" opcode if it's a GTE one
+            //just postpone the interrupt so it doesn't glitch out
+            //Crash Bandicoot intro is a good example for this
+            uint instr = load >> 26;
+            if (instr == 0x12) { //COP2 MTC2
+                return;
+            }
+
+            EXCEPTION(this, EX.INTERRUPT);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -331,6 +335,11 @@ namespace ProjectPSX {
 
         private void InvalidateInstructionCacheRange(uint physicalAddress, int sizeBytes) {
             if (!_instructionCacheRuntimeAllowed || sizeBytes <= 0) {
+                return;
+            }
+
+            if (sizeBytes >= InstructionCacheTotalBytes) {
+                FlushInstructionCache();
                 return;
             }
 

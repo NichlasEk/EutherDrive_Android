@@ -546,6 +546,9 @@ namespace ProjectPSX.Devices {
             int w0_row = orient2d(v1, v2, min) + bias0;
             int w1_row = orient2d(v2, v0, min) + bias1;
             int w2_row = orient2d(v0, v1, min) + bias2;
+            int[] vramBits = vram.Bits;
+            bool checkMask = checkMaskBeforeDraw;
+            int maskBits = maskWhileDrawing << 24;
 
             // Rasterize
             for (int y = min.y; y < max.y; y++) {
@@ -553,6 +556,7 @@ namespace ProjectPSX.Devices {
                 int w0 = w0_row;
                 int w1 = w1_row;
                 int w2 = w2_row;
+                int rowBase = y << 10;
 
                 for (int x = min.x; x < max.x; x++) {
                     // If p is on or inside all edges, render pixel.
@@ -562,8 +566,11 @@ namespace ProjectPSX.Devices {
                         //I assume it could be handled recalculating AXX and BXX offsets but those maths are beyond my scope
 
                         //Check background mask
-                        if (checkMaskBeforeDraw) {
-                            color0.val = (uint)vram.GetPixelRGB888(x, y); //back
+                        int pixelIndex = rowBase + x;
+                        int backColor = 0;
+                        if (checkMask) {
+                            backColor = vramBits[pixelIndex];
+                            color0.val = (uint)backColor;
                             if (color0.m != 0) {
                                 w0 += A12;
                                 w1 += A20;
@@ -611,12 +618,14 @@ namespace ProjectPSX.Devices {
                         }
 
                         if (primitive.isSemiTransparent && (!primitive.isTextured || (color & 0xFF00_0000) != 0)) {
-                            color = handleSemiTransp(x, y, color, primitive.semiTransparencyMode);
+                            if (!checkMask)
+                                backColor = vramBits[pixelIndex];
+                            color = handleSemiTransp(backColor, color, primitive.semiTransparencyMode);
                         }
 
-                        color |= maskWhileDrawing << 24;
+                        color |= maskBits;
 
-                        vram.SetPixel(x, y, color);
+                        vramBits[pixelIndex] = color;
                     }
                     // One step to the right
                     w0 += A12;
@@ -822,12 +831,19 @@ namespace ProjectPSX.Devices {
             int vOrigin = texture.y + (yOrigin - origin.y);
 
             int baseColor = GetRgbColor(bgrColor);
+            int[] vramBits = vram.Bits;
+            bool checkMask = checkMaskBeforeDraw;
+            int maskBits = maskWhileDrawing << 24;
 
             for (int y = yOrigin, v = vOrigin; y < height; y++, v++) {
+                int rowBase = y << 10;
                 for (int x = xOrigin, u = uOrigin; x < width; x++, u++) {
+                    int pixelIndex = rowBase + x;
                     //Check background mask
-                    if (checkMaskBeforeDraw) {
-                        color0.val = (uint)vram.GetPixelRGB888(x & 0x3FF, y & 0x1FF); //back
+                    int backColor = 0;
+                    if (checkMask) {
+                        backColor = vramBits[pixelIndex];
+                        color0.val = (uint)backColor;
                         if (color0.m != 0) continue;
                     }
 
@@ -854,12 +870,14 @@ namespace ProjectPSX.Devices {
                     }
 
                     if (primitive.isSemiTransparent && (!primitive.isTextured || (color & 0xFF00_0000) != 0)) {
-                        color = handleSemiTransp(x, y, color, primitive.semiTransparencyMode);
+                        if (!checkMask)
+                            backColor = vramBits[pixelIndex];
+                        color = handleSemiTransp(backColor, color, primitive.semiTransparencyMode);
                     }
 
-                    color |= maskWhileDrawing << 24;
+                    color |= maskBits;
 
-                    vram.SetPixel(x, y, color);
+                    vramBits[pixelIndex] = color;
                 }
 
             }
@@ -1172,6 +1190,12 @@ namespace ProjectPSX.Devices {
 
         private int handleSemiTransp(int x, int y, int color, int semiTranspMode) {
             color0.val = (uint)vram.GetPixelRGB888(x, y); //back
+            return handleSemiTransp((int)color0.val, color, semiTranspMode);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int handleSemiTransp(int backColor, int color, int semiTranspMode) {
+            color0.val = (uint)backColor; //back
             color1.val = (uint)color; //front
             switch (semiTranspMode) {
                 case 0: //0.5 x B + 0.5 x F    ;aka B/2+F/2
@@ -1244,7 +1268,7 @@ namespace ProjectPSX.Devices {
 
         //This is only needed for the Direct GP0 commands as the command number needs to be
         //known ahead of the first command on queue.
-        private static ReadOnlySpan<byte> CommandSizeTable => new byte[] {
+        private static readonly byte[] CommandSizeTable = {
             //0  1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
              1,  1,  3,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1, //0
              1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1, //1

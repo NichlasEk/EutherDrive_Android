@@ -743,8 +743,12 @@ namespace ProjectPSX.Devices {
             uint edgeKeyOff = keyOff;
             keyOn = 0;
             keyOff = 0;
+            bool reverbEnabled = control.reverbMasterEnabled;
+            bool noiseEnabled = channelNoiseMode != 0;
 
-            tickNoiseGenerator();
+            if (noiseEnabled) {
+                tickNoiseGenerator();
+            }
 
             for (int i = 0; i < voices.Length; i++) {
                 Voice v = voices[i];
@@ -786,7 +790,7 @@ namespace ProjectPSX.Devices {
                 sumLeft += (sample * v.processVolume(v.volumeLeft)) >> 15;
                 sumRight += (sample * v.processVolume(v.volumeRight)) >> 15;
 
-                if((channelReverbMode & (0x1 << i)) != 0) {
+                if (reverbEnabled && (channelReverbMode & (0x1 << i)) != 0) {
                     sumLeftReverb += (sample * v.processVolume(v.volumeLeft)) >> 15;
                     sumRightReverb += (sample * v.processVolume(v.volumeRight)) >> 15;
                 }
@@ -817,13 +821,13 @@ namespace ProjectPSX.Devices {
                 sumLeft += cdL;
                 sumRight += cdR;
 
-                if(control.cdAudioReverb) {
+                if (reverbEnabled && control.cdAudioReverb) {
                     sumLeftReverb += cdL;
                     sumRightReverb += cdR;
                 }
             }
 
-            if (reverbCounter == 0) {
+            if (reverbEnabled && reverbCounter == 0) {
                 var (reverbL, reverbR) = processReverb(sumLeftReverb, sumRightReverb);
 
                 sumLeft += reverbL;
