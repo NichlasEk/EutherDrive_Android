@@ -1,11 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
 
 namespace ProjectPSX {
     public class JOYPAD {
 
         private byte JOY_TX_DATA; //1F801040h JOY_TX_DATA(W)
-        private byte JOY_RX_DATA; //1F801040h JOY_RX_DATA(R) FIFO
-        private bool fifoFull;
+        private readonly Queue<byte> rxFifo = new Queue<byte>(8);
 
         //1F801044 JOY_STAT(R)
         private bool TXreadyFlag1 = true;
@@ -14,6 +14,14 @@ namespace ProjectPSX {
         private bool ackInputLevel;
         private bool interruptRequest;
         private int baudrateTimer;
+        private int transferCyclesRemaining;
+        private int transferStartCyclesRemaining;
+        private bool transferActive;
+        private bool txLatchedEnable;
+        private byte transferByte;
+        private bool transferBytePending;
+        private byte pendingTransferByte;
+        private bool pendingTransferLatchedEnable;
 
         //1F801048 JOY_MODE(R/W)
         private uint baudrateReloadFactor;
@@ -53,15 +61,28 @@ namespace ProjectPSX {
             this.memoryCard = memoryCard;
         }
 
-        int counter;
+        private int ackCounter;
 
-        public bool tick() {
-            if (counter > 0) {
-                counter -= 100;
-                if(counter == 0) {
-                    //Console.WriteLine("[IRQ] TICK Triggering JOYPAD");
+        public bool tick(int cycles) {
+            if (transferActive) {
+                if (!TXreadyFlag1) {
+                    transferStartCyclesRemaining -= cycles;
+                    if (transferStartCyclesRemaining <= 0) {
+                        TXreadyFlag1 = true;
+                    }
+                }
+
+                transferCyclesRemaining -= cycles;
+                if (transferCyclesRemaining <= 0) {
+                    FinishTransfer();
+                }
+            }
+
+            if (ackCounter > 0) {
+                ackCounter -= cycles;
+                if (ackCounter <= 0) {
+                    ackCounter = 0;
                     ackInputLevel = false;
-                    interruptRequest = true;
                 }
             }
 
@@ -75,63 +96,114 @@ namespace ProjectPSX {
             baudrateTimer = (int)(JOY_BAUD * baudrateReloadFactor) & ~0x1;
         }
 
+        private int GetBaudFactor() {
+            return baudrateReloadFactor switch {
+                2 => 16,
+                3 => 64,
+                _ => 1,
+            };
+        }
+
+        private int GetBitCycles() {
+            int reload = ((JOY_BAUD * GetBaudFactor()) & ~0x1);
+            return Math.Max(reload, 8);
+        }
+
+        private void StartTransferIfPossible() {
+            if (transferActive || !transferBytePending || !(TXenable || txLatchedEnable)) {
+                return;
+            }
+
+            transferByte = pendingTransferByte;
+            transferBytePending = false;
+            transferActive = true;
+            int bitCycles = GetBitCycles();
+            transferStartCyclesRemaining = bitCycles;
+            transferCyclesRemaining = bitCycles * 8;
+            TXreadyFlag1 = false;
+            TXreadyFlag2 = false;
+        }
+
+        private void PushRxByte(byte value) {
+            if (rxFifo.Count >= 8) {
+                rxFifo.Dequeue();
+            }
+            rxFifo.Enqueue(value);
+        }
+
+        private void RaiseInterruptIfEnabled() {
+            if (ACKinterruptEnable || (RXinterruptEnable && rxFifo.Count >= 1)) {
+                interruptRequest = true;
+            }
+        }
+
+        private void FinishTransfer() {
+            transferActive = false;
+            transferCyclesRemaining = 0;
+            transferStartCyclesRemaining = 0;
+            TXreadyFlag1 = true;
+            TXreadyFlag2 = true;
+
+            byte response = 0xFF;
+            bool ack = false;
+
+            if (JoyOutput) {
+                if (desiredSlotNumber == 1) {
+                    response = 0xFF;
+                    ack = false;
+                } else {
+                    if (joypadDevice == JoypadDevice.None) {
+                        if (transferByte == 0x01) {
+                            joypadDevice = JoypadDevice.Controller;
+                        } else if (transferByte == 0x81) {
+                            joypadDevice = JoypadDevice.MemoryCard;
+                        }
+                    }
+
+                    if (joypadDevice == JoypadDevice.Controller) {
+                        response = controller.process(transferByte);
+                        ack = controller.ack;
+                    } else if (joypadDevice == JoypadDevice.MemoryCard) {
+                        response = memoryCard.process(transferByte);
+                        ack = memoryCard.ack;
+                    }
+
+                    if (!ack) {
+                        joypadDevice = JoypadDevice.None;
+                    }
+                }
+            } else {
+                joypadDevice = JoypadDevice.None;
+                memoryCard.resetToIdle();
+                controller.resetToIdle();
+            }
+
+            PushRxByte(response);
+            ackInputLevel = ack;
+            if (ackInputLevel) {
+                ackCounter = 120;
+                RaiseInterruptIfEnabled();
+            }
+            txLatchedEnable = pendingTransferLatchedEnable;
+            pendingTransferLatchedEnable = false;
+            StartTransferIfPossible();
+        }
+
         public void write(uint addr, uint value) {
             switch (addr & 0xFF) {
                 case 0x40:
                     //Console.WriteLine("[JOYPAD] TX DATA ENQUEUE " + value.ToString("x2"));
                     JOY_TX_DATA = (byte)value;
-                    JOY_RX_DATA = 0xFF;
-                    fifoFull = true;
-
-                    TXreadyFlag1 = true;
-                    TXreadyFlag2 = false;
-
-                    if (JoyOutput) {
-                        TXreadyFlag2 = true;
-
-                        //Console.WriteLine("[JOYPAD] DesiredSlot == " + desiredSlotNumber);
-                        if (desiredSlotNumber == 1) {
-                            JOY_RX_DATA = 0xFF;
-                            ackInputLevel = false;
-                            return;
-                        }
-
-                        if (joypadDevice == JoypadDevice.None) {
-                            //Console.ForegroundColor = ConsoleColor.Red;
-                            if (value == 0x01) {
-                                //Console.ForegroundColor = ConsoleColor.Green;
-                                joypadDevice = JoypadDevice.Controller;
-                            } else if (value == 0x81) {
-                                //Console.ForegroundColor = ConsoleColor.Blue;
-                                joypadDevice = JoypadDevice.MemoryCard;
-                            }
-                        }
-
-                        if(joypadDevice == JoypadDevice.Controller) {
-                            JOY_RX_DATA = controller.process(JOY_TX_DATA);
-                            ackInputLevel = controller.ack;
-                            if (ackInputLevel) counter = 500;
-                            //Console.WriteLine($"[JOYPAD] Conroller TICK Enqueued RX response {JOY_RX_DATA:x2} ack: {ackInputLevel}");
-                            //Console.ReadLine();
-                        } else if(joypadDevice == JoypadDevice.MemoryCard) {
-                            JOY_RX_DATA = memoryCard.process(JOY_TX_DATA);
-                            ackInputLevel = memoryCard.ack;
-                            if (ackInputLevel) counter = 500;
-                            //Console.WriteLine($"[JOYPAD] MemCard TICK Enqueued RX response {JOY_RX_DATA:x2} ack: {ackInputLevel}");
-                            //Console.ReadLine();
-                        } else {
-                            ackInputLevel = false;
-                        }
-                        if (ackInputLevel == false) joypadDevice = JoypadDevice.None;
-                    } else {
-                        joypadDevice = JoypadDevice.None;
-                        memoryCard.resetToIdle();
-                        controller.resetToIdle();
-
-                        ackInputLevel = false;
+                    if (transferActive && !TXreadyFlag1) {
+                        transferByte = JOY_TX_DATA;
+                        txLatchedEnable = TXenable;
+                        break;
                     }
-
-
+                    transferBytePending = true;
+                    pendingTransferByte = JOY_TX_DATA;
+                    pendingTransferLatchedEnable = TXenable;
+                    txLatchedEnable = pendingTransferLatchedEnable;
+                    StartTransferIfPossible();
                     break;
                 case 0x48:
                     //Console.WriteLine($"[JOYPAD] SET MODE {value:x4}");
@@ -179,13 +251,23 @@ namespace ProjectPSX {
                 joypadDevice = JoypadDevice.None;
                 controller.resetToIdle();
                 memoryCard.resetToIdle();
-                fifoFull = false;
+                rxFifo.Clear();
 
                 setJOY_MODE(0);
                 setJOY_CTRL(0);
                 JOY_BAUD = 0;
+                ackCounter = 0;
+                transferCyclesRemaining = 0;
+                transferStartCyclesRemaining = 0;
+                transferActive = false;
+                txLatchedEnable = false;
+                transferByte = 0xFF;
+                transferBytePending = false;
+                pendingTransferByte = 0xFF;
+                pendingTransferLatchedEnable = false;
+                ackInputLevel = false;
+                interruptRequest = false;
 
-                JOY_RX_DATA = 0xFF;
                 JOY_TX_DATA = 0xFF;
 
                 TXreadyFlag1 = true;
@@ -199,6 +281,8 @@ namespace ProjectPSX {
                 memoryCard.resetToIdle();
                 controller.resetToIdle();
             }
+
+            StartTransferIfPossible();
         }
 
         private void setJOY_MODE(uint value) {
@@ -213,8 +297,10 @@ namespace ProjectPSX {
             switch (addr & 0xFF) {
                 case 0x40:
                     //Console.WriteLine($"[JOYPAD] GET RX DATA {JOY_RX_DATA:x2}");
-                    fifoFull = false;
-                    return JOY_RX_DATA;
+                    if (rxFifo.Count > 0) {
+                        return rxFifo.Dequeue();
+                    }
+                    return 0xFF;
                 case 0x44:
                     //Console.WriteLine($"[JOYPAD] GET STAT {getJOY_STAT():x8}");
                     return getJOY_STAT();
@@ -257,21 +343,19 @@ namespace ProjectPSX {
             joy_mode |= characterLength << 2;
             joy_mode |= (parityEnable ? 1u : 0u) << 4;
             joy_mode |= (parityTypeOdd ? 1u : 0u) << 5;
-            joy_mode |= (clkOutputPolarity ? 1u : 0u) << 4;
+            joy_mode |= (clkOutputPolarity ? 1u : 0u) << 8;
             return joy_mode;
         }
 
         private uint getJOY_STAT() {
             uint joy_stat = 0;
             joy_stat |= TXreadyFlag1 ? 1u : 0u;
-            joy_stat |= (fifoFull ? 1u : 0u) << 1;
+            joy_stat |= (rxFifo.Count > 0 ? 1u : 0u) << 1;
             joy_stat |= (TXreadyFlag2 ? 1u : 0u) << 2;
             joy_stat |= (RXparityError ? 1u : 0u) << 3;
             joy_stat |= (ackInputLevel ? 1u : 0u) << 7;
             joy_stat |= (interruptRequest ? 1u : 0u) << 9;
             joy_stat |= (uint)baudrateTimer << 11;
-
-            ackInputLevel = false;
 
             return joy_stat;
         }

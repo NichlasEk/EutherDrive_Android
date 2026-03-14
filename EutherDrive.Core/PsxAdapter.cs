@@ -8,6 +8,7 @@ namespace EutherDrive.Core;
 public sealed class PsxAdapter : IEmulatorCore
 {
     public static string? BiosPath { get; set; }
+    public static bool AnalogControllerEnabled { get; set; } = true;
     private sealed class PsxHostWindow : IHostWindow
     {
         private const double DefaultAspectRatio = 4.0 / 3.0;
@@ -179,7 +180,7 @@ public sealed class PsxAdapter : IEmulatorCore
         if (!string.IsNullOrWhiteSpace(BiosPath))
             Environment.SetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS", BiosPath);
         _host = new PsxHostWindow(this);
-        _core = new ProjectPSX.ProjectPSX(_host, path);
+        _core = new ProjectPSX.ProjectPSX(_host, path, AnalogControllerEnabled);
     }
 
     public void Reset()
@@ -241,6 +242,12 @@ public sealed class PsxAdapter : IEmulatorCore
         else if (percent > 100)
             percent = 100;
         _masterVolumeScale = percent / 100f;
+    }
+
+    public void SetAnalogControllerEnabled(bool enabled)
+    {
+        AnalogControllerEnabled = enabled;
+        _core?.SetAnalogControllerEnabled(enabled);
     }
 
     public void SetInputState(

@@ -19,14 +19,14 @@ namespace ProjectPSX {
         private JOYPAD joypad;
         private TIMERS timers;
         private MDEC mdec;
-        private Controller controller;
+        private DigitalController controller;
         private MemoryCard memoryCard;
         private CD cd;
         private InterruptController interruptController;
         private Exp2 exp2;
 
-        public ProjectPSX(IHostWindow window, string diskFilename) {
-            controller = new DigitalController();
+        public ProjectPSX(IHostWindow window, string diskFilename, bool analogControllerEnabled = true) {
+            controller = new DigitalController(analogControllerEnabled);
             memoryCard = new MemoryCard();
 
             interruptController = new InterruptController();
@@ -65,6 +65,8 @@ namespace ProjectPSX {
         public void JoyPadUp(GamepadInputsEnum button) => controller.handleJoyPadUp(button);
 
         public void JoyPadDown(GamepadInputsEnum button) => controller.handleJoyPadDown(button);
+
+        public void SetAnalogControllerEnabled(bool enabled) => controller.SetAnalogControllerEnabled(enabled);
 
         public void toggleDebug() {
             cpu.debug = !cpu.debug;

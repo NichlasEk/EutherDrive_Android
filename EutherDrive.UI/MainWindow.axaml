@@ -267,6 +267,11 @@
               <Button Content="Select BIOS…" Click="OnSelectPsxBios"/>
               <Button Classes="ghost" Content="Clear" Click="OnClearPsxBios"/>
             </StackPanel>
+            <CheckBox Name="PsxAnalogPadCheck"
+                      Content="PSX analog pad"
+                      IsChecked="True"
+                      Checked="OnPsxAnalogPadToggle"
+                      Unchecked="OnPsxAnalogPadToggle"/>
             <CheckBox Content="SMS overscan (debug)" IsChecked="False" Name="SmsOverscanCheck" Checked="OnSmsOverscanToggle" Unchecked="OnSmsOverscanToggle"/>
             <Separator/>
             <TextBlock Text="Perf" FontWeight="Bold"/>

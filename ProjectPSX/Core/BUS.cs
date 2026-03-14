@@ -418,7 +418,7 @@ namespace ProjectPSX {
             if (timers.tick(0, cycles)) interruptController.set(Interrupt.TIMER0);
             if (timers.tick(1, cycles)) interruptController.set(Interrupt.TIMER1);
             if (timers.tick(2, cycles)) interruptController.set(Interrupt.TIMER2);
-            if (joypad.tick()) interruptController.set(Interrupt.CONTR);
+            if (joypad.tick(cycles)) interruptController.set(Interrupt.CONTR);
             if (spu.tick(cycles)) interruptController.set(Interrupt.SPU);
         }
 

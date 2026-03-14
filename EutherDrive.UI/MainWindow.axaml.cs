@@ -212,6 +212,7 @@ public partial class MainWindow : Window
     private bool _renderSkipEnabled;
     private int _renderSkipCounter;
     private bool _smsOverscanEnabled;
+    private bool _psxAnalogControllerEnabled = true;
     private double _speedScale = 1.0;
     private long _emuFpsLastTicks;
     private int _emuFpsFrames;
@@ -416,6 +417,7 @@ public partial class MainWindow : Window
             InputTraceCheck.Checked += OnInputTraceToggle;
             InputTraceCheck.Unchecked += OnInputTraceToggle;
         }
+        PsxAdapter.AnalogControllerEnabled = _psxAnalogControllerEnabled;
         UpdateAudioDebugTimer();
 
         // Load ROM from command line if provided
@@ -1330,6 +1332,15 @@ public partial class MainWindow : Window
         if (PsxBiosPathText != null)
             PsxBiosPathText.Text = "(none)";
         StatusText.Text = "PSX BIOS cleared";
+        SaveSettings();
+    }
+
+    private void OnPsxAnalogPadToggle(object? sender, RoutedEventArgs e)
+    {
+        _psxAnalogControllerEnabled = PsxAnalogPadCheck?.IsChecked != false;
+        PsxAdapter.AnalogControllerEnabled = _psxAnalogControllerEnabled;
+        if (_core is PsxAdapter psx)
+            psx.SetAnalogControllerEnabled(_psxAnalogControllerEnabled);
         SaveSettings();
     }
 
@@ -3150,6 +3161,7 @@ public partial class MainWindow : Window
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
+        public bool PsxAnalogControllerEnabled { get; set; } = true;
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -3180,6 +3192,7 @@ public partial class MainWindow : Window
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
+        public bool PsxAnalogControllerEnabled { get; set; } = true;
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -3264,6 +3277,10 @@ public partial class MainWindow : Window
             if (PsxBiosPathText != null)
                 PsxBiosPathText.Text = _psxBiosPath;
         }
+        _psxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled;
+        PsxAdapter.AnalogControllerEnabled = _psxAnalogControllerEnabled;
+        if (PsxAnalogPadCheck != null)
+            PsxAnalogPadCheck.IsChecked = _psxAnalogControllerEnabled;
         if (!string.IsNullOrWhiteSpace(settings.PceBiosPath))
         {
             _pceBiosPath = settings.PceBiosPath;
@@ -3407,6 +3424,7 @@ public partial class MainWindow : Window
             RecentRomPaths = _recentRomPaths.ToList(),
             PceBiosPath = _pceBiosPath,
             PsxBiosPath = _psxBiosPath,
+            PsxAnalogControllerEnabled = _psxAnalogControllerEnabled,
             MasterVolumePercent = _masterVolumePercent,
             PsgMixPercent = _psgMixPercent,
             YmMixPercent = _ymMixPercent,
@@ -3492,6 +3510,7 @@ public partial class MainWindow : Window
             RecentRomPaths = settings.RecentRomPaths,
             PceBiosPath = settings.PceBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
+            PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled,
             MasterVolumePercent = settings.MasterVolumePercent,
             PsgMixPercent = settings.PsgMixPercent,
             YmMixPercent = settings.YmMixPercent,
@@ -3576,6 +3595,7 @@ public partial class MainWindow : Window
             RecentRomPaths = raw.RecentRomPaths,
             PceBiosPath = raw.PceBiosPath,
             PsxBiosPath = raw.PsxBiosPath,
+            PsxAnalogControllerEnabled = raw.PsxAnalogControllerEnabled,
             MasterVolumePercent = raw.MasterVolumePercent,
             PsgMixPercent = raw.PsgMixPercent,
             YmMixPercent = raw.YmMixPercent,
