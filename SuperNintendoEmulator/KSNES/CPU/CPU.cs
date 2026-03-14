@@ -105,7 +105,6 @@ public class CPU : ICPU
     private static readonly bool TraceStackSet =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_STACK_SET"), "1", StringComparison.Ordinal) ||
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_STACK_SET"), "1", StringComparison.Ordinal);
-
     [JsonIgnore]
     private readonly int[] _modes = [
         IMP, IDX, IMM, SR, DP, DP, DP, IDL, IMP, IMMm, IMP, IMP, ABS, ABS, ABS, ABL,
@@ -1685,13 +1684,13 @@ public class CPU : ICPU
         if (_x)
         {
             _br[X] = (ushort) PullByte();
-            SetZAndN(_br[X], _m);
+            SetZAndN(_br[X], _x);
         }
         else
         {
             CyclesLeft++;
             _br[X] = (ushort) PullWord();
-            SetZAndN(_br[X], _m);
+            SetZAndN(_br[X], _x);
         }
     }
 
@@ -1700,13 +1699,13 @@ public class CPU : ICPU
         if (_x)
         {
             _br[Y] = (ushort) PullByte();
-            SetZAndN(_br[Y], _m);
+            SetZAndN(_br[Y], _x);
         }
         else
         {
             CyclesLeft++;
             _br[Y] = (ushort) PullWord();
-            SetZAndN(_br[Y], _m);
+            SetZAndN(_br[Y], _x);
         }
     }
 
