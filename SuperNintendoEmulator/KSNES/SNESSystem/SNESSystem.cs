@@ -63,6 +63,8 @@ public class SNESSystem : ISNESSystem
     private int _cpuCyclesLeft;
     private int _cpuMemOps;
     private ulong _apuMasterCyclesProduct;
+    [NonSerialized]
+    private int _apuBorrowedMainCycles;
 
     private int _ramAdr;
 
@@ -290,27 +292,36 @@ public class SNESSystem : ISNESSystem
 
     public int Read(int adr, bool dma = false)
     {
+        int accessTime = 0;
         if (!dma)
         {
             _cpuMemOps++;
-            _cpuCyclesLeft += GetAccessTime(adr);
+            accessTime = GetAccessTime(adr);
+            _cpuCyclesLeft += accessTime;
         }
         int val = Rread(adr);
+        if (!dma && accessTime > 0 && IsCpuApuPortAccess(adr))
+        {
+            AdvanceApuForCpuAccess(accessTime);
+        }
         OpenBus = val;
         return val;
     }
 
     public void Write(int adr, int value, bool dma = false)
     {
+        int accessTime = 0;
         if (!dma)
         {
             _cpuMemOps++;
-            _cpuCyclesLeft += GetAccessTime(adr);
+            accessTime = GetAccessTime(adr);
+            _cpuCyclesLeft += accessTime;
         }
         OpenBus = value;
-        adr &= 0xffffff;
-        int bank = adr >> 16;
-        adr &= 0xffff;
+        int fullAdr = adr & 0xffffff;
+        int bank = fullAdr >> 16;
+        adr = fullAdr & 0xffff;
+        bool isApuPortAccess = !dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr);
         if (bank == 0x7e || bank == 0x7f)
         {
             _ram[((bank & 0x1) << 16) | adr] = (byte) value;
@@ -370,6 +381,10 @@ public class SNESSystem : ISNESSystem
                 WriteReg(adr, value);
             }
         }
+        if (isApuPortAccess)
+        {
+            AdvanceApuForCpuAccess(accessTime);
+        }
         ROM.Write(bank, adr, (byte) value);
     }
 
@@ -396,6 +411,7 @@ public class SNESSystem : ISNESSystem
         _cpuCyclesLeft = 5 * 8 + 12;
         _cpuMemOps = 0;
         _apuMasterCyclesProduct = 0;
+        _apuBorrowedMainCycles = 0;
         _ramAdr = 0;
         _hIrqEnabled = false;
         _vIrqEnabled = false;
@@ -517,7 +533,17 @@ public class SNESSystem : ISNESSystem
     private void Cycle(bool noPpu) 
     {
         Cycles += 2;
-        _apuMasterCyclesProduct += ApuMasterClockFrequency * 2;
+        int apuStepMclks = 2;
+        if (_apuBorrowedMainCycles > 0)
+        {
+            int borrowed = Math.Min(apuStepMclks, _apuBorrowedMainCycles);
+            apuStepMclks -= borrowed;
+            _apuBorrowedMainCycles -= borrowed;
+        }
+        if (apuStepMclks > 0)
+        {
+            _apuMasterCyclesProduct += ApuMasterClockFrequency * (ulong)apuStepMclks;
+        }
         int currentLineMclks = GetCurrentLineMclks();
         if (_joypadStrobe)
         {
@@ -789,6 +815,26 @@ public class SNESSystem : ISNESSystem
             APU.Cycle();
             _apuMasterCyclesProduct -= threshold;
         }
+    }
+
+    private void AdvanceApuForCpuAccess(int mainMasterCycles)
+    {
+        if (mainMasterCycles <= 0)
+            return;
+
+        _apuBorrowedMainCycles += mainMasterCycles;
+        _apuMasterCyclesProduct += ApuMasterClockFrequency * (ulong)mainMasterCycles;
+        CatchUpApu();
+    }
+
+    private static bool IsCpuApuPortAccess(int adr)
+    {
+        adr &= 0xffffff;
+        int bank = adr >> 16;
+        int address = adr & 0xffff;
+        return address >= 0x2140
+            && address < 0x2144
+            && (bank < 0x40 || (bank >= 0x80 && bank < 0xC0));
     }
 
     private void RunFrame(bool noPpu)
@@ -1442,7 +1488,6 @@ public class SNESSystem : ISNESSystem
         }
         if (adr >= 0x40 && adr < 0x80)
         {
-            CatchUpApu();
             int port = adr & 0x3;
             bool accepted = APU.TryWriteMainCpuPort(port, (byte)value);
             int pc = -1;

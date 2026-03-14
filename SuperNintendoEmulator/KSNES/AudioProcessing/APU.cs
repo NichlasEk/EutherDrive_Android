@@ -84,7 +84,6 @@ public class APU : IAPU
 
     public ISPC700 Spc => _spc;
     public IDSP Dsp => _dsp;
-
     public void Attach()
     {
         _spc?.SetAPU(this);
@@ -237,8 +236,7 @@ public class APU : IAPU
             return false;
         }
 
-        _pendingMainCpuPorts[portIndex] = value;
-        _pendingMainCpuPortDirty[portIndex] = true;
+        SpcReadPorts[portIndex] = value;
         TracePort($"[APU-PORT-CPU-WR] port={portIndex} val=0x{value:X2} cycle={_cycles}");
         return true;
     }
