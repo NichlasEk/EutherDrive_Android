@@ -40,7 +40,7 @@ namespace ProjectPSX.Devices.CdRom {
                 if (line.StartsWith("FILE")) {
                     String[] splittedSring = line.Split("\"");
 
-                    String file = dir + Path.DirectorySeparatorChar + splittedSring[1];
+                    String file = ResolveCueFilePath(cue, splittedSring[1]);
                     long size = new FileInfo(file).Length;
                     int lba = (int)(size / BytesPerSectorRaw);
                     int lbaStart = lbaCounter + 150;
@@ -65,6 +65,32 @@ namespace ProjectPSX.Devices.CdRom {
 
 
             return tracks;
+        }
+
+        private static string ResolveCueFilePath(string cuePath, string referencedFile) {
+            string dir = Path.GetDirectoryName(cuePath) ?? string.Empty;
+            string combined = Path.GetFullPath(Path.Combine(dir, referencedFile));
+            if (File.Exists(combined)) {
+                return combined;
+            }
+
+            string nameOnly = Path.GetFileName(referencedFile);
+            string sibling = Path.GetFullPath(Path.Combine(dir, nameOnly));
+            if (File.Exists(sibling)) {
+                return sibling;
+            }
+
+            string extension = Path.GetExtension(referencedFile);
+            if (string.IsNullOrWhiteSpace(extension) || !Directory.Exists(dir)) {
+                return combined;
+            }
+
+            string[] candidates = Directory.GetFiles(dir, $"*{extension}");
+            if (candidates.Length == 1) {
+                return Path.GetFullPath(candidates[0]);
+            }
+
+            return combined;
         }
 
         public static List<Track> fromBin(string file) {

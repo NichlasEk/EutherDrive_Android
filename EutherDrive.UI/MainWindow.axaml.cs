@@ -554,7 +554,7 @@ public partial class MainWindow : Window
                 if (firstQuote >= 0 && lastQuote > firstQuote)
                 {
                     string file = trimmed.Substring(firstQuote + 1, lastQuote - firstQuote - 1);
-                    return Path.Combine(baseDir, file);
+                    return ResolveCueReferencedPath(baseDir, file);
                 }
             }
         }
@@ -563,6 +563,28 @@ public partial class MainWindow : Window
             return null;
         }
         return null;
+    }
+
+    private static string ResolveCueReferencedPath(string baseDir, string file)
+    {
+        string combined = Path.GetFullPath(Path.Combine(baseDir, file));
+        if (File.Exists(combined))
+            return combined;
+
+        string nameOnly = Path.GetFileName(file);
+        string sibling = Path.GetFullPath(Path.Combine(baseDir, nameOnly));
+        if (File.Exists(sibling))
+            return sibling;
+
+        string extension = Path.GetExtension(file);
+        if (string.IsNullOrWhiteSpace(extension) || !Directory.Exists(baseDir))
+            return combined;
+
+        string[] candidates = Directory.GetFiles(baseDir, $"*{extension}");
+        if (candidates.Length == 1)
+            return Path.GetFullPath(candidates[0]);
+
+        return combined;
     }
 
     private static bool ProbePsxSignature(string path)
