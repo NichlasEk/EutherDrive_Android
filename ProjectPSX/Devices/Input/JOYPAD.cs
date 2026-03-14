@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 
 namespace ProjectPSX {
     public class JOYPAD {
@@ -55,10 +57,17 @@ namespace ProjectPSX {
 
         Controller controller;
         MemoryCard memoryCard;
+        private static readonly string? PadTraceFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_PAD_TRACE_FILE");
+        private static readonly int PadTraceLimit = ParseTraceLimit(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_PAD_TRACE_LIMIT"), 4096);
+        private int _padTraceCount;
 
         public JOYPAD(Controller controller, MemoryCard memoryCard) {
             this.controller = controller;
             this.memoryCard = memoryCard;
+            if (!string.IsNullOrWhiteSpace(PadTraceFile)) {
+                Console.WriteLine($"[PSX-PAD] Trace enabled: {PadTraceFile}");
+                TracePad("INIT", "joypad created");
+            }
         }
 
         private int ackCounter;
@@ -83,6 +92,7 @@ namespace ProjectPSX {
                 if (ackCounter <= 0) {
                     ackCounter = 0;
                     ackInputLevel = false;
+                    RaiseInterruptIfEnabled();
                 }
             }
 
@@ -137,6 +147,28 @@ namespace ProjectPSX {
             }
         }
 
+        private static int ParseTraceLimit(string? raw, int fallback) {
+            if (string.IsNullOrWhiteSpace(raw)) {
+                return fallback;
+            }
+
+            return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0
+                ? parsed
+                : fallback;
+        }
+
+        private void TracePad(string tag, string message) {
+            if (string.IsNullOrWhiteSpace(PadTraceFile) || _padTraceCount >= PadTraceLimit) {
+                return;
+            }
+
+            try {
+                File.AppendAllText(PadTraceFile, $"[{tag}] {message}{Environment.NewLine}");
+                _padTraceCount++;
+            } catch {
+            }
+        }
+
         private void FinishTransfer() {
             transferActive = false;
             transferCyclesRemaining = 0;
@@ -181,9 +213,9 @@ namespace ProjectPSX {
             PushRxByte(response);
             ackInputLevel = ack;
             if (ackInputLevel) {
-                ackCounter = 120;
-                RaiseInterruptIfEnabled();
+                ackCounter = 500;
             }
+            TracePad("PAD", $"tx={transferByte:X2} rx={response:X2} ack={(ack ? 1 : 0)} dev={joypadDevice} txr1={(TXreadyFlag1 ? 1 : 0)} txr2={(TXreadyFlag2 ? 1 : 0)} joyOut={(JoyOutput ? 1 : 0)} txEn={(TXenable ? 1 : 0)} slot={desiredSlotNumber}");
             txLatchedEnable = pendingTransferLatchedEnable;
             pendingTransferLatchedEnable = false;
             StartTransferIfPossible();
@@ -194,7 +226,23 @@ namespace ProjectPSX {
                 case 0x40:
                     //Console.WriteLine("[JOYPAD] TX DATA ENQUEUE " + value.ToString("x2"));
                     JOY_TX_DATA = (byte)value;
-                    if (transferActive && !TXreadyFlag1) {
+                    TracePad("TX", $"value={JOY_TX_DATA:X2} transferActive={(transferActive ? 1 : 0)} txr1={(TXreadyFlag1 ? 1 : 0)} txr2={(TXreadyFlag2 ? 1 : 0)} pending={(transferBytePending ? 1 : 0)}");
+                    TXreadyFlag2 = false;
+                    if (transferActive) {
+                        if (TXreadyFlag1 && !transferBytePending) {
+                            transferBytePending = true;
+                            pendingTransferByte = JOY_TX_DATA;
+                            pendingTransferLatchedEnable = TXenable;
+                            TXreadyFlag1 = false;
+                            break;
+                        }
+
+                        if (transferBytePending) {
+                            pendingTransferByte = JOY_TX_DATA;
+                            pendingTransferLatchedEnable = TXenable;
+                            break;
+                        }
+
                         transferByte = JOY_TX_DATA;
                         txLatchedEnable = TXenable;
                         break;
@@ -212,6 +260,7 @@ namespace ProjectPSX {
                 case 0x4A:
                     //Console.WriteLine($"[JOYPAD] SET CONTROL {value:x4}");
                     setJOY_CTRL(value);
+                    TracePad("CTRL", $"value={value:X4} joyOut={(JoyOutput ? 1 : 0)} txEn={(TXenable ? 1 : 0)} rxEn={(RXenable ? 1 : 0)} ackIrq={(ACKinterruptEnable ? 1 : 0)} slot={desiredSlotNumber}");
                     break;
                 case 0x4E:
                     //Console.WriteLine($"[JOYPAD] SET BAUD {value:x4}");

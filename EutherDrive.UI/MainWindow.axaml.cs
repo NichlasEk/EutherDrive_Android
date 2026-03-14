@@ -212,7 +212,7 @@ public partial class MainWindow : Window
     private bool _renderSkipEnabled;
     private int _renderSkipCounter;
     private bool _smsOverscanEnabled;
-    private bool _psxAnalogControllerEnabled = true;
+    private bool _psxAnalogControllerEnabled;
     private bool _psxFastLoadEnabled;
     private double _speedScale = 1.0;
     private long _emuFpsLastTicks;
@@ -3172,7 +3172,7 @@ public partial class MainWindow : Window
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
-        public bool PsxAnalogControllerEnabled { get; set; } = true;
+        public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
@@ -3204,7 +3204,7 @@ public partial class MainWindow : Window
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
-        public bool PsxAnalogControllerEnabled { get; set; } = true;
+        public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;

@@ -269,7 +269,7 @@
             </StackPanel>
             <CheckBox Name="PsxAnalogPadCheck"
                       Content="PSX analog pad"
-                      IsChecked="True"
+                      IsChecked="False"
                       Checked="OnPsxAnalogPadToggle"
                       Unchecked="OnPsxAnalogPadToggle"/>
             <CheckBox Name="PsxFastLoadCheck"

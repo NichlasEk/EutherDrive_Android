@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Globalization;
+using System.IO;
 
 namespace ProjectPSX {
     public sealed class DigitalController : Controller {
@@ -24,9 +26,38 @@ namespace ProjectPSX {
         private readonly byte[] rumbleConfig = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
         private readonly byte[] pendingRumbleConfig = new byte[6];
         private byte variableResponseIndex;
+        private static readonly string? PadTraceFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_PAD_TRACE_FILE");
+        private static readonly int PadTraceLimit = ParseTraceLimit(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_PAD_TRACE_LIMIT"), 4096);
+        private int _padTraceCount;
 
         public DigitalController(bool analogCapable = true) {
             this.analogCapable = analogCapable;
+            if (!string.IsNullOrWhiteSpace(PadTraceFile)) {
+                Console.WriteLine($"[PSX-PAD] Controller trace enabled: {PadTraceFile}");
+                TracePad("controller created");
+            }
+        }
+
+        private static int ParseTraceLimit(string? raw, int fallback) {
+            if (string.IsNullOrWhiteSpace(raw)) {
+                return fallback;
+            }
+
+            return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0
+                ? parsed
+                : fallback;
+        }
+
+        private void TracePad(string message) {
+            if (string.IsNullOrWhiteSpace(PadTraceFile) || _padTraceCount >= PadTraceLimit) {
+                return;
+            }
+
+            try {
+                File.AppendAllText(PadTraceFile, $"[CTL] {message}{Environment.NewLine}");
+                _padTraceCount++;
+            } catch {
+            }
         }
 
         public void SetAnalogControllerEnabled(bool enabled) {
@@ -36,6 +67,7 @@ namespace ProjectPSX {
                 configMode = false;
                 analogButtonLocked = false;
             }
+            TracePad($"analogCapable={(analogCapable ? 1 : 0)} analogMode={(analogMode ? 1 : 0)} configMode={(configMode ? 1 : 0)}");
             resetToIdle();
         }
 
@@ -250,13 +282,22 @@ namespace ProjectPSX {
             switch (currentCommand) {
                 case 0x43:
                     if (transferIndex == 1)
+                    {
                         configMode = b == 0x01;
+                        TracePad($"cmd43 configMode={(configMode ? 1 : 0)}");
+                    }
                     break;
                 case 0x44:
                     if (transferIndex == 1)
+                    {
                         analogMode = b == 0x01;
+                        TracePad($"cmd44 analogMode={(analogMode ? 1 : 0)}");
+                    }
                     else if (transferIndex == 2)
+                    {
                         analogButtonLocked = (b & 0x03) == 0x03;
+                        TracePad($"cmd44 analogButtonLocked={(analogButtonLocked ? 1 : 0)}");
+                    }
                     break;
                 case 0x46:
                     if (transferIndex == 1)

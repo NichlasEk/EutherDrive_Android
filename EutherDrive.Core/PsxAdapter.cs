@@ -8,7 +8,7 @@ namespace EutherDrive.Core;
 public sealed class PsxAdapter : IEmulatorCore
 {
     public static string? BiosPath { get; set; }
-    public static bool AnalogControllerEnabled { get; set; } = true;
+    public static bool AnalogControllerEnabled { get; set; }
     public static bool FastLoadEnabled { get; set; }
     private sealed class PsxHostWindow : IHostWindow
     {
