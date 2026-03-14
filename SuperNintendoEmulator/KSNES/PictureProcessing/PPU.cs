@@ -984,9 +984,12 @@ public class PPU : IPPU
                 var r2 = 0;
                 var g2 = 0;
                 var b2 = 0;
+                var mainVisible = false;
+                var subVisible = false;
                 if (!_forcedBlank)
                 {
                     var (color, item2, item3) = GetColor(false, i, line);
+                    mainVisible = item2 < 5;
                     r2 = color & 0x1f;
                     g2 = (color & 0x3e0) >> 5;
                     b2 = (color & 0x7c00) >> 10;
@@ -1000,6 +1003,7 @@ public class PPU : IPPU
                     if (_mode == 5 || _mode == 6 || _pseudoHires || GetMathEnabled(i, item2, item3) && _addSub)
                     {
                         secondLay = GetColor(true, i, line);
+                        subVisible = secondLay.Item2 < 5;
                         r1 = secondLay.Item1 & 0x1f;
                         g1 = (secondLay.Item1 & 0x3e0) >> 5;
                         b1 = (secondLay.Item1 & 0x7c00) >> 10;
@@ -1031,6 +1035,25 @@ public class PPU : IPPU
                         b2 = b2 > 31 ? 31 : b2;
                         b2 = b2 < 0 ? 0 : b2;
                     }
+
+                    // Hi-res / pseudo-hires output is built from both main and sub screens.
+                    // We render to a 256-wide buffer, so collapse the two half-pixels into one:
+                    // prefer the visible source when only one screen contributes, otherwise blend.
+                    if (_mode == 5 || _mode == 6 || _pseudoHires)
+                    {
+                        if (!mainVisible && subVisible)
+                        {
+                            r2 = r1;
+                            g2 = g1;
+                            b2 = b1;
+                        }
+                        else if (mainVisible && subVisible)
+                        {
+                            r2 = (r2 + r1) >> 1;
+                            g2 = (g2 + g1) >> 1;
+                            b2 = (b2 + b1) >> 1;
+                        }
+                    }
                 }
                 var realColor = ((byte) (b2 * bMult) & 0xff) | (((byte) (g2 * bMult) & 0xff) << 8) | (((byte) (r2 * bMult) & 0xff) << 16);
                 _pixelOutput[(line - 1) * 256 + i] = (int) (realColor | 0xFF000000);
@@ -1052,7 +1075,7 @@ public class PPU : IPPU
         int j;
         var pixel = 0;
         var layer = 5;
-        if (_interlace && (_mode == 5 || _mode == 6))
+        if (_interlace)
         {
             y = y * 2 + (_evenFrame ? 1 : 0);
         }

@@ -498,7 +498,8 @@ public class ROM : IROM
                 return _sram[SramIndex(idx)];
             }
 
-            if (adr >= 0x8000 || (bank >= 0x40 && (bank & 0x7f) < 0x7e))
+            // HiROM exposes full 64KB ROM windows in banks 40-7D and C0-FF.
+            if (adr >= 0x8000 || (bank >= 0x40 && bank < 0x7e) || bank >= 0xc0)
             {
                 byte value = ReadHiRom(bank, adr);
                 if (traceExactDspRead)
