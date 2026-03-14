@@ -24,7 +24,7 @@ public sealed class PsxAdapter : IEmulatorCore
 
         public PsxHostWindow(PsxAdapter owner) => _owner = owner;
 
-        public void Render(int[] vram)
+        public void Render(int[] vram, ushort[] vram1555)
         {
             if (!TryGetSourceViewport(out int sourceX, out int sourceY, out int sourceWidth, out int sourceHeight))
             {
@@ -34,7 +34,7 @@ public sealed class PsxAdapter : IEmulatorCore
                 sourceHeight = _displayHeight;
             }
 
-            _owner.UpdateFrame(vram, sourceWidth, sourceHeight, (ushort)sourceX, (ushort)sourceY, _is24Bit);
+            _owner.UpdateFrame(vram, vram1555, sourceWidth, sourceHeight, (ushort)sourceX, (ushort)sourceY, _is24Bit);
         }
 
         public void SetDisplayMode(int horizontalRes, int verticalRes, bool is24BitDepth)
@@ -120,8 +120,11 @@ public sealed class PsxAdapter : IEmulatorCore
 
             if (sourceX < 0) sourceX = 0;
             if (sourceY < 0) sourceY = 0;
-            if (sourceX + sourceWidth > 1024)
-                sourceWidth = Math.Max(0, 1024 - sourceX);
+            int maxWidth = 1024 - sourceX;
+            if (_is24Bit)
+                maxWidth = (2048 - (sourceX * 2)) / 3;
+            if (sourceWidth > maxWidth)
+                sourceWidth = Math.Max(0, maxWidth);
             if (sourceY + sourceHeight > 512)
                 sourceHeight = Math.Max(0, 512 - sourceY);
 
@@ -283,7 +286,7 @@ public sealed class PsxAdapter : IEmulatorCore
             _core.JoyPadUp(button);
     }
 
-    private void UpdateFrame(int[] vram, int width, int height, ushort vramX, ushort vramY, bool is24Bit)
+    private void UpdateFrame(int[] vram, ushort[] vram1555, int width, int height, ushort vramX, ushort vramY, bool is24Bit)
     {
         if (width <= 0 || height <= 0)
             return;
@@ -301,6 +304,12 @@ public sealed class PsxAdapter : IEmulatorCore
         int baseY = vramY;
         int vramWidth = 1024;
         int vramHeight = 512;
+        if (is24Bit)
+        {
+            UpdateFrame24(vram1555, width, height, baseX, baseY, vramWidth, vramHeight);
+            return;
+        }
+
         for (int y = 0; y < height; y++)
         {
             int dstRow = y * stride;
@@ -331,6 +340,65 @@ public sealed class PsxAdapter : IEmulatorCore
                 _frameBuffer[o + 2] = (byte)((color >> 16) & 0xFF);
                 _frameBuffer[o + 3] = 0xFF;
             }
+        }
+    }
+
+    private void UpdateFrame24(ushort[] vram1555, int width, int height, int baseX, int baseY, int vramWidth, int vramHeight)
+    {
+        for (int y = 0; y < height; y++)
+        {
+            int dstRow = y * _frameStride;
+            int srcY = baseY + y;
+            if ((uint)srcY >= (uint)vramHeight)
+            {
+                ClearFrameRow(dstRow, width);
+                continue;
+            }
+
+            int rowBase = srcY * vramWidth;
+            int rowByteBase = baseX * 2;
+            for (int x = 0; x < width; x++)
+            {
+                int pixelByteIndex = rowByteBase + (x * 3);
+                int maxBytes = vramWidth * 2;
+                int o = dstRow + (x << 2);
+                if (pixelByteIndex + 2 >= maxBytes)
+                {
+                    _frameBuffer[o + 0] = 0;
+                    _frameBuffer[o + 1] = 0;
+                    _frameBuffer[o + 2] = 0;
+                    _frameBuffer[o + 3] = 0xFF;
+                    continue;
+                }
+
+                byte r = ReadVramByte(vram1555, rowBase, pixelByteIndex);
+                byte g = ReadVramByte(vram1555, rowBase, pixelByteIndex + 1);
+                byte b = ReadVramByte(vram1555, rowBase, pixelByteIndex + 2);
+
+                _frameBuffer[o + 0] = b;
+                _frameBuffer[o + 1] = g;
+                _frameBuffer[o + 2] = r;
+                _frameBuffer[o + 3] = 0xFF;
+            }
+        }
+    }
+
+    private static byte ReadVramByte(ushort[] vram1555, int rowBase, int byteIndex)
+    {
+        int wordOffset = byteIndex >> 1;
+        ushort word = vram1555[rowBase + wordOffset];
+        return (byte)(((byteIndex & 1) == 0) ? (word & 0xFF) : (word >> 8));
+    }
+
+    private void ClearFrameRow(int dstRow, int width)
+    {
+        for (int x = 0; x < width; x++)
+        {
+            int o = dstRow + (x << 2);
+            _frameBuffer[o + 0] = 0;
+            _frameBuffer[o + 1] = 0;
+            _frameBuffer[o + 2] = 0;
+            _frameBuffer[o + 3] = 0xFF;
         }
     }
 

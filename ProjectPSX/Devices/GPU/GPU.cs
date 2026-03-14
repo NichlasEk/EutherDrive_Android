@@ -186,7 +186,7 @@ namespace ProjectPSX.Devices {
                         isInterlaceField = !isOddLine;
                     }
 
-                    window.Render(vram.Bits);
+                    window.Render(vram.Bits, vram1555.Bits);
                     return true;
                 }
             }
