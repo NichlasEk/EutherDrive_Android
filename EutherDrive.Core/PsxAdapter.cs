@@ -10,6 +10,7 @@ public sealed class PsxAdapter : IEmulatorCore
     public static string? BiosPath { get; set; }
     private sealed class PsxHostWindow : IHostWindow
     {
+        private const double DefaultAspectRatio = 4.0 / 3.0;
         private readonly PsxAdapter _owner;
         private int _displayWidth = 320;
         private int _displayHeight = 240;
@@ -25,7 +26,15 @@ public sealed class PsxAdapter : IEmulatorCore
 
         public void Render(int[] vram)
         {
-            _owner.UpdateFrame(vram, _displayWidth, _displayHeight, _vramXStart, _vramYStart, _is24Bit);
+            if (!TryGetSourceViewport(out int sourceX, out int sourceY, out int sourceWidth, out int sourceHeight))
+            {
+                sourceX = _vramXStart;
+                sourceY = _vramYStart;
+                sourceWidth = _displayWidth;
+                sourceHeight = _displayHeight;
+            }
+
+            _owner.UpdateFrame(vram, sourceWidth, sourceHeight, (ushort)sourceX, (ushort)sourceY, _is24Bit);
         }
 
         public void SetDisplayMode(int horizontalRes, int verticalRes, bool is24BitDepth)
@@ -80,6 +89,68 @@ public sealed class PsxAdapter : IEmulatorCore
             y2 = py2;
             return true;
         }
+
+        public bool TryGetSourceViewport(out int sourceX, out int sourceY, out int sourceWidth, out int sourceHeight)
+        {
+            sourceX = _vramXStart;
+            sourceY = _vramYStart;
+            sourceWidth = _displayWidth > 0 ? _displayWidth : 320;
+            sourceHeight = _displayHeight > 0 ? _displayHeight : 240;
+
+            if (_displayX2 > _displayX1)
+            {
+                int cyclesPerPixel = GetCyclesPerPixel();
+                int displayCycles = _displayX2 - _displayX1;
+                int visibleWidth = (((displayCycles / cyclesPerPixel) + 2) & ~3);
+                if (visibleWidth > 0)
+                    sourceWidth = visibleWidth;
+            }
+
+            if (_displayY2 > _displayY1)
+            {
+                int visibleHeight = _displayY2 - _displayY1;
+                if (_displayHeight >= 480 && visibleHeight <= 288)
+                    visibleHeight *= 2;
+                if (visibleHeight > 0)
+                    sourceHeight = Math.Min(sourceHeight, visibleHeight);
+            }
+
+            if (sourceWidth <= 0 || sourceHeight <= 0)
+                return false;
+
+            if (sourceX < 0) sourceX = 0;
+            if (sourceY < 0) sourceY = 0;
+            if (sourceX + sourceWidth > 1024)
+                sourceWidth = Math.Max(0, 1024 - sourceX);
+            if (sourceY + sourceHeight > 512)
+                sourceHeight = Math.Max(0, 512 - sourceY);
+
+            return sourceWidth > 0 && sourceHeight > 0;
+        }
+
+        public double GetPresentationAspectRatio()
+        {
+            if (_displayX2 <= _displayX1 || _displayWidth <= 0)
+                return DefaultAspectRatio;
+
+            int displayCycles = _displayX2 - _displayX1;
+            int nominalCycles = _displayWidth * GetCyclesPerPixel();
+            if (displayCycles <= 0 || nominalCycles <= 0)
+                return DefaultAspectRatio;
+
+            double aspect = DefaultAspectRatio * (displayCycles / (double)nominalCycles);
+            return aspect > 0.1 ? aspect : DefaultAspectRatio;
+        }
+
+        private int GetCyclesPerPixel() => _displayWidth switch
+        {
+            256 => 10,
+            320 => 8,
+            384 => 7,
+            512 => 5,
+            640 => 4,
+            _ => 8
+        };
     }
 
     private ProjectPSX.ProjectPSX? _core;
@@ -127,6 +198,19 @@ public sealed class PsxAdapter : IEmulatorCore
         height = _frameHeight;
         stride = _frameStride;
         return _frameBuffer;
+    }
+
+    public bool TryGetPresentationSize(out double width, out double height)
+    {
+        width = 0;
+        height = 0;
+        if (_frameHeight <= 0)
+            return false;
+
+        double aspect = _host?.GetPresentationAspectRatio() ?? (4.0 / 3.0);
+        width = Math.Round(_frameHeight * aspect);
+        height = _frameHeight;
+        return width > 0 && height > 0;
     }
 
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
@@ -217,34 +301,10 @@ public sealed class PsxAdapter : IEmulatorCore
         int baseY = vramY;
         int vramWidth = 1024;
         int vramHeight = 512;
-        int rangeY1 = 0;
-        int rangeY2 = height;
-        if (_host != null && _host.TryGetVerticalPixelRange(out int stableY1, out int stableY2))
-        {
-            if (stableY2 > stableY1)
-            {
-                rangeY1 = stableY1;
-                rangeY2 = stableY2;
-            }
-        }
-
         for (int y = 0; y < height; y++)
         {
             int dstRow = y * stride;
-            if (y < rangeY1 || y >= rangeY2)
-            {
-                for (int x = 0; x < width; x++)
-                {
-                    int o = dstRow + (x << 2);
-                    _frameBuffer[o + 0] = 0;
-                    _frameBuffer[o + 1] = 0;
-                    _frameBuffer[o + 2] = 0;
-                    _frameBuffer[o + 3] = 0xFF;
-                }
-                continue;
-            }
-
-            int srcY = baseY + (y - rangeY1);
+            int srcY = baseY + y;
             if ((uint)srcY >= (uint)vramHeight)
             {
                 for (int x = 0; x < width; x++)

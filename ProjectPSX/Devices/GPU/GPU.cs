@@ -15,7 +15,7 @@ namespace ProjectPSX.Devices {
 
         private int scanLine = 0;
 
-        private static readonly int[] resolutions = { 256, 320, 512, 640, 368 };//gpustat res index
+        private static readonly int[] resolutions = { 256, 320, 512, 640, 384 };//gpustat res index
         private static readonly int[] dotClockDiv = { 10, 8, 5, 4, 7 };
 
         private IHostWindow window;

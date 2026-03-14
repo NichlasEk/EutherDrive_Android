@@ -5398,11 +5398,16 @@ public partial class MainWindow : Window
         if (ScreenGrid == null || ScreenImage == null)
             return;
 
-        if (core is not PsxAdapter || height <= 0)
+        if (core is not PsxAdapter psx || height <= 0)
             return;
 
         double targetWidth = Math.Round(height * (4.0 / 3.0));
         double targetHeight = height;
+        if (psx.TryGetPresentationSize(out double adapterWidth, out double adapterHeight))
+        {
+            targetWidth = adapterWidth;
+            targetHeight = adapterHeight;
+        }
 
         if (Math.Abs(ScreenGrid.Width - targetWidth) > 0.5 || Math.Abs(ScreenGrid.Height - targetHeight) > 0.5)
         {
