@@ -9,6 +9,7 @@ public sealed class PsxAdapter : IEmulatorCore
 {
     public static string? BiosPath { get; set; }
     public static bool AnalogControllerEnabled { get; set; } = true;
+    public static bool FastLoadEnabled { get; set; }
     private sealed class PsxHostWindow : IHostWindow
     {
         private const double DefaultAspectRatio = 4.0 / 3.0;
@@ -180,7 +181,7 @@ public sealed class PsxAdapter : IEmulatorCore
         if (!string.IsNullOrWhiteSpace(BiosPath))
             Environment.SetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS", BiosPath);
         _host = new PsxHostWindow(this);
-        _core = new ProjectPSX.ProjectPSX(_host, path, AnalogControllerEnabled);
+        _core = new ProjectPSX.ProjectPSX(_host, path, AnalogControllerEnabled, FastLoadEnabled);
     }
 
     public void Reset()
@@ -248,6 +249,12 @@ public sealed class PsxAdapter : IEmulatorCore
     {
         AnalogControllerEnabled = enabled;
         _core?.SetAnalogControllerEnabled(enabled);
+    }
+
+    public void SetFastLoadEnabled(bool enabled)
+    {
+        FastLoadEnabled = enabled;
+        _core?.SetFastLoadEnabled(enabled);
     }
 
     public void SetInputState(

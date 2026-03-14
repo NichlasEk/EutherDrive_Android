@@ -272,6 +272,11 @@
                       IsChecked="True"
                       Checked="OnPsxAnalogPadToggle"
                       Unchecked="OnPsxAnalogPadToggle"/>
+            <CheckBox Name="PsxFastLoadCheck"
+                      Content="PSX fast load"
+                      IsChecked="False"
+                      Checked="OnPsxFastLoadToggle"
+                      Unchecked="OnPsxFastLoadToggle"/>
             <CheckBox Content="SMS overscan (debug)" IsChecked="False" Name="SmsOverscanCheck" Checked="OnSmsOverscanToggle" Unchecked="OnSmsOverscanToggle"/>
             <Separator/>
             <TextBlock Text="Perf" FontWeight="Bold"/>

@@ -72,6 +72,7 @@ namespace ProjectPSX {
 
         //Debug
         public bool debug = false;
+        public uint CurrentPC => PC_Now;
 
         public CPU(BUS bus) {
             this.bus = bus;

@@ -24,8 +24,9 @@ namespace ProjectPSX {
         private CD cd;
         private InterruptController interruptController;
         private Exp2 exp2;
+        private bool _psxBootBiosExited;
 
-        public ProjectPSX(IHostWindow window, string diskFilename, bool analogControllerEnabled = true) {
+        public ProjectPSX(IHostWindow window, string diskFilename, bool analogControllerEnabled = true, bool fastLoadEnabled = false) {
             controller = new DigitalController(analogControllerEnabled);
             memoryCard = new MemoryCard();
 
@@ -35,6 +36,7 @@ namespace ProjectPSX {
             spu = new SPU(window, interruptController);
             gpu = new GPU(window);
             cdrom = new CDROM(cd, spu);
+            cdrom.SetFastLoadEnabled(fastLoadEnabled);
             joypad = new JOYPAD(controller, memoryCard);
             timers = new TIMERS();
             mdec = new MDEC();
@@ -54,6 +56,10 @@ namespace ProjectPSX {
             for (int i = 0; i < SYNC_LOOPS; i++) {
                 while (sync < SYNC_CYCLES) {
                     sync += cpu.Run();
+                    if (!_psxBootBiosExited && (cpu.CurrentPC & 0x1FFF_FFFF) < 0x1FC0_0000) {
+                        _psxBootBiosExited = true;
+                        cdrom.NotifyBiosExited();
+                    }
                     //cpu.handleInterrupts();
                 }
                 sync -= SYNC_CYCLES;
@@ -67,6 +73,8 @@ namespace ProjectPSX {
         public void JoyPadDown(GamepadInputsEnum button) => controller.handleJoyPadDown(button);
 
         public void SetAnalogControllerEnabled(bool enabled) => controller.SetAnalogControllerEnabled(enabled);
+
+        public void SetFastLoadEnabled(bool enabled) => cdrom.SetFastLoadEnabled(enabled);
 
         public void toggleDebug() {
             cpu.debug = !cpu.debug;

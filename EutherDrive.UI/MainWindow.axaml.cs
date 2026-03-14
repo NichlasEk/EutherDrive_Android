@@ -213,6 +213,7 @@ public partial class MainWindow : Window
     private int _renderSkipCounter;
     private bool _smsOverscanEnabled;
     private bool _psxAnalogControllerEnabled = true;
+    private bool _psxFastLoadEnabled;
     private double _speedScale = 1.0;
     private long _emuFpsLastTicks;
     private int _emuFpsFrames;
@@ -418,6 +419,7 @@ public partial class MainWindow : Window
             InputTraceCheck.Unchecked += OnInputTraceToggle;
         }
         PsxAdapter.AnalogControllerEnabled = _psxAnalogControllerEnabled;
+        PsxAdapter.FastLoadEnabled = _psxFastLoadEnabled;
         UpdateAudioDebugTimer();
 
         // Load ROM from command line if provided
@@ -1341,6 +1343,15 @@ public partial class MainWindow : Window
         PsxAdapter.AnalogControllerEnabled = _psxAnalogControllerEnabled;
         if (_core is PsxAdapter psx)
             psx.SetAnalogControllerEnabled(_psxAnalogControllerEnabled);
+        SaveSettings();
+    }
+
+    private void OnPsxFastLoadToggle(object? sender, RoutedEventArgs e)
+    {
+        _psxFastLoadEnabled = PsxFastLoadCheck?.IsChecked == true;
+        PsxAdapter.FastLoadEnabled = _psxFastLoadEnabled;
+        if (_core is PsxAdapter psx)
+            psx.SetFastLoadEnabled(_psxFastLoadEnabled);
         SaveSettings();
     }
 
@@ -3162,6 +3173,7 @@ public partial class MainWindow : Window
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; } = true;
+        public bool PsxFastLoadEnabled { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -3193,6 +3205,7 @@ public partial class MainWindow : Window
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; } = true;
+        public bool PsxFastLoadEnabled { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -3281,6 +3294,10 @@ public partial class MainWindow : Window
         PsxAdapter.AnalogControllerEnabled = _psxAnalogControllerEnabled;
         if (PsxAnalogPadCheck != null)
             PsxAnalogPadCheck.IsChecked = _psxAnalogControllerEnabled;
+        _psxFastLoadEnabled = settings.PsxFastLoadEnabled;
+        PsxAdapter.FastLoadEnabled = _psxFastLoadEnabled;
+        if (PsxFastLoadCheck != null)
+            PsxFastLoadCheck.IsChecked = _psxFastLoadEnabled;
         if (!string.IsNullOrWhiteSpace(settings.PceBiosPath))
         {
             _pceBiosPath = settings.PceBiosPath;
@@ -3425,6 +3442,7 @@ public partial class MainWindow : Window
             PceBiosPath = _pceBiosPath,
             PsxBiosPath = _psxBiosPath,
             PsxAnalogControllerEnabled = _psxAnalogControllerEnabled,
+            PsxFastLoadEnabled = _psxFastLoadEnabled,
             MasterVolumePercent = _masterVolumePercent,
             PsgMixPercent = _psgMixPercent,
             YmMixPercent = _ymMixPercent,
@@ -3511,6 +3529,7 @@ public partial class MainWindow : Window
             PceBiosPath = settings.PceBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
             PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled,
+            PsxFastLoadEnabled = settings.PsxFastLoadEnabled,
             MasterVolumePercent = settings.MasterVolumePercent,
             PsgMixPercent = settings.PsgMixPercent,
             YmMixPercent = settings.YmMixPercent,
@@ -3596,6 +3615,7 @@ public partial class MainWindow : Window
             PceBiosPath = raw.PceBiosPath,
             PsxBiosPath = raw.PsxBiosPath,
             PsxAnalogControllerEnabled = raw.PsxAnalogControllerEnabled,
+            PsxFastLoadEnabled = raw.PsxFastLoadEnabled,
             MasterVolumePercent = raw.MasterVolumePercent,
             PsgMixPercent = raw.PsgMixPercent,
             YmMixPercent = raw.YmMixPercent,
