@@ -73,8 +73,12 @@ namespace ProjectPSX.Devices {
         private bool fastLoadBootUnlocked;
         private bool fastLoadLicensedDiscConfirmed;
         private bool fastLoadBiosExited;
-        private int fastLoadReadWarmupSectors;
-        private int fastLoadReadSessionCount;
+        private bool fastLoadBulkReadCompleted;
+        private bool fastLoadCurrentSessionCanAccelerate;
+        private bool fastLoadCurrentSessionObservedBulkRead;
+        private int fastLoadSequentialReadSectors;
+        private int fastLoadLastReadSector = -1;
+        private int fastLoadLastSeekDistance;
 
         private struct SectorHeader {
             public byte mm;
@@ -156,8 +160,12 @@ namespace ProjectPSX.Devices {
             fastLoadBootUnlocked = !enabled;
             fastLoadLicensedDiscConfirmed = false;
             fastLoadBiosExited = !enabled;
-            fastLoadReadWarmupSectors = 0;
-            fastLoadReadSessionCount = 0;
+            fastLoadBulkReadCompleted = false;
+            fastLoadCurrentSessionCanAccelerate = false;
+            fastLoadCurrentSessionObservedBulkRead = false;
+            fastLoadSequentialReadSectors = 0;
+            fastLoadLastReadSector = -1;
+            fastLoadLastSeekDistance = 0;
         }
 
         private bool IsFastLoadActive => fastLoadEnabled && fastLoadBootUnlocked;
@@ -186,7 +194,7 @@ namespace ProjectPSX.Devices {
         }
 
         private int GetSeekCycles() {
-            if (!IsFastLoadActive) {
+            if (!IsFastLoadActive || !fastLoadBulkReadCompleted) {
                 return 33868800 / 3;
             }
 
@@ -194,7 +202,7 @@ namespace ProjectPSX.Devices {
         }
 
         private int GetReadCycles() {
-            if (!IsFastLoadActive || fastLoadReadSessionCount <= 1 || fastLoadReadWarmupSectors > 0) {
+            if (!IsFastLoadActive || !fastLoadCurrentSessionCanAccelerate || fastLoadSequentialReadSectors < 64) {
                 return 33868800 / (isDoubleSpeed ? 150 : 75);
             }
 
@@ -206,11 +214,29 @@ namespace ProjectPSX.Devices {
         }
 
         private int GetTocCycles() {
-            if (!IsFastLoadActive) {
+            if (!IsFastLoadActive || !fastLoadBulkReadCompleted) {
                 return 33868800 / (isDoubleSpeed ? 150 : 75);
             }
 
             return 33868800 / 1200;
+        }
+
+        private void CompleteFastLoadReadSession() {
+            if (fastLoadCurrentSessionObservedBulkRead) {
+                fastLoadBulkReadCompleted = true;
+            }
+
+            fastLoadCurrentSessionCanAccelerate = false;
+            fastLoadCurrentSessionObservedBulkRead = false;
+            fastLoadSequentialReadSectors = 0;
+            fastLoadLastReadSector = -1;
+        }
+
+        private void BeginFastLoadReadSession() {
+            CompleteFastLoadReadSession();
+            if (IsFastLoadActive) {
+                fastLoadCurrentSessionCanAccelerate = fastLoadBulkReadCompleted && fastLoadLastSeekDistance >= 64;
+            }
         }
 
         private bool edgeTrigger;
@@ -295,6 +321,7 @@ namespace ProjectPSX.Devices {
                     }
                     counter = 0;
 
+                    int deliveredSector = readLoc;
                     byte[] readSector = cd.Read(readLoc++);
 
                     if (cdDebug) {
@@ -401,8 +428,14 @@ namespace ProjectPSX.Devices {
                         lastReadSector.fillWith(rawSector);
                     }
 
-                    if (fastLoadReadWarmupSectors > 0) {
-                        fastLoadReadWarmupSectors--;
+                    if (fastLoadLastReadSector + 1 == deliveredSector) {
+                        fastLoadSequentialReadSectors++;
+                    } else {
+                        fastLoadSequentialReadSectors = 1;
+                    }
+                    fastLoadLastReadSector = deliveredSector;
+                    if (fastLoadSequentialReadSectors >= 128) {
+                        fastLoadCurrentSessionObservedBulkRead = true;
                     }
 
                     responseBuffer.Enqueue(STAT);
@@ -670,6 +703,7 @@ namespace ProjectPSX.Devices {
                 return;
             }
             //If theres a trackN param it seeks and plays from the start location of it
+            CompleteFastLoadReadSession();
             int track = 0;
             if (parameterBuffer.Count > 0 && parameterBuffer.Peek() != 0) {
                 track = BcdToDec(parameterBuffer.Dequeue());
@@ -700,10 +734,7 @@ namespace ProjectPSX.Devices {
             }
 
             UnlockFastLoadAfterBootIfReady();
-            if (IsFastLoadActive) {
-                fastLoadReadSessionCount++;
-                fastLoadReadWarmupSectors = 32;
-            }
+            BeginFastLoadReadSession();
             readLoc = seekLoc;
 
             STAT = 0x2;
@@ -716,6 +747,7 @@ namespace ProjectPSX.Devices {
         }
 
         private void Cmd_07_MotorOn() {
+            CompleteFastLoadReadSession();
             STAT = 0x2;
 
             responseBuffer.Enqueue(STAT);
@@ -726,6 +758,7 @@ namespace ProjectPSX.Devices {
         }
 
         private void Cmd_08_Stop() {
+            CompleteFastLoadReadSession();
             STAT = 0x2;
             responseBuffer.Enqueue(STAT);
             QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
@@ -738,6 +771,7 @@ namespace ProjectPSX.Devices {
         }
 
         private void Cmd_09_Pause() {
+            CompleteFastLoadReadSession();
             responseBuffer.Enqueue(STAT);
             QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
 
@@ -749,6 +783,7 @@ namespace ProjectPSX.Devices {
         }
 
         private void Cmd_0A_Init() {
+            CompleteFastLoadReadSession();
             STAT = 0x2;
 
             responseBuffer.Enqueue(STAT);
@@ -924,6 +959,8 @@ namespace ProjectPSX.Devices {
             }
 
             UnlockFastLoadAfterBootIfReady();
+            CompleteFastLoadReadSession();
+            fastLoadLastSeekDistance = Math.Abs(seekLoc - readLoc);
             readLoc = seekLoc;
             STAT = 0x42; // seek
 
@@ -941,6 +978,8 @@ namespace ProjectPSX.Devices {
             }
 
             UnlockFastLoadAfterBootIfReady();
+            CompleteFastLoadReadSession();
+            fastLoadLastSeekDistance = Math.Abs(seekLoc - readLoc);
             readLoc = seekLoc;
             STAT = 0x42; // seek
 
@@ -1030,10 +1069,7 @@ namespace ProjectPSX.Devices {
             }
 
             UnlockFastLoadAfterBootIfReady();
-            if (IsFastLoadActive) {
-                fastLoadReadSessionCount++;
-                fastLoadReadWarmupSectors = 32;
-            }
+            BeginFastLoadReadSession();
             readLoc = seekLoc;
 
             STAT = 0x2;
@@ -1052,6 +1088,7 @@ namespace ProjectPSX.Devices {
                 return;
             }
 
+            CompleteFastLoadReadSession();
             mode = Mode.TOC;
             responseBuffer.Enqueue(STAT);
             QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
