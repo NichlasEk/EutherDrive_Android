@@ -224,6 +224,12 @@ public class APU : IAPU
         if ((_cycles & 0x1f) == 0)
         {
             _dsp.Cycle();
+            if (_dsp.SampleOffset > 0)
+            {
+                int sampleIndex = _dsp.SampleOffset - 1;
+                AppendResampleSample(_dsp.SamplesL[sampleIndex], _dsp.SamplesR[sampleIndex]);
+                _dsp.SampleOffset = 0;
+            }
         }
     }
 
@@ -375,15 +381,6 @@ public class APU : IAPU
     public void SetSamples(float[] left, float[] right)
     {
         int outCount = Math.Min(left.Length, right.Length);
-        int srcCount = _dsp.SampleOffset;
-        if (srcCount > _dsp.SamplesL.Length)
-            srcCount = _dsp.SamplesL.Length;
-
-        if (srcCount > 0)
-            AppendResampleData(_dsp.SamplesL, _dsp.SamplesR, srcCount);
-
-        _dsp.SampleOffset = 0;
-
         if (outCount <= 0)
             return;
 
@@ -420,25 +417,15 @@ public class APU : IAPU
         }
     }
 
-    private void AppendResampleData(float[] left, float[] right, int count)
+    private void AppendResampleSample(float left, float right)
     {
-        if (count <= 0)
-            return;
+        if (_resampleCount == ResampleRingSize)
+            AdvanceResampleRead(1);
 
-        int available = ResampleRingSize - _resampleCount;
-        if (count > available)
-        {
-            int drop = count - available;
-            AdvanceResampleRead(drop);
-        }
-
-        for (int i = 0; i < count; i++)
-        {
-            _resampleRingL[_resampleWrite] = left[i];
-            _resampleRingR[_resampleWrite] = right[i];
-            _resampleWrite = (_resampleWrite + 1) % ResampleRingSize;
-        }
-        _resampleCount = Math.Min(ResampleRingSize, _resampleCount + count);
+        _resampleRingL[_resampleWrite] = left;
+        _resampleRingR[_resampleWrite] = right;
+        _resampleWrite = (_resampleWrite + 1) % ResampleRingSize;
+        _resampleCount = Math.Min(ResampleRingSize, _resampleCount + 1);
     }
 
     private float PeekResample(float[] ring, int index)

@@ -12,6 +12,8 @@ namespace EutherDrive.Core;
 
 public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
 {
+    private const double NtscFps = 21477272.0 / (1364.0 * 262.0);
+    private const double PalFps = 21281370.0 / (1364.0 * 312.0);
     private const int DefaultWidth = 256;
     private const int DefaultHeight = 224;
     private const int DefaultStride = DefaultWidth * 4;
@@ -499,7 +501,7 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
     public double GetTargetFps(ConsoleRegion overrideRegion)
     {
         ConsoleRegion region = overrideRegion == ConsoleRegion.Auto ? _romRegionHint : overrideRegion;
-        return region == ConsoleRegion.EU ? 50.0 : 60.0;
+        return region == ConsoleRegion.EU ? PalFps : NtscFps;
     }
 
     private void DetectRegion(string path)

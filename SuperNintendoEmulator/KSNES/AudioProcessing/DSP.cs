@@ -348,30 +348,36 @@ public sealed class DSP : IDSP
                 EnvelopeLevel = 0;
             }
 
-            sbyte[] nibbles = new sbyte[4];
             int decoderIdx = BrrDecoderIdx;
-            for (int i = 0; i < 2; i++)
-            {
-                int sampleAddr = (BrrBlockAddress + 1 + (decoderIdx >> 1) + i) & 0xFFFF;
-                byte pair = audioRam[sampleAddr];
-                sbyte first = (sbyte)pair;
-                first >>= 4;
-                sbyte second = (sbyte)(pair << 4);
-                second >>= 4;
-                nibbles[i * 2] = first;
-                nibbles[i * 2 + 1] = second;
-            }
+            int sampleAddr0 = (BrrBlockAddress + 1 + (decoderIdx >> 1)) & 0xFFFF;
+            byte pair0 = audioRam[sampleAddr0];
+            sbyte nibble0 = (sbyte)pair0;
+            nibble0 >>= 4;
+            sbyte nibble1 = (sbyte)(pair0 << 4);
+            nibble1 >>= 4;
+
+            int sampleAddr1 = (BrrBlockAddress + 2 + (decoderIdx >> 1)) & 0xFFFF;
+            byte pair1 = audioRam[sampleAddr1];
+            sbyte nibble2 = (sbyte)pair1;
+            nibble2 >>= 4;
+            sbyte nibble3 = (sbyte)(pair1 << 4);
+            nibble3 >>= 4;
             BrrDecoderIdx += 4;
 
             var (older, old) = BrrBuffer.LastTwoWrittenSamples();
-            foreach (var nibble in nibbles)
-            {
-                short shifted = ApplyBrrShift(nibble, shift);
-                short sample = ApplyBrrFilter(shifted, filter, old, older);
-                BrrBuffer.Write(sample);
-                older = old;
-                old = sample;
-            }
+            WriteDecodedNibble(nibble0, shift, filter, ref older, ref old);
+            WriteDecodedNibble(nibble1, shift, filter, ref older, ref old);
+            WriteDecodedNibble(nibble2, shift, filter, ref older, ref old);
+            WriteDecodedNibble(nibble3, shift, filter, ref older, ref old);
+        }
+
+        private void WriteDecodedNibble(sbyte nibble, byte shift, byte filter, ref short older, ref short old)
+        {
+            short shifted = ApplyBrrShift(nibble, shift);
+            short sample = ApplyBrrFilter(shifted, filter, old, older);
+            BrrBuffer.Write(sample);
+            older = old;
+            old = sample;
         }
 
         private void ClockEnvelope(ushort globalCounter)
@@ -641,6 +647,8 @@ public sealed class DSP : IDSP
     }
 
     private readonly Voice[] _voices = new Voice[8];
+    private readonly int[] _voiceSamplesL = new int[8];
+    private readonly int[] _voiceSamplesR = new int[8];
     private readonly DspRegisters _registers = new();
     private readonly NoiseGenerator _noise = new();
     private readonly EchoFilter _echo = new();
@@ -692,23 +700,21 @@ public sealed class DSP : IDSP
             _voices[i].Clock(_registers, audioRam, prev, _noise.Output);
         }
 
-        int[] voiceSamplesL = new int[8];
-        int[] voiceSamplesR = new int[8];
         int sumL = 0;
         int sumR = 0;
         for (int i = 0; i < 8; i++)
         {
             int sL = (_voices[i].CurrentSample * _voices[i].VolumeL) >> 6;
             int sR = (_voices[i].CurrentSample * _voices[i].VolumeR) >> 6;
-            voiceSamplesL[i] = sL;
-            voiceSamplesR[i] = sR;
+            _voiceSamplesL[i] = sL;
+            _voiceSamplesR[i] = sR;
             sumL += sL;
             sumR += sR;
             sumL = Math.Clamp(sumL, short.MinValue, short.MaxValue);
             sumR = Math.Clamp(sumR, short.MinValue, short.MaxValue);
         }
 
-        var (echoL, echoR) = _echo.DoFilter(_registers.EchoBufferWritesEnabled, audioRam, voiceSamplesL, voiceSamplesR);
+        var (echoL, echoR) = _echo.DoFilter(_registers.EchoBufferWritesEnabled, audioRam, _voiceSamplesL, _voiceSamplesR);
 
         sumL = (sumL * _registers.MasterVolumeL) >> 7;
         sumR = (sumR * _registers.MasterVolumeR) >> 7;
