@@ -37,6 +37,8 @@ public class ROM : IROM
     private KSNES.Specialchips.ST018.St018? _st018;
     [NonSerialized]
     private KSNES.Specialchips.OBC1.Obc1? _obc1;
+    [NonSerialized]
+    private KSNES.Specialchips.SRTC.SRtc? _srtc;
     private bool _superFxHasBattery;
     private ulong _superFxOverclock = 1;
     private Dsp1PortMapping _dsp1PortMapping;
@@ -135,7 +137,11 @@ public class ROM : IROM
             _sdd1 = null;
         }
 
-        bool hasDsp = header.ExCoprocessor == 0 && header.Chips >= 3 && header.Chips <= 5;
+        bool hasDsp =
+            !header.IsExHiRom &&
+            header.ExCoprocessor == 0 &&
+            header.Chips >= 3 &&
+            header.Chips <= 5;
         if (hasDsp)
         {
             if (_system == null)
@@ -255,6 +261,17 @@ public class ROM : IROM
         else
         {
             _obc1 = null;
+        }
+
+        if (header.IsExHiRom && header.ChipsetByte == 0x55)
+        {
+            _srtc = new KSNES.Specialchips.SRTC.SRtc();
+            _srtc.ResetState();
+            Console.WriteLine("[S-RTC] Initialized successfully.");
+        }
+        else
+        {
+            _srtc = null;
         }
     }
 
@@ -428,6 +445,25 @@ public class ROM : IROM
             return obc1Value;
         }
 
+        if (TryReadSrtc(bank, adr, out byte srtcValue))
+        {
+            return srtcValue;
+        }
+
+        if (Header.IsExHiRom)
+        {
+            if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsExHiRomSramBank(bank))
+            {
+                int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
+                return _sram[SramIndex(idx)];
+            }
+
+            if (adr >= 0x8000 || ((bank >= 0x40 && bank < 0x7e) || bank >= 0xC0))
+                return ReadExHiRom(bank, adr);
+
+            return (byte)(_system?.OpenBus ?? 0);
+        }
+
         if (Header.IsHiRom)
         {
             if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
@@ -563,6 +599,22 @@ public class ROM : IROM
 
         if (TryWriteObc1(bank, adr, value))
         {
+            return;
+        }
+
+        if (TryWriteSrtc(bank, adr, value))
+        {
+            return;
+        }
+
+        if (Header.IsExHiRom)
+        {
+            if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsExHiRomSramBank(bank))
+            {
+                int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
+                _sram[SramIndex(idx)] = value;
+                _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            }
             return;
         }
 
@@ -885,6 +937,7 @@ public class ROM : IROM
         _superFx?.Reset();
         _sa1?.Reset();
         _sdd1?.Reset();
+        _srtc?.ResetState();
     }
 
     public void RunCoprocessor(ulong snesCycles)
@@ -1150,10 +1203,56 @@ public class ROM : IROM
         return _data[address % (uint)_data.Length];
     }
 
+    private byte ReadExHiRom(int bank, int adr)
+    {
+        uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+        uint mapped = (address & 0x3FFFFF) | (((address >> 1) & 0x400000) ^ 0x400000);
+        uint mask = (uint)_data.Length - 1;
+        if ((_data.Length & (_data.Length - 1)) == 0)
+            return _data[mapped & mask];
+        return _data[mapped % (uint)_data.Length];
+    }
+
     private static bool IsHiRomSramBank(int bank)
     {
         int b = bank & 0x7f;
         return b >= 0x20 && b < 0x40;
+    }
+
+    private static bool IsExHiRomSramBank(int bank)
+    {
+        return bank >= 0x80 && bank < 0xC0;
+    }
+
+    private bool TryReadSrtc(int bank, int adr, out byte value)
+    {
+        value = 0;
+        if (_srtc == null)
+            return false;
+
+        int maskedBank = bank & 0x7F;
+        if (maskedBank <= 0x3F && adr == 0x2800)
+        {
+            value = _srtc.Read();
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryWriteSrtc(int bank, int adr, byte value)
+    {
+        if (_srtc == null)
+            return false;
+
+        int maskedBank = bank & 0x7F;
+        if (maskedBank <= 0x3F && adr == 0x2801)
+        {
+            _srtc.Write(value);
+            return true;
+        }
+
+        return false;
     }
 
     private static byte[]? TryLoadDspRom(DspVariant variant)

@@ -15,4 +15,5 @@ public class Header
     public int Region;
     public int ExCoprocessor;
     public bool IsHiRom;
+    public bool IsExHiRom;
 }

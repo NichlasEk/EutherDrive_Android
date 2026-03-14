@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Numerics;
 
 namespace KSNES.SNESSystem;
 
@@ -512,22 +513,31 @@ public class SNESSystem : ISNESSystem
         GameName = header.Name;
         if (rom.Length < header.RomSize)
         {
-            int extraData = rom.Length - header.RomSize / 2;
-            var nRom = new byte[header.RomSize];
-            for (var i = 0; i < nRom.Length; i++)
-            {
-                if (i < header.RomSize / 2)
-                {
-                    nRom[i] = rom[i];
-                }
-                else
-                {
-                    nRom[i] = rom[header.RomSize / 2 + i % extraData];
-                }
-            }
-            rom = nRom;
+            rom = MirrorRomToNextPowerOfTwo(rom);
+            header.RomSize = rom.Length;
         }
         ROM.LoadROM(rom, header);
+    }
+
+    private static byte[] MirrorRomToNextPowerOfTwo(byte[] rom)
+    {
+        if (rom.Length == 0 || (rom.Length & (rom.Length - 1)) == 0)
+            return rom;
+
+        var mirrored = new List<byte>(rom);
+        while ((mirrored.Count & (mirrored.Count - 1)) != 0)
+        {
+            int sourceLen = mirrored.Count & -mirrored.Count;
+            int remainingLen = mirrored.Count & ~sourceLen;
+            int copyLen = (1 << BitOperations.TrailingZeroCount(remainingLen)) - sourceLen;
+            int baseAddr = mirrored.Count & ~sourceLen;
+            for (int i = 0; i < copyLen; i++)
+            {
+                mirrored.Add(mirrored[baseAddr + (i & (sourceLen - 1))]);
+            }
+        }
+
+        return mirrored.ToArray();
     }
 
     private void Cycle(bool noPpu) 
@@ -1737,19 +1747,22 @@ public class SNESSystem : ISNESSystem
     {
         int baseOff = SelectHeaderBase(rom);
         string str = Encoding.ASCII.GetString(rom, baseOff, 21);
+        int mapMode = rom[baseOff + 0x15];
+        int mapModeLo = mapMode & 0x0F;
         var header = new Header
         {
             Name = str,
-            Type = rom[baseOff + 0x15] & 0xf,
-            Speed = rom[baseOff + 0x15] >> 4,
-            MapMode = rom[baseOff + 0x15],
+            Type = mapModeLo,
+            Speed = mapMode >> 4,
+            MapMode = mapMode,
             Chips = rom[baseOff + 0x16] & 0xf,
             ChipsetByte = rom[baseOff + 0x16],
             RomSize = 0x400 << rom[baseOff + 0x17],
             RamSize = 0x400 << rom[baseOff + 0x18],
             Region = rom[baseOff + 0x19],
             ExCoprocessor = ReadExCoprocessor(rom, baseOff),
-            IsHiRom = (rom[baseOff + 0x15] & 0x0F) == 0x01
+            IsExHiRom = mapModeLo == 0x05,
+            IsHiRom = mapModeLo == 0x01
         };
         if (header.RomSize < rom.Length)
         {
@@ -1763,9 +1776,26 @@ public class SNESSystem : ISNESSystem
     {
         if (data.Length < 0x10000)
             return 0x7FC0;
-        int scoreLo = CountPrintable(data, 0x7FC0);
-        int scoreHi = CountPrintable(data, 0xFFC0);
-        return scoreHi > scoreLo ? 0xFFC0 : 0x7FC0;
+        int bestOffset = 0x7FC0;
+        int bestScore = ScoreHeaderCandidate(data, bestOffset);
+
+        int hiScore = ScoreHeaderCandidate(data, 0xFFC0);
+        if (hiScore > bestScore)
+        {
+            bestOffset = 0xFFC0;
+            bestScore = hiScore;
+        }
+
+        if (data.Length >= 0x410000)
+        {
+            int exHiScore = ScoreHeaderCandidate(data, 0x40FFC0);
+            if (exHiScore > bestScore)
+            {
+                bestOffset = 0x40FFC0;
+            }
+        }
+
+        return bestOffset;
     }
 
     private static int CountPrintable(byte[] data, int offset)
@@ -1780,6 +1810,21 @@ public class SNESSystem : ISNESSystem
                 printable++;
         }
         return printable;
+    }
+
+    private static int ScoreHeaderCandidate(byte[] data, int offset)
+    {
+        int printable = CountPrintable(data, offset);
+        if (printable < 0)
+            return -1;
+
+        int score = printable;
+        int mapModeLo = data[offset + 0x15] & 0x0F;
+        if (mapModeLo is 0x00 or 0x01 or 0x05)
+            score += 8;
+        if (data[offset + 0x16] != 0xFF)
+            score += 2;
+        return score;
     }
 
     private static int ReadExCoprocessor(byte[] data, int baseOff)
