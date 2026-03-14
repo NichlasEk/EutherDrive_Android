@@ -83,9 +83,15 @@ public class PPU : IPPU
     ];
 
     [JsonIgnore]
-    private readonly int[] _spriteSizes = [
+    private readonly int[] _spriteWidths = [
         1, 1, 1, 2, 2, 4, 2, 2,
         2, 4, 8, 4, 8, 8, 4, 4
+    ];
+
+    [JsonIgnore]
+    private readonly int[] _spriteHeights = [
+        1, 1, 1, 2, 2, 4, 4, 4,
+        2, 4, 8, 4, 8, 8, 8, 4
     ];
 
     private int _cgramAdr;
@@ -492,7 +498,7 @@ public class PPU : IPPU
                 return;
             case 0x02:
                 _oamRegAdr = value;
-                if (!InActiveDisplay())
+                if (!InActiveDisplay() || _forcedBlank)
                 {
                     _oamAdr = _oamRegAdr;
                     _oamInHigh = _oamRegInHigh;
@@ -502,7 +508,7 @@ public class PPU : IPPU
             case 0x03:
                 _oamRegInHigh = (value & 0x1) > 0;
                 _objPriority = (value & 0x80) > 0;
-                if (!InActiveDisplay())
+                if (!InActiveDisplay() || _forcedBlank)
                 {
                     _oamAdr = _oamRegAdr;
                     _oamInHigh = _oamRegInHigh;
@@ -863,7 +869,7 @@ public class PPU : IPPU
                 $"bg1 tilemap[0..7]=[{GetVramWindow(bg1MapAddr, 8)}]",
                 $"bg1 tile0 word=0x{tilemap0:X4} num=0x{tileNum0:X3} pal={(tilemap0 >> 10) & 0x7} prio={((tilemap0 >> 13) & 0x1)} xflip={((tilemap0 >> 14) & 0x1)} yflip={((tilemap0 >> 15) & 0x1)}",
                 $"bg1 tiledata[{tileNum0:X3}]=[{GetVramWindow(tileWordBase, Math.Min(bits << 2, 8))}]",
-                $"obj sprAdr1=0x{_sprAdr1:X4} sprAdr2=0x{_sprAdr2:X4} objSize={_objSize}",
+                $"obj sprAdr1=0x{_sprAdr1:X4} sprAdr2=0x{_sprAdr2:X4} objSize={_objSize} objPriority={_objPriority} oamAdr=0x{_oamAdr:X2} oamRegAdr=0x{_oamRegAdr:X2} oamInHigh={_oamInHigh} oamRegInHigh={_oamRegInHigh} rangeOver={_rangeOver} timeOver={_timeOver}",
                 $"oam[0..7]=[{GetOamWindow(0, 8)}]",
                 $"highOam[0..7]=[{GetHighOamWindow(0, 8)}]"
             });
@@ -1306,15 +1312,16 @@ public class PPU : IPPU
             x |= (_highOam[index >> 4] >> (index & 0xf) & 0x1) << 8;
             bool big = (_highOam[index >> 4] >> (index & 0xf) & 0x2) > 0;
             x = x > 255 ? -(512 - x) : x;
-            int size = _spriteSizes[_objSize + (big ? 8 : 0)];
-            int spriteHeight = size * (_objInterlace ? 4 : 8);
+            int spriteSizeIndex = _objSize + (big ? 8 : 0);
+            int spriteWidth = _spriteWidths[spriteSizeIndex];
+            int spriteHeight = _spriteHeights[spriteSizeIndex] * (_objInterlace ? 4 : 8);
             int sprRow = line - y;
             if (sprRow < 0 || sprRow >= spriteHeight)
             {
                 sprRow = line + (256 - y);
             }
 
-            if (sprRow < 0 || sprRow >= spriteHeight || x <= -(size * 8))
+            if (sprRow < 0 || sprRow >= spriteHeight || x <= -(spriteWidth * 8))
             {
                 continue;
             }
@@ -1339,19 +1346,21 @@ public class PPU : IPPU
             x |= (_highOam[index >> 4] >> (index & 0xf) & 0x1) << 8;
             bool big = (_highOam[index >> 4] >> (index & 0xf) & 0x2) > 0;
             x = x > 255 ? -(512 - x) : x;
-            int size = _spriteSizes[_objSize + (big ? 8 : 0)];
+            int spriteSizeIndex = _objSize + (big ? 8 : 0);
+            int spriteWidth = _spriteWidths[spriteSizeIndex];
+            int spriteHeight = _spriteHeights[spriteSizeIndex] * (_objInterlace ? 4 : 8);
             int sprRow = line - y;
-            if (sprRow < 0 || sprRow >= size * (_objInterlace ? 4 : 8))
+            if (sprRow < 0 || sprRow >= spriteHeight)
             {
                 sprRow = line + (256 - y);
             }
 
             sprRow = _objInterlace ? sprRow * 2 + (_evenFrame ? 1 : 0) : sprRow;
             int adr = _sprAdr1 + ((ex & 0x1) > 0 ? _sprAdr2 : 0);
-            sprRow = (ex & 0x80) > 0 ? size * 8 - 1 - sprRow : sprRow;
+            sprRow = (ex & 0x80) > 0 ? _spriteHeights[spriteSizeIndex] * 8 - 1 - sprRow : sprRow;
             int tileRow = sprRow >> 3;
             sprRow &= 0x7;
-            for (int k = 0; k < size; k++)
+            for (int k = 0; k < spriteWidth; k++)
             {
                 if (x + k * 8 <= -7 || x + k * 8 >= 256)
                 {
@@ -1364,11 +1373,16 @@ public class PPU : IPPU
                     return;
                 }
 
-                int tileColumn = (ex & 0x40) > 0 ? size - 1 - k : k;
-                int tileNum = tile + _spriteTileOffsets[tileRow * 8 + tileColumn];
+                int tileColumn = (ex & 0x40) > 0 ? spriteWidth - 1 - k : k;
+                // Large OBJ tile numbering wraps within the low and high nibbles separately;
+                // it does not carry across like BG 16x16 addressing does.
+                int tileNum = tile;
+                tileNum = (tileNum & ~0x0f) | ((tileNum + tileColumn) & 0x0f);
+                tileNum = (tileNum & ~0xf0) | ((tileNum + (tileRow << 4)) & 0xf0);
                 tileNum &= 0xff;
-                int tileP1 = _vram[(adr + tileNum * 16 + sprRow) & 0x7fff];
-                int tileP2 = _vram[(adr + tileNum * 16 + sprRow + 8) & 0x7fff];
+                int tileAddr = (adr + tileNum * 16 + sprRow) & 0x7fff;
+                int tileP1 = _vram[tileAddr];
+                int tileP2 = _vram[(tileAddr + 8) & 0x7fff];
                 for (int j = 0; j < 8; j++)
                 {
                     int shift = (ex & 0x40) > 0 ? j : 7 - j;
