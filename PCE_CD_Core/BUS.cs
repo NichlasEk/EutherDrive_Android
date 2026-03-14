@@ -242,6 +242,7 @@ namespace ePceCD
             m_MasterClockCycles += cycles;
             ClockTimer(cycles);
             ClockVideo(cycles);
+            APU.Clock(cycles);
             CDRom.ClockAudio(cycles);
 
             if (m_DeadClocks > 0)

@@ -78,7 +78,7 @@ Varför det mattered:
 - `Golden Axe` låste tidigare i introsekvenser kring `SubChannelQ`.
 - Efter att riktig Q-kanal och bättre CDDA-state användes försvann en hel klass av “pollar för evigt”-fel.
 
-### 4. ADPCM gick från grov approximation till Geargrafx-nära modell
+### 4. ADPCM gick från grov approximation till mer hårdvarunära modell
 
 Filer:
 
@@ -88,7 +88,7 @@ Filer:
 Vad som ändrades:
 
 - ADPCM är nu cykelklockad i stället för att dekodas direkt i `GetSample()`.
-- `play pending`, `length`, reset och half/end-IRQ följer Geargrafx mycket närmare.
+- `play pending`, `length`, reset och half/end-IRQ följer hårdvarubeteendet mycket närmare.
 - DMA/read/write för ADPCM har egen intern state.
 - `CDRom.ClockAudio()` clockar nu även ADPCM varje gång bussen clockas.
 
@@ -140,7 +140,7 @@ Det här verkar alltså ha varit ett systemiskt timingproblem i PCE-CD-kedjan, i
 ## Kvar att göra
 
 - `Valis II`: tal/röst saknas fortfarande trots att musik fungerar
-- fortsatt ADPCM-jämförelse mot Geargrafx read/write-slot-latency kan behövas
+- fortsatt ADPCM-jämförelse mot read/write-slot-latency i referenshårdvara kan behövas
 - om fler grafiska avvikelser återstår är nästa starka spår fortfarande VDC line-event/latch-timing, inte generell tiledecode
 
 ## Samlingscommit

@@ -539,9 +539,9 @@ namespace ePceCD
                 }
             }
             CalculateTrackMSF();
-            // Default to Geargrafx-style CUE calc; allow opt-out with EUTHERDRIVE_PCE_CUE_GEARGRAFX=0
-            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CUE_GEARGRAFX") != "0")
-                CalculateTrackMSF_Geargrafx();
+            // Default to compatibility CUE calc; allow opt-out with EUTHERDRIVE_PCE_CUE_COMPAT=0
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CUE_COMPAT") != "0")
+                CalculateTrackMSF_Compat();
             DetectAudioEndianness();
             TryLoadSub(cuePath);
             Console.WriteLine($"Loaded {tracks.Count} tracks");
@@ -733,7 +733,7 @@ namespace ePceCD
             }
         }
 
-        private void CalculateTrackMSF_Geargrafx()
+        private void CalculateTrackMSF_Compat()
         {
             if (tracks.Count == 0)
                 return;
@@ -1954,7 +1954,7 @@ namespace ePceCD
                     break;
 
                 case 0x03:
-                    // Geargrafx/CD hardware behavior:
+                    // Compatibility/CD hardware behavior:
                     // - reading locks BRAM access
                     // - bit 4 is always set
                     // - bit 1 reflects the latched CD-DA sample side rather than mutating IRQ bits
