@@ -1,10 +1,16 @@
 using System;
+using System.IO;
 
 namespace ePceCD
 {
     [Serializable]
     public class ADPCM
     {
+        private static readonly bool TraceEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ADPCM_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly string? TraceFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ADPCM_TRACE_FILE");
+        private static readonly object TraceFileLock = new object();
         private const uint RAM_SIZE = 0x10000; // 64KB ADPCM RAM
         private const int AdpcmRamMask = 0xFFFF;
         private const int AdpcmLengthMask = 0x1FFFF;
@@ -58,6 +64,16 @@ namespace ePceCD
         private float _dcPrevX;
         private float _dcPrevY;
         private float _gainSmooth;
+        [NonSerialized]
+        private bool _traceLastPlaying;
+        [NonSerialized]
+        private bool _traceLastPending;
+        [NonSerialized]
+        private uint _traceLastLength;
+        [NonSerialized]
+        private byte _traceLastControl;
+        [NonSerialized]
+        private byte _traceLastRate;
 
         // 中断标志位掩码
         private const byte STATUS_END_FLAG = 0x01;
@@ -80,6 +96,49 @@ namespace ePceCD
         public void BindCdRom(CDRom cdRom)
         {
             _cdRom = cdRom;
+        }
+
+        private void Trace(string message)
+        {
+            if (!TraceEnabled)
+                return;
+
+            string line = $"ADPCM: {message}";
+            if (!string.IsNullOrWhiteSpace(TraceFile))
+            {
+                lock (TraceFileLock)
+                    File.AppendAllText(TraceFile, line + Environment.NewLine);
+            }
+            else
+            {
+                Console.WriteLine(line);
+            }
+        }
+
+        private void TraceState(string reason)
+        {
+            Trace(
+                $"{reason} pc=0x{HuC6280.CurrentPC:X4} ctl=0x{_control:X2} rate=0x{_playbackRate:X2} len=0x{_adpcmLength:X5} addr=0x{_addressPort:X4} r=0x{_readAddress:X4} w=0x{_writeAddress:X4} play={(_isPlaying ? 1 : 0)} pend={(_playPending ? 1 : 0)} end={(_endReached ? 1 : 0)} half={(_halfReached ? 1 : 0)} dma=0x{_dmaControl:X2}");
+        }
+
+        private void TraceStateChanges(string reason)
+        {
+            if (!TraceEnabled)
+                return;
+
+            if (_traceLastPlaying != _isPlaying ||
+                _traceLastPending != _playPending ||
+                _traceLastLength != _adpcmLength ||
+                _traceLastControl != _control ||
+                _traceLastRate != _playbackRate)
+            {
+                _traceLastPlaying = _isPlaying;
+                _traceLastPending = _playPending;
+                _traceLastLength = _adpcmLength;
+                _traceLastControl = _control;
+                _traceLastRate = _playbackRate;
+                TraceState(reason);
+            }
         }
 
         private void ResetDecoderState()
