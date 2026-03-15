@@ -503,8 +503,7 @@ namespace ProjectPSX.Devices {
             Span<TextureData> t = stackalloc TextureData[vertexN];
 
             if (!isShaded) {
-                uint color = buffer[pointer++];
-                uint rgbColor = (uint)GetRgbColor(color);
+                uint rgbColor = buffer[pointer++] & 0x00FF_FFFFu;
                 c[0] = rgbColor; //triangle 1 opaque color
                 c[1] = rgbColor; //triangle 2 opaque color
             }
@@ -512,7 +511,7 @@ namespace ProjectPSX.Devices {
             primitive.semiTransparencyMode = transparencyMode;
 
             for (int i = 0; i < vertexN; i++) {
-                if (isShaded) c[i] = buffer[pointer++];
+                if (isShaded) c[i] = buffer[pointer++] & 0x00FF_FFFFu;
 
                 uint xy = buffer[pointer++];
                 v[i].x = (short)(signed11bit(xy & 0xFFFF) + drawingXOffset);
@@ -697,7 +696,7 @@ namespace ProjectPSX.Devices {
             //arguments++;
 
             if (isShaded) {
-                color2 = buffer[pointer++];
+                color2 = buffer[pointer++] & 0x00FF_FFFFu;
                 //arguments++;
             }
             uint v2 = buffer[pointer++];
@@ -712,7 +711,7 @@ namespace ProjectPSX.Devices {
                 //arguments++;
                 color1 = color2;
                 if (isShaded) {
-                    color2 = buffer[pointer++];
+                    color2 = buffer[pointer++] & 0x00FF_FFFFu;
                     //arguments++;
                 }
                 v1 = v2;
@@ -1304,7 +1303,7 @@ namespace ProjectPSX.Devices {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int GetRgbColor(uint value) {
             color0.val = value;
-            return (color0.m << 24 | color0.r << 16 | color0.g << 8 | color0.b);
+            return (color0.r << 16 | color0.g << 8 | color0.b);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
