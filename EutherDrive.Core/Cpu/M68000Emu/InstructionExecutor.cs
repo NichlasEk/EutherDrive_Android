@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 
 namespace EutherDrive.Core.Cpu.M68000Emu;
 
@@ -15,15 +16,21 @@ internal sealed partial class InstructionExecutor
 
     private static readonly bool TraceExceptions =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX"), "1", StringComparison.Ordinal);
+    private static readonly string? TraceExceptionsFile =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX_FILE");
     private static readonly uint? TracePcMin = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MIN");
     private static readonly uint? TracePcMax = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MAX");
     private static readonly uint? TraceWriteAddress = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_WRITE_ADDR");
+    private static readonly string? TraceWriteFile =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_WRITE_FILE");
     private static readonly bool TracePcIndexed =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_INDEXED"), "1", StringComparison.Ordinal);
     private static readonly int TracePcIndexedLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_PC_INDEXED_LIMIT", 64);
     private static int _tracePcIndexedRemaining = TracePcIndexed ? TracePcIndexedLimit : 0;
     private static readonly bool TraceInterrupts =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_IRQ"), "1", StringComparison.Ordinal);
+    private static readonly string? TraceInterruptsFile =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_IRQ_FILE");
     private static readonly int TraceInterruptLimit = ParseTraceLimit("EUTHERDRIVE_M68K_TRACE_IRQ_LIMIT", 256);
     private static int _traceInterruptRemaining = TraceInterrupts ? TraceInterruptLimit : 0;
 
@@ -458,6 +465,17 @@ internal sealed partial class InstructionExecutor
                 return ExecuteResult<object>.Ok(null!);
             case ResolvedAddressKind.Memory:
             case ResolvedAddressKind.MemoryPostincrement:
+                if (TraceWriteAddress.HasValue
+                    && (resolved.Address == TraceWriteAddress.Value
+                        || (resolved.Address + 1) == TraceWriteAddress.Value))
+                {
+                    string instKind = _instruction?.Kind.ToString() ?? "?";
+                    string line =
+                        $"[M68K-WW] cpu={_name} tracePc=0x{_tracePc:X8} curPc=0x{_registers.Pc:X8} op=0x{_opcode:X4} inst={instKind} " +
+                        $"addr=0x{resolved.Address:X8} val=0x{value:X4}";
+                    Console.WriteLine(line);
+                    AppendTraceLine(TraceWriteFile, line);
+                }
                 return WriteBusWord(resolved.Address, value);
             default:
                 throw new InvalidOperationException("Cannot write to immediate addressing mode.");
@@ -565,8 +583,10 @@ internal sealed partial class InstructionExecutor
         uint newPc = _bus.ReadLong(vectorAddr);
         if (TraceInterrupts && _traceInterruptRemaining > 0)
         {
-            Console.WriteLine(
-                $"[M68K-IRQVEC] cpu={_name} level={interruptLevel} vector=0x{vectorAddr:X4} target=0x{newPc:X8}");
+            string line =
+                $"[M68K-IRQVEC] cpu={_name} level={interruptLevel} vector=0x{vectorAddr:X4} target=0x{newPc:X8}";
+            Console.WriteLine(line);
+            AppendTraceLine(TraceInterruptsFile, line);
         }
         var r2 = JumpToAddress(newPc);
         if (!r2.IsOk) return ExecuteResult<uint>.Err(r2.Error!.Value);
@@ -588,7 +608,9 @@ internal sealed partial class InstructionExecutor
                 Instruction inst = _instruction.Value;
                 modeInfo = $" size={inst.Size} src={FormatMode(inst.Source)} dst={FormatMode(inst.Dest)}";
             }
-            Console.WriteLine($"[M68K-EX] cpu={_name} kind={ex.Kind} pc=0x{_registers.Pc:X8} op=0x{_opcode:X4} inst={instKind}{modeInfo}{detail}");
+            string line = $"[M68K-EX] cpu={_name} kind={ex.Kind} pc=0x{_registers.Pc:X8} op=0x{_opcode:X4} inst={instKind}{modeInfo}{detail}";
+            Console.WriteLine(line);
+            AppendTraceLine(TraceExceptionsFile, line);
         }
         switch (ex.Kind)
         {
@@ -646,6 +668,21 @@ internal sealed partial class InstructionExecutor
         };
     }
 
+    private static void AppendTraceLine(string? path, string line)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            File.AppendAllText(path, line + Environment.NewLine);
+        }
+        catch
+        {
+            // Ignore trace write failures to avoid altering emulation behavior.
+        }
+    }
+
     private static bool ShouldTracePc(uint pc)
     {
         if (!TracePcMin.HasValue || !TracePcMax.HasValue)
@@ -685,8 +722,10 @@ internal sealed partial class InstructionExecutor
             return;
         _traceInterruptRemaining--;
         string pendingText = pending.HasValue ? pending.Value.ToString() : "-";
-        Console.WriteLine(
-            $"[M68K-IRQ] cpu={_name} phase={phase} pc=0x{_registers.Pc:X8} sr=0x{sr:X4} mask={mask} bus={busLevel} pending={pendingText}");
+        string line =
+            $"[M68K-IRQ] cpu={_name} phase={phase} pc=0x{_registers.Pc:X8} sr=0x{sr:X4} mask={mask} bus={busLevel} pending={pendingText}";
+        Console.WriteLine(line);
+        AppendTraceLine(TraceInterruptsFile, line);
     }
 
     private ExecuteResult<object> HandleTrap(uint vector, uint pc)

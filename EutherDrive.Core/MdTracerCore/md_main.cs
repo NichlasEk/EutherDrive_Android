@@ -341,6 +341,38 @@ namespace EutherDrive.Core.MdTracerCore
             }
         }
 
+        internal static int ConsumeM68kEmuWaitCycles(int maxCycles)
+        {
+            if (!UseM68kEmuMain || maxCycles <= 0 || _m68kWaitCycles <= 0)
+                return 0;
+
+            int step = Math.Min(maxCycles, _m68kWaitCycles);
+            _m68kWaitCycles -= step;
+            return step;
+        }
+
+        internal static void RecordM68kEmuInstructionCycles(int cycles, uint pc)
+        {
+            if (!UseM68kEmuMain || cycles <= 0)
+                return;
+
+            AddM68kCycles(cycles);
+
+            _m68kRefreshCounter += cycles;
+            if (_m68kRefreshCounter >= 128)
+            {
+                int regionIdx = (int)((pc >> 21) & 7);
+                int waitCycles = regionIdx switch
+                {
+                    0 or 1 or 2 or 3 => 2,
+                    7 => 3,
+                    _ => 0
+                };
+                _m68kWaitCycles += waitCycles;
+                _m68kRefreshCounter %= 128;
+            }
+        }
+
         internal readonly struct MainInterruptDebugSnapshot
         {
             internal readonly bool UsingM68kEmu;

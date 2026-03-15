@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 
 namespace EutherDrive.Core.SegaCd;
@@ -107,6 +108,8 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_MAINREG"),
         "1",
         StringComparison.Ordinal);
+    private static readonly string? TraceIrqFile =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_IRQ_FILE");
     private readonly bool _logA12001Pc;
     private static readonly bool LogMainRegReads = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_MAINREG_READ"),
@@ -119,6 +122,7 @@ public sealed class SegaCdMemory
     private bool _subRegAccessLogged;
     private int _subBusLogCount;
     private bool _subBusLogSuppressedNotified;
+    private int _lastLoggedSubInterruptLevel = -1;
     public const int BiosLen = 128 * 1024;
     public const int PrgRamLen = 512 * 1024;
     public const int BackupRamLen = 8 * 1024;
@@ -285,6 +289,7 @@ public sealed class SegaCdMemory
     {
         Registers.Reset();
         Array.Clear(_prgRam, 0, _prgRam.Length);
+        _lastLoggedSubInterruptLevel = -1;
         _cdController.Reset();
         WordRam.Reset();
     }
@@ -666,6 +671,11 @@ public sealed class SegaCdMemory
                 uint pc = cpu == ScdCpu.Main ? (MainPcProvider?.Invoke() ?? 0) : (SubPcProvider?.Invoke() ?? 0);
                 Console.WriteLine($"[SCD-PRG-FLAG] W8 {cpu} addr=0x{address:X6} val=0x{value:X2} pc=0x{pc:X6}");
             }
+            if (address == PrgFlagAddr)
+            {
+                uint pc = cpu == ScdCpu.Main ? (MainPcProvider?.Invoke() ?? 0) : (SubPcProvider?.Invoke() ?? 0);
+                AppendTraceLine($"[SCD-IRQ-FILE] PRG flag cpu={cpu} val=0x{value:X2} pc=0x{pc:X6}");
+            }
             if (LogPrgWaitWindow && (address == PrgFlagAddr || (address >= PrgWaitWindowStart && address <= PrgWaitWindowEnd)))
             {
                 uint pc = cpu == ScdCpu.Main ? (MainPcProvider?.Invoke() ?? 0) : (SubPcProvider?.Invoke() ?? 0);
@@ -777,10 +787,13 @@ public sealed class SegaCdMemory
         {
             case 0xA12000:
                 bool nextPend = (value & 0x01) != 0;
-                if (nextPend != Registers.SubSoftwareInterruptPending)
+                if (LogCommFlags && nextPend != Registers.SubSoftwareInterruptPending)
                     Console.WriteLine(
                         $"[COMM-DEBUG] MAIN W 0xA12000 = 0x{value:X2} (pend={nextPend}) " +
                         $"PC=0x{MainPcProvider?.Invoke():X6} SUBPC=0x{SubPcProvider?.Invoke():X6}");
+                AppendTraceLine(
+                    $"[SCD-IRQ-FILE] MAIN A12000=0x{value:X2} pend={nextPend} " +
+                    $"main_pc=0x{MainPcProvider?.Invoke():X6} sub_pc=0x{SubPcProvider?.Invoke():X6}");
                 Registers.SubSoftwareInterruptPending = nextPend;
                 break;
             case 0xA12001:
@@ -1106,17 +1119,17 @@ public sealed class SegaCdMemory
     {
         uint reg = address & SubRegisterAddressMask;
         LogFirstSubRegAccess(reg, isWrite: true);
-        if (reg == 0x0004 && !_subCdcDestLogged)
+        if (LogSubCdc && reg == 0x0004 && !_subCdcDestLogged)
         {
             _subCdcDestLogged = true;
             Console.Error.WriteLine($"[SCD-SUB-CDC] W 0x0004 = 0x{value:X2}");
         }
-        if (reg == 0x0005 && !_subCdcRegAddrLogged)
+        if (LogSubCdc && reg == 0x0005 && !_subCdcRegAddrLogged)
         {
             _subCdcRegAddrLogged = true;
             Console.Error.WriteLine($"[SCD-SUB-CDC] W 0x0005 = 0x{value:X2}");
         }
-        if (reg == 0x0007 && !_subCdcRegDataLogged)
+        if (LogSubCdc && reg == 0x0007 && !_subCdcRegDataLogged)
         {
             _subCdcRegDataLogged = true;
             Console.Error.WriteLine($"[SCD-SUB-CDC] W 0x0007 = 0x{value:X2}");
@@ -1182,7 +1195,7 @@ public sealed class SegaCdMemory
             case 0x000E:
             case 0x000F:
                 // Hardware-compatible behavior: both byte addresses update sub CPU flags.
-                if (LogCommFlags || Registers.SubCpuCommunicationFlags != value)
+                if (LogCommFlags && Registers.SubCpuCommunicationFlags != value)
                     Console.WriteLine(
                         $"[COMM-DEBUG] SUB  W 0x800F = 0x{value:X2} prev=0x{Registers.SubCpuCommunicationFlags:X2} " +
                         $"PC=0x{SubPcProvider?.Invoke():X6}");
@@ -1207,6 +1220,11 @@ public sealed class SegaCdMemory
                 Registers.TimerInterruptEnabled = (value & 0x08) != 0;
                 Registers.SoftwareInterruptEnabled = (value & 0x04) != 0;
                 Registers.GraphicsInterruptEnabled = (value & 0x02) != 0;
+                AppendTraceLine(
+                    $"[SCD-IRQ-FILE] SUB INTMASK=0x{value:X2} cdc={(Registers.CdcInterruptEnabled ? 1 : 0)} " +
+                    $"cdd={(Registers.CddInterruptEnabled ? 1 : 0)} timer={(Registers.TimerInterruptEnabled ? 1 : 0)} " +
+                    $"sw={(Registers.SoftwareInterruptEnabled ? 1 : 0)} gfx={(Registers.GraphicsInterruptEnabled ? 1 : 0)} " +
+                    $"pc=0x{SubPcProvider?.Invoke():X6}");
                 if (!Registers.GraphicsInterruptEnabled)
                     Graphics.AcknowledgeInterrupt();
                 if (LogSubInt)
@@ -1472,7 +1490,10 @@ public sealed class SegaCdMemory
                     Console.WriteLine($"[SCD-SUBREG-PROBE] W8 0x{address:X6} = 0x{value:X2}");
                 }
                 LogSubBusLine($"[SCD-SUBBUS] W8 0x{addr:X6} = 0x{value:X2}");
-                BufferSubWrite(BufferedWriteKind.Byte, addr, value);
+                if ((addr & SubRegisterAddressMask) == 0x0003)
+                    BufferSubWrite(BufferedWriteKind.Byte, addr, value);
+                else
+                    WriteSubRegisterByte(addr, value);
                 break;
         }
     }
@@ -1507,7 +1528,10 @@ public sealed class SegaCdMemory
                     Console.WriteLine($"[SCD-SUBREG-PROBE] W16 0x{address:X6} = 0x{value:X4}");
                 }
                 LogSubBusLine($"[SCD-SUBBUS] W16 0x{addr:X6} = 0x{value:X4}");
-                BufferSubWrite(BufferedWriteKind.Word, addr, value);
+                if ((addr & SubRegisterAddressMask) == 0x0002)
+                    BufferSubWrite(BufferedWriteKind.Word, addr, value);
+                else
+                    WriteSubRegisterWord(addr, value);
                 break;
         }
     }
@@ -1533,7 +1557,7 @@ public sealed class SegaCdMemory
 
     private void LogFirstSubRegAccess(uint reg, bool isWrite)
     {
-        if (_subRegAccessLogged)
+        if (_subRegAccessLogged || !LogSubRegs)
             return;
         _subRegAccessLogged = true;
         Console.WriteLine($"[SCD-SUBREG-FIRST] {(isWrite ? "W" : "R")} 0x{reg:X4}");
@@ -1541,34 +1565,54 @@ public sealed class SegaCdMemory
 
     public byte GetSubInterruptLevel()
     {
+        byte level;
         if (Registers.CdcInterruptEnabled && Cdc.InterruptPending)
         {
-            return 5;
+            level = 5;
         }
-        if (Registers.CddInterruptEnabled && Registers.CddHostClockOn && Cdd.InterruptPending)
+        else if (Registers.CddInterruptEnabled && Registers.CddHostClockOn && Cdd.InterruptPending)
         {
-            return 4;
+            level = 4;
         }
-        if (Registers.TimerInterruptEnabled && Registers.TimerInterruptPending)
+        else if (Registers.TimerInterruptEnabled && Registers.TimerInterruptPending)
         {
-            return 3;
+            level = 3;
         }
-        if (Registers.SoftwareInterruptEnabled && Registers.SubSoftwareInterruptPending)
+        else if (Registers.SoftwareInterruptEnabled && Registers.SubSoftwareInterruptPending)
         {
-            return 2;
+            level = 2;
         }
-        if (Registers.GraphicsInterruptEnabled && Graphics.InterruptPending)
+        else if (Registers.GraphicsInterruptEnabled && Graphics.InterruptPending)
         {
-            return 1;
+            level = 1;
         }
-        return 0;
+        else
+        {
+            level = 0;
+        }
+
+        if (TraceIrqFile != null && _lastLoggedSubInterruptLevel != level)
+        {
+            _lastLoggedSubInterruptLevel = level;
+            AppendTraceLine(
+                $"[SCD-IRQ-FILE] SUB IRQ level={level} swPend={(Registers.SubSoftwareInterruptPending ? 1 : 0)} " +
+                $"swEn={(Registers.SoftwareInterruptEnabled ? 1 : 0)} timerPend={(Registers.TimerInterruptPending ? 1 : 0)} " +
+                $"timerEn={(Registers.TimerInterruptEnabled ? 1 : 0)} cddPend={(Cdd.InterruptPending ? 1 : 0)} " +
+                $"cddEn={(Registers.CddInterruptEnabled ? 1 : 0)} hostClk={(Registers.CddHostClockOn ? 1 : 0)} " +
+                $"cdcPend={(Cdc.InterruptPending ? 1 : 0)} cdcEn={(Registers.CdcInterruptEnabled ? 1 : 0)} " +
+                $"gfxPend={(Graphics.InterruptPending ? 1 : 0)} gfxEn={(Registers.GraphicsInterruptEnabled ? 1 : 0)} " +
+                $"sub_pc=0x{SubPcProvider?.Invoke():X6}");
+        }
+
+        return level;
     }
 
     public void AcknowledgeSubInterrupt(byte level)
     {
         if (LogSubInt)
             Console.WriteLine($"[SCD-SUBINT] ack level={level} pc=0x{SubPcProvider?.Invoke():X6}");
-        if (level == 4 && !_subAckCddLogged)
+        AppendTraceLine($"[SCD-IRQ-FILE] SUB ACK level={level} pc=0x{SubPcProvider?.Invoke():X6}");
+        if (LogSubInt && level == 4 && !_subAckCddLogged)
         {
             _subAckCddLogged = true;
             Console.Error.WriteLine("[SCD-SUBINT-ACK4] first CDD ack");
@@ -1581,7 +1625,8 @@ public sealed class SegaCdMemory
                 Graphics.AcknowledgeInterrupt();
                 break;
             case 2:
-                Console.WriteLine($"[SCD-SUBINT-ACK2] pc=0x{SubPcProvider?.Invoke():X6}");
+                if (LogSubInt)
+                    Console.WriteLine($"[SCD-SUBINT-ACK2] pc=0x{SubPcProvider?.Invoke():X6}");
                 Registers.SubSoftwareInterruptPending = false;
                 break;
             case 3:
@@ -1596,6 +1641,21 @@ public sealed class SegaCdMemory
             case 6:
                 Cdd.AcknowledgeSubcodeInterrupt();
                 break;
+        }
+    }
+
+    private static void AppendTraceLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(TraceIrqFile))
+            return;
+
+        try
+        {
+            File.AppendAllText(TraceIrqFile, line + Environment.NewLine);
+        }
+        catch
+        {
+            // Ignore trace write failures to avoid altering emulation behavior.
         }
     }
 

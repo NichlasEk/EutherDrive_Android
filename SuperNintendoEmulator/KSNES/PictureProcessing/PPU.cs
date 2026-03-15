@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.Threading;
 
 namespace KSNES.PictureProcessing;
@@ -8,6 +9,16 @@ public class PPU : IPPU
     private static readonly bool TracePpu =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU"), "1", StringComparison.Ordinal);
     private static readonly int TracePpuLimit = GetTracePpuLimit();
+    private static readonly bool DebugDisableBg1 =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_BG1"), "1", StringComparison.Ordinal);
+    private static readonly bool DebugDisableBg2 =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_BG2"), "1", StringComparison.Ordinal);
+    private static readonly bool DebugDisableBg3 =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_BG3"), "1", StringComparison.Ordinal);
+    private static readonly bool DebugDisableBg4 =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_BG4"), "1", StringComparison.Ordinal);
+    private static readonly bool DebugDisableObj =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_OBJ"), "1", StringComparison.Ordinal);
     private static int _tracePpuCount;
     [NonSerialized]
     private ISNESSystem? _snes;
@@ -669,10 +680,14 @@ public class PPU : IPPU
                 return;
             case 0x18:
                 int adr2 = GetVramRemap();
-                if (dma || _forcedBlank || GetCurrentVblank() || GetCurrentHblank())
+                if (_forcedBlank || GetCurrentVblank())
                 {
                     _vram[adr2] = (ushort) ((_vram[adr2] & 0xff00) | value);
                     TracePpuWrite($"[PPU] VMDATAL adr=0x{adr2:X4} val=0x{value:X2} word=0x{_vram[adr2]:X4}");
+                }
+                else
+                {
+                    TracePpuWrite($"[PPU] VMDATAL-REJECT adr=0x{adr2:X4} val=0x{value:X2} forcedBlank={_forcedBlank} vblank={GetCurrentVblank()} hblank={GetCurrentHblank()} xy=({_snes?.XPos ?? -1},{_snes?.YPos ?? -1})");
                 }
                 if (!_vramIncOnHigh)
                 {
@@ -682,10 +697,14 @@ public class PPU : IPPU
                 return;
             case 0x19:
                 int adr3 = GetVramRemap();
-                if (dma || _forcedBlank || GetCurrentVblank() || GetCurrentHblank())
+                if (_forcedBlank || GetCurrentVblank())
                 {
                     _vram[adr3] = (ushort) ((_vram[adr3] & 0xff) | (value << 8));
                     TracePpuWrite($"[PPU] VMDATAH adr=0x{adr3:X4} val=0x{value:X2} word=0x{_vram[adr3]:X4}");
+                }
+                else
+                {
+                    TracePpuWrite($"[PPU] VMDATAH-REJECT adr=0x{adr3:X4} val=0x{value:X2} forcedBlank={_forcedBlank} vblank={GetCurrentVblank()} hblank={GetCurrentHblank()} xy=({_snes?.XPos ?? -1},{_snes?.YPos ?? -1})");
                 }
                 if (_vramIncOnHigh)
                 {
@@ -899,6 +918,7 @@ public class PPU : IPPU
             new[]
             {
                 $"ppu mode={_mode} tm=0x{_tmRaw:X2} ts=0x{_tsRaw:X2} forcedBlank={_forcedBlank} bright={_brightness}",
+                $"window wh0={_window1Left} wh1={_window1Right} wh2={_window2Left} wh3={_window2Right} mainW=[{BoolArrayString(_mainScreenWindow, 5)}] subW=[{BoolArrayString(_subScreenWindow, 5)}] w1E=[{BoolArrayString(_window1Enabled, 6)}] w2E=[{BoolArrayString(_window2Enabled, 6)}] w1Inv=[{BoolArrayString(_window1Inversed, 6)}] w2Inv=[{BoolArrayString(_window2Inversed, 6)}] logic=[{IntArrayString(_windowMaskLogic, 6)}]",
                 $"cgram[0]=0x{_cgram[0]:X4} cgramFrame[0]=0x{_cgramFrame[0]:X4} cgram[1]=0x{_cgram[1]:X4} cgramFrame[1]=0x{_cgramFrame[1]:X4}",
                 GetBgDebugSnapshot(0),
                 GetBgDebugSnapshot(1),
@@ -937,6 +957,30 @@ public class PPU : IPPU
                 $"bg{layer + 1} tile0 word=0x{tilemapWord:X4} num=0x{tileNum:X3} pal={(tilemapWord >> 10) & 0x7} prio={((tilemapWord >> 13) & 0x1)} xflip={((tilemapWord >> 14) & 0x1)} yflip={((tilemapWord >> 15) & 0x1)}",
                 $"bg{layer + 1} tiledata[{tileNum:X3}]=[{GetVramWindow(tileWordBase, Math.Min(bits << 2, 8))}]"
             });
+    }
+
+    private static string BoolArrayString(bool[] values, int count)
+    {
+        if (values.Length < count)
+            count = values.Length;
+
+        string[] parts = new string[count];
+        for (int i = 0; i < count; i++)
+            parts[i] = values[i] ? "1" : "0";
+
+        return string.Join("", parts);
+    }
+
+    private static string IntArrayString(int[] values, int count)
+    {
+        if (values.Length < count)
+            count = values.Length;
+
+        string[] parts = new string[count];
+        for (int i = 0; i < count; i++)
+            parts[i] = values[i].ToString(CultureInfo.InvariantCulture);
+
+        return string.Join(",", parts);
     }
 
     private string GetVramWindow(int start, int count)
@@ -1283,6 +1327,15 @@ public class PPU : IPPU
 
     private int GetPixelForLayer(int x, int y, int l, int p) 
     {
+        if ((l == 0 && DebugDisableBg1)
+            || (l == 1 && DebugDisableBg2)
+            || (l == 2 && DebugDisableBg3)
+            || (l == 3 && DebugDisableBg4)
+            || (l == 4 && DebugDisableObj))
+        {
+            return 0;
+        }
+
         if (l > 3)
         {
             if (_spritePrioBuffer[x] != p)

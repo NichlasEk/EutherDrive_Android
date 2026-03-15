@@ -2148,12 +2148,12 @@ namespace EutherDrive.Core.MdTracerCore
                     Console.WriteLine($"[0xCA-WRITE-DEBUG] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8}");
             }
             // Also log writes to VDP data port (C00000) and control port (C00004)
-            if (in_address == 0xC00000 || in_address == 0xC00004)
+            if (TraceBusWriteDebug && (in_address == 0xC00000 || in_address == 0xC00004))
             {
                 Console.WriteLine($"[VDP-PORT-WRITE] addr=0x{in_address:X8} val=0x{in_data:X2} PC=0x{g_reg_PC:X6}");
             }
             // Special logging for PC around 0x000788 (DMA setup code)
-            if (g_reg_PC >= 0x000780 && g_reg_PC <= 0x000790)
+            if (TraceBusWriteDebug && g_reg_PC >= 0x000780 && g_reg_PC <= 0x000790)
             {
                 Console.WriteLine($"[PC-788-DEBUG-WRITE] PC=0x{g_reg_PC:X6} addr=0x{in_address:X8} val=0x{in_data:X2} D0=0x{g_reg_data[0].l:X8} D1=0x{g_reg_data[1].l:X8} A0=0x{g_reg_addr[0].l:X8}");
             }

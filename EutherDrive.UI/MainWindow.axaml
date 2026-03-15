@@ -37,39 +37,43 @@
               <ComboBox Name="RecentRomCombo" Width="180" SelectionChanged="OnRecentRomSelected"/>
             </StackPanel>
           </Border>
-          <Button Classes="action compact" Content="Start" Click="OnStart"/>
-          <Button Classes="compact" Content="Stop" Click="OnStop"/>
-          <Button Classes="ghost compact" Content="About" Click="OnAbout"/>
-          <Button Classes="compact" Content="Input Settings" Click="OnInputSettings"/>
-          <Expander ExpandDirection="Down" IsExpanded="False" VerticalAlignment="Top">
-            <Expander.Header>
-              <Border Classes="panel" Padding="10,5">
-                <TextBlock Classes="deck-label" Text="SAVESTATES"/>
+          <StackPanel Spacing="6" VerticalAlignment="Top">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Classes="action compact" Content="Start" Click="OnStart"/>
+              <Button Classes="compact" Content="Stop" Click="OnStop"/>
+              <Button Classes="ghost compact" Content="About" Click="OnAbout"/>
+              <Button Classes="compact" Content="Input Settings" Click="OnInputSettings"/>
+            </StackPanel>
+            <Expander ExpandDirection="Down" IsExpanded="False" HorizontalAlignment="Left" Width="324">
+              <Expander.Header>
+                <Border Classes="panel" Padding="10,5">
+                  <TextBlock Classes="deck-label" Text="SAVESTATES"/>
+                </Border>
+              </Expander.Header>
+              <Border Name="SavestatePanel" Classes="panel" Padding="6" Margin="0,6,0,0" x:DataType="savestates:SavestateViewModel">
+                <StackPanel Spacing="4">
+                  <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="{Binding Slot1Label}" Width="128" FontSize="10" VerticalAlignment="Center"/>
+                    <Button Classes="small" Content="Save" Command="{Binding SaveSlot1Command}"/>
+                    <Button Classes="small" Content="Load" Command="{Binding LoadSlot1Command}"/>
+                    <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot1Command}"/>
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="{Binding Slot2Label}" Width="128" FontSize="10" VerticalAlignment="Center"/>
+                    <Button Classes="small" Content="Save" Command="{Binding SaveSlot2Command}"/>
+                    <Button Classes="small" Content="Load" Command="{Binding LoadSlot2Command}"/>
+                    <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot2Command}"/>
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="{Binding Slot3Label}" Width="128" FontSize="10" VerticalAlignment="Center"/>
+                    <Button Classes="small" Content="Save" Command="{Binding SaveSlot3Command}"/>
+                    <Button Classes="small" Content="Load" Command="{Binding LoadSlot3Command}"/>
+                    <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot3Command}"/>
+                  </StackPanel>
+                </StackPanel>
               </Border>
-            </Expander.Header>
-            <Border Name="SavestatePanel" Classes="panel" Padding="6" Margin="0,6,0,0" x:DataType="savestates:SavestateViewModel">
-              <StackPanel Spacing="4">
-                <StackPanel Orientation="Horizontal" Spacing="4">
-                  <TextBlock Text="{Binding Slot1Label}" Width="128" FontSize="10" VerticalAlignment="Center"/>
-                  <Button Classes="small" Content="Save" Command="{Binding SaveSlot1Command}"/>
-                  <Button Classes="small" Content="Load" Command="{Binding LoadSlot1Command}"/>
-                  <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot1Command}"/>
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" Spacing="4">
-                  <TextBlock Text="{Binding Slot2Label}" Width="128" FontSize="10" VerticalAlignment="Center"/>
-                  <Button Classes="small" Content="Save" Command="{Binding SaveSlot2Command}"/>
-                  <Button Classes="small" Content="Load" Command="{Binding LoadSlot2Command}"/>
-                  <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot2Command}"/>
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" Spacing="4">
-                  <TextBlock Text="{Binding Slot3Label}" Width="128" FontSize="10" VerticalAlignment="Center"/>
-                  <Button Classes="small" Content="Save" Command="{Binding SaveSlot3Command}"/>
-                  <Button Classes="small" Content="Load" Command="{Binding LoadSlot3Command}"/>
-                  <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot3Command}"/>
-                </StackPanel>
-              </StackPanel>
-            </Border>
-          </Expander>
+            </Expander>
+          </StackPanel>
           <Border Classes="panel" Padding="6,5">
             <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
               <TextBlock Classes="deck-label" Text="MASTER VOL"/>

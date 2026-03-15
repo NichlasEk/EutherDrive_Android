@@ -397,11 +397,10 @@ public sealed class SegaCdCddStub
                     }
                     else
                     {
-                        // BIOS can get stuck waiting for play; enter Playing immediately and
-                        // prime the CDC with the first sector.
-                        _state = State.Playing;
-                        _loadedAudioSector = false;
-                        HandlePlaying(_stateTime, changeState: true, cdc);
+                        // Match hardware/jgenesis: seek completion enters a short play delay
+                        // before the first sector is delivered to the CDC.
+                        _state = State.PreparingToPlay;
+                        _seekClocks = PlayDelayClocks;
                     }
                 }
                 else
@@ -448,8 +447,6 @@ public sealed class SegaCdCddStub
                     _loadedAudioSector = false;
                     if (TraceCddState)
                         Console.Error.WriteLine($"[SCD-CDD-STATE] t={TraceStamp()} -> Playing time={_stateTime}");
-                    // Prime CDC with the first sector immediately so header data is available.
-                    HandlePlaying(_stateTime, changeState: true, cdc);
                 }
                 else
                 {
@@ -460,6 +457,20 @@ public sealed class SegaCdCddStub
                 if (TraceCddState)
                     Console.Error.WriteLine($"[SCD-CDD-STATE] t={TraceStamp()} Playing time={_stateTime}");
                 HandlePlaying(_stateTime, changeState: true, cdc);
+                break;
+            case State.ReadingToc:
+                if (_disc == null)
+                {
+                    _state = State.NoDisc;
+                }
+                else
+                {
+                    // Reading TOC is a transient drive phase. Keep the active report
+                    // type intact, but return to Paused after one clock so the BIOS
+                    // can consume the status payload and continue its handshake.
+                    _state = State.Paused;
+                    _stateTime = CdTime.Zero;
+                }
                 break;
             case State.MotorStopped:
                 if (_disc == null)

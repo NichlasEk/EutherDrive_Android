@@ -907,12 +907,6 @@ public class SNESSystem : ISNESSystem
 
     private void HandleDma() 
     {
-        if (_pendingDmaWriteValid)
-        {
-            ApplyPendingDmaWrite();
-            return;
-        }
-
         if (_gpdmaState == GpDmaState.Pending)
         {
             bool anyActive = false;
@@ -981,18 +975,14 @@ public class SNESSystem : ISNESSystem
         int tableOff = _dmaMode[channel] * 4 + (_gpdmaBytesCopied & 0x3);
         if (_dmaFromB[channel])
         {
-            QueueDmaWriteBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel],
+            DmaWriteBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel],
                 ReadBBus((_dmaBadr[channel] + _dmaOffs[tableOff]) & 0xff));
         }
         else
         {
-            QueueDmaWriteBusB((_dmaBadr[channel] + _dmaOffs[tableOff]) & 0xff,
-                DmaReadBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel]));
+            WriteBBus((_dmaBadr[channel] + _dmaOffs[tableOff]) & 0xff,
+                DmaReadBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel]), true);
         }
-
-        _dmaTimer = 4;
-        if (_gpdmaBytesCopied == 0)
-            _dmaTimer += 4;
 
         if (!_dmaFixed[channel])
         {
@@ -1017,9 +1007,9 @@ public class SNESSystem : ISNESSystem
             _gpdmaBytesCopied++;
         }
 
-        _dmaTimer = 4;
+        _dmaTimer = 8;
         if (_gpdmaBytesCopied == 0)
-            _dmaTimer += 4;
+            _dmaTimer += 8;
     }
 
     private void InitHdma() 

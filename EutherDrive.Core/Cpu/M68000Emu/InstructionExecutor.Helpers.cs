@@ -56,9 +56,11 @@ internal sealed partial class InstructionExecutor
                 if (TraceWriteAddress.HasValue && resolved.Address == TraceWriteAddress.Value)
                 {
                     string instKind = _instruction?.Kind.ToString() ?? "?";
-                    Console.WriteLine(
+                    string line =
                         $"[M68K-WB] cpu={_name} tracePc=0x{_tracePc:X8} curPc=0x{_registers.Pc:X8} op=0x{_opcode:X4} inst={instKind} " +
-                        $"addr=0x{resolved.Address:X8} val=0x{value:X2}");
+                        $"addr=0x{resolved.Address:X8} val=0x{value:X2}";
+                    Console.WriteLine(line);
+                    AppendTraceLine(TraceWriteFile, line);
                 }
                 _bus.WriteByte(resolved.Address, value);
                 return ExecuteResult<object>.Ok(null!);
