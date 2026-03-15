@@ -495,27 +495,9 @@ public class SNESSystem : ISNESSystem
 
     public void ResyncAfterLoad()
     {
-        int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
-
-        _inVblank = YPos >= vBlankStart;
-        _inHblank = XPos < 4 || XPos >= 1096;
-
-        // These are edge/latched signals in hardware; after a savestate we need a coherent
-        // runtime view that matches the current beam position rather than stale mid-transition bits.
-        _vblankNmiFlag = false;
-        _inIrq = false;
-        _irqLine = false;
-        _irqRaisedAtCycle = 0;
-        _lastIrqHTime = GetIrqHTime();
-        _autoJoyPendingStart = false;
-        if (!_autoJoyBusy)
-            _autoJoyTimer = 0;
-
-        if (CPU is KSNES.CPU.CPU cpu)
-        {
-            cpu.NmiWanted = false;
-            cpu.IrqWanted = ROM.IrqWanted;
-        }
+        // Savestates already serialize the live beam position and interrupt/DMA state.
+        // Clobbering those latched values on load breaks late-frame states that rely on
+        // pending IRQ/NMI/autojoy activity to reproduce the next frame correctly.
     }
 
     private void LoadRom(byte[] rom)
@@ -569,6 +551,7 @@ public class SNESSystem : ISNESSystem
     private void Cycle(bool noPpu) 
     {
         Cycles += 2;
+        bool queueNmiForNextCpuSlot = false;
         int apuStepMclks = 2;
         if (_apuBorrowedMainCycles > 0)
         {
@@ -603,7 +586,10 @@ public class SNESSystem : ISNESSystem
                 }
                 if (_nmiEnabled)
                 {
-                    CPU.NmiWanted = true;
+                    // Raise the RDNMI latch immediately, but defer CPU delivery until after the
+                    // current CPU slot. Games such as Ka-blooey poll $4210 on the VBlank edge and
+                    // expect to observe bit 7 before the NMI handler consumes it.
+                    queueNmiForNextCpuSlot = true;
                 }
             }
             else if (YPos == 0)
@@ -649,6 +635,10 @@ public class SNESSystem : ISNESSystem
             CpuCycle();
         }
         UpdateIrqLine();
+        if (queueNmiForNextCpuSlot)
+        {
+            CPU.NmiWanted = true;
+        }
         
         CPU.IrqWanted = _inIrq || ROM.IrqWanted;
         if (XPos == 512 && !noPpu)
@@ -684,8 +674,7 @@ public class SNESSystem : ISNESSystem
                 YPos = 0;
                 _oddFrame = !_oddFrame;
                 // The PPU is no longer in VBlank once the frame wraps back to scanline 0.
-                // Keeping the latched state until the next Cycle() leaves $4212 bit 7 high
-                // at the frame boundary, which can strand games that poll HVBJOY for VBlank end.
+                // Clear both the live VBlank state and the RDNMI latch at frame wrap.
                 _inNmi = false;
                 _vblankNmiFlag = false;
                 _inVblank = false;
@@ -1051,13 +1040,14 @@ public class SNESSystem : ISNESSystem
                     _dmaSize[i] |= (ushort) (Read(dmaBank | _hdmaTableAdr[i]++, true) << 8);
                     _hdmaTimer += 16;
                 }
-                _hdmaDoTransfer[i] = true;
+                _hdmaTerminated[i] = _hdmaRepCount[i] == 0;
+                _hdmaDoTransfer[i] = !_hdmaTerminated[i];
             }
             else
             {
                 _hdmaDoTransfer[i] = false;
+                _hdmaTerminated[i] = false;
             }
-            _hdmaTerminated[i] = false;
         }
     }
 
@@ -1561,24 +1551,48 @@ public class SNESSystem : ISNESSystem
         switch (adr)
         {
             case 0x80:
-                if (_traceWramWrites && ShouldTraceWramPortAccess(_ramAdr, _ramAdr))
+                int portWritePc = -1;
+                if (CPU is KSNES.CPU.CPU portWriteCpu)
+                    portWritePc = portWriteCpu.ProgramCounter24;
+                bool tracePortWrite = _traceWramWrites &&
+                    (ShouldTraceWramPortAccess(_ramAdr, _ramAdr) ||
+                     (portWritePc >= 0x02E1E0 && portWritePc <= 0x02E1FF));
+                if (tracePortWrite)
                 {
-                    int pc = -1;
-                    if (CPU is KSNES.CPU.CPU cpu)
-                        pc = cpu.ProgramCounter24;
-                    Console.WriteLine($"[WRAM-PORT-WR] addr=0x{_ramAdr:X5} val=0x{value:X2} pc=0x{pc:X6}");
+                    Console.WriteLine($"[WRAM-PORT-WR] addr=0x{_ramAdr:X5} val=0x{value:X2} pc=0x{portWritePc:X6}");
                 }
                 _ram[_ramAdr++] = (byte) value;
                 _ramAdr &= 0x1ffff;
                 return;
             case 0x81:
                 _ramAdr = (_ramAdr & 0x1ff00) | value;
+                if (_traceWramWrites)
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-PORT-ADR] reg=0x2181 val=0x{value:X2} ramAdr=0x{_ramAdr:X5} pc=0x{pc:X6}");
+                }
                 return;
             case 0x82:
                 _ramAdr = (_ramAdr & 0x100ff) | (value << 8);
+                if (_traceWramWrites)
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-PORT-ADR] reg=0x2182 val=0x{value:X2} ramAdr=0x{_ramAdr:X5} pc=0x{pc:X6}");
+                }
                 return;
             case 0x83:
                 _ramAdr = (_ramAdr & 0x0ffff) | ((value & 1) << 16);
+                if (_traceWramWrites)
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-PORT-ADR] reg=0x2183 val=0x{value:X2} ramAdr=0x{_ramAdr:X5} pc=0x{pc:X6}");
+                }
                 return;
         }
     }
@@ -1595,9 +1609,24 @@ public class SNESSystem : ISNESSystem
         }
         switch (adr)
         {
+            case 0x01: // OBJSEL
             case 0x02: // OAMADDL
             case 0x03: // OAMADDH
             case 0x04: // OAMDATA
+            case 0x07: // BG1SC
+            case 0x08: // BG2SC
+            case 0x09: // BG3SC
+            case 0x0A: // BG4SC
+            case 0x0B: // BG12NBA
+            case 0x0C: // BG34NBA
+            case 0x0D: // BG1HOFS / M7HOFS
+            case 0x0E: // BG1VOFS / M7VOFS
+            case 0x0F: // BG2HOFS
+            case 0x10: // BG2VOFS
+            case 0x11: // BG3HOFS
+            case 0x12: // BG3VOFS
+            case 0x13: // BG4HOFS
+            case 0x14: // BG4VOFS
             case 0x15: // VMAIN
             case 0x16: // VMADDL
             case 0x17: // VMADDH
@@ -1707,6 +1736,11 @@ public class SNESSystem : ISNESSystem
     public int Peek(int adr)
     {
         return Rread(adr);
+    }
+
+    public byte[] GetWramDebugCopy()
+    {
+        return (byte[])_ram.Clone();
     }
 
     private int GetAccessTime(int adr)

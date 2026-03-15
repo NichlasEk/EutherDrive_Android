@@ -71,6 +71,9 @@ public class PPU : IPPU
     private readonly double[] _brightnessMults = [0.1, 0.5, 1.1, 1.6, 2.2, 2.7, 3.3, 3.8, 4.4, 4.9, 5.5, 6, 6.6, 7.1, 7.6, 8.2];
 
     [JsonIgnore]
+    private static readonly byte[,] BrightnessTable = BuildBrightnessTable();
+
+    [JsonIgnore]
     private readonly int[] _spriteTileOffsets = [ 
         0, 1, 2, 3, 4, 5, 6, 7,
         16, 17, 18, 19, 20, 21, 22, 23,
@@ -111,6 +114,9 @@ public class PPU : IPPU
     private int[] _bgHoff = [];
     private int[] _bgVoff = [];
 
+    // Keep the original serialized field layout intact for savestate compatibility.
+    // `_offPrev1` now serves as the BG scroll write buffer; `_offPrev2` is retained
+    // so old savestates keep matching the binary field order.
     private int _offPrev1;
     private int _offPrev2;
     private int _mode;
@@ -218,9 +224,37 @@ public class PPU : IPPU
     private int[] _optVerBuffer = [];
     private int[] _lastOrigTileX = [];
 
+    private static byte[,] BuildBrightnessTable()
+    {
+        var table = new byte[16, 32];
+        for (int brightness = 0; brightness < 16; brightness++)
+        {
+            for (int color = 0; color < 32; color++)
+            {
+                table[brightness, color] =
+                    (byte)Math.Round((double)(brightness * color * 255) / (15 * 31), MidpointRounding.AwayFromZero);
+            }
+        }
+
+        return table;
+    }
+
     private int GetCurrentOamAddress()
     {
         return _oamAdr | (_oamInHigh ? 0x100 : 0);
+    }
+
+    private void WriteBgHScroll(int layer, int value)
+    {
+        int current = _bgHoff[layer];
+        _bgHoff[layer] = (value << 8) | (_offPrev1 & ~0x07) | ((current >> 8) & 0x07);
+        _offPrev1 = value;
+    }
+
+    private void WriteBgVScroll(int layer, int value)
+    {
+        _bgVoff[layer] = (value << 8) | _offPrev1;
+        _offPrev1 = value;
     }
 
     private void SetCurrentOamAddress(int address)
@@ -563,7 +597,7 @@ public class PPU : IPPU
                 _mosaicEnabled[2] = (value & 0x4) > 0;
                 _mosaicEnabled[3] = (value & 0x8) > 0;
                 _mosaicSize = ((value & 0xf0) >> 4) + 1;
-                _mosaicStartLine = _snes!.YPos;
+                _mosaicStartLine = Math.Max(0, _snes!.YPos - 1);
                 return;
             case 0x07:
             case 0x08:
@@ -575,6 +609,7 @@ public class PPU : IPPU
                 TracePpuWrite($"[PPU] BG{adr - 6}SC=0x{value:X2} map=0x{_tilemapAdr[adr - 7]:X4} wide={_tilemapWider[adr - 7]} high={_tilemapHigher[adr - 7]}");
                 return;
             case 0x0b:
+                // BGnNBA encodes tile data base in 0x1000-byte steps; _vram is word-addressed.
                 _tileAdr[0] = (value & 0xf) << 12;
                 _tileAdr[1] = (value & 0xf0) << 8;
                 TracePpuWrite($"[PPU] BG12NBA=0x{value:X2} bg1Tile=0x{_tileAdr[0]:X4} bg2Tile=0x{_tileAdr[1]:X4}");
@@ -587,28 +622,22 @@ public class PPU : IPPU
             case 0x0d:
                 _mode7Hoff = Get13Signed((value << 8) | _mode7Prev);
                 _mode7Prev = value;
-                _bgHoff[(adr - 0xd) >> 1] = (value << 8) | (_offPrev1 & 0xf8) | (_offPrev2 & 0x7);
-                _offPrev1 = value;
-                _offPrev2 = value;
+                WriteBgHScroll((adr - 0xd) >> 1, value);
                 return;
             case 0x0f:
             case 0x11:
             case 0x13:
-                _bgHoff[(adr - 0xd) >> 1] = (value << 8) | (_offPrev1 & 0xf8) | (_offPrev2 & 0x7);
-                _offPrev1 = value;
-                _offPrev2 = value;
+                WriteBgHScroll((adr - 0xd) >> 1, value);
                 return;
             case 0x0e:
                 _mode7Voff = Get13Signed((value << 8) | _mode7Prev);
                 _mode7Prev = value;
-                _bgVoff[(adr - 0xe) >> 1] = (value << 8) | (_offPrev1 & 0xff);
-                _offPrev1 = value;
+                WriteBgVScroll((adr - 0xe) >> 1, value);
                 return;
             case 0x10:
             case 0x12:
             case 0x14:
-                _bgVoff[(adr - 0xe) >> 1] = (value << 8) | (_offPrev1 & 0xff);
-                _offPrev1 = value;
+                WriteBgVScroll((adr - 0xe) >> 1, value);
                 return;
             case 0x15:
                 var incVal = value & 0x3;
@@ -848,30 +877,65 @@ public class PPU : IPPU
         return _pixelOutput;
     }
 
+    public ushort[] GetVramDebugCopy()
+    {
+        return (ushort[])_vram.Clone();
+    }
+
+    public ushort[] GetCgramDebugCopy()
+    {
+        return (ushort[])_cgram.Clone();
+    }
+
+    public ushort[] GetOamDebugCopy()
+    {
+        return (ushort[])_oam.Clone();
+    }
+
     public string GetDebugSnapshot()
     {
-        int bg1MapAddr = _tilemapAdr.Length > 0 ? _tilemapAdr[0] & 0x7fff : 0;
-        int bg1TileAddr = _tileAdr.Length > 0 ? _tileAdr[0] & 0x7fff : 0;
-        int bg1Hoff = _bgHoff.Length > 0 ? _bgHoff[0] : 0;
-        int bg1Voff = _bgVoff.Length > 0 ? _bgVoff[0] : 0;
-        ushort tilemap0 = _vram.Length > 0 ? _vram[bg1MapAddr & 0x7fff] : (ushort)0;
-        int tileNum0 = tilemap0 & 0x03ff;
-        int bits = _bitPerMode[_mode * 4];
-        int tileWordBase = (bg1TileAddr + tileNum0 * 4 * bits) & 0x7fff;
-
         return string.Join(
             Environment.NewLine,
             new[]
             {
                 $"ppu mode={_mode} tm=0x{_tmRaw:X2} ts=0x{_tsRaw:X2} forcedBlank={_forcedBlank} bright={_brightness}",
-                $"bg1 map=0x{bg1MapAddr:X4} tile=0x{bg1TileAddr:X4} hoff=0x{bg1Hoff:X4} voff=0x{bg1Voff:X4} bits={bits}",
                 $"cgram[0]=0x{_cgram[0]:X4} cgramFrame[0]=0x{_cgramFrame[0]:X4} cgram[1]=0x{_cgram[1]:X4} cgramFrame[1]=0x{_cgramFrame[1]:X4}",
-                $"bg1 tilemap[0..7]=[{GetVramWindow(bg1MapAddr, 8)}]",
-                $"bg1 tile0 word=0x{tilemap0:X4} num=0x{tileNum0:X3} pal={(tilemap0 >> 10) & 0x7} prio={((tilemap0 >> 13) & 0x1)} xflip={((tilemap0 >> 14) & 0x1)} yflip={((tilemap0 >> 15) & 0x1)}",
-                $"bg1 tiledata[{tileNum0:X3}]=[{GetVramWindow(tileWordBase, Math.Min(bits << 2, 8))}]",
+                GetBgDebugSnapshot(0),
+                GetBgDebugSnapshot(1),
+                GetBgDebugSnapshot(2),
                 $"obj sprAdr1=0x{_sprAdr1:X4} sprAdr2=0x{_sprAdr2:X4} objSize={_objSize} objPriority={_objPriority} oamAdr=0x{_oamAdr:X2} oamRegAdr=0x{_oamRegAdr:X2} oamInHigh={_oamInHigh} oamRegInHigh={_oamRegInHigh} rangeOver={_rangeOver} timeOver={_timeOver}",
                 $"oam[0..7]=[{GetOamWindow(0, 8)}]",
+                $"oam[8..31]=[{GetOamWindow(8, 24)}]",
+                $"obj tiles 70=[{GetVramWindow((_sprAdr1 + 0x70 * 16) & 0x7fff, 8)}] 72=[{GetVramWindow((_sprAdr1 + 0x72 * 16) & 0x7fff, 8)}] 74=[{GetVramWindow((_sprAdr1 + 0x74 * 16) & 0x7fff, 8)}]",
+                $"obj tiles 76=[{GetVramWindow((_sprAdr1 + 0x76 * 16) & 0x7fff, 8)}] 78=[{GetVramWindow((_sprAdr1 + 0x78 * 16) & 0x7fff, 8)}] 79=[{GetVramWindow((_sprAdr1 + 0x79 * 16) & 0x7fff, 8)}] 7A=[{GetVramWindow((_sprAdr1 + 0x7A * 16) & 0x7fff, 8)}]",
                 $"highOam[0..7]=[{GetHighOamWindow(0, 8)}]"
+            });
+    }
+
+    private string GetBgDebugSnapshot(int layer)
+    {
+        if (layer < 0 || layer >= 4)
+        {
+            return string.Empty;
+        }
+
+        int mapAddr = _tilemapAdr.Length > layer ? _tilemapAdr[layer] & 0x7fff : 0;
+        int tileAddr = _tileAdr.Length > layer ? _tileAdr[layer] & 0x7fff : 0;
+        int hoff = _bgHoff.Length > layer ? _bgHoff[layer] : 0;
+        int voff = _bgVoff.Length > layer ? _bgVoff[layer] : 0;
+        int bits = _bitPerMode[_mode * 4 + layer];
+        ushort tilemapWord = _vram.Length > 0 ? _vram[mapAddr & 0x7fff] : (ushort)0;
+        int tileNum = tilemapWord & 0x03ff;
+        int tileWordBase = (tileAddr + tileNum * 4 * bits) & 0x7fff;
+
+        return string.Join(
+            Environment.NewLine,
+            new[]
+            {
+                $"bg{layer + 1} map=0x{mapAddr:X4} tile=0x{tileAddr:X4} hoff=0x{hoff:X4} voff=0x{voff:X4} bits={bits} wide={(_tilemapWider.Length > layer && _tilemapWider[layer] ? 1 : 0)} high={(_tilemapHigher.Length > layer && _tilemapHigher[layer] ? 1 : 0)} big={(_bigTiles.Length > layer && _bigTiles[layer] ? 1 : 0)}",
+                $"bg{layer + 1} tilemap[0..7]=[{GetVramWindow(mapAddr, 8)}]",
+                $"bg{layer + 1} tile0 word=0x{tilemapWord:X4} num=0x{tileNum:X3} pal={(tilemapWord >> 10) & 0x7} prio={((tilemapWord >> 13) & 0x1)} xflip={((tilemapWord >> 14) & 0x1)} yflip={((tilemapWord >> 15) & 0x1)}",
+                $"bg{layer + 1} tiledata[{tileNum:X3}]=[{GetVramWindow(tileWordBase, Math.Min(bits << 2, 8))}]"
             });
     }
 
@@ -944,14 +1008,16 @@ public class PPU : IPPU
 
     public void RenderLine(int line) 
     {
+        int screenY = line - 1;
         if (line == 0)
         {
-            _rangeOver = false;
-            _timeOver = false;
             FrameOverscan = false;
             _spriteLineBuffer =  new byte[256];
+            _spritePrioBuffer = new byte[256];
             if (!_forcedBlank)
             {
+                _rangeOver = false;
+                _timeOver = false;
                 EvaluateSprites(0);
             }
         }
@@ -968,19 +1034,18 @@ public class PPU : IPPU
         {
             if (line == 1)
             {
-                _mosaicStartLine = 1;
+                _mosaicStartLine = 0;
                 Array.Copy(_cgram, _cgramFrame, _cgram.Length);
             }
             if (_mode == 7)
             {
-                GenerateMode7Coords(line);
+                GenerateMode7Coords(screenY);
             }
             _lastTileFetchedX = [-1, -1, -1, -1];
             _lastTileFetchedY = [-1, -1, -1, -1];
             _optHorBuffer = [0, 0];
             _optVerBuffer = [0, 0];
             _lastOrigTileX = [-1, -1];
-            double bMult = _brightnessMults[_brightness];
             var i = 0;
             while (i < 256)
             {
@@ -994,7 +1059,7 @@ public class PPU : IPPU
                 var subVisible = false;
                 if (!_forcedBlank)
                 {
-                    var (color, item2, item3) = GetColor(false, i, line);
+                    var (color, item2, item3) = GetColor(false, i, screenY);
                     mainVisible = item2 < 5;
                     r2 = color & 0x1f;
                     g2 = (color & 0x3e0) >> 5;
@@ -1008,7 +1073,7 @@ public class PPU : IPPU
                     var secondLay = (0, 5, 0);
                     if (_mode == 5 || _mode == 6 || _pseudoHires || GetMathEnabled(i, item2, item3) && _addSub)
                     {
-                        secondLay = GetColor(true, i, line);
+                        secondLay = GetColor(true, i, screenY);
                         subVisible = secondLay.Item2 < 5;
                         r1 = secondLay.Item1 & 0x1f;
                         g1 = (secondLay.Item1 & 0x3e0) >> 5;
@@ -1061,13 +1126,18 @@ public class PPU : IPPU
                         }
                     }
                 }
-                var realColor = ((byte) (b2 * bMult) & 0xff) | (((byte) (g2 * bMult) & 0xff) << 8) | (((byte) (r2 * bMult) & 0xff) << 16);
+                int realColor = BrightnessTable[_brightness, b2]
+                    | (BrightnessTable[_brightness, g2] << 8)
+                    | (BrightnessTable[_brightness, r2] << 16);
                 _pixelOutput[(line - 1) * 256 + i] = (int) (realColor | 0xFF000000);
                 i++;
             }
             _spriteLineBuffer = new byte[256];
+            _spritePrioBuffer = new byte[256];
             if (!_forcedBlank)
             {
+                _rangeOver = false;
+                _timeOver = false;
                 EvaluateSprites(line);
             }
         }
@@ -1262,25 +1332,51 @@ public class PPU : IPPU
 
     private void FetchTileInBuffer(int x, int y, int l, bool offset) 
     {
-        int rx = x;
-        int ry = y;
-        bool useXbig = _bigTiles[l] | _mode == 5 | _mode == 6;
-        x >>= useXbig ? 1 : 0;
-        y >>= _bigTiles[l] ? 1 : 0;
-        int adr = _tilemapAdr[l] + (((y & 0xff) >> 3) << 5 | ((x & 0xff) >> 3));
-        adr += (x & 0x100) > 0 && _tilemapWider[l] ? 1024 : 0;
-        adr += (y & 0x100) > 0 && _tilemapHigher[l] ? _tilemapWider[l] ? 2048 : 1024 : 0;
-        _tilemapBuffer[l] = _vram[adr & 0x7fff];
+        bool wideTiles = _bigTiles[l] || _mode == 5 || _mode == 6;
+        int tileWidthPixels = wideTiles ? 16 : 8;
+        int tileHeightPixels = _bigTiles[l] ? 16 : 8;
+        int screenWidthPixels = (_tilemapWider[l] ? 64 : 32) * tileWidthPixels;
+        int screenHeightPixels = (_tilemapHigher[l] ? 64 : 32) * tileHeightPixels;
+
+        int wrappedX = x & (screenWidthPixels - 1);
+        int wrappedY = y & (screenHeightPixels - 1);
+        int tilemapBase = _tilemapAdr[l];
+
+        int singleScreenWidthPixels = 32 * tileWidthPixels;
+        int singleScreenHeightPixels = 32 * tileHeightPixels;
+        if (wrappedX >= singleScreenWidthPixels)
+        {
+            tilemapBase += 1024;
+            wrappedX &= singleScreenWidthPixels - 1;
+        }
+
+        if (wrappedY >= singleScreenHeightPixels)
+        {
+            tilemapBase += _tilemapWider[l] ? 2048 : 1024;
+            wrappedY &= singleScreenHeightPixels - 1;
+        }
+
+        int tileColumn = wrappedX / tileWidthPixels;
+        int tileRow = wrappedY / tileHeightPixels;
+        _tilemapBuffer[l] = _vram[(tilemapBase + (tileRow << 5) + tileColumn) & 0x7fff];
         if (offset)
         {
             return;
         }
         bool yFlip = (_tilemapBuffer[l] & 0x8000) > 0;
         bool xFlip = (_tilemapBuffer[l] & 0x4000) > 0;
-        int yRow = yFlip ? 7 - (ry & 0x7) : ry & 0x7;
+        int yRow = yFlip ? 7 - (wrappedY & 0x7) : wrappedY & 0x7;
         int tileNum = _tilemapBuffer[l] & 0x3ff;
-        tileNum += useXbig && (rx & 0x8) == (xFlip ? 0 : 8) ? 1 : 0;
-        tileNum += _bigTiles[l] && (ry & 0x8) == (yFlip ? 0 : 8) ? 0x10 : 0;
+        bool shiftRight = tileWidthPixels == 16 && (xFlip ? wrappedX % 16 < 8 : wrappedX % 16 >= 8);
+        bool shiftDown = tileHeightPixels == 16 && (yFlip ? wrappedY % 16 < 8 : wrappedY % 16 >= 8);
+        if (shiftRight)
+        {
+            tileNum += 1;
+        }
+        if (shiftDown)
+        {
+            tileNum += 0x10;
+        }
         int bits = _bitPerMode[_mode * 4 + l];
         _tileBufferP1[l] = _vram[(_tileAdr[l] + tileNum * 4 * bits + yRow) & 0x7fff];
         if (bits > 2)
@@ -1376,8 +1472,6 @@ public class PPU : IPPU
                 }
 
                 int tileColumn = (ex & 0x40) > 0 ? spriteWidth - 1 - k : k;
-                // Large OBJ tile numbering wraps within the low and high nibbles separately;
-                // it does not carry across like BG 16x16 addressing does.
                 int tileNum = tile;
                 tileNum = (tileNum & ~0x0f) | ((tileNum + tileColumn) & 0x0f);
                 tileNum = (tileNum & ~0xf0) | ((tileNum + (tileRow << 4)) & 0xf0);
