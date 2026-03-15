@@ -57,6 +57,14 @@ public class DMA {
 
     public object GetChannelStateObject(int index) => channels[index];
 
+    public string DebugSummary(int channelIndex) {
+        if ((uint)channelIndex >= 7u) {
+            return $"ch={channelIndex} invalid";
+        }
+
+        return ((DmaChannel)channels[channelIndex]).DebugSummary();
+    }
+
     private void RefreshPendingBit(int channelIndex) {
         var channel = (DmaChannel)channels[channelIndex];
         if (channel.HasPendingTransfer) {

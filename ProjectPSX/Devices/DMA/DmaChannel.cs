@@ -289,4 +289,9 @@ public sealed class DmaChannel : Channel {
     }
 
     private uint EffectiveBlockSize() => blockSize == 0 ? 0x10_000u : blockSize;
+
+    public string DebugSummary() {
+        return $"ch={channelNumber} dir={transferDirection} sync={syncMode} en={(enable ? 1 : 0)} trig={(trigger ? 1 : 0)} " +
+            $"base={baseAddress:x8} blkSz={blockSize:x} blkCnt={blockCount:x} pendBlk={pendingBlocks:x} pendWords={pendingBlockWords:x} pendCycles={pendingCycleBudget}";
+    }
 }

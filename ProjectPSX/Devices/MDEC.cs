@@ -125,6 +125,12 @@ namespace ProjectPSX.Devices {
             };
         }
 
+        public string DebugSummary() {
+            return
+                $"mdec[cmd={currentCommandId} busy={(isCommandBusy ? 1 : 0)} inReq={(isDataInRequested ? 1 : 0)} outReq={(isDataOutRequested ? 1 : 0)} " +
+                $"remain={remainingDataWords} pendingBytes={pendingBytesToTransfer} depth={dataOutputDepth} outPos={outBufferPos}]";
+        }
+
         private void decodeMacroBlocks() {
             while (inBuffer.Count != 0) {
                 // Iterating this from initial currentBlock 4 caused problems on a per word aproach decoding

@@ -14,6 +14,8 @@ namespace ProjectPSX.Devices {
         private Queue<byte> responseBuffer = new Queue<byte>(16);
         private Sector currentSector = new Sector(Sector.RAW_BUFFER);
         private Sector lastReadSector = new Sector(Sector.RAW_BUFFER);
+        private bool transferActive;
+        private bool transferReady;
 
         private bool isBusy;
 
@@ -72,6 +74,7 @@ namespace ProjectPSX.Devices {
         private bool isLidOpen = false;
         private byte lastCommand;
         private bool fastLoadEnabled;
+        private readonly bool fastLoadAggressiveReads;
         private bool fastLoadBootUnlocked;
         private bool fastLoadLicensedDiscConfirmed;
         private bool fastLoadBiosExited;
@@ -161,6 +164,7 @@ namespace ProjectPSX.Devices {
             this.cd = cd;
             this.spu = spu;
             cdDebug = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_TRACE") == "1";
+            fastLoadAggressiveReads = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_FAST_LOAD_AGGRESSIVE_READS") == "1";
         }
 
         public void SetFastLoadEnabled(bool enabled) {
@@ -205,6 +209,10 @@ namespace ProjectPSX.Devices {
             QueueInterrupt(interrupt, delay, allowFast, new[] { value });
         }
 
+        private void QueueResponseInterrupt(byte interrupt, int delay = 50_000, bool allowFast = false, params byte[] response) {
+            QueueInterrupt(interrupt, delay, allowFast, response);
+        }
+
         private void DeliverInterrupt(DelayedInterrupt delayedInterrupt) {
             if (delayedInterrupt.response is not null && delayedInterrupt.response.Length > 0) {
                 responseBuffer.EnqueueRange(delayedInterrupt.response);
@@ -222,7 +230,7 @@ namespace ProjectPSX.Devices {
         }
 
         private int GetReadCycles() {
-            if (!IsFastLoadActive || !fastLoadCurrentSessionCanAccelerate || fastLoadSequentialReadSectors < 64) {
+            if (!fastLoadAggressiveReads || !IsFastLoadActive || !fastLoadCurrentSessionCanAccelerate || fastLoadSequentialReadSectors < 64) {
                 return 33868800 / (isDoubleSpeed ? 150 : 75);
             }
 
@@ -329,14 +337,13 @@ namespace ProjectPSX.Devices {
                     mode = Mode.Idle;
                     STAT = (byte)(STAT & (~0x40));
 
-                    responseBuffer.Enqueue(STAT);
-                    QueueInterrupt(Interrupt.INT2_SECOND_RESPONSE, allowFast: true);
+                    QueueSingleByteInterrupt(Interrupt.INT2_SECOND_RESPONSE, STAT, allowFast: true);
                     break;
 
                 case Mode.Read:
                 case Mode.Play:
                     int transferCycles = mode == Mode.Read ? GetReadCycles() : GetPlayCycles();
-                    if (counter < transferCycles || interruptQueue.Count != 0) {
+                    if (counter < transferCycles || interruptQueue.Count != 0 || IF != 0) {
                         return false;
                     }
                     counter = 0;
@@ -358,8 +365,7 @@ namespace ProjectPSX.Devices {
                         }
 
                         if (isAutoPause && cd.isTrackChange) {
-                            responseBuffer.Enqueue(STAT);
-                            QueueInterrupt(Interrupt.INT4_DATA_END, 1);
+                            QueueSingleByteInterrupt(Interrupt.INT4_DATA_END, STAT, 1);
 
                             STAT = 0x2;
                             mode = Mode.Idle;
@@ -370,28 +376,27 @@ namespace ProjectPSX.Devices {
                             Track track = cd.getTrackFromLoc(readLoc);
                             bool inPregap = readLoc < track.lbaStart;
                             byte index = inPregap ? (byte)0 : (byte)1;
-
-                            responseBuffer.Enqueue(STAT);
-                            responseBuffer.Enqueue(track.number);
-                            responseBuffer.Enqueue(index);
+                            byte[] reportResponse = new byte[8];
+                            reportResponse[0] = STAT;
+                            reportResponse[1] = track.number;
+                            reportResponse[2] = index;
 
                             if ((aff & 0x10) != 0) {
                                 (byte mm, byte ss, byte ff) = getMMSSFFfromLBA(Math.Abs(readLoc - track.lbaStart));
-
-                                responseBuffer.Enqueue(DecToBcd(mm));
-                                responseBuffer.Enqueue((byte)(DecToBcd(ss) | 0x80));
-                                responseBuffer.Enqueue(DecToBcd(ff));
+                                reportResponse[3] = DecToBcd(mm);
+                                reportResponse[4] = (byte)(DecToBcd(ss) | 0x80);
+                                reportResponse[5] = DecToBcd(ff);
                             } else {
-                                responseBuffer.Enqueue(DecToBcd(amm));
-                                responseBuffer.Enqueue(DecToBcd(ass));
-                                responseBuffer.Enqueue(DecToBcd(aff));
+                                reportResponse[3] = DecToBcd(amm);
+                                reportResponse[4] = DecToBcd(ass);
+                                reportResponse[5] = DecToBcd(aff);
+                            }
+
+                            reportResponse[6] = 0x80; // peekLo
+                            reportResponse[7] = 0x80; // peekHi
+
+                            QueueInterrupt(Interrupt.INT1_SECOND_RESPONSE_READ_PLAY, 1, response: reportResponse);
                         }
-
-                            responseBuffer.Enqueue(0x80); // peekLo
-                            responseBuffer.Enqueue(0x80); // peekHi
-
-                            QueueInterrupt(Interrupt.INT1_SECOND_RESPONSE_READ_PLAY, 1);
-                    }
 
                         return false; //CDDA without report isn't delivered to CPU and doesn't raise interrupt
                     }
@@ -447,6 +452,7 @@ namespace ProjectPSX.Devices {
                         var rawSector = readSector.AsSpan().Slice(12);
                         lastReadSector.fillWith(rawSector);
                     }
+                    transferReady = true;
 
                     if (fastLoadLastReadSector + 1 == deliveredSector) {
                         fastLoadSequentialReadSectors++;
@@ -458,8 +464,7 @@ namespace ProjectPSX.Devices {
                         fastLoadCurrentSessionObservedBulkRead = true;
                     }
 
-                    responseBuffer.Enqueue(STAT);
-                    QueueInterrupt(Interrupt.INT1_SECOND_RESPONSE_READ_PLAY);
+                    QueueInterrupt(Interrupt.INT1_SECOND_RESPONSE_READ_PLAY, response: new[] { STAT });
 
                     break;
 
@@ -468,8 +473,7 @@ namespace ProjectPSX.Devices {
                         return false;
                     }
                     mode = Mode.Idle;
-                    responseBuffer.Enqueue(STAT);
-                    QueueInterrupt(Interrupt.INT2_SECOND_RESPONSE, allowFast: true);
+                    QueueSingleByteInterrupt(Interrupt.INT2_SECOND_RESPONSE, STAT, allowFast: true);
                     counter = 0;
                     break;
             }
@@ -498,9 +502,12 @@ namespace ProjectPSX.Devices {
 
                 case 0x1F801802:
                     if (cdDebug) Console.WriteLine("[CDROM] [L02] DATA");
-                    //Console.WriteLine(dataBuffer.Count);
-                    //Console.ReadLine();
-                    return currentSector.readByte();
+                    byte value8 = currentSector.readByte();
+                    if (!currentSector.hasData()) {
+                        transferActive = false;
+                        transferReady = false;
+                    }
+                    return value8;
 
                 case 0x1F801803:
                     switch (INDEX) {
@@ -577,9 +584,10 @@ namespace ProjectPSX.Devices {
                             //6   BFWR...
                             //7   BFRD Want Data(0 = No / Reset Data Fifo, 1 = Yes / Load Data Fifo)
                             if ((value & 0x80) != 0) {
-                                //Console.WriteLine("[CDROM] [W03.0]  Want Data (Copy from cd buffer to databuffer)");
-                                if (currentSector.hasData()) { /*Console.WriteLine(">>>>>>> CDROM BUFFER WAS NOT EMPTY <<<<<<<<<");*/ return; }
-                                currentSector.fillWith(lastReadSector.read());
+                                if (!transferActive && lastReadSector.hasLoadedData()) {
+                                    currentSector.fillWith(lastReadSector.read());
+                                    transferActive = true;
+                                }
                             } else {
                                 if (cdDebug) {
                                     Console.ForegroundColor = ConsoleColor.Red;
@@ -587,6 +595,8 @@ namespace ProjectPSX.Devices {
                                     Console.ResetColor();
                                 }
                                 currentSector.clear();
+                                transferActive = false;
+                                transferReady = false;
                             }
                             break;
                         case 1:
@@ -634,7 +644,10 @@ namespace ProjectPSX.Devices {
             lastCommand = (byte)value;
             if (cdDebug) Console.WriteLine($"[CDROM] Command {value:x4}");
             //Console.WriteLine($"PRE STAT {STAT:x2}");
-            interruptQueue.Clear();
+            bool preserveAsyncReadInterrupts = value == 0x01 && (mode == Mode.Read || mode == Mode.Play);
+            if (!preserveAsyncReadInterrupts) {
+                interruptQueue.Clear();
+            }
             responseBuffer.Clear();
             isBusy = true;
             switch (value) {
@@ -677,6 +690,7 @@ namespace ProjectPSX.Devices {
             return
                 $"cmd={commandText} mode={modeText} stat={STAT:x2} ie={IE:x2} if={IF:x2} busy={(isBusy ? 1 : 0)} " +
                 $"seek={seekLoc} read={readLoc} ctr={counter} irqq={interruptQueue.Count} rsp={responseBuffer.Count} " +
+                $"buf={currentSector.DebugPointer}/{currentSector.DebugSize} last={lastReadSector.DebugPointer}/{lastReadSector.DebugSize} " +
                 $"fast={(IsFastLoadActive ? 1 : 0)} bulk={(fastLoadBulkReadCompleted ? 1 : 0)} seq={fastLoadSequentialReadSectors} seekdist={fastLoadLastSeekDistance}";
         }
 
@@ -686,14 +700,12 @@ namespace ProjectPSX.Devices {
                 STAT |= 0x2;
             }
 
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_02_SetLoc() {
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -722,14 +734,12 @@ namespace ProjectPSX.Devices {
                 Console.ResetColor();
             }
 
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_03_Play() {
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
             //If theres a trackN param it seeks and plays from the start location of it
@@ -752,14 +762,12 @@ namespace ProjectPSX.Devices {
             STAT = 0x82;
             mode = Mode.Play;
 
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_06_ReadN() {
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -770,8 +778,7 @@ namespace ProjectPSX.Devices {
             STAT = 0x2;
             STAT |= 0x20;
 
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
 
             mode = Mode.Read;
         }
@@ -818,24 +825,18 @@ namespace ProjectPSX.Devices {
 
         private void Cmd_0B_Mute() {
             mutedAudio = true;
-
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_0C_Demute() {
             mutedAudio = false;
-
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_0D_SetFilter() {
             filterFile = parameterBuffer.Dequeue();
             filterChannel = parameterBuffer.Dequeue();
-
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_0E_SetMode() {
@@ -860,8 +861,7 @@ namespace ProjectPSX.Devices {
             isAutoPause = ((mode >> 1) & 0x1) == 1;
             isCDDA = (mode & 0x1) == 1;
 
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_10_GetLocL() {
@@ -871,8 +871,7 @@ namespace ProjectPSX.Devices {
             }
 
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -887,15 +886,12 @@ namespace ProjectPSX.Devices {
                 sectorSubHeader.codingInfo
             };
 
-            responseBuffer.EnqueueRange(response);
-
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: response.ToArray());
         }
 
         private void Cmd_11_GetLocP() { //SubQ missing...
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -913,17 +909,14 @@ namespace ProjectPSX.Devices {
             }
 
             Span<byte> response = stackalloc byte[] { track.number, 1, DecToBcd(mm), DecToBcd(ss), DecToBcd(ff), DecToBcd(amm), DecToBcd(ass), DecToBcd(aff) };
-            responseBuffer.EnqueueRange(response);
-
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: response.ToArray());
         }
 
         private void Cmd_12_SetSession() { //broken
             parameterBuffer.Clear();
 
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -935,21 +928,18 @@ namespace ProjectPSX.Devices {
 
         private void Cmd_13_GetTN() {
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
             //if (cdDebug)
             Console.WriteLine($"[CDROM] getTN First Track: 1 (Hardcoded) - Last Track: {cd.tracks.Count}");
             //Console.ReadLine();
-            responseBuffer.EnqueueRange(stackalloc byte[] { STAT, 1, DecToBcd((byte)cd.tracks.Count) });
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: new byte[] { STAT, 1, DecToBcd((byte)cd.tracks.Count) });
         }
 
         private void Cmd_14_GetTD() {
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -957,24 +947,20 @@ namespace ProjectPSX.Devices {
 
             if (track == 0) { //returns CD LBA / End of last track
                 (byte mm, byte ss, byte ff) = getMMSSFFfromLBA(cd.getLBA());
-                responseBuffer.EnqueueRange(stackalloc byte[] { STAT, DecToBcd(mm), DecToBcd(ss) });
+                QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: new byte[] { STAT, DecToBcd(mm), DecToBcd(ss) });
                 //if (cdDebug)
                 Console.WriteLine($"[CDROM] getTD Track: {track} STAT: {STAT:x2} {mm}:{ss}");
             } else { //returns Track Start
                 (byte mm, byte ss, byte ff) = getMMSSFFfromLBA(cd.tracks[track - 1].lbaStart);
-                responseBuffer.EnqueueRange(stackalloc byte[] { STAT, DecToBcd(mm), DecToBcd(ss) });
+                QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: new byte[] { STAT, DecToBcd(mm), DecToBcd(ss) });
                 //if (cdDebug)
                 Console.WriteLine($"[CDROM] getTD Track: {track} STAT: {STAT:x2} {mm}:{ss}");
             }
-
-            //Console.ReadLine();
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
         }
 
         private void Cmd_15_SeekL() {
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -986,14 +972,12 @@ namespace ProjectPSX.Devices {
 
             mode = Mode.Seek;
 
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_16_SeekP() {
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -1005,8 +989,7 @@ namespace ProjectPSX.Devices {
 
             mode = Mode.Seek;
 
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_19_Test() {
@@ -1016,25 +999,20 @@ namespace ProjectPSX.Devices {
                 case 0x04://Com 19h,04h   ;ResetSCExInfo (reset GetSCExInfo response to 0,0) Used for antimodchip games like Dino Crisis
                     Console.WriteLine("[CDROM] Command 19 04 ResetSCExInfo Anti Mod Chip Meassures");
                     STAT = 0x2;
-                    responseBuffer.Enqueue(STAT);
-                    QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+                    QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
                     break;
                 case 0x05:// 05h      -   INT3(total,success);Stop SCEx reading and get counters
                     Console.WriteLine("[CDROM] Command 19 05 GetSCExInfo Hack 0 0 Bypass Response");
-                    responseBuffer.EnqueueRange(stackalloc byte[] { 0, 0 });
-                    QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+                    QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: new byte[] { 0, 0 });
                     break;
                 case 0x20: //INT3(yy,mm,dd,ver) ;Get cdrom BIOS date/version (yy,mm,dd,ver) http://www.psxdev.net/forum/viewtopic.php?f=70&t=557
-                    responseBuffer.EnqueueRange(stackalloc byte[] { 0x94, 0x09, 0x19, 0xC0 });
-                    QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+                    QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: new byte[] { 0x94, 0x09, 0x19, 0xC0 });
                     break;
                 case 0x22: //INT3("for US/AEP") --> Region-free debug version --> accepts unlicensed CDRs
-                    responseBuffer.EnqueueRange(stackalloc byte[] { 0x66, 0x6F, 0x72, 0x20, 0x55, 0x53, 0x2F, 0x41, 0x45, 0x50 });
-                    QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+                    QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: new byte[] { 0x66, 0x6F, 0x72, 0x20, 0x55, 0x53, 0x2F, 0x41, 0x45, 0x50 });
                     break;
                 case 0x60://  60h      lo,hi     INT3(databyte)   ;HC05 SUB-CPU read RAM and I/O ports
-                    responseBuffer.Enqueue(0);
-                    QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+                    QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, 0);
                     break;
                 default:
                     Console.WriteLine($"[CDROM] Unimplemented 0x19 Test Command {command:x8}");
@@ -1045,8 +1023,7 @@ namespace ProjectPSX.Devices {
         private void Cmd_1A_GetID() {
             //Door Open              INT5(11h,80h)  N/A
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -1082,8 +1059,7 @@ namespace ProjectPSX.Devices {
 
         private void Cmd_1B_ReadS() {
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
@@ -1094,29 +1070,24 @@ namespace ProjectPSX.Devices {
             STAT = 0x2;
             STAT |= 0x20;
 
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
 
             mode = Mode.Read;
         }
 
         private void Cmd_1E_ReadTOC() {
             if (isLidOpen) {
-                responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x80 });
-                QueueInterrupt(Interrupt.INT5_ERROR);
+                QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x80 });
                 return;
             }
 
             CompleteFastLoadReadSession();
             mode = Mode.TOC;
-            responseBuffer.Enqueue(STAT);
-            QueueInterrupt(Interrupt.INT3_FIRST_RESPONSE);
+            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
 
         private void Cmd_1F_VideoCD() { //INT5(11h,40h)  ;-Unused/invalid
-            responseBuffer.EnqueueRange(stackalloc byte[] { 0x11, 0x40 });
-
-            QueueInterrupt(Interrupt.INT5_ERROR);
+            QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x40 });
         }
 
         private void Cmd_5x_lockUnlock() {
@@ -1140,7 +1111,7 @@ namespace ProjectPSX.Devices {
 
             int stat = 0;
             stat |= (isBusy ? 1 : 0) << 7;
-            stat |= dataBuffer_hasData() << 6;
+            stat |= transferBuffer_hasData() << 6;
             stat |= responseBuffer_hasData() << 5;
             stat |= parametterBuffer_hasSpace() << 4;
             stat |= parametterBuffer_isEmpty() << 3;
@@ -1149,8 +1120,8 @@ namespace ProjectPSX.Devices {
             return (byte)stat;
         }
 
-        private int dataBuffer_hasData() {
-            return (currentSector.hasData()) ? 1 : 0;
+        private int transferBuffer_hasData() {
+            return transferReady ? 1 : 0;
         }
 
         private int parametterBuffer_isEmpty() {
@@ -1202,7 +1173,12 @@ namespace ProjectPSX.Devices {
         }
 
         public Span<uint> processDmaLoad(int size) {
-            return currentSector.read(size);
+            var dma = currentSector.read(size);
+            if (!currentSector.hasData()) {
+                transferActive = false;
+                transferReady = false;
+            }
+            return dma;
         }
 
         internal void toggleLid() {
@@ -1212,6 +1188,10 @@ namespace ProjectPSX.Devices {
                 mode = Mode.Idle;
                 interruptQueue.Clear();
                 responseBuffer.Clear();
+                currentSector.clear();
+                lastReadSector.clear();
+                transferActive = false;
+                transferReady = false;
             } else {
                 //todo handle the Cd load and not this hardcoded test:
                 //cd = new CD(@"cd_change_path");

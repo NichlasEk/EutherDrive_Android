@@ -210,6 +210,15 @@ namespace ProjectPSX.Devices {
             return false;
         }
 
+        public string DebugSummary() {
+            int horizontalRes = resolutions[horizontalResolution2 << 2 | horizontalResolution1];
+            int verticalRes = isVerticalResolution480 ? 480 : 240;
+            return
+                $"gpu[hres={horizontalRes} vres={verticalRes} 24={(is24BitDepth ? 1 : 0)} pal={(isPal ? 1 : 0)} interlace={(isVerticalInterlace ? 1 : 0)} " +
+                $"disp=({displayX1}-{displayX2},{displayY1}-{displayY2}) vram=({displayVRAMXStart},{displayVRAMYStart}) " +
+                $"scan=({scanLine},{videoCycles}) mode={mode}]";
+        }
+
         public (int dot, bool hblank, bool bBlank) getBlanksAndDot() { //test
             int dot = dotClockDiv[horizontalResolution2 << 2 | horizontalResolution1];
             bool hBlank = videoCycles < displayX1 || videoCycles > displayX2;

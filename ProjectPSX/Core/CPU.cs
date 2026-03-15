@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Runtime.Serialization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -10,6 +11,11 @@ namespace ProjectPSX {
         private static readonly bool ExperimentalInstructionCache =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_DISABLE_ICACHE") != "1"
             && Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_EXPERIMENTAL_ICACHE") != "0";
+        private static readonly string? FaultTraceFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_FAULT_TRACE_FILE");
+        private static readonly int FaultTraceLimit = ParseOptionalPositiveInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_FAULT_TRACE_LIMIT"), 64);
+        private static int s_faultTraceCount;
 
         private uint PC_Now; // PC on current execution as PC and PC Predictor go ahead after fetch. This is handy on Branch Delay so it dosn't give erronious PC-4
         private uint PC = 0xbfc0_0000; // Bios Entry Point
@@ -93,6 +99,9 @@ namespace ProjectPSX {
         public bool debug = false;
         public static uint TraceCurrentPC;
         public uint CurrentPC => PC_Now;
+        public uint GetRegister(int index) => GPR[index & 31];
+        public uint StackPointer => GPR[29];
+        public uint ReturnAddress => GPR[31];
 
         public CPU(BUS bus) {
             this.bus = bus;
@@ -536,6 +545,8 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void EXCEPTION(CPU cpu, EX cause, uint coprocessor = 0) {
+            TraceFault(cpu, cause, coprocessor);
+
             uint mode = cpu.COP0_GPR[SR] & 0x3F;
             cpu.COP0_GPR[SR] &= ~(uint)0x3F;
             cpu.COP0_GPR[SR] |= (mode << 2) & 0x3F;
@@ -566,6 +577,25 @@ namespace ProjectPSX {
 
             cpu.PC = ExceptionAdress[(cpu.COP0_GPR[SR] & 0x400000) >> 22];
             cpu.PC_Predictor = cpu.PC + 4;
+        }
+
+        private static void TraceFault(CPU cpu, EX cause, uint coprocessor) {
+            if (string.IsNullOrWhiteSpace(FaultTraceFile) || s_faultTraceCount >= FaultTraceLimit) {
+                return;
+            }
+
+            s_faultTraceCount++;
+            try {
+                string line =
+                    $"[PSX-FAULT] cause={cause} cop={coprocessor} pc_now={cpu.PC_Now:x8} pc={cpu.PC:x8} next={cpu.PC_Predictor:x8} " +
+                    $"sr={cpu.COP0_GPR[SR]:x8} causeReg={cpu.COP0_GPR[CAUSE]:x8} epc={cpu.COP0_GPR[EPC]:x8} badv={cpu.COP0_GPR[BADA]:x8}{Environment.NewLine}";
+                File.AppendAllText(FaultTraceFile, line);
+            } catch {
+            }
+        }
+
+        private static int ParseOptionalPositiveInt(string? raw, int fallback) {
+            return int.TryParse(raw, out int value) && value > 0 ? value : fallback;
         }
 
         private static void COP2(CPU cpu) {

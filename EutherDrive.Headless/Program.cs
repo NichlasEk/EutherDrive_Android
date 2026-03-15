@@ -632,6 +632,7 @@ class Program
                 bool tracePsxFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 bool tracePsxStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_START") == "1";
                 string? tracePsxStartFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_START_TRACE_FILE");
+                string? tracePsxCodeFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CODE_TRACE_FILE");
                 bool holdUp = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_UP");
                 bool holdDown = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_DOWN");
                 bool holdLeft = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_LEFT");
@@ -710,6 +711,11 @@ class Program
                                 Directory.CreateDirectory(Path.GetDirectoryName(tracePsxStartFile) ?? ".");
                                 File.AppendAllText(tracePsxStartFile, line + Environment.NewLine);
                             }
+                        }
+                        if (!string.IsNullOrWhiteSpace(tracePsxCodeFile) && psx.TryGetDebugCodeWindow(out string codeWindow))
+                        {
+                            Directory.CreateDirectory(Path.GetDirectoryName(tracePsxCodeFile) ?? ".");
+                            File.AppendAllText(tracePsxCodeFile, $"[HEADLESS][PSX-SAVESTATE-CODE] frame={frame}{Environment.NewLine}{codeWindow}");
                         }
                     }
                 }
@@ -1735,6 +1741,9 @@ class Program
             {
                 PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
                 PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+                bool tracePsxStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_START") == "1";
+                string? tracePsxStartFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_START_TRACE_FILE");
+                string? tracePsxCodeFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CODE_TRACE_FILE");
 
                 var psx = new PsxAdapter();
                 psx.LoadRom(romPath);
@@ -1766,6 +1775,24 @@ class Program
                     Console.WriteLine($"[HEADLESS] Frame {frame}: psx_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
                     if (frame == 0 || frame == 5 || frame == 10)
                         DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                    if (tracePsxStart && (frame < 60 || (frame % 60) == 0))
+                    {
+                        if (psx.TryGetDebugState(out string debugState))
+                        {
+                            string line = $"[HEADLESS][PSX-SAVESTATE] frame={frame} {debugState}";
+                            Console.WriteLine(line);
+                            if (!string.IsNullOrWhiteSpace(tracePsxStartFile))
+                            {
+                                Directory.CreateDirectory(Path.GetDirectoryName(tracePsxStartFile) ?? ".");
+                                File.AppendAllText(tracePsxStartFile, line + Environment.NewLine);
+                            }
+                        }
+                        if (!string.IsNullOrWhiteSpace(tracePsxCodeFile) && psx.TryGetDebugCodeWindow(out string codeWindow))
+                        {
+                            Directory.CreateDirectory(Path.GetDirectoryName(tracePsxCodeFile) ?? ".");
+                            File.AppendAllText(tracePsxCodeFile, $"[HEADLESS][PSX-SAVESTATE-CODE] frame={frame}{Environment.NewLine}{codeWindow}");
+                        }
+                    }
                 }
 
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");

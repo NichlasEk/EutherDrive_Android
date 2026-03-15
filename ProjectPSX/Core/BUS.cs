@@ -518,6 +518,8 @@ public class BUS {
             return *(uint*)(ramPtr + (addr & 0x1F_FFFF));
         }
 
+        public DMA DMAController => dma;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe uint LoadFromBios(uint addr) {
             return *(uint*)(biosPtr + (addr & 0x7_FFFF));

@@ -52,7 +52,12 @@ namespace ProjectPSX.Devices.CdRom {
 
         public bool hasData() => pointer < size;
 
+        public bool hasLoadedData() => size > 0;
+
         public bool hasSamples() => size - pointer > 3;
+
+        public int DebugPointer => pointer;
+        public int DebugSize => size;
 
         public void clear() {
             pointer = 0;

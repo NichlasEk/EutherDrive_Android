@@ -402,6 +402,21 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
         }
     }
 
+    public bool TryGetDebugCodeWindow(out string codeWindow, int wordsBefore = 8, int wordsAfter = 16)
+    {
+        lock (_stateLock)
+        {
+            if (_core == null)
+            {
+                codeWindow = string.Empty;
+                return false;
+            }
+
+            codeWindow = _core.DebugCodeWindow(wordsBefore, wordsAfter);
+            return true;
+        }
+    }
+
     public void SetInputState(
         bool up,
         bool down,

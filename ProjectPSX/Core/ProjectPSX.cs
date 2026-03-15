@@ -118,7 +118,31 @@ namespace ProjectPSX {
         }
 
         public string DebugStartSummary() {
-            return $"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} {cdrom.DebugSummary()}";
+            uint d370 = bus.LoadFromRam(0x0003_D370);
+            uint d374 = bus.LoadFromRam(0x0003_D374);
+            uint d378 = bus.LoadFromRam(0x0003_D378);
+            uint a0 = cpu.GetRegister(4);
+            uint sp = cpu.StackPointer;
+            uint ra = cpu.ReturnAddress;
+            return $"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} a0={a0:x8} sp={sp:x8} ra={ra:x8} " +
+                $"d370={d370:x8} d374={d374:x8} d378={d378:x8} " +
+                $"irq=({interruptController.DebugISTAT:x3}/{interruptController.DebugIMASK:x3}) {bus.DMAController.DebugSummary(3)} " +
+                $"{gpu.DebugSummary()} {mdec.DebugSummary()} {cdrom.DebugSummary()}";
+        }
+
+        public string DebugCodeWindow(int wordsBefore = 8, int wordsAfter = 16) {
+            uint pc = cpu.CurrentPC;
+            uint start = pc - (uint)(wordsBefore * 4);
+            var text = new System.Text.StringBuilder();
+            text.AppendLine($"pc={pc:x8}");
+            for (int i = -wordsBefore; i <= wordsAfter; i++) {
+                uint addr = pc + (uint)(i * 4);
+                uint instr = bus.load32(addr);
+                text.Append(i == 0 ? "=>" : "  ");
+                text.Append($" {addr:x8}: {instr:x8}");
+                text.AppendLine();
+            }
+            return text.ToString();
         }
 
         private static int ParseBusTickBatchCycles() {
