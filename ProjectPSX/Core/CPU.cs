@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.Serialization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ProjectPSX.Disassembler;
@@ -49,9 +50,12 @@ namespace ProjectPSX {
         private bool _instructionCacheRuntimeAllowed;
 
         private GTE gte;
+        [NonSerialized]
         private BUS bus;
 
+        [NonSerialized]
         private BIOS_Disassembler bios;
+        [NonSerialized]
         private MIPS_Disassembler mips;
 
         private struct MEM {

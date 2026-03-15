@@ -79,6 +79,9 @@ namespace ProjectPSX.Devices {
             private bool irq;
             private bool alreadFiredIrq;
 
+            public TIMER() {
+            }
+
             public TIMER(int timerNumber) {
                 this.timerNumber = timerNumber;
             }

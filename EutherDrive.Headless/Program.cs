@@ -1275,6 +1275,7 @@ class Program
         WriteU16Array($"{prefix}_vram.bin", ppu.GetVramDebugCopy());
         WriteU16Array($"{prefix}_cgram.bin", ppu.GetCgramDebugCopy());
         WriteU16Array($"{prefix}_oam.bin", ppu.GetOamDebugCopy());
+        File.WriteAllBytes($"{prefix}_wram.bin", snes.System.GetWramDebugCopy());
 
         string? snapshot = snes.GetPpuDebugSnapshot();
         if (!string.IsNullOrEmpty(snapshot))
@@ -1384,6 +1385,58 @@ class Program
         }
 
         Console.WriteLine($"[HEADLESS] Savestate roundtrip test: {romPath}");
+
+        string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
+        bool usePsx = string.Equals(coreOverride, "psx", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
+
+        if (usePsx)
+        {
+            PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
+            PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+
+            var psx = new PsxAdapter();
+            psx.LoadRom(romPath);
+
+            for (int i = 0; i < 10; i++)
+                psx.RunFrame();
+
+            byte[] snapshotPsx;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                psx.SaveState(writer);
+                writer.Flush();
+                snapshotPsx = ms.ToArray();
+            }
+
+            using (var ms = new MemoryStream(snapshotPsx))
+            using (var reader = new BinaryReader(ms))
+            {
+                psx.LoadState(reader);
+            }
+
+            byte[] snapshotAfterPsx;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                psx.SaveState(writer);
+                writer.Flush();
+                snapshotAfterPsx = ms.ToArray();
+            }
+
+            if (!snapshotPsx.SequenceEqual(snapshotAfterPsx))
+            {
+                Console.Error.WriteLine("[HEADLESS] PSX savestate roundtrip failed: payload mismatch.");
+                return 1;
+            }
+
+            Console.WriteLine("[HEADLESS] PSX savestate roundtrip ok.");
+            return 0;
+        }
+
         var adapter = new MdTracerAdapter();
         adapter.LoadRom(romPath);
 
@@ -1680,8 +1733,48 @@ class Program
 
             if (usePsx)
             {
-                Console.Error.WriteLine("[HEADLESS-ERROR] PSX savestate loading is not implemented in headless yet.");
-                return 1;
+                PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
+                PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+
+                var psx = new PsxAdapter();
+                psx.LoadRom(romPath);
+
+                int? slotOverridePsx = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadPsx = TryLoadSavestatePayload(savestatePath, psx.RomIdentity, slotOverridePsx, out var psxError);
+                if (payloadPsx == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {psxError}");
+                    return 1;
+                }
+
+                using (var psxStateStream = new MemoryStream(payloadPsx, writable: false))
+                using (var psxStateReader = new BinaryReader(psxStateStream))
+                    psx.LoadState(psxStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (PSX)");
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> psxFbIn = psx.GetFrameBuffer(out int psxWIn, out int psxHIn, out int psxSIn);
+                var psxStatsIn = GetFrameStats(psxFbIn, psxWIn, psxHIn, psxSIn);
+                Console.WriteLine($"[HEADLESS] PSX fb_has_content={psxStatsIn.HasContent} nonzero_pixels={psxStatsIn.NonZeroPixels} first_nonzero=({psxStatsIn.FirstX},{psxStatsIn.FirstY})");
+                DumpBgraToPpm(psxFbIn, psxWIn, psxHIn, psxSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    psx.RunFrame();
+                    ReadOnlySpan<byte> fb = psx.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    Console.WriteLine($"[HEADLESS] Frame {frame}: psx_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> psxFbOut = psx.GetFrameBuffer(out int psxWOut, out int psxHOut, out int psxSOut);
+                var psxStatsOut = GetFrameStats(psxFbOut, psxWOut, psxHOut, psxSOut);
+                Console.WriteLine($"[HEADLESS] PSX fb_has_content={psxStatsOut.HasContent} nonzero_pixels={psxStatsOut.NonZeroPixels} first_nonzero=({psxStatsOut.FirstX},{psxStatsOut.FirstY})");
+                DumpBgraToPpm(psxFbOut, psxWOut, psxHOut, psxSOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
             }
 
             if (usePce)
@@ -2099,8 +2192,36 @@ class Program
 
             if (usePsx)
             {
-                Console.Error.WriteLine("[HEADLESS-ERROR] PSX raw-state loading is not implemented in headless.");
-                return 1;
+                PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
+                PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+
+                var psx = new PsxAdapter();
+                psx.LoadRom(romPath);
+
+                using (var fs = new FileStream(rawStatePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var reader = new BinaryReader(fs))
+                {
+                    psx.LoadState(reader);
+                }
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    psx.RunFrame();
+                    Console.WriteLine($"[HEADLESS] Frame {frame} completed");
+                    if (frame == 0 || frame == 5 || frame == 10)
+                    {
+                        ReadOnlySpan<byte> fb = psx.GetFrameBuffer(out int w, out int h, out int s);
+                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                        DumpBgraToPpm(fb, w, h, s, ppmPath);
+                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = psx.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                string outPathPsx = Path.Combine(dumpDir, "headless_output.ppm");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, outPathPsx);
+                Console.WriteLine($"[HEADLESS] Framebuffer dumped to {outPathPsx}");
+                return 0;
             }
 
             if (usePce)

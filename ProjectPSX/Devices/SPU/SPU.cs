@@ -1,6 +1,8 @@
 ﻿using System;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using ProjectPSX.Devices.CdRom;
 using ProjectPSX.Devices.Spu;
 
@@ -83,6 +85,7 @@ namespace ProjectPSX.Devices {
 
         private Sector cdBuffer = new Sector(Sector.XA_BUFFER);
 
+        [NonSerialized]
         private unsafe byte* ram = (byte*)Marshal.AllocHGlobal(512 * 1024);
         private Voice[] voices = new Voice[24];
 
@@ -185,7 +188,9 @@ namespace ProjectPSX.Devices {
         }
         Status status;
 
+        [NonSerialized]
         private IHostWindow window;
+        [NonSerialized]
         private InterruptController interruptController;
 
         public SPU(IHostWindow window, InterruptController interruptController) {
@@ -194,6 +199,24 @@ namespace ProjectPSX.Devices {
 
             for (int i = 0; i < voices.Length; i++) {
                 voices[i] = new Voice();
+            }
+        }
+
+        public unsafe void SaveRawState(BinaryWriter writer) {
+            writer.Write(new ReadOnlySpan<byte>(ram, 512 * 1024));
+        }
+
+        public unsafe void LoadRawState(BinaryReader reader) {
+            ReadExactly(reader, new Span<byte>(ram, 512 * 1024));
+        }
+
+        private static void ReadExactly(BinaryReader reader, Span<byte> buffer) {
+            while (!buffer.IsEmpty) {
+                int read = reader.Read(buffer);
+                if (read <= 0)
+                    throw new EndOfStreamException("Unexpected end of stream while loading PSX SPU state.");
+
+                buffer = buffer[read..];
             }
         }
 

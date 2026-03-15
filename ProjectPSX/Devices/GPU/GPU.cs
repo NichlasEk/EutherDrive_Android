@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 
 namespace ProjectPSX.Devices {
 
@@ -18,11 +19,13 @@ namespace ProjectPSX.Devices {
         private static readonly int[] resolutions = { 256, 320, 512, 640, 384 };//gpustat res index
         private static readonly int[] dotClockDiv = { 10, 8, 5, 4, 7 };
 
+        [NonSerialized]
         private IHostWindow window;
 
         private VRAM vram = new VRAM(); //Vram is 8888 and we transform everything to it
         private VRAM1555 vram1555 = new VRAM1555(); //an un transformed 1555 to 8888 vram so we can fetch clut indexes without reverting to 1555
 
+        [NonSerialized]
         private int[] color1555to8888LUT;
 
         public bool debug;

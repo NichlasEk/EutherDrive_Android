@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.Serialization;
 
 namespace ProjectPSX.Devices;
 public sealed class DmaChannel : Channel {
@@ -18,8 +19,8 @@ public sealed class DmaChannel : Channel {
     private uint unknownBit29;
     private uint unknownBit30;
 
-    private BUS bus;
-    private InterruptChannel interrupt;
+    [NonSerialized] private BUS bus;
+    [NonSerialized] private InterruptChannel interrupt;
     private int channelNumber;
 
     private uint pendingBlocks;

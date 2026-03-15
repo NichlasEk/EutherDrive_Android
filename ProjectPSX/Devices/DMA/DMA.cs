@@ -53,6 +53,9 @@ public class DMA {
     }
 
     public bool HasPendingWork => pendingTransferMask != 0 || ((InterruptChannel)channels[7]).HasPendingInterrupt;
+    public int ChannelCount => channels.Length;
+
+    public object GetChannelStateObject(int index) => channels[index];
 
     private void RefreshPendingBit(int channelIndex) {
         var channel = (DmaChannel)channels[channelIndex];

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using ProjectPSX.Devices.CdRom;
 using static ProjectPSX.Devices.CdRom.TrackBuilder;
 
@@ -151,7 +152,9 @@ namespace ProjectPSX.Devices {
             public const byte INT5_ERROR = 5;
         }
 
+        [NonSerialized]
         private CD cd;
+        [NonSerialized]
         private SPU spu;
 
         public CDROM(CD cd, SPU spu) {

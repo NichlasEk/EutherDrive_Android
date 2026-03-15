@@ -1,5 +1,7 @@
-﻿using System.Runtime.CompilerServices;
+﻿using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 
 namespace ProjectPSX {
     public class VRAM {
@@ -7,6 +9,7 @@ namespace ProjectPSX {
         public const int Height = 512;
         public const int Width = 1024;
 
+        [NonSerialized]
         protected GCHandle BitsHandle;
 
         public VRAM() {

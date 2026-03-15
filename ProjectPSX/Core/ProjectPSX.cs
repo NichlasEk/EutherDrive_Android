@@ -102,6 +102,20 @@ namespace ProjectPSX {
         }
 
         public uint DebugCurrentPC => cpu.CurrentPC;
+        public object CpuStateObject => cpu;
+        public BUS Bus => bus;
+        public GPU GPU => gpu;
+        public SPU SPU => spu;
+        public CDROM CDROM => cdrom;
+        public JOYPAD JOYPAD => joypad;
+        public TIMERS Timers => timers;
+        public MDEC MDEC => mdec;
+        public InterruptController InterruptController => interruptController;
+        public bool BootBiosExited
+        {
+            get => _psxBootBiosExited;
+            set => _psxBootBiosExited = value;
+        }
 
         public string DebugStartSummary() {
             return $"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} {cdrom.DebugSummary()}";

@@ -4,6 +4,7 @@ using System;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 
 namespace ProjectPSX {
 
@@ -13,28 +14,28 @@ public class BUS {
         private const int SpuTickBatchCycles = 96;
 
         //Memory
-        private unsafe byte* ramPtr = (byte*)Marshal.AllocHGlobal(2048 * 1024);
-        private unsafe byte* ex1Ptr = (byte*)Marshal.AllocHGlobal(512 * 1024);
-        private unsafe byte* scrathpadPtr = (byte*)Marshal.AllocHGlobal(1024);
-        private unsafe byte* biosPtr = (byte*)Marshal.AllocHGlobal(512 * 1024);
-        private unsafe byte* sio = (byte*)Marshal.AllocHGlobal(0x10);
-        private unsafe byte* memoryControl1 = (byte*)Marshal.AllocHGlobal(0x40);
-        private unsafe byte* memoryControl2 = (byte*)Marshal.AllocHGlobal(0x10);
+        [NonSerialized] private unsafe byte* ramPtr = (byte*)Marshal.AllocHGlobal(2048 * 1024);
+        [NonSerialized] private unsafe byte* ex1Ptr = (byte*)Marshal.AllocHGlobal(512 * 1024);
+        [NonSerialized] private unsafe byte* scrathpadPtr = (byte*)Marshal.AllocHGlobal(1024);
+        [NonSerialized] private unsafe byte* biosPtr = (byte*)Marshal.AllocHGlobal(512 * 1024);
+        [NonSerialized] private unsafe byte* sio = (byte*)Marshal.AllocHGlobal(0x10);
+        [NonSerialized] private unsafe byte* memoryControl1 = (byte*)Marshal.AllocHGlobal(0x40);
+        [NonSerialized] private unsafe byte* memoryControl2 = (byte*)Marshal.AllocHGlobal(0x10);
 
         private uint memoryCache;
         private uint memoryCacheWriteCount;
-        private Action<uint, int>? ramWriteObserver;
+        [NonSerialized] private Action<uint, int>? ramWriteObserver;
 
         //Other Subsystems
-        public InterruptController interruptController;
-        private DMA dma;
-        private GPU gpu;
-        private CDROM cdrom;
-        private TIMERS timers;
-        private JOYPAD joypad;
-        private MDEC mdec;
-        private SPU spu;
-        private Exp2 exp2;
+        [NonSerialized] public InterruptController interruptController;
+        [NonSerialized] private DMA dma;
+        [NonSerialized] private GPU gpu;
+        [NonSerialized] private CDROM cdrom;
+        [NonSerialized] private TIMERS timers;
+        [NonSerialized] private JOYPAD joypad;
+        [NonSerialized] private MDEC mdec;
+        [NonSerialized] private SPU spu;
+        [NonSerialized] private Exp2 exp2;
         private int spuCycleAccumulator;
 
         //temporary hardcoded bios/ex1
@@ -69,6 +70,36 @@ public class BUS {
 
         public void SetRamWriteObserver(Action<uint, int> observer) {
             ramWriteObserver = observer;
+        }
+
+        public unsafe void SaveRawState(BinaryWriter writer) {
+            writer.Write(new ReadOnlySpan<byte>(ramPtr, 2048 * 1024));
+            writer.Write(new ReadOnlySpan<byte>(ex1Ptr, 512 * 1024));
+            writer.Write(new ReadOnlySpan<byte>(scrathpadPtr, 1024));
+            writer.Write(new ReadOnlySpan<byte>(biosPtr, 512 * 1024));
+            writer.Write(new ReadOnlySpan<byte>(sio, 0x10));
+            writer.Write(new ReadOnlySpan<byte>(memoryControl1, 0x40));
+            writer.Write(new ReadOnlySpan<byte>(memoryControl2, 0x10));
+        }
+
+        public unsafe void LoadRawState(BinaryReader reader) {
+            ReadExactly(reader, new Span<byte>(ramPtr, 2048 * 1024));
+            ReadExactly(reader, new Span<byte>(ex1Ptr, 512 * 1024));
+            ReadExactly(reader, new Span<byte>(scrathpadPtr, 1024));
+            ReadExactly(reader, new Span<byte>(biosPtr, 512 * 1024));
+            ReadExactly(reader, new Span<byte>(sio, 0x10));
+            ReadExactly(reader, new Span<byte>(memoryControl1, 0x40));
+            ReadExactly(reader, new Span<byte>(memoryControl2, 0x10));
+        }
+
+        private static void ReadExactly(BinaryReader reader, Span<byte> buffer) {
+            while (!buffer.IsEmpty) {
+                int read = reader.Read(buffer);
+                if (read <= 0)
+                    throw new EndOfStreamException("Unexpected end of stream while loading PSX BUS state.");
+
+                buffer = buffer[read..];
+            }
         }
 
         public unsafe uint load32(uint address) {
@@ -495,6 +526,7 @@ public class BUS {
         public uint MemoryCacheControl => memoryCache;
 
         public uint MemoryCacheWriteCount => memoryCacheWriteCount;
+        public DMA Dma => dma;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe Span<uint> DmaFromRam(uint addr, uint size) {

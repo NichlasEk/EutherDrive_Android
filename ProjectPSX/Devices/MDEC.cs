@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 
 namespace ProjectPSX.Devices {
     public class MDEC {
@@ -29,7 +30,9 @@ namespace ProjectPSX.Devices {
         private byte[] colorQuantTable = new byte[64];
         private short[] scaleTable = new short[64];
 
-        private Action command;
+        [NonSerialized]
+        private Action? command;
+        private uint currentCommandId;
 
         private short[][] block = { new short[64], new short[64], new short[64], new short[64], new short[64], new short[64] };
 
@@ -98,6 +101,7 @@ namespace ProjectPSX.Devices {
 
         private void decodeCommand(uint value) {
             uint rawCommand = value >> 29;
+            currentCommandId = rawCommand;
             dataOutputDepth = (value >> 27) & 0x3;
             isSigned = ((value >> 26) & 0x1) == 1;
             bit15 = (value >> 25) & 0x1;
@@ -110,6 +114,15 @@ namespace ProjectPSX.Devices {
                 case 3: command = setScaleTable; remainingDataWords = 32; break;
                 default: Console.WriteLine("[MDEC] Unhandled Command " + rawCommand); break;
             }
+        }
+
+        public void ResyncAfterLoad() {
+            command = currentCommandId switch {
+                1 => decodeMacroBlocks,
+                2 => setQuantTable,
+                3 => setScaleTable,
+                _ => null,
+            };
         }
 
         private void decodeMacroBlocks() {

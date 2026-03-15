@@ -6,10 +6,11 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using ProjectPSX;
 using ProjectPSX.Devices.Input;
+using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core;
 
-public sealed class PsxAdapter : IEmulatorCore
+public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
 {
     private const uint OpaqueBlackPixel = 0xFF000000u;
     private static readonly Vector<uint> OpaqueAlphaVector = new(0xFF000000u);
@@ -186,6 +187,8 @@ public sealed class PsxAdapter : IEmulatorCore
     private short[] _audioReadBuffer = Array.Empty<short>();
     private float _masterVolumeScale = 1.0f;
     private long _frameCounter;
+    private RomIdentity? _romIdentity;
+    public RomIdentity? RomIdentity => _romIdentity;
 
     public void LoadRom(string path)
     {
@@ -197,6 +200,8 @@ public sealed class PsxAdapter : IEmulatorCore
             Environment.SetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS", BiosPath);
         _host = new PsxHostWindow(this);
         _core = new ProjectPSX.ProjectPSX(_host, path, AnalogControllerEnabled, FastLoadEnabled);
+        _frameCounter = 0;
+        _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(File.ReadAllBytes(path)));
     }
 
     public void Reset()
@@ -204,6 +209,92 @@ public sealed class PsxAdapter : IEmulatorCore
         if (string.IsNullOrWhiteSpace(_diskPath))
             return;
         LoadRom(_diskPath);
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        lock (_stateLock)
+        {
+            if (_core == null)
+                throw new InvalidOperationException("PSX core is not loaded.");
+
+            const int version = 1;
+            writer.Write(version);
+            writer.Write(_frameCounter);
+            writer.Write(_core.BootBiosExited);
+
+            StateBinarySerializer.WriteInto(writer, _core.CpuStateObject);
+
+            _core.Bus.SaveRawState(writer);
+            StateBinarySerializer.WriteInto(writer, _core.Bus);
+            StateBinarySerializer.WriteInto(writer, _core.InterruptController);
+
+            var dma = _core.Bus.Dma;
+            writer.Write(dma.ChannelCount);
+            for (int i = 0; i < dma.ChannelCount; i++)
+                StateBinarySerializer.WriteInto(writer, dma.GetChannelStateObject(i));
+
+            StateBinarySerializer.WriteInto(writer, _core.GPU);
+            StateBinarySerializer.WriteInto(writer, _core.CDROM);
+            StateBinarySerializer.WriteInto(writer, _core.JOYPAD);
+            StateBinarySerializer.WriteInto(writer, _core.Timers);
+            StateBinarySerializer.WriteInto(writer, _core.MDEC);
+            _core.SPU.SaveRawState(writer);
+            StateBinarySerializer.WriteInto(writer, _core.SPU);
+        }
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+
+        lock (_stateLock)
+        {
+            if (_core == null)
+                throw new InvalidOperationException("PSX core is not loaded.");
+
+            int version = reader.ReadInt32();
+            if (version != 1)
+                throw new InvalidDataException($"Unsupported PSX savestate version: {version}.");
+
+            _frameCounter = reader.ReadInt64();
+            _core.BootBiosExited = reader.ReadBoolean();
+
+            StateBinarySerializer.ReadInto(reader, _core.CpuStateObject);
+
+            _core.Bus.LoadRawState(reader);
+            StateBinarySerializer.ReadInto(reader, _core.Bus);
+            StateBinarySerializer.ReadInto(reader, _core.InterruptController);
+
+            var dma = _core.Bus.Dma;
+            int channelCount = reader.ReadInt32();
+            if (channelCount != dma.ChannelCount)
+                throw new InvalidDataException($"Unsupported PSX DMA channel count: {channelCount}.");
+            for (int i = 0; i < channelCount; i++)
+                StateBinarySerializer.ReadInto(reader, dma.GetChannelStateObject(i));
+
+            StateBinarySerializer.ReadInto(reader, _core.GPU);
+            StateBinarySerializer.ReadInto(reader, _core.CDROM);
+            StateBinarySerializer.ReadInto(reader, _core.JOYPAD);
+            StateBinarySerializer.ReadInto(reader, _core.Timers);
+            StateBinarySerializer.ReadInto(reader, _core.MDEC);
+            _core.MDEC.ResyncAfterLoad();
+            _core.SPU.LoadRawState(reader);
+            StateBinarySerializer.ReadInto(reader, _core.SPU);
+
+            lock (_audioLock)
+            {
+                _audioQueuedCount = 0;
+            }
+            lock (_frameLock)
+            {
+                Array.Clear(_workFrameBuffer, 0, _workFrameBuffer.Length);
+                Array.Clear(_presentFrameBuffer, 0, _presentFrameBuffer.Length);
+                Array.Clear(_spareFrameBuffer, 0, _spareFrameBuffer.Length);
+            }
+        }
     }
 
     public void RunFrame()
