@@ -125,6 +125,18 @@ public partial class MainWindow : Window
     private string? _psxBiosPath;
     private readonly List<string> _recentRomPaths = new();
     private bool _recentRomUpdating;
+    private readonly Dictionary<string, string> _snesSpecialRomPaths = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly SnesSpecialRomDefinition[] s_snesSpecialRomDefinitions =
+    [
+        new("DSP1", "DSP1", "EUTHERDRIVE_DSP1_ROM"),
+        new("DSP2", "DSP2", "EUTHERDRIVE_DSP2_ROM"),
+        new("DSP3", "DSP3", "EUTHERDRIVE_DSP3_ROM"),
+        new("DSP4", "DSP4", "EUTHERDRIVE_DSP4_ROM"),
+        new("ST010", "ST010", "EUTHERDRIVE_ST010_ROM"),
+        new("ST011", "ST011", "EUTHERDRIVE_ST011_ROM"),
+        new("ST018", "ST018", "EUTHERDRIVE_ST018_ROM",
+            "Combined ST018 .bin/.rom is preferred here; automatic lookup still supports repo-local split st018.program.rom + st018.data.rom.")
+    ];
 
     // Input “håll nere”
     private readonly HashSet<Key> _keysDown = new();
@@ -353,6 +365,7 @@ public partial class MainWindow : Window
         _ymResampleLinear = IsEnvEnabled("EUTHERDRIVE_YM_RESAMPLE_LINEAR")
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
+        ApplySnesSpecialRomOverrides();
         UpdateRecentRomCombo();
         if (MasterVolumeSlider != null)
             MasterVolumeSlider.Value = _masterVolumePercent;
@@ -1321,6 +1334,195 @@ public partial class MainWindow : Window
             PsxBiosPathText.Text = "(none)";
         StatusText.Text = "PSX BIOS cleared";
         SaveSettings();
+    }
+
+    private async void OnShowSnesSpecialRomSettings(object? sender, RoutedEventArgs e)
+    {
+        Window? dialog = null;
+        var root = new StackPanel { Spacing = 12, Margin = new Thickness(16) };
+        root.Children.Add(new TextBlock
+        {
+            Text = "SNES Special ROMs",
+            FontSize = 18,
+            FontWeight = Avalonia.Media.FontWeight.Bold
+        });
+
+        var intro = new TextBlock
+        {
+            Text = "Saved paths override env vars and the built-in fallback lookup. Leave a chip empty to keep automatic lookup.",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap
+        };
+        intro.Classes.Add("muted");
+        root.Children.Add(intro);
+
+        foreach (SnesSpecialRomDefinition definition in s_snesSpecialRomDefinitions)
+        {
+            var card = new Border { Padding = new Thickness(10, 8) };
+            card.Classes.Add("option-card");
+
+            var stack = new StackPanel { Spacing = 6 };
+            stack.Children.Add(new TextBlock
+            {
+                Text = definition.DisplayName,
+                FontWeight = Avalonia.Media.FontWeight.Bold
+            });
+
+            if (!string.IsNullOrWhiteSpace(definition.Note))
+            {
+                var note = new TextBlock
+                {
+                    Text = definition.Note,
+                    FontSize = 11,
+                    TextWrapping = TextWrapping.Wrap
+                };
+                note.Classes.Add("muted");
+                stack.Children.Add(note);
+            }
+
+            var pathText = new TextBlock
+            {
+                Text = GetSnesSpecialRomDisplayText(definition),
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap
+            };
+            pathText.Classes.Add("muted");
+            stack.Children.Add(pathText);
+
+            var buttons = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6 };
+            var browseButton = new Button { Content = "Browse..." };
+            browseButton.Click += async (_, _) =>
+            {
+                string? selectedPath = await PickSnesSpecialRomPathAsync(definition);
+                if (string.IsNullOrWhiteSpace(selectedPath))
+                    return;
+
+                SetSnesSpecialRomPath(definition.Key, selectedPath);
+                pathText.Text = GetSnesSpecialRomDisplayText(definition);
+            };
+
+            var clearButton = new Button { Content = "Clear" };
+            clearButton.Classes.Add("ghost");
+            clearButton.Click += (_, _) =>
+            {
+                SetSnesSpecialRomPath(definition.Key, null);
+                pathText.Text = GetSnesSpecialRomDisplayText(definition);
+            };
+
+            buttons.Children.Add(browseButton);
+            buttons.Children.Add(clearButton);
+            stack.Children.Add(buttons);
+            card.Child = stack;
+            root.Children.Add(card);
+        }
+
+        var closeButton = new Button
+        {
+            Content = "Close",
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            MinWidth = 88
+        };
+        closeButton.Click += (_, _) => dialog?.Close();
+        root.Children.Add(closeButton);
+
+        dialog = new Window
+        {
+            Title = "SNES Special ROMs",
+            Width = ScaleDialogSize(720, _uiScale),
+            Height = ScaleDialogSize(580, _uiScale),
+            Background = new SolidColorBrush(Color.Parse("#0F1216")),
+            Content = WrapDialogForUiScale(new ScrollViewer { Content = root }, _uiScale),
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+
+        await dialog.ShowDialog(this);
+    }
+
+    private string GetSnesSpecialRomDisplayText(SnesSpecialRomDefinition definition)
+    {
+        if (_snesSpecialRomPaths.TryGetValue(definition.Key, out string? path) && !string.IsNullOrWhiteSpace(path))
+            return path;
+
+        return "(automatic lookup: env var and fallback paths remain available)";
+    }
+
+    private async Task<string?> PickSnesSpecialRomPathAsync(SnesSpecialRomDefinition definition)
+    {
+        if (StorageProvider == null)
+            return null;
+
+        string? currentPath = null;
+        if (_snesSpecialRomPaths.TryGetValue(definition.Key, out string? configuredPath) &&
+            !string.IsNullOrWhiteSpace(configuredPath))
+        {
+            currentPath = configuredPath;
+        }
+        else if (!string.IsNullOrWhiteSpace(_romPath))
+        {
+            currentPath = _romPath;
+        }
+
+        IStorageFolder? startFolder = null;
+        if (!string.IsNullOrWhiteSpace(currentPath))
+        {
+            string? folderPath = Path.GetDirectoryName(currentPath);
+            if (!string.IsNullOrWhiteSpace(folderPath))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(folderPath);
+        }
+
+        var options = new FilePickerOpenOptions
+        {
+            Title = $"Select {definition.DisplayName} ROM",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType($"{definition.DisplayName} ROM")
+                {
+                    Patterns = new[] { "*.bin", "*.BIN", "*.rom", "*.ROM" }
+                }
+            }
+        };
+
+        if (startFolder != null)
+            options.SuggestedStartLocation = startFolder;
+        if (!string.IsNullOrWhiteSpace(currentPath))
+            options.SuggestedFileName = Path.GetFileName(currentPath);
+
+        var files = await StorageProvider.OpenFilePickerAsync(options);
+        if (files.Count == 0)
+            return null;
+
+        string? localPath = files[0].TryGetLocalPath();
+        if (string.IsNullOrWhiteSpace(localPath))
+        {
+            StatusText.Text = $"{definition.DisplayName}: only local files are supported.";
+            return null;
+        }
+
+        return localPath;
+    }
+
+    private void SetSnesSpecialRomPath(string key, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            _snesSpecialRomPaths.Remove(key);
+        else
+            _snesSpecialRomPaths[key] = path;
+
+        ApplySnesSpecialRomOverrides();
+        SaveSettings();
+        StatusText.Text = string.IsNullOrWhiteSpace(path)
+            ? $"{key} special ROM override cleared; reload SNES ROM to apply."
+            : $"{key} special ROM override saved; reload SNES ROM to apply.";
+    }
+
+    private void ApplySnesSpecialRomOverrides()
+    {
+        foreach (SnesSpecialRomDefinition definition in s_snesSpecialRomDefinitions)
+        {
+            _snesSpecialRomPaths.TryGetValue(definition.Key, out string? path);
+            KSNES.ROM.ROM.SetSpecialRomOverride(definition.EnvironmentVariable, path);
+        }
     }
 
     private void OnPsxAnalogPadToggle(object? sender, RoutedEventArgs e)
@@ -3180,6 +3382,7 @@ public partial class MainWindow : Window
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
+        public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public PsxVideoStandardMode PsxVideoStandardMode { get; set; } = PsxVideoStandardMode.Auto;
@@ -3213,6 +3416,7 @@ public partial class MainWindow : Window
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
+        public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public string? PsxVideoStandardMode { get; set; }
@@ -3318,6 +3522,17 @@ public partial class MainWindow : Window
             if (PceBiosPathText != null)
                 PceBiosPathText.Text = _pceBiosPath;
         }
+
+        _snesSpecialRomPaths.Clear();
+        if (settings.SnesSpecialRomPaths != null)
+        {
+            foreach (var entry in settings.SnesSpecialRomPaths)
+            {
+                if (!string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value))
+                    _snesSpecialRomPaths[entry.Key] = entry.Value;
+            }
+        }
+        ApplySnesSpecialRomOverrides();
 
         _recentRomPaths.Clear();
         if (settings.RecentRomPaths != null)
@@ -3455,6 +3670,9 @@ public partial class MainWindow : Window
             RecentRomPaths = _recentRomPaths.ToList(),
             PceBiosPath = _pceBiosPath,
             PsxBiosPath = _psxBiosPath,
+            SnesSpecialRomPaths = _snesSpecialRomPaths.Count > 0
+                ? new Dictionary<string, string>(_snesSpecialRomPaths, StringComparer.OrdinalIgnoreCase)
+                : null,
             PsxAnalogControllerEnabled = _psxAnalogControllerEnabled,
             PsxFastLoadEnabled = _psxFastLoadEnabled,
             PsxVideoStandardMode = _psxVideoStandardMode,
@@ -3543,6 +3761,7 @@ public partial class MainWindow : Window
             RecentRomPaths = settings.RecentRomPaths,
             PceBiosPath = settings.PceBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
+            SnesSpecialRomPaths = settings.SnesSpecialRomPaths,
             PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = settings.PsxFastLoadEnabled,
             PsxVideoStandardMode = settings.PsxVideoStandardMode.ToString(),
@@ -3573,6 +3792,9 @@ public partial class MainWindow : Window
             if (table.Count > 0)
                 model.RomRegionOverrides = table;
         }
+
+        if (settings.SnesSpecialRomPaths != null && settings.SnesSpecialRomPaths.Count > 0)
+            model.SnesSpecialRomPaths = new Dictionary<string, string>(settings.SnesSpecialRomPaths, StringComparer.OrdinalIgnoreCase);
 
         if (settings.RomSegaCdRamCartOverrides != null && settings.RomSegaCdRamCartOverrides.Count > 0)
             model.RomSegaCdRamCartOverrides = new Dictionary<string, bool>(settings.RomSegaCdRamCartOverrides, StringComparer.OrdinalIgnoreCase);
@@ -3656,6 +3878,16 @@ public partial class MainWindow : Window
         if (Enum.TryParse<PsxVideoStandardMode>(raw.PsxVideoStandardMode ?? string.Empty, out var psxVideoStandard))
             settings.PsxVideoStandardMode = psxVideoStandard;
 
+        if (raw.SnesSpecialRomPaths != null)
+        {
+            settings.SnesSpecialRomPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in raw.SnesSpecialRomPaths)
+            {
+                if (!string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value))
+                    settings.SnesSpecialRomPaths[entry.Key] = entry.Value;
+            }
+        }
+
         if (raw.RomRegionOverrides != null)
         {
             settings.RomRegionOverrides = new Dictionary<string, ConsoleRegion>(StringComparer.OrdinalIgnoreCase);
@@ -3689,6 +3921,12 @@ public partial class MainWindow : Window
         settings.InputMappings = ConvertTomlInputMappings(raw.InputMappings) ?? settings.InputMappings;
         return settings;
     }
+
+    private sealed record SnesSpecialRomDefinition(
+        string Key,
+        string DisplayName,
+        string EnvironmentVariable,
+        string? Note = null);
 
     private static InputMappingSettings? ConvertTomlInputMappings(InputMappingSettingsToml? raw)
     {

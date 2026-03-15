@@ -67,6 +67,9 @@ public class ROM : IROM
     private int _traceReadPcCount;
     private static readonly bool TraceSnesVectors =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_VECTORS"), "1", StringComparison.Ordinal);
+    private static readonly Dictionary<string, string> s_specialRomOverrides =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object s_specialRomOverridesLock = new();
     private readonly bool _traceSa1BwramWatch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal);
     [NonSerialized]
@@ -75,6 +78,20 @@ public class ROM : IROM
 
     [NonSerialized]
     private Timer? _sRAMTimer;
+
+    public static void SetSpecialRomOverride(string environmentVariable, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(environmentVariable))
+            return;
+
+        lock (s_specialRomOverridesLock)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                s_specialRomOverrides.Remove(environmentVariable);
+            else
+                s_specialRomOverrides[environmentVariable] = path;
+        }
+    }
 
     public void LoadROM(byte[] data, Header header)
     {
@@ -1357,9 +1374,9 @@ public class ROM : IROM
             _ => "EUTHERDRIVE_DSP1_ROM"
         };
 
-        string? fromEnv = Environment.GetEnvironmentVariable(envName);
-        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
-            return File.ReadAllBytes(fromEnv);
+        byte[]? configuredRom = TryLoadConfiguredSpecialRom(envName);
+        if (configuredRom is not null)
+            return configuredRom;
 
         string[] possiblePaths = variant switch
         {
@@ -1400,9 +1417,9 @@ public class ROM : IROM
 
     private static byte[]? TryLoadSt010Rom()
     {
-        string? fromEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_ST010_ROM");
-        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
-            return File.ReadAllBytes(fromEnv);
+        byte[]? configuredRom = TryLoadConfiguredSpecialRom("EUTHERDRIVE_ST010_ROM");
+        if (configuredRom is not null)
+            return configuredRom;
 
         // Search repo-local BIOS paths first, then compatibility fallbacks.
         string[] possiblePaths = [
@@ -1425,9 +1442,9 @@ public class ROM : IROM
 
     private static byte[]? TryLoadSt011Rom()
     {
-        string? fromEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_ST011_ROM");
-        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
-            return File.ReadAllBytes(fromEnv);
+        byte[]? configuredRom = TryLoadConfiguredSpecialRom("EUTHERDRIVE_ST011_ROM");
+        if (configuredRom is not null)
+            return configuredRom;
 
         // Search repo-local BIOS paths first, then compatibility fallbacks.
         string[] possiblePaths = [
@@ -1452,9 +1469,13 @@ public class ROM : IROM
 
     private static byte[]? TryLoadSt018Rom()
     {
-        string? fromEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_ST018_ROM");
-        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
-            return File.ReadAllBytes(fromEnv);
+        string? configuredPath = ResolveConfiguredSpecialRomPath("EUTHERDRIVE_ST018_ROM");
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            byte[]? configuredRom = TryLoadSt018RomFromPath(configuredPath);
+            if (configuredRom is not null)
+                return configuredRom;
+        }
 
         byte[]? splitRom = TryLoadSplitSt018Rom();
         if (splitRom is not null)
@@ -1483,25 +1504,95 @@ public class ROM : IROM
     {
         foreach (string programPath in EnumerateRepoRelativeBiosPaths("st018.program.rom"))
         {
-            string dataPath = Path.Combine(Path.GetDirectoryName(programPath) ?? string.Empty, "st018.data.rom");
-            bool hasProgram = File.Exists(programPath);
-            bool hasData = File.Exists(dataPath);
+            string directory = Path.GetDirectoryName(programPath) ?? string.Empty;
+            byte[]? splitRom = TryLoadSplitSt018RomFromDirectory(directory);
+            if (splitRom is not null)
+                return splitRom;
+        }
 
-            if (!hasProgram && !hasData)
-                continue;
+        return null;
+    }
 
-            if (hasProgram && hasData)
+    private static byte[]? TryLoadConfiguredSpecialRom(string environmentVariable)
+    {
+        string? configuredPath = ResolveConfiguredSpecialRomPath(environmentVariable);
+        if (string.IsNullOrWhiteSpace(configuredPath))
+            return null;
+
+        return File.ReadAllBytes(configuredPath);
+    }
+
+    private static string? ResolveConfiguredSpecialRomPath(string environmentVariable)
+    {
+        lock (s_specialRomOverridesLock)
+        {
+            if (s_specialRomOverrides.TryGetValue(environmentVariable, out string? overridePath) &&
+                !string.IsNullOrWhiteSpace(overridePath) &&
+                File.Exists(overridePath))
             {
-                byte[] programRom = File.ReadAllBytes(programPath);
-                byte[] dataRom = File.ReadAllBytes(dataPath);
-                byte[] combined = new byte[programRom.Length + dataRom.Length];
-                Buffer.BlockCopy(programRom, 0, combined, 0, programRom.Length);
-                Buffer.BlockCopy(dataRom, 0, combined, programRom.Length, dataRom.Length);
-                return combined;
+                return overridePath;
             }
+        }
 
-            throw new FileNotFoundException(
-                $"ST018 BIOS set incomplete in '{Path.GetDirectoryName(programPath)}'; expected both st018.program.rom and st018.data.rom.");
+        string? fromEnv = Environment.GetEnvironmentVariable(environmentVariable);
+        if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv))
+            return fromEnv;
+
+        return null;
+    }
+
+    private static byte[]? TryLoadSt018RomFromPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return null;
+
+        string fileName = Path.GetFileName(path);
+        if (string.Equals(fileName, "st018.program.rom", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(fileName, "st018.data.rom", StringComparison.OrdinalIgnoreCase))
+        {
+            return TryLoadSplitSt018RomFromDirectory(Path.GetDirectoryName(path) ?? string.Empty);
+        }
+
+        return File.ReadAllBytes(path);
+    }
+
+    private static byte[]? TryLoadSplitSt018RomFromDirectory(string directory)
+    {
+        string? programPath = TryFindSiblingFile(directory, "st018.program.rom");
+        string? dataPath = TryFindSiblingFile(directory, "st018.data.rom");
+        bool hasProgram = !string.IsNullOrWhiteSpace(programPath);
+        bool hasData = !string.IsNullOrWhiteSpace(dataPath);
+
+        if (!hasProgram && !hasData)
+            return null;
+
+        if (hasProgram && hasData)
+        {
+            byte[] programRom = File.ReadAllBytes(programPath!);
+            byte[] dataRom = File.ReadAllBytes(dataPath!);
+            byte[] combined = new byte[programRom.Length + dataRom.Length];
+            Buffer.BlockCopy(programRom, 0, combined, 0, programRom.Length);
+            Buffer.BlockCopy(dataRom, 0, combined, programRom.Length, dataRom.Length);
+            return combined;
+        }
+
+        throw new FileNotFoundException(
+            $"ST018 BIOS set incomplete in '{directory}'; expected both st018.program.rom and st018.data.rom.");
+    }
+
+    private static string? TryFindSiblingFile(string directory, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            return null;
+
+        string exactPath = Path.Combine(directory, fileName);
+        if (File.Exists(exactPath))
+            return exactPath;
+
+        foreach (string candidate in Directory.EnumerateFiles(directory))
+        {
+            if (string.Equals(Path.GetFileName(candidate), fileName, StringComparison.OrdinalIgnoreCase))
+                return candidate;
         }
 
         return null;

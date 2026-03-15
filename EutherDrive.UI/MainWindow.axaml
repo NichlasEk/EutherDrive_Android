@@ -215,6 +215,7 @@
             <TextBlock x:Name="RomRegionHintText" Classes="muted" FontSize="12"/>
             <Button Content="Use ROM region" Click="OnUseRomRegion" HorizontalAlignment="Left"/>
             <Button Classes="ghost" Content="Controls..." Click="OnShowControls" HorizontalAlignment="Left"/>
+            <Button Classes="ghost" Content="SNES Special ROMs..." Click="OnShowSnesSpecialRomSettings" HorizontalAlignment="Left"/>
             <Separator/>
             <TextBlock Text="ROM" FontWeight="Bold"/>
             <TextBlock Name="RomPathText" Text="(none)" TextWrapping="Wrap"/>
