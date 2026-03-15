@@ -255,8 +255,48 @@ public partial class MainWindow : Window
     private const int AutoFireRateMin = 5;
     private const int AutoFireRateMax = 30;
     private const int AutoFireRateDefault = 12;
+    private const int AutoFireButtonsPerRow = 3;
+    private const int AutoFireBitA = 1 << 0;
+    private const int AutoFireBitB = 1 << 1;
+    private const int AutoFireBitC = 1 << 2;
+    private const int AutoFireBitX = 1 << 3;
+    private const int AutoFireBitY = 1 << 4;
+    private const int AutoFireBitZ = 1 << 5;
+    private static readonly AutoFireButtonDefinition[] s_autoFireMdThreeButtonButtons =
+    [
+        new("A", "A"),
+        new("B", "B"),
+        new("C", "C")
+    ];
+    private static readonly AutoFireButtonDefinition[] s_autoFireMdSixButtonButtons =
+    [
+        new("X", "X"),
+        new("Y", "Y"),
+        new("Z", "Z"),
+        new("A", "A"),
+        new("B", "B"),
+        new("C", "C")
+    ];
+    private static readonly AutoFireButtonDefinition[] s_autoFireSnesButtons =
+    [
+        new("Y", "Y"),
+        new("X", "X"),
+        new("L", "Z"),
+        new("R", "C"),
+        new("B", "B"),
+        new("A", "A")
+    ];
+    private static readonly AutoFireButtonDefinition[] s_autoFireTwoButtonButtons =
+    [
+        new("A", "A"),
+        new("B", "B")
+    ];
     private int _autoFireRateHz = AutoFireRateDefault;
     private int _autoFireMask;
+    private readonly Dictionary<string, HashSet<string>> _autoFireSelectionsByProfile = new(StringComparer.Ordinal);
+    private readonly List<ToggleButton> _autoFireButtons = new();
+    private string _activeAutoFireProfileId = "md-3";
+    private bool _updatingAutoFireUi;
     private long _audioLastTicks;
     private double _audioFrameAccumulator;
     private double _audioDrivenAccumulator;
@@ -393,7 +433,6 @@ public partial class MainWindow : Window
 
         _audioTimedEnabled = AudioTimedEnvEnabled;
         UpdatePadTypeFromUi();
-        UpdateAutoFireMask();
         UpdateAutoFireRateText(_autoFireRateHz);
         if (SixButtonPadCheck != null)
         {
@@ -470,6 +509,10 @@ public partial class MainWindow : Window
         private set => _romRegionHint = value;
     }
 
+    private sealed record AutoFireButtonDefinition(string DisplayAction, string TargetAction);
+
+    private sealed record AutoFireProfile(string Id, InputMappingSet MappingSet, AutoFireButtonDefinition[] Buttons);
+
     private static IEmulatorCore CreateCoreForRom(string? path)
     {
         if (!string.IsNullOrWhiteSpace(path) && IsSegaCdRom(path))
@@ -526,6 +569,12 @@ public partial class MainWindow : Window
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
         return ext is ".z64" or ".n64" or ".v64";
+    }
+
+    private static bool IsMasterSystemRomPath(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".sms" or ".sg" or ".gg";
     }
 
     private static bool IsSnesRom(string path)
@@ -911,6 +960,8 @@ public partial class MainWindow : Window
 
     private void OnAutoFireToggle(object? sender, RoutedEventArgs e)
     {
+        if (_updatingAutoFireUi)
+            return;
         UpdateAutoFireMask();
     }
 
@@ -987,15 +1038,186 @@ public partial class MainWindow : Window
         }
     }
 
+    private void RefreshAutoFireUi()
+    {
+        if (AutoFireButtonsPanel == null)
+            return;
+
+        StoreCurrentAutoFireSelections();
+
+        AutoFireProfile profile = GetCurrentAutoFireProfile();
+        HashSet<string> selectedTargets = GetAutoFireSelectionSet(profile.Id);
+        _activeAutoFireProfileId = profile.Id;
+
+        _updatingAutoFireUi = true;
+        try
+        {
+            AutoFireButtonsPanel.Children.Clear();
+            _autoFireButtons.Clear();
+
+            int buttonsPerRow = Math.Min(AutoFireButtonsPerRow, Math.Max(1, profile.Buttons.Length));
+            StackPanel? row = null;
+
+            for (int i = 0; i < profile.Buttons.Length; i++)
+            {
+                if (i % buttonsPerRow == 0)
+                {
+                    row = new StackPanel
+                    {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        Spacing = 4
+                    };
+                    AutoFireButtonsPanel.Children.Add(row);
+                }
+
+                AutoFireButtonDefinition definition = profile.Buttons[i];
+                var button = new ToggleButton
+                {
+                    Content = GetAutoFireButtonLabel(profile.MappingSet, definition),
+                    IsChecked = selectedTargets.Contains(definition.TargetAction),
+                    Tag = definition.TargetAction,
+                    HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Center
+                };
+                button.Classes.Add("autofire");
+                button.Checked += OnAutoFireToggle;
+                button.Unchecked += OnAutoFireToggle;
+                row?.Children.Add(button);
+                _autoFireButtons.Add(button);
+            }
+        }
+        finally
+        {
+            _updatingAutoFireUi = false;
+        }
+
+        UpdateAutoFireMask();
+    }
+
+    private AutoFireProfile GetCurrentAutoFireProfile()
+    {
+        if (_core != null)
+            return GetAutoFireProfileForCore(_core);
+        if (!string.IsNullOrWhiteSpace(_romPath))
+            return GetAutoFireProfileForPath(_romPath);
+        bool useSixButtonPad = (PadType)Volatile.Read(ref _padTypeRaw) == PadType.SixButton;
+        return CreateMdFamilyAutoFireProfile("md", useSixButtonPad);
+    }
+
+    private AutoFireProfile GetAutoFireProfileForCore(IEmulatorCore core)
+    {
+        bool useSixButtonPad = (PadType)Volatile.Read(ref _padTypeRaw) == PadType.SixButton;
+        return core switch
+        {
+            PsxAdapter => new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons),
+            PceCdAdapter => new AutoFireProfile("pce", _inputMappings.Pce, s_autoFireTwoButtonButtons),
+            SnesAdapter => new AutoFireProfile("snes", _inputMappings.Snes, s_autoFireSnesButtons),
+            NesAdapter => new AutoFireProfile("nes", _inputMappings.Snes, s_autoFireTwoButtonButtons),
+            MdTracerAdapter md when md.IsMasterSystemMode => new AutoFireProfile("sms", _inputMappings.MdSms, s_autoFireTwoButtonButtons),
+            MdTracerAdapter => CreateMdFamilyAutoFireProfile("md", useSixButtonPad),
+            EutherDrive.Core.SegaCd.SegaCdAdapter => CreateMdFamilyAutoFireProfile("sega-cd", useSixButtonPad),
+            N64Adapter => CreateMdFamilyAutoFireProfile("n64", useSixButtonPad),
+            _ => GetAutoFireProfileForPath(_romPath)
+        };
+    }
+
+    private AutoFireProfile GetAutoFireProfileForPath(string? path)
+    {
+        bool useSixButtonPad = (PadType)Volatile.Read(ref _padTypeRaw) == PadType.SixButton;
+        if (string.IsNullOrWhiteSpace(path))
+            return CreateMdFamilyAutoFireProfile("md", useSixButtonPad);
+        if (IsPsxRom(path))
+            return new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons);
+        if (IsPceRom(path))
+            return new AutoFireProfile("pce", _inputMappings.Pce, s_autoFireTwoButtonButtons);
+        if (IsNesRom(path))
+            return new AutoFireProfile("nes", _inputMappings.Snes, s_autoFireTwoButtonButtons);
+        if (IsSnesRom(path))
+            return new AutoFireProfile("snes", _inputMappings.Snes, s_autoFireSnesButtons);
+        if (IsMasterSystemRomPath(path))
+            return new AutoFireProfile("sms", _inputMappings.MdSms, s_autoFireTwoButtonButtons);
+        return CreateMdFamilyAutoFireProfile("md", useSixButtonPad);
+    }
+
+    private AutoFireProfile CreateMdFamilyAutoFireProfile(string idBase, bool useSixButtonPad)
+        => new(
+            useSixButtonPad ? $"{idBase}-6" : $"{idBase}-3",
+            _inputMappings.MdSms,
+            useSixButtonPad ? s_autoFireMdSixButtonButtons : s_autoFireMdThreeButtonButtons);
+
+    private HashSet<string> GetAutoFireSelectionSet(string profileId)
+    {
+        if (!_autoFireSelectionsByProfile.TryGetValue(profileId, out HashSet<string>? selected))
+        {
+            selected = new HashSet<string>(StringComparer.Ordinal);
+            _autoFireSelectionsByProfile[profileId] = selected;
+        }
+
+        return selected;
+    }
+
+    private void StoreCurrentAutoFireSelections()
+    {
+        if (_autoFireButtons.Count == 0)
+            return;
+
+        HashSet<string> selectedTargets = GetAutoFireSelectionSet(_activeAutoFireProfileId);
+        selectedTargets.Clear();
+
+        foreach (ToggleButton button in _autoFireButtons)
+        {
+            if (button.IsChecked == true && button.Tag is string targetAction)
+                selectedTargets.Add(targetAction);
+        }
+    }
+
+    private static string GetAutoFireButtonLabel(InputMappingSet mappingSet, AutoFireButtonDefinition definition)
+    {
+        if (mappingSet.KeyboardMappings.TryGetValue(definition.DisplayAction, out Key key))
+            return FormatAutoFireKeyLabel(key);
+        return definition.DisplayAction;
+    }
+
+    private static string FormatAutoFireKeyLabel(Key key)
+    {
+        string label = key switch
+        {
+            Key.LeftShift or Key.RightShift => "Shift",
+            Key.Enter => "Enter",
+            Key.Space => "Space",
+            Key.OemPlus => "+",
+            Key.OemMinus => "-",
+            Key.OemComma => ",",
+            Key.OemPeriod => ".",
+            _ => key.ToString()
+        };
+
+        if (label.Length == 2 && label[0] == 'D' && char.IsDigit(label[1]))
+            return label[1].ToString();
+
+        return label;
+    }
+
+    private static int GetAutoFireBit(string action)
+        => action switch
+        {
+            "A" => AutoFireBitA,
+            "B" => AutoFireBitB,
+            "C" => AutoFireBitC,
+            "X" => AutoFireBitX,
+            "Y" => AutoFireBitY,
+            "Z" => AutoFireBitZ,
+            _ => 0
+        };
+
     private void UpdateAutoFireMask()
     {
         int mask = 0;
-        if (AutoFireAButton?.IsChecked == true)
-            mask |= 1;
-        if (AutoFireBButton?.IsChecked == true)
-            mask |= 2;
-        if (AutoFireCButton?.IsChecked == true)
-            mask |= 4;
+        StoreCurrentAutoFireSelections();
+        foreach (ToggleButton button in _autoFireButtons)
+        {
+            if (button.IsChecked == true && button.Tag is string action)
+                mask |= GetAutoFireBit(action);
+        }
         Volatile.Write(ref _autoFireMask, mask);
     }
 
@@ -1239,6 +1461,7 @@ public partial class MainWindow : Window
         RomPathText.Text = _romPath ?? files[0].Name;
         StatusText.Text = "ROM selected";
         AddRecentRom(_romPath);
+        RefreshAutoFireUi();
     }
 
     private async void OnSelectPsxBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -1675,6 +1898,7 @@ public partial class MainWindow : Window
             }
 
             _savestateViewModel.Refresh();
+            RefreshAutoFireUi();
             ApplyFrameRateModeToCore(resetIfRunning: false);
             StartAudioEngineIfEnabled();
             if (_audioEngine != null)
@@ -1855,6 +2079,7 @@ public partial class MainWindow : Window
                 RomPathText.Text = _romPath;
             StatusText.Text = "ROM selected (recent)";
             AddRecentRom(_romPath);
+            RefreshAutoFireUi();
         }
     }
 
@@ -3624,6 +3849,7 @@ public partial class MainWindow : Window
             NormalizeMappingSet(_inputMappings.Snes, includePause: false);
             NormalizeMappingSet(_inputMappings.Pce, includePause: false);
         }
+        RefreshAutoFireUi();
         UpdateYmResampleUi();
         UpdateZ80CyclesMultUi();
         UpdateSpeedLockUi();
@@ -4191,6 +4417,7 @@ public partial class MainWindow : Window
             // Save updated mappings
             _inputMappings = dialog.Mappings;
             SaveSettings();
+            RefreshAutoFireUi();
         }
     }
 
@@ -5173,12 +5400,18 @@ public partial class MainWindow : Window
         autoMask = Volatile.Read(ref _autoFireMask);
         autoRate = Volatile.Read(ref _autoFireRateHz);
         long nowTicks = Stopwatch.GetTimestamp();
-        if ((autoMask & 1) != 0 && a)
+        if ((autoMask & AutoFireBitA) != 0 && a)
             a = IsAutoFireActive(nowTicks, autoRate);
-        if ((autoMask & 2) != 0 && b)
+        if ((autoMask & AutoFireBitB) != 0 && b)
             b = IsAutoFireActive(nowTicks, autoRate);
-        if ((autoMask & 4) != 0 && c)
+        if ((autoMask & AutoFireBitC) != 0 && c)
             c = IsAutoFireActive(nowTicks, autoRate);
+        if ((autoMask & AutoFireBitX) != 0 && x)
+            x = IsAutoFireActive(nowTicks, autoRate);
+        if ((autoMask & AutoFireBitY) != 0 && y)
+            y = IsAutoFireActive(nowTicks, autoRate);
+        if ((autoMask & AutoFireBitZ) != 0 && z)
+            z = IsAutoFireActive(nowTicks, autoRate);
 
         MdTracerAdapter.SetPad2Mirror(_pad2MirrorEnabled);
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
@@ -5759,6 +5992,7 @@ public partial class MainWindow : Window
             ? (int)PadType.SixButton
             : (int)PadType.ThreeButton;
         Volatile.Write(ref _padTypeRaw, raw);
+        RefreshAutoFireUi();
     }
 
     private void StartEmuLoop()

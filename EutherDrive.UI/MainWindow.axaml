@@ -83,22 +83,25 @@
             </StackPanel>
           </Border>
           <Border Classes="panel" Padding="8,5" MinWidth="300">
-            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-              <TextBlock Classes="deck-label" Text="AUTOFIRE"/>
-              <ToggleButton Name="AutoFireAButton" Content="A" Width="32" IsChecked="False"
-                            Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
-              <ToggleButton Name="AutoFireBButton" Content="B" Width="32" IsChecked="False"
-                            Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
-              <ToggleButton Name="AutoFireCButton" Content="C" Width="32" IsChecked="False"
-                            Checked="OnAutoFireToggle" Unchecked="OnAutoFireToggle"/>
-              <Slider Name="AutoFireRateSlider"
-                      Minimum="5"
-                      Maximum="30"
-                      Width="90"
-                      Value="12"
-                      ValueChanged="OnAutoFireRateChanged"/>
-              <TextBlock Name="AutoFireRateText" Width="34" Text="12Hz" VerticalAlignment="Center"/>
-            </StackPanel>
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+              <TextBlock Grid.Column="0"
+                         Classes="deck-label"
+                         Text="AUTOFIRE"
+                         VerticalAlignment="Top"
+                         Margin="0,2,0,0"/>
+              <StackPanel Grid.Column="1" Spacing="4">
+                <StackPanel Name="AutoFireButtonsPanel" Spacing="4"/>
+                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <Slider Name="AutoFireRateSlider"
+                          Minimum="5"
+                          Maximum="30"
+                          Width="96"
+                          Value="12"
+                          ValueChanged="OnAutoFireRateChanged"/>
+                  <TextBlock Name="AutoFireRateText" Width="34" Text="12Hz" VerticalAlignment="Center"/>
+                </StackPanel>
+              </StackPanel>
+            </Grid>
           </Border>
           <Border Classes="panel" Padding="6,5">
             <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">

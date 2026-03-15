@@ -202,6 +202,15 @@
             <Setter Property="BorderBrush" Value="{StaticResource EdAccentBrush}" />
         </Style>
 
+        <Style Selector="ToggleButton.autofire">
+            <Setter Property="MinWidth" Value="36" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+        </Style>
+
         <Style Selector="ComboBox">
             <Setter Property="Background" Value="#101B26" />
             <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
