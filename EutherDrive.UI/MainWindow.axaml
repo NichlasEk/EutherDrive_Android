@@ -126,7 +126,7 @@
             <StackPanel Spacing="8" Width="240">
             <TextBlock Classes="deck-label" Text="MACHINE ROOM"/>
             <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
-            <CheckBox Content="Use 6-button pad" IsChecked="False" Name="SixButtonPadCheck"/>
+            <CheckBox Content="Use 6-button controller" IsChecked="False" Name="SixButtonPadCheck"/>
             <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
             <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
               <TextBlock Text="YM resample" VerticalAlignment="Center"/>

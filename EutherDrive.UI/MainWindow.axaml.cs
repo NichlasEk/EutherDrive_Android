@@ -1086,7 +1086,7 @@ public partial class MainWindow : Window
         return core switch
         {
             PsxAdapter => new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons),
-            PceCdAdapter => new AutoFireProfile("pce", _inputMappings.Pce, s_autoFireTwoButtonButtons),
+            PceCdAdapter => CreatePceAutoFireProfile(useSixButtonPad),
             SnesAdapter => new AutoFireProfile("snes", _inputMappings.Snes, s_autoFireSnesButtons),
             NesAdapter => new AutoFireProfile("nes", _inputMappings.Snes, s_autoFireTwoButtonButtons),
             MdTracerAdapter md when md.IsMasterSystemMode => new AutoFireProfile("sms", _inputMappings.MdSms, s_autoFireTwoButtonButtons),
@@ -1105,7 +1105,7 @@ public partial class MainWindow : Window
         if (IsPsxRom(path))
             return new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons);
         if (IsPceRom(path))
-            return new AutoFireProfile("pce", _inputMappings.Pce, s_autoFireTwoButtonButtons);
+            return CreatePceAutoFireProfile(useSixButtonPad);
         if (IsNesRom(path))
             return new AutoFireProfile("nes", _inputMappings.Snes, s_autoFireTwoButtonButtons);
         if (IsSnesRom(path))
@@ -1120,6 +1120,12 @@ public partial class MainWindow : Window
             useSixButtonPad ? $"{idBase}-6" : $"{idBase}-3",
             _inputMappings.MdSms,
             useSixButtonPad ? s_autoFireMdSixButtonButtons : s_autoFireMdThreeButtonButtons);
+
+    private AutoFireProfile CreatePceAutoFireProfile(bool useSixButtonPad)
+        => new(
+            useSixButtonPad ? "pce-6" : "pce-2",
+            _inputMappings.Pce,
+            useSixButtonPad ? s_autoFireMdSixButtonButtons : s_autoFireTwoButtonButtons);
 
     private HashSet<string> GetAutoFireSelectionSet(string profileId)
     {
@@ -3220,6 +3226,10 @@ public partial class MainWindow : Window
             set.KeyboardMappings["Right"] = Key.Right;
             set.KeyboardMappings["A"] = Key.Z;
             set.KeyboardMappings["B"] = Key.X;
+            set.KeyboardMappings["C"] = Key.C;
+            set.KeyboardMappings["X"] = Key.A;
+            set.KeyboardMappings["Y"] = Key.S;
+            set.KeyboardMappings["Z"] = Key.D;
             set.KeyboardMappings["Start"] = Key.Enter;
             set.KeyboardMappings["Select"] = Key.RightShift;
 
@@ -3229,6 +3239,10 @@ public partial class MainWindow : Window
             set.GamepadMappings["Right"] = GamepadButton.DPadRight;
             set.GamepadMappings["A"] = GamepadButton.B;
             set.GamepadMappings["B"] = GamepadButton.A;
+            set.GamepadMappings["C"] = GamepadButton.X;
+            set.GamepadMappings["X"] = GamepadButton.Y;
+            set.GamepadMappings["Y"] = GamepadButton.LeftShoulder;
+            set.GamepadMappings["Z"] = GamepadButton.RightShoulder;
             set.GamepadMappings["Start"] = GamepadButton.Start;
             set.GamepadMappings["Select"] = GamepadButton.Back;
         }
@@ -3310,7 +3324,7 @@ public partial class MainWindow : Window
 
             BuildMappingItems(Mappings.MdSms, _mdItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "Start", "Pause", "X", "Y", "Z", "Mode" });
             BuildMappingItems(Mappings.Snes, _snesItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R", "Start", "Select" });
-            BuildMappingItems(Mappings.Pce, _pceItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "Start", "Select" });
+            BuildMappingItems(Mappings.Pce, _pceItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "X", "Y", "Z", "Start", "Select" });
             BuildMappingItems(Mappings.Psx, _psxItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "X", "Y", "Z", "Start", "Mode" });
 
             BuildUi();
@@ -4339,8 +4353,8 @@ public partial class MainWindow : Window
             "Arrow keys: D-pad",
             "Z/X/C: A/B/C",
             "Enter: Start",
-            "Right Shift: Mode (optional)",
-            "A/S/D: X/Y/Z (6-button mode)"));
+            "Right Shift: Mode / Select",
+            "A/S/D: extra buttons in 6-button mode"));
 
         root.Children.Add(BuildControlsSection("Savestates",
             "F5: Save Slot 1",

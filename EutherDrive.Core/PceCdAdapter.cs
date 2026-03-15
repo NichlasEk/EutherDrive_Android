@@ -159,12 +159,17 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         bool mode,
         PadType padType)
     {
+        _bus.JoyPort.SetSixButtonMode(padType == PadType.SixButton);
         _bus.JoyPort.KeyState(PCEKEY.DPadUp, (short)(up ? 0 : 1));
         _bus.JoyPort.KeyState(PCEKEY.DPadDown, (short)(down ? 0 : 1));
         _bus.JoyPort.KeyState(PCEKEY.DPadLeft, (short)(left ? 0 : 1));
         _bus.JoyPort.KeyState(PCEKEY.DPadRight, (short)(right ? 0 : 1));
         _bus.JoyPort.KeyState(PCEKEY.A, (short)(a ? 0 : 1));
         _bus.JoyPort.KeyState(PCEKEY.B, (short)(b ? 0 : 1));
+        _bus.JoyPort.KeyState(PCEKEY.C, (short)(c ? 0 : 1));
+        _bus.JoyPort.KeyState(PCEKEY.X, (short)(x ? 0 : 1));
+        _bus.JoyPort.KeyState(PCEKEY.Y, (short)(y ? 0 : 1));
+        _bus.JoyPort.KeyState(PCEKEY.Z, (short)(z ? 0 : 1));
         _bus.JoyPort.KeyState(PCEKEY.Start, (short)(start ? 0 : 1));
         _bus.JoyPort.KeyState(PCEKEY.Select, (short)(mode ? 0 : 1));
     }
