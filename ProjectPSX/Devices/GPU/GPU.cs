@@ -175,7 +175,11 @@ namespace ProjectPSX.Devices {
                 for (int r = 0; r < 32; r++) {
                     for (int g = 0; g < 32; g++) {
                         for (int b = 0; b < 32; b++) {
-                            color1555to8888LUT[m << 15 | b << 10 | g << 5 | r] = m << 24 | r << 16 + 3 | g << 8 + 3| b << 3;
+                            int r8 = (r << 3) | (r >> 2);
+                            int g8 = (g << 3) | (g >> 2);
+                            int b8 = (b << 3) | (b >> 2);
+                            color1555to8888LUT[m << 15 | b << 10 | g << 5 | r] =
+                                (m << 24) | (r8 << 16) | (g8 << 8) | b8;
                         }
                     }
                 }
@@ -327,9 +331,9 @@ namespace ProjectPSX.Devices {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private uint readFromVRAM() {
-            ushort pixel0 = vram.GetPixelBGR555(vramTransfer.x & 0x3FF, vramTransfer.y & 0x1FF);
+            ushort pixel0 = vram1555.GetPixel(vramTransfer.x & 0x3FF, vramTransfer.y & 0x1FF);
             stepVramTransfer();
-            ushort pixel1 = vram.GetPixelBGR555(vramTransfer.x & 0x3FF, vramTransfer.y & 0x1FF);
+            ushort pixel1 = vram1555.GetPixel(vramTransfer.x & 0x3FF, vramTransfer.y & 0x1FF);
             stepVramTransfer();
 
             vramTransfer.halfWords -= 2;
@@ -449,16 +453,22 @@ namespace ProjectPSX.Devices {
             ushort h = (ushort)((hw >> 16) & 0x1FF);
 
             int color = color0.r << 16 | color0.g << 8 | color0.b;
+            ushort rawColor = PackColor1555(color);
 
             if(x + w <= 0x3FF && y + h <= 0x1FF) {
                 var vramSpan = new Span<int>(vram.Bits);
+                var vram1555Span = new Span<ushort>(vram1555.Bits);
                 for (int yPos = y; yPos < h + y; yPos++) {
                     vramSpan.Slice(x + (yPos * 1024), w).Fill(color);
+                    vram1555Span.Slice(x + (yPos * 1024), w).Fill(rawColor);
                 }
             } else {
                 for (int yPos = y; yPos < h + y; yPos++) {
                     for (int xPos = x; xPos < w + x; xPos++) {
-                        vram.SetPixel(xPos & 0x3FF, yPos & 0x1FF, color);
+                        int writeX = xPos & 0x3FF;
+                        int writeY = yPos & 0x1FF;
+                        vram.SetPixel(writeX, writeY, color);
+                        vram1555.SetPixel(writeX, writeY, rawColor);
                     }
                 }
             }
@@ -573,6 +583,7 @@ namespace ProjectPSX.Devices {
             int w1_row = orient2d(v2, v0, min) + bias1;
             int w2_row = orient2d(v0, v1, min) + bias2;
             int[] vramBits = vram.Bits;
+            ushort[] vram1555Bits = vram1555.Bits;
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
 
@@ -622,13 +633,14 @@ namespace ProjectPSX.Devices {
                         if (primitive.isTextured) {
                             int texelX = interpolate(w0 - bias0, w1 - bias1, w2 - bias2, t0.x, t1.x, t2.x, area);
                             int texelY = interpolate(w0 - bias0, w1 - bias1, w2 - bias2, t0.y, t1.y, t2.y, area);
-                            int texel = getTexel(maskTexelAxis(texelX, preMaskX, postMaskX), maskTexelAxis(texelY, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
-                            if (texel == 0) {
+                            ushort rawTexel = getTexelRaw(maskTexelAxis(texelX, preMaskX, postMaskX), maskTexelAxis(texelY, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
+                            if ((rawTexel & 0x7FFF) == 0) {
                                 w0 += A12;
                                 w1 += A20;
                                 w2 += A01;
                                 continue;
                             }
+                            int texel = color1555to8888LUT[rawTexel];
 
                             if (!primitive.isRawTextured) {
                                 color0.val = (uint)color;
@@ -652,6 +664,7 @@ namespace ProjectPSX.Devices {
                         color |= maskBits;
 
                         vramBits[pixelIndex] = color;
+                        vram1555Bits[pixelIndex] = PackColor1555(color);
                     }
                     // One step to the right
                     w0 += A12;
@@ -765,6 +778,7 @@ namespace ProjectPSX.Devices {
                     color |= maskWhileDrawing << 24;
 
                     vram.SetPixel(x, y, color);
+                    vram1555.SetPixel(x, y, PackColor1555(color));
                 }
 
                 numerator += shortest;
@@ -833,8 +847,8 @@ namespace ProjectPSX.Devices {
                 width = 16; heigth = 16;
             }
 
-            short y = signed11bit((uint)(yo + drawingYOffset));
-            short x = signed11bit((uint)(xo + drawingXOffset));
+            short y = (short)(yo + drawingYOffset);
+            short x = (short)(xo + drawingXOffset);
 
             Point2D origin;
             origin.x = x;
@@ -852,18 +866,23 @@ namespace ProjectPSX.Devices {
             int yOrigin = Math.Max(origin.y, drawingAreaTop);
             int width = Math.Min(size.x, drawingAreaRight + 1);
             int height = Math.Min(size.y, drawingAreaBottom + 1);
-
-            int uOrigin = texture.x + (xOrigin - origin.x);
-            int vOrigin = texture.y + (yOrigin - origin.y);
+            int rectWidth = size.x - origin.x;
+            int rectHeight = size.y - origin.y;
+            bool flipX = isTexturedRectangleXFlipped;
+            bool flipY = isTexturedRectangleYFlipped;
 
             int baseColor = GetRgbColor(bgrColor);
             int[] vramBits = vram.Bits;
+            ushort[] vram1555Bits = vram1555.Bits;
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
 
-            for (int y = yOrigin, v = vOrigin; y < height; y++, v++) {
+            for (int y = yOrigin; y < height; y++) {
                 int rowBase = y << 10;
-                for (int x = xOrigin, u = uOrigin; x < width; x++, u++) {
+                int sourceY = y - origin.y;
+                int v = texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY);
+
+                for (int x = xOrigin; x < width; x++) {
                     int pixelIndex = rowBase + x;
                     //Check background mask
                     int backColor = 0;
@@ -876,11 +895,13 @@ namespace ProjectPSX.Devices {
                     int color = baseColor;
 
                     if (primitive.isTextured) {
-                        //int texel = getTexel(u, v, clut, textureBase, depth);
-                        int texel = getTexel(maskTexelAxis(u, preMaskX, postMaskX),maskTexelAxis(v, preMaskY, postMaskY),primitive.clut, primitive.textureBase, primitive.depth);
-                        if (texel == 0) {
+                        int sourceX = x - origin.x;
+                        int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                        ushort rawTexel = getTexelRaw(maskTexelAxis(u, preMaskX, postMaskX), maskTexelAxis(v, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
+                        if ((rawTexel & 0x7FFF) == 0) {
                             continue;
                         }
+                        int texel = color1555to8888LUT[rawTexel];
 
                         if (!primitive.isRawTextured) {
                             color0.val = (uint)color;
@@ -904,6 +925,7 @@ namespace ProjectPSX.Devices {
                     color |= maskBits;
 
                     vramBits[pixelIndex] = color;
+                    vram1555Bits[pixelIndex] = PackColor1555(color);
                 }
 
             }
@@ -924,18 +946,28 @@ namespace ProjectPSX.Devices {
             ushort w = (ushort)((((wh & 0xFFFF) - 1) & 0x3FF) + 1);
             ushort h = (ushort)((((wh >> 16) - 1) & 0x1FF) + 1);
 
+            // VRAM blits must copy raw 16-bit VRAM words, not the expanded RGB view.
+            // Text/CLUT pages are stored as packed indices and get corrupted otherwise.
+            ushort[] copyBuffer = new ushort[w * h];
+            int copyIndex = 0;
             for (int yPos = 0; yPos < h; yPos++) {
                 for (int xPos = 0; xPos < w; xPos++) {
-                    int color = vram.GetPixelRGB888((sx + xPos) & 0x3FF, (sy + yPos) & 0x1FF);
+                    copyBuffer[copyIndex++] = vram1555.GetPixel((sx + xPos) & 0x3FF, (sy + yPos) & 0x1FF);
+                }
+            }
 
+            copyIndex = 0;
+            for (int yPos = 0; yPos < h; yPos++) {
+                for (int xPos = 0; xPos < w; xPos++) {
+                    ushort rawColor = copyBuffer[copyIndex++];
                     if (checkMaskBeforeDraw) {
-                        color0.val = (uint)vram.GetPixelRGB888((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF);
-                        if (color0.m != 0) continue;
+                        ushort destColor = vram1555.GetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF);
+                        if ((destColor & 0x8000) != 0) continue;
                     }
 
-                    color |= maskWhileDrawing << 24;
-
-                    vram.SetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF, color);
+                    rawColor |= (ushort)(maskWhileDrawing << 15);
+                    vram1555.SetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF, rawColor);
+                    vram.SetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF, color1555to8888LUT[rawColor]);
                 }
             }
         }
@@ -991,33 +1023,33 @@ namespace ProjectPSX.Devices {
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int getTexel(int x, int y, Point2D clut, Point2D textureBase, int depth) {
+        private ushort getTexelRaw(int x, int y, Point2D clut, Point2D textureBase, int depth) {
             if (depth == 0) {
-                return get4bppTexel(x, y, clut, textureBase);
+                return get4bppTexelRaw(x, y, clut, textureBase);
             } else if (depth == 1) {
-                return get8bppTexel(x, y, clut, textureBase);
+                return get8bppTexelRaw(x, y, clut, textureBase);
             } else {
-                return get16bppTexel(x, y, textureBase);
+                return get16bppTexelRaw(x, y, textureBase);
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int get4bppTexel(int x, int y, Point2D clut, Point2D textureBase) {
+        private ushort get4bppTexelRaw(int x, int y, Point2D clut, Point2D textureBase) {
             ushort index = vram1555.GetPixel(x / 4 + textureBase.x, y + textureBase.y);
             int p = (index >> (x & 3) * 4) & 0xF;
-            return vram.GetPixelRGB888(clut.x + p, clut.y);
+            return vram1555.GetPixel(clut.x + p, clut.y);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int get8bppTexel(int x, int y, Point2D clut, Point2D textureBase) {
+        private ushort get8bppTexelRaw(int x, int y, Point2D clut, Point2D textureBase) {
             ushort index = vram1555.GetPixel(x / 2 + textureBase.x, y + textureBase.y);
             int p = (index >> (x & 1) * 8) & 0xFF;
-            return vram.GetPixelRGB888(clut.x + p, clut.y);
+            return vram1555.GetPixel(clut.x + p, clut.y);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int get16bppTexel(int x, int y, Point2D textureBase) {
-            return vram.GetPixelRGB888(x + textureBase.x, y + textureBase.y);
+        private ushort get16bppTexelRaw(int x, int y, Point2D textureBase) {
+            return vram1555.GetPixel(x + textureBase.x, y + textureBase.y);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1258,6 +1290,15 @@ namespace ProjectPSX.Devices {
         private static byte clampToFF(int v) {
             if (v > 0xFF) return 0xFF;
             else return (byte)v;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ushort PackColor1555(int color) {
+            int m = (color >> 24) & 0xFF;
+            int r = ((color >> 16) & 0xFF) >> 3;
+            int g = ((color >> 8) & 0xFF) >> 3;
+            int b = (color & 0xFF) >> 3;
+            return (ushort)(((m != 0 ? 1 : 0) << 15) | (b << 10) | (g << 5) | r);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

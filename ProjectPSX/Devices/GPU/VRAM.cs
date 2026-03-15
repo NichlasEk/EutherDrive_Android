@@ -43,8 +43,8 @@ namespace ProjectPSX {
             ref int color = ref Unsafe.Add(ref r0, (nint)index);
 
             byte m = (byte)((color & 0xFF000000) >> 24);
-            byte r = (byte)((color & 0x00FF0000) >> 16 + 3);
-            byte g = (byte)((color & 0x0000FF00) >> 8 + 3);
+            byte r = (byte)(((color & 0x00FF0000) >> 16) >> 3);
+            byte g = (byte)(((color & 0x0000FF00) >> 8) >> 3);
             byte b = (byte)((color & 0x000000FF) >> 3);
 
             return (ushort)(m << 15 | b << 10 | g << 5 | r);
