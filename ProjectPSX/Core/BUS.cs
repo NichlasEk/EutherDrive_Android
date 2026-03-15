@@ -10,6 +10,7 @@ namespace ProjectPSX {
 public class BUS {
         private const uint Sio1StatusDefault = 0x0000_0805;
         private static readonly bool VerboseBusAccess = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1";
+        private const int SpuTickBatchCycles = 96;
 
         //Memory
         private unsafe byte* ramPtr = (byte*)Marshal.AllocHGlobal(2048 * 1024);
@@ -34,6 +35,7 @@ public class BUS {
         private MDEC mdec;
         private SPU spu;
         private Exp2 exp2;
+        private int spuCycleAccumulator;
 
         //temporary hardcoded bios/ex1
         private static string bios = "./SCPH1001.BIN"; //SCPH1001 //openbios
@@ -463,7 +465,12 @@ public class BUS {
             if (timers.tick(1, cycles)) interruptController.set(Interrupt.TIMER1);
             if (timers.tick(2, cycles)) interruptController.set(Interrupt.TIMER2);
             if (joypad.tick(cycles)) interruptController.set(Interrupt.CONTR);
-            if (spu.tick(cycles)) interruptController.set(Interrupt.SPU);
+
+            spuCycleAccumulator += cycles;
+            if (spuCycleAccumulator >= SpuTickBatchCycles) {
+                if (spu.tick(spuCycleAccumulator)) interruptController.set(Interrupt.SPU);
+                spuCycleAccumulator = 0;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
