@@ -18,6 +18,8 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
     public static string? BiosPath { get; set; }
     public static bool AnalogControllerEnabled { get; set; }
     public static bool FastLoadEnabled { get; set; }
+    public static FrameRateMode FrameRateMode { get; set; }
+    public static PsxVideoStandardMode VideoStandardMode { get; set; }
     public long? FrameCounter => Interlocked.Read(ref _frameCounter);
     private sealed class PsxHostWindow : IHostWindow
     {
@@ -200,6 +202,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
             Environment.SetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS", BiosPath);
         _host = new PsxHostWindow(this);
         _core = new ProjectPSX.ProjectPSX(_host, path, AnalogControllerEnabled, FastLoadEnabled);
+        ApplyConfiguredTimingToCore(_core);
         _frameCounter = 0;
         _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(File.ReadAllBytes(path)));
     }
@@ -278,6 +281,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
             StateBinarySerializer.ReadInto(reader, _core.GPU);
             if (_host != null)
                 _core.GPU.ResyncAfterLoad(_host);
+            ApplyConfiguredTimingToCore(_core);
             StateBinarySerializer.ReadInto(reader, _core.CDROM);
             StateBinarySerializer.ReadInto(reader, _core.JOYPAD);
             StateBinarySerializer.ReadInto(reader, _core.Timers);
@@ -385,6 +389,31 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
     {
         FastLoadEnabled = enabled;
         _core?.SetFastLoadEnabled(enabled);
+    }
+
+    public void SetFrameRateMode(FrameRateMode mode)
+    {
+        FrameRateMode = mode;
+        _core?.SetFrameRateOverrideHz(GetFrameRateOverrideHz(mode));
+    }
+
+    public void SetVideoStandardMode(PsxVideoStandardMode mode)
+    {
+        VideoStandardMode = mode;
+        _core?.SetVideoStandardOverride(GetVideoStandardOverride(mode));
+    }
+
+    public double GetTargetFps()
+    {
+        if (_core != null)
+            return _core.GetTargetFps();
+
+        return FrameRateMode switch
+        {
+            FrameRateMode.Hz50 => 50.0,
+            FrameRateMode.Hz60 => 60.0,
+            _ => VideoStandardMode == PsxVideoStandardMode.PAL ? 49.76 : 59.29
+        };
     }
 
     public bool TryGetDebugState(out string state)
@@ -597,6 +626,32 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
     private void RotateFrameBuffers()
     {
         (_presentFrameBuffer, _spareFrameBuffer, _workFrameBuffer) = (_workFrameBuffer, _presentFrameBuffer, _spareFrameBuffer);
+    }
+
+    private static double? GetFrameRateOverrideHz(FrameRateMode mode)
+    {
+        return mode switch
+        {
+            FrameRateMode.Hz50 => 50.0,
+            FrameRateMode.Hz60 => 60.0,
+            _ => null
+        };
+    }
+
+    private static bool? GetVideoStandardOverride(PsxVideoStandardMode mode)
+    {
+        return mode switch
+        {
+            PsxVideoStandardMode.PAL => true,
+            PsxVideoStandardMode.NTSC => false,
+            _ => null
+        };
+    }
+
+    private static void ApplyConfiguredTimingToCore(ProjectPSX.ProjectPSX core)
+    {
+        core.SetVideoStandardOverride(GetVideoStandardOverride(VideoStandardMode));
+        core.SetFrameRateOverrideHz(GetFrameRateOverrideHz(FrameRateMode));
     }
 
     private void PushAudio(byte[] samples)

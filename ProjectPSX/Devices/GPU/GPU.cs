@@ -103,6 +103,8 @@ namespace ProjectPSX.Devices {
         private byte horizontalResolution1;
         private bool isVerticalResolution480;
         private bool isPal;
+        [NonSerialized]
+        private bool? forcedVideoStandardPal;
         private bool is24BitDepth;
         private bool isVerticalInterlace;
         private bool isDisplayDisabled;
@@ -153,6 +155,13 @@ namespace ProjectPSX.Devices {
             mode = Mode.COMMAND;
             initColorTable();
             GP1_00_ResetGPU();
+        }
+
+        public bool IsPalMode => forcedVideoStandardPal ?? isPal;
+
+        public void SetVideoStandardOverride(bool? forcePal) {
+            forcedVideoStandardPal = forcePal;
+            ApplyVideoTiming();
         }
 
         public void ResyncAfterLoad(IHostWindow window) {
@@ -218,7 +227,7 @@ namespace ProjectPSX.Devices {
             int horizontalRes = resolutions[horizontalResolution2 << 2 | horizontalResolution1];
             int verticalRes = isVerticalResolution480 ? 480 : 240;
             return
-                $"gpu[hres={horizontalRes} vres={verticalRes} 24={(is24BitDepth ? 1 : 0)} pal={(isPal ? 1 : 0)} interlace={(isVerticalInterlace ? 1 : 0)} " +
+                $"gpu[hres={horizontalRes} vres={verticalRes} 24={(is24BitDepth ? 1 : 0)} pal={(IsPalMode ? 1 : 0)} interlace={(isVerticalInterlace ? 1 : 0)} " +
                 $"disp=({displayX1}-{displayX2},{displayY1}-{displayY2}) vram=({displayVRAMXStart},{displayVRAMYStart}) " +
                 $"scan=({scanLine},{videoCycles}) mode={mode}]";
         }
@@ -243,7 +252,7 @@ namespace ProjectPSX.Devices {
             GPUSTAT |= (uint)horizontalResolution2 << 16;
             GPUSTAT |= (uint)horizontalResolution1 << 17;
             GPUSTAT |= (uint)(isVerticalResolution480 ? 1 : 0) << 19;
-            GPUSTAT |= (uint)(isPal ? 1 : 0) << 20;
+            GPUSTAT |= (uint)(IsPalMode ? 1 : 0) << 20;
             GPUSTAT |= (uint)(is24BitDepth ? 1 : 0) << 21;
             GPUSTAT |= (uint)(isVerticalInterlace ? 1 : 0) << 22;
             GPUSTAT |= (uint)(isDisplayDisabled ? 1 : 0) << 23;
@@ -1219,14 +1228,18 @@ namespace ProjectPSX.Devices {
             isReverseFlag = (value & 0x80) != 0;
 
             isInterlaceField = isVerticalInterlace;
-
-            horizontalTiming = isPal ? 3406 : 3413;
-            verticalTiming = isPal ? 314 : 263;
+            ApplyVideoTiming();
 
             int horizontalRes = resolutions[horizontalResolution2 << 2 | horizontalResolution1];
             int verticalRes = isVerticalResolution480 ? 480 : 240;
 
             window.SetDisplayMode(horizontalRes, verticalRes, is24BitDepth);
+        }
+
+        private void ApplyVideoTiming() {
+            bool effectivePal = IsPalMode;
+            horizontalTiming = effectivePal ? 3406 : 3413;
+            verticalTiming = effectivePal ? 314 : 263;
         }
 
         private void GP1_09_TextureDisable(uint value) => isTextureDisabledAllowed = (value & 0x1) != 0;

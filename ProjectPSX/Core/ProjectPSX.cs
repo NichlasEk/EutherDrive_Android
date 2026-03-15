@@ -8,8 +8,8 @@ namespace ProjectPSX {
     public class ProjectPSX {
         const int PSX_MHZ = 33868800;
         const int MIPS_UNDERCLOCK = 3; //Testing: This compensates the ausence of HALT instruction on MIPS Architecture, may broke some games.
-        const int CYCLES_PER_FRAME = PSX_MHZ / 60;
-        const int CPU_CYCLES_PER_FRAME = CYCLES_PER_FRAME / MIPS_UNDERCLOCK;
+        const double FPS_PAL = PSX_MHZ / ((3406.0 * 314.0 * 7.0) / 11.0);
+        const double FPS_NTSC = PSX_MHZ / ((3413.0 * 263.0 * 7.0) / 11.0);
         private static readonly int BusTickBatchCycles = ParseBusTickBatchCycles();
 
         private CPU cpu;
@@ -26,6 +26,7 @@ namespace ProjectPSX {
         private InterruptController interruptController;
         private Exp2 exp2;
         private bool _psxBootBiosExited;
+        private double? _frameRateOverrideHz;
 
         public ProjectPSX(IHostWindow window, string diskFilename, bool analogControllerEnabled = true, bool fastLoadEnabled = false) {
             controller = new DigitalController(analogControllerEnabled);
@@ -55,7 +56,8 @@ namespace ProjectPSX {
         public void RunFrame() {
             int cpuCyclesThisFrame = 0;
             int pendingBusCycles = 0;
-            while (cpuCyclesThisFrame < CPU_CYCLES_PER_FRAME) {
+            int cpuCyclesPerFrame = GetCpuCyclesPerFrame();
+            while (cpuCyclesThisFrame < cpuCyclesPerFrame) {
                 int cpuCycles = cpu.Run();
                 cpuCyclesThisFrame += cpuCycles;
                 pendingBusCycles += cpuCycles * MIPS_UNDERCLOCK;
@@ -91,6 +93,23 @@ namespace ProjectPSX {
         public void SetAnalogControllerEnabled(bool enabled) => controller.SetAnalogControllerEnabled(enabled);
 
         public void SetFastLoadEnabled(bool enabled) => cdrom.SetFastLoadEnabled(enabled);
+
+        public void SetFrameRateOverrideHz(double? hz) {
+            if (hz.HasValue && hz.Value > 0) {
+                _frameRateOverrideHz = hz.Value;
+            } else {
+                _frameRateOverrideHz = null;
+            }
+        }
+
+        public void SetVideoStandardOverride(bool? forcePal) => gpu.SetVideoStandardOverride(forcePal);
+
+        public double GetTargetFps() {
+            if (_frameRateOverrideHz.HasValue)
+                return _frameRateOverrideHz.Value;
+
+            return gpu.IsPalMode ? FPS_PAL : FPS_NTSC;
+        }
 
         public void toggleDebug() {
             cpu.debug = !cpu.debug;
@@ -155,6 +174,10 @@ namespace ProjectPSX {
             return int.TryParse(raw, out int parsed) && parsed > 0
                 ? parsed
                 : fallback;
+        }
+
+        private int GetCpuCyclesPerFrame() {
+            return (int)Math.Round((PSX_MHZ / GetTargetFps()) / MIPS_UNDERCLOCK);
         }
 
     }

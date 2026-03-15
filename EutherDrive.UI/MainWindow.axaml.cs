@@ -267,6 +267,7 @@ public partial class MainWindow : Window
     private ConsoleRegion _defaultRegionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
     private FrameRateMode _frameRateMode = FrameRateMode.Auto;
+    private PsxVideoStandardMode _psxVideoStandardMode = PsxVideoStandardMode.Auto;
     private readonly Dictionary<string, ConsoleRegion> _romRegionOverrides = new(StringComparer.OrdinalIgnoreCase);
     private string? _romRegionKey;
     private readonly Dictionary<string, bool> _romSegaCdRamCartOverrides = new(StringComparer.OrdinalIgnoreCase);
@@ -279,6 +280,7 @@ public partial class MainWindow : Window
     private bool _segaCdOptionsUiUpdating;
     private bool _regionOverrideUpdating;
     private bool _frameRateUpdating;
+    private bool _psxVideoStandardUpdating;
     private const string SettingsFileName = "eutherdrive_settings.toml";
     private const string LegacyJsonSettingsFileName = "eutherdrive_settings.json";
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
@@ -614,13 +616,20 @@ public partial class MainWindow : Window
             return;
         if (FrameRateCombo?.SelectedItem is not ComboBoxItem item)
             return;
-        var tag = item.Tag?.ToString();
-        _frameRateMode = tag switch
-        {
-            "Hz50" => FrameRateMode.Hz50,
-            "Hz60" => FrameRateMode.Hz60,
-            _ => FrameRateMode.Auto
-        };
+        _frameRateMode = ParseFrameRateMode(item.Tag?.ToString());
+        UpdateFrameRateCombo();
+        ApplyFrameRateModeToCore(resetIfRunning: false);
+        SaveSettings();
+    }
+
+    private void OnPsxFrameRateChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_frameRateUpdating)
+            return;
+        if (PsxFrameRateCombo?.SelectedItem is not ComboBoxItem item)
+            return;
+        _frameRateMode = ParseFrameRateMode(item.Tag?.ToString());
+        UpdateFrameRateCombo();
         ApplyFrameRateModeToCore(resetIfRunning: false);
         SaveSettings();
     }
@@ -634,6 +643,8 @@ public partial class MainWindow : Window
             target = snes.GetTargetFps(RegionOverride);
         else if (_core is PceCdAdapter pce)
             target = pce.GetTargetFps();
+        else if (_core is PsxAdapter psx)
+            target = psx.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -1789,16 +1800,48 @@ public partial class MainWindow : Window
 
     private void ApplyFrameRateModeToCore(bool resetIfRunning)
     {
-        if (_core is not MdTracerAdapter adapter)
+        if (_core is MdTracerAdapter adapter)
+        {
+            adapter.SetFrameRateMode(_frameRateMode);
+            UpdateEmuTargetFps();
+            if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
+            {
+                adapter.Reset();
+                StatusText.Text = $"Frame rate set to {_frameRateMode}. Reset applied.";
+            }
+            return;
+        }
+
+        if (_core is PsxAdapter psx)
+        {
+            psx.SetFrameRateMode(_frameRateMode);
+            UpdateEmuTargetFps();
+        }
+    }
+
+    private void OnPsxVideoStandardChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_psxVideoStandardUpdating)
+            return;
+        if (PsxVideoStandardCombo?.SelectedItem is not ComboBoxItem item)
             return;
 
-        adapter.SetFrameRateMode(_frameRateMode);
-        UpdateEmuTargetFps();
-        if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
+        _psxVideoStandardMode = item.Tag?.ToString() switch
         {
-            adapter.Reset();
-            StatusText.Text = $"Frame rate set to {_frameRateMode}. Reset applied.";
+            "PAL" => PsxVideoStandardMode.PAL,
+            "NTSC" => PsxVideoStandardMode.NTSC,
+            _ => PsxVideoStandardMode.Auto
+        };
+
+        PsxAdapter.VideoStandardMode = _psxVideoStandardMode;
+        if (_core is PsxAdapter psx)
+        {
+            psx.SetVideoStandardMode(_psxVideoStandardMode);
+            UpdateEmuTargetFps();
         }
+
+        UpdatePsxVideoStandardCombo();
+        SaveSettings();
     }
 
     private void ApplyDefaultCpuCyclesPerLine()
@@ -2555,24 +2598,53 @@ public partial class MainWindow : Window
 
     private void UpdateFrameRateCombo()
     {
-        if (FrameRateCombo == null)
-            return;
-
         _frameRateUpdating = true;
         try
         {
-            foreach (var item in FrameRateCombo.Items.Cast<ComboBoxItem>())
-            {
-                if (string.Equals(item.Tag?.ToString(), _frameRateMode.ToString(), StringComparison.OrdinalIgnoreCase))
-                {
-                    FrameRateCombo.SelectedItem = item;
-                    return;
-                }
-            }
+            UpdateComboSelection(FrameRateCombo, _frameRateMode.ToString());
+            UpdateComboSelection(PsxFrameRateCombo, _frameRateMode.ToString());
         }
         finally
         {
             _frameRateUpdating = false;
+        }
+    }
+
+    private void UpdatePsxVideoStandardCombo()
+    {
+        _psxVideoStandardUpdating = true;
+        try
+        {
+            UpdateComboSelection(PsxVideoStandardCombo, _psxVideoStandardMode.ToString());
+        }
+        finally
+        {
+            _psxVideoStandardUpdating = false;
+        }
+    }
+
+    private static FrameRateMode ParseFrameRateMode(string? tag)
+    {
+        return tag switch
+        {
+            "Hz50" => FrameRateMode.Hz50,
+            "Hz60" => FrameRateMode.Hz60,
+            _ => FrameRateMode.Auto
+        };
+    }
+
+    private static void UpdateComboSelection(ComboBox? combo, string tag)
+    {
+        if (combo == null)
+            return;
+
+        foreach (var item in combo.Items.Cast<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase))
+            {
+                combo.SelectedItem = item;
+                return;
+            }
         }
     }
 
@@ -3110,6 +3182,7 @@ public partial class MainWindow : Window
         public string? PsxBiosPath { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
+        public PsxVideoStandardMode PsxVideoStandardMode { get; set; } = PsxVideoStandardMode.Auto;
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -3142,6 +3215,7 @@ public partial class MainWindow : Window
         public string? PsxBiosPath { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
+        public string? PsxVideoStandardMode { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -3234,6 +3308,9 @@ public partial class MainWindow : Window
         PsxAdapter.FastLoadEnabled = _psxFastLoadEnabled;
         if (PsxFastLoadCheck != null)
             PsxFastLoadCheck.IsChecked = _psxFastLoadEnabled;
+        _psxVideoStandardMode = settings.PsxVideoStandardMode;
+        PsxAdapter.VideoStandardMode = _psxVideoStandardMode;
+        UpdatePsxVideoStandardCombo();
         if (!string.IsNullOrWhiteSpace(settings.PceBiosPath))
         {
             _pceBiosPath = settings.PceBiosPath;
@@ -3304,6 +3381,7 @@ public partial class MainWindow : Window
 
         RegionOverride = _defaultRegionOverride;
         _frameRateMode = settings.FrameRateMode;
+        PsxAdapter.FrameRateMode = _frameRateMode;
         UpdateFrameRateCombo();
 
         // Input mappings
@@ -3379,6 +3457,7 @@ public partial class MainWindow : Window
             PsxBiosPath = _psxBiosPath,
             PsxAnalogControllerEnabled = _psxAnalogControllerEnabled,
             PsxFastLoadEnabled = _psxFastLoadEnabled,
+            PsxVideoStandardMode = _psxVideoStandardMode,
             MasterVolumePercent = _masterVolumePercent,
             PsgMixPercent = _psgMixPercent,
             YmMixPercent = _ymMixPercent,
@@ -3466,6 +3545,7 @@ public partial class MainWindow : Window
             PsxBiosPath = settings.PsxBiosPath,
             PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = settings.PsxFastLoadEnabled,
+            PsxVideoStandardMode = settings.PsxVideoStandardMode.ToString(),
             MasterVolumePercent = settings.MasterVolumePercent,
             PsgMixPercent = settings.PsgMixPercent,
             YmMixPercent = settings.YmMixPercent,
@@ -3573,6 +3653,8 @@ public partial class MainWindow : Window
             settings.DefaultRegionOverride = region;
         if (Enum.TryParse<FrameRateMode>(raw.FrameRateMode ?? string.Empty, out var frameRate))
             settings.FrameRateMode = frameRate;
+        if (Enum.TryParse<PsxVideoStandardMode>(raw.PsxVideoStandardMode ?? string.Empty, out var psxVideoStandard))
+            settings.PsxVideoStandardMode = psxVideoStandard;
 
         if (raw.RomRegionOverrides != null)
         {
@@ -6324,6 +6406,8 @@ public partial class MainWindow : Window
     {
         if (_core is MdTracerAdapter adapter)
             return adapter.GetTargetFps() * _speedScale;
+        if (_core is PsxAdapter psx)
+            return psx.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;
     }
 

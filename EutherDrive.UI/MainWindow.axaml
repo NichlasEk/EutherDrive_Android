@@ -277,6 +277,22 @@
                       IsChecked="False"
                       Checked="OnPsxFastLoadToggle"
                       Unchecked="OnPsxFastLoadToggle"/>
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Text="PSX video" VerticalAlignment="Center"/>
+              <ComboBox Name="PsxVideoStandardCombo" Width="120" SelectionChanged="OnPsxVideoStandardChanged">
+                <ComboBoxItem Tag="Auto">Auto</ComboBoxItem>
+                <ComboBoxItem Tag="PAL">PAL</ComboBoxItem>
+                <ComboBoxItem Tag="NTSC">NTSC</ComboBoxItem>
+              </ComboBox>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Text="PSX rate" VerticalAlignment="Center"/>
+              <ComboBox Name="PsxFrameRateCombo" Width="120" SelectionChanged="OnPsxFrameRateChanged">
+                <ComboBoxItem Tag="Auto">Auto</ComboBoxItem>
+                <ComboBoxItem Tag="Hz50">50 Hz</ComboBoxItem>
+                <ComboBoxItem Tag="Hz60">60 Hz</ComboBoxItem>
+              </ComboBox>
+            </StackPanel>
             <CheckBox Content="SMS overscan (debug)" IsChecked="False" Name="SmsOverscanCheck" Checked="OnSmsOverscanToggle" Unchecked="OnSmsOverscanToggle"/>
             <Separator/>
             <TextBlock Text="Perf" FontWeight="Bold"/>
