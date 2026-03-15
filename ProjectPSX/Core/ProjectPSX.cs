@@ -1,4 +1,5 @@
-﻿using ProjectPSX.Devices;
+﻿using System;
+using ProjectPSX.Devices;
 using ProjectPSX.Devices.CdRom;
 using ProjectPSX.Devices.Expansion;
 using ProjectPSX.Devices.Input;
@@ -9,6 +10,7 @@ namespace ProjectPSX {
         const int MIPS_UNDERCLOCK = 3; //Testing: This compensates the ausence of HALT instruction on MIPS Architecture, may broke some games.
         const int CYCLES_PER_FRAME = PSX_MHZ / 60;
         const int CPU_CYCLES_PER_FRAME = CYCLES_PER_FRAME / MIPS_UNDERCLOCK;
+        private static readonly int BusTickBatchCycles = ParseBusTickBatchCycles();
 
         private CPU cpu;
         private BUS bus;
@@ -52,16 +54,32 @@ namespace ProjectPSX {
 
         public void RunFrame() {
             int cpuCyclesThisFrame = 0;
+            int pendingBusCycles = 0;
             while (cpuCyclesThisFrame < CPU_CYCLES_PER_FRAME) {
                 int cpuCycles = cpu.Run();
                 cpuCyclesThisFrame += cpuCycles;
+                pendingBusCycles += cpuCycles * MIPS_UNDERCLOCK;
                 uint physicalPc = cpu.CurrentPC & 0x1FFF_FFFF;
                 if (!_psxBootBiosExited && physicalPc < 0x1FC0_0000 && physicalPc >= 0x0001_0000) {
                     _psxBootBiosExited = true;
                     cdrom.NotifyBiosExited();
                     cpu.NotifyBiosExited();
                 }
-                bus.tick(cpuCycles * MIPS_UNDERCLOCK);
+
+                bool busFlushed = false;
+                if (pendingBusCycles >= BusTickBatchCycles) {
+                    bus.tick(pendingBusCycles);
+                    pendingBusCycles = 0;
+                    busFlushed = true;
+                }
+
+                if (busFlushed || bus.interruptController.interruptPending()) {
+                    cpu.handleInterrupts();
+                }
+            }
+
+            if (pendingBusCycles > 0) {
+                bus.tick(pendingBusCycles);
                 cpu.handleInterrupts();
             }
         }
@@ -87,6 +105,18 @@ namespace ProjectPSX {
 
         public string DebugStartSummary() {
             return $"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} {cdrom.DebugSummary()}";
+        }
+
+        private static int ParseBusTickBatchCycles() {
+            const int fallback = 192;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BUS_TICK_BATCH_CYCLES");
+            if (string.IsNullOrWhiteSpace(raw)) {
+                return fallback;
+            }
+
+            return int.TryParse(raw, out int parsed) && parsed > 0
+                ? parsed
+                : fallback;
         }
 
     }
