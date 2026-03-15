@@ -2,7 +2,9 @@
 
 ## Grundregel
 
-För PCE-CD ska man nästan alltid tvinga kärnan:
+Nuvarande builds auto-detekterar normalt `PCE CD`, `PSX` och `Sega CD` via första datatracken i `.cue`.
+
+Tvinga ändå gärna kärnan när du vill eliminera all routing-osäkerhet under debug:
 
 ```bash
 EUTHERDRIVE_HEADLESS_CORE=pce

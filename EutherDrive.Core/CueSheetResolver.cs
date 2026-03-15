@@ -8,12 +8,92 @@ namespace EutherDrive.Core;
 
 public static class CueSheetResolver
 {
+    public sealed record CueTrackReference(
+        string FilePath,
+        string TrackType,
+        int TrackNumber,
+        int Index01Lba,
+        long FileOffsetBytes,
+        int SectorSize,
+        int DataOffset);
+
     private static readonly Regex s_trackNumberRegex = new(@"(?:track|trk|disc|disk|cd)\s*0*(\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static string? ResolveFirstReferencedPath(string cuePath)
     {
         foreach (string referencedFile in EnumerateReferencedFiles(cuePath))
             return ResolveReferencedPath(cuePath, referencedFile);
+
+        return null;
+    }
+
+    public static CueTrackReference? ResolveFirstDataTrack(string cuePath)
+    {
+        if (string.IsNullOrWhiteSpace(cuePath) || !File.Exists(cuePath))
+            return null;
+
+        string baseDir = Path.GetDirectoryName(cuePath) ?? string.Empty;
+        string? currentFilePath = null;
+        string? currentTrackType = null;
+        int currentTrackNumber = 0;
+        int? currentFileBaseLba = null;
+
+        foreach (string rawLine in File.ReadLines(cuePath))
+        {
+            string line = rawLine.Trim();
+            if (line.Length == 0)
+                continue;
+
+            if (line.StartsWith("FILE", StringComparison.OrdinalIgnoreCase))
+            {
+                string? referencedFile = TryExtractReferencedFile(line);
+                currentFilePath = string.IsNullOrWhiteSpace(referencedFile)
+                    ? null
+                    : ResolveReferencedPathFromDirectory(baseDir, referencedFile);
+                currentTrackType = null;
+                currentTrackNumber = 0;
+                currentFileBaseLba = null;
+                continue;
+            }
+
+            string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+                continue;
+
+            if (parts[0].Equals("TRACK", StringComparison.OrdinalIgnoreCase))
+            {
+                currentTrackType = parts.Length >= 3 ? parts[2] : null;
+                currentTrackNumber = parts.Length >= 2 && int.TryParse(parts[1], out int parsedTrackNumber)
+                    ? parsedTrackNumber
+                    : 0;
+                continue;
+            }
+
+            if (!parts[0].Equals("INDEX", StringComparison.OrdinalIgnoreCase)
+                || parts.Length < 3
+                || !string.Equals(parts[1], "01", StringComparison.OrdinalIgnoreCase)
+                || currentFilePath == null
+                || currentTrackType == null
+                || !TryParseMsf(parts[2], out int index01Lba))
+            {
+                continue;
+            }
+
+            currentFileBaseLba ??= index01Lba;
+            if (!LooksLikeDataTrackType(currentTrackType))
+                continue;
+
+            int sectorSize = GetSectorSize(currentTrackType);
+            long relativeLba = Math.Max(0, index01Lba - currentFileBaseLba.Value);
+            return new CueTrackReference(
+                currentFilePath,
+                currentTrackType,
+                currentTrackNumber,
+                index01Lba,
+                relativeLba * sectorSize,
+                sectorSize,
+                sectorSize == 2352 ? 16 : 0);
+        }
 
         return null;
     }
@@ -76,6 +156,38 @@ public static class CueSheetResolver
 
         string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return parts.Length >= 2 ? parts[1] : null;
+    }
+
+    private static bool TryParseMsf(string value, out int lba)
+    {
+        lba = 0;
+        string[] parts = value.Split(':', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3)
+            return false;
+
+        if (!int.TryParse(parts[0], out int minutes)
+            || !int.TryParse(parts[1], out int seconds)
+            || !int.TryParse(parts[2], out int frames))
+        {
+            return false;
+        }
+
+        lba = (minutes * 60 * 75) + (seconds * 75) + frames;
+        return true;
+    }
+
+    private static bool LooksLikeDataTrackType(string trackType)
+    {
+        return trackType.StartsWith("MODE", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int GetSectorSize(string trackType)
+    {
+        if (trackType.EndsWith("/2048", StringComparison.OrdinalIgnoreCase))
+            return 2048;
+        if (trackType.EndsWith("/2336", StringComparison.OrdinalIgnoreCase))
+            return 2336;
+        return 2352;
     }
 
     private static string? FindBestCandidate(string referencedFile, string[] candidates)

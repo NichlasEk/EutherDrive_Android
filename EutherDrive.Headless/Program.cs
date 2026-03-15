@@ -322,7 +322,8 @@ class Program
                 || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
             bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -1223,25 +1224,12 @@ class Program
 
     private static bool IsPsxRomPath(string path)
     {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
-        return ext is ".exe";
+        return OpticalDiscDetector.Detect(path) == OpticalDiscKind.Psx;
     }
 
     private static bool IsSegaCdRomPath(string path)
     {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext is ".cue" or ".iso" or ".bin" or ".chd")
-        {
-            try
-            {
-                return SegaCdDiscInfo.IsSegaCdDisc(path);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-        return false;
+        return OpticalDiscDetector.Detect(path) == OpticalDiscKind.SegaCd;
     }
 
     private static bool IsN64RomPath(string path)
@@ -1253,7 +1241,13 @@ class Program
     private static bool IsPceRomPath(string path)
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
-        return ext is ".pce" or ".cue";
+        if (ext == ".pce")
+            return true;
+        if (ext != ".cue")
+            return false;
+
+        OpticalDiscKind opticalDiscKind = OpticalDiscDetector.Detect(path);
+        return opticalDiscKind is OpticalDiscKind.PceCd or OpticalDiscKind.Unknown;
     }
 
     private static void DumpSnesFrame(SnesAdapter snes, string path, bool logStats)
@@ -1529,7 +1523,8 @@ class Program
                 || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
             bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
 
             if (useNes)
             {

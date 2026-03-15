@@ -515,10 +515,23 @@ public partial class MainWindow : Window
 
     private static IEmulatorCore CreateCoreForRom(string? path)
     {
-        if (!string.IsNullOrWhiteSpace(path) && IsSegaCdRom(path))
-            return new EutherDrive.Core.SegaCd.SegaCdAdapter();
-        if (!string.IsNullOrWhiteSpace(path) && IsPsxRom(path))
-            return new PsxAdapter();
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            OpticalDiscKind opticalDiscKind = OpticalDiscDetector.Detect(path);
+            switch (opticalDiscKind)
+            {
+                case OpticalDiscKind.SegaCd:
+                    return new EutherDrive.Core.SegaCd.SegaCdAdapter();
+                case OpticalDiscKind.Psx:
+                    return new PsxAdapter();
+                case OpticalDiscKind.PceCd:
+                    return new PceCdAdapter();
+            }
+
+            if (Path.GetExtension(path).Equals(".cue", StringComparison.OrdinalIgnoreCase))
+                return new PceCdAdapter();
+        }
+
         if (!string.IsNullOrWhiteSpace(path) && IsPceRom(path))
             return new PceCdAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsN64Rom(path))
@@ -532,37 +545,24 @@ public partial class MainWindow : Window
 
     private static bool IsPsxRom(string path)
     {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext is ".exe")
-            return true;
-        if (ext is ".cue")
-        {
-            string? cueTrack = CueSheetResolver.ResolveFirstReferencedPath(path);
-            if (!string.IsNullOrWhiteSpace(cueTrack) && ProbePsxSignature(cueTrack))
-                return true;
-            return false;
-        }
-        if (ext is ".bin" or ".img" or ".iso" or ".chd" or ".pbp")
-            return ProbePsxSignature(path);
-        return false;
+        return OpticalDiscDetector.Detect(path) == OpticalDiscKind.Psx;
     }
 
     private static bool IsSegaCdRom(string path)
     {
-        try
-        {
-            return EutherDrive.Core.SegaCd.SegaCdDiscInfo.IsSegaCdDisc(path);
-        }
-        catch
-        {
-            return false;
-        }
+        return OpticalDiscDetector.Detect(path) == OpticalDiscKind.SegaCd;
     }
 
     private static bool IsPceRom(string path)
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
-        return ext is ".pce" or ".cue";
+        if (ext == ".pce")
+            return true;
+        if (ext != ".cue")
+            return false;
+
+        OpticalDiscKind opticalDiscKind = OpticalDiscDetector.Detect(path);
+        return opticalDiscKind is OpticalDiscKind.PceCd or OpticalDiscKind.Unknown;
     }
 
     private static bool IsN64Rom(string path)
@@ -603,29 +603,6 @@ public partial class MainWindow : Window
             return false;
         }
         return false;
-    }
-
-    private static bool ProbePsxSignature(string path)
-    {
-        try
-        {
-            if (!File.Exists(path))
-                return false;
-            using var fs = File.OpenRead(path);
-            int readLen = (int)Math.Min(0x20000, fs.Length);
-            byte[] buf = new byte[readLen];
-            int n = fs.Read(buf, 0, readLen);
-            if (n <= 0)
-                return false;
-            string text = System.Text.Encoding.ASCII.GetString(buf, 0, n);
-            return text.Contains("PLAYSTATION", StringComparison.OrdinalIgnoreCase)
-                || text.Contains("PS-X EXE", StringComparison.OrdinalIgnoreCase)
-                || text.Contains("Sony Computer Entertainment", StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     private static bool IsNesRom(string path)
