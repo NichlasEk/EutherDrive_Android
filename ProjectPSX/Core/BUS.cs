@@ -391,6 +391,10 @@ public class BUS {
 
         public unsafe void loadEXE(String fileName) {
             byte[] exe = File.ReadAllBytes(fileName);
+            loadEXE(exe, fileName);
+        }
+
+        public unsafe void loadEXE(byte[] exe, string sourceLabel) {
             uint PC = Unsafe.As<byte, uint>(ref exe[0x10]);
             uint R28 = Unsafe.As<byte, uint>(ref exe[0x14]);
             uint R29 = Unsafe.As<byte, uint>(ref exe[0x30]);
@@ -399,7 +403,7 @@ public class BUS {
 
             uint DestAdress = Unsafe.As<byte, uint>(ref exe[0x18]);
 
-            Console.WriteLine($"SideLoading PSX EXE: PC {PC:x8} R28 {R28:x8} R29 {R29:x8} R30 {R30:x8}");
+            Console.WriteLine($"SideLoading PSX EXE ({sourceLabel}): PC {PC:x8} R28 {R28:x8} R29 {R29:x8} R30 {R30:x8}");
 
             uint physicalDest = DestAdress & 0x1F_FFFF;
             int copyLength = exe.Length - 0x800;

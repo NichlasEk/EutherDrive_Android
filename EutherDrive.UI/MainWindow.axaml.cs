@@ -227,6 +227,7 @@ public partial class MainWindow : Window
     private bool _smsOverscanEnabled;
     private bool _psxAnalogControllerEnabled;
     private bool _psxFastLoadEnabled;
+    private bool _psxSuperFastBootEnabled;
     private double _speedScale = 1.0;
     private long _emuFpsLastTicks;
     private int _emuFpsFrames;
@@ -1540,6 +1541,16 @@ public partial class MainWindow : Window
         PsxAdapter.FastLoadEnabled = _psxFastLoadEnabled;
         if (_core is PsxAdapter psx)
             psx.SetFastLoadEnabled(_psxFastLoadEnabled);
+        SaveSettings();
+    }
+
+    private void OnPsxSuperFastBootToggle(object? sender, RoutedEventArgs e)
+    {
+        _psxSuperFastBootEnabled = PsxSuperFastBootCheck?.IsChecked == true;
+        PsxAdapter.SuperFastBootEnabled = _psxSuperFastBootEnabled;
+        if (_core is PsxAdapter psx)
+            psx.SetSuperFastBootEnabled(_psxSuperFastBootEnabled);
+        StatusText.Text = "PSX superfast boot updated; reload disc to apply.";
         SaveSettings();
     }
 
@@ -3385,6 +3396,7 @@ public partial class MainWindow : Window
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
+        public bool PsxSuperFastBootEnabled { get; set; }
         public PsxVideoStandardMode PsxVideoStandardMode { get; set; } = PsxVideoStandardMode.Auto;
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
@@ -3419,6 +3431,7 @@ public partial class MainWindow : Window
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
+        public bool PsxSuperFastBootEnabled { get; set; }
         public string? PsxVideoStandardMode { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
@@ -3512,6 +3525,10 @@ public partial class MainWindow : Window
         PsxAdapter.FastLoadEnabled = _psxFastLoadEnabled;
         if (PsxFastLoadCheck != null)
             PsxFastLoadCheck.IsChecked = _psxFastLoadEnabled;
+        _psxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled;
+        PsxAdapter.SuperFastBootEnabled = _psxSuperFastBootEnabled;
+        if (PsxSuperFastBootCheck != null)
+            PsxSuperFastBootCheck.IsChecked = _psxSuperFastBootEnabled;
         _psxVideoStandardMode = settings.PsxVideoStandardMode;
         PsxAdapter.VideoStandardMode = _psxVideoStandardMode;
         UpdatePsxVideoStandardCombo();
@@ -3675,6 +3692,7 @@ public partial class MainWindow : Window
                 : null,
             PsxAnalogControllerEnabled = _psxAnalogControllerEnabled,
             PsxFastLoadEnabled = _psxFastLoadEnabled,
+            PsxSuperFastBootEnabled = _psxSuperFastBootEnabled,
             PsxVideoStandardMode = _psxVideoStandardMode,
             MasterVolumePercent = _masterVolumePercent,
             PsgMixPercent = _psgMixPercent,
@@ -3764,6 +3782,7 @@ public partial class MainWindow : Window
             SnesSpecialRomPaths = settings.SnesSpecialRomPaths,
             PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = settings.PsxFastLoadEnabled,
+            PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled,
             PsxVideoStandardMode = settings.PsxVideoStandardMode.ToString(),
             MasterVolumePercent = settings.MasterVolumePercent,
             PsgMixPercent = settings.PsgMixPercent,
@@ -3854,6 +3873,7 @@ public partial class MainWindow : Window
             PsxBiosPath = raw.PsxBiosPath,
             PsxAnalogControllerEnabled = raw.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = raw.PsxFastLoadEnabled,
+            PsxSuperFastBootEnabled = raw.PsxSuperFastBootEnabled,
             MasterVolumePercent = raw.MasterVolumePercent,
             PsgMixPercent = raw.PsgMixPercent,
             YmMixPercent = raw.YmMixPercent,

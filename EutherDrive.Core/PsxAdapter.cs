@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.IO;
@@ -14,10 +15,15 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
 {
     private const uint OpaqueBlackPixel = 0xFF000000u;
     private static readonly Vector<uint> OpaqueAlphaVector = new(0xFF000000u);
+    private const int SuperFastBootMaxTotalFrames = 2400;
+    private const int SuperFastBootMaxPostBiosFrames = 900;
+    private const int SuperFastBootRequiredVisibleFrames = 2;
+    private const int SuperFastBootMinVisibleSamples = 8;
 
     public static string? BiosPath { get; set; }
     public static bool AnalogControllerEnabled { get; set; }
     public static bool FastLoadEnabled { get; set; }
+    public static bool SuperFastBootEnabled { get; set; }
     public static FrameRateMode FrameRateMode { get; set; }
     public static PsxVideoStandardMode VideoStandardMode { get; set; }
     public long? FrameCounter => Interlocked.Read(ref _frameCounter);
@@ -187,6 +193,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
     private short[] _audioQueue = Array.Empty<short>();
     private int _audioQueuedCount;
     private short[] _audioReadBuffer = Array.Empty<short>();
+    private bool _dropAudioOutput;
     private float _masterVolumeScale = 1.0f;
     private long _frameCounter;
     private RomIdentity? _romIdentity;
@@ -201,8 +208,14 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
         if (!string.IsNullOrWhiteSpace(BiosPath))
             Environment.SetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS", BiosPath);
         _host = new PsxHostWindow(this);
-        _core = new ProjectPSX.ProjectPSX(_host, path, AnalogControllerEnabled, FastLoadEnabled);
+        bool superFastBoot = SuperFastBootEnabled && !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+        bool bootFastLoadEnabled = FastLoadEnabled || superFastBoot;
+        _core = new ProjectPSX.ProjectPSX(_host, path, AnalogControllerEnabled, bootFastLoadEnabled, superFastBoot);
         ApplyConfiguredTimingToCore(_core);
+        if (superFastBoot)
+            RunSuperFastBoot(_core);
+        if (bootFastLoadEnabled != FastLoadEnabled)
+            _core.SetFastLoadEnabled(FastLoadEnabled);
         _frameCounter = 0;
         _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(File.ReadAllBytes(path)));
     }
@@ -389,6 +402,11 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
     {
         FastLoadEnabled = enabled;
         _core?.SetFastLoadEnabled(enabled);
+    }
+
+    public void SetSuperFastBootEnabled(bool enabled)
+    {
+        SuperFastBootEnabled = enabled;
     }
 
     public void SetFrameRateMode(FrameRateMode mode)
@@ -654,8 +672,105 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
         core.SetFrameRateOverrideHz(GetFrameRateOverrideHz(FrameRateMode));
     }
 
+    private void RunSuperFastBoot(ProjectPSX.ProjectPSX core)
+    {
+        _dropAudioOutput = true;
+        bool visibleFrameObserved = false;
+        int visibleFrames = 0;
+        int postBiosFrames = 0;
+        int totalFrames = 0;
+        var stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            for (; totalFrames < SuperFastBootMaxTotalFrames; totalFrames++)
+            {
+                core.RunFrame();
+
+                if (core.BootBiosExited)
+                    postBiosFrames++;
+
+                if (core.BootBiosExited && HasMeaningfulWorkFrame())
+                {
+                    visibleFrames++;
+                    if (visibleFrames >= SuperFastBootRequiredVisibleFrames)
+                    {
+                        visibleFrameObserved = true;
+                        break;
+                    }
+                }
+                else
+                {
+                    visibleFrames = 0;
+                }
+
+                if (core.BootBiosExited && postBiosFrames >= SuperFastBootMaxPostBiosFrames)
+                    break;
+            }
+        }
+        finally
+        {
+            _dropAudioOutput = false;
+            lock (_audioLock)
+                _audioQueuedCount = 0;
+        }
+
+        PromoteWorkFrameToPresent();
+        Console.WriteLine(
+            $"[PSX-SUPERFAST] bootedFrames={totalFrames + 1} biosExited={(core.BootBiosExited ? 1 : 0)} " +
+            $"postBiosFrames={postBiosFrames} visible={(visibleFrameObserved ? 1 : 0)} elapsedMs={stopwatch.ElapsedMilliseconds}");
+    }
+
+    private bool HasMeaningfulWorkFrame()
+    {
+        int width = _workFrameWidth;
+        int height = _workFrameHeight;
+        int stride = _workFrameStride;
+        if (width <= 0 || height <= 0 || stride <= 0)
+            return false;
+
+        int byteLength = stride * height;
+        if (byteLength <= 0 || byteLength > _workFrameBuffer.Length)
+            return false;
+
+        ReadOnlySpan<uint> pixels = MemoryMarshal.Cast<byte, uint>(_workFrameBuffer.AsSpan(0, byteLength));
+        int pixelCount = width * height;
+        if (pixelCount <= 0 || pixels.Length < pixelCount)
+            return false;
+
+        int step = Math.Max(1, pixelCount / 4096);
+        int samples = 0;
+        int nonBlackSamples = 0;
+        for (int i = 0; i < pixelCount; i += step)
+        {
+            samples++;
+            if (pixels[i] != OpaqueBlackPixel)
+                nonBlackSamples++;
+        }
+
+        int threshold = Math.Max(SuperFastBootMinVisibleSamples, samples / 64);
+        return nonBlackSamples >= threshold;
+    }
+
+    private void PromoteWorkFrameToPresent()
+    {
+        if (_workFrameWidth <= 0 || _workFrameHeight <= 0 || _workFrameStride <= 0)
+            return;
+
+        lock (_frameLock)
+        {
+            RotateFrameBuffers();
+            _presentFrameWidth = _workFrameWidth;
+            _presentFrameHeight = _workFrameHeight;
+            _presentFrameStride = _workFrameStride;
+        }
+    }
+
     private void PushAudio(byte[] samples)
     {
+        if (_dropAudioOutput)
+            return;
+
         int sampleCount = samples.Length / 2;
         if (sampleCount == 0)
             return;

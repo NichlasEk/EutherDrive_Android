@@ -78,6 +78,7 @@ namespace ProjectPSX.Devices {
         private bool isLidOpen = false;
         private byte lastCommand;
         private bool fastLoadEnabled;
+        private bool superFastLoadEnabled;
         private readonly bool fastLoadAggressiveReads;
         private bool fastLoadBootUnlocked;
         private bool fastLoadLicensedDiscConfirmed;
@@ -190,6 +191,10 @@ namespace ProjectPSX.Devices {
             fastLoadLastSeekDistance = 0;
         }
 
+        public void SetSuperFastLoadEnabled(bool enabled) {
+            superFastLoadEnabled = enabled;
+        }
+
         private bool IsFastLoadActive => fastLoadEnabled && fastLoadBootUnlocked;
 
         public void NotifyBiosExited() {
@@ -211,8 +216,16 @@ namespace ProjectPSX.Devices {
             return Math.Max(2_048, delay / 8);
         }
 
+        private int ScaleQueuedDelay(int delay, bool allowFast) {
+            if (superFastLoadEnabled && !fastLoadBiosExited && delay > 1) {
+                return Math.Max(1_024, delay / 64);
+            }
+
+            return allowFast ? ScaleInterruptDelay(delay) : delay;
+        }
+
         private void QueueInterrupt(byte interrupt, int delay = 50_000, bool allowFast = false, byte[]? response = null) {
-            interruptQueue.Enqueue(new DelayedInterrupt(allowFast ? ScaleInterruptDelay(delay) : delay, interrupt, response));
+            interruptQueue.Enqueue(new DelayedInterrupt(ScaleQueuedDelay(delay, allowFast), interrupt, response));
         }
 
         private void QueueSingleByteInterrupt(byte interrupt, byte value, int delay = 50_000, bool allowFast = false) {
@@ -232,7 +245,7 @@ namespace ProjectPSX.Devices {
             bool beginFastLoadReadSession = false,
             int delay = 50_000,
             bool allowFast = false) {
-            var delayed = new DelayedInterrupt(allowFast ? ScaleInterruptDelay(delay) : delay, interrupt, new[] { responseValue }) {
+            var delayed = new DelayedInterrupt(ScaleQueuedDelay(delay, allowFast), interrupt, new[] { responseValue }) {
                 applyStateChange = true,
                 nextMode = nextMode,
                 nextReadLoc = nextReadLoc,
@@ -1076,7 +1089,7 @@ namespace ProjectPSX.Devices {
             }
 
             // Licensed: Mode2 INT3(stat)     INT2(02h, 00h, 20h, 00h, 53h, 43h, 45h, 4xh)
-            if (fastLoadEnabled) {
+            if (fastLoadEnabled || superFastLoadEnabled) {
                 fastLoadLicensedDiscConfirmed = true;
             }
             QueueInterrupt(

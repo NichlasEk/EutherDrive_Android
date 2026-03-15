@@ -28,7 +28,7 @@ namespace ProjectPSX {
         private bool _psxBootBiosExited;
         private double? _frameRateOverrideHz;
 
-        public ProjectPSX(IHostWindow window, string diskFilename, bool analogControllerEnabled = true, bool fastLoadEnabled = false) {
+        public ProjectPSX(IHostWindow window, string diskFilename, bool analogControllerEnabled = true, bool fastLoadEnabled = false, bool superFastLoadEnabled = false) {
             controller = new DigitalController(analogControllerEnabled);
             memoryCard = new MemoryCard();
 
@@ -39,6 +39,7 @@ namespace ProjectPSX {
             gpu = new GPU(window);
             cdrom = new CDROM(cd, spu);
             cdrom.SetFastLoadEnabled(fastLoadEnabled);
+            cdrom.SetSuperFastLoadEnabled(superFastLoadEnabled);
             joypad = new JOYPAD(controller, memoryCard);
             timers = new TIMERS();
             mdec = new MDEC();
@@ -50,6 +51,12 @@ namespace ProjectPSX {
             bus.loadBios();
             if (diskFilename.EndsWith(".exe")) {
                 bus.loadEXE(diskFilename);
+            } else if (superFastLoadEnabled) {
+                PsxDiscBootResolver.ResolvedExecutable resolvedExecutable = PsxDiscBootResolver.TryResolveExecutable(cd);
+                if (resolvedExecutable != null) {
+                    Console.WriteLine($"[PSX-SUPERFAST] Resolved {resolvedExecutable.BootPath} entry=0x{resolvedExecutable.EntryPoint:x8}");
+                    bus.loadEXE(resolvedExecutable.ExecutableBytes, $"disc:{resolvedExecutable.BootPath}");
+                }
             }
         }
 

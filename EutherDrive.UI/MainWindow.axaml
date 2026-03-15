@@ -278,6 +278,11 @@
                       IsChecked="False"
                       Checked="OnPsxFastLoadToggle"
                       Unchecked="OnPsxFastLoadToggle"/>
+            <CheckBox Name="PsxSuperFastBootCheck"
+                      Content="PSX superfast boot"
+                      IsChecked="False"
+                      Checked="OnPsxSuperFastBootToggle"
+                      Unchecked="OnPsxSuperFastBootToggle"/>
             <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
               <TextBlock Text="PSX video" VerticalAlignment="Center"/>
               <ComboBox Name="PsxVideoStandardCombo" Width="120" SelectionChanged="OnPsxVideoStandardChanged">
