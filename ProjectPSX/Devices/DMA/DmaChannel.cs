@@ -101,7 +101,14 @@ public sealed class DmaChannel : Channel {
             //    Console.WriteLine($"[DMA] Chopping Syncmode 0 not supported. DmaWindow: {choppingDMAWindowSize} CpuWindow: {choppingCPUWindowSize}");
             //}
 
-            blockCopy(blockSize == 0 ? 0x10_000 : blockSize);
+            uint transferWords;
+            if (channelNumber == 3 && transferDirection == 0 && blockSize == 0) {
+                transferWords = (uint)bus.GetCdDmaWordCount();
+            } else {
+                transferWords = blockSize == 0 ? 0x10_000 : blockSize;
+            }
+
+            blockCopy(transferWords);
             finishDMA();
 
         } else if (syncMode == 1) {

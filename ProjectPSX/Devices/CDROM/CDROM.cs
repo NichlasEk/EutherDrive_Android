@@ -47,8 +47,12 @@ namespace ProjectPSX.Devices {
         //0   CDDA(0 = Off, 1 = Allow to Read CD - DA Sectors; ignore missing EDC)
         private bool isDoubleSpeed;
         private bool isXAADPCM;
-        private bool isSectorSizeRAW;
-        private bool isIgnoreBit;
+        private enum TransferSizeMode {
+            Data2048,
+            Sector2328,
+            Sector2340
+        }
+        private TransferSizeMode transferSizeMode;
         private bool isXAFilter;
         private bool isReport;
         private bool isAutoPause;
@@ -123,15 +127,21 @@ namespace ProjectPSX.Devices {
         private Queue<DelayedInterrupt> interruptQueue = new Queue<DelayedInterrupt>();
         public bool HasPendingWork => mode != Mode.Idle || interruptQueue.Count != 0 || (IF & IE) != 0;
 
-        public class DelayedInterrupt {
+        private sealed class DelayedInterrupt {
             public int delay;
             public byte interrupt;
             public byte[]? response;
+            public bool applyStateChange;
+            public Mode nextMode;
+            public int nextReadLoc;
+            public byte nextStat;
+            public bool beginFastLoadReadSession;
 
             public DelayedInterrupt(int delay, byte interrupt, byte[]? response = null) {
                 this.delay = delay;
                 this.interrupt = interrupt;
                 this.response = response;
+                nextMode = Mode.Idle;
             }
         }
 
@@ -213,7 +223,35 @@ namespace ProjectPSX.Devices {
             QueueInterrupt(interrupt, delay, allowFast, response);
         }
 
+        private void QueueStatefulSingleByteInterrupt(
+            byte interrupt,
+            byte responseValue,
+            byte nextStat,
+            Mode nextMode,
+            int nextReadLoc,
+            bool beginFastLoadReadSession = false,
+            int delay = 50_000,
+            bool allowFast = false) {
+            var delayed = new DelayedInterrupt(allowFast ? ScaleInterruptDelay(delay) : delay, interrupt, new[] { responseValue }) {
+                applyStateChange = true,
+                nextMode = nextMode,
+                nextReadLoc = nextReadLoc,
+                nextStat = nextStat,
+                beginFastLoadReadSession = beginFastLoadReadSession,
+            };
+            interruptQueue.Enqueue(delayed);
+        }
+
         private void DeliverInterrupt(DelayedInterrupt delayedInterrupt) {
+            if (delayedInterrupt.applyStateChange) {
+                if (delayedInterrupt.beginFastLoadReadSession) {
+                    BeginFastLoadReadSession();
+                }
+                readLoc = delayedInterrupt.nextReadLoc;
+                STAT = delayedInterrupt.nextStat;
+                mode = delayedInterrupt.nextMode;
+            }
+
             if (delayedInterrupt.response is not null && delayedInterrupt.response.Length > 0) {
                 responseBuffer.EnqueueRange(delayedInterrupt.response);
             }
@@ -445,15 +483,17 @@ namespace ProjectPSX.Devices {
                     }
 
                     //If we arived here sector is supposed to be delivered to CPU so slice out sync and header based on flag
-                    if (!isSectorSizeRAW) {
-                        var dataSector = readSector.AsSpan().Slice(24, 0x800);
-                        lastReadSector.fillWith(dataSector);
-                    } else {
-                        var rawSector = readSector.AsSpan().Slice(12);
-                        lastReadSector.fillWith(rawSector);
+                    switch (transferSizeMode) {
+                        case TransferSizeMode.Sector2340:
+                            lastReadSector.fillWith(readSector.AsSpan().Slice(12, 2340));
+                            break;
+                        case TransferSizeMode.Sector2328:
+                            lastReadSector.fillWith(readSector.AsSpan().Slice(12, 2328));
+                            break;
+                        default:
+                            lastReadSector.fillWith(readSector.AsSpan().Slice(24, 0x800));
+                            break;
                     }
-                    transferReady = true;
-
                     if (fastLoadLastReadSector + 1 == deliveredSector) {
                         fastLoadSequentialReadSectors++;
                     } else {
@@ -587,6 +627,7 @@ namespace ProjectPSX.Devices {
                                 if (!transferActive && lastReadSector.hasLoadedData()) {
                                     currentSector.fillWith(lastReadSector.read());
                                     transferActive = true;
+                                    transferReady = true;
                                 }
                             } else {
                                 if (cdDebug) {
@@ -745,24 +786,22 @@ namespace ProjectPSX.Devices {
             //If theres a trackN param it seeks and plays from the start location of it
             CompleteFastLoadReadSession();
             int track = 0;
+            int targetReadLoc;
             if (parameterBuffer.Count > 0 && parameterBuffer.Peek() != 0) {
                 track = BcdToDec(parameterBuffer.Dequeue());
                 if (cd.isAudioCD()) {
-                    readLoc = seekLoc = cd.tracks[track - 1].lbaStart;
+                    targetReadLoc = cd.tracks[track - 1].lbaStart;
                 } else {
-                    readLoc = seekLoc = cd.tracks[track].lbaStart;
+                    targetReadLoc = cd.tracks[track].lbaStart;
                 }
                 //else it plays from the previously seekLoc and seeks if not done (actually not checking if already seeked)
             } else {
-                readLoc = seekLoc;
+                targetReadLoc = seekLoc;
             }
 
-            Console.WriteLine($"[CDROM] CDDA Play Triggered Track: {track} readLoc: {readLoc}");
-
-            STAT = 0x82;
-            mode = Mode.Play;
-
-            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
+            Console.WriteLine($"[CDROM] CDDA Play Triggered Track: {track} readLoc: {targetReadLoc}");
+            seekLoc = targetReadLoc;
+            QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, 0x82, 0x82, Mode.Play, targetReadLoc);
         }
 
         private void Cmd_06_ReadN() {
@@ -772,15 +811,8 @@ namespace ProjectPSX.Devices {
             }
 
             UnlockFastLoadAfterBootIfReady();
-            BeginFastLoadReadSession();
-            readLoc = seekLoc;
-
-            STAT = 0x2;
-            STAT |= 0x20;
-
-            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
-
-            mode = Mode.Read;
+            byte readStat = 0x22;
+            QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, readStat, readStat, Mode.Read, seekLoc, beginFastLoadReadSession: true);
         }
 
         private void Cmd_07_MotorOn() {
@@ -842,8 +874,10 @@ namespace ProjectPSX.Devices {
         private void Cmd_0E_SetMode() {
             //7   Speed(0 = Normal speed, 1 = Double speed)
             //6   XA - ADPCM(0 = Off, 1 = Send XA - ADPCM sectors to SPU Audio Input)
-            //5   Sector Size(0 = 800h = DataOnly, 1 = 924h = WholeSectorExceptSyncBytes)
-            //4   Ignore Bit(0 = Normal, 1 = Ignore Sector Size and Setloc position)
+            //5-4 Transfer size:
+            //    00 = 2048 bytes data only
+            //    01 = 2328 bytes starting after sync
+            //    10 = 2340 bytes starting after sync
             //3   XA - Filter(0 = Off, 1 = Process only XA - ADPCM sectors that match Setfilter)
             //2   Report(0 = Off, 1 = Enable Report - Interrupts for Audio Play)
             //1   AutoPause(0 = Off, 1 = Auto Pause upon End of Track); for Audio Play
@@ -854,8 +888,11 @@ namespace ProjectPSX.Devices {
 
             isDoubleSpeed = ((mode >> 7) & 0x1) == 1;
             isXAADPCM = ((mode >> 6) & 0x1) == 1;
-            isSectorSizeRAW = ((mode >> 5) & 0x1) == 1;
-            isIgnoreBit = ((mode >> 4) & 0x1) == 1;
+            transferSizeMode = (mode & 0x30) switch {
+                0x20 => TransferSizeMode.Sector2340,
+                0x10 => TransferSizeMode.Sector2328,
+                _ => TransferSizeMode.Data2048,
+            };
             isXAFilter = ((mode >> 3) & 0x1) == 1;
             isReport = ((mode >> 2) & 0x1) == 1;
             isAutoPause = ((mode >> 1) & 0x1) == 1;
@@ -967,12 +1004,7 @@ namespace ProjectPSX.Devices {
             UnlockFastLoadAfterBootIfReady();
             CompleteFastLoadReadSession();
             fastLoadLastSeekDistance = Math.Abs(seekLoc - readLoc);
-            readLoc = seekLoc;
-            STAT = 0x42; // seek
-
-            mode = Mode.Seek;
-
-            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
+            QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, 0x42, 0x42, Mode.Seek, seekLoc);
         }
 
         private void Cmd_16_SeekP() {
@@ -984,12 +1016,7 @@ namespace ProjectPSX.Devices {
             UnlockFastLoadAfterBootIfReady();
             CompleteFastLoadReadSession();
             fastLoadLastSeekDistance = Math.Abs(seekLoc - readLoc);
-            readLoc = seekLoc;
-            STAT = 0x42; // seek
-
-            mode = Mode.Seek;
-
-            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
+            QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, 0x42, 0x42, Mode.Seek, seekLoc);
         }
 
         private void Cmd_19_Test() {
@@ -1064,15 +1091,8 @@ namespace ProjectPSX.Devices {
             }
 
             UnlockFastLoadAfterBootIfReady();
-            BeginFastLoadReadSession();
-            readLoc = seekLoc;
-
-            STAT = 0x2;
-            STAT |= 0x20;
-
-            QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
-
-            mode = Mode.Read;
+            byte readStat = 0x22;
+            QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, readStat, readStat, Mode.Read, seekLoc, beginFastLoadReadSession: true);
         }
 
         private void Cmd_1E_ReadTOC() {
@@ -1120,8 +1140,28 @@ namespace ProjectPSX.Devices {
             return (byte)stat;
         }
 
+        public int GetDmaWordCount() => GetTransferBytesRemaining() >> 2;
+
+        private int GetTransferBytesRemaining() {
+            int remaining = currentSector.DebugSize - currentSector.DebugPointer;
+            if (remaining > 0) {
+                return remaining;
+            }
+
+            int loaded = lastReadSector.DebugSize;
+            if (loaded > 0) {
+                return loaded;
+            }
+
+            return transferSizeMode switch {
+                TransferSizeMode.Sector2340 => 2340,
+                TransferSizeMode.Sector2328 => 2328,
+                _ => 2048,
+            };
+        }
+
         private int transferBuffer_hasData() {
-            return transferReady ? 1 : 0;
+            return currentSector.hasData() ? 1 : 0;
         }
 
         private int parametterBuffer_isEmpty() {
@@ -1173,7 +1213,14 @@ namespace ProjectPSX.Devices {
         }
 
         public Span<uint> processDmaLoad(int size) {
-            var dma = currentSector.read(size);
+            int bytesRemaining = GetTransferBytesRemaining();
+            int wordsRequested = size == 0 ? (bytesRemaining >> 2) : size;
+            int wordsAvailable = bytesRemaining >> 2;
+            if (wordsRequested > wordsAvailable) {
+                wordsRequested = wordsAvailable;
+            }
+
+            var dma = currentSector.read(wordsRequested);
             if (!currentSector.hasData()) {
                 transferActive = false;
                 transferReady = false;

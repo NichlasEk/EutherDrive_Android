@@ -568,10 +568,13 @@ public class BUS {
         public unsafe void DmaFromCD(uint address, int size) {
             var dma = cdrom.processDmaLoad(size);
             uint physical = address & 0x1F_FFFC;
-            var dest = new Span<uint>(ramPtr + physical, size);
+            var dest = new Span<uint>(ramPtr + physical, dma.Length);
             dma.CopyTo(dest);
-            ramWriteObserver?.Invoke(physical, size * 4);
+            ramWriteObserver?.Invoke(physical, dma.Length * 4);
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetCdDmaWordCount() => cdrom.GetDmaWordCount();
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void DmaToMdecIn(Span<uint> dma) { //todo: actual process the whole array
