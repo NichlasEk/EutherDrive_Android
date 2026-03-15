@@ -61,8 +61,15 @@ namespace Ryu64.MIPS
         public readonly byte[] SP_SEMAPHORE_REG_W = new byte[4];
         public readonly byte[] SP_PC_REG_RW       = new byte[4];
 
-        public readonly byte[] DPC_STATUS_REG_R = new byte[4];
-        public readonly byte[] DPC_STATUS_REG_W = new byte[4];
+        public readonly byte[] DPC_START_REG_RW    = new byte[4];
+        public readonly byte[] DPC_END_REG_RW      = new byte[4];
+        public readonly byte[] DPC_CURRENT_REG_RW  = new byte[4];
+        public readonly byte[] DPC_STATUS_REG_R    = new byte[4];
+        public readonly byte[] DPC_STATUS_REG_W    = new byte[4];
+        public readonly byte[] DPC_CLOCK_REG_RW    = new byte[4];
+        public readonly byte[] DPC_BUFBUSY_REG_RW  = new byte[4];
+        public readonly byte[] DPC_PIPEBUSY_REG_RW = new byte[4];
+        public readonly byte[] DPC_TMEM_REG_RW     = new byte[4];
 
         public readonly byte[] MI_INIT_MODE_REG_R = new byte[4];
         public readonly byte[] MI_INIT_MODE_REG_W = new byte[4];
@@ -160,10 +167,21 @@ namespace Ryu64.MIPS
             MemoryMapList.Add(new MemEntry(0x04080000, 0x04080003, SP_PC_REG_RW,       SP_PC_REG_RW,        "SP_PC_REG"));
 
             // DPC Registers
-            MemoryMapList.Add(new MemEntry(0x0410000C, 0x0410000F, DPC_STATUS_REG_R, DPC_STATUS_REG_W, "DPC_STATUS_REG"));
+            MemoryMapList.Add(new MemEntry(0x04100000, 0x04100003, DPC_START_REG_RW, DPC_START_REG_RW, "DPC_START_REG",
+                null, DPC_START_WRITE_EVENT));
+            MemoryMapList.Add(new MemEntry(0x04100004, 0x04100007, DPC_END_REG_RW, DPC_END_REG_RW, "DPC_END_REG",
+                null, DPC_END_WRITE_EVENT));
+            MemoryMapList.Add(new MemEntry(0x04100008, 0x0410000B, DPC_CURRENT_REG_RW, DPC_CURRENT_REG_RW, "DPC_CURRENT_REG"));
+            MemoryMapList.Add(new MemEntry(0x0410000C, 0x0410000F, DPC_STATUS_REG_R, DPC_STATUS_REG_W, "DPC_STATUS_REG",
+                null, DPC_STATUS_WRITE_EVENT));
+            MemoryMapList.Add(new MemEntry(0x04100010, 0x04100013, DPC_CLOCK_REG_RW, DPC_CLOCK_REG_RW, "DPC_CLOCK_REG"));
+            MemoryMapList.Add(new MemEntry(0x04100014, 0x04100017, DPC_BUFBUSY_REG_RW, DPC_BUFBUSY_REG_RW, "DPC_BUFBUSY_REG"));
+            MemoryMapList.Add(new MemEntry(0x04100018, 0x0410001B, DPC_PIPEBUSY_REG_RW, DPC_PIPEBUSY_REG_RW, "DPC_PIPEBUSY_REG"));
+            MemoryMapList.Add(new MemEntry(0x0410001C, 0x0410001F, DPC_TMEM_REG_RW, DPC_TMEM_REG_RW, "DPC_TMEM_REG"));
 
             // MI Registers
-            MemoryMapList.Add(new MemEntry(0x04300000, 0x04300003, MI_INIT_MODE_REG_R, MI_INIT_MODE_REG_W, "MI_INIT_MODE_REG"));
+            MemoryMapList.Add(new MemEntry(0x04300000, 0x04300003, MI_INIT_MODE_REG_R, MI_INIT_MODE_REG_W, "MI_INIT_MODE_REG",
+                null, MI_INIT_MODE_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04300004, 0x04300007, MI_VERSION_REG_RW,  MI_VERSION_REG_RW,  "MI_VERSION_REG"));
             MemoryMapList.Add(new MemEntry(0x04300008, 0x0430000B, MI_INTR_REG_R,      null,               "MI_INTR_REG"));
             MemoryMapList.Add(new MemEntry(0x0430000C, 0x0430000F, MI_INTR_MASK_REG_R, MI_INTR_MASK_REG_W, "MI_INTR_MASK_REG",
@@ -254,7 +272,8 @@ namespace Ryu64.MIPS
             // Setup Environment
 
             // MI Registers
-            WriteUInt32Physical(0x04300004, 0x02020102); // MI_VERSION_REG (Same value as Pj64 1.4)
+            WriteBigEndianWord(MI_INIT_MODE_REG_R, 0x00000080); // MI_INIT_MODE_REG
+            WriteUInt32Physical(0x04300004, 0x01010101); // MI_VERSION_REG
 
             // VI Registers
             WriteUInt32Physical(0x0440000C, 1023); // VI_INTR_REG
@@ -329,6 +348,8 @@ namespace Ryu64.MIPS
             if (transferSize > 0)
                 DmaCopyPhysical(DramAddr, CartAddr, transferSize);
 
+            FinalizePiWriteTransfer(WriteLength, DramAddr, CartAddr, transferSize);
+
             PI_STATUS_REG_R[3] &= 0b1110; // Clear DMA Busy
             _piDmaBusy = false;
             SetMiPiInterrupt();
@@ -357,6 +378,8 @@ namespace Ryu64.MIPS
                 if (transferSize > 0)
                     DmaCopyPhysical(DramAddr, CartAddr, transferSize);
             }
+
+            FinalizePiReadTransfer(ReadLength, DramAddr, CartAddr);
 
             PI_STATUS_REG_R[3] &= 0b1110; // Clear DMA Busy
             _piDmaBusy = false;
@@ -394,6 +417,35 @@ namespace Ryu64.MIPS
                 return 0;
 
             return (int)maxSafe;
+        }
+
+        private void FinalizePiWriteTransfer(uint writeLengthReg, uint dramAddr, uint cartAddr, int transferSize)
+        {
+            // Match the common readback quirk from hardware/cen64 closely enough for boot code.
+            uint writeback = 0x7Fu;
+            if (transferSize > 0 && transferSize <= 8)
+                writeback = (uint)Math.Max(0, 0x7F - (int)(dramAddr & 7u));
+
+            WriteBigEndianWord(PI_WR_LEN_REG_RW, writeback);
+
+            uint advancedDram = (dramAddr + (uint)Math.Max(transferSize, 0) + 7u) & ~7u;
+            uint advancedCart = (cartAddr + (uint)Math.Max(transferSize, 0) + 1u) & ~1u;
+            WriteBigEndianWord(PI_DRAM_ADDR_REG_RW, advancedDram & 0x00FFFFFEu);
+            WriteBigEndianWord(PI_CART_ADDR_REG_RW, advancedCart & 0x1FFFFFFEu);
+        }
+
+        private void FinalizePiReadTransfer(uint readLengthReg, uint dramAddr, uint cartAddr)
+        {
+            uint requested = readLengthReg + 1u;
+            if ((dramAddr & 7u) != 0 && requested > (dramAddr & 7u))
+                requested -= dramAddr & 7u;
+
+            WriteBigEndianWord(PI_RD_LEN_REG_RW, 0x7Fu);
+
+            uint advancedDram = (dramAddr + requested + 7u) & ~7u;
+            uint advancedCart = (cartAddr + requested + 1u) & ~1u;
+            WriteBigEndianWord(PI_DRAM_ADDR_REG_RW, advancedDram & 0x00FFFFFEu);
+            WriteBigEndianWord(PI_CART_ADDR_REG_RW, advancedCart & 0x1FFFFFFEu);
         }
 
         public void PI_STATUS_WRITE_EVENT()
@@ -498,6 +550,37 @@ namespace Ryu64.MIPS
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine($"[N64IO] MI_INTR_MASK new=0x{mask:x8}");
+            }
+        }
+
+        public void MI_INIT_MODE_WRITE_EVENT()
+        {
+            uint value = ReadBigEndianWord(MI_INIT_MODE_REG_W);
+            uint mode = ReadBigEndianWord(MI_INIT_MODE_REG_R) & 0x000003FFu;
+
+            // Mirror the bring-up subset used by cen64:
+            // bit 7 clears INIT mode, bit 8 sets INIT mode,
+            // bit 9 clears EBUS test, bit 10 sets EBUS test,
+            // bit 11 clears DP interrupt, bit 12 clears RDRAM reg mode,
+            // bit 13 sets RDRAM reg mode.
+            if ((value & 0x00000080u) != 0) mode &= ~0x00000100u;
+            else if ((value & 0x00000100u) != 0) mode |= 0x00000100u;
+
+            if ((value & 0x00000200u) != 0) mode &= ~0x00000080u;
+            else if ((value & 0x00000400u) != 0) mode |= 0x00000080u;
+
+            if ((value & 0x00000800u) != 0)
+                ClearMiDpInterrupt();
+
+            if ((value & 0x00001000u) != 0) mode &= ~0x00000200u;
+            else if ((value & 0x00002000u) != 0) mode |= 0x00000200u;
+
+            WriteBigEndianWord(MI_INIT_MODE_REG_R, mode);
+
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] MI_INIT_MODE write value=0x{value:x8} new=0x{mode:x8} pc=0x{Registers.R4300.PC:x8}");
             }
         }
 
@@ -607,6 +690,26 @@ namespace Ryu64.MIPS
             if ((writeValue & 0x00000004u) != 0) status &= ~0x00000002u; // CLR_BROKE
             if ((writeValue & 0x00000008u) != 0) ClearMiSpInterrupt();    // CLR_INTR
             if ((writeValue & 0x00000010u) != 0) SetMiSpInterrupt();      // SET_INTR
+            if ((writeValue & 0x00000020u) != 0) status &= ~0x00000020u; // CLR_SSTEP
+            if ((writeValue & 0x00000040u) != 0) status |= 0x00000020u;  // SET_SSTEP
+            if ((writeValue & 0x00000080u) != 0) status &= ~0x00000040u; // CLR_INTR_BREAK
+            if ((writeValue & 0x00000100u) != 0) status |= 0x00000040u;  // SET_INTR_BREAK
+            if ((writeValue & 0x00000200u) != 0) status &= ~0x00000080u; // CLR_SIG0
+            if ((writeValue & 0x00000400u) != 0) status |= 0x00000080u;  // SET_SIG0
+            if ((writeValue & 0x00000800u) != 0) status &= ~0x00000100u; // CLR_SIG1
+            if ((writeValue & 0x00001000u) != 0) status |= 0x00000100u;  // SET_SIG1
+            if ((writeValue & 0x00002000u) != 0) status &= ~0x00000200u; // CLR_SIG2
+            if ((writeValue & 0x00004000u) != 0) status |= 0x00000200u;  // SET_SIG2
+            if ((writeValue & 0x00008000u) != 0) status &= ~0x00000400u; // CLR_SIG3
+            if ((writeValue & 0x00010000u) != 0) status |= 0x00000400u;  // SET_SIG3
+            if ((writeValue & 0x00020000u) != 0) status &= ~0x00000800u; // CLR_SIG4
+            if ((writeValue & 0x00040000u) != 0) status |= 0x00000800u;  // SET_SIG4
+            if ((writeValue & 0x00080000u) != 0) status &= ~0x00001000u; // CLR_SIG5
+            if ((writeValue & 0x00100000u) != 0) status |= 0x00001000u;  // SET_SIG5
+            if ((writeValue & 0x00200000u) != 0) status &= ~0x00002000u; // CLR_SIG6
+            if ((writeValue & 0x00400000u) != 0) status |= 0x00002000u;  // SET_SIG6
+            if ((writeValue & 0x00800000u) != 0) status &= ~0x00004000u; // CLR_SIG7
+            if ((writeValue & 0x01000000u) != 0) status |= 0x00004000u;  // SET_SIG7
 
             bool rspKicked = (writeValue & 0x00000001u) != 0;
             if (rspKicked && EnableRspTaskHleDispatcher)
@@ -638,6 +741,48 @@ namespace Ryu64.MIPS
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine($"[N64IO] SP_STATUS new=0x{status:x8}");
+            }
+        }
+
+        public void DPC_START_WRITE_EVENT()
+        {
+            uint value = ReadBigEndianWord(DPC_START_REG_RW);
+            WriteBigEndianWord(DPC_START_REG_RW, value);
+            WriteBigEndianWord(DPC_CURRENT_REG_RW, value);
+        }
+
+        public void DPC_END_WRITE_EVENT()
+        {
+            uint value = ReadBigEndianWord(DPC_END_REG_RW);
+            WriteBigEndianWord(DPC_END_REG_RW, value);
+
+            // Minimal bring-up behavior: latch the list bounds and mark the DP list as consumed.
+            // Real command execution still requires an RDP implementation.
+            WriteBigEndianWord(DPC_CURRENT_REG_RW, value);
+
+            uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
+            status &= ~0x00000600u; // clear pipe/buf busy
+            WriteBigEndianWord(DPC_STATUS_REG_R, status);
+        }
+
+        public void DPC_STATUS_WRITE_EVENT()
+        {
+            uint value = ReadBigEndianWord(DPC_STATUS_REG_W);
+            uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
+
+            if ((value & 0x00000001u) != 0) status &= ~0x00000001u; // CLR_XBUS_DMEM_DMA
+            else if ((value & 0x00000002u) != 0) status |= 0x00000001u; // SET_XBUS_DMEM_DMA
+
+            if ((value & 0x00000004u) != 0) status &= ~0x00000002u; // CLR_FREEZE
+            if ((value & 0x00000008u) != 0) status &= ~0x00000004u; // CLR_FLUSH
+            else if ((value & 0x00000010u) != 0) status |= 0x00000004u; // SET_FLUSH
+
+            WriteBigEndianWord(DPC_STATUS_REG_R, status);
+
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] DPC_STATUS write value=0x{value:x8} new=0x{status:x8} pc=0x{Registers.R4300.PC:x8}");
             }
         }
 
@@ -844,6 +989,12 @@ namespace Ryu64.MIPS
         {
             const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
             MI_INTR_REG_R[3] |= MiDpIntrBit;
+        }
+
+        private void ClearMiDpInterrupt()
+        {
+            const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
+            MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiDpIntrBit);
         }
 
         public void VI_CURRENT_WRITE_EVENT()
@@ -1151,9 +1302,9 @@ namespace Ryu64.MIPS
 
             // Bring-up fallback: allow unknown SI alias offsets to behave as RAM-like mirrors
             // instead of OpenBus to avoid lockups in early exception/controller loops.
-            if (index <= 0x0481FFFF)
+            if (index <= 0x048FFFFF)
             {
-                entry = new MemEntry(0x04800000, 0x0481FFFF, SI_MIRROR_RAM, SI_MIRROR_RAM, "SI_MIRROR_RAM");
+                entry = new MemEntry(0x04800000, 0x048FFFFF, SI_MIRROR_RAM, SI_MIRROR_RAM, "SI_MIRROR_RAM");
                 return true;
             }
 

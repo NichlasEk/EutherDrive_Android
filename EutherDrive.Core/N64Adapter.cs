@@ -34,6 +34,9 @@ public sealed class N64Adapter : IEmulatorCore
     private bool? _swap5551BytesDecision;
     private readonly ulong _targetCyclesPerRunFrame = ReadUlongEnv("EUTHERDRIVE_N64_TARGET_CYCLES_PER_RUNFRAME", 300_000);
     private readonly int _runFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_RUNFRAME_WAIT_MS", 12);
+    private readonly ulong _bringupTargetCyclesPerRunFrame = ReadUlongEnv("EUTHERDRIVE_N64_BRINGUP_TARGET_CYCLES_PER_RUNFRAME", 8_000_000);
+    private readonly int _bringupRunFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_BRINGUP_RUNFRAME_WAIT_MS", 20000);
+    private readonly long _bringupFrameLimit = ReadLongEnv("EUTHERDRIVE_N64_BRINGUP_FRAME_LIMIT", 120);
 
     ~N64Adapter()
     {
@@ -267,16 +270,29 @@ public sealed class N64Adapter : IEmulatorCore
 
     private void WaitForCpuProgress()
     {
-        if (_targetCyclesPerRunFrame == 0 || _runFrameWaitMs <= 0)
+        ulong targetCyclesPerFrame = _targetCyclesPerRunFrame;
+        int runFrameWaitMs = _runFrameWaitMs;
+
+        bool inBringup = (_runFrameCount == 1 || _noFramebufferCount > 0)
+            && _runFrameCount <= _bringupFrameLimit;
+        if (inBringup)
+        {
+            if (_bringupTargetCyclesPerRunFrame > targetCyclesPerFrame)
+                targetCyclesPerFrame = _bringupTargetCyclesPerRunFrame;
+            if (_bringupRunFrameWaitMs > runFrameWaitMs)
+                runFrameWaitMs = _bringupRunFrameWaitMs;
+        }
+
+        if (targetCyclesPerFrame == 0 || runFrameWaitMs <= 0)
             return;
 
         ulong startCycles = _core.GetCycleCounter();
-        ulong targetCycles = startCycles + _targetCyclesPerRunFrame;
+        ulong targetCycles = startCycles + targetCyclesPerFrame;
         var sw = Stopwatch.StartNew();
 
         while (_core.GetCycleCounter() < targetCycles)
         {
-            if (sw.ElapsedMilliseconds >= _runFrameWaitMs)
+            if (sw.ElapsedMilliseconds >= runFrameWaitMs)
                 break;
 
             if (sw.ElapsedMilliseconds == 0)
@@ -290,7 +306,7 @@ public sealed class N64Adapter : IEmulatorCore
             ulong endCycles = _core.GetCycleCounter();
             ulong deltaCycles = endCycles >= startCycles ? endCycles - startCycles : 0;
             Console.WriteLine(
-                $"[N64Adapter] RunFrame pacing: frame={_runFrameCount} cycles+={deltaCycles} target={_targetCyclesPerRunFrame} waitMs={sw.ElapsedMilliseconds}/{_runFrameWaitMs}");
+                $"[N64Adapter] RunFrame pacing: frame={_runFrameCount} cycles+={deltaCycles} target={targetCyclesPerFrame} waitMs={sw.ElapsedMilliseconds}/{runFrameWaitMs} bringup={inBringup}");
         }
     }
 
@@ -306,6 +322,14 @@ public sealed class N64Adapter : IEmulatorCore
     {
         string? raw = Environment.GetEnvironmentVariable(name);
         if (ulong.TryParse(raw, out ulong value))
+            return value;
+        return fallback;
+    }
+
+    private static long ReadLongEnv(string name, long fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (long.TryParse(raw, out long value))
             return value;
         return fallback;
     }

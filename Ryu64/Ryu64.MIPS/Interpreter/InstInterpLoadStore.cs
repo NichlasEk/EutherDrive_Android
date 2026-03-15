@@ -156,6 +156,7 @@
                     if ((alt & 0xE0000000u) == 0x80000000u)
                         value = unchecked((int)alt);
                 }
+
             }
 
             Registers.R4300.Reg[Desc.op2] = unchecked((ulong)(long)value);

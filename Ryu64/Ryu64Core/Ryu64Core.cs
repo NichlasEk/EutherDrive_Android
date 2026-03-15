@@ -13,7 +13,7 @@ namespace Ryu64Core
         private const uint ViVStartReg = 0xA4400028;
         private const int RdramSizeBytes = 8 * 1024 * 1024;
         private static readonly bool EnableFramebufferOriginScanFallback =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FB_SCAN_FALLBACK"), "1", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FB_SCAN_FALLBACK"), "0", StringComparison.Ordinal);
 
         private const uint AiDramAddrReg = 0xA4500000;
         private const uint AiLenReg = 0xA4500004;
@@ -247,8 +247,8 @@ namespace Ryu64Core
                     return false;
                 }
 
-                // Optional bring-up fallback: some paths write obviously invalid VI origins
-                // (for example 0x0000027f). Disabled by default to avoid masking core bugs.
+                // Bring-up fallback: some paths still produce obviously invalid VI origins
+                // (for example 0x0000027f). Scan RDRAM for a stronger framebuffer candidate.
                 if (EnableFramebufferOriginScanFallback
                     && origin < 0x00001000u
                     && bytesPerPixel > 0)
@@ -482,8 +482,22 @@ namespace Ryu64Core
                 }
             }
 
-            // Only replace VI origin when fallback is clearly stronger.
-            if (bestOrigin != viOrigin && bestScore < viScore + 80)
+            // Refine around the strongest coarse hit with smaller alignment steps.
+            uint refineStart = bestOrigin >= 0x4000u ? bestOrigin - 0x4000u : 0x001000u;
+            uint refineEnd = Math.Min((uint)(RdramSizeBytes - bufferSize), bestOrigin + 0x4000u);
+            for (uint candidate = refineStart; candidate <= refineEnd; candidate += 0x200u)
+            {
+                int score = ScoreFramebufferCandidate(candidate, width, height, bytesPerPixel);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestOrigin = candidate;
+                }
+            }
+
+            // When the VI-provided origin is obviously bogus, accept a smaller margin.
+            int requiredMargin = viOrigin < 0x00001000u ? 24 : 80;
+            if (bestOrigin != viOrigin && bestScore < viScore + requiredMargin)
                 return viOrigin;
 
             return bestOrigin;
