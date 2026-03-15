@@ -71,6 +71,7 @@ namespace ProjectPSX {
         }
 
         private int ackCounter;
+        public bool HasPendingWork => transferActive || ackCounter > 0 || interruptRequest;
 
         public bool tick(int cycles) {
             if (transferActive) {

@@ -456,15 +456,14 @@ public class BUS {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void tick(int cycles) {
             if (gpu.tick(cycles)) interruptController.set(Interrupt.VBLANK);
-            if (cdrom.tick(cycles)) interruptController.set(Interrupt.CDROM);
-            if (dma.tick(cycles)) interruptController.set(Interrupt.DMA);
+            if (cdrom.HasPendingWork && cdrom.tick(cycles)) interruptController.set(Interrupt.CDROM);
+            if (dma.HasPendingWork && dma.tick(cycles)) interruptController.set(Interrupt.DMA);
 
-            timers.syncGPU(gpu.getBlanksAndDot());
-
-            if (timers.tick(0, cycles)) interruptController.set(Interrupt.TIMER0);
-            if (timers.tick(1, cycles)) interruptController.set(Interrupt.TIMER1);
-            if (timers.tick(2, cycles)) interruptController.set(Interrupt.TIMER2);
-            if (joypad.tick(cycles)) interruptController.set(Interrupt.CONTR);
+            uint timerInterrupts = timers.tickAll(gpu.getBlanksAndDot(), cycles);
+            if ((timerInterrupts & 0x1) != 0) interruptController.set(Interrupt.TIMER0);
+            if ((timerInterrupts & 0x2) != 0) interruptController.set(Interrupt.TIMER1);
+            if ((timerInterrupts & 0x4) != 0) interruptController.set(Interrupt.TIMER2);
+            if (joypad.HasPendingWork && joypad.tick(cycles)) interruptController.set(Interrupt.CONTR);
 
             spuCycleAccumulator += cycles;
             if (spuCycleAccumulator >= SpuTickBatchCycles) {

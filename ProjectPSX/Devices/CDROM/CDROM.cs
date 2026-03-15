@@ -117,6 +117,7 @@ namespace ProjectPSX.Devices {
 
         private int counter;
         private Queue<DelayedInterrupt> interruptQueue = new Queue<DelayedInterrupt>();
+        public bool HasPendingWork => mode != Mode.Idle || interruptQueue.Count != 0 || (IF & IE) != 0;
 
         public class DelayedInterrupt {
             public int delay;

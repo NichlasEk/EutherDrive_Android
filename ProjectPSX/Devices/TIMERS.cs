@@ -40,6 +40,17 @@ namespace ProjectPSX.Devices {
             timer[1].syncGPU(sync);
         }
 
+        public uint tickAll((int dotDiv, bool hblank, bool vblank) sync, int cycles) {
+            timer[0].syncGPU(sync);
+            timer[1].syncGPU(sync);
+
+            uint interrupts = 0;
+            if (timer[0].tick(cycles)) interrupts |= 1u << 0;
+            if (timer[1].tick(cycles)) interrupts |= 1u << 1;
+            if (timer[2].tick(cycles)) interrupts |= 1u << 2;
+            return interrupts;
+        }
+
         public class TIMER {
             private int timerNumber;
 

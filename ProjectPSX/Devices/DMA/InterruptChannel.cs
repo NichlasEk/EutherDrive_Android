@@ -14,6 +14,7 @@ public sealed class InterruptChannel : Channel {
     private bool masterFlag;
 
     private bool edgeInterruptTrigger;
+    public bool HasPendingInterrupt => edgeInterruptTrigger;
 
     public InterruptChannel() {
         control = 0x07654321;
