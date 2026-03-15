@@ -155,6 +155,20 @@ namespace ProjectPSX.Devices {
             GP1_00_ResetGPU();
         }
 
+        public void ResyncAfterLoad(IHostWindow window) {
+            this.window = window;
+            if (color1555to8888LUT == null || color1555to8888LUT.Length != ushort.MaxValue + 1) {
+                initColorTable();
+            }
+
+            int horizontalRes = resolutions[horizontalResolution2 << 2 | horizontalResolution1];
+            int verticalRes = isVerticalResolution480 ? 480 : 240;
+            window.SetDisplayMode(horizontalRes, verticalRes, is24BitDepth);
+            window.SetHorizontalRange(displayX1, displayX2);
+            window.SetVerticalRange(displayY1, displayY2);
+            window.SetVRAMStart(displayVRAMXStart, displayVRAMYStart);
+        }
+
         public void initColorTable() {
             color1555to8888LUT = new int[ushort.MaxValue + 1];
             for (int m = 0; m < 2; m++) {
