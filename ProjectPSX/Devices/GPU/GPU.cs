@@ -633,14 +633,13 @@ namespace ProjectPSX.Devices {
                         if (primitive.isTextured) {
                             int texelX = interpolate(w0 - bias0, w1 - bias1, w2 - bias2, t0.x, t1.x, t2.x, area);
                             int texelY = interpolate(w0 - bias0, w1 - bias1, w2 - bias2, t0.y, t1.y, t2.y, area);
-                            ushort rawTexel = getTexelRaw(maskTexelAxis(texelX, preMaskX, postMaskX), maskTexelAxis(texelY, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
-                            if ((rawTexel & 0x7FFF) == 0) {
+                            int texel = getTexel(maskTexelAxis(texelX, preMaskX, postMaskX), maskTexelAxis(texelY, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
+                            if (texel == 0) {
                                 w0 += A12;
                                 w1 += A20;
                                 w2 += A01;
                                 continue;
                             }
-                            int texel = color1555to8888LUT[rawTexel];
 
                             if (!primitive.isRawTextured) {
                                 color0.val = (uint)color;
@@ -897,11 +896,10 @@ namespace ProjectPSX.Devices {
                     if (primitive.isTextured) {
                         int sourceX = x - origin.x;
                         int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
-                        ushort rawTexel = getTexelRaw(maskTexelAxis(u, preMaskX, postMaskX), maskTexelAxis(v, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
-                        if ((rawTexel & 0x7FFF) == 0) {
+                        int texel = getTexel(maskTexelAxis(u, preMaskX, postMaskX), maskTexelAxis(v, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
+                        if (texel == 0) {
                             continue;
                         }
-                        int texel = color1555to8888LUT[rawTexel];
 
                         if (!primitive.isRawTextured) {
                             color0.val = (uint)color;
@@ -1023,33 +1021,33 @@ namespace ProjectPSX.Devices {
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private ushort getTexelRaw(int x, int y, Point2D clut, Point2D textureBase, int depth) {
+        private int getTexel(int x, int y, Point2D clut, Point2D textureBase, int depth) {
             if (depth == 0) {
-                return get4bppTexelRaw(x, y, clut, textureBase);
+                return get4bppTexel(x, y, clut, textureBase);
             } else if (depth == 1) {
-                return get8bppTexelRaw(x, y, clut, textureBase);
+                return get8bppTexel(x, y, clut, textureBase);
             } else {
-                return get16bppTexelRaw(x, y, textureBase);
+                return get16bppTexel(x, y, textureBase);
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private ushort get4bppTexelRaw(int x, int y, Point2D clut, Point2D textureBase) {
+        private int get4bppTexel(int x, int y, Point2D clut, Point2D textureBase) {
             ushort index = vram1555.GetPixel(x / 4 + textureBase.x, y + textureBase.y);
             int p = (index >> (x & 3) * 4) & 0xF;
-            return vram1555.GetPixel(clut.x + p, clut.y);
+            return vram.GetPixelRGB888(clut.x + p, clut.y);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private ushort get8bppTexelRaw(int x, int y, Point2D clut, Point2D textureBase) {
+        private int get8bppTexel(int x, int y, Point2D clut, Point2D textureBase) {
             ushort index = vram1555.GetPixel(x / 2 + textureBase.x, y + textureBase.y);
             int p = (index >> (x & 1) * 8) & 0xFF;
-            return vram1555.GetPixel(clut.x + p, clut.y);
+            return vram.GetPixelRGB888(clut.x + p, clut.y);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private ushort get16bppTexelRaw(int x, int y, Point2D textureBase) {
-            return vram1555.GetPixel(x + textureBase.x, y + textureBase.y);
+        private int get16bppTexel(int x, int y, Point2D textureBase) {
+            return vram.GetPixelRGB888(x + textureBase.x, y + textureBase.y);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
