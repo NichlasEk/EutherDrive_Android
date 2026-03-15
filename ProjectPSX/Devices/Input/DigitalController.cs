@@ -97,13 +97,6 @@ namespace ProjectPSX {
                             ack = true;
                             return transferDataFifo.Dequeue();
                         case 0x43:
-                            if (!analogCapable)
-                            {
-                                mode = Mode.Idle;
-                                transferDataFifo.Clear();
-                                ack = false;
-                                return 0xFF;
-                            }
                             mode = Mode.Transfering;
                             currentCommand = b;
                             transferIndex = 0;
@@ -114,7 +107,7 @@ namespace ProjectPSX {
                             ack = true;
                             return transferDataFifo.Dequeue();
                         case 0x44:
-                            if (!analogCapable || !configMode)
+                            if (!configMode)
                             {
                                 mode = Mode.Idle;
                                 transferDataFifo.Clear();
@@ -128,7 +121,7 @@ namespace ProjectPSX {
                             ack = true;
                             return transferDataFifo.Dequeue();
                         case 0x45:
-                            if (!analogCapable || !configMode)
+                            if (!configMode)
                             {
                                 mode = Mode.Idle;
                                 transferDataFifo.Clear();
@@ -153,7 +146,7 @@ namespace ProjectPSX {
                         case 0x4B:
                         case 0x4E:
                         case 0x4F:
-                            if (!analogCapable || !configMode)
+                            if (!configMode)
                             {
                                 mode = Mode.Idle;
                                 transferDataFifo.Clear();
@@ -192,7 +185,7 @@ namespace ProjectPSX {
 
         private void GenerateReadResponse(bool forceAnalog) {
             transferDataFifo.Clear();
-            bool replyAnalog = analogCapable && (forceAnalog || analogMode);
+            bool replyAnalog = forceAnalog || analogMode;
             transferDataFifo.Enqueue(replyAnalog ? AnalogId : DigitalId);
             transferDataFifo.Enqueue(ReadyByte);
             transferDataFifo.Enqueue((byte)(buttons & 0xFF));
