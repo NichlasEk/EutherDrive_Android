@@ -39,7 +39,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private readonly M68000 _subCpu = M68000.CreateBuilder().Name("SCD-SUB").Build();
     private IBusInterface? _mainCpuBus;
     private IBusInterface? _subCpuBus;
-    private bool _useM68kEmu = UseM68kEmu;
+    private bool _useMainM68kEmu = UseMainM68kEmu;
+    private bool _useSubM68kEmu = UseSubM68kEmu;
     private bool _subCpuNeedsReset;
     private int _subInitLogRemaining = 8;
     private int _subVectorLogRemaining = 16;
@@ -169,6 +170,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private static readonly double PsgMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_PSG_GAIN", PsgCoefficient);
     private static readonly double YmMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_YM_GAIN", 1.0);
     private static readonly bool UseM68kEmu = ReadEnvFlag("EUTHERDRIVE_SCD_USE_M68KEMU", true);
+    private static readonly bool UseMainM68kEmu = ReadEnvFlag("EUTHERDRIVE_SCD_USE_MAIN_M68KEMU", UseM68kEmu);
+    private static readonly bool UseSubM68kEmu = ReadEnvFlag("EUTHERDRIVE_SCD_USE_SUB_M68KEMU", UseM68kEmu);
     private readonly bool _psgDisabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DISABLE_PSG"), "1", StringComparison.Ordinal);
     private bool _ymEnabled =
@@ -180,6 +183,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private ulong _scdMclkCycles;
     private ulong _genesisMasterClockHz = GenesisMasterClockHzNtsc;
     private uint _subCpuWaitCycles;
+    private int _z80PendingTicksCarry;
     private double _lastTargetFps = 60.0;
     private double _ymResamplePhase;
     private bool _ymResampleHasCarry;
@@ -206,6 +210,15 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private int _subFileTraceRemaining = 512;
     private static readonly bool TraceCycleBudget =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CYCLES"), "1", StringComparison.Ordinal);
+    private static readonly bool FullLegacyMainMirror =
+        ReadEnvFlag("EUTHERDRIVE_SCD_FULL_MAIN_MIRROR", false)
+        || TraceMainPc
+        || TraceMainPcFrame
+        || TraceMainWaitLoop
+        || TraceMainDebug
+        || TraceMainRamJump
+        || TraceReset
+        || !string.IsNullOrWhiteSpace(MainWaitTraceFilePath);
     private static readonly bool DumpBootSector =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_DUMP_BOOT_SECTOR"), "1", StringComparison.Ordinal);
     private static readonly string BootSectorDumpPath =
@@ -279,14 +292,16 @@ public sealed class SegaCdAdapter : IEmulatorCore
         bool forceNoDisc = ShouldForceNoDisc();
         if (forceNoDisc)
             _memory.SetDisc(null);
-        if (_useM68kEmu)
+        if (_useMainM68kEmu || _useSubM68kEmu)
         {
             // Initialized builder above
         }
 
         if (TraceCycleBudget)
             Console.Error.WriteLine($"[SCD-CYCLES] main={MainCyclesPerFrame} sub={SubCyclesPerFrame} (load)");
-        Console.WriteLine($"[SCD-CONFIG] m68kemu={(_useM68kEmu ? 1 : 0)} gfxOverlay={(EnableGfxOverlay ? 1 : 0)}");
+        Console.WriteLine(
+            $"[SCD-CONFIG] main68kemu={(_useMainM68kEmu ? 1 : 0)} sub68kemu={(_useSubM68kEmu ? 1 : 0)} " +
+            $"gfxOverlay={(EnableGfxOverlay ? 1 : 0)}");
         EutherDrive.Core.MdTracerCore.md_main.initialize();
         if (EutherDrive.Core.MdTracerCore.md_main.g_md_io != null)
         {
@@ -318,18 +333,35 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 $"[SCD-RESET] vectors: SSP=0x{initialSp:X8} PC=0x{initialPc:X8} " +
                 $"BUSERR=0x{busError:X8} ADDRERR=0x{addrError:X8} ILL=0x{illegal:X8}");
         }
-        if (_useM68kEmu && _mainBus != null)
+        if ((_useMainM68kEmu || _useSubM68kEmu) && _mainBus != null)
         {
-            _mainCpuBus = new SegaCdMainM68kBus(_mainBus, _memory);
-            _subCpuBus = new SegaCdSubM68kBus(_memory);
-            _mainCpu.Reset(_mainCpuBus);
-            _subCpuNeedsReset = true;
-            if (TraceReset)
-                Console.WriteLine($"[SCD-RESET] main CPU: SSP=0x{_mainCpu.Ssp:X8} PC=0x{_mainCpu.Pc:X8} op=0x{_mainCpu.NextOpcode:X4}");
-            _mainContext = null;
-            _subContext = null;
-            _memory.MainPcProvider = () => _mainCpu.Pc;
-            _memory.SubPcProvider = () => _subCpu.Pc;
+            if (_useMainM68kEmu)
+            {
+                _mainCpuBus = new SegaCdMainM68kBus(_mainBus, _memory);
+                _mainCpu.Reset(_mainCpuBus);
+                if (TraceReset)
+                    Console.WriteLine($"[SCD-RESET] main CPU: SSP=0x{_mainCpu.Ssp:X8} PC=0x{_mainCpu.Pc:X8} op=0x{_mainCpu.NextOpcode:X4}");
+                _mainContext = null;
+                _memory.MainPcProvider = () => _mainCpu.Pc;
+            }
+            else
+            {
+                _mainContext = CreateResetContext(initialPc, initialSp);
+                _memory.MainPcProvider = () => _mainContext.RegPc;
+            }
+
+            if (_useSubM68kEmu)
+            {
+                _subCpuBus = new SegaCdSubM68kBus(_memory);
+                _subCpuNeedsReset = true;
+                _subContext = null;
+                _memory.SubPcProvider = () => _subCpu.Pc;
+            }
+            else
+            {
+                _subContext = CreateResetContext(0, 0);
+                _memory.SubPcProvider = () => _subContext.RegPc;
+            }
         }
         else
         {
@@ -520,20 +552,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
             return;
         var r = _memory.Registers;
         var sb = new StringBuilder();
-        if (_useM68kEmu)
-        {
-            sb.AppendLine($"MainCpuPc: 0x{_mainCpu.Pc:X6}");
-            sb.AppendLine($"MainCpuOp: 0x{_mainCpu.NextOpcode:X4}");
-            sb.AppendLine($"SubCpuPc: 0x{_subCpu.Pc:X6}");
-            sb.AppendLine($"SubCpuOp: 0x{_subCpu.NextOpcode:X4}");
-        }
-        else
-        {
-            sb.AppendLine($"MainCpuPc: 0x{_mainContext?.RegPc ?? 0:X6}");
-            sb.AppendLine($"MainCpuOp: 0x{_mainContext?.Opcode ?? 0:X4}");
-            sb.AppendLine($"SubCpuPc: 0x{_subContext?.RegPc ?? 0:X6}");
-            sb.AppendLine($"SubCpuOp: 0x{_subContext?.Opcode ?? 0:X4}");
-        }
+        sb.AppendLine($"MainCpuPc: 0x{(_useMainM68kEmu ? _mainCpu.Pc : _mainContext?.RegPc ?? 0):X6}");
+        sb.AppendLine($"MainCpuOp: 0x{(_useMainM68kEmu ? _mainCpu.NextOpcode : _mainContext?.Opcode ?? 0):X4}");
+        sb.AppendLine($"SubCpuPc: 0x{(_useSubM68kEmu ? _subCpu.Pc : _subContext?.RegPc ?? 0):X6}");
+        sb.AppendLine($"SubCpuOp: 0x{(_useSubM68kEmu ? _subCpu.NextOpcode : _subContext?.Opcode ?? 0):X4}");
         sb.AppendLine($"SubCpuWaitCycles: 0x{_subCpuWaitCycles:X4}");
         sb.AppendLine($"SubCpuBusReq: {r.SubCpuBusReq}");
         sb.AppendLine($"SubCpuReset: {r.SubCpuReset}");
@@ -590,11 +612,11 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
     private static void SyncLegacyMain68kView(M68000 cpu)
     {
-        var state = cpu.GetState();
-        ushort sr = state.Sr;
-        ushort op = state.Prefetch;
+        ushort sr = cpu.StatusRegister;
+        ushort op = cpu.NextOpcode;
+        uint pc = cpu.Pc & 0x00FF_FFFF;
 
-        EutherDrive.Core.MdTracerCore.md_m68k.g_reg_PC = state.Pc & 0x00FF_FFFF;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_reg_PC = pc;
         EutherDrive.Core.MdTracerCore.md_m68k.g_opcode = op;
         EutherDrive.Core.MdTracerCore.md_m68k.g_op = (byte)(op >> 12);
         EutherDrive.Core.MdTracerCore.md_m68k.g_op1 = (byte)((op >> 9) & 0x07);
@@ -602,16 +624,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
         EutherDrive.Core.MdTracerCore.md_m68k.g_op3 = (byte)((op >> 3) & 0x07);
         EutherDrive.Core.MdTracerCore.md_m68k.g_op4 = (byte)(op & 0x07);
 
-        for (int i = 0; i < 8; i++)
-            EutherDrive.Core.MdTracerCore.md_m68k.g_reg_data[i].l = state.Data[i];
-        for (int i = 0; i < 7; i++)
-            EutherDrive.Core.MdTracerCore.md_m68k.g_reg_addr[i].l = state.Address[i];
-
         bool supervisor = (sr & 0x2000) != 0;
-        uint a7 = supervisor ? state.Ssp : state.Usp;
-        EutherDrive.Core.MdTracerCore.md_m68k.g_reg_addr[7].l = a7;
-        EutherDrive.Core.MdTracerCore.md_m68k.g_reg_addr_usp.l = state.Usp;
-
         EutherDrive.Core.MdTracerCore.md_m68k.g_status_T = (sr & 0x8000) != 0;
         EutherDrive.Core.MdTracerCore.md_m68k.g_status_S = supervisor;
         EutherDrive.Core.MdTracerCore.md_m68k.g_status_interrupt_mask = (byte)((sr >> 8) & 0x07);
@@ -620,6 +633,19 @@ public sealed class SegaCdAdapter : IEmulatorCore
         EutherDrive.Core.MdTracerCore.md_m68k.g_status_Z = (sr & 0x0004) != 0;
         EutherDrive.Core.MdTracerCore.md_m68k.g_status_V = (sr & 0x0002) != 0;
         EutherDrive.Core.MdTracerCore.md_m68k.g_status_C = (sr & 0x0001) != 0;
+
+        if (!FullLegacyMainMirror)
+            return;
+
+        var state = cpu.GetState();
+        for (int i = 0; i < 8; i++)
+            EutherDrive.Core.MdTracerCore.md_m68k.g_reg_data[i].l = state.Data[i];
+        for (int i = 0; i < 7; i++)
+            EutherDrive.Core.MdTracerCore.md_m68k.g_reg_addr[i].l = state.Address[i];
+
+        uint a7 = supervisor ? state.Ssp : state.Usp;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_reg_addr[7].l = a7;
+        EutherDrive.Core.MdTracerCore.md_m68k.g_reg_addr_usp.l = state.Usp;
     }
 
     private static string ScrollSizeToString(int bits)
@@ -639,15 +665,24 @@ public sealed class SegaCdAdapter : IEmulatorCore
         if (_memory == null || _mainBus == null)
             return;
 
-        if (_useM68kEmu)
+        if (_useMainM68kEmu)
         {
-            if (_mainCpuBus == null || _subCpuBus == null)
+            if (_mainCpuBus == null)
                 return;
         }
-        else
+        else if (_mainContext == null)
         {
-            if (_mainContext == null || _subContext == null || _subBus == null)
+            return;
+        }
+
+        if (_useSubM68kEmu)
+        {
+            if (_subCpuBus == null)
                 return;
+        }
+        else if (_subContext == null || _subBus == null)
+        {
+            return;
         }
 
         long frameStart = ProfileScd ? Stopwatch.GetTimestamp() : 0;
@@ -664,7 +699,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
         var vdp = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp;
         if (vdp != null)
         {
-            if (!_useM68kEmu)
+            if (!_useMainM68kEmu)
                 EutherDrive.Core.MdTracerCore.md_m68k.ApplyContext(_mainContext!);
             int lines = vdp.g_vertical_line_max > 0 ? vdp.g_vertical_line_max : 262;
             double targetFps = TargetFpsOverride
@@ -699,6 +734,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     $"baseMain={baseMainCycles} baseSub={baseSubCycles} scale={ScdCpuCycleScale:0.###} " +
                     $"lines={lines} fps={targetFps:0.###}");
             }
+            bool useStepZ80Scheduling = _useMainM68kEmu && EutherDrive.Core.MdTracerCore.md_main.IsCycleCounterZ80SchedulingEnabled();
             int mainPerLine = mainCycles / lines;
             int mainRemainder = mainCycles % lines;
             int baseMainPerLine = baseMainCycles / lines;
@@ -715,11 +751,11 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
                 int mainSlice = mainPerLine + (line < mainRemainder ? 1 : 0);
                 EutherDrive.Core.MdTracerCore.md_m68k.g_slice_clock_len = mainSlice;
-                int z80Slice = z80PerLine + (line < z80Remainder ? 1 : 0);
+                int z80Slice = useStepZ80Scheduling ? 0 : z80PerLine + (line < z80Remainder ? 1 : 0);
                 int baseMainSlice = baseMainPerLine + (line < baseMainRemainder ? 1 : 0);
 
                 int subSlice;
-                if (_useM68kEmu)
+                if (_useMainM68kEmu)
                 {
                     subSlice = 0;
                 }
@@ -744,9 +780,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
                         subSlice = ScaleCycleCount(subSlice, ScdCpuCycleScale);
                 }
                 int subCyclesInterleaved = 0;
+                int pendingMdCycles = 0;
 
                 EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
-                if (_useM68kEmu)
+                if (_useMainM68kEmu)
                     SyncLegacyMain68kView(_mainCpu);
                 vdp.BeginLineTiming(line);
 
@@ -755,7 +792,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     if (frameCounter != _lastMainPcFrame)
                     {
                         _lastMainPcFrame = frameCounter;
-                        if (_useM68kEmu)
+                        if (_useMainM68kEmu)
                         {
                             Console.WriteLine($"[SCD-MAIN-FRAME] frame={frameCounter} pc=0x{_mainCpu.Pc:X6} op=0x{_mainCpu.NextOpcode:X4}");
                         }
@@ -768,9 +805,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 if (TraceMainWaitLoop && frameCounter != _lastMainWaitLogFrame && (frameCounter % 60) == 0)
                 {
                     _lastMainWaitLogFrame = frameCounter;
-                    uint pc = _useM68kEmu ? _mainCpu.Pc : _mainContext!.RegPc;
-                    ushort op = _useM68kEmu ? _mainCpu.NextOpcode : _mainContext!.Opcode;
-                    ushort sr = _useM68kEmu ? _mainCpu.GetState().Sr : _mainContext!.RegSr;
+                    uint pc = _useMainM68kEmu ? _mainCpu.Pc : _mainContext!.RegPc;
+                    ushort op = _useMainM68kEmu ? _mainCpu.NextOpcode : _mainContext!.Opcode;
+                    ushort sr = _useMainM68kEmu ? _mainCpu.StatusRegister : _mainContext!.RegSr;
                     int imask = (sr >> 8) & 0x07;
                     ushort ext = _mainCpuBus?.ReadWord(0x000A1C) ?? 0;
                     uint probeAddrRaw = ext;
@@ -831,7 +868,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 {
                     if (ProfileScd) _profileCpuTicks -= Stopwatch.GetTimestamp();
                     long mainCyclesConsumed = 0;
-                    if (_useM68kEmu)
+                    if (_useMainM68kEmu)
                     {
                         if (_memory.Registers.MainSoftwareInterruptPending)
                         {
@@ -932,30 +969,16 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             }
 
                             if (mainStepCycles > 0)
-                                subSlice += AdvanceSegaCdTimingFromMainCycles(mainStepCycles);
-
-                            while (subCyclesInterleaved < subSlice)
                             {
-                                if (_memory.SubCpuHalt || _memory.SubCpuReset)
-                                    break;
-                                if (!EnsureSubVectorsReady(_memory))
-                                    break;
-                                if (_subCpuNeedsReset)
-                                {
-                                    _subCpu.Reset(_subCpuBus!);
-                                    _subCpuNeedsReset = false;
-                                    _subCpuWaitCycles = 0;
-                                }
-
-                                subCyclesInterleaved += RunSubCpuBudget(
-                                    subSlice - subCyclesInterleaved,
+                                AdvanceMainStepTiming(
+                                    mainStepCycles,
+                                    allowZ80,
                                     frameCounter,
+                                    ref pendingMdCycles,
+                                    ref subSlice,
+                                    ref subCyclesInterleaved,
                                     ref loggedSubWaitOpcodeWindow);
                             }
-
-                            // Match jgenesis ordering: make main CPU register writes visible
-                            // after Sega CD time and the sub CPU have caught up to this main step.
-                            _memory.FlushBufferedMainWrites();
 
                         }
 
@@ -967,7 +990,11 @@ public sealed class SegaCdAdapter : IEmulatorCore
                         mainCyclesConsumed += mainSlice;
                     }
 
-                    if (mainCyclesConsumed > 0)
+                    if (_useMainM68kEmu)
+                    {
+                        FlushPendingMainMdCycles(allowZ80, ref pendingMdCycles);
+                    }
+                    else if (mainCyclesConsumed > 0)
                     {
                         // Keep MD audio/VDP scheduling timebase aligned with executed main-CPU cycles.
                         EutherDrive.Core.MdTracerCore.md_main.AdvanceSystemCycles(mainCyclesConsumed);
@@ -986,7 +1013,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 if (TraceMainPc && _mainPcLogRemaining > 0)
                 {
                     _mainPcLogRemaining--;
-                    if (_useM68kEmu)
+                    if (_useMainM68kEmu)
                     {
                         Console.WriteLine($"[SCD-MAIN] pc=0x{_mainCpu.Pc:X6} op=0x{_mainCpu.NextOpcode:X4}");
                     }
@@ -996,7 +1023,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     }
                 }
 
-                if (!_useM68kEmu && TraceMainDebug && _mainDecompLogRemaining > 0 && _mainContext!.RegPc >= 0x00090E && _mainContext.RegPc <= 0x00098C)
+                if (!_useMainM68kEmu && TraceMainDebug && _mainDecompLogRemaining > 0 && _mainContext!.RegPc >= 0x00090E && _mainContext.RegPc <= 0x00098C)
                 {
                     _mainDecompLogRemaining--;
                     Console.WriteLine(
@@ -1006,7 +1033,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 }
 
                 bool subReset = _memory.SubCpuReset;
-                if (_useM68kEmu)
+                if (_useSubM68kEmu)
                 {
                     if (subReset && !_lastSubReset)
                         _subCpuNeedsReset = true;
@@ -1352,11 +1379,13 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     }
                 }
 
+                FlushPendingMainMdCycles(allowZ80, ref pendingMdCycles);
                 if (ProfileScd) _profileVdpTicks -= Stopwatch.GetTimestamp();
                 vdp.CompleteLineTiming();
                 if (ProfileScd) _profileVdpTicks += Stopwatch.GetTimestamp();
+                EutherDrive.Core.MdTracerCore.md_main.FlushScheduledAudio();
 
-                if (!_useM68kEmu)
+                if (!_useMainM68kEmu)
                 {
                     // Present completed scanline interrupt state to the legacy 68k runner on the next slice.
                     _mainContext!.InterruptVReq = EutherDrive.Core.MdTracerCore.md_m68k.g_interrupt_V_req;
@@ -1370,7 +1399,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
             }
 
-            if (!_useM68kEmu)
+            if (!_useMainM68kEmu)
             {
                 // Ensure main CPU context is active before capturing.
                 EutherDrive.Core.MdTracerCore.md_m68k.ApplyContext(_mainContext!);
@@ -1462,7 +1491,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
             }
         }
 
-        if (_memory != null && _memory.Graphics.TryGetImageBufferDimensions(out int gw, out int gh))
+        bool shouldRenderGfxOverlay = EnableGfxOverlay && (_vdpFrameLooksBlank || TraceFrameBuffer);
+        if (_memory != null && shouldRenderGfxOverlay && _memory.Graphics.TryGetImageBufferDimensions(out int gw, out int gh))
         {
             if (ProfileScd) _profileGfxTicks -= Stopwatch.GetTimestamp();
             int needed = gw * gh * 4;
@@ -1735,26 +1765,11 @@ public sealed class SegaCdAdapter : IEmulatorCore
         if (_memory.WordRam.SubPerformedBlockedAccess())
             return 0;
 
-        int consumed = 0;
-        while (consumed < budget)
+        int remainingBudget = budget;
+        while ((uint)remainingBudget >= _subCpuWaitCycles)
         {
             if (_memory.WordRam.SubPerformedBlockedAccess())
                 break;
-
-            if (_subCpuWaitCycles != 0)
-            {
-                int remainingBudget = budget - consumed;
-                if (_subCpuWaitCycles > (uint)remainingBudget)
-                {
-                    _subCpuWaitCycles -= (uint)remainingBudget;
-                    consumed = budget;
-                    break;
-                }
-
-                consumed += (int)_subCpuWaitCycles;
-                _subCpuWaitCycles = 0;
-                continue;
-            }
 
             if (TraceSubWait && _subCpu.Pc == 0x0003D4 && frameCounter % 60 == 0)
             {
@@ -1814,11 +1829,25 @@ public sealed class SegaCdAdapter : IEmulatorCore
             // Match jgenesis: buffered sub register writes are visible before each instruction,
             // and carry the remaining cycles forward instead of overrunning every slice.
             _memory.FlushBufferedSubWrites();
+            uint waitCycles = _subCpuWaitCycles;
             uint cycles = _subCpu.ExecuteInstruction(_subCpuBus);
             _subCpuWaitCycles = cycles == 0 ? 1u : cycles;
+            remainingBudget -= (int)waitCycles;
         }
 
-        return consumed;
+        if (remainingBudget > 0 && _subCpuWaitCycles != 0)
+        {
+            if (_subCpuWaitCycles > (uint)remainingBudget)
+            {
+                _subCpuWaitCycles -= (uint)remainingBudget;
+            }
+            else
+            {
+                _subCpuWaitCycles = 0;
+            }
+        }
+
+        return budget - remainingBudget;
     }
 
     private static void AppendTraceLine(string? path, string line)
@@ -1834,6 +1863,103 @@ public sealed class SegaCdAdapter : IEmulatorCore
         {
             // Ignore trace write failures to avoid altering emulation behavior.
         }
+    }
+
+    private void AdvanceMainStepTiming(
+        int mainStepCycles,
+        bool allowZ80,
+        long frameCounter,
+        ref int pendingMdCycles,
+        ref int subSlice,
+        ref int subCyclesInterleaved,
+        ref bool loggedSubWaitOpcodeWindow)
+    {
+        if (mainStepCycles <= 0)
+            return;
+
+        pendingMdCycles += mainStepCycles;
+        if (pendingMdCycles >= 32)
+            FlushPendingMainMdCycles(allowZ80, ref pendingMdCycles);
+
+        subSlice += AdvanceSegaCdTimingFromMainCycles(mainStepCycles);
+
+        while (subCyclesInterleaved < subSlice)
+        {
+            if (_memory!.SubCpuHalt || _memory.SubCpuReset)
+                break;
+            if (!EnsureSubVectorsReady(_memory))
+                break;
+            if (_subCpuNeedsReset)
+            {
+                _subCpu.Reset(_subCpuBus!);
+                _subCpuNeedsReset = false;
+                _subCpuWaitCycles = 0;
+            }
+
+            subCyclesInterleaved += RunSubCpuBudget(
+                subSlice - subCyclesInterleaved,
+                frameCounter,
+                ref loggedSubWaitOpcodeWindow);
+        }
+
+        // Make main CPU register writes visible only after the sub side has
+        // caught up to the same step, like jgenesis main_bus_writes.apply_writes().
+        _memory.FlushBufferedMainWrites();
+    }
+
+    private void FlushPendingMainMdCycles(bool allowZ80, ref int pendingMdCycles)
+    {
+        if (pendingMdCycles <= 0)
+            return;
+
+        // Keep the order closer to jgenesis without paying the full cost of
+        // advancing the MD domain on every single instruction boundary.
+        EutherDrive.Core.MdTracerCore.md_main.AdvanceSystemCycles(pendingMdCycles, flushAudio: false);
+        RunZ80BudgetForMainStep(pendingMdCycles, allowZ80);
+        pendingMdCycles = 0;
+    }
+
+    private void RunZ80BudgetForMainStep(int mainStepCycles, bool allowZ80)
+    {
+        if (!allowZ80 || mainStepCycles <= 0)
+            return;
+        if (!EutherDrive.Core.MdTracerCore.md_main.IsCycleCounterZ80SchedulingEnabled())
+            return;
+
+        var z80 = EutherDrive.Core.MdTracerCore.md_main.g_md_z80;
+        var mainBus = _mainBus;
+        if (z80 == null || mainBus == null)
+            return;
+
+        int readyTicks = _z80PendingTicksCarry + EutherDrive.Core.MdTracerCore.md_main.TakeZ80TicksForScheduling();
+        int ranTicks = DrainReadyZ80Ticks(readyTicks, z80, mainBus);
+        _z80PendingTicksCarry = readyTicks - ranTicks;
+    }
+
+    private static int DrainReadyZ80Ticks(
+        int readyTicks,
+        EutherDrive.Core.MdTracerCore.md_z80 z80,
+        EutherDrive.Core.MdTracerCore.md_bus mainBus)
+    {
+        int ranTicks = 0;
+
+        while (readyTicks > 0)
+        {
+            mainBus.ApplyZ80BusReqLatch();
+            if (mainBus.Z80BusGranted || mainBus.Z80Reset)
+                break;
+
+            int z80Ticks = Math.Min(32, readyTicks);
+            z80.BeginSystemCycleSlice();
+            z80.run(z80Ticks);
+            z80.EndSystemCycleSlice();
+
+            EutherDrive.Core.MdTracerCore.md_main.AddZ80Cycles(z80Ticks);
+            readyTicks -= z80Ticks;
+            ranTicks += z80Ticks;
+        }
+
+        return ranTicks;
     }
 
     private int AdvanceSegaCdTimingFromMainCycles(int mainCycles)

@@ -14,6 +14,7 @@ public sealed class SegaCdCddStub
     private const int FastForwardFrames = 25;
     private const int BytesPerAudioSample = 4;
     private const int MaxFaderVolume = 1 << 10;
+    private static readonly byte[] InitialStatus = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F];
 
     private enum DriveStatus : byte
     {
@@ -98,7 +99,6 @@ public sealed class SegaCdCddStub
     private ushort _currentVolume;
     private ushort _audioSampleIdx;
     private bool _loadedAudioSector;
-    private State _lastStatusState;
     private int _dataSpeed = 1;
     private double _lastAudioLeft;
     private double _lastAudioRight;
@@ -160,8 +160,6 @@ public sealed class SegaCdCddStub
         _audioSampleIdx = 0;
         _loadedAudioSector = false;
         UpdateStatus();
-        _lastStatusState = _state;
-        _lastStatusState = _state;
     }
 
     internal void ChangeDisc(CdRom? disc)
@@ -190,7 +188,6 @@ public sealed class SegaCdCddStub
         _audioSampleIdx = 0;
         _loadedAudioSector = false;
         UpdateStatus();
-        _lastStatusState = _state;
     }
 
     public void SendCommand(byte[] command)
@@ -295,8 +292,7 @@ public sealed class SegaCdCddStub
         _currentVolume = 0;
         _audioSampleIdx = 0;
         _loadedAudioSector = false;
-        UpdateStatus();
-        _lastStatusState = _state;
+        Array.Copy(InitialStatus, _status, _status.Length);
     }
 
     public string? DiscTitle(ConsoleRegion region)
@@ -362,7 +358,6 @@ public sealed class SegaCdCddStub
 
     private void Clock75Hz(SegaCdCdcStub cdc)
     {
-        State prevState = _state;
         _interruptPending = true;
         _subcodeInterruptPending = true;
         if (LogCddIrq)
@@ -459,18 +454,6 @@ public sealed class SegaCdCddStub
                 HandlePlaying(_stateTime, changeState: true, cdc);
                 break;
             case State.ReadingToc:
-                if (_disc == null)
-                {
-                    _state = State.NoDisc;
-                }
-                else
-                {
-                    // Reading TOC is a transient drive phase. Keep the active report
-                    // type intact, but return to Paused after one clock so the BIOS
-                    // can consume the status payload and continue its handshake.
-                    _state = State.Paused;
-                    _stateTime = CdTime.Zero;
-                }
                 break;
             case State.MotorStopped:
                 if (_disc == null)
@@ -496,11 +479,6 @@ public sealed class SegaCdCddStub
                 if (_trayAutoClose)
                     _state = State.TrayClosing;
                 break;
-        }
-        if (_state != prevState && _state != _lastStatusState)
-        {
-            UpdateStatus();
-            _lastStatusState = _state;
         }
     }
 
@@ -692,10 +670,7 @@ public sealed class SegaCdCddStub
         {
             (State.MotorStopped, null) => State.NoDisc,
             (State.MotorStopped, _) => State.Paused,
-            // Real hardware briefly enters a TOC-read phase for TOCN reports, but our current
-            // stub can strand the BIOS in a repeated ReadingToc handshake. Return the report data
-            // directly while staying in the current ready state.
-            (_, _) when _reportType == ReportType.TrackNStartTime => _state == State.ReadingToc ? State.Paused : _state,
+            (_, not null) when _reportType == ReportType.TrackNStartTime => State.ReadingToc,
             _ => _state
         };
 

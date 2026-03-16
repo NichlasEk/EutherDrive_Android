@@ -317,8 +317,10 @@ public sealed class SegaCdMemory
         if (Registers.SubCpuReset || Registers.SubCpuBusReq)
             return;
 
-        for (int i = 0; i < Registers.CommunicationCommands.Length; i++)
-            Registers.CommunicationStatuses[i] = Registers.CommunicationCommands[i];
+        // Keep only the ordering side effect of deferred sub-register writes.
+        // Unlike the previous stub behavior, do not synthesize command/status
+        // mailbox progress when the sub CPU is not actually executing.
+        FlushBufferedSubWrites();
     }
 
     public void FlushBufferedSubWrites()

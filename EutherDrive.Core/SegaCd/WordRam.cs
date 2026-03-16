@@ -142,19 +142,11 @@ public sealed class WordRam
         _mode = (value & 0x04) != 0 ? WordRamMode.OneM : WordRamMode.TwoM;
         bool ret = (value & 0x01) != 0;
 
-        if (_mode == WordRamMode.TwoM)
+        // RET=1 always returns 2M Word RAM ownership to the main CPU, even
+        // when the register write also switches the hardware into 1M mode.
+        if (ret)
         {
-            if (ret)
-            {
-                // Sub CPU returning ownership to Main CPU
-                _owner2m = ScdCpu.Main;
-            }
-            else
-            {
-                // Sub CPU requests ownership (doesn't take it directly, just signals)
-                // In a perfect model we'd track the request, but usually just setting it to Sub isn't right here.
-                // It stays Sub until returned.
-            }
+            _owner2m = ScdCpu.Main;
         }
 
         ScdCpu prev = _bank0Owner1m;
