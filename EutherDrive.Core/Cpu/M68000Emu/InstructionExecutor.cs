@@ -31,6 +31,8 @@ internal sealed partial class InstructionExecutor
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_IRQ"), "1", StringComparison.Ordinal);
     private static readonly string? TraceInterruptsFile =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_IRQ_FILE");
+    private static readonly string? TraceInterruptCpu =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_IRQ_CPU");
     private static readonly int TraceInterruptLimit = ParseTraceLimit("EUTHERDRIVE_M68K_TRACE_IRQ_LIMIT", 256);
     private static int _traceInterruptRemaining = TraceInterrupts ? TraceInterruptLimit : 0;
 
@@ -64,7 +66,8 @@ internal sealed partial class InstructionExecutor
             _bus.AcknowledgeInterrupt(level);
             _registers.Stopped = false;
             MaybeTraceInterrupt("take", level, srBefore, _registers.InterruptPriorityMask, pending: level);
-            return HandleAutoVectoredInterrupt(level).IsOk ? 44u : 50u;
+            var interrupt = HandleAutoVectoredInterrupt(level);
+            return interrupt.IsOk ? interrupt.Value : HandleException(interrupt.Error!.Value);
         }
 
         byte interruptLevel = (byte)(_bus.InterruptLevel() & 0x07);
@@ -718,6 +721,12 @@ internal sealed partial class InstructionExecutor
 
     private void MaybeTraceInterrupt(string phase, byte busLevel, ushort sr, byte mask, byte? pending)
     {
+        if (!string.IsNullOrWhiteSpace(TraceInterruptCpu)
+            && !string.Equals(_name, TraceInterruptCpu, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         if (!TraceInterrupts || _traceInterruptRemaining <= 0)
             return;
         _traceInterruptRemaining--;

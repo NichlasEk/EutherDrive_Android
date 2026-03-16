@@ -191,6 +191,54 @@ namespace EutherDrive.Core.MdTracerCore
             MdLog.WriteLine("[md_m68k] Boot trace armed");
         }
 
+        public void ResetForExternalBoot()
+        {
+            initialize();
+
+            Array.Clear(g_memory!, 0, g_memory!.Length);
+
+            g_initial_PC = 0;
+            g_reg_PC = 0;
+            g_stack_top = 0;
+
+            for (int i = 0; i < 8; i++)
+            {
+                g_reg_data[i].l = 0;
+                g_reg_addr[i].l = 0;
+            }
+
+            g_reg_addr_usp.l = 0;
+
+            g_status_T = false;
+            g_status_B1 = false;
+            g_status_S = true;
+            g_status_B2 = false;
+            g_status_B3 = false;
+            g_status_interrupt_mask = 7;
+            g_status_B4 = false;
+            g_status_B5 = false;
+            g_status_B6 = false;
+            g_status_X = false;
+            g_status_N = false;
+            g_status_Z = false;
+            g_status_V = false;
+            g_status_C = false;
+
+            g_interrupt_V_req = false;
+            g_interrupt_H_req = false;
+            g_interrupt_EXT_req = false;
+            g_interrupt_V_act = false;
+            g_interrupt_H_act = false;
+            g_interrupt_EXT_act = false;
+
+            g_opcode = 0;
+            g_op = g_op1 = g_op2 = g_op3 = g_op4 = 0;
+            g_68k_stop = false;
+            g_clock_total = 0;
+            g_clock_now = 0;
+            g_clock = 0;
+        }
+
         private void opcode_add(
             int in_opnum,
             Action in_func,

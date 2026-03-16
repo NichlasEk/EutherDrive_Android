@@ -302,7 +302,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
         Console.WriteLine(
             $"[SCD-CONFIG] main68kemu={(_useMainM68kEmu ? 1 : 0)} sub68kemu={(_useSubM68kEmu ? 1 : 0)} " +
             $"gfxOverlay={(EnableGfxOverlay ? 1 : 0)}");
+        EutherDrive.Core.MdTracerCore.md_main.PowerCycleReset();
         EutherDrive.Core.MdTracerCore.md_main.initialize();
+        EutherDrive.Core.MdTracerCore.md_main.g_md_m68k?.ResetForExternalBoot();
         if (EutherDrive.Core.MdTracerCore.md_main.g_md_io != null)
         {
             EutherDrive.Core.MdTracerCore.md_io.Current = EutherDrive.Core.MdTracerCore.md_main.g_md_io;
@@ -556,6 +558,26 @@ public sealed class SegaCdAdapter : IEmulatorCore
         sb.AppendLine($"MainCpuOp: 0x{(_useMainM68kEmu ? _mainCpu.NextOpcode : _mainContext?.Opcode ?? 0):X4}");
         sb.AppendLine($"SubCpuPc: 0x{(_useSubM68kEmu ? _subCpu.Pc : _subContext?.RegPc ?? 0):X6}");
         sb.AppendLine($"SubCpuOp: 0x{(_useSubM68kEmu ? _subCpu.NextOpcode : _subContext?.Opcode ?? 0):X4}");
+        ushort mainSr = _useMainM68kEmu ? _mainCpu.StatusRegister : _mainContext?.RegSr ?? 0;
+        int mainMask = (mainSr >> 8) & 0x07;
+        int mainPendingLevel = _useMainM68kEmu && _mainCpu.PendingInterruptLevel.HasValue ? _mainCpu.PendingInterruptLevel.Value : -1;
+        byte mainBusLevel = _mainCpuBus?.InterruptLevel() ?? 0;
+        var mainIrqDebug = md_main.CaptureMainInterruptDebug();
+        sb.AppendLine($"MainIrqBusLevel: {mainBusLevel}");
+        sb.AppendLine($"MainIrqMask: {mainMask}");
+        sb.AppendLine($"MainIrqPendingLevel: {mainPendingLevel}");
+        sb.AppendLine($"MainIrqWillTake: {(mainPendingLevel >= 0 || mainBusLevel > mainMask)}");
+        sb.AppendLine($"MainIrqHintReq: {md_m68k.g_interrupt_H_req}");
+        sb.AppendLine($"MainIrqVintReq: {md_m68k.g_interrupt_V_req}");
+        sb.AppendLine($"MainIrqExtReq: {md_m68k.g_interrupt_EXT_req}");
+        sb.AppendLine($"MainIrqHintEnabled: {md_main.g_md_vdp != null && md_main.g_md_vdp.g_vdp_reg_0_4_hinterrupt == 1}");
+        sb.AppendLine($"MainIrqVintEnabled: {md_main.g_md_vdp != null && md_main.g_md_vdp.g_vdp_reg_1_5_vinterrupt == 1}");
+        sb.AppendLine($"MainIrqHintReqCount: {mainIrqDebug.HintReqCount}");
+        sb.AppendLine($"MainIrqVintReqCount: {mainIrqDebug.VintReqCount}");
+        sb.AppendLine($"MainIrqExtReqCount: {mainIrqDebug.ExtReqCount}");
+        sb.AppendLine($"MainIrqHintAckCount: {mainIrqDebug.HintAckCount}");
+        sb.AppendLine($"MainIrqVintAckCount: {mainIrqDebug.VintAckCount}");
+        sb.AppendLine($"MainIrqExtAckCount: {mainIrqDebug.ExtAckCount}");
         sb.AppendLine($"SubCpuWaitCycles: 0x{_subCpuWaitCycles:X4}");
         sb.AppendLine($"SubCpuBusReq: {r.SubCpuBusReq}");
         sb.AppendLine($"SubCpuReset: {r.SubCpuReset}");
@@ -827,6 +849,9 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     ushort vec2Op = _mainCpuBus?.ReadWord(vec2) ?? 0;
                     ushort vec4Op = _mainCpuBus?.ReadWord(vec4) ?? 0;
                     ushort vec6Op = _mainCpuBus?.ReadWord(vec6) ?? 0;
+                    uint vec2Target = vec2Op == 0x4EF9 ? (_mainCpuBus?.ReadLong(vec2 + 2) ?? 0) : 0;
+                    uint vec4Target = vec4Op == 0x4EF9 ? (_mainCpuBus?.ReadLong(vec4 + 2) ?? 0) : 0;
+                    uint vec6Target = vec6Op == 0x4EF9 ? (_mainCpuBus?.ReadLong(vec6 + 2) ?? 0) : 0;
                     byte mainIrq = _mainCpuBus?.InterruptLevel() ?? 0;
                     byte subIrq = _memory.GetSubInterruptLevel();
                     bool mainSwPending = _memory.Registers.MainSoftwareInterruptPending;
@@ -835,14 +860,15 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     bool cdcPending = _memory.Cdc.InterruptPending;
                     bool hintEnabled = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp?.g_vdp_reg_0_4_hinterrupt == 1;
                     bool vintEnabled = EutherDrive.Core.MdTracerCore.md_main.g_md_vdp?.g_vdp_reg_1_5_vinterrupt == 1;
+                    var irqDebug = md_main.CaptureMainInterruptDebug();
                     Console.WriteLine(
                         $"[SCD-MAIN-WAIT] frame={frameCounter} pc=0x{pc:X6} op=0x{op:X4} " +
                         $"sr=0x{sr:X4} imask={imask} " +
                         $"tstExt=0x{ext:X4} raw=0x{probeAddrRaw:X6} b=0x{probeRaw8:X2} w=0x{probeRaw16:X4} " +
                         $"se=0x{probeAddrSe:X8} b=0x{probeSe8:X2} w=0x{probeSe16:X4} " +
                         $"A12000=0x{gate00:X2} A12001=0x{gate01:X2} A12002=0x{gate02:X2} A12003=0x{gate03:X2} A1200E=0x{gate0E:X2} " +
-                        $"V2=0x{vec2:X8}/0x{vec2Op:X4} V4=0x{vec4:X8}/0x{vec4Op:X4} V6=0x{vec6:X8}/0x{vec6Op:X4} " +
-                        $"IRQ[m={mainIrq},sub={subIrq},swM={(mainSwPending ? 1 : 0)},swS={(subSwPending ? 1 : 0)},h={(md_m68k.g_interrupt_H_req ? 1 : 0)},v={(md_m68k.g_interrupt_V_req ? 1 : 0)},ext={(md_m68k.g_interrupt_EXT_req ? 1 : 0)},he={(hintEnabled ? 1 : 0)},ve={(vintEnabled ? 1 : 0)},cdd={(cddPending ? 1 : 0)},cdc={(cdcPending ? 1 : 0)}]");
+                        $"V2=0x{vec2:X8}/0x{vec2Op:X4}->0x{vec2Target:X8} V4=0x{vec4:X8}/0x{vec4Op:X4}->0x{vec4Target:X8} V6=0x{vec6:X8}/0x{vec6Op:X4}->0x{vec6Target:X8} " +
+                        $"IRQ[m={mainIrq},sub={subIrq},swM={(mainSwPending ? 1 : 0)},swS={(subSwPending ? 1 : 0)},h={(md_m68k.g_interrupt_H_req ? 1 : 0)},v={(md_m68k.g_interrupt_V_req ? 1 : 0)},ext={(md_m68k.g_interrupt_EXT_req ? 1 : 0)},he={(hintEnabled ? 1 : 0)},ve={(vintEnabled ? 1 : 0)},cdd={(cddPending ? 1 : 0)},cdc={(cdcPending ? 1 : 0)},req={irqDebug.HintReqCount}/{irqDebug.VintReqCount}/{irqDebug.ExtReqCount},ack={irqDebug.HintAckCount}/{irqDebug.VintAckCount}/{irqDebug.ExtAckCount}]");
                     if (!string.IsNullOrWhiteSpace(MainWaitTraceFilePath))
                     {
                         string lineOut =
@@ -851,8 +877,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
                             $"tstExt=0x{ext:X4} raw=0x{probeAddrRaw:X6} b=0x{probeRaw8:X2} w=0x{probeRaw16:X4} " +
                             $"se=0x{probeAddrSe:X8} b=0x{probeSe8:X2} w=0x{probeSe16:X4} " +
                             $"A12000=0x{gate00:X2} A12001=0x{gate01:X2} A12002=0x{gate02:X2} A12003=0x{gate03:X2} A1200E=0x{gate0E:X2} " +
-                            $"V2=0x{vec2:X8}/0x{vec2Op:X4} V4=0x{vec4:X8}/0x{vec4Op:X4} V6=0x{vec6:X8}/0x{vec6Op:X4} " +
-                            $"IRQ[m={mainIrq},sub={subIrq},swM={(mainSwPending ? 1 : 0)},swS={(subSwPending ? 1 : 0)},h={(md_m68k.g_interrupt_H_req ? 1 : 0)},v={(md_m68k.g_interrupt_V_req ? 1 : 0)},ext={(md_m68k.g_interrupt_EXT_req ? 1 : 0)},he={(hintEnabled ? 1 : 0)},ve={(vintEnabled ? 1 : 0)},cdd={(cddPending ? 1 : 0)},cdc={(cdcPending ? 1 : 0)}]";
+                            $"V2=0x{vec2:X8}/0x{vec2Op:X4}->0x{vec2Target:X8} V4=0x{vec4:X8}/0x{vec4Op:X4}->0x{vec4Target:X8} V6=0x{vec6:X8}/0x{vec6Op:X4}->0x{vec6Target:X8} " +
+                            $"IRQ[m={mainIrq},sub={subIrq},swM={(mainSwPending ? 1 : 0)},swS={(subSwPending ? 1 : 0)},h={(md_m68k.g_interrupt_H_req ? 1 : 0)},v={(md_m68k.g_interrupt_V_req ? 1 : 0)},ext={(md_m68k.g_interrupt_EXT_req ? 1 : 0)},he={(hintEnabled ? 1 : 0)},ve={(vintEnabled ? 1 : 0)},cdd={(cddPending ? 1 : 0)},cdc={(cdcPending ? 1 : 0)},req={irqDebug.HintReqCount}/{irqDebug.VintReqCount}/{irqDebug.ExtReqCount},ack={irqDebug.HintAckCount}/{irqDebug.VintAckCount}/{irqDebug.ExtAckCount}]";
                         try
                         {
                             File.AppendAllText(MainWaitTraceFilePath!, lineOut + Environment.NewLine);
@@ -1896,10 +1922,14 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 _subCpuWaitCycles = 0;
             }
 
-            subCyclesInterleaved += RunSubCpuBudget(
+            int progressed = RunSubCpuBudget(
                 subSlice - subCyclesInterleaved,
                 frameCounter,
                 ref loggedSubWaitOpcodeWindow);
+            if (progressed <= 0)
+                break;
+
+            subCyclesInterleaved += progressed;
         }
 
         // Make main CPU register writes visible only after the sub side has
