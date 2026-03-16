@@ -572,6 +572,13 @@ public sealed class SegaCdAdapter : IEmulatorCore
         sb.AppendLine($"CdcDmaAddress: 0x{_memory.Cdc.DmaAddress:X4}");
         sb.AppendLine($"WordRamState: {_memory.WordRam.GetDebugState()}");
         sb.AppendLine($"WordRamSubBlocked: {_memory.WordRam.SubPerformedBlockedAccess()}");
+        _memory.ConsumeSubAckCounts(out long ack1, out long ack2, out long ack3, out long ack4, out long ack5, out long ack6);
+        sb.AppendLine($"SubAckLevel1: {ack1}");
+        sb.AppendLine($"SubAckLevel2: {ack2}");
+        sb.AppendLine($"SubAckLevel3: {ack3}");
+        sb.AppendLine($"SubAckLevel4: {ack4}");
+        sb.AppendLine($"SubAckLevel5: {ack5}");
+        sb.AppendLine($"SubAckLevel6: {ack6}");
         for (int i = 0; i < _memory.Cdd.Status.Length; i++)
             sb.AppendLine($"CddStatus[{i}]: 0x{_memory.Cdd.Status[i]:X2}");
         for (int i = 0; i < r.CddCommand.Length; i++)
@@ -946,6 +953,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                     ref loggedSubWaitOpcodeWindow);
                             }
 
+                            // Match jgenesis ordering: make main CPU register writes visible
+                            // after Sega CD time and the sub CPU have caught up to this main step.
                             _memory.FlushBufferedMainWrites();
 
                         }
@@ -1030,7 +1039,6 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                     remaining,
                                     frameCounter,
                                     ref loggedSubWaitOpcodeWindow);
-                                _memory.FlushBufferedMainWrites();
                                 if (ProfileScd) _profileCpuTicks += Stopwatch.GetTimestamp();
                             }
 
@@ -1178,7 +1186,6 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                 }
                             }
                             _memory.FlushBufferedSubWrites();
-                            _memory.FlushBufferedMainWrites();
                         }
                     }
                 }

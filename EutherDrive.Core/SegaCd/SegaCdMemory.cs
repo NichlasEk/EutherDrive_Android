@@ -1161,9 +1161,8 @@ public sealed class SegaCdMemory
                     {
                         if (LogCddResetEdge)
                             Console.WriteLine("[SCD-CDD-RESET-EDGE] 1->0");
-                    }
-                    if (!lineHigh)
                         Cdd.Reset();
+                    }
                     _cddResetLineHigh = lineHigh;
                 }
                 break;

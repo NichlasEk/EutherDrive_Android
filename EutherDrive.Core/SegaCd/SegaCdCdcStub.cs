@@ -78,7 +78,7 @@ public sealed class SegaCdCdcStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_DMA_LOW"),
         "1",
         StringComparison.Ordinal);
-    private static readonly bool CompatCdcForceWrrq = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_FORCE_WRRQ", defaultValue: false);
+    private static readonly bool CompatCdcForceWrrq = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_FORCE_WRRQ", defaultValue: true);
     // Keep this enabled by default: several BIOS flows set DOUTEN before explicitly
     // writing destination bits, and otherwise stall with DEST=None0.
     private static readonly bool CompatCdcAutoDest = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_DEST", defaultValue: false);

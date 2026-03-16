@@ -692,7 +692,10 @@ public sealed class SegaCdCddStub
         {
             (State.MotorStopped, null) => State.NoDisc,
             (State.MotorStopped, _) => State.Paused,
-            (_, _) when _reportType == ReportType.TrackNStartTime => State.ReadingToc,
+            // Real hardware briefly enters a TOC-read phase for TOCN reports, but our current
+            // stub can strand the BIOS in a repeated ReadingToc handshake. Return the report data
+            // directly while staying in the current ready state.
+            (_, _) when _reportType == ReportType.TrackNStartTime => _state == State.ReadingToc ? State.Paused : _state,
             _ => _state
         };
 
