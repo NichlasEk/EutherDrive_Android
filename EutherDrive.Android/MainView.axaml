@@ -71,6 +71,18 @@
       <Setter Property="BorderBrush" Value="#7DD3FC" />
     </Style>
 
+    <Style Selector="Border.padGlow">
+      <Setter Property="Width" Value="48" />
+      <Setter Property="Height" Value="48" />
+      <Setter Property="CornerRadius" Value="24" />
+      <Setter Property="Background" Value="#6B2563EB" />
+      <Setter Property="BorderBrush" Value="#93C5FD" />
+      <Setter Property="BorderThickness" Value="2" />
+      <Setter Property="Opacity" Value="0.92" />
+      <Setter Property="IsVisible" Value="False" />
+      <Setter Property="IsHitTestVisible" Value="False" />
+    </Style>
+
     <Style Selector="TextBlock.hudLabel">
       <Setter Property="Foreground" Value="#91A8BD" />
       <Setter Property="FontSize" Value="12" />
@@ -299,10 +311,20 @@
 
         <Border Grid.Row="1" Classes="surface" Padding="14">
           <Grid ColumnDefinitions="*,Auto,*" ColumnSpacing="18">
-            <Grid Grid.Column="0"
+            <Grid x:Name="PortraitDPadSurface"
+                  Grid.Column="0"
                   Width="192"
                   Height="192"
-                  HorizontalAlignment="Center">
+                  HorizontalAlignment="Center"
+                  Background="Transparent"
+                  PointerPressed="OnDPadPointerPressed"
+                  PointerMoved="OnDPadPointerMoved"
+                  PointerReleased="OnDPadPointerReleased"
+                  PointerCaptureLost="OnDPadPointerCaptureLost">
+              <Canvas IsHitTestVisible="False">
+                <Border x:Name="PortraitPadGlow"
+                        Classes="padGlow" />
+              </Canvas>
               <Border x:Name="PortraitPadUp"
                       Classes="pad"
                       IsHitTestVisible="False"
@@ -347,62 +369,6 @@
                            FontWeight="Bold"
                            Foreground="#91A8BD" />
               </Border>
-              <Grid Background="Transparent"
-                    ColumnDefinitions="*,*,*"
-                    RowDefinitions="*,*,*">
-                <Border Grid.Column="1"
-                        Background="Transparent"
-                        Tag="Up"
-                        PointerPressed="OnDPadZonePress"
-                        PointerReleased="OnDPadZoneRelease"
-                        PointerCaptureLost="OnDPadZoneCaptureLost" />
-                <Border Grid.Row="1"
-                        Grid.Column="0"
-                        Background="Transparent"
-                        Tag="Left"
-                        PointerPressed="OnDPadZonePress"
-                        PointerReleased="OnDPadZoneRelease"
-                        PointerCaptureLost="OnDPadZoneCaptureLost" />
-                <Border Grid.Row="1"
-                        Grid.Column="2"
-                        Background="Transparent"
-                        Tag="Right"
-                        PointerPressed="OnDPadZonePress"
-                        PointerReleased="OnDPadZoneRelease"
-                        PointerCaptureLost="OnDPadZoneCaptureLost" />
-                <Border Grid.Row="2"
-                        Grid.Column="1"
-                        Background="Transparent"
-                        Tag="Down"
-                        PointerPressed="OnDPadZonePress"
-                        PointerReleased="OnDPadZoneRelease"
-                        PointerCaptureLost="OnDPadZoneCaptureLost" />
-                <Border Grid.Column="0"
-                        Background="Transparent"
-                        Tag="Up Left"
-                        PointerPressed="OnDPadZonePress"
-                        PointerReleased="OnDPadZoneRelease"
-                        PointerCaptureLost="OnDPadZoneCaptureLost" />
-                <Border Grid.Column="2"
-                        Background="Transparent"
-                        Tag="Up Right"
-                        PointerPressed="OnDPadZonePress"
-                        PointerReleased="OnDPadZoneRelease"
-                        PointerCaptureLost="OnDPadZoneCaptureLost" />
-                <Border Grid.Row="2"
-                        Background="Transparent"
-                        Tag="Down Left"
-                        PointerPressed="OnDPadZonePress"
-                        PointerReleased="OnDPadZoneRelease"
-                        PointerCaptureLost="OnDPadZoneCaptureLost" />
-                <Border Grid.Row="2"
-                        Grid.Column="2"
-                        Background="Transparent"
-                        Tag="Down Right"
-                        PointerPressed="OnDPadZonePress"
-                        PointerReleased="OnDPadZoneRelease"
-                        PointerCaptureLost="OnDPadZoneCaptureLost" />
-              </Grid>
             </Grid>
 
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="10">
@@ -600,11 +566,21 @@
                     Tag="R1" />
           </Grid>
 
-          <Grid Width="150"
+          <Grid x:Name="LandscapeDPadSurface"
+                Width="150"
                 Height="150"
                 HorizontalAlignment="Left"
                 VerticalAlignment="Bottom"
-                Margin="26,0,0,18">
+                Margin="26,0,0,18"
+                Background="Transparent"
+                PointerPressed="OnDPadPointerPressed"
+                PointerMoved="OnDPadPointerMoved"
+                PointerReleased="OnDPadPointerReleased"
+                PointerCaptureLost="OnDPadPointerCaptureLost">
+            <Canvas IsHitTestVisible="False">
+              <Border x:Name="LandscapePadGlow"
+                      Classes="padGlow" />
+            </Canvas>
             <Border x:Name="LandscapePadUp"
                     Classes="landscapePad"
                     IsHitTestVisible="False"
@@ -633,62 +609,6 @@
                     VerticalAlignment="Center">
               <TextBlock Text="▶" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
             </Border>
-            <Grid Background="Transparent"
-                  ColumnDefinitions="*,*,*"
-                  RowDefinitions="*,*,*">
-              <Border Grid.Column="1"
-                      Background="Transparent"
-                      Tag="Up"
-                      PointerPressed="OnDPadZonePress"
-                      PointerReleased="OnDPadZoneRelease"
-                      PointerCaptureLost="OnDPadZoneCaptureLost" />
-              <Border Grid.Row="1"
-                      Grid.Column="0"
-                      Background="Transparent"
-                      Tag="Left"
-                      PointerPressed="OnDPadZonePress"
-                      PointerReleased="OnDPadZoneRelease"
-                      PointerCaptureLost="OnDPadZoneCaptureLost" />
-              <Border Grid.Row="1"
-                      Grid.Column="2"
-                      Background="Transparent"
-                      Tag="Right"
-                      PointerPressed="OnDPadZonePress"
-                      PointerReleased="OnDPadZoneRelease"
-                      PointerCaptureLost="OnDPadZoneCaptureLost" />
-              <Border Grid.Row="2"
-                      Grid.Column="1"
-                      Background="Transparent"
-                      Tag="Down"
-                      PointerPressed="OnDPadZonePress"
-                      PointerReleased="OnDPadZoneRelease"
-                      PointerCaptureLost="OnDPadZoneCaptureLost" />
-              <Border Grid.Column="0"
-                      Background="Transparent"
-                      Tag="Up Left"
-                      PointerPressed="OnDPadZonePress"
-                      PointerReleased="OnDPadZoneRelease"
-                      PointerCaptureLost="OnDPadZoneCaptureLost" />
-              <Border Grid.Column="2"
-                      Background="Transparent"
-                      Tag="Up Right"
-                      PointerPressed="OnDPadZonePress"
-                      PointerReleased="OnDPadZoneRelease"
-                      PointerCaptureLost="OnDPadZoneCaptureLost" />
-              <Border Grid.Row="2"
-                      Background="Transparent"
-                      Tag="Down Left"
-                      PointerPressed="OnDPadZonePress"
-                      PointerReleased="OnDPadZoneRelease"
-                      PointerCaptureLost="OnDPadZoneCaptureLost" />
-              <Border Grid.Row="2"
-                      Grid.Column="2"
-                      Background="Transparent"
-                      Tag="Down Right"
-                      PointerPressed="OnDPadZonePress"
-                      PointerReleased="OnDPadZoneRelease"
-                      PointerCaptureLost="OnDPadZoneCaptureLost" />
-            </Grid>
           </Grid>
 
           <Grid Width="192"

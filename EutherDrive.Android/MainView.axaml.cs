@@ -328,6 +328,7 @@ public partial class MainView : UserControl
         lock (_inputSync)
         {
             ReleaseDPadPointerLocked(e.Pointer);
+            HideDPadGlowLocked(control);
         }
 
         e.Pointer.Capture(null);
@@ -348,6 +349,8 @@ public partial class MainView : UserControl
             {
                 ReleaseDPadPointerLocked(pointer);
             }
+
+            HideDPadGlowLocked();
         }
 
         UpdateOverlaySummary();
@@ -494,6 +497,7 @@ public partial class MainView : UserControl
     private void UpdateDPadPointerLocked(Control control, IPointer pointer, Point point)
     {
         ReleaseDPadPointerLocked(pointer);
+        UpdateDPadGlowLocked(control, point);
 
         double width = control.Bounds.Width;
         double height = control.Bounds.Height;
@@ -504,7 +508,7 @@ public partial class MainView : UserControl
 
         double centerX = width * 0.5;
         double centerY = height * 0.5;
-        double deadZone = Math.Min(width, height) * 0.16;
+        double deadZone = Math.Min(width, height) * 0.14;
         double dx = point.X - centerX;
         double dy = point.Y - centerY;
 
@@ -635,6 +639,59 @@ public partial class MainView : UserControl
         SetPadVisualState(LandscapePadDown, down);
         SetPadVisualState(LandscapePadLeft, left);
         SetPadVisualState(LandscapePadRight, right);
+    }
+
+    private void UpdateDPadGlowLocked(Control control, Point point)
+    {
+        Border? glow = GetDPadGlowForControl(control);
+        if (glow == null)
+        {
+            return;
+        }
+
+        double controlWidth = control.Bounds.Width;
+        double controlHeight = control.Bounds.Height;
+        if (controlWidth <= 0 || controlHeight <= 0)
+        {
+            return;
+        }
+
+        double glowWidth = double.IsNaN(glow.Width) || glow.Width <= 0 ? 48 : glow.Width;
+        double glowHeight = double.IsNaN(glow.Height) || glow.Height <= 0 ? 48 : glow.Height;
+        double left = Math.Clamp(point.X - (glowWidth * 0.5), 0, Math.Max(0, controlWidth - glowWidth));
+        double top = Math.Clamp(point.Y - (glowHeight * 0.5), 0, Math.Max(0, controlHeight - glowHeight));
+
+        Canvas.SetLeft(glow, left);
+        Canvas.SetTop(glow, top);
+        glow.IsVisible = true;
+    }
+
+    private void HideDPadGlowLocked(Control? activeControl = null)
+    {
+        if (activeControl == null || ReferenceEquals(activeControl, PortraitDPadSurface))
+        {
+            PortraitPadGlow.IsVisible = false;
+        }
+
+        if (activeControl == null || ReferenceEquals(activeControl, LandscapeDPadSurface))
+        {
+            LandscapePadGlow.IsVisible = false;
+        }
+    }
+
+    private Border? GetDPadGlowForControl(Control control)
+    {
+        if (ReferenceEquals(control, PortraitDPadSurface))
+        {
+            return PortraitPadGlow;
+        }
+
+        if (ReferenceEquals(control, LandscapeDPadSurface))
+        {
+            return LandscapePadGlow;
+        }
+
+        return null;
     }
 
     private static void SetPadVisualState(Border? border, bool active)
@@ -1047,6 +1104,7 @@ public partial class MainView : UserControl
             _directionLatchFrames.Clear();
             _actionLatchFrames.Clear();
             UpdateDPadVisualsLocked();
+            HideDPadGlowLocked();
         }
 
         UpdateOverlaySummary();
