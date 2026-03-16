@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -43,5 +44,12 @@ public sealed class RomIdentity
     {
         using var sha = SHA256.Create();
         return sha.ComputeHash(data);
+    }
+
+    public static byte[] ComputeSha256(Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        using var sha = SHA256.Create();
+        return sha.ComputeHash(stream);
     }
 }

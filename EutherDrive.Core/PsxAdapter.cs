@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using ProjectPSX;
 using ProjectPSX.Devices.Input;
+using ProjectPSX.IO;
 using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core;
@@ -201,7 +202,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
 
     public void LoadRom(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path) || !VirtualFileSystem.Exists(path))
             throw new FileNotFoundException("PSX image not found.", path);
 
         _diskPath = path;
@@ -217,7 +218,8 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
         if (bootFastLoadEnabled != FastLoadEnabled)
             _core.SetFastLoadEnabled(FastLoadEnabled);
         _frameCounter = 0;
-        _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(File.ReadAllBytes(path)));
+        using Stream romStream = VirtualFileSystem.OpenRead(path);
+        _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(romStream));
     }
 
     public void Reset()

@@ -1,6 +1,7 @@
 ﻿using System.IO;
 using System;
 using System.Collections.Generic;
+using ProjectPSX.IO;
 using static ProjectPSX.Devices.CdRom.TrackBuilder;
 
 namespace ProjectPSX.Devices.CdRom {
@@ -11,7 +12,7 @@ namespace ProjectPSX.Devices.CdRom {
 
         private byte[] rawSectorBuffer = new byte[BYTES_PER_SECTOR_RAW];
 
-        private FileStream[] streams;
+        private Stream[] streams;
 
         public List<Track> tracks;
 
@@ -30,10 +31,10 @@ namespace ProjectPSX.Devices.CdRom {
                 return;
             }
 
-            streams = new FileStream[tracks.Count];
+            streams = new Stream[tracks.Count];
 
             for (int i = 0; i < tracks.Count; i++) {
-                streams[i] = new FileStream(tracks[i].file, FileMode.Open, FileAccess.Read);
+                streams[i] = VirtualFileSystem.OpenRead(tracks[i].file);
                 if (Verbose)
                     Console.WriteLine($"Track {i} size: {tracks[i].size} lbaStart: {tracks[i].lbaStart} lbaEnd: {tracks[i].lbaEnd}");
             }
@@ -54,7 +55,7 @@ namespace ProjectPSX.Devices.CdRom {
             int position = currentTrack.fileStartSector + (loc - currentTrack.lbaStart);
             if (position < 0) position = 0;
 
-            FileStream currentStream = streams[currentTrack.number - 1];
+            Stream currentStream = streams[currentTrack.number - 1];
             currentStream.Seek(position * BYTES_PER_SECTOR_RAW, SeekOrigin.Begin);
             currentStream.Read(rawSectorBuffer, 0, rawSectorBuffer.Length);
             return rawSectorBuffer;

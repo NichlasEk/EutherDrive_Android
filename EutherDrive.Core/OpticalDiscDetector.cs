@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using EutherDrive.Core.SegaCd;
+using ProjectPSX.IO;
 
 namespace EutherDrive.Core;
 
@@ -19,7 +20,7 @@ public static class OpticalDiscDetector
 
     public static OpticalDiscKind Detect(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path) || !VirtualFileSystem.Exists(path))
             return OpticalDiscKind.Unknown;
 
         string ext = Path.GetExtension(path).ToLowerInvariant();
@@ -110,10 +111,10 @@ public static class OpticalDiscDetector
     {
         try
         {
-            if (!File.Exists(path))
+            if (!VirtualFileSystem.Exists(path))
                 return false;
 
-            using var fs = File.OpenRead(path);
+            using Stream fs = VirtualFileSystem.OpenRead(path);
             int readLen = (int)Math.Min(PsxProbeBytes, fs.Length);
             byte[] buf = new byte[readLen];
             int n = fs.Read(buf, 0, readLen);

@@ -1,6 +1,21 @@
 # Build artifacts
 bin/
 obj/
+artifacts/
+*.apk
+*.aab
+*.apks
+*.keystore
+*.jks
+
+# Editor / local tool state
+.vs/
+.vscode/
+.idea/
+.ruff_cache/
+*.swp
+*.swo
+*~
 
 # Emulator logs
 rom_*.log

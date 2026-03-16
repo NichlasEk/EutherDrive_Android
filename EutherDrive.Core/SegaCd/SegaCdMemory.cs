@@ -1199,13 +1199,18 @@ public sealed class SegaCdMemory
                     Console.WriteLine(
                         $"[COMM-DEBUG] SUB  W 0x800F = 0x{value:X2} prev=0x{Registers.SubCpuCommunicationFlags:X2} " +
                         $"PC=0x{SubPcProvider?.Invoke():X6}");
+                AppendTraceLine(
+                    $"[SCD-IRQ-FILE] SUB COMM8 reg=0x{reg:X4} val=0x{value:X2} prev=0x{Registers.SubCpuCommunicationFlags:X2} " +
+                    $"pc=0x{SubPcProvider?.Invoke():X6}");
                 Registers.SubCpuCommunicationFlags = value;
                 if (LogCommFlags)
                     Console.WriteLine($"[SCD-COMM] SUB W8 0x{reg:X4} = 0x{value:X2}");
                 break;
             case >= 0x0020 and <= 0x002F:
                 if (LogSubComm)
-                    Console.WriteLine($"[SCD-SUBREG] W8 STATUS 0x{reg:X4} = 0x{value:X2}");
+                    Console.WriteLine($"[SCD-SUBREG] W8 STATUS 0x{reg:X4} = 0x{value:X2} PC=0x{SubPcProvider?.Invoke():X6}");
+                AppendTraceLine(
+                    $"[SCD-IRQ-FILE] SUB STATUS8 reg=0x{reg:X4} val=0x{value:X2} pc=0x{SubPcProvider?.Invoke():X6}");
                 WriteCommBuffer(Registers.CommunicationStatuses, reg, value);
                 break;
             case 0x0030:
@@ -1324,11 +1329,16 @@ public sealed class SegaCdMemory
                 break;
             case 0x000E:
                 // Only sub CPU flags are writable by sub CPU word access.
+                AppendTraceLine(
+                    $"[SCD-IRQ-FILE] SUB COMM16 reg=0x{reg:X4} val=0x{value:X4} prev=0x{Registers.SubCpuCommunicationFlags:X2} " +
+                    $"pc=0x{SubPcProvider?.Invoke():X6}");
                 Registers.SubCpuCommunicationFlags = (byte)value;
                 break;
             case >= 0x0020 and <= 0x002F:
                 if (LogSubComm)
-                    Console.WriteLine($"[SCD-SUBREG] W16 STATUS 0x{reg:X4} = 0x{value:X4}");
+                    Console.WriteLine($"[SCD-SUBREG] W16 STATUS 0x{reg:X4} = 0x{value:X4} PC=0x{SubPcProvider?.Invoke():X6}");
+                AppendTraceLine(
+                    $"[SCD-IRQ-FILE] SUB STATUS16 reg=0x{reg:X4} val=0x{value:X4} pc=0x{SubPcProvider?.Invoke():X6}");
                 WriteCommWord(Registers.CommunicationStatuses, reg, value);
                 break;
             case 0x0030:

@@ -314,6 +314,14 @@ internal sealed partial class InstructionExecutor
             var destResolved = ResolveAddressWithPost(dest, OpSize.Byte);
             if (!destResolved.IsOk) return ExecuteResult<uint>.Err(destResolved.Error!.Value);
             byte value = ReadByteResolved(destResolved.Value);
+            if (ShouldTracePc(_tracePc))
+            {
+                string line =
+                    $"[M68K-BIT] cpu={_name} tracePc=0x{_tracePc:X8} curPc=0x{_registers.Pc:X8} " +
+                    $"op=0x{_opcode:X4} destKind={dest.Kind} addr=0x{destResolved.Value.Address:X8} val=0x{value:X2}";
+                Console.WriteLine(line);
+                AppendTraceLine(TraceWriteFile, line);
+            }
             int bit = bitIndex.Value % 8;
             _registers.Ccr.Zero = !value.Test(bit);
             byte newValue = (byte)op(value, bit);

@@ -1,0 +1,470 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="EutherDrive.Android.MainView">
+  <UserControl.Styles>
+    <Style Selector="Border.surface">
+      <Setter Property="Background" Value="#C8141C27" />
+      <Setter Property="BorderBrush" Value="#324356" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="22" />
+    </Style>
+
+    <Style Selector="Button.chrome">
+      <Setter Property="Background" Value="#182736" />
+      <Setter Property="Foreground" Value="#EEF6FF" />
+      <Setter Property="BorderBrush" Value="#36506B" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="Padding" Value="14,10" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <Style Selector="Button.chrome:pressed">
+      <Setter Property="Background" Value="#0F1B27" />
+    </Style>
+
+    <Style Selector="Button.action">
+      <Setter Property="Background" Value="#173E43" />
+      <Setter Property="BorderBrush" Value="#5EEAD4" />
+    </Style>
+
+    <Style Selector="Button.warn">
+      <Setter Property="Background" Value="#3A2318" />
+      <Setter Property="BorderBrush" Value="#F59E0B" />
+    </Style>
+
+    <Style Selector="Border.pad">
+      <Setter Property="Width" Value="64" />
+      <Setter Property="Height" Value="64" />
+      <Setter Property="CornerRadius" Value="32" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderBrush" Value="#3F566F" />
+      <Setter Property="Background" Value="#B8141F2A" />
+    </Style>
+
+    <Style Selector="Border.padPressed">
+      <Setter Property="Background" Value="#E85EEAD4" />
+      <Setter Property="BorderBrush" Value="#D8FB7185" />
+    </Style>
+
+    <Style Selector="TextBlock.hudLabel">
+      <Setter Property="Foreground" Value="#91A8BD" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid Background="#091119">
+    <Border Margin="-120,-70,0,0"
+            Width="340"
+            Height="340"
+            HorizontalAlignment="Left"
+            VerticalAlignment="Top"
+            CornerRadius="170"
+            Background="#173149"
+            Opacity="0.24" />
+    <Border Margin="0,180,-120,0"
+            Width="300"
+            Height="300"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Top"
+            CornerRadius="150"
+            Background="#2A1A29"
+            Opacity="0.18" />
+
+    <Grid RowDefinitions="Auto,*,Auto" Margin="14" RowSpacing="12">
+      <Border Grid.Row="0" Classes="surface" Padding="14">
+        <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="8">
+          <Button Grid.Column="0"
+                  Classes="chrome"
+                  Content="Settings"
+                  Click="OnMenuTapped" />
+
+          <StackPanel Grid.Column="1" VerticalAlignment="Center">
+            <TextBlock Text="EutherDrive Android"
+                       FontSize="24"
+                       FontWeight="Black"
+                       FontStyle="Italic"
+                       Foreground="#EEF6FF" />
+          </StackPanel>
+
+          <Button Grid.Column="2"
+                  Classes="chrome"
+                  Content="Open ROM"
+                  Click="OnPickRom" />
+          <Button Grid.Column="3"
+                  Classes="chrome action"
+                  Content="Start"
+                  Click="OnStartClicked" />
+          <Button Grid.Column="4"
+                  Classes="chrome warn"
+                  Content="Stop"
+                  Click="OnStopClicked" />
+        </Grid>
+      </Border>
+
+      <Grid Grid.Row="1" RowDefinitions="*,Auto" RowSpacing="12">
+        <Border Grid.Row="0" Classes="surface" Padding="10">
+          <Grid>
+            <Border CornerRadius="18"
+                    Background="#060A0E"
+                    BorderBrush="#3A4A59"
+                    BorderThickness="1" />
+
+            <Grid Margin="6">
+              <Border HorizontalAlignment="Stretch"
+                      VerticalAlignment="Stretch"
+                      CornerRadius="16"
+                      Background="#0D131A" />
+
+              <Grid Margin="12" RowDefinitions="Auto,*,Auto,Auto">
+                <Grid>
+                  <Border HorizontalAlignment="Left"
+                          Background="#A0121923"
+                          CornerRadius="999"
+                          Padding="10,6">
+                    <TextBlock Text="{Binding StatusPill}"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               Foreground="#5EEAD4" />
+                  </Border>
+
+                  <Border HorizontalAlignment="Right"
+                          Background="#A0121923"
+                          CornerRadius="999"
+                          Padding="10,6">
+                    <TextBlock Text="{Binding SelectedConsoleLabel}"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               Foreground="#F59E0B" />
+                  </Border>
+                </Grid>
+
+                <Grid Grid.Row="1">
+                  <Image Name="ScreenImage"
+                         Stretch="Uniform"
+                         HorizontalAlignment="Stretch"
+                         VerticalAlignment="Stretch" />
+
+                  <Border HorizontalAlignment="Center"
+                          VerticalAlignment="Center"
+                          MaxWidth="360"
+                          Padding="18"
+                          CornerRadius="18"
+                          Background="#A00B1219"
+                          IsVisible="{Binding ScreenOverlayVisible}">
+                    <StackPanel Spacing="10">
+                      <TextBlock Text="{Binding ScreenTitle}"
+                                 FontSize="28"
+                                 FontWeight="Black"
+                                 TextAlignment="Center"
+                                 Foreground="#EEF6FF" />
+                      <TextBlock Text="{Binding ScreenDescription}"
+                                 FontSize="14"
+                                 TextWrapping="Wrap"
+                                 TextAlignment="Center"
+                                 Foreground="#91A8BD" />
+                    </StackPanel>
+                  </Border>
+                </Grid>
+
+                <Border Grid.Row="2"
+                        HorizontalAlignment="Stretch"
+                        Background="#7A101820"
+                        CornerRadius="16"
+                        Padding="12">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                    <StackPanel Spacing="4">
+                      <TextBlock Classes="hudLabel" Text="Current ROM" />
+                      <TextBlock Text="{Binding CurrentRomDisplay}"
+                                 Foreground="#EEF6FF"
+                                 TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" HorizontalAlignment="Right" Spacing="4">
+                      <TextBlock Classes="hudLabel" Text="Input" />
+                      <TextBlock Text="{Binding LastPressedDisplay}"
+                                 Foreground="#FB7185"
+                                 FontWeight="Bold"
+                                 HorizontalAlignment="Right" />
+                    </StackPanel>
+                  </Grid>
+                </Border>
+
+                <Border Grid.Row="3"
+                        Margin="0,8,0,0"
+                        HorizontalAlignment="Stretch"
+                        Background="#70101820"
+                        CornerRadius="12"
+                        Padding="10,6">
+                  <TextBlock Text="{Binding PerfSummary}"
+                             FontSize="11"
+                             Foreground="#91A8BD"
+                             TextWrapping="NoWrap" />
+                </Border>
+              </Grid>
+            </Grid>
+          </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Classes="surface" Padding="14">
+          <Grid ColumnDefinitions="*,Auto,*" ColumnSpacing="18">
+            <Grid Grid.Column="0" Width="192" Height="192" HorizontalAlignment="Center">
+              <Border Classes="pad"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Top"
+                      PointerPressed="OnOverlayPress"
+                      PointerReleased="OnOverlayRelease"
+                      PointerCaptureLost="OnOverlayCaptureLost"
+                      Tag="Up">
+                <TextBlock Text="▲" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
+              </Border>
+              <Border Classes="pad"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Bottom"
+                      PointerPressed="OnOverlayPress"
+                      PointerReleased="OnOverlayRelease"
+                      PointerCaptureLost="OnOverlayCaptureLost"
+                      Tag="Down">
+                <TextBlock Text="▼" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
+              </Border>
+              <Border Classes="pad"
+                      HorizontalAlignment="Left"
+                      VerticalAlignment="Center"
+                      PointerPressed="OnOverlayPress"
+                      PointerReleased="OnOverlayRelease"
+                      PointerCaptureLost="OnOverlayCaptureLost"
+                      Tag="Left">
+                <TextBlock Text="◀" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
+              </Border>
+              <Border Classes="pad"
+                      HorizontalAlignment="Right"
+                      VerticalAlignment="Center"
+                      PointerPressed="OnOverlayPress"
+                      PointerReleased="OnOverlayRelease"
+                      PointerCaptureLost="OnOverlayCaptureLost"
+                      Tag="Right">
+                <TextBlock Text="▶" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
+              </Border>
+              <Border Width="62"
+                      Height="62"
+                      CornerRadius="31"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      Background="#C80D141B"
+                      BorderBrush="#43566A"
+                      BorderThickness="1">
+                <TextBlock Text="D-Pad"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           FontSize="12"
+                           FontWeight="Bold"
+                           Foreground="#91A8BD" />
+              </Border>
+            </Grid>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="10">
+              <Button Classes="chrome"
+                      Width="74"
+                      Content="Menu"
+                      PointerPressed="OnOverlayButtonPress"
+                      PointerReleased="OnOverlayButtonRelease"
+                      PointerCaptureLost="OnOverlayButtonCaptureLost"
+                      Tag="Menu" />
+              <Button Classes="chrome"
+                      Width="74"
+                      Content="Select"
+                      PointerPressed="OnOverlayButtonPress"
+                      PointerReleased="OnOverlayButtonRelease"
+                      PointerCaptureLost="OnOverlayButtonCaptureLost"
+                      Tag="Select" />
+              <Button Classes="chrome"
+                      Width="74"
+                      Content="Start"
+                      PointerPressed="OnOverlayButtonPress"
+                      PointerReleased="OnOverlayButtonRelease"
+                      PointerCaptureLost="OnOverlayButtonCaptureLost"
+                      Tag="Start" />
+            </StackPanel>
+
+            <Grid Grid.Column="2" Width="212" Height="212" HorizontalAlignment="Center">
+              <Button Classes="chrome action"
+                      Width="74"
+                      Height="74"
+                      HorizontalAlignment="Left"
+                      VerticalAlignment="Center"
+                      Content="Y"
+                      PointerPressed="OnOverlayButtonPress"
+                      PointerReleased="OnOverlayButtonRelease"
+                      PointerCaptureLost="OnOverlayButtonCaptureLost"
+                      Tag="Y" />
+              <Button Classes="chrome action"
+                      Width="74"
+                      Height="74"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Bottom"
+                      Content="B"
+                      PointerPressed="OnOverlayButtonPress"
+                      PointerReleased="OnOverlayButtonRelease"
+                      PointerCaptureLost="OnOverlayButtonCaptureLost"
+                      Tag="B" />
+              <Button Classes="chrome action"
+                      Width="74"
+                      Height="74"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Top"
+                      Content="X"
+                      PointerPressed="OnOverlayButtonPress"
+                      PointerReleased="OnOverlayButtonRelease"
+                      PointerCaptureLost="OnOverlayButtonCaptureLost"
+                      Tag="X" />
+              <Button Classes="chrome action"
+                      Width="74"
+                      Height="74"
+                      HorizontalAlignment="Right"
+                      VerticalAlignment="Center"
+                      Content="A"
+                      PointerPressed="OnOverlayButtonPress"
+                      PointerReleased="OnOverlayButtonRelease"
+                      PointerCaptureLost="OnOverlayButtonCaptureLost"
+                      Tag="A" />
+            </Grid>
+          </Grid>
+        </Border>
+      </Grid>
+
+      <Border Grid.Row="2" Classes="surface" Padding="12">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+          <StackPanel Spacing="4">
+            <TextBlock Classes="hudLabel" Text="Session" />
+            <TextBlock Text="{Binding FooterStatus}" Foreground="#EEF6FF" TextWrapping="Wrap" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Spacing="4" HorizontalAlignment="Right">
+            <TextBlock Classes="hudLabel" Text="Overlay" HorizontalAlignment="Right" />
+            <TextBlock Text="{Binding OverlaySummary}"
+                       HorizontalAlignment="Right"
+                       Foreground="#5EEAD4" />
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <Border IsVisible="{Binding SettingsVisible}"
+            Background="#CC091119">
+      <Grid Margin="18">
+        <Border Classes="surface"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Center"
+                MaxWidth="720"
+                Padding="18">
+          <Grid RowDefinitions="Auto,*,Auto" RowSpacing="14">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="System Files"
+                           FontSize="22"
+                           FontWeight="Black"
+                           FontStyle="Italic" />
+                <TextBlock Text="Pick BIOS and coprocessor files once and keep them in app storage."
+                           Foreground="#91A8BD"
+                           TextWrapping="Wrap" />
+              </StackPanel>
+              <Button Grid.Column="1"
+                      Classes="chrome"
+                      Content="Close"
+                      Click="OnCloseSettings" />
+            </Grid>
+
+            <ScrollViewer Grid.Row="1" MaxHeight="520">
+              <StackPanel Spacing="12">
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="PCE BIOS" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding PceBiosDisplay}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickPceBios" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearPceBios" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="PSX BIOS" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding PsxBiosDisplay}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickPsxBios" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearPsxBios" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="DSP1" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding Dsp1Display}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickDsp1" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearDsp1" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="DSP2" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding Dsp2Display}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickDsp2" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearDsp2" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="DSP3" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding Dsp3Display}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickDsp3" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearDsp3" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="DSP4" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding Dsp4Display}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickDsp4" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearDsp4" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="ST010" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding St010Display}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickSt010" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearSt010" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="ST011" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding St011Display}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickSt011" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearSt011" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="ST018" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding St018Display}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickSt018" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearSt018" />
+                  </Grid>
+                </Border>
+              </StackPanel>
+            </ScrollViewer>
+
+            <TextBlock Grid.Row="2"
+                       Text="{Binding SettingsHint}"
+                       Foreground="#91A8BD"
+                       TextWrapping="Wrap" />
+          </Grid>
+        </Border>
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

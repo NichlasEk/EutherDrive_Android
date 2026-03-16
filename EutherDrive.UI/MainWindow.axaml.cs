@@ -4559,19 +4559,37 @@ public partial class MainWindow : Window
             if (openAlSink != null)
                 return openAlSink;
 
-            return new PwCatAudioSink();
+            return CreatePlatformFallbackAudioSink();
         }
 
         if (sinkPref == "openal")
         {
             IAudioSink? openAlSink = OpenAlAudioOutput.TryCreate();
-            return openAlSink ?? new PwCatAudioSink();
+            return openAlSink ?? CreatePlatformFallbackAudioSink();
         }
 
         if (sinkPref == "pwcat")
+            return CreatePwCatOrFallbackAudioSink();
+
+        return CreatePlatformFallbackAudioSink();
+    }
+
+    private static IAudioSink CreatePlatformFallbackAudioSink()
+    {
+        if (OperatingSystem.IsLinux())
             return new PwCatAudioSink();
 
-        return new PwCatAudioSink();
+        Console.WriteLine("[Audio] No native audio sink available for this platform; falling back to NullAudioSink.");
+        return new NullAudioSink();
+    }
+
+    private static IAudioSink CreatePwCatOrFallbackAudioSink()
+    {
+        if (OperatingSystem.IsLinux())
+            return new PwCatAudioSink();
+
+        Console.WriteLine("[Audio] pw-cat requested on a non-Linux platform; falling back to NullAudioSink.");
+        return new NullAudioSink();
     }
 
     private void StopAudioEngine()

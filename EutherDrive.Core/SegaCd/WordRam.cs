@@ -121,19 +121,13 @@ public sealed class WordRam
     public void MainCpuWriteControl(byte value)
     {
         bool dmna = (value & 0x02) != 0;
-        if (_mode == WordRamMode.TwoM)
+        // In 2M mode, DMNA=1 hands Word RAM to the sub CPU.
+        // DMNA=0 does not immediately give it back to the main CPU.
+        if (dmna)
         {
-            if (dmna)
-            {
-                _owner2m = ScdCpu.Sub;
-                FlushBufferedSubWrites();
-                _subBlockedRead = false;
-            }
-            else
-            {
-                // Main CPU taking back ownership
-                _owner2m = ScdCpu.Main;
-            }
+            _owner2m = ScdCpu.Sub;
+            FlushBufferedSubWrites();
+            _subBlockedRead = false;
         }
 
         if (_mode == WordRamMode.OneM && !dmna)

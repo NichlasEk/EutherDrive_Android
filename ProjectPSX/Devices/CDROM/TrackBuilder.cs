@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using ProjectPSX.IO;
 
 namespace ProjectPSX.Devices.CdRom {
     public class TrackBuilder {
@@ -62,7 +63,7 @@ namespace ProjectPSX.Devices.CdRom {
                     string referencedFile = ParseCueFile(line);
                     currentFile = ResolveCueFilePath(cue, referencedFile);
                     EnsureSupportedTrackFile(currentFile);
-                    currentFileSize = new FileInfo(currentFile).Length;
+                    currentFileSize = VirtualFileSystem.GetLength(currentFile);
                     currentTrack = null;
                     continue;
                 }
@@ -182,7 +183,7 @@ namespace ProjectPSX.Devices.CdRom {
         }
 
         private static void EnsureSupportedTrackFile(string file) {
-            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using Stream stream = VirtualFileSystem.OpenRead(file);
             Span<byte> header = stackalloc byte[4];
             int read = stream.Read(header);
             if (read == 4 && header[0] == (byte)'E' && header[1] == (byte)'C' && header[2] == (byte)'M' && header[3] == 0x00) {
@@ -199,13 +200,13 @@ namespace ProjectPSX.Devices.CdRom {
         private static string ResolveCueFilePath(string cuePath, string referencedFile) {
             string dir = Path.GetDirectoryName(cuePath) ?? string.Empty;
             string combined = Path.GetFullPath(Path.Combine(dir, referencedFile));
-            if (File.Exists(combined)) {
+            if (VirtualFileSystem.Exists(combined)) {
                 return combined;
             }
 
             string nameOnly = Path.GetFileName(referencedFile);
             string sibling = Path.GetFullPath(Path.Combine(dir, nameOnly));
-            if (File.Exists(sibling)) {
+            if (VirtualFileSystem.Exists(sibling)) {
                 return sibling;
             }
 
@@ -333,7 +334,7 @@ namespace ProjectPSX.Devices.CdRom {
             Console.WriteLine($"[CD Track Builder] Generating CD Track from: {file}");
             List<Track> tracks = new List<Track>();
 
-            long size = new FileInfo(file).Length;
+            long size = VirtualFileSystem.GetLength(file);
             ValidateSectorAlignedFile(file, size);
             int lba = (int)(size / BytesPerSectorRaw);
             int lbaStart = 150; // 150 frames (2 seconds) offset from track 1

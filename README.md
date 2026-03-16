@@ -125,6 +125,24 @@ dotnet build
 dotnet run --project EutherDrive.UI
 ```
 
+## Android Fork Bootstrap
+There is now a separate Android head project at `EutherDrive.Android/`.
+
+- It is intentionally not added to `EutherDrive.sln` yet, so the existing desktop solution still builds on machines without Android workloads.
+- Install the .NET Android workload first:
+
+```bash
+dotnet workload install android
+```
+
+- Then build the Android head directly:
+
+```bash
+dotnet build EutherDrive.Android/EutherDrive.Android.csproj
+```
+
+This Android head is currently a minimal shell. The next required work is to extract a reusable emulator view from the desktop window, add an Android-specific audio output path, and build a touch-first layout around it.
+
 ## References
 - https://github.com/sasayaki-japan/MDTracer-Genesis-megadrive-Emulator
 - https://github.com/Kookpot/SuperNintendoEmulator

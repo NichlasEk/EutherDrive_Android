@@ -110,6 +110,7 @@ public sealed class M68000
         _regs.SupervisorMode = true;
         _regs.TraceEnabled = false;
         _regs.InterruptPriorityMask = Registers.DefaultInterruptMask;
+        _regs.PendingInterruptLevel = null;
         _regs.Stopped = false;
         _regs.Frozen = false;
         _regs.AddressError = false;

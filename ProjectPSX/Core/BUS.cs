@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
+using ProjectPSX.IO;
 
 namespace ProjectPSX {
 
@@ -296,40 +297,47 @@ public class BUS {
 
         internal unsafe void loadBios() {
             string? overridePath = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS");
-            if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath)) {
+            if (!string.IsNullOrWhiteSpace(overridePath) && VirtualFileSystem.Exists(overridePath)) {
                 try {
-                    byte[] rom = File.ReadAllBytes(overridePath);
+                    byte[] rom = VirtualFileSystem.ReadAllBytes(overridePath);
                     Marshal.Copy(rom, 0, (IntPtr)biosPtr, rom.Length);
-                    Console.ForegroundColor = ConsoleColor.DarkGreen;
                     Console.WriteLine($"[BUS] BIOS File found at (override): {overridePath}");
                     Console.WriteLine("[BUS] BIOS Contents Loaded.");
-                    Console.ResetColor();
                     return;
                 } catch (Exception e) {
-                    Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine($"[BUS] Error loading BIOS from override {overridePath}:\n" + e.Message);
-                    Console.ResetColor();
                 }
             }
             // Try multiple locations for BIOS file
             // Try both uppercase and lowercase filenames since Linux is case-sensitive
             string[] biosFilenames = { "SCPH1001.BIN", "scph1001.bin", "SCPH1001.bin", "scph1001.BIN" };
+            string currentDirectory = ".";
+            string appBaseDirectory = ".";
+            try {
+                currentDirectory = Environment.CurrentDirectory;
+            } catch {
+            }
+            try {
+                appBaseDirectory = AppContext.BaseDirectory;
+            } catch {
+            }
+
             string[] biosPaths = {
-                "./{0}",                    // Current directory
-                "{0}",                      // Current directory (no ./)
-                "../bios/{0}",              // ../bios directory
-                "../../bios/{0}",           // ../../bios directory
-                "../../../bios/{0}",        // ../../../bios directory
-                "/bios/{0}",                // Absolute /bios directory
-                Path.Combine(Environment.CurrentDirectory, "bios", "{0}"), // Current dir/bios
-                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bios", "{0}") // App base/bios
+                "./{0}",
+                "{0}",
+                "../bios/{0}",
+                "../../bios/{0}",
+                "../../../bios/{0}",
+                "/bios/{0}",
+                Path.Combine(currentDirectory, "bios", "{0}"),
+                Path.Combine(appBaseDirectory, "bios", "{0}")
             };
             
             string foundBiosPath = null;
             foreach (string filename in biosFilenames) {
                 foreach (string pathTemplate in biosPaths) {
                     string path = string.Format(pathTemplate, filename);
-                    if (File.Exists(path)) {
+                    if (VirtualFileSystem.Exists(path)) {
                         foundBiosPath = path;
                         break;
                     }
@@ -338,7 +346,6 @@ public class BUS {
             }
             
             if (foundBiosPath == null) {
-                Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[BUS] No BIOS file found. Tried locations:");
                 foreach (string filename in biosFilenames) {
                     foreach (string pathTemplate in biosPaths) {
@@ -346,22 +353,17 @@ public class BUS {
                         Console.WriteLine($"  {path}");
                     }
                 }
-                Console.ResetColor();
                 return;
             }
             
             try {
-                byte[] rom = File.ReadAllBytes(foundBiosPath);
+                byte[] rom = VirtualFileSystem.ReadAllBytes(foundBiosPath);
                 Marshal.Copy(rom, 0, (IntPtr)biosPtr, rom.Length);
 
-                Console.ForegroundColor = ConsoleColor.DarkGreen;
                 Console.WriteLine($"[BUS] BIOS File found at: {foundBiosPath}");
                 Console.WriteLine("[BUS] BIOS Contents Loaded.");
-                Console.ResetColor();
             } catch (Exception e) {
-                Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"[BUS] Error loading BIOS from {foundBiosPath}:\n" + e.Message);
-                Console.ResetColor();
             }
         }
 
