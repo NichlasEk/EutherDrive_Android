@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using ProjectPSX.IO;
 
 namespace EutherDrive.Core;
 
@@ -29,7 +30,7 @@ public static class CueSheetResolver
 
     public static CueTrackReference? ResolveFirstDataTrack(string cuePath)
     {
-        if (string.IsNullOrWhiteSpace(cuePath) || !File.Exists(cuePath))
+        if (string.IsNullOrWhiteSpace(cuePath) || !VirtualFileSystem.Exists(cuePath))
             return null;
 
         string baseDir = Path.GetDirectoryName(cuePath) ?? string.Empty;
@@ -38,7 +39,7 @@ public static class CueSheetResolver
         int currentTrackNumber = 0;
         int? currentFileBaseLba = null;
 
-        foreach (string rawLine in File.ReadLines(cuePath))
+        foreach (string rawLine in ReadLines(cuePath))
         {
             string line = rawLine.Trim();
             if (line.Length == 0)
@@ -100,10 +101,10 @@ public static class CueSheetResolver
 
     public static IEnumerable<string> EnumerateReferencedFiles(string cuePath)
     {
-        if (string.IsNullOrWhiteSpace(cuePath) || !File.Exists(cuePath))
+        if (string.IsNullOrWhiteSpace(cuePath) || !VirtualFileSystem.Exists(cuePath))
             yield break;
 
-        foreach (string rawLine in File.ReadLines(cuePath))
+        foreach (string rawLine in ReadLines(cuePath))
         {
             string line = rawLine.Trim();
             if (!line.StartsWith("FILE", StringComparison.OrdinalIgnoreCase))
@@ -123,20 +124,21 @@ public static class CueSheetResolver
 
     public static string ResolveReferencedPathFromDirectory(string baseDir, string referencedFile)
     {
-        string combined = Path.GetFullPath(Path.Combine(baseDir, referencedFile));
-        if (File.Exists(combined))
+        string normalizedReference = NormalizeReferencedPath(referencedFile);
+        string combined = Path.GetFullPath(Path.Combine(baseDir, normalizedReference));
+        if (VirtualFileSystem.Exists(combined))
             return combined;
 
-        string nameOnly = Path.GetFileName(referencedFile);
+        string nameOnly = Path.GetFileName(normalizedReference);
         string sibling = Path.GetFullPath(Path.Combine(baseDir, nameOnly));
-        if (File.Exists(sibling))
+        if (VirtualFileSystem.Exists(sibling))
             return sibling;
 
-        string extension = Path.GetExtension(referencedFile);
-        if (string.IsNullOrWhiteSpace(extension) || !Directory.Exists(baseDir))
+        string extension = Path.GetExtension(nameOnly);
+        if (string.IsNullOrWhiteSpace(extension) || !VirtualFileSystem.DirectoryExists(baseDir))
             return combined;
 
-        string[] candidates = Directory.GetFiles(baseDir, $"*{extension}");
+        string[] candidates = VirtualFileSystem.GetFiles(baseDir, $"*{extension}");
         if (candidates.Length == 1)
             return Path.GetFullPath(candidates[0]);
 
@@ -302,5 +304,20 @@ public static class CueSheetResolver
         }
 
         return sb.ToString();
+    }
+
+    private static IEnumerable<string> ReadLines(string path)
+    {
+        using Stream stream = VirtualFileSystem.OpenRead(path);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        while (reader.ReadLine() is { } line)
+            yield return line;
+    }
+
+    private static string NormalizeReferencedPath(string referencedFile)
+    {
+        return referencedFile
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
     }
 }

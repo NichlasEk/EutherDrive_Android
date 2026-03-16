@@ -1,12 +1,16 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 namespace ProjectPSX.IO
 {
     public static class VirtualFileSystem
     {
+        private const string VirtualRoot = "/__eutherdrive_virtual__";
         private static readonly ConcurrentDictionary<string, Entry> Entries = new(StringComparer.OrdinalIgnoreCase);
 
         public static string Register(string displayName, Func<Stream> openRead, long? length = null)
@@ -15,16 +19,26 @@ namespace ProjectPSX.IO
             ArgumentNullException.ThrowIfNull(openRead);
 
             string safeName = SanitizeFileName(displayName);
-            string virtualPath = Path.Combine("/__eutherdrive_virtual__", $"{Guid.NewGuid():N}_{safeName}");
-            Entries[virtualPath] = new Entry
+            string virtualPath = Path.Combine(VirtualRoot, $"{Guid.NewGuid():N}_{safeName}");
+            return RegisterAtPath(virtualPath, safeName, openRead, length);
+        }
+
+        public static string RegisterAtPath(string virtualPath, string displayName, Func<Stream> openRead, long? length = null, IDisposable? lifetime = null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(virtualPath);
+            ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
+            ArgumentNullException.ThrowIfNull(openRead);
+
+            string normalizedPath = NormalizePath(virtualPath);
+            Entries[normalizedPath] = new Entry
             {
-                DisplayName = safeName,
+                DisplayName = SanitizeFileName(displayName),
                 OpenRead = openRead,
                 Length = length,
-                Lifetime = null
+                Lifetime = lifetime
             };
 
-            return virtualPath;
+            return normalizedPath;
         }
 
         public static string RegisterSharedStream(string displayName, Stream stream, bool ownsStream = true)
@@ -36,18 +50,35 @@ namespace ProjectPSX.IO
                 throw new InvalidOperationException("Shared virtual streams must be seekable.");
 
             string safeName = SanitizeFileName(displayName);
-            string virtualPath = Path.Combine("/__eutherdrive_virtual__", $"{Guid.NewGuid():N}_{safeName}");
+            string virtualPath = Path.Combine(VirtualRoot, $"{Guid.NewGuid():N}_{safeName}");
+            return RegisterSharedStreamAtPath(virtualPath, safeName, stream, ownsStream);
+        }
+
+        public static string RegisterSharedStreamAtPath(string virtualPath, Stream stream, bool ownsStream = true)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(virtualPath);
+            ArgumentNullException.ThrowIfNull(stream);
+
+            string displayName = Path.GetFileName(virtualPath);
+            return RegisterSharedStreamAtPath(virtualPath, displayName, stream, ownsStream);
+        }
+
+        public static string RegisterSharedStreamAtPath(string virtualPath, string displayName, Stream stream, bool ownsStream = true)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(virtualPath);
+            ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
+            ArgumentNullException.ThrowIfNull(stream);
+
+            if (!stream.CanSeek)
+                throw new InvalidOperationException("Shared virtual streams must be seekable.");
+
             var owner = new SharedStreamOwner(stream, ownsStream);
-
-            Entries[virtualPath] = new Entry
-            {
-                DisplayName = safeName,
-                OpenRead = () => new SharedReadStream(owner),
-                Length = stream.Length,
-                Lifetime = owner
-            };
-
-            return virtualPath;
+            return RegisterAtPath(
+                virtualPath,
+                displayName,
+                () => new SharedReadStream(owner),
+                stream.Length,
+                owner);
         }
 
         public static string RegisterBytes(string displayName, byte[] data)
@@ -56,19 +87,33 @@ namespace ProjectPSX.IO
             ArgumentNullException.ThrowIfNull(data);
 
             string safeName = SanitizeFileName(displayName);
-            string virtualPath = Path.Combine("/__eutherdrive_virtual__", $"{Guid.NewGuid():N}_{safeName}");
+            string virtualPath = Path.Combine(VirtualRoot, $"{Guid.NewGuid():N}_{safeName}");
+            return RegisterBytesAtPath(virtualPath, safeName, data);
+        }
+
+        public static string RegisterBytesAtPath(string virtualPath, byte[] data)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(virtualPath);
+            ArgumentNullException.ThrowIfNull(data);
+
+            string displayName = Path.GetFileName(virtualPath);
+            return RegisterBytesAtPath(virtualPath, displayName, data);
+        }
+
+        public static string RegisterBytesAtPath(string virtualPath, string displayName, byte[] data)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(virtualPath);
+            ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
+            ArgumentNullException.ThrowIfNull(data);
+
             byte[] snapshot = new byte[data.Length];
             Array.Copy(data, snapshot, data.Length);
 
-            Entries[virtualPath] = new Entry
-            {
-                DisplayName = safeName,
-                OpenRead = () => new MemoryStream(snapshot, writable: false),
-                Length = snapshot.Length,
-                Lifetime = null
-            };
-
-            return virtualPath;
+            return RegisterAtPath(
+                virtualPath,
+                displayName,
+                () => new MemoryStream(snapshot, writable: false),
+                snapshot.Length);
         }
 
         public static void Unregister(string path)
@@ -76,18 +121,51 @@ namespace ProjectPSX.IO
             if (string.IsNullOrWhiteSpace(path))
                 return;
 
-            if (Entries.TryRemove(path, out Entry entry))
+            string normalizedPath = NormalizePath(path);
+            if (Entries.TryRemove(normalizedPath, out Entry entry))
                 (entry as IDisposable)?.Dispose();
         }
 
-        public static bool IsVirtualPath(string path) => !string.IsNullOrWhiteSpace(path) && Entries.ContainsKey(path);
+        public static bool IsVirtualPath(string path)
+        {
+            return !string.IsNullOrWhiteSpace(path) && Entries.ContainsKey(NormalizePath(path));
+        }
+
+        public static bool DirectoryExists(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+
+            if (Directory.Exists(path))
+                return true;
+
+            string normalized = NormalizeDirectoryPath(path);
+            return Entries.Keys.Any(entryPath => IsDirectChildOfDirectory(entryPath, normalized));
+        }
 
         public static bool Exists(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return false;
 
-            return Entries.ContainsKey(path) || File.Exists(path);
+            string normalizedPath = NormalizePath(path);
+            return Entries.ContainsKey(normalizedPath) || File.Exists(normalizedPath);
+        }
+
+        public static string[] GetFiles(string directoryPath, string searchPattern)
+        {
+            if (string.IsNullOrWhiteSpace(directoryPath))
+                return Array.Empty<string>();
+
+            if (Directory.Exists(directoryPath))
+                return Directory.GetFiles(directoryPath, searchPattern);
+
+            string normalized = NormalizeDirectoryPath(directoryPath);
+            return Entries.Keys
+                .Where(path => IsDirectChildOfDirectory(path, normalized))
+                .Where(path => MatchesSearchPattern(Path.GetFileName(path), searchPattern))
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
         public static Stream OpenRead(string path)
@@ -95,21 +173,23 @@ namespace ProjectPSX.IO
             if (string.IsNullOrWhiteSpace(path))
                 throw new ArgumentException("Path is required.", nameof(path));
 
-            if (Entries.TryGetValue(path, out Entry? entry))
+            string normalizedPath = NormalizePath(path);
+            if (Entries.TryGetValue(normalizedPath, out Entry? entry))
                 return entry.OpenRead();
 
-            return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return new FileStream(normalizedPath, FileMode.Open, FileAccess.Read, FileShare.Read);
         }
 
         public static long GetLength(string path)
         {
-            if (Entries.TryGetValue(path, out Entry? entry) && entry.Length.HasValue)
+            string normalizedPath = NormalizePath(path);
+            if (Entries.TryGetValue(normalizedPath, out Entry? entry) && entry.Length.HasValue)
                 return entry.Length.Value;
 
-            if (File.Exists(path))
-                return new FileInfo(path).Length;
+            if (File.Exists(normalizedPath))
+                return new FileInfo(normalizedPath).Length;
 
-            using Stream stream = OpenRead(path);
+            using Stream stream = OpenRead(normalizedPath);
             if (!stream.CanSeek)
                 throw new InvalidOperationException($"Unable to determine length for non-seekable stream: {path}");
 
@@ -149,6 +229,45 @@ namespace ProjectPSX.IO
             foreach (char invalid in Path.GetInvalidFileNameChars())
                 trimmed = trimmed.Replace(invalid, '_');
             return string.IsNullOrWhiteSpace(trimmed) ? "disc.bin" : trimmed;
+        }
+
+        private static string NormalizePath(string path)
+        {
+            string normalized = path.Replace('\\', Path.DirectorySeparatorChar);
+            return normalized.Length > 1
+                ? normalized.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                : normalized;
+        }
+
+        private static string NormalizeDirectoryPath(string path)
+        {
+            string normalized = NormalizePath(path);
+            return normalized.EndsWith(Path.DirectorySeparatorChar)
+                ? normalized.TrimEnd(Path.DirectorySeparatorChar)
+                : normalized;
+        }
+
+        private static bool IsDirectChildOfDirectory(string path, string directoryPath)
+        {
+            string? parent = Path.GetDirectoryName(NormalizePath(path));
+            if (string.IsNullOrWhiteSpace(parent))
+                return false;
+
+            return string.Equals(
+                NormalizeDirectoryPath(parent),
+                NormalizeDirectoryPath(directoryPath),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool MatchesSearchPattern(string fileName, string searchPattern)
+        {
+            if (string.IsNullOrWhiteSpace(searchPattern) || searchPattern == "*" || searchPattern == "*.*")
+                return true;
+
+            string regexPattern = "^" + Regex.Escape(searchPattern)
+                .Replace(@"\*", ".*")
+                .Replace(@"\?", ".") + "$";
+            return Regex.IsMatch(fileName, regexPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
 
         private sealed class SharedStreamOwner : IDisposable

@@ -51,7 +51,7 @@ namespace ProjectPSX.Devices.CdRom {
             long currentFileSize = 0;
             CueTrackEntry? currentTrack = null;
 
-            using StreamReader cueFile = new StreamReader(cue);
+            using StreamReader cueFile = new StreamReader(VirtualFileSystem.OpenRead(cue), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
             string? line;
             while ((line = cueFile.ReadLine()) != null) {
                 line = line.Trim();
@@ -199,23 +199,24 @@ namespace ProjectPSX.Devices.CdRom {
 
         private static string ResolveCueFilePath(string cuePath, string referencedFile) {
             string dir = Path.GetDirectoryName(cuePath) ?? string.Empty;
-            string combined = Path.GetFullPath(Path.Combine(dir, referencedFile));
+            string normalizedReference = NormalizeReferencedPath(referencedFile);
+            string combined = Path.GetFullPath(Path.Combine(dir, normalizedReference));
             if (VirtualFileSystem.Exists(combined)) {
                 return combined;
             }
 
-            string nameOnly = Path.GetFileName(referencedFile);
+            string nameOnly = Path.GetFileName(normalizedReference);
             string sibling = Path.GetFullPath(Path.Combine(dir, nameOnly));
             if (VirtualFileSystem.Exists(sibling)) {
                 return sibling;
             }
 
-            string extension = Path.GetExtension(referencedFile);
-            if (string.IsNullOrWhiteSpace(extension) || !Directory.Exists(dir)) {
+            string extension = Path.GetExtension(nameOnly);
+            if (string.IsNullOrWhiteSpace(extension) || !VirtualFileSystem.DirectoryExists(dir)) {
                 return combined;
             }
 
-            string[] candidates = Directory.GetFiles(dir, $"*{extension}");
+            string[] candidates = VirtualFileSystem.GetFiles(dir, $"*{extension}");
             if (candidates.Length == 1) {
                 return Path.GetFullPath(candidates[0]);
             }
@@ -328,6 +329,12 @@ namespace ProjectPSX.Devices.CdRom {
             }
 
             return sb.ToString();
+        }
+
+        private static string NormalizeReferencedPath(string referencedFile) {
+            return referencedFile
+                .Replace('\\', Path.DirectorySeparatorChar)
+                .Replace('/', Path.DirectorySeparatorChar);
         }
 
         public static List<Track> fromBin(string file) {

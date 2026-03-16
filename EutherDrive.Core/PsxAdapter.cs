@@ -4,6 +4,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using ProjectPSX;
 using ProjectPSX.Devices.Input;
@@ -198,6 +199,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
     private float _masterVolumeScale = 1.0f;
     private long _frameCounter;
     private RomIdentity? _romIdentity;
+    private string _bootEnvironmentSummary = "bios=(none)";
     public RomIdentity? RomIdentity => _romIdentity;
 
     public void LoadRom(string path)
@@ -208,6 +210,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
         _diskPath = path;
         if (!string.IsNullOrWhiteSpace(BiosPath))
             Environment.SetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS", BiosPath);
+        _bootEnvironmentSummary = BuildBootEnvironmentSummary();
         _host = new PsxHostWindow(this);
         bool superFastBoot = SuperFastBootEnabled && !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
         bool bootFastLoadEnabled = FastLoadEnabled || superFastBoot;
@@ -448,6 +451,42 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
 
             state = _core.DebugStartSummary();
             return true;
+        }
+    }
+
+    public bool TryGetBootProgressSummary(out string summary)
+    {
+        lock (_stateLock)
+        {
+            if (_core == null)
+            {
+                summary = string.Empty;
+                return false;
+            }
+
+            summary = $"PSX pc={_core.DebugCurrentPC:x8} biosExited={(_core.BootBiosExited ? 1 : 0)} {_bootEnvironmentSummary}";
+            return true;
+        }
+    }
+
+    private static string BuildBootEnvironmentSummary()
+    {
+        string biosName = string.IsNullOrWhiteSpace(BiosPath) ? "(none)" : Path.GetFileName(BiosPath);
+        if (string.IsNullOrWhiteSpace(BiosPath) || !VirtualFileSystem.Exists(BiosPath))
+        {
+            return $"bios={biosName} biosLen=missing fast={(FastLoadEnabled ? 1 : 0)} super={(SuperFastBootEnabled ? 1 : 0)}";
+        }
+
+        try
+        {
+            byte[] biosBytes = VirtualFileSystem.ReadAllBytes(BiosPath);
+            byte[] hash = SHA256.HashData(biosBytes);
+            string shortHash = Convert.ToHexString(hash.AsSpan(0, 4));
+            return $"bios={biosName} biosLen={biosBytes.Length} biosSha={shortHash} fast={(FastLoadEnabled ? 1 : 0)} super={(SuperFastBootEnabled ? 1 : 0)}";
+        }
+        catch
+        {
+            return $"bios={biosName} biosLen=err fast={(FastLoadEnabled ? 1 : 0)} super={(SuperFastBootEnabled ? 1 : 0)}";
         }
     }
 

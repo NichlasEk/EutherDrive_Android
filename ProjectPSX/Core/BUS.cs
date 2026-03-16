@@ -295,21 +295,44 @@ public class BUS {
             }
         }
 
-        internal unsafe void loadBios() {
+        internal unsafe bool loadBios() {
+            if (TryResolveBiosPath(out string? foundBiosPath, out string[] attemptedPaths) == false || string.IsNullOrWhiteSpace(foundBiosPath)) {
+                Console.WriteLine("[BUS] No BIOS file found. Tried locations:");
+                foreach (string path in attemptedPaths) {
+                    Console.WriteLine($"  {path}");
+                }
+                return false;
+            }
+
+            try {
+                byte[] rom = VirtualFileSystem.ReadAllBytes(foundBiosPath);
+                if (rom.Length < 512 * 1024) {
+                    Console.WriteLine($"[BUS] BIOS file is too small: {foundBiosPath} ({rom.Length} bytes)");
+                    return false;
+                }
+
+                Marshal.Copy(rom, 0, (IntPtr)biosPtr, Math.Min(rom.Length, 512 * 1024));
+                Console.WriteLine($"[BUS] BIOS File found at: {foundBiosPath}");
+                Console.WriteLine("[BUS] BIOS Contents Loaded.");
+                return true;
+            } catch (Exception e) {
+                Console.WriteLine($"[BUS] Error loading BIOS from {foundBiosPath}:\n" + e.Message);
+                return false;
+            }
+        }
+
+        internal static bool TryResolveBiosPath(out string? foundBiosPath, out string[] attemptedPaths) {
+            var attempts = new System.Collections.Generic.List<string>();
             string? overridePath = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS");
-            if (!string.IsNullOrWhiteSpace(overridePath) && VirtualFileSystem.Exists(overridePath)) {
-                try {
-                    byte[] rom = VirtualFileSystem.ReadAllBytes(overridePath);
-                    Marshal.Copy(rom, 0, (IntPtr)biosPtr, rom.Length);
-                    Console.WriteLine($"[BUS] BIOS File found at (override): {overridePath}");
-                    Console.WriteLine("[BUS] BIOS Contents Loaded.");
-                    return;
-                } catch (Exception e) {
-                    Console.WriteLine($"[BUS] Error loading BIOS from override {overridePath}:\n" + e.Message);
+            if (!string.IsNullOrWhiteSpace(overridePath)) {
+                attempts.Add(overridePath);
+                if (VirtualFileSystem.Exists(overridePath)) {
+                    foundBiosPath = overridePath;
+                    attemptedPaths = attempts.ToArray();
+                    return true;
                 }
             }
-            // Try multiple locations for BIOS file
-            // Try both uppercase and lowercase filenames since Linux is case-sensitive
+
             string[] biosFilenames = { "SCPH1001.BIN", "scph1001.bin", "SCPH1001.bin", "scph1001.BIN" };
             string currentDirectory = ".";
             string appBaseDirectory = ".";
@@ -332,39 +355,22 @@ public class BUS {
                 Path.Combine(currentDirectory, "bios", "{0}"),
                 Path.Combine(appBaseDirectory, "bios", "{0}")
             };
-            
-            string foundBiosPath = null;
+
             foreach (string filename in biosFilenames) {
                 foreach (string pathTemplate in biosPaths) {
                     string path = string.Format(pathTemplate, filename);
+                    attempts.Add(path);
                     if (VirtualFileSystem.Exists(path)) {
                         foundBiosPath = path;
-                        break;
+                        attemptedPaths = attempts.ToArray();
+                        return true;
                     }
                 }
-                if (foundBiosPath != null) break;
             }
-            
-            if (foundBiosPath == null) {
-                Console.WriteLine("[BUS] No BIOS file found. Tried locations:");
-                foreach (string filename in biosFilenames) {
-                    foreach (string pathTemplate in biosPaths) {
-                        string path = string.Format(pathTemplate, filename);
-                        Console.WriteLine($"  {path}");
-                    }
-                }
-                return;
-            }
-            
-            try {
-                byte[] rom = VirtualFileSystem.ReadAllBytes(foundBiosPath);
-                Marshal.Copy(rom, 0, (IntPtr)biosPtr, rom.Length);
 
-                Console.WriteLine($"[BUS] BIOS File found at: {foundBiosPath}");
-                Console.WriteLine("[BUS] BIOS Contents Loaded.");
-            } catch (Exception e) {
-                Console.WriteLine($"[BUS] Error loading BIOS from {foundBiosPath}:\n" + e.Message);
-            }
+            foundBiosPath = null;
+            attemptedPaths = attempts.ToArray();
+            return false;
         }
 
         //PSX executables are having an 800h-byte header, followed by the code/data.
@@ -511,12 +517,12 @@ public class BUS {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private unsafe T load<T>(uint addr, byte* ptr) where T : unmanaged {
-            return *(T*)(ptr + addr);
+            return Unsafe.ReadUnaligned<T>(ptr + addr);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private unsafe void write<T>(uint addr, T value, byte* ptr) where T : unmanaged {
-            *(T*)(ptr + addr) = value;
+            Unsafe.WriteUnaligned(ptr + addr, value);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

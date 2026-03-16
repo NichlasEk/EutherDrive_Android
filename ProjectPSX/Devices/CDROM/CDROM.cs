@@ -77,6 +77,11 @@ namespace ProjectPSX.Devices {
         private bool cdDebug = false;
         private bool isLidOpen = false;
         private byte lastCommand;
+        private int registerReadCount;
+        private int registerWriteCount;
+        private int commandExecCount;
+        private uint lastReadAddr;
+        private uint lastWriteAddr;
         private bool fastLoadEnabled;
         private bool superFastLoadEnabled;
         private readonly bool fastLoadAggressiveReads;
@@ -535,6 +540,8 @@ namespace ProjectPSX.Devices {
         }
 
         public uint load(uint addr) {
+            registerReadCount++;
+            lastReadAddr = addr;
             switch (addr) {
                 case 0x1F801800:
                     if (cdDebug) Console.WriteLine($"[CDROM] [L00] STATUS: {STATUS():x2}");
@@ -582,6 +589,8 @@ namespace ProjectPSX.Devices {
         }
 
         public void write(uint addr, uint value) {
+            registerWriteCount++;
+            lastWriteAddr = addr;
             switch (addr) {
                 case 0x1F801800:
                     if (cdDebug) Console.WriteLine($"[CDROM] [W00] I: {value:x8}");
@@ -695,6 +704,7 @@ namespace ProjectPSX.Devices {
         }
 
         private void ExecuteCommand(uint value) {
+            commandExecCount++;
             lastCommand = (byte)value;
             if (cdDebug) Console.WriteLine($"[CDROM] Command {value:x4}");
             //Console.WriteLine($"PRE STAT {STAT:x2}");
@@ -745,6 +755,7 @@ namespace ProjectPSX.Devices {
                 $"cmd={commandText} mode={modeText} stat={STAT:x2} ie={IE:x2} if={IF:x2} busy={(isBusy ? 1 : 0)} " +
                 $"seek={seekLoc} read={readLoc} ctr={counter} irqq={interruptQueue.Count} rsp={responseBuffer.Count} " +
                 $"buf={currentSector.DebugPointer}/{currentSector.DebugSize} last={lastReadSector.DebugPointer}/{lastReadSector.DebugSize} " +
+                $"io=r{registerReadCount}/w{registerWriteCount}/c{commandExecCount} idx={INDEX} last=({lastReadAddr:x8}/{lastWriteAddr:x8}) " +
                 $"fast={(IsFastLoadActive ? 1 : 0)} bulk={(fastLoadBulkReadCompleted ? 1 : 0)} seq={fastLoadSequentialReadSectors} seekdist={fastLoadLastSeekDistance}";
         }
 

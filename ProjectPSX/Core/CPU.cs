@@ -473,12 +473,12 @@ namespace ProjectPSX {
 
         private static void SLTI(CPU cpu) {
             bool condition = (int)cpu.GPR[cpu.instr.rs] < (int)cpu.instr.imm_s;
-            cpu.setGPR(cpu.instr.rt, Unsafe.As<bool, uint>(ref condition));
+            cpu.setGPR(cpu.instr.rt, condition ? 1u : 0u);
         }
 
         private static void SLTIU(CPU cpu) {
             bool condition = cpu.GPR[cpu.instr.rs] < cpu.instr.imm_s;
-            cpu.setGPR(cpu.instr.rt, Unsafe.As<bool, uint>(ref condition));
+            cpu.setGPR(cpu.instr.rt, condition ? 1u : 0u);
         }
 
         private static void ANDI(CPU cpu) => cpu.setGPR(cpu.instr.rt, cpu.GPR[cpu.instr.rs] & cpu.instr.imm);
@@ -920,12 +920,12 @@ namespace ProjectPSX {
 
         private static void SLT(CPU cpu) {
             bool condition = (int)cpu.GPR[cpu.instr.rs] < (int)cpu.GPR[cpu.instr.rt];
-            cpu.setGPR(cpu.instr.rd, Unsafe.As<bool, uint>(ref condition));
+            cpu.setGPR(cpu.instr.rd, condition ? 1u : 0u);
         }
 
         private static void SLTU(CPU cpu) {
             bool condition = cpu.GPR[cpu.instr.rs] < cpu.GPR[cpu.instr.rt];
-            cpu.setGPR(cpu.instr.rd, Unsafe.As<bool, uint>(ref condition));
+            cpu.setGPR(cpu.instr.rd, condition ? 1u : 0u);
         }
 
 

@@ -44,7 +44,7 @@ public static class OpticalDiscDetector
     private static OpticalDiscKind DetectCue(string cuePath)
     {
         CueSheetResolver.CueTrackReference? dataTrack = CueSheetResolver.ResolveFirstDataTrack(cuePath);
-        if (dataTrack == null || !File.Exists(dataTrack.FilePath))
+        if (dataTrack == null || !VirtualFileSystem.Exists(dataTrack.FilePath))
             return OpticalDiscKind.Unknown;
 
         if (LooksLikeSegaCdImage(dataTrack))
@@ -147,7 +147,7 @@ public static class OpticalDiscDetector
         if (byteCount <= 0)
             return Array.Empty<byte>();
 
-        using var stream = File.OpenRead(track.FilePath);
+        using var stream = VirtualFileSystem.OpenRead(track.FilePath);
         long absoluteOffset = track.FileOffsetBytes + track.DataOffset + dataOffsetBytes;
         if (absoluteOffset < 0 || absoluteOffset >= stream.Length)
             return Array.Empty<byte>();

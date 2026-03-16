@@ -52,6 +52,33 @@
       <Setter Property="FontSize" Value="12" />
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
+
+    <Style Selector="Border.debugShell">
+      <Setter Property="Background" Value="#E1070D13" />
+      <Setter Property="BorderBrush" Value="#4B6A7E" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="24" />
+    </Style>
+
+    <Style Selector="Border.debugGlass">
+      <Setter Property="Background" Value="#CC0C141C" />
+      <Setter Property="BorderBrush" Value="#2C4253" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="18" />
+    </Style>
+
+    <Style Selector="TextBlock.debugEyebrow">
+      <Setter Property="Foreground" Value="#5EEAD4" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="FontWeight" Value="Bold" />
+    </Style>
+
+    <Style Selector="TextBlock.debugTitle">
+      <Setter Property="Foreground" Value="#EEF6FF" />
+      <Setter Property="FontSize" Value="26" />
+      <Setter Property="FontWeight" Value="Black" />
+      <Setter Property="FontStyle" Value="Italic" />
+    </Style>
   </UserControl.Styles>
 
   <Grid Background="#091119">
@@ -76,7 +103,7 @@
       <Border Grid.Row="0" Classes="surface" Padding="14">
         <Grid ColumnDefinitions="*" RowDefinitions="Auto">
           <Grid IsVisible="{Binding NormalTopButtonsVisible}"
-                ColumnDefinitions="Auto,*,Auto,Auto,Auto"
+                ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto"
                 ColumnSpacing="8">
             <Button Grid.Column="0"
                     Classes="chrome"
@@ -96,10 +123,14 @@
                     Content="Open ROM"
                     Click="OnPickRom" />
             <Button Grid.Column="3"
+                    Classes="chrome"
+                    Content="Debug"
+                    Click="OnOpenDebug" />
+            <Button Grid.Column="4"
                     Classes="chrome action"
                     Content="Start"
                     Click="OnStartClicked" />
-            <Button Grid.Column="4"
+            <Button Grid.Column="5"
                     Classes="chrome warn"
                     Content="Stop"
                     Click="OnStopClicked" />
@@ -231,18 +262,6 @@
                   </Grid>
                 </Border>
 
-                <Border Grid.Row="3"
-                        IsVisible="{Binding ScreenHudVisible}"
-                        Margin="0,8,0,0"
-                        HorizontalAlignment="Stretch"
-                        Background="#70101820"
-                        CornerRadius="12"
-                        Padding="10,6">
-                  <TextBlock Text="{Binding PerfSummary}"
-                             FontSize="11"
-                             Foreground="#91A8BD"
-                             TextWrapping="NoWrap" />
-                </Border>
               </Grid>
             </Grid>
           </Grid>
@@ -504,6 +523,139 @@
                        Text="{Binding SettingsHint}"
                        Foreground="#91A8BD"
                        TextWrapping="Wrap" />
+          </Grid>
+        </Border>
+      </Grid>
+    </Border>
+
+    <Border IsVisible="{Binding DebugVisible}"
+            Background="#DE050B10"
+            PointerPressed="OnCloseDebug">
+      <Grid Margin="18">
+        <Border Classes="debugShell"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                Padding="20"
+                IsHitTestVisible="False">
+          <Grid RowDefinitions="Auto,Auto,*" RowSpacing="14">
+            <Grid ColumnDefinitions="Auto,*,Auto"
+                  ColumnSpacing="12">
+              <StackPanel Orientation="Horizontal"
+                          Spacing="8"
+                          VerticalAlignment="Center">
+                <Border Width="10"
+                        Height="10"
+                        CornerRadius="5"
+                        Background="#5EEAD4" />
+                <Border Width="10"
+                        Height="10"
+                        CornerRadius="5"
+                        Background="#F59E0B" />
+                <Border Width="10"
+                        Height="10"
+                        CornerRadius="5"
+                        Background="#FB7185" />
+              </StackPanel>
+
+              <StackPanel Grid.Column="1"
+                          Spacing="2">
+                <TextBlock Classes="debugEyebrow"
+                           Text="ANDROID RUNTIME TRACE" />
+                <TextBlock Classes="debugTitle"
+                           Text="EutherDrive Debug View" />
+              </StackPanel>
+
+              <Border Grid.Column="2"
+                      Background="#8A121C25"
+                      BorderBrush="#32485A"
+                      BorderThickness="1"
+                      CornerRadius="999"
+                      Padding="12,8">
+                <TextBlock Text="Tap Anywhere To Close"
+                           Foreground="#91A8BD"
+                           FontSize="11"
+                           FontWeight="SemiBold" />
+              </Border>
+            </Grid>
+
+            <Border Grid.Row="1"
+                    Classes="debugGlass"
+                    Padding="12">
+              <Grid ColumnDefinitions="*,Auto,Auto,Auto"
+                    ColumnSpacing="8">
+                <TextBlock Text="Live PSX/Android instrumentation snapshot"
+                           Foreground="#D6E3F0"
+                           FontWeight="SemiBold" />
+                <Border Grid.Column="1"
+                        Background="#162735"
+                        CornerRadius="999"
+                        Padding="10,5">
+                  <TextBlock Text="CORE"
+                             Foreground="#5EEAD4"
+                             FontSize="11"
+                             FontWeight="Bold" />
+                </Border>
+                <Border Grid.Column="2"
+                        Background="#2A2013"
+                        CornerRadius="999"
+                        Padding="10,5">
+                  <TextBlock Text="BOOT"
+                             Foreground="#F59E0B"
+                             FontSize="11"
+                             FontWeight="Bold" />
+                </Border>
+                <Border Grid.Column="3"
+                        Background="#23131E"
+                        CornerRadius="999"
+                        Padding="10,5">
+                  <TextBlock Text="DMA / CD"
+                             Foreground="#FB7185"
+                             FontSize="11"
+                             FontWeight="Bold" />
+                </Border>
+              </Grid>
+            </Border>
+
+            <Grid Grid.Row="2">
+              <Border Classes="debugGlass"
+                      Margin="0,0,0,10" />
+              <Border Classes="debugGlass"
+                      Margin="10,10,0,0"
+                      Opacity="0.22" />
+              <Border Classes="debugGlass"
+                      Padding="14">
+                <Grid RowDefinitions="Auto,*"
+                      RowSpacing="10">
+                  <Border Background="#8A071017"
+                          CornerRadius="10"
+                          Padding="10,6">
+                    <TextBlock Text="Frame Trace"
+                               Foreground="#91A8BD"
+                               FontSize="11"
+                               FontWeight="Bold" />
+                  </Border>
+
+                  <Border Grid.Row="1"
+                          Background="#D204090D"
+                          BorderBrush="#1E3949"
+                          BorderThickness="1"
+                          CornerRadius="14"
+                          Padding="12">
+                    <TextBox Text="{Binding PerfSummary}"
+                             IsReadOnly="True"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             FontSize="12"
+                             FontFamily="Cascadia Mono, Consolas, Menlo, monospace"
+                             Foreground="#D8E7F5"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             Padding="0"
+                             IsHitTestVisible="False" />
+                  </Border>
+                </Grid>
+              </Border>
+            </Grid>
           </Grid>
         </Border>
       </Grid>

@@ -48,7 +48,9 @@ namespace ProjectPSX {
             cpu = new CPU(bus);
             bus.SetRamWriteObserver(cpu.ObserveRamWrite);
 
-            bus.loadBios();
+            if (!bus.loadBios()) {
+                throw new InvalidOperationException("PSX BIOS not found or failed to load.");
+            }
             if (diskFilename.EndsWith(".exe")) {
                 bus.loadEXE(diskFilename);
             } else if (superFastLoadEnabled) {
@@ -147,12 +149,16 @@ namespace ProjectPSX {
             uint d370 = bus.LoadFromRam(0x0003_D370);
             uint d374 = bus.LoadFromRam(0x0003_D374);
             uint d378 = bus.LoadFromRam(0x0003_D378);
+            uint at = cpu.GetRegister(1);
+            uint v0 = cpu.GetRegister(2);
+            uint v1 = cpu.GetRegister(3);
             uint a0 = cpu.GetRegister(4);
             uint sp = cpu.StackPointer;
             uint ra = cpu.ReturnAddress;
-            return $"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} a0={a0:x8} sp={sp:x8} ra={ra:x8} " +
+            uint loopDelta = v1 >= v0 ? v1 - v0 : 0;
+            return $"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} at={at:x8} v0={v0:x8} v1={v1:x8} dv={loopDelta:x8} a0={a0:x8} sp={sp:x8} ra={ra:x8} " +
                 $"d370={d370:x8} d374={d374:x8} d378={d378:x8} " +
-                $"irq=({interruptController.DebugISTAT:x3}/{interruptController.DebugIMASK:x3}) {bus.DMAController.DebugSummary(3)} " +
+                $"irq=({interruptController.DebugISTAT:x3}/{interruptController.DebugIMASK:x3}) {bus.DMAController.DebugSummary(2)} {bus.DMAController.DebugSummary(3)} " +
                 $"{gpu.DebugSummary()} {mdec.DebugSummary()} {cdrom.DebugSummary()}";
         }
 

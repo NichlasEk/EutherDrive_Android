@@ -34,6 +34,7 @@ public partial class MainView : UserControl
     private readonly object _frameSync = new();
     private readonly HashSet<string> _pressedDirections = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pressedActions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _selectedVirtualPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _directionLatchFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _actionLatchFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _virtualSystemPaths = new(StringComparer.OrdinalIgnoreCase);
@@ -115,7 +116,7 @@ public partial class MainView : UserControl
         try
         {
             ReleaseSelectedVirtualRom();
-            string importedPath = await ImportRomAsync(files[0], isSystemFile: false);
+            string importedPath = await ImportRomAsync(storageProvider, files[0], isSystemFile: false);
             _selectedRomPath = importedPath;
             _selectedRomDisplayName = files[0].Name;
             _viewModel.SetSelectedRom(importedPath, files[0].Name);
@@ -167,6 +168,7 @@ public partial class MainView : UserControl
 
     private void OnMenuTapped(object? sender, RoutedEventArgs e)
     {
+        _viewModel.DebugVisible = false;
         _viewModel.SettingsVisible = true;
     }
 
@@ -175,9 +177,20 @@ public partial class MainView : UserControl
         _viewModel.SettingsVisible = false;
     }
 
+    private void OnOpenDebug(object? sender, RoutedEventArgs e)
+    {
+        _viewModel.SettingsVisible = false;
+        _viewModel.DebugVisible = true;
+    }
+
+    private void OnCloseDebug(object? sender, PointerPressedEventArgs e)
+    {
+        _viewModel.DebugVisible = false;
+    }
+
     private void OnToggleScreenFocus(object? sender, PointerPressedEventArgs e)
     {
-        if (_viewModel.SettingsVisible)
+        if (_viewModel.SettingsVisible || _viewModel.DebugVisible)
         {
             return;
         }
@@ -300,6 +313,7 @@ public partial class MainView : UserControl
         _presentedFrames = 0;
         ResetPerfCounters();
         _core = CreateCoreForRom(_selectedRomPath);
+        _viewModel.SelectedConsoleLabel = GetConsoleLabelForCore(_core, _selectedRomPath);
 
         if (_core is MdTracerAdapter md)
         {
@@ -559,8 +573,29 @@ public partial class MainView : UserControl
 
         double avgFrameMs = windowMs / _perfWindowFrames;
         double fps = avgFrameMs > 0 ? 1000.0 / avgFrameMs : 0;
-        _latestPerfSummary =
-            $"Perf  FPS:{fps:0}  Emu:{_perfAccumulatedEmuMs / _perfWindowFrames:0.0}ms  Audio:{_perfAccumulatedAudioMs / _perfWindowFrames:0.0}ms  Blit:{_perfAccumulatedBlitMs / _perfWindowFrames:0.0}ms  Frame:{_emulatedFrames}  Res:{_lastFrameWidth}x{_lastFrameHeight}";
+        string coreLabel = _core?.GetType().Name ?? "None";
+        string perfSummary =
+            $"Perf  FPS:{fps:0}  Emu:{_perfAccumulatedEmuMs / _perfWindowFrames:0.0}ms  Audio:{_perfAccumulatedAudioMs / _perfWindowFrames:0.0}ms  Blit:{_perfAccumulatedBlitMs / _perfWindowFrames:0.0}ms  Frame:{_emulatedFrames}  Res:{_lastFrameWidth}x{_lastFrameHeight}  Core:{coreLabel}";
+        if (_core is PsxAdapter psx && psx.TryGetBootProgressSummary(out string psxBoot))
+        {
+            perfSummary = $"{perfSummary}\n{psxBoot}";
+            if (psx.TryGetDebugState(out string psxState))
+            {
+                perfSummary = $"{perfSummary}\n{psxState}";
+            }
+            if (psxBoot.Contains("biosExited=0", StringComparison.Ordinal)
+                && psx.TryGetDebugCodeWindow(out string psxCodeWindow, wordsBefore: 2, wordsAfter: 4))
+            {
+                string compactCodeWindow = string.Join(
+                    '\n',
+                    psxCodeWindow
+                        .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Take(7));
+                perfSummary = $"{perfSummary}\n{compactCodeWindow}";
+            }
+        }
+
+        _latestPerfSummary = perfSummary;
 
         _perfWindowStartTicks = nowTicks;
         _perfWindowFrames = 0;
@@ -698,7 +733,7 @@ public partial class MainView : UserControl
         audioEngine.Submit(audio);
     }
 
-    private async Task<string> ImportRomAsync(IStorageFile file, bool isSystemFile)
+    private async Task<string> ImportRomAsync(IStorageProvider? storageProvider, IStorageFile file, bool isSystemFile)
     {
         string extension = Path.GetExtension(file.Name);
         string? localPath = file.TryGetLocalPath();
@@ -712,7 +747,7 @@ public partial class MainView : UserControl
         if (!isSystemFile)
         {
             string ext = extension.ToLowerInvariant();
-            if (ext is ".cue" or ".iso" or ".img" or ".chd" or ".pbp")
+            if (ext is ".iso" or ".img" or ".chd" or ".pbp")
             {
                 throw new InvalidOperationException("Large/disc-based ROMs are not cached on Android yet. A streaming backend is still needed for PS1/CD images.");
             }
@@ -730,10 +765,12 @@ public partial class MainView : UserControl
         bool transferredToVirtualFile = false;
         try
         {
-            if (!isSystemFile && TryRegisterVirtualDiscSource(file, source, out string? virtualPath))
+            if (!isSystemFile
+                && await TryRegisterVirtualDiscSourceAsync(storageProvider, file, source) is { } virtualImport)
             {
                 transferredToVirtualFile = true;
-                return virtualPath!;
+                TrackSelectedVirtualPaths(virtualImport.RegisteredPaths);
+                return virtualImport.PrimaryPath;
             }
 
             if (!isSystemFile && source.CanSeek && source.Length > 128L * 1024 * 1024)
@@ -755,19 +792,22 @@ public partial class MainView : UserControl
         }
     }
 
-    private static bool TryRegisterVirtualDiscSource(IStorageFile file, Stream source, out string? virtualPath)
+    private async Task<VirtualRomImport?> TryRegisterVirtualDiscSourceAsync(IStorageProvider? storageProvider, IStorageFile file, Stream source)
     {
-        virtualPath = null;
+        string ext = Path.GetExtension(file.Name).ToLowerInvariant();
+        if (ext == ".cue")
+        {
+            return await TryRegisterVirtualCueBundleAsync(storageProvider, file, source);
+        }
 
         if (!source.CanSeek || source.Length <= 128L * 1024 * 1024)
         {
-            return false;
+            return null;
         }
 
-        string ext = Path.GetExtension(file.Name).ToLowerInvariant();
         if (ext != ".bin")
         {
-            return false;
+            return null;
         }
 
         string candidatePath = VirtualFileSystem.RegisterSharedStream(file.Name, source, ownsStream: true);
@@ -779,16 +819,128 @@ public partial class MainView : UserControl
             throw new InvalidOperationException("Large direct-stream discs are currently only enabled for single-file PSX .bin images on Android.");
         }
 
-        virtualPath = candidatePath;
-        return true;
+        return new VirtualRomImport(candidatePath, new[] { candidatePath });
+    }
+
+    private async Task<VirtualRomImport?> TryRegisterVirtualCueBundleAsync(IStorageProvider? storageProvider, IStorageFile cueFile, Stream cueSource)
+    {
+        if (storageProvider == null)
+        {
+            throw new InvalidOperationException("Folder picker is unavailable for cue-based disc images on this surface.");
+        }
+
+        using var cueBuffer = new MemoryStream();
+        await cueSource.CopyToAsync(cueBuffer);
+        byte[] cueBytes = cueBuffer.ToArray();
+
+        string bundleRoot = Path.Combine("/__eutherdrive_virtual__", $"cuebundle_{Guid.NewGuid():N}");
+        string cueVirtualPath = VirtualFileSystem.RegisterBytesAtPath(Path.Combine(bundleRoot, cueFile.Name), cueFile.Name, cueBytes);
+        var registeredPaths = new List<string> { cueVirtualPath };
+
+        try
+        {
+            List<string> referencedFiles = CueSheetResolver.EnumerateReferencedFiles(cueVirtualPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (referencedFiles.Count == 0)
+            {
+                throw new InvalidOperationException("The selected cue file does not reference any track files.");
+            }
+
+            var folders = await storageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = "Choose the folder containing the cue track files",
+                AllowMultiple = false
+            });
+
+            if (folders.Count == 0)
+            {
+                throw new InvalidOperationException("Track folder selection was cancelled.");
+            }
+
+            var candidateFiles = new List<IStorageFile>();
+            await foreach (IStorageItem folderItem in folders[0].GetItemsAsync())
+            {
+                if (folderItem is IStorageFile candidateFile)
+                {
+                    candidateFiles.Add(candidateFile);
+                }
+            }
+
+            if (candidateFiles.Count == 0)
+            {
+                throw new InvalidOperationException("The selected folder does not contain any files.");
+            }
+
+            HashSet<string> referencedExtensions = referencedFiles
+                .Select(static reference => Path.GetExtension(reference))
+                .Where(static extension => !string.IsNullOrWhiteSpace(extension))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (IStorageFile candidateFile in candidateFiles)
+            {
+                string candidateExtension = Path.GetExtension(candidateFile.Name);
+                if (referencedExtensions.Count != 0 && !referencedExtensions.Contains(candidateExtension))
+                {
+                    continue;
+                }
+
+                Stream candidateStream = await candidateFile.OpenReadAsync();
+                string virtualPath = VirtualFileSystem.RegisterSharedStreamAtPath(
+                    Path.Combine(bundleRoot, candidateFile.Name),
+                    candidateFile.Name,
+                    candidateStream,
+                    ownsStream: true);
+                registeredPaths.Add(virtualPath);
+            }
+
+            foreach (string referencedFile in referencedFiles)
+            {
+                string resolvedPath = CueSheetResolver.ResolveReferencedPath(cueVirtualPath, referencedFile);
+                if (!VirtualFileSystem.Exists(resolvedPath))
+                {
+                    throw new InvalidOperationException($"Missing cue track file: {Path.GetFileName(referencedFile)}");
+                }
+            }
+
+            OpticalDiscKind discKind = OpticalDiscDetector.Detect(cueVirtualPath);
+            if (discKind != OpticalDiscKind.Psx)
+            {
+                throw new InvalidOperationException("Android cue streaming is currently enabled for PSX disc sets only.");
+            }
+
+            return new VirtualRomImport(cueVirtualPath, registeredPaths);
+        }
+        catch
+        {
+            foreach (string path in registeredPaths)
+            {
+                VirtualFileSystem.Unregister(path);
+            }
+
+            throw;
+        }
+    }
+
+    private void TrackSelectedVirtualPaths(IEnumerable<string> paths)
+    {
+        foreach (string path in paths)
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                _selectedVirtualPaths.Add(path);
+            }
+        }
     }
 
     private void ReleaseSelectedVirtualRom()
     {
-        if (!string.IsNullOrWhiteSpace(_selectedRomPath) && VirtualFileSystem.IsVirtualPath(_selectedRomPath))
+        foreach (string path in _selectedVirtualPaths.ToArray())
         {
-            VirtualFileSystem.Unregister(_selectedRomPath);
+            VirtualFileSystem.Unregister(path);
         }
+
+        _selectedVirtualPaths.Clear();
     }
 
     private async Task PickSystemFileAsync(string key, string title, string[] patterns)
@@ -820,7 +972,7 @@ public partial class MainView : UserControl
 
         try
         {
-            string importedPath = await ImportRomAsync(files[0], isSystemFile: true);
+            string importedPath = await ImportRomAsync(storageProvider, files[0], isSystemFile: true);
             _viewModel.SetSystemFile(key, importedPath, files[0].Name);
             SaveSettings();
             ApplySettings();
@@ -863,6 +1015,8 @@ public partial class MainView : UserControl
     {
         PceCdAdapter.BiosPath = _viewModel.PceBiosPath;
         PsxAdapter.BiosPath = RegisterSystemFileVirtualPath("PSX BIOS", _viewModel.PsxBiosPath, _viewModel.PsxBiosDisplay);
+        PsxAdapter.FastLoadEnabled = false;
+        PsxAdapter.SuperFastBootEnabled = false;
 
         SetEnv("EUTHERDRIVE_DSP1_ROM", _viewModel.Dsp1Path);
         SetEnv("EUTHERDRIVE_DSP2_ROM", _viewModel.Dsp2Path);
@@ -1142,7 +1296,12 @@ public partial class MainView : UserControl
         }
 
         string ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext == ".pce" || ext == ".cue")
+        if (ext == ".cue")
+        {
+            throw new InvalidOperationException("Cue disc type could not be detected. Check that the selected cue bundle resolves to a valid PSX or PCE data track.");
+        }
+
+        if (ext == ".pce")
         {
             return new PceCdAdapter();
         }
@@ -1165,6 +1324,33 @@ public partial class MainView : UserControl
         return new MdTracerAdapter();
     }
 
+    private static string GetConsoleLabelForCore(IEmulatorCore core, string romPath)
+    {
+        return core switch
+        {
+            PsxAdapter => "PlayStation",
+            EutherDrive.Core.SegaCd.SegaCdAdapter => "Sega CD",
+            PceCdAdapter => "PC Engine CD",
+            N64Adapter => "Nintendo 64",
+            SnesAdapter => "SNES",
+            NesAdapter => "NES",
+            MdTracerAdapter => GuessConsoleLabelFromPath(romPath),
+            _ => GuessConsoleLabelFromPath(romPath)
+        };
+    }
+
+    private static string GuessConsoleLabelFromPath(string romPath)
+    {
+        OpticalDiscKind discKind = OpticalDiscDetector.Detect(romPath);
+        return discKind switch
+        {
+            OpticalDiscKind.Psx => "PlayStation",
+            OpticalDiscKind.SegaCd => "Sega CD",
+            OpticalDiscKind.PceCd => "PC Engine CD",
+            _ => MainViewModel.GuessConsole(romPath)
+        };
+    }
+
     private sealed class MainViewModel : INotifyPropertyChanged
     {
         private string _headerSubtitle = "Big screen first. ROM picker and touch controls live around it.";
@@ -1179,6 +1365,7 @@ public partial class MainView : UserControl
         private string _overlaySummary = "D:-  A:-";
         private bool _isFocusMode;
         private bool _settingsVisible;
+        private bool _debugVisible;
         private bool _normalTopButtonsVisible = true;
         private bool _quickSaveButtonsVisible;
         private bool _screenHudVisible = true;
@@ -1293,6 +1480,12 @@ public partial class MainView : UserControl
         {
             get => _settingsVisible;
             set => SetField(ref _settingsVisible, value);
+        }
+
+        public bool DebugVisible
+        {
+            get => _debugVisible;
+            set => SetField(ref _debugVisible, value);
         }
 
         public bool NormalTopButtonsVisible
@@ -1443,7 +1636,7 @@ public partial class MainView : UserControl
             LastPressedDisplay = value;
         }
 
-        private static string GuessConsole(string romPath)
+        internal static string GuessConsole(string romPath)
         {
             string ext = Path.GetExtension(romPath).ToLowerInvariant();
             return ext switch
@@ -1498,4 +1691,6 @@ public partial class MainView : UserControl
         public string? St018Path { get; set; }
         public string? St018Display { get; set; }
     }
+
+    private sealed record VirtualRomImport(string PrimaryPath, IReadOnlyList<string> RegisteredPaths);
 }
