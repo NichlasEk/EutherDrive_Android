@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using EutherDrive.Core.Savestates;
 using ePceCD;
+using ProjectPSX.IO;
 
 namespace EutherDrive.Core;
 
@@ -38,7 +39,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
 
     public void LoadRom(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path) || !VirtualFileSystem.Exists(path))
             return;
 
         _romPath = path;
@@ -72,7 +73,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         Reset();
         try
         {
-            byte[] data = File.ReadAllBytes(path);
+            byte[] data = VirtualFileSystem.ReadAllBytes(path);
             _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(data));
         }
         catch
@@ -388,7 +389,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
 
     private static string? FindBiosPath()
     {
-        if (!string.IsNullOrWhiteSpace(BiosPath) && File.Exists(BiosPath))
+        if (!string.IsNullOrWhiteSpace(BiosPath) && VirtualFileSystem.Exists(BiosPath))
             return BiosPath;
 
         string biosDir = Path.Combine(Directory.GetCurrentDirectory(), "bios");
@@ -412,7 +413,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         foreach (string name in candidates)
         {
             string path = Path.Combine(biosDir, name);
-            if (File.Exists(path))
+            if (VirtualFileSystem.Exists(path))
                 return path;
         }
 
@@ -423,7 +424,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
     {
         try
         {
-            byte[] data = File.ReadAllBytes(path);
+            byte[] data = VirtualFileSystem.ReadAllBytes(path);
             if (data.Length < 0x2000)
                 return false;
 

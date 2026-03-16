@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using EutherDrive.Core;
+using ProjectPSX.IO;
 
 namespace ePceCD
 {
@@ -46,7 +47,7 @@ namespace ePceCD
         private int currentSector = -1;
         private int lastDataSector = -1;
         [NonSerialized]
-        private FileStream _subFile;
+        private Stream _subFile;
         private long _subSectors;
         [NonSerialized]
         private List<System.Timers.Timer> _scsiTimers = new List<System.Timers.Timer>();
@@ -91,7 +92,7 @@ namespace ePceCD
             public TrackType Type;
             public string FileName;
             [NonSerialized]
-            public FileStream File;
+            public Stream File;
             public long SectorStart;
             public long SectorEnd;
             public long OffsetStart;
@@ -265,7 +266,7 @@ namespace ePceCD
             }
 
             string subPath = Path.ChangeExtension(baseFile, ".sub");
-            if (!File.Exists(subPath))
+            if (!VirtualFileSystem.Exists(subPath))
             {
                 _subSectors = 0;
                 return;
@@ -273,7 +274,7 @@ namespace ePceCD
 
             try
             {
-                _subFile = new FileStream(subPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                _subFile = VirtualFileSystem.OpenRead(subPath);
                 _subSectors = (_subFile.Length % 96 == 0) ? (_subFile.Length / 96) : 0;
             }
             catch
@@ -518,7 +519,7 @@ namespace ePceCD
             tracks.Clear();
             string baseDir = Path.GetDirectoryName(cuePath);
 
-            foreach (string line in File.ReadLines(cuePath))
+            foreach (string line in ReadLines(cuePath))
             {
                 string[] parts = line.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 2) continue;
@@ -550,6 +551,13 @@ namespace ePceCD
                 DumpToc();
         }
 
+        private static IEnumerable<string> ReadLines(string path)
+        {
+            using var reader = new StreamReader(VirtualFileSystem.OpenRead(path));
+            while (reader.ReadLine() is { } line)
+                yield return line;
+        }
+
         private void DumpToc()
         {
             Console.WriteLine("[PCE-TOC] ---");
@@ -569,18 +577,18 @@ namespace ePceCD
             _subSectors = 0;
 
             string subPath = Path.ChangeExtension(cuePath, ".sub");
-            if (!File.Exists(subPath) && FileTrack?.FileName != null)
+            if (!VirtualFileSystem.Exists(subPath) && FileTrack?.FileName != null)
                 subPath = Path.ChangeExtension(FileTrack.FileName, ".sub");
 
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
                 Console.WriteLine($"CDROM SUB probe {subPath}");
 
-            if (!File.Exists(subPath))
+            if (!VirtualFileSystem.Exists(subPath))
                 return;
 
             try
             {
-                _subFile = new FileStream(subPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                _subFile = VirtualFileSystem.OpenRead(subPath);
                 if (_subFile.Length % 96 == 0)
                     _subSectors = _subFile.Length / 96;
                 Console.WriteLine($"CDROM {subPath} SUB LOADED");
@@ -599,7 +607,7 @@ namespace ePceCD
             string filename = string.Join(" ", parts.Skip(1).TakeWhile(p => p != "BINARY" && p != "WAVE")).Trim('"');
             string fileType = parts.LastOrDefault() ?? string.Empty;
             string filePath = CueSheetResolver.ResolveReferencedPathFromDirectory(baseDir, filename);
-            currentTrack = new CDTrack { File = new FileStream(filePath, FileMode.Open, FileAccess.Read) };
+            currentTrack = new CDTrack { File = VirtualFileSystem.OpenRead(filePath) };
             currentTrack.FileName = filePath;
             string typeLabel = fileType.Equals("WAVE", StringComparison.OrdinalIgnoreCase) ? "WAVE" : "BINARY";
             _currentFileIsWave = typeLabel == "WAVE";
@@ -617,7 +625,7 @@ namespace ePceCD
         private void ParseTrackCommand(string[] parts)
         {
             var track = new CDTrack { File = currentTrack.File };
-            track.FileName = track.File.Name;
+            track.FileName = currentTrack.FileName;
             track.Number = int.Parse(parts[1]);
             track.IsWave = _currentFileIsWave;
 
@@ -880,7 +888,7 @@ namespace ePceCD
                 return 0;
             try
             {
-                using var fs = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var fs = VirtualFileSystem.OpenRead(fileName);
                 using var br = new BinaryReader(fs);
                 if (fs.Length < 12)
                     return 0;

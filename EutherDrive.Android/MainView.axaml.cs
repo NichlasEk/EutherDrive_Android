@@ -75,6 +75,13 @@ public partial class MainView : UserControl
         LoadSettings();
         ApplySettings();
         _viewModel.SettingsHint = "Small BIOS/chip files are imported into app storage. Large disc images are intentionally not cached here.";
+        SizeChanged += OnViewSizeChanged;
+    }
+
+    private void OnViewSizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        Size size = e.NewSize;
+        _viewModel.IsLandscapeMode = size.Width > size.Height && size.Height > 0;
     }
 
     private async void OnPickRom(object? sender, RoutedEventArgs e)
@@ -468,7 +475,7 @@ public partial class MainView : UserControl
             _presentedFrameSerial = serial;
         }
 
-        ScreenImage.InvalidateVisual();
+        InvalidateScreenImages();
         _presentedFrames++;
         if (_presentedFrames == 1)
         {
@@ -654,7 +661,7 @@ public partial class MainView : UserControl
         {
             _latestFrameBuffer = Array.Empty<byte>();
         }
-        ScreenImage.Source = null;
+        SetScreenSource(null);
         _viewModel.IsRunning = false;
         _viewModel.ScreenOverlayVisible = true;
 
@@ -813,10 +820,16 @@ public partial class MainView : UserControl
         string candidatePath = VirtualFileSystem.RegisterSharedStream(file.Name, source, ownsStream: true);
 
         OpticalDiscKind discKind = OpticalDiscDetector.Detect(candidatePath);
-        if (discKind != OpticalDiscKind.Psx)
+        if (discKind == OpticalDiscKind.PceCd)
         {
             VirtualFileSystem.Unregister(candidatePath);
-            throw new InvalidOperationException("Large direct-stream discs are currently only enabled for single-file PSX .bin images on Android.");
+            throw new InvalidOperationException("PC Engine CD needs the .cue file so the full disc layout can be streamed on Android.");
+        }
+
+        if (discKind is not OpticalDiscKind.Psx and not OpticalDiscKind.SegaCd)
+        {
+            VirtualFileSystem.Unregister(candidatePath);
+            throw new InvalidOperationException("Large direct-stream discs are currently enabled for single-file PSX or Sega CD .bin images on Android.");
         }
 
         return new VirtualRomImport(candidatePath, new[] { candidatePath });
@@ -904,9 +917,9 @@ public partial class MainView : UserControl
             }
 
             OpticalDiscKind discKind = OpticalDiscDetector.Detect(cueVirtualPath);
-            if (discKind != OpticalDiscKind.Psx)
+            if (discKind is not OpticalDiscKind.Psx and not OpticalDiscKind.PceCd and not OpticalDiscKind.SegaCd)
             {
-                throw new InvalidOperationException("Android cue streaming is currently enabled for PSX disc sets only.");
+                throw new InvalidOperationException("Android cue streaming currently supports PSX, PC Engine CD and Sega CD disc sets.");
             }
 
             return new VirtualRomImport(cueVirtualPath, registeredPaths);
@@ -994,6 +1007,8 @@ public partial class MainView : UserControl
 
     private async void OnPickPceBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("PCE BIOS", "Select PCE BIOS", new[] { "*.pce", "*.bin", "*.*" });
     private void OnClearPceBios(object? sender, RoutedEventArgs e) => ClearSystemFile("PCE BIOS");
+    private async void OnPickSegaCdBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("SEGA CD BIOS", "Select Sega CD BIOS", new[] { "*.bin", "*.*" });
+    private void OnClearSegaCdBios(object? sender, RoutedEventArgs e) => ClearSystemFile("SEGA CD BIOS");
     private async void OnPickPsxBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("PSX BIOS", "Select PSX BIOS", new[] { "*.bin", "*.*" });
     private void OnClearPsxBios(object? sender, RoutedEventArgs e) => ClearSystemFile("PSX BIOS");
     private async void OnPickDsp1(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("DSP1", "Select DSP1 ROM", new[] { "*.bin", "*.*" });
@@ -1013,11 +1028,19 @@ public partial class MainView : UserControl
 
     private void ApplySettings()
     {
-        PceCdAdapter.BiosPath = _viewModel.PceBiosPath;
+        string pceSaveDir = Path.Combine(_appDataDir, "saves", "pce");
+
+        PceCdAdapter.BiosPath = RegisterSystemFileVirtualPath("PCE BIOS", _viewModel.PceBiosPath, _viewModel.PceBiosDisplay);
+        string? segaCdBiosPath = RegisterSystemFileVirtualPath("SEGA CD BIOS", _viewModel.SegaCdBiosPath, _viewModel.SegaCdBiosDisplay);
         PsxAdapter.BiosPath = RegisterSystemFileVirtualPath("PSX BIOS", _viewModel.PsxBiosPath, _viewModel.PsxBiosDisplay);
         PsxAdapter.FastLoadEnabled = false;
         PsxAdapter.SuperFastBootEnabled = false;
 
+        SetEnv("EUTHERDRIVE_PCE_SAVE_DIR", pceSaveDir);
+        SetEnv("EUTHERDRIVE_SCD_BIOS", segaCdBiosPath);
+        SetEnv("EUTHERDRIVE_SCD_BIOS_U", segaCdBiosPath);
+        SetEnv("EUTHERDRIVE_SCD_BIOS_E", segaCdBiosPath);
+        SetEnv("EUTHERDRIVE_SCD_BIOS_J", segaCdBiosPath);
         SetEnv("EUTHERDRIVE_DSP1_ROM", _viewModel.Dsp1Path);
         SetEnv("EUTHERDRIVE_DSP2_ROM", _viewModel.Dsp2Path);
         SetEnv("EUTHERDRIVE_DSP3_ROM", _viewModel.Dsp3Path);
@@ -1057,6 +1080,8 @@ public partial class MainView : UserControl
         {
             PceBiosPath = _viewModel.PceBiosPath,
             PceBiosDisplay = _viewModel.PceBiosDisplay,
+            SegaCdBiosPath = _viewModel.SegaCdBiosPath,
+            SegaCdBiosDisplay = _viewModel.SegaCdBiosDisplay,
             PsxBiosPath = _viewModel.PsxBiosPath,
             PsxBiosDisplay = _viewModel.PsxBiosDisplay,
             Dsp1Path = _viewModel.Dsp1Path,
@@ -1096,6 +1121,8 @@ public partial class MainView : UserControl
 
             _viewModel.PceBiosPath = settings.PceBiosPath;
             _viewModel.PceBiosDisplay = settings.PceBiosDisplay ?? "(auto)";
+            _viewModel.SegaCdBiosPath = settings.SegaCdBiosPath;
+            _viewModel.SegaCdBiosDisplay = settings.SegaCdBiosDisplay ?? "(none)";
             _viewModel.PsxBiosPath = settings.PsxBiosPath;
             _viewModel.PsxBiosDisplay = settings.PsxBiosDisplay ?? "(none)";
             _viewModel.Dsp1Path = settings.Dsp1Path;
@@ -1123,20 +1150,46 @@ public partial class MainView : UserControl
     {
         lock (_inputSync)
         {
-            bool up = IsDirectionActiveLocked("Up");
-            bool down = IsDirectionActiveLocked("Down");
-            bool left = IsDirectionActiveLocked("Left");
-            bool right = IsDirectionActiveLocked("Right");
-            bool a = IsActionActiveLocked("A");
-            bool b = IsActionActiveLocked("B");
-            bool c = IsActionActiveLocked("C") || IsActionActiveLocked("Y");
-            bool start = IsActionActiveLocked("Start");
-            bool x = IsActionActiveLocked("X");
-            bool y = IsActionActiveLocked("Y");
-            bool z = IsActionActiveLocked("Z");
-            bool mode = IsActionActiveLocked("Select") || IsActionActiveLocked("Menu");
+            var input = new ExtendedInputState(
+                Up: IsDirectionActiveLocked("Up"),
+                Down: IsDirectionActiveLocked("Down"),
+                Left: IsDirectionActiveLocked("Left"),
+                Right: IsDirectionActiveLocked("Right"),
+                South: IsActionActiveLocked("A"),
+                East: IsActionActiveLocked("B"),
+                West: IsActionActiveLocked("Y"),
+                North: IsActionActiveLocked("X"),
+                Start: IsActionActiveLocked("Start"),
+                Select: IsActionActiveLocked("Select"),
+                Menu: IsActionActiveLocked("Menu"),
+                L1: IsActionActiveLocked("L1"),
+                L2: IsActionActiveLocked("L2"),
+                R1: IsActionActiveLocked("R1"),
+                R2: IsActionActiveLocked("R2"),
+                PadType: PadType.SixButton);
 
-            core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, PadType.SixButton);
+            if (core is IExtendedInputHandler extendedInputHandler)
+            {
+                extendedInputHandler.SetExtendedInputState(input);
+            }
+            else
+            {
+                core.SetInputState(
+                    input.Up,
+                    input.Down,
+                    input.Left,
+                    input.Right,
+                    input.South,
+                    input.East,
+                    input.West,
+                    input.Start,
+                    input.North,
+                    input.L1,
+                    input.R1,
+                    input.Select || input.Menu,
+                    input.PadType);
+            }
+
             AdvanceLatchFrames(_directionLatchFrames, _pressedDirections);
             AdvanceLatchFrames(_actionLatchFrames, _pressedActions);
         }
@@ -1208,8 +1261,8 @@ public partial class MainView : UserControl
 
     private string FormatActiveActionsLocked()
     {
-        var active = new List<string>(8);
-        foreach (string tag in new[] { "A", "B", "X", "Y", "Start", "Select", "Menu" })
+        var active = new List<string>(12);
+        foreach (string tag in new[] { "A", "B", "X", "Y", "L1", "L2", "R1", "R2", "Start", "Select", "Menu" })
         {
             if (IsActionActiveLocked(tag))
             {
@@ -1279,7 +1332,19 @@ public partial class MainView : UserControl
             PixelFormat.Bgra8888,
             AlphaFormat.Unpremul);
 
-        ScreenImage.Source = _bitmap;
+        SetScreenSource(_bitmap);
+    }
+
+    private void SetScreenSource(WriteableBitmap? bitmap)
+    {
+        PortraitScreenImage.Source = bitmap;
+        LandscapeScreenImage.Source = bitmap;
+    }
+
+    private void InvalidateScreenImages()
+    {
+        PortraitScreenImage.InvalidateVisual();
+        LandscapeScreenImage.InvalidateVisual();
     }
 
     private static IEmulatorCore CreateCoreForRom(string path)
@@ -1364,16 +1429,20 @@ public partial class MainView : UserControl
         private string _perfSummary = "Perf idle";
         private string _overlaySummary = "D:-  A:-";
         private bool _isFocusMode;
+        private bool _isLandscapeMode;
         private bool _settingsVisible;
         private bool _debugVisible;
         private bool _normalTopButtonsVisible = true;
         private bool _quickSaveButtonsVisible;
         private bool _screenHudVisible = true;
+        private Thickness _rootMargin = new(14);
+        private double _rootRowSpacing = 12;
         private Thickness _screenSurfacePadding = new(10);
         private Thickness _screenFrameMargin = new(6);
         private Thickness _screenContentMargin = new(12);
         private string _settingsHint = "Pick BIOS and chip ROMs here.";
         private string _pceBiosDisplay = "(auto)";
+        private string _segaCdBiosDisplay = "(none)";
         private string _psxBiosDisplay = "(none)";
         private string _dsp1Display = "(none)";
         private string _dsp2Display = "(none)";
@@ -1386,6 +1455,7 @@ public partial class MainView : UserControl
         private bool _isRunning;
         private string? _selectedRomPath;
         private string? _pceBiosPath;
+        private string? _segaCdBiosPath;
         private string? _psxBiosPath;
         private string? _dsp1Path;
         private string? _dsp2Path;
@@ -1476,6 +1546,36 @@ public partial class MainView : UserControl
             }
         }
 
+        public bool IsLandscapeMode
+        {
+            get => _isLandscapeMode;
+            set
+            {
+                if (!SetField(ref _isLandscapeMode, value))
+                {
+                    return;
+                }
+
+                RootMargin = value ? new Thickness(6, 2, 6, 6) : new Thickness(14);
+                RootRowSpacing = value ? 0 : 12;
+                OnPropertyChanged(nameof(IsPortraitMode));
+            }
+        }
+
+        public bool IsPortraitMode => !_isLandscapeMode;
+
+        public Thickness RootMargin
+        {
+            get => _rootMargin;
+            set => SetField(ref _rootMargin, value);
+        }
+
+        public double RootRowSpacing
+        {
+            get => _rootRowSpacing;
+            set => SetField(ref _rootRowSpacing, value);
+        }
+
         public bool SettingsVisible
         {
             get => _settingsVisible;
@@ -1531,6 +1631,7 @@ public partial class MainView : UserControl
         }
 
         public string PceBiosDisplay { get => _pceBiosDisplay; set => SetField(ref _pceBiosDisplay, value); }
+        public string SegaCdBiosDisplay { get => _segaCdBiosDisplay; set => SetField(ref _segaCdBiosDisplay, value); }
         public string PsxBiosDisplay { get => _psxBiosDisplay; set => SetField(ref _psxBiosDisplay, value); }
         public string Dsp1Display { get => _dsp1Display; set => SetField(ref _dsp1Display, value); }
         public string Dsp2Display { get => _dsp2Display; set => SetField(ref _dsp2Display, value); }
@@ -1547,6 +1648,7 @@ public partial class MainView : UserControl
         }
 
         public string? PceBiosPath { get => _pceBiosPath; set => SetField(ref _pceBiosPath, value); }
+        public string? SegaCdBiosPath { get => _segaCdBiosPath; set => SetField(ref _segaCdBiosPath, value); }
         public string? PsxBiosPath { get => _psxBiosPath; set => SetField(ref _psxBiosPath, value); }
         public string? Dsp1Path { get => _dsp1Path; set => SetField(ref _dsp1Path, value); }
         public string? Dsp2Path { get => _dsp2Path; set => SetField(ref _dsp2Path, value); }
@@ -1595,6 +1697,10 @@ public partial class MainView : UserControl
                 case "PCE BIOS":
                     PceBiosPath = path;
                     PceBiosDisplay = path == null ? "(auto)" : label;
+                    break;
+                case "SEGA CD BIOS":
+                    SegaCdBiosPath = path;
+                    SegaCdBiosDisplay = label;
                     break;
                 case "PSX BIOS":
                     PsxBiosPath = path;
@@ -1674,6 +1780,8 @@ public partial class MainView : UserControl
     {
         public string? PceBiosPath { get; set; }
         public string? PceBiosDisplay { get; set; }
+        public string? SegaCdBiosPath { get; set; }
+        public string? SegaCdBiosDisplay { get; set; }
         public string? PsxBiosPath { get; set; }
         public string? PsxBiosDisplay { get; set; }
         public string? Dsp1Path { get; set; }

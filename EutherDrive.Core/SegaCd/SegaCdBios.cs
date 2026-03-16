@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using ProjectPSX.IO;
 
 namespace EutherDrive.Core.SegaCd;
 
@@ -11,10 +12,10 @@ public static class SegaCdBios
     public static byte[] Load(ConsoleRegion region)
     {
         string? path = ResolvePath(region);
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path) || !VirtualFileSystem.Exists(path))
             throw new FileNotFoundException($"Sega CD BIOS not found for region {region}.", path ?? "(null)");
 
-        byte[] data = File.ReadAllBytes(path);
+        byte[] data = VirtualFileSystem.ReadAllBytes(path);
         if (data.Length != BiosSizeBytes)
             throw new InvalidDataException($"Sega CD BIOS must be {BiosSizeBytes} bytes (got {data.Length}).");
 
@@ -23,6 +24,10 @@ public static class SegaCdBios
 
     public static string? ResolvePath(ConsoleRegion region)
     {
+        string? genericEnv = Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_BIOS");
+        if (!string.IsNullOrWhiteSpace(genericEnv) && VirtualFileSystem.Exists(genericEnv))
+            return genericEnv;
+
         string? env = region switch
         {
             ConsoleRegion.EU => Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_BIOS_E"),
@@ -30,7 +35,7 @@ public static class SegaCdBios
             ConsoleRegion.US => Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_BIOS_U"),
             _ => null
         };
-        if (!string.IsNullOrWhiteSpace(env) && File.Exists(env))
+        if (!string.IsNullOrWhiteSpace(env) && VirtualFileSystem.Exists(env))
             return env;
 
         string fileName = region switch
@@ -42,7 +47,7 @@ public static class SegaCdBios
         };
 
         string candidate = Path.Combine(DefaultBiosDir, fileName);
-        if (File.Exists(candidate))
+        if (VirtualFileSystem.Exists(candidate))
             return candidate;
 
         return null;

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using ProjectPSX.IO;
 
 namespace ePceCD
 {
@@ -153,14 +154,14 @@ namespace ePceCD
                 foreach (CDRom.CDTrack track in CDRom.tracks)
                 {
                     if (!string.IsNullOrWhiteSpace(track.FileName))
-                        track.File = new FileStream(track.FileName, FileMode.Open, FileAccess.Read, FileShare.Read);
+                        track.File = VirtualFileSystem.OpenRead(track.FileName);
                 }
 
                 if (CDRom.FileTrack != null && !string.IsNullOrWhiteSpace(CDRom.FileTrack.FileName))
-                    CDRom.FileTrack.File = new FileStream(CDRom.FileTrack.FileName, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    CDRom.FileTrack.File = VirtualFileSystem.OpenRead(CDRom.FileTrack.FileName);
 
                 if (CDRom.currentTrack != null && !string.IsNullOrWhiteSpace(CDRom.currentTrack.FileName))
-                    CDRom.currentTrack.File = new FileStream(CDRom.currentTrack.FileName, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    CDRom.currentTrack.File = VirtualFileSystem.OpenRead(CDRom.currentTrack.FileName);
 
                 CDRom.RestoreExternalFilesAfterDeserialize();
             }
@@ -561,7 +562,7 @@ namespace ePceCD
         {
             int i;
 
-            FileStream file = new FileStream(fileName, FileMode.Open, FileAccess.Read);
+            using Stream file = VirtualFileSystem.OpenRead(fileName);
             byte[][] page = new byte[(file.Length - file.Length % 0x400) / 0x2000][];
             RomName = Path.GetFileNameWithoutExtension(fileName);
 
@@ -578,9 +579,6 @@ namespace ePceCD
             if (swap)//page[0][0x1FFF] < 0xE0)
                 for (i = 0; i < page.Length; i++)
                     BitSwap(page[i]);
-
-            file.Close();
-
             _romPages = page;
             MapRomPages(page);
         }

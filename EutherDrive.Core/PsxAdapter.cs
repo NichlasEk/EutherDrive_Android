@@ -13,7 +13,7 @@ using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core;
 
-public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
+public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInputHandler
 {
     private const uint OpaqueBlackPixel = 0xFF000000u;
     private static readonly Vector<uint> OpaqueAlphaVector = new(0xFF000000u);
@@ -536,6 +536,27 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable
         SetButton(GamepadInputsEnum.Q, y);     // L1
         SetButton(GamepadInputsEnum.E, z);     // R1
         SetButton(GamepadInputsEnum.Space, mode);
+    }
+
+    public void SetExtendedInputState(ExtendedInputState input)
+    {
+        if (_core == null)
+            return;
+
+        SetButton(GamepadInputsEnum.Up, input.Up);
+        SetButton(GamepadInputsEnum.Down, input.Down);
+        SetButton(GamepadInputsEnum.Left, input.Left);
+        SetButton(GamepadInputsEnum.Right, input.Right);
+        SetButton(GamepadInputsEnum.S, input.South);   // Cross
+        SetButton(GamepadInputsEnum.D, input.East);    // Circle
+        SetButton(GamepadInputsEnum.A, input.West);    // Square
+        SetButton(GamepadInputsEnum.W, input.North);   // Triangle
+        SetButton(GamepadInputsEnum.Enter, input.Start);
+        SetButton(GamepadInputsEnum.Space, input.Select || input.Menu);
+        SetButton(GamepadInputsEnum.Q, input.L1);
+        SetButton(GamepadInputsEnum.E, input.R1);
+        SetButton(GamepadInputsEnum.D1, input.L2);
+        SetButton(GamepadInputsEnum.D3, input.R2);
     }
 
     private void SetButton(GamepadInputsEnum button, bool pressed)

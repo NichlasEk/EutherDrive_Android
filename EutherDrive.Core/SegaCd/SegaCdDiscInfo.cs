@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text;
+using ProjectPSX.IO;
 
 namespace EutherDrive.Core.SegaCd;
 
@@ -17,7 +18,7 @@ public sealed class SegaCdDiscInfo
             return null;
 
         string dataPath = ResolveCueDataPath(path) ?? path;
-        if (!File.Exists(dataPath))
+        if (!VirtualFileSystem.Exists(dataPath))
             return null;
 
         if (!TryReadSector0(dataPath, out var header))
@@ -60,12 +61,12 @@ public sealed class SegaCdDiscInfo
     private static bool TryReadSector0(string path, out byte[] header)
     {
         header = Array.Empty<byte>();
-        long length = new FileInfo(path).Length;
+        long length = VirtualFileSystem.GetLength(path);
         int sectorSize = GuessSectorSize(length);
         if (sectorSize <= 0)
             return false;
 
-        using var stream = File.OpenRead(path);
+        using var stream = VirtualFileSystem.OpenRead(path);
         int dataOffset = sectorSize == 2352 ? 16 : 0;
         byte[] buffer = new byte[dataOffset + 0x800];
         if (stream.Read(buffer, 0, buffer.Length) != buffer.Length)

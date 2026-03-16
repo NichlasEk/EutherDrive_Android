@@ -33,6 +33,30 @@
       <Setter Property="BorderBrush" Value="#F59E0B" />
     </Style>
 
+    <Style Selector="Button.landscapeOverlay">
+      <Setter Property="Background" Value="#8C142534" />
+      <Setter Property="Foreground" Value="#EEF6FF" />
+      <Setter Property="BorderBrush" Value="#5C7895" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <Style Selector="Button.landscapeOverlay:pressed">
+      <Setter Property="Background" Value="#CC173E43" />
+      <Setter Property="BorderBrush" Value="#5EEAD4" />
+    </Style>
+
+    <Style Selector="Border.landscapePad">
+      <Setter Property="Background" Value="#8C111B25" />
+      <Setter Property="BorderBrush" Value="#59718B" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="28" />
+      <Setter Property="Width" Value="56" />
+      <Setter Property="Height" Value="56" />
+    </Style>
+
     <Style Selector="Border.pad">
       <Setter Property="Width" Value="64" />
       <Setter Property="Height" Value="64" />
@@ -99,14 +123,15 @@
             Background="#2A1A29"
             Opacity="0.18" />
 
-    <Grid RowDefinitions="Auto,*,Auto" Margin="14" RowSpacing="12">
-      <Border Grid.Row="0" Classes="surface" Padding="14">
+    <Grid RowDefinitions="Auto,*,Auto" Margin="{Binding RootMargin}" RowSpacing="{Binding RootRowSpacing}">
+      <Border Grid.Row="0" Classes="surface" Padding="14" IsVisible="{Binding IsPortraitMode}">
         <Grid ColumnDefinitions="*" RowDefinitions="Auto">
           <Grid IsVisible="{Binding NormalTopButtonsVisible}"
                 ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto"
-                ColumnSpacing="8">
+                ColumnSpacing="6">
             <Button Grid.Column="0"
                     Classes="chrome"
+                    Padding="12,10"
                     Content="Settings"
                     Click="OnMenuTapped" />
 
@@ -120,18 +145,23 @@
 
             <Button Grid.Column="2"
                     Classes="chrome"
-                    Content="Open ROM"
+                    Padding="12,10"
+                    Content="ROM"
                     Click="OnPickRom" />
             <Button Grid.Column="3"
                     Classes="chrome"
-                    Content="Debug"
+                    Width="42"
+                    Padding="0,10"
+                    Content="D"
                     Click="OnOpenDebug" />
             <Button Grid.Column="4"
                     Classes="chrome action"
+                    Padding="12,10"
                     Content="Start"
                     Click="OnStartClicked" />
             <Button Grid.Column="5"
                     Classes="chrome warn"
+                    Padding="12,10"
                     Content="Stop"
                     Click="OnStopClicked" />
           </Grid>
@@ -173,7 +203,7 @@
         </Grid>
       </Border>
 
-      <Grid Grid.Row="1" RowDefinitions="*,Auto" RowSpacing="12">
+      <Grid Grid.Row="1" IsVisible="{Binding IsPortraitMode}" RowDefinitions="*,Auto" RowSpacing="12">
         <Border Grid.Row="0" Classes="surface" Padding="{Binding ScreenSurfacePadding}">
           <Grid>
             <Border CornerRadius="18"
@@ -212,7 +242,7 @@
 
                 <Grid Grid.Row="1"
                       PointerPressed="OnToggleScreenFocus">
-                  <Image Name="ScreenImage"
+                  <Image Name="PortraitScreenImage"
                          Stretch="Uniform"
                          HorizontalAlignment="Stretch"
                          VerticalAlignment="Stretch" />
@@ -393,7 +423,223 @@
         </Border>
       </Grid>
 
-      <Border Grid.Row="2" Classes="surface" Padding="12">
+      <Grid Grid.Row="1"
+            IsVisible="{Binding IsLandscapeMode}">
+        <Grid Margin="-6,0,-6,0">
+          <Image Name="LandscapeScreenImage"
+                 Stretch="Uniform"
+                 HorizontalAlignment="Stretch"
+                 VerticalAlignment="Stretch"
+                 PointerPressed="OnToggleScreenFocus" />
+
+          <Border IsVisible="{Binding ScreenOverlayVisible}"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  MaxWidth="420"
+                  Padding="18"
+                  CornerRadius="18"
+                  Background="#A00B1219">
+            <StackPanel Spacing="10">
+              <TextBlock Text="{Binding ScreenTitle}"
+                         FontSize="28"
+                         FontWeight="Black"
+                         TextAlignment="Center"
+                         Foreground="#EEF6FF" />
+              <TextBlock Text="{Binding ScreenDescription}"
+                         FontSize="14"
+                         TextWrapping="Wrap"
+                         TextAlignment="Center"
+                         Foreground="#91A8BD" />
+            </StackPanel>
+          </Border>
+
+          <Border IsVisible="{Binding ScreenHudVisible}"
+                  HorizontalAlignment="Left"
+                  VerticalAlignment="Top"
+                  Margin="18,10,0,0"
+                  Background="#8A121C25"
+                  CornerRadius="999"
+                  Padding="10,6">
+            <TextBlock Text="{Binding StatusPill}"
+                       FontSize="12"
+                       FontWeight="Bold"
+                       Foreground="#5EEAD4" />
+          </Border>
+
+          <Border IsVisible="{Binding ScreenHudVisible}"
+                  HorizontalAlignment="Right"
+                  VerticalAlignment="Top"
+                  Margin="0,10,18,0"
+                  Background="#8A121C25"
+                  CornerRadius="999"
+                  Padding="10,6">
+            <TextBlock Text="{Binding SelectedConsoleLabel}"
+                       FontSize="12"
+                       FontWeight="Bold"
+                       Foreground="#F59E0B" />
+          </Border>
+
+          <StackPanel HorizontalAlignment="Left"
+                      VerticalAlignment="Top"
+                      Margin="22,18,0,0"
+                      Spacing="8">
+            <Button Classes="landscapeOverlay"
+                    Width="58"
+                    Content="L2"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="L2" />
+            <Button Classes="landscapeOverlay"
+                    Width="58"
+                    Content="L1"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="L1" />
+          </StackPanel>
+
+          <StackPanel HorizontalAlignment="Right"
+                      VerticalAlignment="Top"
+                      Margin="0,18,22,0"
+                      Spacing="8">
+            <Button Classes="landscapeOverlay"
+                    Width="58"
+                    Content="R2"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="R2" />
+            <Button Classes="landscapeOverlay"
+                    Width="58"
+                    Content="R1"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="R1" />
+          </StackPanel>
+
+          <Grid Width="150"
+                Height="150"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Bottom"
+                Margin="26,0,0,18">
+            <Border Classes="landscapePad"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    PointerPressed="OnOverlayPress"
+                    PointerReleased="OnOverlayRelease"
+                    PointerCaptureLost="OnOverlayCaptureLost"
+                    Tag="Up">
+              <TextBlock Text="▲" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
+            </Border>
+            <Border Classes="landscapePad"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Bottom"
+                    PointerPressed="OnOverlayPress"
+                    PointerReleased="OnOverlayRelease"
+                    PointerCaptureLost="OnOverlayCaptureLost"
+                    Tag="Down">
+              <TextBlock Text="▼" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
+            </Border>
+            <Border Classes="landscapePad"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Center"
+                    PointerPressed="OnOverlayPress"
+                    PointerReleased="OnOverlayRelease"
+                    PointerCaptureLost="OnOverlayCaptureLost"
+                    Tag="Left">
+              <TextBlock Text="◀" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
+            </Border>
+            <Border Classes="landscapePad"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Center"
+                    PointerPressed="OnOverlayPress"
+                    PointerReleased="OnOverlayRelease"
+                    PointerCaptureLost="OnOverlayCaptureLost"
+                    Tag="Right">
+              <TextBlock Text="▶" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
+            </Border>
+          </Grid>
+
+          <Grid Width="192"
+                Height="192"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                Margin="0,0,22,18">
+            <Button Classes="landscapeOverlay"
+                    Width="68"
+                    Height="68"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Center"
+                    Content="Y"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="Y" />
+            <Button Classes="landscapeOverlay"
+                    Width="68"
+                    Height="68"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Bottom"
+                    Content="B"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="B" />
+            <Button Classes="landscapeOverlay"
+                    Width="68"
+                    Height="68"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    Content="X"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="X" />
+            <Button Classes="landscapeOverlay"
+                    Width="68"
+                    Height="68"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Center"
+                    Content="A"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="A" />
+          </Grid>
+
+          <StackPanel Orientation="Horizontal"
+                      HorizontalAlignment="Right"
+                      VerticalAlignment="Bottom"
+                      Margin="0,0,116,22"
+                      Spacing="10">
+            <Button Classes="landscapeOverlay"
+                    Width="72"
+                    Content="Select"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="Select" />
+            <Button Classes="landscapeOverlay"
+                    Width="72"
+                    Content="Menu"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="Menu" />
+            <Button Classes="landscapeOverlay"
+                    Width="72"
+                    Content="Start"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="Start" />
+          </StackPanel>
+        </Grid>
+      </Grid>
+
+      <Border Grid.Row="2" Classes="surface" Padding="12" IsVisible="{Binding IsPortraitMode}">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
           <StackPanel Spacing="4">
             <TextBlock Classes="hudLabel" Text="Session" />
@@ -442,6 +688,15 @@
                     <TextBlock Grid.Column="1" Text="{Binding PceBiosDisplay}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
                     <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickPceBios" />
                     <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearPceBios" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="SEGA CD BIOS" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding SegaCdBiosDisplay}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickSegaCdBios" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearSegaCdBios" />
                   </Grid>
                 </Border>
 

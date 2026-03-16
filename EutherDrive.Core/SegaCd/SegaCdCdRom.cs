@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using ProjectPSX.IO;
 
 namespace EutherDrive.Core.SegaCd;
 
@@ -140,13 +141,13 @@ internal sealed class CdCue
     public static CdCue Parse(string cuePath)
     {
         var cue = new CdCue();
-        if (!File.Exists(cuePath))
+        if (!VirtualFileSystem.Exists(cuePath))
             return cue;
 
         var parsedFiles = new List<ParsedFile>();
         ParsedFile? currentFile = null;
         ParsedTrack? currentTrack = null;
-        foreach (var rawLine in File.ReadLines(cuePath))
+        foreach (var rawLine in ReadLines(cuePath))
         {
             string line = rawLine.Trim();
             if (line.Length == 0)
@@ -260,9 +261,16 @@ internal sealed class CdCue
         return CueSheetResolver.ResolveReferencedPath(cuePath, fileName);
     }
 
+    private static IEnumerable<string> ReadLines(string path)
+    {
+        using var reader = new StreamReader(VirtualFileSystem.OpenRead(path));
+        while (reader.ReadLine() is { } line)
+            yield return line;
+    }
+
     private static int GuessSectorSize(string path)
     {
-        long length = new FileInfo(path).Length;
+        long length = VirtualFileSystem.GetLength(path);
         if (length % 2352 == 0)
             return 2352;
         return 2048;
@@ -270,7 +278,7 @@ internal sealed class CdCue
 
     private static int GuessSectorCount(string path, int? sectorSizeOverride = null)
     {
-        long length = new FileInfo(path).Length;
+        long length = VirtualFileSystem.GetLength(path);
         int sectorSize = sectorSizeOverride ?? GuessSectorSize(path);
         if (sectorSize <= 0)
             return 0;
@@ -288,7 +296,7 @@ internal sealed class CdCue
             ParsedFile file = files[fileIndex];
             if (string.IsNullOrWhiteSpace(file.Path))
                 continue;
-            if (!File.Exists(file.Path))
+            if (!VirtualFileSystem.Exists(file.Path))
                 continue;
 
             int sectorSize = GuessSectorSize(file.Path);
@@ -381,7 +389,7 @@ internal sealed class CdRom
         public readonly int SectorSize;
         public readonly int SectorCount;
         public readonly int StartFrameAbs;
-        public readonly FileStream? Stream;
+        public readonly Stream? Stream;
         public readonly byte[]? Data;
 
         public FileEntry(string path, int sectorSize, int sectorCount, int startFrameAbs, byte[]? data)
@@ -391,7 +399,7 @@ internal sealed class CdRom
             SectorCount = sectorCount;
             StartFrameAbs = startFrameAbs;
             Data = data;
-            Stream = data == null ? File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read) : null;
+            Stream = data == null ? VirtualFileSystem.OpenRead(path) : null;
         }
     }
 
@@ -428,7 +436,7 @@ internal sealed class CdRom
             for (int i = 0; i < cue.Files.Count; i++)
             {
                 string filePath = cue.Files[i];
-                if (!File.Exists(filePath))
+                if (!VirtualFileSystem.Exists(filePath))
                 {
                     if (LogDisc)
                         Console.Error.WriteLine($"[SCD-DISC] Open: data file not found path='{filePath}' (cue='{path}')");
@@ -442,7 +450,7 @@ internal sealed class CdRom
                 {
                     try
                     {
-                        data = File.ReadAllBytes(filePath);
+                        data = VirtualFileSystem.ReadAllBytes(filePath);
                     }
                     catch
                     {
@@ -455,7 +463,7 @@ internal sealed class CdRom
         }
         else
         {
-            if (!File.Exists(dataPath))
+            if (!VirtualFileSystem.Exists(dataPath))
             {
                 if (LogDisc)
                     Console.Error.WriteLine($"[SCD-DISC] Open: data file not found path='{dataPath}' (cue='{path}')");
@@ -469,7 +477,7 @@ internal sealed class CdRom
             {
                 try
                 {
-                    data = File.ReadAllBytes(dataPath);
+                    data = VirtualFileSystem.ReadAllBytes(dataPath);
                 }
                 catch
                 {
@@ -644,7 +652,7 @@ internal sealed class CdRom
 
     private static int GuessSectorSize(string path)
     {
-        long length = new FileInfo(path).Length;
+        long length = VirtualFileSystem.GetLength(path);
         if (length % 2352 == 0)
             return 2352;
         return 2048;
@@ -652,7 +660,7 @@ internal sealed class CdRom
 
     private static int GuessSectorCount(string path, int? sectorSizeOverride = null)
     {
-        long length = new FileInfo(path).Length;
+        long length = VirtualFileSystem.GetLength(path);
         int sectorSize = sectorSizeOverride ?? GuessSectorSize(path);
         if (sectorSize <= 0)
             return 0;

@@ -10,7 +10,7 @@ using System.IO;
 
 namespace EutherDrive.Core;
 
-public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
+public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInputHandler
 {
     private const double NtscFps = 21477272.0 / (1364.0 * 262.0);
     private const double PalFps = 21281370.0 / (1364.0 * 312.0);
@@ -343,6 +343,22 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable
         SetButton(SNESButton.R, c);
         SetButton(SNESButton.Start, start);
         SetButton(SNESButton.Sel, mode);
+    }
+
+    public void SetExtendedInputState(ExtendedInputState input)
+    {
+        SetButton(SNESButton.Up, input.Up);
+        SetButton(SNESButton.Down, input.Down);
+        SetButton(SNESButton.Left, input.Left);
+        SetButton(SNESButton.Right, input.Right);
+        SetButton(SNESButton.A, input.South);
+        SetButton(SNESButton.B, input.East);
+        SetButton(SNESButton.X, input.North);
+        SetButton(SNESButton.Y, input.West);
+        SetButton(SNESButton.L, input.L1 || input.L2);
+        SetButton(SNESButton.R, input.R1 || input.R2);
+        SetButton(SNESButton.Start, input.Start);
+        SetButton(SNESButton.Sel, input.Select || input.Menu);
     }
 
     public void SetInputState2(

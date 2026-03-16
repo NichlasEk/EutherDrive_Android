@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using EutherDrive.Core.Cpu.M68000Emu;
 using EutherDrive.Core.MdTracerCore;
+using ProjectPSX.IO;
 
 namespace EutherDrive.Core.SegaCd;
 
@@ -261,7 +262,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
     public void LoadRom(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path) || !VirtualFileSystem.Exists(path))
             throw new FileNotFoundException("Sega CD image not found.", path);
 
         _romPath = path;
