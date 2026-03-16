@@ -34,6 +34,11 @@ public partial class MainView : UserControl
     private readonly object _frameSync = new();
     private readonly HashSet<string> _pressedDirections = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pressedActions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<IPointer, HashSet<string>> _dpadPointerDirections = new();
+    private readonly Dictionary<IPointer, string> _directionPointers = new();
+    private readonly Dictionary<IPointer, string> _actionPointers = new();
+    private readonly Dictionary<string, int> _directionPressCounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _actionPressCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _selectedVirtualPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _directionLatchFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _actionLatchFrames = new(StringComparer.OrdinalIgnoreCase);
@@ -220,12 +225,132 @@ public partial class MainView : UserControl
             lock (_inputSync)
             {
                 border.Classes.Add("padPressed");
-                _pressedDirections.Add(tag);
+                RegisterPointerPressLocked(_directionPointers, _directionPressCounts, _pressedDirections, e.Pointer, tag);
                 _directionLatchFrames[tag] = InputLatchFrames;
             }
+            e.Pointer.Capture(border);
+            e.Handled = true;
             _viewModel.SetLastPressed(tag);
             UpdateOverlaySummary();
         }
+    }
+
+    private void OnDPadZonePress(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Control control || control.Tag is not string tag)
+        {
+            return;
+        }
+
+        lock (_inputSync)
+        {
+            RegisterDPadDirectionsLocked(e.Pointer, ParseDPadDirections(tag));
+        }
+
+        e.Pointer.Capture(control);
+        e.Handled = true;
+        UpdateOverlaySummary();
+    }
+
+    private void OnDPadZoneRelease(object? sender, PointerReleasedEventArgs e)
+    {
+        if (sender is not Control control)
+        {
+            return;
+        }
+
+        lock (_inputSync)
+        {
+            ReleaseDPadPointerLocked(e.Pointer);
+            UpdateDPadVisualsLocked();
+        }
+
+        e.Pointer.Capture(null);
+        e.Handled = true;
+        UpdateOverlaySummary();
+    }
+
+    private void OnDPadZoneCaptureLost(object? sender, RoutedEventArgs e)
+    {
+        lock (_inputSync)
+        {
+            foreach (IPointer pointer in _dpadPointerDirections.Keys.ToArray())
+            {
+                ReleaseDPadPointerLocked(pointer);
+            }
+
+            UpdateDPadVisualsLocked();
+        }
+
+        UpdateOverlaySummary();
+    }
+
+    private void OnDPadPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Control control)
+        {
+            return;
+        }
+
+        lock (_inputSync)
+        {
+            UpdateDPadPointerLocked(control, e.Pointer, e.GetPosition(control));
+        }
+
+        e.Pointer.Capture(control);
+        e.Handled = true;
+        UpdateOverlaySummary();
+    }
+
+    private void OnDPadPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (sender is not Control control || e.Pointer.Captured != control)
+        {
+            return;
+        }
+
+        lock (_inputSync)
+        {
+            UpdateDPadPointerLocked(control, e.Pointer, e.GetPosition(control));
+        }
+
+        e.Handled = true;
+        UpdateOverlaySummary();
+    }
+
+    private void OnDPadPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (sender is not Control control)
+        {
+            return;
+        }
+
+        lock (_inputSync)
+        {
+            ReleaseDPadPointerLocked(e.Pointer);
+        }
+
+        e.Pointer.Capture(null);
+        e.Handled = true;
+        UpdateOverlaySummary();
+    }
+
+    private void OnDPadPointerCaptureLost(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control)
+        {
+            return;
+        }
+
+        lock (_inputSync)
+        {
+            foreach (IPointer pointer in _dpadPointerDirections.Keys.ToArray())
+            {
+                ReleaseDPadPointerLocked(pointer);
+            }
+        }
+
+        UpdateOverlaySummary();
     }
 
     private void OnOverlayRelease(object? sender, PointerReleasedEventArgs e)
@@ -235,9 +360,11 @@ public partial class MainView : UserControl
             lock (_inputSync)
             {
                 border.Classes.Remove("padPressed");
-                _pressedDirections.Remove(tag);
+                ReleasePointerLocked(_directionPointers, _directionPressCounts, _pressedDirections, e.Pointer, tag);
                 _directionLatchFrames[tag] = InputLatchFrames;
             }
+            e.Pointer.Capture(null);
+            e.Handled = true;
             UpdateOverlaySummary();
         }
     }
@@ -249,7 +376,7 @@ public partial class MainView : UserControl
             lock (_inputSync)
             {
                 border.Classes.Remove("padPressed");
-                _pressedDirections.Remove(tag);
+                ReleaseAllPointersForTagLocked(_directionPointers, _directionPressCounts, _pressedDirections, tag);
                 _directionLatchFrames[tag] = InputLatchFrames;
             }
             UpdateOverlaySummary();
@@ -262,9 +389,11 @@ public partial class MainView : UserControl
         {
             lock (_inputSync)
             {
-                _pressedActions.Add(tag);
+                RegisterPointerPressLocked(_actionPointers, _actionPressCounts, _pressedActions, e.Pointer, tag);
                 _actionLatchFrames[tag] = InputLatchFrames;
             }
+            e.Pointer.Capture(button);
+            e.Handled = true;
             _viewModel.SetLastPressed(tag);
             UpdateOverlaySummary();
         }
@@ -276,9 +405,11 @@ public partial class MainView : UserControl
         {
             lock (_inputSync)
             {
-                _pressedActions.Remove(tag);
+                ReleasePointerLocked(_actionPointers, _actionPressCounts, _pressedActions, e.Pointer, tag);
                 _actionLatchFrames[tag] = InputLatchFrames;
             }
+            e.Pointer.Capture(null);
+            e.Handled = true;
             UpdateOverlaySummary();
         }
     }
@@ -289,11 +420,191 @@ public partial class MainView : UserControl
         {
             lock (_inputSync)
             {
-                _pressedActions.Remove(tag);
+                ReleaseAllPointersForTagLocked(_actionPointers, _actionPressCounts, _pressedActions, tag);
                 _actionLatchFrames[tag] = InputLatchFrames;
             }
             UpdateOverlaySummary();
         }
+    }
+
+    private static void RegisterPointerPressLocked(
+        Dictionary<IPointer, string> pointerMap,
+        Dictionary<string, int> pressCounts,
+        HashSet<string> pressedTags,
+        IPointer pointer,
+        string tag)
+    {
+        if (pointerMap.TryGetValue(pointer, out string existingTag))
+        {
+            if (string.Equals(existingTag, tag, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            DecrementPressCountLocked(pressCounts, pressedTags, existingTag);
+        }
+
+        pointerMap[pointer] = tag;
+        if (pressCounts.TryGetValue(tag, out int count))
+        {
+            pressCounts[tag] = count + 1;
+        }
+        else
+        {
+            pressCounts[tag] = 1;
+        }
+
+        pressedTags.Add(tag);
+    }
+
+    private void RegisterDPadDirectionsLocked(IPointer pointer, IEnumerable<string> directions)
+    {
+        ReleaseDPadPointerLocked(pointer);
+
+        var directionSet = new HashSet<string>(directions, StringComparer.OrdinalIgnoreCase);
+        if (directionSet.Count == 0)
+        {
+            UpdateDPadVisualsLocked();
+            return;
+        }
+
+        _dpadPointerDirections[pointer] = directionSet;
+        foreach (string direction in directionSet)
+        {
+            if (_directionPressCounts.TryGetValue(direction, out int count))
+                _directionPressCounts[direction] = count + 1;
+            else
+                _directionPressCounts[direction] = 1;
+
+            _pressedDirections.Add(direction);
+            _directionLatchFrames[direction] = InputLatchFrames;
+        }
+
+        _viewModel.SetLastPressed(string.Join(" ", directionSet.OrderBy(static value => value)));
+        UpdateDPadVisualsLocked();
+    }
+
+    private static IEnumerable<string> ParseDPadDirections(string tag)
+    {
+        return tag
+            .Split(new[] { ' ', '+', '/' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static part => part is "Up" or "Down" or "Left" or "Right");
+    }
+
+    private void UpdateDPadPointerLocked(Control control, IPointer pointer, Point point)
+    {
+        ReleaseDPadPointerLocked(pointer);
+
+        double width = control.Bounds.Width;
+        double height = control.Bounds.Height;
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        double centerX = width * 0.5;
+        double centerY = height * 0.5;
+        double deadZone = Math.Min(width, height) * 0.16;
+        double dx = point.X - centerX;
+        double dy = point.Y - centerY;
+
+        var directions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (dx <= -deadZone)
+            directions.Add("Left");
+        else if (dx >= deadZone)
+            directions.Add("Right");
+
+        if (dy <= -deadZone)
+            directions.Add("Up");
+        else if (dy >= deadZone)
+            directions.Add("Down");
+
+        if (directions.Count == 0)
+        {
+            return;
+        }
+
+        _dpadPointerDirections[pointer] = directions;
+        foreach (string direction in directions)
+        {
+            if (_directionPressCounts.TryGetValue(direction, out int count))
+                _directionPressCounts[direction] = count + 1;
+            else
+                _directionPressCounts[direction] = 1;
+
+            _pressedDirections.Add(direction);
+            _directionLatchFrames[direction] = InputLatchFrames;
+        }
+
+        _viewModel.SetLastPressed(string.Join(" ", directions.OrderBy(static value => value)));
+        UpdateDPadVisualsLocked();
+    }
+
+    private void ReleaseDPadPointerLocked(IPointer pointer)
+    {
+        if (!_dpadPointerDirections.TryGetValue(pointer, out HashSet<string>? directions))
+        {
+            return;
+        }
+
+        _dpadPointerDirections.Remove(pointer);
+        foreach (string direction in directions)
+        {
+            DecrementPressCountLocked(_directionPressCounts, _pressedDirections, direction);
+            _directionLatchFrames[direction] = InputLatchFrames;
+        }
+
+        UpdateDPadVisualsLocked();
+    }
+
+    private static void ReleasePointerLocked(
+        Dictionary<IPointer, string> pointerMap,
+        Dictionary<string, int> pressCounts,
+        HashSet<string> pressedTags,
+        IPointer pointer,
+        string fallbackTag)
+    {
+        if (pointerMap.TryGetValue(pointer, out string actualTag))
+        {
+            pointerMap.Remove(pointer);
+            DecrementPressCountLocked(pressCounts, pressedTags, actualTag);
+            return;
+        }
+
+        DecrementPressCountLocked(pressCounts, pressedTags, fallbackTag);
+    }
+
+    private static void ReleaseAllPointersForTagLocked(
+        Dictionary<IPointer, string> pointerMap,
+        Dictionary<string, int> pressCounts,
+        HashSet<string> pressedTags,
+        string tag)
+    {
+        IPointer[] pointers = pointerMap
+            .Where(kvp => string.Equals(kvp.Value, tag, StringComparison.OrdinalIgnoreCase))
+            .Select(kvp => kvp.Key)
+            .ToArray();
+
+        foreach (IPointer pointer in pointers)
+        {
+            pointerMap.Remove(pointer);
+            DecrementPressCountLocked(pressCounts, pressedTags, tag);
+        }
+    }
+
+    private static void DecrementPressCountLocked(
+        Dictionary<string, int> pressCounts,
+        HashSet<string> pressedTags,
+        string tag)
+    {
+        if (!pressCounts.TryGetValue(tag, out int count) || count <= 1)
+        {
+            pressCounts.Remove(tag);
+            pressedTags.Remove(tag);
+            return;
+        }
+
+        pressCounts[tag] = count - 1;
     }
 
     private void UpdateOverlaySummary()
@@ -307,6 +618,43 @@ public partial class MainView : UserControl
         }
 
         _viewModel.OverlaySummary = $"D:{directions}  A:{actions}";
+    }
+
+    private void UpdateDPadVisualsLocked()
+    {
+        bool up = _pressedDirections.Contains("Up");
+        bool down = _pressedDirections.Contains("Down");
+        bool left = _pressedDirections.Contains("Left");
+        bool right = _pressedDirections.Contains("Right");
+
+        SetPadVisualState(PortraitPadUp, up);
+        SetPadVisualState(PortraitPadDown, down);
+        SetPadVisualState(PortraitPadLeft, left);
+        SetPadVisualState(PortraitPadRight, right);
+        SetPadVisualState(LandscapePadUp, up);
+        SetPadVisualState(LandscapePadDown, down);
+        SetPadVisualState(LandscapePadLeft, left);
+        SetPadVisualState(LandscapePadRight, right);
+    }
+
+    private static void SetPadVisualState(Border? border, bool active)
+    {
+        if (border == null)
+        {
+            return;
+        }
+
+        if (active)
+        {
+            if (!border.Classes.Contains("padPressed"))
+            {
+                border.Classes.Add("padPressed");
+            }
+        }
+        else
+        {
+            border.Classes.Remove("padPressed");
+        }
     }
 
     private void StartCore()
@@ -681,6 +1029,27 @@ public partial class MainView : UserControl
         {
             _viewModel.FooterStatus = footerStatus;
         }
+
+        ClearOverlayInputState();
+    }
+
+    private void ClearOverlayInputState()
+    {
+        lock (_inputSync)
+        {
+            _dpadPointerDirections.Clear();
+            _directionPointers.Clear();
+            _actionPointers.Clear();
+            _directionPressCounts.Clear();
+            _actionPressCounts.Clear();
+            _pressedDirections.Clear();
+            _pressedActions.Clear();
+            _directionLatchFrames.Clear();
+            _actionLatchFrames.Clear();
+            UpdateDPadVisualsLocked();
+        }
+
+        UpdateOverlaySummary();
     }
 
     private void InitializeAudio(IEmulatorCore? core)
@@ -1150,6 +1519,10 @@ public partial class MainView : UserControl
     {
         lock (_inputSync)
         {
+            PadType padType = core is MdTracerAdapter or EutherDrive.Core.SegaCd.SegaCdAdapter
+                ? PadType.SixButton
+                : PadType.ThreeButton;
+
             var input = new ExtendedInputState(
                 Up: IsDirectionActiveLocked("Up"),
                 Down: IsDirectionActiveLocked("Down"),
@@ -1166,7 +1539,7 @@ public partial class MainView : UserControl
                 L2: IsActionActiveLocked("L2"),
                 R1: IsActionActiveLocked("R1"),
                 R2: IsActionActiveLocked("R2"),
-                PadType: PadType.SixButton);
+                PadType: padType);
 
             if (core is IExtendedInputHandler extendedInputHandler)
             {

@@ -67,8 +67,8 @@
     </Style>
 
     <Style Selector="Border.padPressed">
-      <Setter Property="Background" Value="#E85EEAD4" />
-      <Setter Property="BorderBrush" Value="#D8FB7185" />
+      <Setter Property="Background" Value="#D0183350" />
+      <Setter Property="BorderBrush" Value="#7DD3FC" />
     </Style>
 
     <Style Selector="TextBlock.hudLabel">
@@ -299,45 +299,41 @@
 
         <Border Grid.Row="1" Classes="surface" Padding="14">
           <Grid ColumnDefinitions="*,Auto,*" ColumnSpacing="18">
-            <Grid Grid.Column="0" Width="192" Height="192" HorizontalAlignment="Center">
-              <Border Classes="pad"
+            <Grid Grid.Column="0"
+                  Width="192"
+                  Height="192"
+                  HorizontalAlignment="Center">
+              <Border x:Name="PortraitPadUp"
+                      Classes="pad"
+                      IsHitTestVisible="False"
                       HorizontalAlignment="Center"
-                      VerticalAlignment="Top"
-                      PointerPressed="OnOverlayPress"
-                      PointerReleased="OnOverlayRelease"
-                      PointerCaptureLost="OnOverlayCaptureLost"
-                      Tag="Up">
+                      VerticalAlignment="Top">
                 <TextBlock Text="▲" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
               </Border>
-              <Border Classes="pad"
+              <Border x:Name="PortraitPadDown"
+                      Classes="pad"
+                      IsHitTestVisible="False"
                       HorizontalAlignment="Center"
-                      VerticalAlignment="Bottom"
-                      PointerPressed="OnOverlayPress"
-                      PointerReleased="OnOverlayRelease"
-                      PointerCaptureLost="OnOverlayCaptureLost"
-                      Tag="Down">
+                      VerticalAlignment="Bottom">
                 <TextBlock Text="▼" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
               </Border>
-              <Border Classes="pad"
+              <Border x:Name="PortraitPadLeft"
+                      Classes="pad"
+                      IsHitTestVisible="False"
                       HorizontalAlignment="Left"
-                      VerticalAlignment="Center"
-                      PointerPressed="OnOverlayPress"
-                      PointerReleased="OnOverlayRelease"
-                      PointerCaptureLost="OnOverlayCaptureLost"
-                      Tag="Left">
+                      VerticalAlignment="Center">
                 <TextBlock Text="◀" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
               </Border>
-              <Border Classes="pad"
+              <Border x:Name="PortraitPadRight"
+                      Classes="pad"
+                      IsHitTestVisible="False"
                       HorizontalAlignment="Right"
-                      VerticalAlignment="Center"
-                      PointerPressed="OnOverlayPress"
-                      PointerReleased="OnOverlayRelease"
-                      PointerCaptureLost="OnOverlayCaptureLost"
-                      Tag="Right">
+                      VerticalAlignment="Center">
                 <TextBlock Text="▶" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
               </Border>
               <Border Width="62"
                       Height="62"
+                      IsHitTestVisible="False"
                       CornerRadius="31"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Center"
@@ -351,6 +347,62 @@
                            FontWeight="Bold"
                            Foreground="#91A8BD" />
               </Border>
+              <Grid Background="Transparent"
+                    ColumnDefinitions="*,*,*"
+                    RowDefinitions="*,*,*">
+                <Border Grid.Column="1"
+                        Background="Transparent"
+                        Tag="Up"
+                        PointerPressed="OnDPadZonePress"
+                        PointerReleased="OnDPadZoneRelease"
+                        PointerCaptureLost="OnDPadZoneCaptureLost" />
+                <Border Grid.Row="1"
+                        Grid.Column="0"
+                        Background="Transparent"
+                        Tag="Left"
+                        PointerPressed="OnDPadZonePress"
+                        PointerReleased="OnDPadZoneRelease"
+                        PointerCaptureLost="OnDPadZoneCaptureLost" />
+                <Border Grid.Row="1"
+                        Grid.Column="2"
+                        Background="Transparent"
+                        Tag="Right"
+                        PointerPressed="OnDPadZonePress"
+                        PointerReleased="OnDPadZoneRelease"
+                        PointerCaptureLost="OnDPadZoneCaptureLost" />
+                <Border Grid.Row="2"
+                        Grid.Column="1"
+                        Background="Transparent"
+                        Tag="Down"
+                        PointerPressed="OnDPadZonePress"
+                        PointerReleased="OnDPadZoneRelease"
+                        PointerCaptureLost="OnDPadZoneCaptureLost" />
+                <Border Grid.Column="0"
+                        Background="Transparent"
+                        Tag="Up Left"
+                        PointerPressed="OnDPadZonePress"
+                        PointerReleased="OnDPadZoneRelease"
+                        PointerCaptureLost="OnDPadZoneCaptureLost" />
+                <Border Grid.Column="2"
+                        Background="Transparent"
+                        Tag="Up Right"
+                        PointerPressed="OnDPadZonePress"
+                        PointerReleased="OnDPadZoneRelease"
+                        PointerCaptureLost="OnDPadZoneCaptureLost" />
+                <Border Grid.Row="2"
+                        Background="Transparent"
+                        Tag="Down Left"
+                        PointerPressed="OnDPadZonePress"
+                        PointerReleased="OnDPadZoneRelease"
+                        PointerCaptureLost="OnDPadZoneCaptureLost" />
+                <Border Grid.Row="2"
+                        Grid.Column="2"
+                        Background="Transparent"
+                        Tag="Down Right"
+                        PointerPressed="OnDPadZonePress"
+                        PointerReleased="OnDPadZoneRelease"
+                        PointerCaptureLost="OnDPadZoneCaptureLost" />
+              </Grid>
             </Grid>
 
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="10">
@@ -453,113 +505,190 @@
             </StackPanel>
           </Border>
 
-          <Border IsVisible="{Binding ScreenHudVisible}"
-                  HorizontalAlignment="Left"
-                  VerticalAlignment="Top"
-                  Margin="18,10,0,0"
-                  Background="#8A121C25"
-                  CornerRadius="999"
-                  Padding="10,6">
-            <TextBlock Text="{Binding StatusPill}"
+          <Grid HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Margin="22,14,0,0"
+                RowDefinitions="Auto,Auto,Auto"
+                ColumnDefinitions="Auto,Auto"
+                ColumnSpacing="8"
+                RowSpacing="8">
+            <TextBlock Grid.ColumnSpan="2"
+                       IsVisible="{Binding ScreenHudVisible}"
+                       Text="{Binding StatusPill}"
                        FontSize="12"
                        FontWeight="Bold"
-                       Foreground="#5EEAD4" />
-          </Border>
-
-          <Border IsVisible="{Binding ScreenHudVisible}"
-                  HorizontalAlignment="Right"
-                  VerticalAlignment="Top"
-                  Margin="0,10,18,0"
-                  Background="#8A121C25"
-                  CornerRadius="999"
-                  Padding="10,6">
-            <TextBlock Text="{Binding SelectedConsoleLabel}"
-                       FontSize="12"
-                       FontWeight="Bold"
-                       Foreground="#F59E0B" />
-          </Border>
-
-          <StackPanel HorizontalAlignment="Left"
-                      VerticalAlignment="Top"
-                      Margin="22,18,0,0"
-                      Spacing="8">
-            <Button Classes="landscapeOverlay"
+                       Foreground="#5EEAD4"
+                       Margin="6,0,0,2" />
+            <Button Grid.Row="1"
+                    Classes="landscapeOverlay"
                     Width="58"
                     Content="L2"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
                     Tag="L2" />
-            <Button Classes="landscapeOverlay"
+            <Button Grid.Row="1"
+                    Grid.Column="1"
+                    Classes="landscapeOverlay"
+                    Width="72"
+                    Content="Select"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="Select" />
+            <Button Grid.Row="2"
+                    Classes="landscapeOverlay"
                     Width="58"
                     Content="L1"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
                     Tag="L1" />
-          </StackPanel>
+            <Button Grid.Row="2"
+                    Grid.Column="1"
+                    Classes="landscapeOverlay"
+                    Width="72"
+                    Content="Start"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="Start" />
+          </Grid>
 
-          <StackPanel HorizontalAlignment="Right"
-                      VerticalAlignment="Top"
-                      Margin="0,18,22,0"
-                      Spacing="8">
-            <Button Classes="landscapeOverlay"
+          <Grid HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="0,14,22,0"
+                RowDefinitions="Auto,Auto,Auto"
+                ColumnDefinitions="Auto,Auto"
+                ColumnSpacing="8"
+                RowSpacing="8">
+            <TextBlock Grid.ColumnSpan="2"
+                       IsVisible="{Binding ScreenHudVisible}"
+                       Text="{Binding SelectedConsoleLabel}"
+                       FontSize="12"
+                       FontWeight="Bold"
+                       Foreground="#F59E0B"
+                       HorizontalAlignment="Right"
+                       Margin="0,0,6,2" />
+            <Button Grid.Row="1"
+                    Classes="landscapeOverlay"
+                    Width="72"
+                    Content="Menu"
+                    PointerPressed="OnOverlayButtonPress"
+                    PointerReleased="OnOverlayButtonRelease"
+                    PointerCaptureLost="OnOverlayButtonCaptureLost"
+                    Tag="Menu" />
+            <Button Grid.Row="1"
+                    Grid.Column="1"
+                    Classes="landscapeOverlay"
                     Width="58"
                     Content="R2"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
                     Tag="R2" />
-            <Button Classes="landscapeOverlay"
+            <Border Grid.Row="2"
+                    Background="Transparent" />
+            <Button Grid.Row="2"
+                    Grid.Column="1"
+                    Classes="landscapeOverlay"
                     Width="58"
                     Content="R1"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
                     Tag="R1" />
-          </StackPanel>
+          </Grid>
 
           <Grid Width="150"
                 Height="150"
                 HorizontalAlignment="Left"
                 VerticalAlignment="Bottom"
                 Margin="26,0,0,18">
-            <Border Classes="landscapePad"
+            <Border x:Name="LandscapePadUp"
+                    Classes="landscapePad"
+                    IsHitTestVisible="False"
                     HorizontalAlignment="Center"
-                    VerticalAlignment="Top"
-                    PointerPressed="OnOverlayPress"
-                    PointerReleased="OnOverlayRelease"
-                    PointerCaptureLost="OnOverlayCaptureLost"
-                    Tag="Up">
+                    VerticalAlignment="Top">
               <TextBlock Text="▲" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
             </Border>
-            <Border Classes="landscapePad"
+            <Border x:Name="LandscapePadDown"
+                    Classes="landscapePad"
+                    IsHitTestVisible="False"
                     HorizontalAlignment="Center"
-                    VerticalAlignment="Bottom"
-                    PointerPressed="OnOverlayPress"
-                    PointerReleased="OnOverlayRelease"
-                    PointerCaptureLost="OnOverlayCaptureLost"
-                    Tag="Down">
+                    VerticalAlignment="Bottom">
               <TextBlock Text="▼" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
             </Border>
-            <Border Classes="landscapePad"
+            <Border x:Name="LandscapePadLeft"
+                    Classes="landscapePad"
+                    IsHitTestVisible="False"
                     HorizontalAlignment="Left"
-                    VerticalAlignment="Center"
-                    PointerPressed="OnOverlayPress"
-                    PointerReleased="OnOverlayRelease"
-                    PointerCaptureLost="OnOverlayCaptureLost"
-                    Tag="Left">
+                    VerticalAlignment="Center">
               <TextBlock Text="◀" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
             </Border>
-            <Border Classes="landscapePad"
+            <Border x:Name="LandscapePadRight"
+                    Classes="landscapePad"
+                    IsHitTestVisible="False"
                     HorizontalAlignment="Right"
-                    VerticalAlignment="Center"
-                    PointerPressed="OnOverlayPress"
-                    PointerReleased="OnOverlayRelease"
-                    PointerCaptureLost="OnOverlayCaptureLost"
-                    Tag="Right">
+                    VerticalAlignment="Center">
               <TextBlock Text="▶" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
             </Border>
+            <Grid Background="Transparent"
+                  ColumnDefinitions="*,*,*"
+                  RowDefinitions="*,*,*">
+              <Border Grid.Column="1"
+                      Background="Transparent"
+                      Tag="Up"
+                      PointerPressed="OnDPadZonePress"
+                      PointerReleased="OnDPadZoneRelease"
+                      PointerCaptureLost="OnDPadZoneCaptureLost" />
+              <Border Grid.Row="1"
+                      Grid.Column="0"
+                      Background="Transparent"
+                      Tag="Left"
+                      PointerPressed="OnDPadZonePress"
+                      PointerReleased="OnDPadZoneRelease"
+                      PointerCaptureLost="OnDPadZoneCaptureLost" />
+              <Border Grid.Row="1"
+                      Grid.Column="2"
+                      Background="Transparent"
+                      Tag="Right"
+                      PointerPressed="OnDPadZonePress"
+                      PointerReleased="OnDPadZoneRelease"
+                      PointerCaptureLost="OnDPadZoneCaptureLost" />
+              <Border Grid.Row="2"
+                      Grid.Column="1"
+                      Background="Transparent"
+                      Tag="Down"
+                      PointerPressed="OnDPadZonePress"
+                      PointerReleased="OnDPadZoneRelease"
+                      PointerCaptureLost="OnDPadZoneCaptureLost" />
+              <Border Grid.Column="0"
+                      Background="Transparent"
+                      Tag="Up Left"
+                      PointerPressed="OnDPadZonePress"
+                      PointerReleased="OnDPadZoneRelease"
+                      PointerCaptureLost="OnDPadZoneCaptureLost" />
+              <Border Grid.Column="2"
+                      Background="Transparent"
+                      Tag="Up Right"
+                      PointerPressed="OnDPadZonePress"
+                      PointerReleased="OnDPadZoneRelease"
+                      PointerCaptureLost="OnDPadZoneCaptureLost" />
+              <Border Grid.Row="2"
+                      Background="Transparent"
+                      Tag="Down Left"
+                      PointerPressed="OnDPadZonePress"
+                      PointerReleased="OnDPadZoneRelease"
+                      PointerCaptureLost="OnDPadZoneCaptureLost" />
+              <Border Grid.Row="2"
+                      Grid.Column="2"
+                      Background="Transparent"
+                      Tag="Down Right"
+                      PointerPressed="OnDPadZonePress"
+                      PointerReleased="OnDPadZoneRelease"
+                      PointerCaptureLost="OnDPadZoneCaptureLost" />
+            </Grid>
           </Grid>
 
           <Grid Width="192"
@@ -609,33 +738,6 @@
                     Tag="A" />
           </Grid>
 
-          <StackPanel Orientation="Horizontal"
-                      HorizontalAlignment="Right"
-                      VerticalAlignment="Bottom"
-                      Margin="0,0,116,22"
-                      Spacing="10">
-            <Button Classes="landscapeOverlay"
-                    Width="72"
-                    Content="Select"
-                    PointerPressed="OnOverlayButtonPress"
-                    PointerReleased="OnOverlayButtonRelease"
-                    PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="Select" />
-            <Button Classes="landscapeOverlay"
-                    Width="72"
-                    Content="Menu"
-                    PointerPressed="OnOverlayButtonPress"
-                    PointerReleased="OnOverlayButtonRelease"
-                    PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="Menu" />
-            <Button Classes="landscapeOverlay"
-                    Width="72"
-                    Content="Start"
-                    PointerPressed="OnOverlayButtonPress"
-                    PointerReleased="OnOverlayButtonRelease"
-                    PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="Start" />
-          </StackPanel>
         </Grid>
       </Grid>
 
