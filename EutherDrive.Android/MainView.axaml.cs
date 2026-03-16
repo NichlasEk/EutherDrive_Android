@@ -17,6 +17,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using EutherDrive.Audio;
 using EutherDrive.Core;
+using EutherDrive.Core.Savestates;
 using ProjectPSX.IO;
 
 namespace EutherDrive.Android;
@@ -39,6 +40,7 @@ public partial class MainView : UserControl
     private readonly DispatcherTimer _frameTimer;
     private readonly string _appDataDir;
     private readonly string _settingsPath;
+    private readonly SavestateService _savestateService;
     private readonly Stopwatch _perfStopwatch = Stopwatch.StartNew();
     private IEmulatorCore? _core;
     private Thread? _emulationThread;
@@ -66,6 +68,7 @@ public partial class MainView : UserControl
         InitializeComponent();
         _appDataDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         _settingsPath = Path.Combine(_appDataDir, "android-settings.json");
+        _savestateService = new SavestateService(Path.Combine(_appDataDir, "savestates"));
         DataContext = _viewModel;
         _frameTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => PresentLatestFrame());
         LoadSettings();
@@ -171,6 +174,24 @@ public partial class MainView : UserControl
     {
         _viewModel.SettingsVisible = false;
     }
+
+    private void OnToggleScreenFocus(object? sender, PointerPressedEventArgs e)
+    {
+        if (_viewModel.SettingsVisible)
+        {
+            return;
+        }
+
+        _viewModel.IsFocusMode = !_viewModel.IsFocusMode;
+    }
+
+    private void OnSaveSlot1(object? sender, RoutedEventArgs e) => RunSavestateAction(slotIndex: 1, isLoad: false);
+
+    private void OnLoadSlot1(object? sender, RoutedEventArgs e) => RunSavestateAction(slotIndex: 1, isLoad: true);
+
+    private void OnSaveSlot2(object? sender, RoutedEventArgs e) => RunSavestateAction(slotIndex: 2, isLoad: false);
+
+    private void OnLoadSlot2(object? sender, RoutedEventArgs e) => RunSavestateAction(slotIndex: 2, isLoad: true);
 
     private void OnOverlayPress(object? sender, PointerPressedEventArgs e)
     {
@@ -449,6 +470,50 @@ public partial class MainView : UserControl
         _viewModel.ScreenTitle = "Runtime error";
         _viewModel.ScreenDescription = details;
         _viewModel.FooterStatus = $"Runtime error: {details}";
+    }
+
+    private void RunSavestateAction(int slotIndex, bool isLoad)
+    {
+        IEmulatorCore? core = _core;
+        if (core is not ISavestateCapable savestateCore)
+        {
+            _viewModel.FooterStatus = core == null
+                ? "Start a ROM before using savestates."
+                : "Savestates are not supported for this core.";
+            return;
+        }
+
+        bool wasRunning = _emulationThreadRunning;
+        StopEmulationLoop();
+
+        try
+        {
+            if (isLoad)
+            {
+                _savestateService.Load(savestateCore, slotIndex);
+                CaptureLatestFrame(core);
+                PresentLatestFrame();
+                _viewModel.ScreenOverlayVisible = false;
+                _viewModel.FooterStatus = $"Loaded slot {slotIndex}.";
+            }
+            else
+            {
+                _savestateService.Save(savestateCore, slotIndex);
+                _viewModel.FooterStatus = $"Saved slot {slotIndex}.";
+            }
+        }
+        catch (Exception ex)
+        {
+            string operation = isLoad ? "Load" : "Save";
+            _viewModel.FooterStatus = $"{operation} slot {slotIndex} failed: {FormatExceptionForUi(ex)}";
+        }
+        finally
+        {
+            if (wasRunning && ReferenceEquals(core, _core))
+            {
+                StartEmulationLoop(core);
+            }
+        }
     }
 
     private static string FormatExceptionForUi(Exception ex)
@@ -1112,7 +1177,14 @@ public partial class MainView : UserControl
         private string _footerStatus = "Ready for ROM selection.";
         private string _perfSummary = "Perf idle";
         private string _overlaySummary = "D:-  A:-";
+        private bool _isFocusMode;
         private bool _settingsVisible;
+        private bool _normalTopButtonsVisible = true;
+        private bool _quickSaveButtonsVisible;
+        private bool _screenHudVisible = true;
+        private Thickness _screenSurfacePadding = new(10);
+        private Thickness _screenFrameMargin = new(6);
+        private Thickness _screenContentMargin = new(12);
         private string _settingsHint = "Pick BIOS and chip ROMs here.";
         private string _pceBiosDisplay = "(auto)";
         private string _psxBiosDisplay = "(none)";
@@ -1198,10 +1270,65 @@ public partial class MainView : UserControl
             set => SetField(ref _overlaySummary, value);
         }
 
+        public bool IsFocusMode
+        {
+            get => _isFocusMode;
+            set
+            {
+                if (!SetField(ref _isFocusMode, value))
+                {
+                    return;
+                }
+
+                NormalTopButtonsVisible = !value;
+                QuickSaveButtonsVisible = value;
+                ScreenHudVisible = !value;
+                ScreenSurfacePadding = value ? new Thickness(0) : new Thickness(10);
+                ScreenFrameMargin = value ? new Thickness(0) : new Thickness(6);
+                ScreenContentMargin = value ? new Thickness(2) : new Thickness(12);
+            }
+        }
+
         public bool SettingsVisible
         {
             get => _settingsVisible;
             set => SetField(ref _settingsVisible, value);
+        }
+
+        public bool NormalTopButtonsVisible
+        {
+            get => _normalTopButtonsVisible;
+            set => SetField(ref _normalTopButtonsVisible, value);
+        }
+
+        public bool QuickSaveButtonsVisible
+        {
+            get => _quickSaveButtonsVisible;
+            set => SetField(ref _quickSaveButtonsVisible, value);
+        }
+
+        public bool ScreenHudVisible
+        {
+            get => _screenHudVisible;
+            set => SetField(ref _screenHudVisible, value);
+        }
+
+        public Thickness ScreenSurfacePadding
+        {
+            get => _screenSurfacePadding;
+            set => SetField(ref _screenSurfacePadding, value);
+        }
+
+        public Thickness ScreenFrameMargin
+        {
+            get => _screenFrameMargin;
+            set => SetField(ref _screenFrameMargin, value);
+        }
+
+        public Thickness ScreenContentMargin
+        {
+            get => _screenContentMargin;
+            set => SetField(ref _screenContentMargin, value);
         }
 
         public string SettingsHint

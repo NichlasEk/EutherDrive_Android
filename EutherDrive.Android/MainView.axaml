@@ -74,51 +74,90 @@
 
     <Grid RowDefinitions="Auto,*,Auto" Margin="14" RowSpacing="12">
       <Border Grid.Row="0" Classes="surface" Padding="14">
-        <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="8">
-          <Button Grid.Column="0"
-                  Classes="chrome"
-                  Content="Settings"
-                  Click="OnMenuTapped" />
+        <Grid ColumnDefinitions="*" RowDefinitions="Auto">
+          <Grid IsVisible="{Binding NormalTopButtonsVisible}"
+                ColumnDefinitions="Auto,*,Auto,Auto,Auto"
+                ColumnSpacing="8">
+            <Button Grid.Column="0"
+                    Classes="chrome"
+                    Content="Settings"
+                    Click="OnMenuTapped" />
 
-          <StackPanel Grid.Column="1" VerticalAlignment="Center">
-            <TextBlock Text="EutherDrive Android"
-                       FontSize="24"
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+              <TextBlock Text="EutherDrive Android"
+                         FontSize="24"
+                         FontWeight="Black"
+                         FontStyle="Italic"
+                         Foreground="#EEF6FF" />
+            </StackPanel>
+
+            <Button Grid.Column="2"
+                    Classes="chrome"
+                    Content="Open ROM"
+                    Click="OnPickRom" />
+            <Button Grid.Column="3"
+                    Classes="chrome action"
+                    Content="Start"
+                    Click="OnStartClicked" />
+            <Button Grid.Column="4"
+                    Classes="chrome warn"
+                    Content="Stop"
+                    Click="OnStopClicked" />
+          </Grid>
+
+          <Grid IsVisible="{Binding QuickSaveButtonsVisible}"
+                ColumnDefinitions="Auto,Auto,*,Auto,Auto"
+                ColumnSpacing="8">
+            <Button Grid.Column="0"
+                    Classes="chrome"
+                    Content="Sav1"
+                    IsEnabled="{Binding IsRunning}"
+                    Click="OnSaveSlot1" />
+            <Button Grid.Column="1"
+                    Classes="chrome"
+                    Content="Load1"
+                    IsEnabled="{Binding IsRunning}"
+                    Click="OnLoadSlot1" />
+
+            <TextBlock Grid.Column="2"
+                       VerticalAlignment="Center"
+                       HorizontalAlignment="Center"
+                       Text="Focus Mode"
+                       FontSize="22"
                        FontWeight="Black"
                        FontStyle="Italic"
                        Foreground="#EEF6FF" />
-          </StackPanel>
 
-          <Button Grid.Column="2"
-                  Classes="chrome"
-                  Content="Open ROM"
-                  Click="OnPickRom" />
-          <Button Grid.Column="3"
-                  Classes="chrome action"
-                  Content="Start"
-                  Click="OnStartClicked" />
-          <Button Grid.Column="4"
-                  Classes="chrome warn"
-                  Content="Stop"
-                  Click="OnStopClicked" />
+            <Button Grid.Column="3"
+                    Classes="chrome"
+                    Content="Sav2"
+                    IsEnabled="{Binding IsRunning}"
+                    Click="OnSaveSlot2" />
+            <Button Grid.Column="4"
+                    Classes="chrome"
+                    Content="Load2"
+                    IsEnabled="{Binding IsRunning}"
+                    Click="OnLoadSlot2" />
+          </Grid>
         </Grid>
       </Border>
 
       <Grid Grid.Row="1" RowDefinitions="*,Auto" RowSpacing="12">
-        <Border Grid.Row="0" Classes="surface" Padding="10">
+        <Border Grid.Row="0" Classes="surface" Padding="{Binding ScreenSurfacePadding}">
           <Grid>
             <Border CornerRadius="18"
                     Background="#060A0E"
                     BorderBrush="#3A4A59"
                     BorderThickness="1" />
 
-            <Grid Margin="6">
+            <Grid Margin="{Binding ScreenFrameMargin}">
               <Border HorizontalAlignment="Stretch"
                       VerticalAlignment="Stretch"
                       CornerRadius="16"
                       Background="#0D131A" />
 
-              <Grid Margin="12" RowDefinitions="Auto,*,Auto,Auto">
-                <Grid>
+              <Grid Margin="{Binding ScreenContentMargin}" RowDefinitions="Auto,*,Auto,Auto">
+                <Grid IsVisible="{Binding ScreenHudVisible}">
                   <Border HorizontalAlignment="Left"
                           Background="#A0121923"
                           CornerRadius="999"
@@ -140,7 +179,8 @@
                   </Border>
                 </Grid>
 
-                <Grid Grid.Row="1">
+                <Grid Grid.Row="1"
+                      PointerPressed="OnToggleScreenFocus">
                   <Image Name="ScreenImage"
                          Stretch="Uniform"
                          HorizontalAlignment="Stretch"
@@ -169,6 +209,7 @@
                 </Grid>
 
                 <Border Grid.Row="2"
+                        IsVisible="{Binding ScreenHudVisible}"
                         HorizontalAlignment="Stretch"
                         Background="#7A101820"
                         CornerRadius="16"
@@ -191,6 +232,7 @@
                 </Border>
 
                 <Border Grid.Row="3"
+                        IsVisible="{Binding ScreenHudVisible}"
                         Margin="0,8,0,0"
                         HorizontalAlignment="Stretch"
                         Background="#70101820"
