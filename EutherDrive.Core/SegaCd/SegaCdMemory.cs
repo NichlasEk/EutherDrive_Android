@@ -121,7 +121,12 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAIN_STATUS_READS"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceGfxRegs = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_GFX_REGS"),
+        "1",
+        StringComparison.Ordinal);
     private static readonly int MainStatusReadLimit = ReadInt("EUTHERDRIVE_SCD_TRACE_MAIN_STATUS_LIMIT", 2048);
+    private static readonly int GfxRegTraceLimit = ReadInt("EUTHERDRIVE_SCD_TRACE_GFX_REGS_LIMIT", 4096);
     private static readonly string? TraceIrqFile =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_IRQ_FILE");
     private readonly bool _logA12001Pc;
@@ -133,11 +138,16 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_MAINREG_PROBE"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool CompatImmediateMainRegWrites = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_COMPAT_IMMEDIATE_MAIN_REG_WRITES"),
+        "1",
+        StringComparison.Ordinal);
     private bool _subRegAccessLogged;
     private int _subBusLogCount;
     private bool _subBusLogSuppressedNotified;
     private int _lastLoggedSubInterruptLevel = -1;
     private int _mainStatusReadRemaining = MainStatusReadLimit;
+    private int _gfxRegTraceRemaining = GfxRegTraceLimit;
     public const int BiosLen = 128 * 1024;
     public const int PrgRamLen = 512 * 1024;
     public const int BackupRamLen = 8 * 1024;
@@ -370,6 +380,8 @@ public sealed class SegaCdMemory
         _bufferedMainWriteCount = 0;
     }
 
+    public bool HasBufferedMainWrites => _bufferedMainWriteCount != 0;
+
     private void ClockTimers()
     {
         if (Registers.TimerCounter == 1)
@@ -535,11 +547,23 @@ public sealed class SegaCdMemory
 
     public void WriteMainByte(uint address, byte value)
     {
+        if (CompatImmediateMainRegWrites && address >= 0xA12000 && address <= 0xA1202F)
+        {
+            ApplyMainWriteByte(address, value);
+            return;
+        }
+
         BufferMainWrite(BufferedWriteKind.Byte, address, value);
     }
 
     public void WriteMainWord(uint address, ushort value)
     {
+        if (CompatImmediateMainRegWrites && address >= 0xA12000 && address <= 0xA1202F)
+        {
+            ApplyMainWriteWord(address, value);
+            return;
+        }
+
         BufferMainWrite(BufferedWriteKind.Word, address, value);
     }
 
@@ -962,6 +986,13 @@ public sealed class SegaCdMemory
         return (address & 1) != 0 ? (byte)(word & 0xFF) : (byte)(word >> 8);
     }
 
+    private static ushort MergeRegisterByte(uint address, ushort current, byte value)
+    {
+        return (address & 1) == 0
+            ? (ushort)((value << 8) | (current & 0x00FF))
+            : (ushort)((current & 0xFF00) | value);
+    }
+
     private static ushort ReadCommWord(ushort[] buffer, uint address)
     {
         int idx = (int)((address & 0xF) >> 1);
@@ -1019,103 +1050,120 @@ public sealed class SegaCdMemory
             };
             Console.WriteLine($"[SCD-SUBREG] R8 0x{reg:X4} -> 0x{val:X2}");
         }
+        byte value;
         switch (reg)
         {
             case 0x0000:
-                return (byte)(((Registers.LedGreen ? 1 : 0) << 1) | (Registers.LedRed ? 1 : 0));
+                value = (byte)(((Registers.LedGreen ? 1 : 0) << 1) | (Registers.LedRed ? 1 : 0));
+                break;
             case 0x0001:
-                byte res = 0x01;
+                value = 0x01;
                 if (_subRegProbeRemaining > 0)
                 {
                     _subRegProbeRemaining--;
-                    Console.WriteLine($"[COMM-LOG] SUB R 0x8001 = 0x{res:X2}");
+                    Console.WriteLine($"[COMM-LOG] SUB R 0x8001 = 0x{value:X2}");
                 }
-                return res;
+                break;
             case 0x0002:
-                return Registers.PrgRamWriteProtect;
+                value = Registers.PrgRamWriteProtect;
+                break;
             case 0x0003:
-                return (byte)(WordRam.ReadControl() | ((byte)WordRam.PriorityMode << 3));
+                value = (byte)(WordRam.ReadControl() | ((byte)WordRam.PriorityMode << 3));
+                break;
             case 0x0004:
-                return (byte)(((Cdc.EndOfDataTransfer ? 1 : 0) << 7) | ((Cdc.DataReady ? 1 : 0) << 6) | Cdc.DeviceDestinationBits);
+                value = (byte)(((Cdc.EndOfDataTransfer ? 1 : 0) << 7) | ((Cdc.DataReady ? 1 : 0) << 6) | Cdc.DeviceDestinationBits);
+                break;
             case 0x0005:
-                return Cdc.RegisterAddress;
+                value = Cdc.RegisterAddress;
+                break;
             case 0x0007:
-                return Cdc.ReadRegister();
+                value = Cdc.ReadRegister();
+                break;
             case 0x0008:
-                return (byte)(Cdc.ReadHostData(ScdCpu.Sub) >> 8);
+                value = (byte)(Cdc.ReadHostData(ScdCpu.Sub) >> 8);
+                break;
             case 0x0009:
-                return (byte)(Cdc.ReadHostData(ScdCpu.Sub) & 0xFF);
+                value = (byte)(Cdc.ReadHostData(ScdCpu.Sub) & 0xFF);
+                break;
             case 0x000C:
-                return (byte)(Registers.StopwatchCounter >> 8);
+                value = (byte)(Registers.StopwatchCounter >> 8);
+                break;
             case 0x000D:
-                return (byte)(Registers.StopwatchCounter & 0xFF);
+                value = (byte)(Registers.StopwatchCounter & 0xFF);
+                break;
             case 0x000E:
-                {
-                    byte value = Registers.MainCpuCommunicationFlags;
-                    if (LogCommFlags)
-                        Console.WriteLine($"[SCD-COMM] SUB R8 0x{reg:X4} -> 0x{value:X2}");
-                    return value;
-                }
+                value = Registers.MainCpuCommunicationFlags;
+                if (LogCommFlags)
+                    Console.WriteLine($"[SCD-COMM] SUB R8 0x{reg:X4} -> 0x{value:X2}");
+                break;
             case 0x000F:
-                {
-                    byte value = Registers.SubCpuCommunicationFlags;
-                    if (LogCommFlags)
-                        Console.WriteLine($"[SCD-COMM] SUB R8 0x{reg:X4} -> 0x{value:X2}");
-                    return value;
-                }
+                value = Registers.SubCpuCommunicationFlags;
+                if (LogCommFlags)
+                    Console.WriteLine($"[SCD-COMM] SUB R8 0x{reg:X4} -> 0x{value:X2}");
+                break;
             case >= 0x0010 and <= 0x001F:
-                return ReadCommBuffer(Registers.CommunicationCommands, reg);
+                value = ReadCommBuffer(Registers.CommunicationCommands, reg);
+                break;
             case >= 0x0020 and <= 0x002F:
-                return ReadCommBuffer(Registers.CommunicationStatuses, reg);
+                value = ReadCommBuffer(Registers.CommunicationStatuses, reg);
+                break;
             case 0x0031:
-                return Registers.TimerInterval;
+                value = Registers.TimerInterval;
+                break;
             case 0x0033:
-                return (byte)(
+                value = (byte)(
                     ((Registers.SubcodeInterruptEnabled ? 1 : 0) << 6)
                     | ((Registers.CdcInterruptEnabled ? 1 : 0) << 5)
                     | ((Registers.CddInterruptEnabled ? 1 : 0) << 4)
                     | ((Registers.TimerInterruptEnabled ? 1 : 0) << 3)
                     | ((Registers.SoftwareInterruptEnabled ? 1 : 0) << 2)
                     | ((Registers.GraphicsInterruptEnabled ? 1 : 0) << 1));
+                break;
             case 0x0036:
-                {
-                    byte value = (byte)(Cdd.PlayingAudio ? 0 : 1);
-                    if (LogCddStatus && _cddStatusLogRemaining-- > 0)
-                        Console.WriteLine($"[SCD-CDD-STATUS] R8 0x0036 -> 0x{value:X2}");
-                    return value;
-                }
+                value = (byte)(Cdd.PlayingAudio ? 0 : 1);
+                if (LogCddStatus && _cddStatusLogRemaining-- > 0)
+                    Console.WriteLine($"[SCD-CDD-STATUS] R8 0x0036 -> 0x{value:X2}");
+                break;
             case 0x0037:
-                {
-                    byte value = (byte)((Registers.CddHostClockOn ? 1 : 0) << 2);
-                    if (LogCddStatus && _cddStatusLogRemaining-- > 0)
-                        Console.WriteLine($"[SCD-CDD-STATUS] R8 0x0037 -> 0x{value:X2}");
-                    return value;
-                }
+                value = (byte)((Registers.CddHostClockOn ? 1 : 0) << 2);
+                if (LogCddStatus && _cddStatusLogRemaining-- > 0)
+                    Console.WriteLine($"[SCD-CDD-STATUS] R8 0x0037 -> 0x{value:X2}");
+                break;
             case >= 0x0038 and <= 0x0041:
-                {
-                    byte value = Cdd.Status[(reg - 8) & 0x0F];
-                    if (LogCddStatus && _cddStatusLogRemaining-- > 0)
-                        Console.WriteLine($"[SCD-CDD-STATUS] R8 0x{reg:X4} -> 0x{value:X2}");
-                    return value;
-                }
+                value = Cdd.Status[(reg - 8) & 0x0F];
+                if (LogCddStatus && _cddStatusLogRemaining-- > 0)
+                    Console.WriteLine($"[SCD-CDD-STATUS] R8 0x{reg:X4} -> 0x{value:X2}");
+                break;
             case >= 0x0042 and <= 0x004B:
-                return Registers.CddCommand[(reg - 2) & 0x0F];
+                value = Registers.CddCommand[(reg - 2) & 0x0F];
+                break;
             case 0x004C:
-                return FontRegisters.ReadColor();
+                value = FontRegisters.ReadColor();
+                break;
             case 0x004E:
-                return (byte)(FontRegisters.FontBits >> 8);
+                value = (byte)(FontRegisters.FontBits >> 8);
+                break;
             case 0x004F:
-                return (byte)(FontRegisters.FontBits & 0xFF);
+                value = (byte)(FontRegisters.FontBits & 0xFF);
+                break;
             case >= 0x0050 and <= 0x0057:
                 {
                     ushort word = FontRegisters.ReadFontData(reg);
-                    return (reg & 1) != 0 ? (byte)(word & 0xFF) : (byte)(word >> 8);
+                    value = (reg & 1) != 0 ? (byte)(word & 0xFF) : (byte)(word >> 8);
+                    break;
                 }
             case >= 0x0058 and <= 0x0067:
-                return Graphics.ReadRegisterByte(reg);
+                value = Graphics.ReadRegisterByte(reg);
+                break;
             default:
-                return 0x00;
+                value = 0x00;
+                break;
         }
+
+        if (TraceGfxRegs && reg is >= 0x0058 and <= 0x0067)
+            TraceGraphicsRegisterAccess("R8", reg, value);
+
+        return value;
     }
 
     private ushort ReadSubRegisterWord(uint address)
@@ -1136,61 +1184,95 @@ public sealed class SegaCdMemory
             };
             Console.WriteLine($"[SCD-SUBREG] R16 0x{reg:X4} -> 0x{val:X4}");
         }
+        ushort value;
         switch (reg)
         {
             case 0x0000:
             case 0x0002:
             case 0x0004:
             case 0x0036:
-                return (ushort)((ReadSubRegisterByte(reg) << 8) | ReadSubRegisterByte(reg | 1));
+                value = (ushort)((ReadSubRegisterByte(reg) << 8) | ReadSubRegisterByte(reg | 1));
+                break;
             case 0x0006:
-                return ReadSubRegisterByte(reg | 1);
+                value = ReadSubRegisterByte(reg | 1);
+                break;
             case 0x0008:
-                return Cdc.ReadHostData(ScdCpu.Sub);
+                value = Cdc.ReadHostData(ScdCpu.Sub);
+                break;
             case 0x000A:
-                return (ushort)(Cdc.DmaAddress >> 3);
+                value = (ushort)(Cdc.DmaAddress >> 3);
+                break;
             case 0x000C:
-                return Registers.StopwatchCounter;
+                value = Registers.StopwatchCounter;
+                break;
             case 0x000E:
-                return (ushort)((Registers.MainCpuCommunicationFlags << 8) | Registers.SubCpuCommunicationFlags);
+                value = (ushort)((Registers.MainCpuCommunicationFlags << 8) | Registers.SubCpuCommunicationFlags);
+                break;
             case >= 0x0010 and <= 0x001F:
-                return ReadCommWord(Registers.CommunicationCommands, reg);
+                value = ReadCommWord(Registers.CommunicationCommands, reg);
+                break;
             case >= 0x0020 and <= 0x002F:
-                return ReadCommWord(Registers.CommunicationStatuses, reg);
+                value = ReadCommWord(Registers.CommunicationStatuses, reg);
+                break;
             case 0x0030:
-                return Registers.TimerInterval;
+                value = Registers.TimerInterval;
+                break;
             case 0x0032:
-                return ReadSubRegisterByte(reg | 1);
+                value = ReadSubRegisterByte(reg | 1);
+                break;
             case >= 0x0038 and <= 0x0041:
                 {
                     int rel = (int)((reg - 8) & 0x0F);
-                    ushort value = (ushort)((Cdd.Status[rel] << 8) | Cdd.Status[(rel + 1) & 0x0F]);
+                    value = (ushort)((Cdd.Status[rel] << 8) | Cdd.Status[(rel + 1) & 0x0F]);
                     if (LogCddStatus && _cddStatusLogRemaining-- > 0)
                         Console.WriteLine($"[SCD-CDD-STATUS] R16 0x{reg:X4} -> 0x{value:X4}");
-                    return value;
+                    break;
                 }
             case >= 0x0042 and <= 0x004B:
                 {
                     int rel = (int)((reg - 2) & 0x0F);
-                    return (ushort)((Registers.CddCommand[rel] << 8) | Registers.CddCommand[(rel + 1) & 0x0F]);
+                    value = (ushort)((Registers.CddCommand[rel] << 8) | Registers.CddCommand[(rel + 1) & 0x0F]);
+                    break;
                 }
             case 0x004C:
-                return FontRegisters.ReadColor();
+                value = FontRegisters.ReadColor();
+                break;
             case 0x004E:
-                return FontRegisters.FontBits;
+                value = FontRegisters.FontBits;
+                break;
             case >= 0x0050 and <= 0x0057:
-                return FontRegisters.ReadFontData(reg);
+                value = FontRegisters.ReadFontData(reg);
+                break;
             case >= 0x0058 and <= 0x0067:
-                return Graphics.ReadRegisterWord(reg);
+                value = Graphics.ReadRegisterWord(reg);
+                break;
             default:
-                return 0x0000;
+                value = 0x0000;
+                break;
         }
+
+        if (TraceGfxRegs && reg is >= 0x0058 and <= 0x0067)
+            TraceGraphicsRegisterAccess("R16", reg, value);
+
+        return value;
+    }
+
+    private void TraceGraphicsRegisterAccess(string op, uint reg, ushort value)
+    {
+        if (_gfxRegTraceRemaining-- <= 0)
+            return;
+
+        Console.WriteLine(
+            $"[SCD-GFXREG] {op} pc=0x{SubPcProvider?.Invoke():X6} reg=0x{reg:X4} val=0x{value:X4} " +
+            $"gfxPend={(Graphics.InterruptPending ? 1 : 0)} gfxEn={(Registers.GraphicsInterruptEnabled ? 1 : 0)}");
     }
 
     private void WriteSubRegisterByte(uint address, byte value)
     {
         uint reg = address & SubRegisterAddressMask;
         LogFirstSubRegAccess(reg, isWrite: true);
+        if (TraceGfxRegs && reg is >= 0x0058 and <= 0x0067)
+            TraceGraphicsRegisterAccess("W8", reg, value);
         if (LogSubCdc && reg == 0x0004 && !_subCdcDestLogged)
         {
             _subCdcDestLogged = true;
@@ -1265,11 +1347,16 @@ public sealed class SegaCdMemory
                 break;
             case 0x000A:
             case 0x000B:
-                Cdc.SetDmaAddress((uint)((value << 8) | value) << 3);
-                break;
+                {
+                    // Match hardware/jgenesis behavior: byte writes mirror the written
+                    // byte across both halves instead of merging with the previous word.
+                    ushort dmaAddress = (ushort)((value << 8) | value);
+                    Cdc.SetDmaAddress((uint)dmaAddress << 3);
+                    break;
+                }
             case 0x000C:
             case 0x000D:
-                Registers.StopwatchCounter = (ushort)(((value << 8) | value) & 0x0FFF);
+                Registers.StopwatchCounter = (ushort)(MergeRegisterByte(reg, Registers.StopwatchCounter, value) & 0x0FFF);
                 break;
             case 0x000E:
             case 0x000F:
@@ -1373,6 +1460,8 @@ public sealed class SegaCdMemory
     {
         uint reg = address & SubRegisterAddressMask;
         LogFirstSubRegAccess(reg, isWrite: true);
+        if (TraceGfxRegs && reg is >= 0x0058 and <= 0x0067)
+            TraceGraphicsRegisterAccess("W16", reg, value);
         if (LogSubRegs
             && reg is 0x0004 or 0x0008 or 0x000A or 0x0030 or 0x0032 or 0x0034 or 0x0036
                 or >= 0x0042 and <= 0x004B)

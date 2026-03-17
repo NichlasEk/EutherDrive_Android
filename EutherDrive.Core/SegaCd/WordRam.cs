@@ -235,22 +235,30 @@ public sealed class WordRam
         }
     }
 
-    public byte GraphicsReadRam(uint address)
-    {
-        return _ram[address & AddressMask];
-    }
-
     public void GraphicsWriteRam(uint address, Nibble nibble, byte pixel)
     {
-        int byteAddr = (int)(address & AddressMask);
-        byte current = _ram[byteAddr];
-        byte currentNibble = nibble == Nibble.High ? (byte)(current >> 4) : (byte)(current & 0x0F);
-        if (!ShouldWritePixel(currentNibble, pixel))
-            return;
-
-        _ram[byteAddr] = nibble == Nibble.High
-            ? (byte)((pixel << 4) | (current & 0x0F))
-            : (byte)(pixel | (current & 0xF0));
+        WordRamSubMapResult mapped = SubCpuMapAddress(address);
+        switch (mapped.Kind)
+        {
+            case WordRamSubMapResultKind.None:
+                return;
+            case WordRamSubMapResultKind.Byte:
+                {
+                    byte current = _ram[mapped.Address];
+                    byte currentNibble = nibble == Nibble.High ? (byte)(current >> 4) : (byte)(current & 0x0F);
+                    if (!ShouldWritePixel(currentNibble, pixel))
+                        return;
+                    byte newValue = nibble == Nibble.High
+                        ? (byte)((pixel << 4) | (current & 0x0F))
+                        : (byte)(pixel | (current & 0xF0));
+                    _ram[mapped.Address] = newValue;
+                    return;
+                }
+            case WordRamSubMapResultKind.Pixel:
+                if (nibble == Nibble.Low)
+                    Write1mPixel(mapped.Address, pixel);
+                return;
+        }
     }
 
     public void DmaWrite(uint address, byte value)

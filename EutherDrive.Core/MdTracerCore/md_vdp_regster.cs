@@ -769,11 +769,17 @@ namespace EutherDrive.Core.MdTracerCore
                      g_vdp_reg_1_3_cellmode = (byte)((in_data >> 3) & 0x01);
                      g_vdp_mode4 = (in_data & 0x04) == 0;
                      
-                      // REMOVED: SPECIAL FIX FOR SONIC 2 SPECIAL STAGE
-                      // Game should handle its own display and mode switching
+                     // REMOVED: SPECIAL FIX FOR SONIC 2 SPECIAL STAGE
+                     // Game should handle its own display and mode switching
                     if (MdTracerCore.MdLog.Enabled && prevDisplay != g_vdp_reg_1_6_display)
                     {
                         MdTracerCore.MdLog.WriteLine($"[VDP] reg1 display {prevDisplay} -> {g_vdp_reg_1_6_display} data=0x{in_data:X2}");
+                    }
+                    if (TraceDisplayOn && prevDisplay != g_vdp_reg_1_6_display)
+                    {
+                        Console.WriteLine(
+                            $"[VDP-REG1-DISPLAY] frame={_frameCounter} pc=0x{md_m68k.g_reg_PC:X6} " +
+                            $"prev={prevDisplay} new={g_vdp_reg_1_6_display} data=0x{in_data:X2}");
                     }
                       // Log reg1 writes during debugging
                       // if (_frameCounter >= 4900 && _frameCounter <= 4950)

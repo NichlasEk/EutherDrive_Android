@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using EutherDrive.Core;
 
@@ -103,6 +104,8 @@ public sealed class SegaCdCddStub
     private double _lastAudioLeft;
     private double _lastAudioRight;
     private int _sectorReadFailLogRemaining = 16;
+    private int _lastSectorTraceTrackNumber = -1;
+    private CdTrackType _lastSectorTraceTrackType = CdTrackType.Data;
 
     private static readonly double[] FaderVolumeTable = BuildFaderTable();
 
@@ -126,6 +129,12 @@ public sealed class SegaCdCddStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDD_SEEK"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceSectorSanity = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SECTOR_SANITY"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly string? TraceSectorSanityFilePath =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SECTOR_SANITY_FILE");
     private static readonly long TraceStartTicks = Stopwatch.GetTimestamp();
 
     public byte[] Status => _status;
@@ -511,6 +520,10 @@ public sealed class SegaCdCddStub
                 $"[SCD-CD-READFAIL] track={track.Number} abs={time} rel={relative} " +
                 $"start={track.StartTime} pregap={track.PregapLen} postgap={track.PostgapLen} fileTime={track.FileTime}");
         }
+
+        if (TraceSectorSanity)
+            TraceSectorHeader(time, relative, track);
+
         cdc.DecodeBlock(_sectorBuffer);
         _loadedAudioSector = track.TrackType == CdTrackType.Audio;
 
@@ -531,6 +544,45 @@ public sealed class SegaCdCddStub
             State.TrackSkipping => _skipCurrent,
             _ => _stateTime
         };
+    }
+
+    private void TraceSectorHeader(CdTime absoluteTime, CdTime relativeTime, CdTrack track)
+    {
+        bool trackChanged = _lastSectorTraceTrackNumber != track.Number || _lastSectorTraceTrackType != track.TrackType;
+        byte h0 = _sectorBuffer[12];
+        byte h1 = _sectorBuffer[13];
+        byte h2 = _sectorBuffer[14];
+        byte mode = _sectorBuffer[15];
+        bool expectedHeader = track.TrackType != CdTrackType.Data || DataSectorHeaderLooksValid(absoluteTime);
+
+        if (!trackChanged && expectedHeader)
+            return;
+
+        _lastSectorTraceTrackNumber = track.Number;
+        _lastSectorTraceTrackType = track.TrackType;
+
+        int trackSector = relativeTime >= track.PregapLen ? relativeTime.Sub(track.PregapLen).ToFrames() : -1;
+        string line =
+            $"[SCD-SECTOR] abs={absoluteTime} rel={relativeTime} track={track.Number} type={track.TrackType} " +
+            $"trackSector={trackSector} hdr={h0:X2} {h1:X2} {h2:X2} {mode:X2} valid={(expectedHeader ? 1 : 0)}";
+        Console.Error.WriteLine(line);
+        if (!string.IsNullOrWhiteSpace(TraceSectorSanityFilePath))
+            File.AppendAllText(TraceSectorSanityFilePath, line + Environment.NewLine);
+    }
+
+    private bool DataSectorHeaderLooksValid(CdTime absoluteTime)
+    {
+        return _sectorBuffer[12] == ToBcd(absoluteTime.Minutes)
+            && _sectorBuffer[13] == ToBcd(absoluteTime.Seconds)
+            && _sectorBuffer[14] == ToBcd(absoluteTime.Frames)
+            && (_sectorBuffer[15] == 0x01 || _sectorBuffer[15] == 0x02);
+    }
+
+    private static byte ToBcd(int value)
+    {
+        if (value < 0)
+            value = 0;
+        return (byte)(((value / 10) << 4) | (value % 10));
     }
 
     private void UpdateStatus()

@@ -9,6 +9,10 @@ public sealed class SegaCdGraphicsCoprocessor
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_IMAGE"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceGfxState = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_GFX_STATE"),
+        "1",
+        StringComparison.Ordinal);
 
     private StampSizeDots _stampSize = StampSizeDots.Sixteen;
     private StampMapSizeScreens _stampMapSize = StampMapSizeScreens.One;
@@ -23,6 +27,7 @@ public sealed class SegaCdGraphicsCoprocessor
     private uint _traceVectorBaseAddress;
     private State _state = State.Idle;
     private bool _interruptPending;
+    private uint _operationId;
 
     public byte ReadRegisterByte(uint address)
     {
@@ -94,14 +99,14 @@ public sealed class SegaCdGraphicsCoprocessor
                 break;
             case 0x005A:
             case 0x005B:
-                WriteRegisterWord(address & ~1u, (ushort)((value << 8) | value));
+                WriteRegisterWord(address & ~1u, MergeRegisterByte(address, value));
                 break;
             case 0x005D:
                 _imageBufferVCellSize = (uint)((value & 0x1F) + 1);
                 break;
             case 0x005E:
             case 0x005F:
-                WriteRegisterWord(address & ~1u, (ushort)((value << 8) | value));
+                WriteRegisterWord(address & ~1u, MergeRegisterByte(address, value));
                 break;
             case 0x0061:
                 _imageBufferVOffset = (uint)((value >> 3) & 0x07);
@@ -109,15 +114,15 @@ public sealed class SegaCdGraphicsCoprocessor
                 break;
             case 0x0062:
             case 0x0063:
-                WriteRegisterWord(address & ~1u, (ushort)((value << 8) | value));
+                WriteRegisterWord(address & ~1u, MergeRegisterByte(address, value));
                 break;
             case 0x0064:
             case 0x0065:
-                WriteRegisterWord(address & ~1u, (ushort)((value << 8) | value));
+                WriteRegisterWord(address & ~1u, MergeRegisterByte(address, value));
                 break;
             case 0x0066:
             case 0x0067:
-                WriteRegisterWord(address & ~1u, (ushort)((value << 8) | value));
+                WriteRegisterWord(address & ~1u, MergeRegisterByte(address, value));
                 break;
         }
     }
@@ -161,6 +166,14 @@ public sealed class SegaCdGraphicsCoprocessor
                 uint vDot = _imageBufferVDotSize;
                 uint estimatedPerLine = 4 + 2 * hDot + hDot / 4;
                 uint estimated = SubCpuDivider * 3 * vDot * estimatedPerLine;
+                _operationId++;
+                if (TraceGfxState)
+                {
+                    Console.WriteLine(
+                        $"[SCD-GFX] start op={_operationId} trace=0x{_traceVectorBaseAddress:X6} start=0x{_imageBufferStartAddress:X6} " +
+                        $"vcell={_imageBufferVCellSize} hoff={_imageBufferHOffset} voff={_imageBufferVOffset} hdot={_imageBufferHDotSize} " +
+                        $"vdot={_imageBufferVDotSize} cycles={estimated}");
+                }
                 _state = State.Processing(estimated);
                 break;
         }
@@ -177,8 +190,16 @@ public sealed class SegaCdGraphicsCoprocessor
         if (mclkCycles >= _state.CyclesRemaining)
         {
             _state = State.Idle;
+            // Hardware/jgenesis behavior: VDOT counts down during processing and reads as 0
+            // once the graphics operation has completed.
+            _imageBufferVDotSize = 0;
             if (graphicsInterruptEnabled)
                 _interruptPending = true;
+            if (TraceGfxState)
+            {
+                Console.WriteLine(
+                    $"[SCD-GFX] done op={_operationId} irqEn={(graphicsInterruptEnabled ? 1 : 0)} irqPend={(_interruptPending ? 1 : 0)}");
+            }
         }
         else
         {
@@ -296,7 +317,7 @@ public sealed class SegaCdGraphicsCoprocessor
                     + ComputeRelativeAddrVThenH(imageBufferLineSize, imageBufferDot, imageBufferLine);
 
                 var nibble = (imageBufferDot & 1) != 0 ? Nibble.Low : Nibble.High;
-                wordRam.GraphicsWriteRam(imageBufferAddr, nibble, sample);
+                wordRam.GraphicsWriteRam(WordRam.SubBaseAddress | imageBufferAddr, nibble, sample);
 
                 traceX += trace.DeltaX;
                 traceY += trace.DeltaY;
@@ -325,7 +346,16 @@ public sealed class SegaCdGraphicsCoprocessor
 
     private static byte ReadWordRam(WordRam wordRam, uint address)
     {
-        return wordRam.GraphicsReadRam(address);
+        return wordRam.SubCpuReadRam(WordRam.SubBaseAddress | (address & WordRam.AddressMask));
+    }
+
+    private ushort MergeRegisterByte(uint address, byte value)
+    {
+        uint wordAddress = address & ~1u;
+        ushort current = ReadRegisterWord(wordAddress);
+        return (address & 1) == 0
+            ? (ushort)((value << 8) | (current & 0x00FF))
+            : (ushort)((current & 0xFF00) | value);
     }
 
     private static uint ComputeStampMapAddress(uint baseAddr, StampSizeDots stampSize, StampMapSizeScreens mapSize, uint x, uint y)

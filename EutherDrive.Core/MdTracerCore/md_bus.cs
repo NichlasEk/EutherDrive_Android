@@ -775,6 +775,11 @@ namespace EutherDrive.Core.MdTracerCore
             return _openBus;
         }
 
+        internal ushort PeekOpenBusWord()
+        {
+            return _openBus;
+        }
+
         private uint ReadOpenBusLong()
         {
             return (uint)((_openBus << 16) | _openBus);
@@ -797,6 +802,11 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private void SetOpenBusFromWord(ushort value)
+        {
+            _openBus = value;
+        }
+
+        internal void SetOpenBusWordForDma(ushort value)
         {
             _openBus = value;
         }

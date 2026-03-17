@@ -70,6 +70,10 @@ public sealed class SegaCdCdcStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_DECODE"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceCdcDttrg = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_DTTRG"),
+        "1",
+        StringComparison.Ordinal);
     private static readonly bool TraceBootProbe = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_BOOT"),
         "1",
@@ -78,7 +82,7 @@ public sealed class SegaCdCdcStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_DMA_LOW"),
         "1",
         StringComparison.Ordinal);
-    private static readonly bool CompatCdcForceWrrq = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_FORCE_WRRQ", defaultValue: true);
+    private static readonly bool CompatCdcForceWrrq = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_FORCE_WRRQ", defaultValue: false);
     // Keep this enabled by default: several BIOS flows set DOUTEN before explicitly
     // writing destination bits, and otherwise stall with DEST=None0.
     private static readonly bool CompatCdcAutoDest = ReadCompatFlag("EUTHERDRIVE_SCD_CDC_COMPAT_AUTO_DEST", defaultValue: false);
@@ -363,7 +367,11 @@ public sealed class SegaCdCdcStub
                     PopulateHostDataBuffer();
                 if (LogCdc)
                     Console.WriteLine($"[SCD-CDC] DTTRG transfer={_dataTransferInProgress} DOUTEN={_dataOutEnabled}");
-                Console.Error.WriteLine($"[SCD-CDC-DTTRG] DOUTEN={(_dataOutEnabled ? 1 : 0)} DEST={_destination} DBC=0x{_dataByteCounter:X4} DAC=0x{_dataAddressCounter:X4}");
+                if (TraceCdcDttrg)
+                {
+                    Console.Error.WriteLine(
+                        $"[SCD-CDC-DTTRG] DOUTEN={(_dataOutEnabled ? 1 : 0)} DEST={_destination} DBC=0x{_dataByteCounter:X4} DAC=0x{_dataAddressCounter:X4}");
+                }
                 break;
             case 7:
                 _transferEndInterruptPending = false;

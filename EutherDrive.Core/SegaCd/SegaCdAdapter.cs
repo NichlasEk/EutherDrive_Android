@@ -100,6 +100,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SUBWAIT"),
             "1",
             StringComparison.Ordinal);
+    private static readonly uint SubTracePcStart = ReadUIntEnv("EUTHERDRIVE_SCD_SUBTRACE_PC_START", 0);
+    private static readonly uint SubTracePcEnd = ReadUIntEnv("EUTHERDRIVE_SCD_SUBTRACE_PC_END", 0);
+    private static readonly uint SubTraceMemBase = ReadUIntEnv("EUTHERDRIVE_SCD_SUBTRACE_MEM_BASE", 0);
+    private static readonly int SubTraceMemBytes = (int)ReadUIntEnv("EUTHERDRIVE_SCD_SUBTRACE_MEM_BYTES", 24);
     private static readonly bool TraceSubIntMask =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_SUBINT_MASK"),
             "1",
@@ -134,6 +138,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private long _lastSubWaitFrame = -1;
     private int _subLateTraceRemaining = 256;
     private bool _subLateBytesLogged;
+    private int _subWindowTraceRemaining = 256;
+    private bool _subWindowBytesLogged;
     private int _lastFbLogW = -1;
     private int _lastFbLogH = -1;
     private int _lastFbLogStride = -1;
@@ -166,6 +172,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private const double PsgCoefficient = 0.44668359215096315; // jgenesis PSG coefficient
     private static readonly double YmResampleScale = GetYmResampleScale();
     private static readonly double FmMixGain = GetFmMixGain();
+    private static readonly int MainMdFlushGranularity = ReadPositiveIntOr("EUTHERDRIVE_SCD_MAIN_FLUSH_GRANULARITY", 128);
+    private static readonly int SubInterleaveGranularity = ReadPositiveIntOr("EUTHERDRIVE_SCD_SUB_INTERLEAVE_GRANULARITY", 256);
     private static readonly double ScdCpuCycleScale = ReadDoubleOr("EUTHERDRIVE_SCD_CPU_SCALE", 1.0);
     private static readonly double PcmMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_PCM_GAIN", PcmCoefficient);
     private static readonly double CdMixGain = ReadDoubleOr("EUTHERDRIVE_SCD_CD_GAIN", CdCoefficient);
@@ -632,6 +640,10 @@ public sealed class SegaCdAdapter : IEmulatorCore
         File.WriteAllText(path, sb.ToString());
     }
 
+    public uint MainCpuPc => _useMainM68kEmu ? _mainCpu.Pc : _mainContext?.RegPc ?? 0;
+
+    public uint SubCpuPc => _useSubM68kEmu ? _subCpu.Pc : _subContext?.RegPc ?? 0;
+
     private static string BoolStr(bool value) => value ? "true" : "false";
 
     private static void SyncLegacyMain68kView(M68000 cpu)
@@ -805,6 +817,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                 }
                 int subCyclesInterleaved = 0;
                 int pendingMdCycles = 0;
+                int pendingScdMainCycles = 0;
 
                 EutherDrive.Core.MdTracerCore.md_main.g_md_bus = _mainBus;
                 if (_useMainM68kEmu)
@@ -1003,6 +1016,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                     allowZ80,
                                     frameCounter,
                                     ref pendingMdCycles,
+                                    ref pendingScdMainCycles,
                                     ref subSlice,
                                     ref subCyclesInterleaved,
                                     ref loggedSubWaitOpcodeWindow);
@@ -1020,6 +1034,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
 
                     if (_useMainM68kEmu)
                     {
+                        subSlice += FlushPendingScdMainTiming(ref pendingScdMainCycles);
                         FlushPendingMainMdCycles(allowZ80, ref pendingMdCycles);
                     }
                     else if (mainCyclesConsumed > 0)
@@ -1883,6 +1898,44 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     $"cdcPend={(_memory.Cdc.InterruptPending ? 1 : 0)} cdcEn={(_memory.Registers.CdcInterruptEnabled ? 1 : 0)} " +
                     $"wram={_memory.WordRam.GetDebugState()}");
             }
+            if (_subWindowTraceRemaining > 0
+                && !string.IsNullOrWhiteSpace(SubTraceFilePath)
+                && SubTracePcStart != 0
+                && SubTracePcEnd >= SubTracePcStart
+                && _subCpu.Pc >= SubTracePcStart
+                && _subCpu.Pc <= SubTracePcEnd)
+            {
+                if (!_subWindowBytesLogged && SubTraceMemBase != 0 && SubTraceMemBytes > 0)
+                {
+                    _subWindowBytesLogged = true;
+                    byte[] bytes = new byte[SubTraceMemBytes];
+                    for (int i = 0; i < bytes.Length; i++)
+                        bytes[i] = _memory.ReadSubByte(SubTraceMemBase + (uint)i);
+                    AppendTraceLine(
+                        SubTraceFilePath,
+                        $"[SCD-SUBWIN-BYTES] frame={frameCounter} mem@0x{SubTraceMemBase:X6}={BitConverter.ToString(bytes).Replace("-", " ")}");
+                }
+                _subWindowTraceRemaining--;
+                var state = _subCpu.GetState();
+                byte reg8003 = _memory.ReadSubByte(0xFFFF8003);
+                byte reg800F = _memory.ReadSubByte(0xFFFF800F);
+                ushort status0 = _memory.ReadSubWord(0x00FF8020);
+                ushort status1 = _memory.ReadSubWord(0x00FF8022);
+                ushort status2 = _memory.ReadSubWord(0x00FF8024);
+                ushort status3 = _memory.ReadSubWord(0x00FF8026);
+                AppendTraceLine(
+                    SubTraceFilePath,
+                    $"[SCD-SUBWIN] frame={frameCounter} pc=0x{_subCpu.Pc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{state.Sr:X4} " +
+                    $"d0=0x{state.Data[0]:X8} d1=0x{state.Data[1]:X8} d2=0x{state.Data[2]:X8} d3=0x{state.Data[3]:X8} " +
+                    $"a0=0x{state.Address[0]:X8} a1=0x{state.Address[1]:X8} a6=0x{state.Address[6]:X8} " +
+                    $"r8003=0x{reg8003:X2} r800f=0x{reg800F:X2} " +
+                    $"st=0x{status0:X4}/0x{status1:X4}/0x{status2:X4}/0x{status3:X4} " +
+                    $"commM=0x{_memory.Registers.MainCpuCommunicationFlags:X2} commS=0x{_memory.Registers.SubCpuCommunicationFlags:X2} " +
+                    $"swPend={(_memory.Registers.SubSoftwareInterruptPending ? 1 : 0)} swEn={(_memory.Registers.SoftwareInterruptEnabled ? 1 : 0)} " +
+                    $"cddPend={(_memory.Cdd.InterruptPending ? 1 : 0)} cddEn={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} " +
+                    $"cdcPend={(_memory.Cdc.InterruptPending ? 1 : 0)} cdcEn={(_memory.Registers.CdcInterruptEnabled ? 1 : 0)} " +
+                    $"wram={_memory.WordRam.GetDebugState()}");
+            }
 
             // Match jgenesis: buffered sub register writes are visible before each instruction,
             // and carry the remaining cycles forward instead of overrunning every slice.
@@ -1928,6 +1981,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
         bool allowZ80,
         long frameCounter,
         ref int pendingMdCycles,
+        ref int pendingScdMainCycles,
         ref int subSlice,
         ref int subCyclesInterleaved,
         ref bool loggedSubWaitOpcodeWindow)
@@ -1936,12 +1990,32 @@ public sealed class SegaCdAdapter : IEmulatorCore
             return;
 
         pendingMdCycles += mainStepCycles;
-        if (pendingMdCycles >= 32)
+        pendingScdMainCycles += mainStepCycles;
+        bool forceSyncForMainWrites = _memory!.HasBufferedMainWrites;
+        if (forceSyncForMainWrites
+            || pendingMdCycles >= MainMdFlushGranularity
+            || pendingScdMainCycles >= MainMdFlushGranularity)
+        {
             FlushPendingMainMdCycles(allowZ80, ref pendingMdCycles);
+            subSlice += FlushPendingScdMainTiming(ref pendingScdMainCycles);
+        }
 
-        subSlice += AdvanceSegaCdTimingFromMainCycles(mainStepCycles);
+        int subLag = subSlice - subCyclesInterleaved;
+        if (subLag <= 0)
+        {
+            if (forceSyncForMainWrites)
+                _memory.FlushBufferedMainWrites();
+            return;
+        }
 
-        while (subCyclesInterleaved < subSlice)
+        if (!forceSyncForMainWrites && subLag < SubInterleaveGranularity)
+            return;
+
+        int targetSubSlice = forceSyncForMainWrites
+            ? subSlice
+            : subCyclesInterleaved + Math.Min(subLag, SubInterleaveGranularity);
+
+        while (subCyclesInterleaved < targetSubSlice)
         {
             if (_memory!.SubCpuHalt || _memory.SubCpuReset)
                 break;
@@ -1955,7 +2029,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
             }
 
             int progressed = RunSubCpuBudget(
-                subSlice - subCyclesInterleaved,
+                targetSubSlice - subCyclesInterleaved,
                 frameCounter,
                 ref loggedSubWaitOpcodeWindow);
             if (progressed <= 0)
@@ -1964,9 +2038,22 @@ public sealed class SegaCdAdapter : IEmulatorCore
             subCyclesInterleaved += progressed;
         }
 
-        // Make main CPU register writes visible only after the sub side has
-        // caught up to the same step, like jgenesis main_bus_writes.apply_writes().
-        _memory.FlushBufferedMainWrites();
+        if (forceSyncForMainWrites)
+        {
+            // Make main CPU register writes visible only after the sub side has
+            // caught up to the same step, like jgenesis main_bus_writes.apply_writes().
+            _memory.FlushBufferedMainWrites();
+        }
+    }
+
+    private int FlushPendingScdMainTiming(ref int pendingScdMainCycles)
+    {
+        if (pendingScdMainCycles <= 0)
+            return 0;
+
+        int subCycles = AdvanceSegaCdTimingFromMainCycles(pendingScdMainCycles);
+        pendingScdMainCycles = 0;
+        return subCycles;
     }
 
     private void FlushPendingMainMdCycles(bool allowZ80, ref int pendingMdCycles)
@@ -2443,6 +2530,39 @@ public sealed class SegaCdAdapter : IEmulatorCore
         {
             return value;
         }
+        return fallback;
+    }
+
+    private static int ReadPositiveIntOr(string key, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(key);
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value)
+            && value > 0)
+        {
+            return value;
+        }
+
+        return fallback;
+    }
+
+    private static uint ReadUIntEnv(string key, uint fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            raw = raw[2..];
+            if (uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint hex))
+                return hex;
+            return fallback;
+        }
+        if (uint.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out uint value))
+            return value;
+
         return fallback;
     }
 

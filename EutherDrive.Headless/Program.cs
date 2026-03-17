@@ -758,6 +758,7 @@ class Program
                     autoStart || holdUp || holdDown || holdLeft || holdRight ||
                     holdA || holdB || holdC || holdStart || holdX || holdY || holdZ || holdMode;
                 bool lastStartPressed = false;
+                bool autoStartCompleted = false;
 
                 if (inputEnabled)
                 {
@@ -772,9 +773,23 @@ class Program
                 Console.WriteLine($"[HEADLESS] SegaCD fb_has_content={stats0.HasContent} nonzero_pixels={stats0.NonZeroPixels} first_nonzero=({stats0.FirstX},{stats0.FirstY})");
                 DumpBgraToPpm(fb0, w0, h0, s0, Path.Combine(dumpDir, "headless_frame0.ppm"));
 
+                var scdDumpFrames = new HashSet<int>();
+                string? scdDumpFramesRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+                if (!string.IsNullOrWhiteSpace(scdDumpFramesRaw))
+                {
+                    foreach (string part in scdDumpFramesRaw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (int.TryParse(part.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int frameIndex))
+                            scdDumpFrames.Add(frameIndex);
+                    }
+                }
+                int? scdDumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+                if (scdDumpFrameSingle.HasValue)
+                    scdDumpFrames.Add(scdDumpFrameSingle.Value);
+
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
-                    bool startPressed = holdStart || (autoStart &&
+                    bool startPressed = holdStart || (autoStart && !autoStartCompleted &&
                         ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount));
                     scd.SetInputState(
                         up: holdUp,
@@ -796,11 +811,29 @@ class Program
 
                     scd.RunFrame();
 
+                    if (autoStart && !autoStartCompleted && frame >= autoStartDelayFrames)
+                    {
+                        uint mainPc = scd.MainCpuPc;
+                        if (mainPc >= SegaCdMemory.BiosLen)
+                        {
+                            autoStartCompleted = true;
+                            if (autoStartLog)
+                                Console.WriteLine($"[HEADLESS] Sega CD auto-start stop frame={frame} pc=0x{mainPc:X6}");
+                        }
+                    }
+
                     if (frame == 0 || frame == 5 || frame == 10)
                     {
                         ReadOnlySpan<byte> fb = scd.GetFrameBuffer(out int w, out int h, out int s);
                         var stats = GetFrameStats(fb, w, h, s);
                         Console.WriteLine($"[HEADLESS] Frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                        DumpBgraToPpm(fb, w, h, s, ppmPath);
+                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                    }
+                    else if (scdDumpFrames.Contains(frame))
+                    {
+                        ReadOnlySpan<byte> fb = scd.GetFrameBuffer(out int w, out int h, out int s);
                         string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
                         DumpBgraToPpm(fb, w, h, s, ppmPath);
                         Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
