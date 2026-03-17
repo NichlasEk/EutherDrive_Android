@@ -309,7 +309,13 @@ internal sealed class CdCue
                 CdTime trackStart = track.TrackStart ?? CdTime.Zero;
                 CdTime pauseStart = track.PauseStart ?? trackStart;
                 CdTime pauseLen = trackStart.Sub(pauseStart);
-                CdTime pregapLen = track.TrackType == CdTrackType.Data ? CdTime.TwoSeconds : (track.PregapLen ?? CdTime.Zero);
+                // Cue-backed discs still need the implicit 00:02:00 lead-in before the first
+                // data track, but later track timing should come from INDEX 00/01 / PREGAP
+                // rather than a synthetic extra data postgap.
+                CdTime pregapLen =
+                    track.TrackType == CdTrackType.Data && track.Number == 1
+                        ? (track.PregapLen ?? CdTime.TwoSeconds)
+                        : (track.PregapLen ?? CdTime.Zero);
 
                 CdTime dataEndTime;
                 if (i + 1 < file.Tracks.Count)
@@ -325,7 +331,7 @@ internal sealed class CdCue
                     dataEndTime = trackStart;
 
                 CdTime dataLen = dataEndTime.Sub(trackStart);
-                CdTime postgapLen = track.TrackType == CdTrackType.Data ? CdTime.TwoSeconds : CdTime.Zero;
+                CdTime postgapLen = CdTime.Zero;
                 CdTime paddedLen = pregapLen.Add(pauseLen).Add(dataLen).Add(postgapLen);
 
                 CdTime startTime = CdTime.FromFrames(absoluteStartFrames);
