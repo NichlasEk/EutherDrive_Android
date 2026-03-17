@@ -67,6 +67,7 @@ namespace ePceCD
         [NonSerialized]
         private float _hpfPrevOutputRight;
 
+        [NonSerialized]
         public IAudioHandler host;
 
         public APU(IAudioHandler audio, CDRom cdrom)

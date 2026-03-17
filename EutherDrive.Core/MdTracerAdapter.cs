@@ -1343,7 +1343,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 Console.WriteLine("[MdTracerAdapter] LoadRom: SMS header detected in raw data.");
             }
 
-            _romIdentity = new RomIdentity(romDisplayName, RomIdentity.ComputeSha256(rawData));
+            _romIdentity = new RomIdentity(
+                romDisplayName,
+                RomIdentity.ComputeSha256(rawData),
+                PersistentStoragePath.ResolveSavestateDirectory(path, isSms ? "sms" : "megadrive"));
 
             md_main.PowerCycleReset();
             md_main.initialize();

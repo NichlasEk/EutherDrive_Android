@@ -83,6 +83,23 @@
       <Setter Property="IsHitTestVisible" Value="False" />
     </Style>
 
+    <Style Selector="Border.faceGlow">
+      <Setter Property="Width" Value="54" />
+      <Setter Property="Height" Value="54" />
+      <Setter Property="CornerRadius" Value="27" />
+      <Setter Property="Background" Value="#542563EB" />
+      <Setter Property="BorderBrush" Value="#93C5FD" />
+      <Setter Property="BorderThickness" Value="2" />
+      <Setter Property="Opacity" Value="0.9" />
+      <Setter Property="IsVisible" Value="False" />
+      <Setter Property="IsHitTestVisible" Value="False" />
+    </Style>
+
+    <Style Selector="Button.facePressed">
+      <Setter Property="Background" Value="#C6173E43" />
+      <Setter Property="BorderBrush" Value="#7DD3FC" />
+    </Style>
+
     <Style Selector="TextBlock.hudLabel">
       <Setter Property="Foreground" Value="#91A8BD" />
       <Setter Property="FontSize" Value="12" />
@@ -395,47 +412,52 @@
                       Tag="Start" />
             </StackPanel>
 
-            <Grid Grid.Column="2" Width="212" Height="212" HorizontalAlignment="Center">
-              <Button Classes="chrome action"
+            <Grid x:Name="PortraitFaceSurface"
+                  Grid.Column="2"
+                  Width="212"
+                  Height="212"
+                  HorizontalAlignment="Center"
+                  Background="Transparent"
+                  PointerPressed="OnFacePointerPressed"
+                  PointerMoved="OnFacePointerMoved"
+                  PointerReleased="OnFacePointerReleased"
+                  PointerCaptureLost="OnFacePointerCaptureLost">
+              <Canvas IsHitTestVisible="False">
+                <Border x:Name="PortraitFaceGlow"
+                        Classes="faceGlow" />
+              </Canvas>
+              <Button x:Name="PortraitFaceY"
+                      Classes="chrome action"
                       Width="74"
                       Height="74"
+                      IsHitTestVisible="False"
                       HorizontalAlignment="Left"
                       VerticalAlignment="Center"
-                      Content="Y"
-                      PointerPressed="OnOverlayButtonPress"
-                      PointerReleased="OnOverlayButtonRelease"
-                      PointerCaptureLost="OnOverlayButtonCaptureLost"
-                      Tag="Y" />
-              <Button Classes="chrome action"
+                      Content="Y" />
+              <Button x:Name="PortraitFaceB"
+                      Classes="chrome action"
                       Width="74"
                       Height="74"
+                      IsHitTestVisible="False"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Bottom"
-                      Content="B"
-                      PointerPressed="OnOverlayButtonPress"
-                      PointerReleased="OnOverlayButtonRelease"
-                      PointerCaptureLost="OnOverlayButtonCaptureLost"
-                      Tag="B" />
-              <Button Classes="chrome action"
+                      Content="B" />
+              <Button x:Name="PortraitFaceX"
+                      Classes="chrome action"
                       Width="74"
                       Height="74"
+                      IsHitTestVisible="False"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Top"
-                      Content="X"
-                      PointerPressed="OnOverlayButtonPress"
-                      PointerReleased="OnOverlayButtonRelease"
-                      PointerCaptureLost="OnOverlayButtonCaptureLost"
-                      Tag="X" />
-              <Button Classes="chrome action"
+                      Content="X" />
+              <Button x:Name="PortraitFaceA"
+                      Classes="chrome action"
                       Width="74"
                       Height="74"
+                      IsHitTestVisible="False"
                       HorizontalAlignment="Right"
                       VerticalAlignment="Center"
-                      Content="A"
-                      PointerPressed="OnOverlayButtonPress"
-                      PointerReleased="OnOverlayButtonRelease"
-                      PointerCaptureLost="OnOverlayButtonCaptureLost"
-                      Tag="A" />
+                      Content="A" />
             </Grid>
           </Grid>
         </Border>
@@ -611,51 +633,53 @@
             </Border>
           </Grid>
 
-          <Grid Width="192"
+          <Grid x:Name="LandscapeFaceSurface"
+                Width="192"
                 Height="192"
                 HorizontalAlignment="Right"
                 VerticalAlignment="Bottom"
-                Margin="0,0,22,18">
-            <Button Classes="landscapeOverlay"
+                Margin="0,0,22,18"
+                Background="Transparent"
+                PointerPressed="OnFacePointerPressed"
+                PointerMoved="OnFacePointerMoved"
+                PointerReleased="OnFacePointerReleased"
+                PointerCaptureLost="OnFacePointerCaptureLost">
+            <Canvas IsHitTestVisible="False">
+              <Border x:Name="LandscapeFaceGlow"
+                      Classes="faceGlow" />
+            </Canvas>
+            <Button x:Name="LandscapeFaceY"
+                    Classes="landscapeOverlay"
                     Width="68"
                     Height="68"
+                    IsHitTestVisible="False"
                     HorizontalAlignment="Left"
                     VerticalAlignment="Center"
-                    Content="Y"
-                    PointerPressed="OnOverlayButtonPress"
-                    PointerReleased="OnOverlayButtonRelease"
-                    PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="Y" />
-            <Button Classes="landscapeOverlay"
+                    Content="Y" />
+            <Button x:Name="LandscapeFaceB"
+                    Classes="landscapeOverlay"
                     Width="68"
                     Height="68"
+                    IsHitTestVisible="False"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Bottom"
-                    Content="B"
-                    PointerPressed="OnOverlayButtonPress"
-                    PointerReleased="OnOverlayButtonRelease"
-                    PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="B" />
-            <Button Classes="landscapeOverlay"
+                    Content="B" />
+            <Button x:Name="LandscapeFaceX"
+                    Classes="landscapeOverlay"
                     Width="68"
                     Height="68"
+                    IsHitTestVisible="False"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Top"
-                    Content="X"
-                    PointerPressed="OnOverlayButtonPress"
-                    PointerReleased="OnOverlayButtonRelease"
-                    PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="X" />
-            <Button Classes="landscapeOverlay"
+                    Content="X" />
+            <Button x:Name="LandscapeFaceA"
+                    Classes="landscapeOverlay"
                     Width="68"
                     Height="68"
+                    IsHitTestVisible="False"
                     HorizontalAlignment="Right"
                     VerticalAlignment="Center"
-                    Content="A"
-                    PointerPressed="OnOverlayButtonPress"
-                    PointerReleased="OnOverlayButtonRelease"
-                    PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="A" />
+                    Content="A" />
           </Grid>
 
         </Grid>

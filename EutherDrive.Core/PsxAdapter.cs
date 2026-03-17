@@ -222,7 +222,10 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             _core.SetFastLoadEnabled(FastLoadEnabled);
         _frameCounter = 0;
         using Stream romStream = VirtualFileSystem.OpenRead(path);
-        _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(romStream));
+        _romIdentity = new RomIdentity(
+            Path.GetFileName(path),
+            RomIdentity.ComputeSha256(romStream),
+            PersistentStoragePath.ResolveSavestateDirectory(path, "psx"));
     }
 
     public void Reset()

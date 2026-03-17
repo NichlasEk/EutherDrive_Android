@@ -307,8 +307,9 @@ public sealed class SavestateService
 
     private void WriteFile(RomIdentity romId, SavestateFile file)
     {
-        Directory.CreateDirectory(_rootDirectory);
         string path = GetStatePath(romId);
+        string? targetDirectory = Path.GetDirectoryName(path);
+        Directory.CreateDirectory(string.IsNullOrWhiteSpace(targetDirectory) ? _rootDirectory : targetDirectory);
         string tmpPath = path + ".tmp";
 
         int nameLength = Encoding.UTF8.GetByteCount(file.RomName);
@@ -373,7 +374,10 @@ public sealed class SavestateService
         string safeName = SanitizeFileName(romId.Name);
         string prefix = romId.HashPrefix();
         string fileName = $"{safeName}_{prefix}.euthstate";
-        return Path.Combine(_rootDirectory, fileName);
+        string rootDirectory = string.IsNullOrWhiteSpace(romId.PreferredStateDirectory)
+            ? _rootDirectory
+            : romId.PreferredStateDirectory;
+        return Path.Combine(rootDirectory, fileName);
     }
 
     private static string SanitizeFileName(string name)

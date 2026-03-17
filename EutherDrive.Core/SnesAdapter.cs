@@ -74,7 +74,10 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         if (File.Exists(path))
         {
             byte[] data = File.ReadAllBytes(path);
-            _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(data));
+            _romIdentity = new RomIdentity(
+                Path.GetFileName(path),
+                RomIdentity.ComputeSha256(data),
+                PersistentStoragePath.ResolveSavestateDirectory(path, "snes"));
         }
         else
         {

@@ -103,7 +103,10 @@ public sealed class NesAdapter : IEmulatorCore, ISavestateCapable
         }
         Reset();
         _romSummary = BuildRomSummary(path, rom);
-        _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(rom));
+        _romIdentity = new RomIdentity(
+            Path.GetFileName(path),
+            RomIdentity.ComputeSha256(rom),
+            PersistentStoragePath.ResolveSavestateDirectory(path, "nes"));
     }
 
     public void Reset()

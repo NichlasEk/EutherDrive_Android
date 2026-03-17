@@ -74,7 +74,10 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         try
         {
             byte[] data = VirtualFileSystem.ReadAllBytes(path);
-            _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(data));
+            _romIdentity = new RomIdentity(
+                Path.GetFileName(path),
+                RomIdentity.ComputeSha256(data),
+                PersistentStoragePath.ResolveSavestateDirectory(path, "pce"));
         }
         catch
         {
@@ -478,7 +481,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         try
         {
             _bus.BRAM?.Dispose();
-            string saveDir = GetSaveDirectory();
+            string saveDir = GetSaveDirectory(path);
             Directory.CreateDirectory(saveDir);
             string name = Path.GetFileNameWithoutExtension(path);
             string savePath = Path.Combine(saveDir, name);
@@ -495,7 +498,7 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         try
         {
             _bus.BRAM?.Dispose();
-            string saveDir = GetSaveDirectory();
+            string saveDir = GetSaveDirectory(cuePath);
             Directory.CreateDirectory(saveDir);
             string name = Path.GetFileNameWithoutExtension(cuePath);
             string savePath = Path.Combine(saveDir, name);
@@ -507,12 +510,12 @@ public sealed class PceCdAdapter : IEmulatorCore, IRenderHandler, IAudioHandler,
         }
     }
 
-    private static string GetSaveDirectory()
+    private static string GetSaveDirectory(string contentPath)
     {
-        string? overrideDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SAVE_DIR");
-        if (!string.IsNullOrWhiteSpace(overrideDir))
-            return overrideDir;
-        return Path.Combine(Directory.GetCurrentDirectory(), "saves", "pce");
+        return PersistentStoragePath.ResolveSaveDirectory(
+            contentPath,
+            "pce",
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SAVE_DIR"));
     }
 
     private static int ScorePceEntry(byte[] data, int offset)

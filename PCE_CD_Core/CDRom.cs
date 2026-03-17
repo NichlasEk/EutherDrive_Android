@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using EutherDrive.Core;
+using EutherDrive.Core.Savestates;
 using ProjectPSX.IO;
 
 namespace ePceCD
@@ -614,12 +615,12 @@ namespace ePceCD
             Console.WriteLine($"CDROM {filePath} {typeLabel} LOADED");
         }
 
-        private static string GetSaveDirectory()
+        private static string GetSaveDirectory(string? contentPath)
         {
-            string? overrideDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SAVE_DIR");
-            if (!string.IsNullOrWhiteSpace(overrideDir))
-                return overrideDir;
-            return Path.Combine(Directory.GetCurrentDirectory(), "saves", "pce");
+            return PersistentStoragePath.ResolveSaveDirectory(
+                contentPath,
+                "pce",
+                Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SAVE_DIR"));
         }
 
         private void ParseTrackCommand(string[] parts)
@@ -662,7 +663,7 @@ namespace ePceCD
                 return;
 
             string savefile = Path.GetFileNameWithoutExtension(track.FileName);
-            string saveDir = GetSaveDirectory();
+            string saveDir = GetSaveDirectory(track.FileName);
             Directory.CreateDirectory(saveDir);
             Bus.BRAM = new SaveMemoryBank(Path.Combine(saveDir, savefile));
             _bramInitialized = true;

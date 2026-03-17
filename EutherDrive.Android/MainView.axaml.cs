@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading;
@@ -39,6 +40,7 @@ public partial class MainView : UserControl
     private readonly Dictionary<IPointer, string> _actionPointers = new();
     private readonly Dictionary<string, int> _directionPressCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _actionPressCounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<IPointer> _facePointers = new();
     private readonly HashSet<string> _selectedVirtualPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _directionLatchFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _actionLatchFrames = new(StringComparer.OrdinalIgnoreCase);
@@ -394,6 +396,7 @@ public partial class MainView : UserControl
             {
                 RegisterPointerPressLocked(_actionPointers, _actionPressCounts, _pressedActions, e.Pointer, tag);
                 _actionLatchFrames[tag] = InputLatchFrames;
+                UpdateFaceVisualsLocked();
             }
             e.Pointer.Capture(button);
             e.Handled = true;
@@ -410,6 +413,7 @@ public partial class MainView : UserControl
             {
                 ReleasePointerLocked(_actionPointers, _actionPressCounts, _pressedActions, e.Pointer, tag);
                 _actionLatchFrames[tag] = InputLatchFrames;
+                UpdateFaceVisualsLocked();
             }
             e.Pointer.Capture(null);
             e.Handled = true;
@@ -425,9 +429,79 @@ public partial class MainView : UserControl
             {
                 ReleaseAllPointersForTagLocked(_actionPointers, _actionPressCounts, _pressedActions, tag);
                 _actionLatchFrames[tag] = InputLatchFrames;
+                UpdateFaceVisualsLocked();
             }
             UpdateOverlaySummary();
         }
+    }
+
+    private void OnFacePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Control control)
+        {
+            return;
+        }
+
+        lock (_inputSync)
+        {
+            _facePointers.Add(e.Pointer);
+            UpdateFacePointerLocked(control, e.Pointer, e.GetPosition(control));
+        }
+
+        e.Pointer.Capture(control);
+        e.Handled = true;
+        UpdateOverlaySummary();
+    }
+
+    private void OnFacePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (sender is not Control control || e.Pointer.Captured != control)
+        {
+            return;
+        }
+
+        lock (_inputSync)
+        {
+            UpdateFacePointerLocked(control, e.Pointer, e.GetPosition(control));
+        }
+
+        e.Handled = true;
+        UpdateOverlaySummary();
+    }
+
+    private void OnFacePointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (sender is not Control control)
+        {
+            return;
+        }
+
+        lock (_inputSync)
+        {
+            _facePointers.Remove(e.Pointer);
+            ReleaseFacePointerLocked(e.Pointer);
+            HideFaceGlowLocked(control);
+        }
+
+        e.Pointer.Capture(null);
+        e.Handled = true;
+        UpdateOverlaySummary();
+    }
+
+    private void OnFacePointerCaptureLost(object? sender, RoutedEventArgs e)
+    {
+        lock (_inputSync)
+        {
+            foreach (IPointer pointer in _facePointers.ToArray())
+            {
+                ReleaseFacePointerLocked(pointer);
+            }
+
+            _facePointers.Clear();
+            HideFaceGlowLocked();
+        }
+
+        UpdateOverlaySummary();
     }
 
     private static void RegisterPointerPressLocked(
@@ -485,6 +559,63 @@ public partial class MainView : UserControl
 
         _viewModel.SetLastPressed(string.Join(" ", directionSet.OrderBy(static value => value)));
         UpdateDPadVisualsLocked();
+    }
+
+    private void UpdateFacePointerLocked(Control control, IPointer pointer, Point point)
+    {
+        string? tag = DetermineFaceAction(control, point);
+        if (string.IsNullOrEmpty(tag))
+        {
+            ReleaseFacePointerLocked(pointer);
+            HideFaceGlowLocked(control);
+            return;
+        }
+
+        UpdateFaceGlowLocked(control, point);
+        RegisterPointerPressLocked(_actionPointers, _actionPressCounts, _pressedActions, pointer, tag);
+        _actionLatchFrames[tag] = InputLatchFrames;
+        _viewModel.SetLastPressed(tag);
+        UpdateFaceVisualsLocked();
+    }
+
+    private void ReleaseFacePointerLocked(IPointer pointer)
+    {
+        if (_actionPointers.TryGetValue(pointer, out string? currentTag)
+            && (currentTag is "A" or "B" or "X" or "Y"))
+        {
+            ReleasePointerLocked(_actionPointers, _actionPressCounts, _pressedActions, pointer, currentTag);
+            _actionLatchFrames[currentTag] = InputLatchFrames;
+        }
+
+        UpdateFaceVisualsLocked();
+    }
+
+    private static string? DetermineFaceAction(Control control, Point point)
+    {
+        double width = control.Bounds.Width;
+        double height = control.Bounds.Height;
+        if (width <= 0 || height <= 0)
+        {
+            return null;
+        }
+
+        double centerX = width * 0.5;
+        double centerY = height * 0.5;
+        double dx = point.X - centerX;
+        double dy = point.Y - centerY;
+        double deadZone = Math.Min(width, height) * 0.09;
+
+        if (Math.Abs(dx) < deadZone && Math.Abs(dy) < deadZone)
+        {
+            return null;
+        }
+
+        if (Math.Abs(dx) >= Math.Abs(dy))
+        {
+            return dx >= 0 ? "A" : "Y";
+        }
+
+        return dy >= 0 ? "B" : "X";
     }
 
     private static IEnumerable<string> ParseDPadDirections(string tag)
@@ -641,6 +772,23 @@ public partial class MainView : UserControl
         SetPadVisualState(LandscapePadRight, right);
     }
 
+    private void UpdateFaceVisualsLocked()
+    {
+        bool a = _pressedActions.Contains("A");
+        bool b = _pressedActions.Contains("B");
+        bool x = _pressedActions.Contains("X");
+        bool y = _pressedActions.Contains("Y");
+
+        SetFaceVisualState(PortraitFaceA, a);
+        SetFaceVisualState(PortraitFaceB, b);
+        SetFaceVisualState(PortraitFaceX, x);
+        SetFaceVisualState(PortraitFaceY, y);
+        SetFaceVisualState(LandscapeFaceA, a);
+        SetFaceVisualState(LandscapeFaceB, b);
+        SetFaceVisualState(LandscapeFaceX, x);
+        SetFaceVisualState(LandscapeFaceY, y);
+    }
+
     private void UpdateDPadGlowLocked(Control control, Point point)
     {
         Border? glow = GetDPadGlowForControl(control);
@@ -694,6 +842,59 @@ public partial class MainView : UserControl
         return null;
     }
 
+    private void UpdateFaceGlowLocked(Control control, Point point)
+    {
+        Border? glow = GetFaceGlowForControl(control);
+        if (glow == null)
+        {
+            return;
+        }
+
+        double controlWidth = control.Bounds.Width;
+        double controlHeight = control.Bounds.Height;
+        if (controlWidth <= 0 || controlHeight <= 0)
+        {
+            return;
+        }
+
+        double glowWidth = double.IsNaN(glow.Width) || glow.Width <= 0 ? 54 : glow.Width;
+        double glowHeight = double.IsNaN(glow.Height) || glow.Height <= 0 ? 54 : glow.Height;
+        double left = Math.Clamp(point.X - (glowWidth * 0.5), 0, Math.Max(0, controlWidth - glowWidth));
+        double top = Math.Clamp(point.Y - (glowHeight * 0.5), 0, Math.Max(0, controlHeight - glowHeight));
+
+        Canvas.SetLeft(glow, left);
+        Canvas.SetTop(glow, top);
+        glow.IsVisible = true;
+    }
+
+    private void HideFaceGlowLocked(Control? activeControl = null)
+    {
+        if (activeControl == null || ReferenceEquals(activeControl, PortraitFaceSurface))
+        {
+            PortraitFaceGlow.IsVisible = false;
+        }
+
+        if (activeControl == null || ReferenceEquals(activeControl, LandscapeFaceSurface))
+        {
+            LandscapeFaceGlow.IsVisible = false;
+        }
+    }
+
+    private Border? GetFaceGlowForControl(Control control)
+    {
+        if (ReferenceEquals(control, PortraitFaceSurface))
+        {
+            return PortraitFaceGlow;
+        }
+
+        if (ReferenceEquals(control, LandscapeFaceSurface))
+        {
+            return LandscapeFaceGlow;
+        }
+
+        return null;
+    }
+
     private static void SetPadVisualState(Border? border, bool active)
     {
         if (border == null)
@@ -711,6 +912,26 @@ public partial class MainView : UserControl
         else
         {
             border.Classes.Remove("padPressed");
+        }
+    }
+
+    private static void SetFaceVisualState(Avalonia.Controls.Button? button, bool active)
+    {
+        if (button == null)
+        {
+            return;
+        }
+
+        if (active)
+        {
+            if (!button.Classes.Contains("facePressed"))
+            {
+                button.Classes.Add("facePressed");
+            }
+        }
+        else
+        {
+            button.Classes.Remove("facePressed");
         }
     }
 
@@ -1097,6 +1318,7 @@ public partial class MainView : UserControl
             _dpadPointerDirections.Clear();
             _directionPointers.Clear();
             _actionPointers.Clear();
+            _facePointers.Clear();
             _directionPressCounts.Clear();
             _actionPressCounts.Clear();
             _pressedDirections.Clear();
@@ -1105,6 +1327,8 @@ public partial class MainView : UserControl
             _actionLatchFrames.Clear();
             UpdateDPadVisualsLocked();
             HideDPadGlowLocked();
+            UpdateFaceVisualsLocked();
+            HideFaceGlowLocked();
         }
 
         UpdateOverlaySummary();
@@ -1190,10 +1414,7 @@ public partial class MainView : UserControl
         string baseDir = Path.Combine(_appDataDir, isSystemFile ? "system-files" : "rom-cache");
         Directory.CreateDirectory(baseDir);
 
-        string safeName = string.IsNullOrWhiteSpace(Path.GetFileNameWithoutExtension(file.Name))
-            ? "rom"
-            : Path.GetFileNameWithoutExtension(file.Name);
-        string targetPath = Path.Combine(baseDir, $"{safeName}-{Guid.NewGuid():N}{extension}");
+        string safeName = SanitizeFileComponent(Path.GetFileNameWithoutExtension(file.Name), fallback: "rom");
 
         Stream? source = await file.OpenReadAsync();
         bool transferredToVirtualFile = false;
@@ -1212,10 +1433,7 @@ public partial class MainView : UserControl
                 throw new InvalidOperationException("This ROM is too large for temporary Android caching. Disc images need direct streaming support instead.");
             }
 
-            await using FileStream destination = File.Create(targetPath);
-            await source.CopyToAsync(destination);
-            await destination.FlushAsync();
-            return targetPath;
+            return await CopyToDeterministicCacheAsync(source, baseDir, safeName, extension);
         }
         finally
         {
@@ -1224,6 +1442,69 @@ public partial class MainView : UserControl
                 await source.DisposeAsync();
             }
         }
+    }
+
+    private static async Task<string> CopyToDeterministicCacheAsync(Stream source, string baseDir, string safeName, string extension)
+    {
+        string tempPath = Path.Combine(baseDir, $".tmp-{Guid.NewGuid():N}{extension}");
+        using IncrementalHash hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        byte[] buffer = new byte[1024 * 64];
+
+        try
+        {
+            await using (FileStream destination = File.Create(tempPath))
+            {
+                while (true)
+                {
+                    int read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length));
+                    if (read <= 0)
+                        break;
+
+                    hasher.AppendData(buffer, 0, read);
+                    await destination.WriteAsync(buffer.AsMemory(0, read));
+                }
+
+                await destination.FlushAsync();
+            }
+
+            string hashPrefix = Convert.ToHexString(hasher.GetHashAndReset()).ToLowerInvariant()[..12];
+            string finalPath = Path.Combine(baseDir, $"{safeName}-{hashPrefix}{extension}");
+            if (File.Exists(finalPath))
+            {
+                File.Delete(tempPath);
+                return finalPath;
+            }
+
+            File.Move(tempPath, finalPath);
+            return finalPath;
+        }
+        catch
+        {
+            if (File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private static string SanitizeFileComponent(string? value, string fallback)
+    {
+        string candidate = string.IsNullOrWhiteSpace(value) ? fallback : value;
+        foreach (char invalid in Path.GetInvalidFileNameChars())
+        {
+            candidate = candidate.Replace(invalid, '_');
+        }
+
+        candidate = candidate.Trim();
+        return string.IsNullOrWhiteSpace(candidate) ? fallback : candidate;
     }
 
     private async Task<VirtualRomImport?> TryRegisterVirtualDiscSourceAsync(IStorageProvider? storageProvider, IStorageFile file, Stream source)
@@ -1455,15 +1736,13 @@ public partial class MainView : UserControl
 
     private void ApplySettings()
     {
-        string pceSaveDir = Path.Combine(_appDataDir, "saves", "pce");
-
         PceCdAdapter.BiosPath = RegisterSystemFileVirtualPath("PCE BIOS", _viewModel.PceBiosPath, _viewModel.PceBiosDisplay);
         string? segaCdBiosPath = RegisterSystemFileVirtualPath("SEGA CD BIOS", _viewModel.SegaCdBiosPath, _viewModel.SegaCdBiosDisplay);
         PsxAdapter.BiosPath = RegisterSystemFileVirtualPath("PSX BIOS", _viewModel.PsxBiosPath, _viewModel.PsxBiosDisplay);
         PsxAdapter.FastLoadEnabled = false;
         PsxAdapter.SuperFastBootEnabled = false;
 
-        SetEnv("EUTHERDRIVE_PCE_SAVE_DIR", pceSaveDir);
+        SetEnv("EUTHERDRIVE_PCE_SAVE_DIR", null);
         SetEnv("EUTHERDRIVE_SCD_BIOS", segaCdBiosPath);
         SetEnv("EUTHERDRIVE_SCD_BIOS_U", segaCdBiosPath);
         SetEnv("EUTHERDRIVE_SCD_BIOS_E", segaCdBiosPath);

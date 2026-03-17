@@ -7,7 +7,7 @@ namespace EutherDrive.Core.Savestates;
 
 public sealed class RomIdentity
 {
-    public RomIdentity(string name, byte[] hash)
+    public RomIdentity(string name, byte[] hash, string? preferredStateDirectory = null)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("ROM name is required.", nameof(name));
@@ -16,10 +16,12 @@ public sealed class RomIdentity
 
         Name = name;
         Hash = hash;
+        PreferredStateDirectory = preferredStateDirectory;
     }
 
     public string Name { get; }
     public byte[] Hash { get; }
+    public string? PreferredStateDirectory { get; }
 
     public string HashHex
     {
