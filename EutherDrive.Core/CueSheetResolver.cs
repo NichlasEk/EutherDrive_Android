@@ -72,25 +72,27 @@ public static class CueSheetResolver
 
             if (!parts[0].Equals("INDEX", StringComparison.OrdinalIgnoreCase)
                 || parts.Length < 3
-                || !string.Equals(parts[1], "01", StringComparison.OrdinalIgnoreCase)
                 || currentFilePath == null
                 || currentTrackType == null
-                || !TryParseMsf(parts[2], out int index01Lba))
+                || !TryParseMsf(parts[2], out int indexLba))
             {
                 continue;
             }
 
-            currentFileBaseLba ??= index01Lba;
+            currentFileBaseLba ??= indexLba;
+            if (!string.Equals(parts[1], "01", StringComparison.OrdinalIgnoreCase))
+                continue;
+
             if (!LooksLikeDataTrackType(currentTrackType))
                 continue;
 
             int sectorSize = GetSectorSize(currentTrackType);
-            long relativeLba = Math.Max(0, index01Lba - currentFileBaseLba.Value);
+            long relativeLba = Math.Max(0, indexLba - currentFileBaseLba.Value);
             return new CueTrackReference(
                 currentFilePath,
                 currentTrackType,
                 currentTrackNumber,
-                index01Lba,
+                indexLba,
                 relativeLba * sectorSize,
                 sectorSize,
                 sectorSize == 2352 ? 16 : 0);
