@@ -736,6 +736,35 @@ class Program
                 Console.WriteLine("[HEADLESS] Using Sega CD core");
                 var scd = new SegaCdAdapter();
                 scd.LoadRom(romPath);
+                bool autoStart = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_AUTO_START");
+                int autoStartDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_SCD_HEADLESS_AUTO_START_DELAY_FRAMES") ?? 120;
+                int autoStartPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_SCD_HEADLESS_AUTO_START_PULSE_FRAMES") ?? 2;
+                int autoStartPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_SCD_HEADLESS_AUTO_START_PERIOD_FRAMES") ?? 90;
+                int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_SCD_HEADLESS_AUTO_START_PULSE_COUNT") ?? 4;
+                bool autoStartLog = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_AUTO_START_LOG");
+                bool holdUp = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_UP") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_UP");
+                bool holdDown = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_DOWN") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_DOWN");
+                bool holdLeft = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_LEFT") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_LEFT");
+                bool holdRight = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_RIGHT") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_RIGHT");
+                bool holdA = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_A") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_A");
+                bool holdB = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_B") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_B");
+                bool holdC = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_C") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_C");
+                bool holdStart = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_START") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_START");
+                bool holdX = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_X") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_X");
+                bool holdY = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_Y") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_Y");
+                bool holdZ = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_Z") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_Z");
+                bool holdMode = IsEnvEnabled("EUTHERDRIVE_SCD_HEADLESS_HOLD_MODE") || IsEnvEnabled("EUTHERDRIVE_MD_HEADLESS_HOLD_MODE");
+                bool inputEnabled =
+                    autoStart || holdUp || holdDown || holdLeft || holdRight ||
+                    holdA || holdB || holdC || holdStart || holdX || holdY || holdZ || holdMode;
+                bool lastStartPressed = false;
+
+                if (inputEnabled)
+                {
+                    Console.WriteLine(
+                        $"[HEADLESS-SCD-INPUT] autoStart={autoStart} hold up={holdUp} down={holdDown} left={holdLeft} right={holdRight} " +
+                        $"a={holdA} b={holdB} c={holdC} start={holdStart} x={holdX} y={holdY} z={holdZ} mode={holdMode}");
+                }
 
                 Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
                 ReadOnlySpan<byte> fb0 = scd.GetFrameBuffer(out int w0, out int h0, out int s0);
@@ -745,6 +774,26 @@ class Program
 
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
+                    bool startPressed = holdStart || (autoStart &&
+                        ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount));
+                    scd.SetInputState(
+                        up: holdUp,
+                        down: holdDown,
+                        left: holdLeft,
+                        right: holdRight,
+                        a: holdA,
+                        b: holdB,
+                        c: holdC,
+                        start: startPressed,
+                        x: holdX,
+                        y: holdY,
+                        z: holdZ,
+                        mode: holdMode,
+                        padType: PadType.SixButton);
+                    if (autoStartLog && startPressed != lastStartPressed)
+                        Console.WriteLine($"[HEADLESS] Sega CD auto-start start={(startPressed ? 1 : 0)} frame={frame}");
+                    lastStartPressed = startPressed;
+
                     scd.RunFrame();
 
                     if (frame == 0 || frame == 5 || frame == 10)

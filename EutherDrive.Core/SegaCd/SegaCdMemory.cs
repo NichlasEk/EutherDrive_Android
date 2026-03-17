@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text;
 using System.Threading;
 
 namespace EutherDrive.Core.SegaCd;
@@ -108,6 +109,19 @@ public sealed class SegaCdMemory
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_MAINREG"),
         "1",
         StringComparison.Ordinal);
+    private static readonly bool TraceWordRamControl = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_WORDRAM_CTL"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool TraceCommMailbox = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_COMM_MAILBOX"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool TraceMainStatusReads = string.Equals(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_MAIN_STATUS_READS"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly int MainStatusReadLimit = ReadInt("EUTHERDRIVE_SCD_TRACE_MAIN_STATUS_LIMIT", 2048);
     private static readonly string? TraceIrqFile =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_IRQ_FILE");
     private readonly bool _logA12001Pc;
@@ -123,6 +137,7 @@ public sealed class SegaCdMemory
     private int _subBusLogCount;
     private bool _subBusLogSuppressedNotified;
     private int _lastLoggedSubInterruptLevel = -1;
+    private int _mainStatusReadRemaining = MainStatusReadLimit;
     public const int BiosLen = 128 * 1024;
     public const int PrgRamLen = 512 * 1024;
     public const int BackupRamLen = 8 * 1024;
@@ -747,6 +762,7 @@ public sealed class SegaCdMemory
         };
         if (LogMainRegReads && address is >= 0xA12000 and <= 0xA1202F)
             Console.WriteLine($"[SCD-MAINREG] R8 0x{address:X6} -> 0x{value:X2}");
+        TraceMainStatusRead("R8", address, value);
         if (LogCommFlags && (address == 0xA1200E || address == 0xA1200F))
             Console.WriteLine($"[SCD-COMM] MAIN R8 0x{address:X6} -> 0x{value:X2}");
         return value;
@@ -773,6 +789,7 @@ public sealed class SegaCdMemory
         };
         if (LogMainRegReads && address is >= 0xA12000 and <= 0xA1202F)
             Console.WriteLine($"[SCD-MAINREG] R16 0x{address:X6} -> 0x{value:X4}");
+        TraceMainStatusRead("R16", address, value);
         return value;
     }
 
@@ -817,6 +834,14 @@ public sealed class SegaCdMemory
             case 0xA12003:
                 Registers.PrgRamBank = (byte)(value >> 6);
                 WordRam.MainCpuWriteControl(value);
+                if (TraceWordRamControl)
+                {
+                    string line =
+                        $"[SCD-WRAM-CTL] MAIN pc=0x{MainPcProvider?.Invoke():X6} " +
+                        $"val=0x{value:X2} state={WordRam.GetDebugState()}";
+                    Console.WriteLine(line);
+                    AppendTraceLine(line);
+                }
                 if (LogMainRegs)
                     Console.WriteLine($"[SCD-WORDRAM] main ctl=0x{value:X2} {WordRam.GetDebugState()}");
                 break;
@@ -843,6 +868,8 @@ public sealed class SegaCdMemory
                 break;
             case >= 0xA12010 and <= 0xA1201F:
                 WriteCommBuffer(Registers.CommunicationCommands, address, value);
+                if (TraceCommMailbox)
+                    TraceMainCommMailbox("W8", address);
                 break;
         }
     }
@@ -881,8 +908,51 @@ public sealed class SegaCdMemory
                 break;
             case >= 0xA12010 and <= 0xA1201F:
                 WriteCommWord(Registers.CommunicationCommands, address, value);
+                if (TraceCommMailbox)
+                    TraceMainCommMailbox("W16", address);
                 break;
         }
+    }
+
+    private void TraceMainCommMailbox(string op, uint address)
+    {
+        uint pc = MainPcProvider?.Invoke() ?? 0;
+        uint cmd0 = ((uint)Registers.CommunicationCommands[0] << 16) | Registers.CommunicationCommands[1];
+        string ascii = Encoding.ASCII.GetString(new[]
+        {
+            (byte)(cmd0 >> 24),
+            (byte)(cmd0 >> 16),
+            (byte)(cmd0 >> 8),
+            (byte)cmd0
+        });
+        string line =
+            $"[SCD-COMM-MBOX] MAIN {op} addr=0x{address:X6} pc=0x{pc:X6} " +
+            $"cmd0=0x{Registers.CommunicationCommands[0]:X4} cmd1=0x{Registers.CommunicationCommands[1]:X4} " +
+            $"long=0x{cmd0:X8} ascii='{ascii}' flagsM=0x{Registers.MainCpuCommunicationFlags:X2} flagsS=0x{Registers.SubCpuCommunicationFlags:X2}";
+        Console.WriteLine(line);
+        AppendTraceLine(line);
+    }
+
+    private void TraceMainStatusRead(string op, uint address, ushort value)
+    {
+        if (!TraceMainStatusReads || _mainStatusReadRemaining <= 0)
+            return;
+        if (address < 0xA12020 || address > 0xA12027)
+            return;
+
+        _mainStatusReadRemaining--;
+        uint mainPc = MainPcProvider?.Invoke() ?? 0;
+        uint subPc = SubPcProvider?.Invoke() ?? 0;
+        string line =
+            $"[SCD-MAINSTATUS] {op} addr=0x{address:X6} val=0x{value:X4} " +
+            $"pc=0x{mainPc:X6} subpc=0x{subPc:X6} " +
+            $"flagsM=0x{Registers.MainCpuCommunicationFlags:X2} flagsS=0x{Registers.SubCpuCommunicationFlags:X2} " +
+            $"status=0x{Registers.CommunicationStatuses[0]:X4}/0x{Registers.CommunicationStatuses[1]:X4}/" +
+            $"0x{Registers.CommunicationStatuses[2]:X4}/0x{Registers.CommunicationStatuses[3]:X4} " +
+            $"cdcPend={(Cdc.InterruptPending ? 1 : 0)} cdcReady={(Cdc.DataReady ? 1 : 0)} " +
+            $"cdd=0x{Cdd.Status[0]:X2}/0x{Cdd.Status[1]:X2}/0x{Cdd.Status[2]:X2}/0x{Cdd.Status[3]:X2}";
+        Console.WriteLine(line);
+        AppendTraceLine(line);
     }
 
     private static byte ReadCommBuffer(ushort[] buffer, uint address)
@@ -1171,6 +1241,14 @@ public sealed class SegaCdMemory
             case 0x0002:
             case 0x0003:
                 WordRam.SubCpuWriteControl(value);
+                if (TraceWordRamControl)
+                {
+                    string line =
+                        $"[SCD-WRAM-CTL] SUB  pc=0x{SubPcProvider?.Invoke():X6} reg=0x{reg:X4} " +
+                        $"val=0x{value:X2} state={WordRam.GetDebugState()}";
+                    Console.WriteLine(line);
+                    AppendTraceLine(line);
+                }
                 break;
             case 0x0004:
                 Cdc.SetDeviceDestination((byte)(value & 0x07));

@@ -132,6 +132,8 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private int _mainPcB3bLogStreakMark;
     private int _mainDecompLogRemaining = 64;
     private long _lastSubWaitFrame = -1;
+    private int _subLateTraceRemaining = 256;
+    private bool _subLateBytesLogged;
     private int _lastFbLogW = -1;
     private int _lastFbLogH = -1;
     private int _lastFbLogStride = -1;
@@ -1850,6 +1852,36 @@ public sealed class SegaCdAdapter : IEmulatorCore
                     $"cddPend={(_memory.Cdd.InterruptPending ? 1 : 0)} cddEn={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} " +
                     $"hostClk={(_memory.Registers.CddHostClockOn ? 1 : 0)} commM=0x{_memory.Registers.MainCpuCommunicationFlags:X2} commS=0x{_memory.Registers.SubCpuCommunicationFlags:X2} " +
                     $"prg5ea4=0x{_memory.ReadSubByte(0x0005EA4):X2}");
+            }
+            if (_subLateTraceRemaining > 0
+                && !string.IsNullOrWhiteSpace(SubTraceFilePath)
+                && frameCounter >= 780
+                && _subCpu.Pc >= 0x006050
+                && _subCpu.Pc <= 0x006070)
+            {
+                if (!_subLateBytesLogged)
+                {
+                    _subLateBytesLogged = true;
+                    uint baseAddr = 0x006054;
+                    Span<byte> bytes = stackalloc byte[24];
+                    for (int i = 0; i < bytes.Length; i++)
+                        bytes[i] = _memory.ReadSubByte(baseAddr + (uint)i);
+                    AppendTraceLine(
+                        SubTraceFilePath,
+                        $"[SCD-SUBLATE-BYTES] frame={frameCounter} mem@0x{baseAddr:X6}={BitConverter.ToString(bytes.ToArray()).Replace("-", " ")}");
+                }
+                _subLateTraceRemaining--;
+                var state = _subCpu.GetState();
+                AppendTraceLine(
+                    SubTraceFilePath,
+                    $"[SCD-SUBLATE] frame={frameCounter} pc=0x{_subCpu.Pc:X6} op=0x{_subCpu.NextOpcode:X4} sr=0x{state.Sr:X4} " +
+                    $"d0=0x{state.Data[0]:X8} d1=0x{state.Data[1]:X8} d2=0x{state.Data[2]:X8} d3=0x{state.Data[3]:X8} " +
+                    $"a0=0x{state.Address[0]:X8} a1=0x{state.Address[1]:X8} a6=0x{state.Address[6]:X8} " +
+                    $"commM=0x{_memory.Registers.MainCpuCommunicationFlags:X2} commS=0x{_memory.Registers.SubCpuCommunicationFlags:X2} " +
+                    $"swPend={(_memory.Registers.SubSoftwareInterruptPending ? 1 : 0)} swEn={(_memory.Registers.SoftwareInterruptEnabled ? 1 : 0)} " +
+                    $"cddPend={(_memory.Cdd.InterruptPending ? 1 : 0)} cddEn={(_memory.Registers.CddInterruptEnabled ? 1 : 0)} " +
+                    $"cdcPend={(_memory.Cdc.InterruptPending ? 1 : 0)} cdcEn={(_memory.Registers.CdcInterruptEnabled ? 1 : 0)} " +
+                    $"wram={_memory.WordRam.GetDebugState()}");
             }
 
             // Match jgenesis: buffered sub register writes are visible before each instruction,

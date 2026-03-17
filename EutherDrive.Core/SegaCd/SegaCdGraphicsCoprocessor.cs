@@ -296,7 +296,7 @@ public sealed class SegaCdGraphicsCoprocessor
                     + ComputeRelativeAddrVThenH(imageBufferLineSize, imageBufferDot, imageBufferLine);
 
                 var nibble = (imageBufferDot & 1) != 0 ? Nibble.Low : Nibble.High;
-                wordRam.GraphicsWriteRam(WordRam.SubBaseAddress | imageBufferAddr, nibble, sample);
+                wordRam.GraphicsWriteRam(imageBufferAddr, nibble, sample);
 
                 traceX += trace.DeltaX;
                 traceY += trace.DeltaY;
@@ -325,7 +325,7 @@ public sealed class SegaCdGraphicsCoprocessor
 
     private static byte ReadWordRam(WordRam wordRam, uint address)
     {
-        return wordRam.SubCpuReadRam(WordRam.SubBaseAddress | (address & WordRam.AddressMask));
+        return wordRam.GraphicsReadRam(address);
     }
 
     private static uint ComputeStampMapAddress(uint baseAddr, StampSizeDots stampSize, StampMapSizeScreens mapSize, uint x, uint y)
