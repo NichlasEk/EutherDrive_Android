@@ -6,6 +6,7 @@ namespace EutherDrive.Android;
 
 [Activity(
     Label = "EutherDrive",
+    Icon = "@mipmap/ic_launcher",
     Theme = "@style/MainTheme",
     MainLauncher = true,
     Exported = true,
