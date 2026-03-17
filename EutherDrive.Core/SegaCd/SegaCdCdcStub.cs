@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 
 namespace EutherDrive.Core.SegaCd;
 
@@ -78,6 +79,8 @@ public sealed class SegaCdCdcStub
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_BOOT"),
         "1",
         StringComparison.Ordinal);
+    private static readonly string? TraceBootFile =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_TRACE_CDC_BOOT_FILE");
     private static readonly bool LogPrgDmaLow = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_PRG_DMA_LOW"),
         "1",
@@ -193,6 +196,10 @@ public sealed class SegaCdCdcStub
         ushort hostData = _hostDataBuffer.Value;
         if (TraceCdcTimeline)
             Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} HOSTRD cpu={cpu} data=0x{hostData:X4}");
+        TraceBootLine(
+            $"[SCD-CDC-BOOT] HOSTRD cpu={cpu} data=0x{hostData:X4} pc=0x{SubPcProvider?.Invoke():X6} " +
+            $"dbc=0x{_dataByteCounter:X4} dac=0x{_dataAddressCounter:X4} eod={(_endOfDataTransfer ? 1 : 0)} " +
+            $"dt={(_dataTransferInProgress ? 1 : 0)} dest={_destination} bits=0x{_destinationBits:X2}");
         _hostDataBuffer = null;
 
         if (_endOfDataTransfer)
@@ -214,6 +221,10 @@ public sealed class SegaCdCdcStub
 
         if (TraceCdcTimeline)
             Console.Error.WriteLine($"[SCD-TL CDC] t={TraceStamp()} HOSTWR cpu={cpu}");
+        TraceBootLine(
+            $"[SCD-CDC-BOOT] HOSTWR cpu={cpu} pc=0x{SubPcProvider?.Invoke():X6} " +
+            $"dbc=0x{_dataByteCounter:X4} dac=0x{_dataAddressCounter:X4} eod={(_endOfDataTransfer ? 1 : 0)} " +
+            $"dt={(_dataTransferInProgress ? 1 : 0)} dest={_destination} bits=0x{_destinationBits:X2}");
         if (_endOfDataTransfer)
         {
             _dataTransferInProgress = false;
@@ -232,16 +243,22 @@ public sealed class SegaCdCdcStub
 
     private void PopulateHostDataBuffer()
     {
+        ushort remainingBytes = _dataByteCounter;
         ushort msb = _bufferRam[_dataAddressCounter];
         ushort lsb = _bufferRam[(_dataAddressCounter + 1) & BufferRamAddressMask];
         _hostDataBuffer = (ushort)((msb << 8) | lsb);
         _dataAddressCounter = (ushort)((_dataAddressCounter + 2) & BufferRamAddressMask);
 
-        ushort newCounter = (ushort)(_dataByteCounter - 2);
-        bool overflowed = _dataByteCounter < 2;
-        _dataByteCounter = newCounter;
-        if (overflowed)
+        // Host-port transfers should expose the final word and raise EOD immediately
+        // after it is latched, not after a spurious extra prefetch.
+        if (remainingBytes <= 2)
+        {
+            _dataByteCounter = 0;
             EndDmaTransfer();
+            return;
+        }
+
+        _dataByteCounter = (ushort)(remainingBytes - 2);
     }
 
     private void EndDmaTransfer()
@@ -579,6 +596,27 @@ public sealed class SegaCdCdcStub
         return ms.ToString("0.000", CultureInfo.InvariantCulture);
     }
 
+    private static void TraceBootLine(string line)
+    {
+        if (!TraceBootProbe)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(TraceBootFile))
+        {
+            try
+            {
+                File.AppendAllText(TraceBootFile, line + Environment.NewLine);
+            }
+            catch
+            {
+                // Avoid perturbing emulation on trace write failures.
+            }
+            return;
+        }
+
+        Console.WriteLine(line);
+    }
+
     private void TraceBootAccess(string rw, byte reg, byte value)
     {
         if (!TraceBootProbe)
@@ -587,8 +625,8 @@ public sealed class SegaCdCdcStub
         uint pc = SubPcProvider?.Invoke() ?? 0;
         bool interestingPc =
             (pc >= 0x0005E0 && pc <= 0x000620) ||
-            (pc >= 0x001EE0 && pc <= 0x002000) ||
-            (pc >= 0x0021A0 && pc <= 0x0021D0);
+            (pc >= 0x001D70 && pc <= 0x002040) ||
+            (pc >= 0x0021A0 && pc <= 0x002240);
         if (!interestingPc)
             return;
 
@@ -596,7 +634,7 @@ public sealed class SegaCdCdcStub
         if (!interestingReg)
             return;
 
-        Console.WriteLine(
+        TraceBootLine(
             $"[SCD-CDC-BOOT] {rw} reg=0x{reg:X2} val=0x{value:X2} pc=0x{pc:X6} " +
             $"ifstat=0x{BuildIfStat():X2} dbc=0x{_dataByteCounter:X4} dac=0x{_dataAddressCounter:X4} " +
             $"pt=0x{_blockPointer:X4} wa=0x{_writeAddress:X4} dout={(_dataOutEnabled ? 1 : 0)} " +
