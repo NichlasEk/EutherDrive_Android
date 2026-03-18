@@ -390,15 +390,16 @@ public partial class MainView : UserControl
 
     private void OnOverlayButtonPress(object? sender, PointerPressedEventArgs e)
     {
-        if (sender is Avalonia.Controls.Button button && button.Tag is string tag)
+        if (sender is Control control && control.Tag is string tag)
         {
             lock (_inputSync)
             {
                 RegisterPointerPressLocked(_actionPointers, _actionPressCounts, _pressedActions, e.Pointer, tag);
                 _actionLatchFrames[tag] = InputLatchFrames;
+                SetOverlayButtonVisualLocked(control, pressed: true);
                 UpdateFaceVisualsLocked();
             }
-            e.Pointer.Capture(button);
+            e.Pointer.Capture(control);
             e.Handled = true;
             _viewModel.SetLastPressed(tag);
             UpdateOverlaySummary();
@@ -407,12 +408,13 @@ public partial class MainView : UserControl
 
     private void OnOverlayButtonRelease(object? sender, PointerReleasedEventArgs e)
     {
-        if (sender is Avalonia.Controls.Button button && button.Tag is string tag)
+        if (sender is Control control && control.Tag is string tag)
         {
             lock (_inputSync)
             {
                 ReleasePointerLocked(_actionPointers, _actionPressCounts, _pressedActions, e.Pointer, tag);
                 _actionLatchFrames[tag] = InputLatchFrames;
+                SetOverlayButtonVisualLocked(control, pressed: false);
                 UpdateFaceVisualsLocked();
             }
             e.Pointer.Capture(null);
@@ -423,15 +425,28 @@ public partial class MainView : UserControl
 
     private void OnOverlayButtonCaptureLost(object? sender, RoutedEventArgs e)
     {
-        if (sender is Avalonia.Controls.Button button && button.Tag is string tag)
+        if (sender is Control control && control.Tag is string tag)
         {
             lock (_inputSync)
             {
                 ReleaseAllPointersForTagLocked(_actionPointers, _actionPressCounts, _pressedActions, tag);
                 _actionLatchFrames[tag] = InputLatchFrames;
+                SetOverlayButtonVisualLocked(control, pressed: false);
                 UpdateFaceVisualsLocked();
             }
             UpdateOverlaySummary();
+        }
+    }
+
+    private static void SetOverlayButtonVisualLocked(Control control, bool pressed)
+    {
+        if (pressed)
+        {
+            control.Classes.Add("padPressed");
+        }
+        else
+        {
+            control.Classes.Remove("padPressed");
         }
     }
 

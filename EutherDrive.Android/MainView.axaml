@@ -48,6 +48,19 @@
       <Setter Property="BorderBrush" Value="#5EEAD4" />
     </Style>
 
+    <Style Selector="Border.touchOverlay">
+      <Setter Property="Background" Value="#8C142534" />
+      <Setter Property="BorderBrush" Value="#5C7895" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="Padding" Value="12,8" />
+    </Style>
+
+    <Style Selector="Border.touchOverlay.padPressed">
+      <Setter Property="Background" Value="#CC173E43" />
+      <Setter Property="BorderBrush" Value="#5EEAD4" />
+    </Style>
+
     <Style Selector="Border.landscapePad">
       <Setter Property="Background" Value="#8C111B25" />
       <Setter Property="BorderBrush" Value="#59718B" />
@@ -389,27 +402,42 @@
             </Grid>
 
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="10">
-              <Button Classes="chrome"
+              <Border Classes="touchOverlay"
                       Width="74"
-                      Content="Menu"
                       PointerPressed="OnOverlayButtonPress"
                       PointerReleased="OnOverlayButtonRelease"
                       PointerCaptureLost="OnOverlayButtonCaptureLost"
-                      Tag="Menu" />
-              <Button Classes="chrome"
+                      Tag="Menu">
+                <TextBlock Text="Menu"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           FontWeight="SemiBold"
+                           Foreground="#EEF6FF" />
+              </Border>
+              <Border Classes="touchOverlay"
                       Width="74"
-                      Content="Select"
                       PointerPressed="OnOverlayButtonPress"
                       PointerReleased="OnOverlayButtonRelease"
                       PointerCaptureLost="OnOverlayButtonCaptureLost"
-                      Tag="Select" />
-              <Button Classes="chrome"
+                      Tag="Select">
+                <TextBlock Text="Select"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           FontWeight="SemiBold"
+                           Foreground="#EEF6FF" />
+              </Border>
+              <Border Classes="touchOverlay"
                       Width="74"
-                      Content="Start"
                       PointerPressed="OnOverlayButtonPress"
                       PointerReleased="OnOverlayButtonRelease"
                       PointerCaptureLost="OnOverlayButtonCaptureLost"
-                      Tag="Start" />
+                      Tag="Start">
+                <TextBlock Text="Start"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           FontWeight="SemiBold"
+                           Foreground="#EEF6FF" />
+              </Border>
             </StackPanel>
 
             <Grid x:Name="PortraitFaceSurface"
@@ -507,40 +535,60 @@
                        FontWeight="Bold"
                        Foreground="#5EEAD4"
                        Margin="6,0,0,2" />
-            <Button Grid.Row="1"
-                    Classes="landscapeOverlay"
+            <Border Grid.Row="1"
+                    Classes="touchOverlay"
                     Width="58"
-                    Content="L2"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="L2" />
-            <Button Grid.Row="1"
+                    Tag="L2">
+              <TextBlock Text="L2"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center"
+                         FontWeight="SemiBold"
+                         Foreground="#EEF6FF" />
+            </Border>
+            <Border Grid.Row="1"
                     Grid.Column="1"
-                    Classes="landscapeOverlay"
+                    Classes="touchOverlay"
                     Width="72"
-                    Content="Select"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="Select" />
-            <Button Grid.Row="2"
-                    Classes="landscapeOverlay"
+                    Tag="Select">
+              <TextBlock Text="Select"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center"
+                         FontWeight="SemiBold"
+                         Foreground="#EEF6FF" />
+            </Border>
+            <Border Grid.Row="2"
+                    Classes="touchOverlay"
                     Width="58"
-                    Content="L1"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="L1" />
-            <Button Grid.Row="2"
+                    Tag="L1">
+              <TextBlock Text="L1"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center"
+                         FontWeight="SemiBold"
+                         Foreground="#EEF6FF" />
+            </Border>
+            <Border Grid.Row="2"
                     Grid.Column="1"
-                    Classes="landscapeOverlay"
+                    Classes="touchOverlay"
                     Width="72"
-                    Content="Start"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="Start" />
+                    Tag="Start">
+              <TextBlock Text="Start"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center"
+                         FontWeight="SemiBold"
+                         Foreground="#EEF6FF" />
+            </Border>
           </Grid>
 
           <Grid HorizontalAlignment="Right"
@@ -558,34 +606,49 @@
                        Foreground="#F59E0B"
                        HorizontalAlignment="Right"
                        Margin="0,0,6,2" />
-            <Button Grid.Row="1"
-                    Classes="landscapeOverlay"
+            <Border Grid.Row="1"
+                    Classes="touchOverlay"
                     Width="72"
-                    Content="Menu"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="Menu" />
-            <Button Grid.Row="1"
+                    Tag="Menu">
+              <TextBlock Text="Menu"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center"
+                         FontWeight="SemiBold"
+                         Foreground="#EEF6FF" />
+            </Border>
+            <Border Grid.Row="1"
                     Grid.Column="1"
-                    Classes="landscapeOverlay"
+                    Classes="touchOverlay"
                     Width="58"
-                    Content="R2"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="R2" />
+                    Tag="R2">
+              <TextBlock Text="R2"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center"
+                         FontWeight="SemiBold"
+                         Foreground="#EEF6FF" />
+            </Border>
             <Border Grid.Row="2"
                     Background="Transparent" />
-            <Button Grid.Row="2"
+            <Border Grid.Row="2"
                     Grid.Column="1"
-                    Classes="landscapeOverlay"
+                    Classes="touchOverlay"
                     Width="58"
-                    Content="R1"
                     PointerPressed="OnOverlayButtonPress"
                     PointerReleased="OnOverlayButtonRelease"
                     PointerCaptureLost="OnOverlayButtonCaptureLost"
-                    Tag="R1" />
+                    Tag="R1">
+              <TextBlock Text="R1"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center"
+                         FontWeight="SemiBold"
+                         Foreground="#EEF6FF" />
+            </Border>
           </Grid>
 
           <Grid x:Name="LandscapeDPadSurface"
