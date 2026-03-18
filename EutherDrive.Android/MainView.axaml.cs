@@ -2077,20 +2077,22 @@ public partial class MainView : UserControl
             targetHeight = adapterHeight;
         }
 
-        ApplyImagePresentationSize(PortraitScreenImage, targetWidth, targetHeight);
-        ApplyImagePresentationSize(LandscapeScreenImage, targetWidth, targetHeight);
+        ApplyPresentationSize(PortraitScreenHost, targetWidth, targetHeight);
+        ApplyPresentationSize(LandscapeScreenHost, targetWidth, targetHeight);
+        ApplyPresentationSize(PortraitScreenImage, targetWidth, targetHeight);
+        ApplyPresentationSize(LandscapeScreenImage, targetWidth, targetHeight);
     }
 
-    private static void ApplyImagePresentationSize(Avalonia.Controls.Image image, double width, double height)
+    private static void ApplyPresentationSize(Control control, double width, double height)
     {
-        if (Math.Abs(image.Width - width) > 0.5)
+        if (double.IsNaN(control.Width) || Math.Abs(control.Width - width) > 0.5)
         {
-            image.Width = width;
+            control.Width = width;
         }
 
-        if (Math.Abs(image.Height - height) > 0.5)
+        if (double.IsNaN(control.Height) || Math.Abs(control.Height - height) > 0.5)
         {
-            image.Height = height;
+            control.Height = height;
         }
     }
 

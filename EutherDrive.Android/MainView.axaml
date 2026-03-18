@@ -287,10 +287,12 @@
                   <Viewbox Stretch="Uniform"
                            HorizontalAlignment="Stretch"
                            VerticalAlignment="Stretch">
-                    <Image Name="PortraitScreenImage"
-                           Stretch="Fill"
-                           HorizontalAlignment="Stretch"
-                           VerticalAlignment="Stretch" />
+                    <Grid x:Name="PortraitScreenHost">
+                      <Image Name="PortraitScreenImage"
+                             Stretch="Fill"
+                             HorizontalAlignment="Stretch"
+                             VerticalAlignment="Stretch" />
+                    </Grid>
                   </Viewbox>
 
                   <Border HorizontalAlignment="Center"
@@ -502,10 +504,12 @@
                    HorizontalAlignment="Stretch"
                    VerticalAlignment="Stretch"
                    PointerPressed="OnToggleScreenFocus">
-            <Image Name="LandscapeScreenImage"
-                   Stretch="Fill"
-                   HorizontalAlignment="Stretch"
-                   VerticalAlignment="Stretch" />
+            <Grid x:Name="LandscapeScreenHost">
+              <Image Name="LandscapeScreenImage"
+                     Stretch="Fill"
+                     HorizontalAlignment="Stretch"
+                     VerticalAlignment="Stretch" />
+            </Grid>
           </Viewbox>
 
           <Border IsVisible="{Binding ScreenOverlayVisible}"
