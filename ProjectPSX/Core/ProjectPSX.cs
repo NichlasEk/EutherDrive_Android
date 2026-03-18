@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Text;
 using ProjectPSX.Devices;
 using ProjectPSX.Devices.CdRom;
 using ProjectPSX.Devices.Expansion;
@@ -11,6 +12,8 @@ namespace ProjectPSX {
         const double FPS_PAL = PSX_MHZ / ((3406.0 * 314.0 * 7.0) / 11.0);
         const double FPS_NTSC = PSX_MHZ / ((3413.0 * 263.0 * 7.0) / 11.0);
         private static readonly int BusTickBatchCycles = ParseBusTickBatchCycles();
+        private static readonly uint[] DebugPeekAddresses = ParseOptionalHexAddrEnv("EUTHERDRIVE_PSX_TRACE_PEEK_ADDRS");
+        private static readonly bool DebugPointerPeeks = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_POINTER_PEEKS") == "1";
 
         private CPU cpu;
         private BUS bus;
@@ -153,17 +156,39 @@ namespace ProjectPSX {
             uint v0 = cpu.GetRegister(2);
             uint v1 = cpu.GetRegister(3);
             uint a0 = cpu.GetRegister(4);
+            uint a1 = cpu.GetRegister(5);
+            uint a2 = cpu.GetRegister(6);
+            uint a3 = cpu.GetRegister(7);
             uint sp = cpu.StackPointer;
             uint ra = cpu.ReturnAddress;
-            uint loopDelta = v1 >= v0 ? v1 - v0 : 0;
-            return $"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} at={at:x8} v0={v0:x8} v1={v1:x8} dv={loopDelta:x8} a0={a0:x8} sp={sp:x8} ra={ra:x8} " +
-                $"d370={d370:x8} d374={d374:x8} d378={d378:x8} " +
-                $"irq=({interruptController.DebugISTAT:x3}/{interruptController.DebugIMASK:x3}) {bus.DMAController.DebugSummary(2)} {bus.DMAController.DebugSummary(3)} " +
-                $"{gpu.DebugSummary()} {mdec.DebugSummary()} {cdrom.DebugSummary()}";
+            var text = new StringBuilder();
+            text.Append($"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} ");
+            text.Append($"at={at:x8} v0={v0:x8} v1={v1:x8} ");
+            text.Append($"a0={a0:x8} a1={a1:x8} a2={a2:x8} a3={a3:x8} ");
+            text.Append($"sp={sp:x8} ra={ra:x8} ");
+            text.Append($"d370={d370:x8} d374={d374:x8} d378={d378:x8} ");
+
+            if (DebugPointerPeeks) {
+                AppendPointerPeek(text, "at", at);
+                AppendPointerPeek(text, "a0", a0);
+                AppendPointerPeek(text, "sp", sp);
+            }
+
+            AppendConfiguredPeeks(text);
+
+            text.Append($"irq=({interruptController.DebugISTAT:x3}/{interruptController.DebugIMASK:x3}) ");
+            text.Append($"{bus.DMAController.DebugSummary(2)} ");
+            text.Append($"{bus.DMAController.DebugSummary(3)} ");
+            text.Append($"{gpu.DebugSummary()} {mdec.DebugSummary()} {cdrom.DebugSummary()}");
+            return text.ToString();
         }
 
         public string DebugCodeWindow(int wordsBefore = 8, int wordsAfter = 16) {
-            uint pc = cpu.CurrentPC;
+            return DebugCodeWindowAt(cpu.CurrentPC, wordsBefore, wordsAfter);
+        }
+
+        public string DebugCodeWindowAt(uint address, int wordsBefore = 8, int wordsAfter = 16) {
+            uint pc = address;
             uint start = pc - (uint)(wordsBefore * 4);
             var text = new System.Text.StringBuilder();
             text.AppendLine($"pc={pc:x8}");
@@ -178,7 +203,10 @@ namespace ProjectPSX {
         }
 
         private static int ParseBusTickBatchCycles() {
-            const int fallback = 192;
+            // Spyro YOTD and similar titles busy-wait on GPU/timer-visible state during CD-driven loads.
+            // A coarse device flush batch leaves those MMIO reads stale long enough to stall loading.
+            // Keep the default close to instruction cadence until the underlying timing model is improved.
+            const int fallback = 6;
             string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BUS_TICK_BATCH_CYCLES");
             if (string.IsNullOrWhiteSpace(raw)) {
                 return fallback;
@@ -191,6 +219,84 @@ namespace ProjectPSX {
 
         private int GetCpuCyclesPerFrame() {
             return (int)Math.Round((PSX_MHZ / GetTargetFps()) / MIPS_UNDERCLOCK);
+        }
+
+        private void AppendConfiguredPeeks(StringBuilder text) {
+            if (DebugPeekAddresses.Length == 0) {
+                return;
+            }
+
+            text.Append("peek[");
+            for (int i = 0; i < DebugPeekAddresses.Length; i++) {
+                uint addr = DebugPeekAddresses[i];
+                if (i != 0) {
+                    text.Append(' ');
+                }
+
+                if (TryLoadRamWord(addr, out uint value)) {
+                    text.Append($"{addr:x8}:{value:x8}");
+                } else {
+                    text.Append($"{addr:x8}:--------");
+                }
+            }
+            text.Append("] ");
+        }
+
+        private void AppendPointerPeek(StringBuilder text, string label, uint pointer) {
+            if (!TryLoadRamWord(pointer, out uint at0)) {
+                return;
+            }
+
+            text.Append($"{label}[");
+            if (TryLoadRamWord(pointer - 8, out uint minus8)) {
+                text.Append($"-8:{minus8:x8} ");
+            }
+            if (TryLoadRamWord(pointer - 4, out uint minus4)) {
+                text.Append($"-4:{minus4:x8} ");
+            }
+            text.Append($"0:{at0:x8}");
+            if (TryLoadRamWord(pointer + 4, out uint plus4)) {
+                text.Append($" +4:{plus4:x8}");
+            }
+            text.Append("] ");
+        }
+
+        private bool TryLoadRamWord(uint address, out uint value) {
+            uint physical = address & 0x1FFF_FFFF;
+            bool isMappedRam = physical < 0x0020_0000;
+            bool looksLikeRamPointer = address < 0x0020_0000 || (address >= 0x8000_0000 && address < 0x8020_0000);
+            if (!isMappedRam || !looksLikeRamPointer) {
+                value = 0;
+                return false;
+            }
+
+            value = bus.LoadFromRam(physical);
+            return true;
+        }
+
+        private static uint[] ParseOptionalHexAddrEnv(string name) {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw)) {
+                return Array.Empty<uint>();
+            }
+
+            string[] parts = raw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            uint[] values = new uint[parts.Length];
+            int count = 0;
+            foreach (string part in parts) {
+                string token = part.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? part[2..] : part;
+                if (uint.TryParse(token, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint value)) {
+                    values[count++] = value;
+                }
+            }
+
+            if (count == values.Length) {
+                return values;
+            }
+
+            uint[] trimmed = new uint[count];
+            Array.Copy(values, trimmed, count);
+            return trimmed;
         }
 
     }

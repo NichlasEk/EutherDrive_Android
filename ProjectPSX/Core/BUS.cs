@@ -12,6 +12,15 @@ namespace ProjectPSX {
 public class BUS {
         private const uint Sio1StatusDefault = 0x0000_0805;
         private static readonly bool VerboseBusAccess = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1";
+        private static readonly uint? TraceRamReadStart = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_START");
+        private static readonly uint? TraceRamReadEnd = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_END");
+        private static readonly int TraceRamReadLimit = ParseOptionalPositiveInt("EUTHERDRIVE_PSX_TRACE_RAM_READ_LIMIT", 4096);
+        private static readonly uint? TraceRamWriteStart = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_WRITE_START");
+        private static readonly uint? TraceRamWriteEnd = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_WRITE_END");
+        private static readonly int TraceRamWriteLimit = ParseOptionalPositiveInt("EUTHERDRIVE_PSX_TRACE_RAM_WRITE_LIMIT", 4096);
+        private static readonly bool TraceCdDma = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_CD_DMA") == "1";
+        private static int s_traceRamReadCount;
+        private static int s_traceRamWriteCount;
         private const int SpuTickBatchCycles = 96;
 
         //Memory
@@ -111,7 +120,10 @@ public class BUS {
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
-                return load<uint>(addr & 0x1F_FFFF, ramPtr);
+                uint physical = addr & 0x1F_FFFF;
+                uint value = load<uint>(physical, ramPtr);
+                TraceRamRead(physical, 4, value);
+                return value;
             } else if (addr < 0x1F80_0000) {
                 return load<uint>(addr & 0x7_FFFF, ex1Ptr);
             } else if (addr < 0x1f80_0400) {
@@ -165,6 +177,7 @@ public class BUS {
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
+                TraceRamWrite(physical, 4, value, "cpu");
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 4);
             } else if (addr < 0x1F80_0000) {
@@ -212,6 +225,7 @@ public class BUS {
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
+                TraceRamWrite(physical, 2, value, "cpu");
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 2);
             } else if (addr < 0x1F80_0000) {
@@ -259,6 +273,7 @@ public class BUS {
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
+                TraceRamWrite(physical, 1, value, "cpu");
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 1);
             } else if (addr < 0x1F80_0000) {
@@ -544,12 +559,15 @@ public class BUS {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe Span<uint> DmaFromRam(uint addr, uint size) {
-            return new Span<uint>(ramPtr + (addr & 0x1F_FFFF), (int)size);
+            uint physical = addr & 0x1F_FFFF;
+            TraceRamDmaRead(physical, size);
+            return new Span<uint>(ramPtr + physical, (int)size);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaToRam(uint addr, uint value) {
             uint physical = addr & 0x1F_FFFF;
+            TraceRamWrite(physical, 4, value, "dma");
             *(uint*)(ramPtr + physical) = value;
             ramWriteObserver?.Invoke(physical, 4);
         }
@@ -558,6 +576,12 @@ public class BUS {
         public unsafe void DmaToRam(uint addr, byte[] buffer, uint size) {
             uint physical = addr & 0x1F_FFFF;
             int byteCount = (int)size * 4;
+            if (ShouldTraceRamWriteRange(physical, (uint)byteCount)) {
+                int previewCount = Math.Min(byteCount, 16);
+                string preview = BitConverter.ToString(buffer, 0, previewCount);
+                Console.WriteLine(
+                    $"[PSX-RAM-WRITE] src=dma-bulk addr={physical:x6} bytes={byteCount} preview={preview} pc={CPU.TraceCurrentPC:x8}");
+            }
             Marshal.Copy(buffer, 0, (IntPtr)(ramPtr + physical), byteCount);
             ramWriteObserver?.Invoke(physical, byteCount);
         }
@@ -580,6 +604,18 @@ public class BUS {
         public unsafe void DmaFromCD(uint address, int size) {
             var dma = cdrom.processDmaLoad(size);
             uint physical = address & 0x1F_FFFC;
+            if (TraceCdDma || ShouldTraceRamWriteRange(physical, (uint)(dma.Length * 4))) {
+                int previewCount = Math.Min(dma.Length, 4);
+                string preview = string.Empty;
+                for (int i = 0; i < previewCount; i++) {
+                    if (i != 0) {
+                        preview += "-";
+                    }
+                    preview += dma[i].ToString("x8");
+                }
+                Console.WriteLine(
+                    $"[PSX-RAM-WRITE] src=cd-dma addr={physical:x6} words={dma.Length} preview={preview} pc={CPU.TraceCurrentPC:x8}");
+            }
             var dest = new Span<uint>(ramPtr + physical, dma.Length);
             dma.CopyTo(dest);
             ramWriteObserver?.Invoke(physical, dma.Length * 4);
@@ -661,6 +697,104 @@ public class BUS {
             }
 
             DmaToRam(baseAddress, 0xFF_FFFF);
+        }
+
+        private static void TraceRamWrite(uint physicalAddress, int sizeBytes, uint value, string source) {
+            if (!ShouldTraceRamWriteRange(physicalAddress, (uint)sizeBytes)) {
+                return;
+            }
+
+            Console.WriteLine(
+                $"[PSX-RAM-WRITE] src={source} addr={physicalAddress:x6} size={sizeBytes} value={value:x8} pc={CPU.TraceCurrentPC:x8}");
+        }
+
+        private static void TraceRamRead(uint physicalAddress, int sizeBytes, uint value) {
+            if (!ShouldTraceRamReadRange(physicalAddress, (uint)sizeBytes)) {
+                return;
+            }
+
+            Console.WriteLine(
+                $"[PSX-RAM-READ] addr={physicalAddress:x6} size={sizeBytes} value={value:x8} pc={CPU.TraceCurrentPC:x8}");
+        }
+
+        private unsafe void TraceRamDmaRead(uint physicalAddress, uint sizeWords) {
+            uint sizeBytes = sizeWords * 4;
+            if (!ShouldTraceRamReadRange(physicalAddress, sizeBytes)) {
+                return;
+            }
+
+            int previewCount = (int)Math.Min(sizeWords, 4);
+            string preview = string.Empty;
+            for (int i = 0; i < previewCount; i++) {
+                if (i != 0) {
+                    preview += "-";
+                }
+                preview += (*(uint*)(ramPtr + physicalAddress + (uint)(i * 4))).ToString("x8");
+            }
+
+            Console.WriteLine(
+                $"[PSX-RAM-READ] src=dma addr={physicalAddress:x6} words={sizeWords} preview={preview} pc={CPU.TraceCurrentPC:x8}");
+        }
+
+        private static bool ShouldTraceRamReadRange(uint physicalAddress, uint sizeBytes) {
+            if (!TraceRamReadStart.HasValue || !TraceRamReadEnd.HasValue) {
+                return false;
+            }
+
+            if (s_traceRamReadCount >= TraceRamReadLimit) {
+                return false;
+            }
+
+            uint start = TraceRamReadStart.Value;
+            uint end = TraceRamReadEnd.Value;
+            uint readEnd = sizeBytes == 0 ? physicalAddress : physicalAddress + sizeBytes - 1;
+            bool overlaps = !(readEnd < start || physicalAddress > end);
+            if (overlaps) {
+                s_traceRamReadCount++;
+            }
+            return overlaps;
+        }
+
+        private static bool ShouldTraceRamWriteRange(uint physicalAddress, uint sizeBytes) {
+            if (!TraceRamWriteStart.HasValue || !TraceRamWriteEnd.HasValue) {
+                return false;
+            }
+
+            if (s_traceRamWriteCount >= TraceRamWriteLimit) {
+                return false;
+            }
+
+            uint start = TraceRamWriteStart.Value;
+            uint end = TraceRamWriteEnd.Value;
+            uint writeEnd = sizeBytes == 0 ? physicalAddress : physicalAddress + sizeBytes - 1;
+            bool overlaps = !(writeEnd < start || physicalAddress > end);
+            if (overlaps) {
+                s_traceRamWriteCount++;
+            }
+            return overlaps;
+        }
+
+        private static uint? ParseOptionalHexEnv(string name) {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw)) {
+                return null;
+            }
+
+            string token = raw.Trim();
+            if (token.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) {
+                token = token[2..];
+            }
+
+            return uint.TryParse(token, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint value)
+                ? value
+                : null;
+        }
+
+        private static int ParseOptionalPositiveInt(string name, int fallback) {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            return int.TryParse(raw, out int value) && value > 0
+                ? value
+                : fallback;
         }
 
         private static uint[] RegionMask = {

@@ -42,6 +42,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         private ushort _displayX2;
         private ushort _displayY1;
         private ushort _displayY2;
+        private int _stableProgressiveSourceHeight;
 
         public PsxHostWindow(PsxAdapter owner) => _owner = owner;
 
@@ -63,6 +64,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             _displayWidth = horizontalRes > 0 ? horizontalRes : 320;
             _displayHeight = verticalRes > 0 ? verticalRes : 240;
             _is24Bit = is24BitDepth;
+            _stableProgressiveSourceHeight = 0;
         }
 
         public void SetHorizontalRange(ushort displayX1, ushort displayX2)
@@ -130,10 +132,33 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             if (_displayY2 > _displayY1)
             {
                 int visibleHeight = _displayY2 - _displayY1;
-                if (_displayHeight >= 480 && visibleHeight <= 288)
-                    visibleHeight *= 2;
                 if (visibleHeight > 0)
-                    sourceHeight = visibleHeight;
+                {
+                    if (_displayHeight >= 480)
+                    {
+                        if (visibleHeight <= 288)
+                            visibleHeight *= 2;
+                        sourceHeight = visibleHeight;
+                    }
+                    else
+                    {
+                        // PAL progressive titles can bounce the raw display range between 240 and 256 lines
+                        // during loads; keep a stable progressive source height to avoid vertical jitter.
+                        int nominalHeight = sourceHeight;
+                        if (visibleHeight >= nominalHeight - 8 && visibleHeight <= nominalHeight + 32)
+                        {
+                            _stableProgressiveSourceHeight = _stableProgressiveSourceHeight > 0
+                                ? Math.Max(_stableProgressiveSourceHeight, visibleHeight)
+                                : visibleHeight;
+                            sourceHeight = Math.Max(nominalHeight, _stableProgressiveSourceHeight);
+                        }
+                        else
+                        {
+                            _stableProgressiveSourceHeight = 0;
+                            sourceHeight = visibleHeight;
+                        }
+                    }
+                }
             }
 
             if (sourceWidth <= 0 || sourceHeight <= 0)
@@ -493,7 +518,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         }
     }
 
-    public bool TryGetDebugCodeWindow(out string codeWindow, int wordsBefore = 8, int wordsAfter = 16)
+    public bool TryGetDebugCodeWindow(out string codeWindow, int wordsBefore = 8, int wordsAfter = 16, uint? address = null)
     {
         lock (_stateLock)
         {
@@ -502,8 +527,9 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
                 codeWindow = string.Empty;
                 return false;
             }
-
-            codeWindow = _core.DebugCodeWindow(wordsBefore, wordsAfter);
+            codeWindow = address.HasValue
+                ? _core.DebugCodeWindowAt(address.Value, wordsBefore, wordsAfter)
+                : _core.DebugCodeWindow(wordsBefore, wordsAfter);
             return true;
         }
     }

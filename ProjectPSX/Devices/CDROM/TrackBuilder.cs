@@ -21,8 +21,23 @@ namespace ProjectPSX.Devices.CdRom {
             public int lbaEnd { get; private set; }
             public int fileStartSector { get; private set; }
             public bool isAudio { get; private set; }
+            public int pregapSectors { get; private set; }
+            public int filePregapStartSector { get; private set; }
+            public bool hasEmbeddedPregap { get; private set; }
+            public int lbaPregapStart => lbaStart - pregapSectors;
 
-            public Track(String file, long size, byte number, int lba, int lbaStart, int lbaEnd, int fileStartSector, bool isAudio) {
+            public Track(
+                String file,
+                long size,
+                byte number,
+                int lba,
+                int lbaStart,
+                int lbaEnd,
+                int fileStartSector,
+                bool isAudio,
+                int pregapSectors,
+                int filePregapStartSector,
+                bool hasEmbeddedPregap) {
                 this.file = file;
                 this.size = size;
                 this.number = number;
@@ -31,6 +46,9 @@ namespace ProjectPSX.Devices.CdRom {
                 this.lbaEnd = lbaEnd;
                 this.fileStartSector = fileStartSector;
                 this.isAudio = isAudio;
+                this.pregapSectors = pregapSectors;
+                this.filePregapStartSector = filePregapStartSector;
+                this.hasEmbeddedPregap = hasEmbeddedPregap;
             }
         }
 
@@ -143,9 +161,15 @@ namespace ProjectPSX.Devices.CdRom {
                     lbaStart,
                     lbaEnd,
                     cueTrack.Index01,
-                    cueTrack.IsAudio));
+                    cueTrack.IsAudio,
+                    pregapSectors,
+                    filePregapStartSector,
+                    hasIndex00));
 
-                Console.WriteLine($"File: {cueTrack.File} Size: {cueTrack.FileSize} Number: {cueTrack.Number} LbaStart: {lbaStart} LbaEnd: {lbaEnd} fileStartSector: {cueTrack.Index01} isAudio {cueTrack.IsAudio}");
+                Console.WriteLine(
+                    $"File: {cueTrack.File} Size: {cueTrack.FileSize} Number: {cueTrack.Number} " +
+                    $"LbaStart: {lbaStart} LbaEnd: {lbaEnd} fileStartSector: {cueTrack.Index01} " +
+                    $"pregap: {pregapSectors} embeddedPregap: {hasIndex00} isAudio {cueTrack.IsAudio}");
 
                 discCursor += discSpanLba;
             }
@@ -349,7 +373,7 @@ namespace ProjectPSX.Devices.CdRom {
             byte number = 1;
             bool isAudio = false;
 
-            tracks.Add(new Track(file, size, number, lba, lbaStart, lbaEnd, 0, isAudio));
+            tracks.Add(new Track(file, size, number, lba, lbaStart, lbaEnd, 0, isAudio, 0, 0, false));
 
             Console.WriteLine($"File: {file} Size: {size} Number: {number} LbaStart: {lbaStart} LbaEnd: {lbaEnd} isAudio {isAudio}");
 

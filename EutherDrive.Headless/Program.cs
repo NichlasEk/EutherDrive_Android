@@ -634,6 +634,11 @@ class Program
                 bool tracePsxStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_START") == "1";
                 string? tracePsxStartFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_START_TRACE_FILE");
                 string? tracePsxCodeFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CODE_TRACE_FILE");
+                int[] tracePsxCodeAddresses = ParseOptionalHexAddrEnv("EUTHERDRIVE_PSX_CODE_TRACE_ADDR");
+                uint? tracePsxCodeAddress = tracePsxCodeAddresses.Length > 0 ? (uint)tracePsxCodeAddresses[0] : null;
+                int tracePsxFrameStart = ParseOptionalIntEnv("EUTHERDRIVE_PSX_TRACE_FRAME_START") ?? 0;
+                int tracePsxFrameEnd = ParseOptionalIntEnv("EUTHERDRIVE_PSX_TRACE_FRAME_END") ?? int.MaxValue;
+                bool tracePsxEveryFrame = IsEnvEnabled("EUTHERDRIVE_PSX_TRACE_EVERY_FRAME");
                 bool holdUp = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_UP");
                 bool holdDown = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_DOWN");
                 bool holdLeft = IsEnvEnabled("EUTHERDRIVE_PSX_HEADLESS_HOLD_LEFT");
@@ -701,7 +706,7 @@ class Program
                         }
                     }
 
-                    if (tracePsxStart && (frame < 600 || (frame % 60) == 0))
+                    if (ShouldTracePsxFrame(frame, tracePsxStart, tracePsxEveryFrame, tracePsxFrameStart, tracePsxFrameEnd))
                     {
                         if (psx.TryGetDebugState(out string debugState))
                         {
@@ -713,7 +718,7 @@ class Program
                                 File.AppendAllText(tracePsxStartFile, line + Environment.NewLine);
                             }
                         }
-                        if (!string.IsNullOrWhiteSpace(tracePsxCodeFile) && psx.TryGetDebugCodeWindow(out string codeWindow))
+                        if (!string.IsNullOrWhiteSpace(tracePsxCodeFile) && psx.TryGetDebugCodeWindow(out string codeWindow, address: tracePsxCodeAddress))
                         {
                             Directory.CreateDirectory(Path.GetDirectoryName(tracePsxCodeFile) ?? ".");
                             File.AppendAllText(tracePsxCodeFile, $"[HEADLESS][PSX-SAVESTATE-CODE] frame={frame}{Environment.NewLine}{codeWindow}");
@@ -850,6 +855,12 @@ class Program
                     string prgPath = Path.Combine(dumpDir, "headless_prg_ram.bin");
                     scd.DumpPrgRam(prgPath);
                     Console.WriteLine($"[HEADLESS] Dumped PRG RAM to {prgPath}");
+                }
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_MAIN_RAM") == "1")
+                {
+                    string mainRamPath = Path.Combine(dumpDir, "headless_main_ram_ff0000.bin");
+                    scd.DumpMainRam(mainRamPath);
+                    Console.WriteLine($"[HEADLESS] Dumped main RAM to {mainRamPath}");
                 }
                 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_CDC") == "1")
                 {
@@ -1821,6 +1832,11 @@ class Program
                 bool tracePsxStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_START") == "1";
                 string? tracePsxStartFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_START_TRACE_FILE");
                 string? tracePsxCodeFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CODE_TRACE_FILE");
+                int[] tracePsxCodeAddresses = ParseOptionalHexAddrEnv("EUTHERDRIVE_PSX_CODE_TRACE_ADDR");
+                uint? tracePsxCodeAddress = tracePsxCodeAddresses.Length > 0 ? (uint)tracePsxCodeAddresses[0] : null;
+                int tracePsxFrameStart = ParseOptionalIntEnv("EUTHERDRIVE_PSX_TRACE_FRAME_START") ?? 0;
+                int tracePsxFrameEnd = ParseOptionalIntEnv("EUTHERDRIVE_PSX_TRACE_FRAME_END") ?? int.MaxValue;
+                bool tracePsxEveryFrame = IsEnvEnabled("EUTHERDRIVE_PSX_TRACE_EVERY_FRAME");
 
                 var psx = new PsxAdapter();
                 psx.LoadRom(romPath);
@@ -1852,7 +1868,7 @@ class Program
                     Console.WriteLine($"[HEADLESS] Frame {frame}: psx_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
                     if (frame == 0 || frame == 5 || frame == 10)
                         DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
-                    if (tracePsxStart && (frame < 60 || (frame % 60) == 0))
+                    if (ShouldTracePsxFrame(frame, tracePsxStart, tracePsxEveryFrame, tracePsxFrameStart, tracePsxFrameEnd))
                     {
                         if (psx.TryGetDebugState(out string debugState))
                         {
@@ -1864,7 +1880,7 @@ class Program
                                 File.AppendAllText(tracePsxStartFile, line + Environment.NewLine);
                             }
                         }
-                        if (!string.IsNullOrWhiteSpace(tracePsxCodeFile) && psx.TryGetDebugCodeWindow(out string codeWindow))
+                        if (!string.IsNullOrWhiteSpace(tracePsxCodeFile) && psx.TryGetDebugCodeWindow(out string codeWindow, address: tracePsxCodeAddress))
                         {
                             Directory.CreateDirectory(Path.GetDirectoryName(tracePsxCodeFile) ?? ".");
                             File.AppendAllText(tracePsxCodeFile, $"[HEADLESS][PSX-SAVESTATE-CODE] frame={frame}{Environment.NewLine}{codeWindow}");
@@ -2568,6 +2584,17 @@ class Program
         }
 
         return result.ToArray();
+    }
+
+    private static bool ShouldTracePsxFrame(int frame, bool traceEnabled, bool traceEveryFrame, int startFrame, int endFrame)
+    {
+        if (!traceEnabled)
+            return false;
+        if (frame < startFrame || frame > endFrame)
+            return false;
+        if (traceEveryFrame)
+            return true;
+        return frame < 60 || (frame % 60) == 0;
     }
 
     private static string GetSavestateRoot()
