@@ -1085,6 +1085,7 @@ public partial class MainView : UserControl
             frameBuffer = _latestFrameBuffer;
 
             EnsureBitmap(width, height);
+            ApplyPresentationSizeForCore(_core, width, height);
             if (_bitmap == null)
             {
                 return;
@@ -2058,6 +2059,39 @@ public partial class MainView : UserControl
             AlphaFormat.Unpremul);
 
         SetScreenSource(_bitmap);
+    }
+
+    private void ApplyPresentationSizeForCore(IEmulatorCore? core, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        double targetWidth = width;
+        double targetHeight = height;
+
+        if (core is PsxAdapter psx && psx.TryGetPresentationSize(out double adapterWidth, out double adapterHeight))
+        {
+            targetWidth = adapterWidth;
+            targetHeight = adapterHeight;
+        }
+
+        ApplyImagePresentationSize(PortraitScreenImage, targetWidth, targetHeight);
+        ApplyImagePresentationSize(LandscapeScreenImage, targetWidth, targetHeight);
+    }
+
+    private static void ApplyImagePresentationSize(Avalonia.Controls.Image image, double width, double height)
+    {
+        if (Math.Abs(image.Width - width) > 0.5)
+        {
+            image.Width = width;
+        }
+
+        if (Math.Abs(image.Height - height) > 0.5)
+        {
+            image.Height = height;
+        }
     }
 
     private void SetScreenSource(WriteableBitmap? bitmap)

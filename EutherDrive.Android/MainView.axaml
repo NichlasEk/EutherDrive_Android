@@ -284,10 +284,14 @@
 
                 <Grid Grid.Row="1"
                       PointerPressed="OnToggleScreenFocus">
-                  <Image Name="PortraitScreenImage"
-                         Stretch="Uniform"
-                         HorizontalAlignment="Stretch"
-                         VerticalAlignment="Stretch" />
+                  <Viewbox Stretch="Uniform"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Stretch">
+                    <Image Name="PortraitScreenImage"
+                           Stretch="Fill"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Stretch" />
+                  </Viewbox>
 
                   <Border HorizontalAlignment="Center"
                           VerticalAlignment="Center"
@@ -494,11 +498,15 @@
       <Grid Grid.Row="1"
             IsVisible="{Binding IsLandscapeMode}">
         <Grid Margin="-6,0,-6,0">
-          <Image Name="LandscapeScreenImage"
-                 Stretch="Uniform"
-                 HorizontalAlignment="Stretch"
-                 VerticalAlignment="Stretch"
-                 PointerPressed="OnToggleScreenFocus" />
+          <Viewbox Stretch="Uniform"
+                   HorizontalAlignment="Stretch"
+                   VerticalAlignment="Stretch"
+                   PointerPressed="OnToggleScreenFocus">
+            <Image Name="LandscapeScreenImage"
+                   Stretch="Fill"
+                   HorizontalAlignment="Stretch"
+                   VerticalAlignment="Stretch" />
+          </Viewbox>
 
           <Border IsVisible="{Binding ScreenOverlayVisible}"
                   HorizontalAlignment="Center"
