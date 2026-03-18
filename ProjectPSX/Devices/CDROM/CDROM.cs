@@ -428,24 +428,20 @@ namespace ProjectPSX.Devices {
                         }
 
                         if (isReport) {
-                            (byte amm, byte ass, byte aff) = getMMSSFFfromLBA(readLoc);
-                            Track track = cd.getTrackFromLoc(readLoc);
-                            bool inPregap = readLoc < track.lbaStart;
-                            byte index = inPregap ? (byte)0 : (byte)1;
+                            var subQ = GetSubQPosition(readLoc);
                             byte[] reportResponse = new byte[8];
                             reportResponse[0] = STAT;
-                            reportResponse[1] = track.number;
-                            reportResponse[2] = index;
+                            reportResponse[1] = subQ.track;
+                            reportResponse[2] = subQ.index;
 
-                            if ((aff & 0x10) != 0) {
-                                (byte mm, byte ss, byte ff) = getMMSSFFfromLBA(Math.Abs(readLoc - track.lbaStart));
-                                reportResponse[3] = DecToBcd(mm);
-                                reportResponse[4] = (byte)(DecToBcd(ss) | 0x80);
-                                reportResponse[5] = DecToBcd(ff);
+                            if ((subQ.aff & 0x10) != 0) {
+                                reportResponse[3] = subQ.mm;
+                                reportResponse[4] = (byte)(subQ.ss | 0x80);
+                                reportResponse[5] = subQ.ff;
                             } else {
-                                reportResponse[3] = DecToBcd(amm);
-                                reportResponse[4] = DecToBcd(ass);
-                                reportResponse[5] = DecToBcd(aff);
+                                reportResponse[3] = subQ.amm;
+                                reportResponse[4] = subQ.ass;
+                                reportResponse[5] = subQ.aff;
                             }
 
                             reportResponse[6] = 0x80; // peekLo
@@ -813,10 +809,12 @@ namespace ProjectPSX.Devices {
             int targetReadLoc;
             if (parameterBuffer.Count > 0 && parameterBuffer.Peek() != 0) {
                 track = BcdToDec(parameterBuffer.Dequeue());
-                if (cd.isAudioCD()) {
+                if (track >= 1 && track <= cd.tracks.Count) {
                     targetReadLoc = cd.tracks[track - 1].lbaStart;
                 } else {
-                    targetReadLoc = cd.tracks[track].lbaStart;
+                    Track currentTrack = cd.getTrackFromLoc(readLoc);
+                    track = currentTrack.number;
+                    targetReadLoc = currentTrack.lbaStart;
                 }
                 //else it plays from the previously seekLoc and seeks if not done (actually not checking if already seeked)
             } else {
@@ -956,20 +954,18 @@ namespace ProjectPSX.Devices {
                 return;
             }
 
-            Track track = cd.getTrackFromLoc(readLoc);
-            (byte mm, byte ss, byte ff) = getMMSSFFfromLBA(readLoc - track.lbaStart);
-            (byte amm, byte ass, byte aff) = getMMSSFFfromLBA(readLoc);
+            var subQ = GetSubQPosition(readLoc);
 
             if (cdDebug) {
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"track: {track.number} index: {1} mm: {mm} ss: {ss}" +
-                    $" ff: {ff} amm: {amm} ass: {ass} aff: {aff}");
-                Console.WriteLine($"track: {track.number} index: {1} mm: {DecToBcd(mm)} ss: {DecToBcd(ss)}" +
-                    $" ff: {DecToBcd(ff)} amm: {DecToBcd(amm)} ass: {DecToBcd(ass)} aff: {DecToBcd(aff)}");
+                Console.WriteLine($"track: {BcdToDec(subQ.track)} index: {BcdToDec(subQ.index)} mm: {BcdToDec(subQ.mm)} ss: {BcdToDec(subQ.ss)}" +
+                    $" ff: {BcdToDec(subQ.ff)} amm: {BcdToDec(subQ.amm)} ass: {BcdToDec(subQ.ass)} aff: {BcdToDec(subQ.aff)}");
+                Console.WriteLine($"track: {subQ.track:X2} index: {subQ.index:X2} mm: {subQ.mm:X2} ss: {subQ.ss:X2}" +
+                    $" ff: {subQ.ff:X2} amm: {subQ.amm:X2} ass: {subQ.ass:X2} aff: {subQ.aff:X2}");
                 Console.ResetColor();
             }
 
-            Span<byte> response = stackalloc byte[] { track.number, 1, DecToBcd(mm), DecToBcd(ss), DecToBcd(ff), DecToBcd(amm), DecToBcd(ass), DecToBcd(aff) };
+            Span<byte> response = stackalloc byte[] { subQ.track, subQ.index, subQ.mm, subQ.ss, subQ.ff, subQ.amm, subQ.ass, subQ.aff };
             QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: response.ToArray());
         }
 
@@ -1218,6 +1214,27 @@ namespace ProjectPSX.Devices {
             int mm = lba;
 
             return ((byte)mm, (byte)ss, (byte)ff);
+        }
+
+        private (byte track, byte index, byte mm, byte ss, byte ff, byte amm, byte ass, byte aff) GetSubQPosition(int lba) {
+            Track track = cd.getTrackFromLoc(lba);
+            bool inPregap = lba < track.lbaStart;
+            int relativeLba = inPregap
+                ? Math.Abs(track.lbaStart - lba)
+                : lba - track.lbaStart;
+
+            (byte mm, byte ss, byte ff) = getMMSSFFfromLBA(relativeLba);
+            (byte amm, byte ass, byte aff) = getMMSSFFfromLBA(Math.Max(0, lba));
+
+            return (
+                DecToBcd((byte)track.number),
+                DecToBcd((byte)(inPregap ? 0 : 1)),
+                DecToBcd(mm),
+                DecToBcd(ss),
+                DecToBcd(ff),
+                DecToBcd(amm),
+                DecToBcd(ass),
+                DecToBcd(aff));
         }
 
         private void applyVolume(byte[] rawSector) {
