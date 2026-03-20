@@ -28,14 +28,17 @@ namespace ProjectPSX.Devices.CdRom {
         public CD(string diskFilename, string? subchannelOverridePath = null) {
             string ext = Path.GetExtension(diskFilename);
 
-            if (ext == ".bin") {
+            if (ext.Equals(".bin", StringComparison.OrdinalIgnoreCase)
+                || ext.Equals(".img", StringComparison.OrdinalIgnoreCase)) {
                 tracks = TrackBuilder.fromBin(diskFilename);
-            } else if (ext == ".cue") {
+            } else if (ext.Equals(".cue", StringComparison.OrdinalIgnoreCase)) {
                 tracks = TrackBuilder.fromCue(diskFilename);
-            } else if (ext == ".exe") {
+            } else if (ext.Equals(".exe", StringComparison.OrdinalIgnoreCase)) {
                 // TODO: THERES NOT ONLY NO CD BUT ANY ACCESS TO THE CDROM WILL THROW.
                 // EXES THAT ACCES THE CDROM WILL CURRENTLY CRASH.
                 return;
+            } else {
+                throw new InvalidDataException($"Unsupported PSX disc image format: {diskFilename}");
             }
 
             streams = new Stream[tracks.Count];
