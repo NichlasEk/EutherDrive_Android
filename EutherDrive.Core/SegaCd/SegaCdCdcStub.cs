@@ -55,6 +55,7 @@ public sealed class SegaCdCdcStub
     private bool _transferEndInterruptPending;
     private bool _decoderInterruptEnabled = true;
     private bool _decoderInterruptPending;
+    private bool _decoderInterruptClearReady;
     private bool _scdInterruptFlag;
     private bool _decoderInterruptLogged;
     private bool _destLogged;
@@ -137,6 +138,7 @@ public sealed class SegaCdCdcStub
         WriteCtrl1(0x00);
         _transferEndInterruptPending = false;
         _decoderInterruptPending = false;
+        _decoderInterruptClearReady = false;
     }
 
     public void SetDeviceDestination(byte destBits)
@@ -267,6 +269,13 @@ public sealed class SegaCdCdcStub
         SetTransferEndInterruptFlag();
     }
 
+    private void RefreshInterruptLine()
+    {
+        _scdInterruptFlag =
+            (_transferEndInterruptEnabled && _transferEndInterruptPending)
+            || (_decoderInterruptEnabled && _decoderInterruptPending);
+    }
+
     public byte ReadRegister()
     {
         byte value;
@@ -277,6 +286,7 @@ public sealed class SegaCdCdcStub
                 value = 0xFF;
                 break;
             case 1:
+                ExpireDecoderInterruptIfReady();
                 value = (byte)(0x95
                     | (( _transferEndInterruptPending ? 0 : 1) << 6)
                     | (( _decoderInterruptPending ? 0 : 1) << 5)
@@ -319,6 +329,8 @@ public sealed class SegaCdCdcStub
             case 15:
                 value = (byte)((_decoderInterruptPending ? 0 : 1) << 7);
                 _decoderInterruptPending = false;
+                _decoderInterruptClearReady = false;
+                RefreshInterruptLine();
                 break;
             default:
                 value = 0xFF;
@@ -392,6 +404,7 @@ public sealed class SegaCdCdcStub
                 break;
             case 7:
                 _transferEndInterruptPending = false;
+                RefreshInterruptLine();
                 break;
             case 8:
                 SegaCdBitUtils.SetLsb(ref _writeAddress, value);
@@ -425,17 +438,12 @@ public sealed class SegaCdCdcStub
 
     private void WriteIfCtrl(byte value)
     {
+        ExpireDecoderInterruptIfReady();
         bool prevDtei = _transferEndInterruptEnabled;
         bool prevDeci = _decoderInterruptEnabled;
 
         _transferEndInterruptEnabled = value.Bit(6);
         _decoderInterruptEnabled = value.Bit(5);
-
-        if ((!prevDtei && _transferEndInterruptEnabled && _transferEndInterruptPending)
-            || (!prevDeci && _decoderInterruptEnabled && _decoderInterruptPending))
-        {
-            _scdInterruptFlag = true;
-        }
 
         _dataOutEnabled = value.Bit(1);
         if (!_dataOutEnabled)
@@ -449,6 +457,13 @@ public sealed class SegaCdCdcStub
             _destination = SegaCdDeviceDestination.SubCpuRegister;
             _destinationBits = 0b011;
         }
+
+        bool risingEdge =
+            (!prevDtei && _transferEndInterruptEnabled && _transferEndInterruptPending)
+            || (!prevDeci && _decoderInterruptEnabled && _decoderInterruptPending);
+        RefreshInterruptLine();
+        if (risingEdge)
+            _scdInterruptFlag = true;
     }
 
     private void WriteCtrl0(byte value)
@@ -458,7 +473,11 @@ public sealed class SegaCdCdcStub
         if (CompatCdcForceWrrq && _decoderEnabled && !_decoderWritesEnabled && _dataOutEnabled)
             _decoderWritesEnabled = true;
         if (!_decoderEnabled)
+        {
             _decoderInterruptPending = false;
+            _decoderInterruptClearReady = false;
+            RefreshInterruptLine();
+        }
         if (!_decoderEnabled || !_decoderWritesEnabled)
             _decodedFirstWrittenBlock = false;
     }
@@ -493,6 +512,7 @@ public sealed class SegaCdCdcStub
             return;
 
         _decodedLast75HzCycle = true;
+        _decoderInterruptClearReady = false;
         Array.Copy(sectorBuffer, 12, _headerData, 0, 4);
         Array.Copy(sectorBuffer, 16, _subheaderData, 0, 4);
         SetDecoderInterruptFlag();
@@ -550,6 +570,7 @@ public sealed class SegaCdCdcStub
     private void SetDecoderInterruptFlag()
     {
         _decoderInterruptPending = true;
+        _decoderInterruptClearReady = false;
         if (_decoderInterruptEnabled && (!_transferEndInterruptEnabled || !_transferEndInterruptPending))
             _scdInterruptFlag = true;
         if (!_decoderInterruptLogged)
@@ -563,6 +584,7 @@ public sealed class SegaCdCdcStub
 
     private void SetTransferEndInterruptFlag()
     {
+        ExpireDecoderInterruptIfReady();
         if (_transferEndInterruptEnabled && !_transferEndInterruptPending
             && (!_decoderInterruptEnabled || !_decoderInterruptPending))
         {
@@ -577,8 +599,8 @@ public sealed class SegaCdCdcStub
             ProgressDma(wordRam, prgRam, prgRamAccessible, pcm);
 
         _cycles44100SinceDecode++;
-        if (_cycles44100SinceDecode == DecoderInterruptClearCycle)
-            _decoderInterruptPending = false;
+        if (_cycles44100SinceDecode >= DecoderInterruptClearCycle)
+            _decoderInterruptClearReady = true;
     }
 
     public void Clock75Hz()
@@ -587,6 +609,16 @@ public sealed class SegaCdCdcStub
             SetDecoderInterruptFlag();
         _decodedLast75HzCycle = false;
         _cycles44100SinceDecode = 0;
+    }
+
+    private void ExpireDecoderInterruptIfReady()
+    {
+        if (!_decoderInterruptPending || !_decoderInterruptClearReady)
+            return;
+
+        _decoderInterruptPending = false;
+        _decoderInterruptClearReady = false;
+        RefreshInterruptLine();
     }
 
     private static string TraceStamp()

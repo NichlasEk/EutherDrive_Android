@@ -213,10 +213,14 @@ public sealed class SegaCdCddStub
             Console.WriteLine($"[SCD-CDD] CMD: {string.Join(" ", command)}");
 
         CdTime? prevPlayingTime = _state == State.Playing ? _stateTime : null;
+        bool refreshStatus = true;
+        bool preserveReportedPayload = false;
 
         switch (command[0])
         {
             case 0x00:
+                UpdateDriveStatusPacket();
+                refreshStatus = false;
                 break;
             case 0x01:
                 _state = State.MotorStopped;
@@ -234,6 +238,9 @@ public sealed class SegaCdCddStub
             case 0x06:
                 _state = _disc == null ? State.NoDisc : State.Paused;
                 _stateTime = CurrentTime();
+                PreserveReportedStatus();
+                refreshStatus = false;
+                preserveReportedPayload = true;
                 break;
             case 0x07:
                 if (_state is State.Paused or State.FastForwarding or State.Rewinding)
@@ -242,6 +249,9 @@ public sealed class SegaCdCddStub
                     _stateTime = CurrentTime();
                     _seekClocks = PlayDelayClocks;
                 }
+                PreserveReportedStatus();
+                refreshStatus = false;
+                preserveReportedPayload = true;
                 break;
             case 0x08:
                 if (_disc != null)
@@ -249,6 +259,9 @@ public sealed class SegaCdCddStub
                     _state = State.FastForwarding;
                     _stateTime = CurrentTime();
                 }
+                PreserveReportedStatus();
+                refreshStatus = false;
+                preserveReportedPayload = true;
                 break;
             case 0x09:
                 if (_disc != null)
@@ -256,9 +269,15 @@ public sealed class SegaCdCddStub
                     _state = State.Rewinding;
                     _stateTime = CurrentTime();
                 }
+                PreserveReportedStatus();
+                refreshStatus = false;
+                preserveReportedPayload = true;
                 break;
             case 0x0A:
                 ExecuteTrackSkip(command);
+                PreserveReportedStatus();
+                refreshStatus = false;
+                preserveReportedPayload = true;
                 break;
             case 0x0C:
                 if (_state is State.TrayOpening or State.TrayOpen)
@@ -271,13 +290,14 @@ public sealed class SegaCdCddStub
                 break;
         }
 
-        if (command[0] != 0x00 && command[0] != 0x02 && _reportType == ReportType.TrackNStartTime)
+        if (!preserveReportedPayload && command[0] != 0x00 && command[0] != 0x02 && _reportType == ReportType.TrackNStartTime)
         {
             _reportType = ReportType.AbsoluteTime;
             _reportTrackNumber = 0;
         }
 
-        UpdateStatus();
+        if (refreshStatus)
+            UpdateStatus();
 
         if (TraceCddTimeline)
         {
@@ -368,7 +388,7 @@ public sealed class SegaCdCddStub
     private void Clock75Hz(SegaCdCdcStub cdc)
     {
         _interruptPending = true;
-        _subcodeInterruptPending = true;
+        _subcodeInterruptPending = _state == State.Playing;
         if (LogCddIrq)
             Console.WriteLine($"[SCD-CDD-IRQ] pending=1 subcode=1 state={_state} time={CurrentTime()}");
         if (TraceCddState)
@@ -585,6 +605,65 @@ public sealed class SegaCdCddStub
         return (byte)(((value / 10) << 4) | (value % 10));
     }
 
+    private void PreserveReportedStatus()
+    {
+        _status[0] = (byte)CurrentStatus();
+        UpdateChecksum();
+    }
+
+    private void UpdateDriveStatusPacket()
+    {
+        _status[0] = (byte)CurrentStatus();
+
+        if (_status[0] == (byte)DriveStatus.Stopped || _status[0] > (byte)DriveStatus.Paused)
+        {
+            UpdateChecksum();
+            return;
+        }
+
+        switch (_status[1])
+        {
+            case 0x0F:
+                if (_state is not State.Seeking and not State.TrackSkipping and not State.TrayOpening and not State.TrayOpen and not State.TrayClosing and not State.NoDisc)
+                {
+                    _status[1] = 0x00;
+                    WriteTimeAndFlags(CurrentTime());
+                }
+                break;
+            case 0x00:
+                WriteTimeAndFlags(CurrentTime());
+                break;
+            case 0x01:
+                if (_disc != null)
+                {
+                    CdTime current = CurrentTime();
+                    CdTime trackStart = _disc.Cue.FindTrackByTime(current)?.EffectiveStartTime() ?? CdTime.Zero;
+                    WriteTimeAndFlags(current.SaturatingSub(trackStart));
+                }
+                break;
+            case 0x02:
+                {
+                    int num = _disc?.Cue.FindTrackByTime(CurrentTime())?.Number ?? 0;
+                    _status[2] = (byte)(num / 10);
+                    _status[3] = (byte)(num % 10);
+                    _status[4] = 0x00;
+                    _status[5] = 0x00;
+                    _status[6] = 0x00;
+                    _status[7] = 0x00;
+                    _status[8] = 0x00;
+                    break;
+                }
+        }
+
+        UpdateChecksum();
+    }
+
+    private void WriteTimeAndFlags(CdTime time)
+    {
+        WriteTimeToStatus(time);
+        _status[8] = CurrentBlockFlags();
+    }
+
     private void UpdateStatus()
     {
         Array.Clear(_status, 0, _status.Length);
@@ -613,15 +692,13 @@ public sealed class SegaCdCddStub
             switch (_reportType)
             {
                 case ReportType.AbsoluteTime:
-                    WriteTimeToStatus(CurrentTime());
-                    _status[8] = StatusFlags();
+                    WriteTimeAndFlags(CurrentTime());
                     break;
                 case ReportType.RelativeTime:
                     {
                         CdTime current = CurrentTime();
                         CdTime trackStart = _disc.Cue.FindTrackByTime(current)?.EffectiveStartTime() ?? CdTime.Zero;
-                        WriteTimeToStatus(current.SaturatingSub(trackStart));
-                        _status[8] = StatusFlags();
+                        WriteTimeAndFlags(current.SaturatingSub(trackStart));
                         break;
                     }
                 case ReportType.CurrentTrack:
@@ -630,12 +707,12 @@ public sealed class SegaCdCddStub
                         int num = _disc.Cue.FindTrackByTime(current)?.Number ?? 0;
                         _status[2] = (byte)(num / 10);
                         _status[3] = (byte)(num % 10);
-                        _status[8] = StatusFlags();
+                        _status[8] = 0x00;
                         break;
                     }
                 case ReportType.DiscLength:
                     WriteTimeToStatus(_disc.Cue.LastTrack.EndTime);
-                    _status[8] = StatusFlags();
+                    _status[8] = 0x00;
                     break;
                 case ReportType.StartAndEndTracks:
                     _status[2] = 0x00;
@@ -643,7 +720,7 @@ public sealed class SegaCdCddStub
                     int endTrack = _disc.Cue.LastTrack.Number;
                     _status[4] = (byte)(endTrack / 10);
                     _status[5] = (byte)(endTrack % 10);
-                    _status[8] = StatusFlags();
+                    _status[8] = 0x00;
                     break;
                 case ReportType.TrackNStartTime:
                     {
@@ -682,17 +759,14 @@ public sealed class SegaCdCddStub
         };
     }
 
-    private byte StatusFlags()
+    private byte CurrentBlockFlags()
     {
-        bool playingData = _state == State.Playing || _state == State.PreparingToPlay;
-        if (playingData && _disc != null)
-        {
-            CdTime time = CurrentTime();
-            CdTrack? track = _disc.Cue.FindTrackByTime(time);
-            if (track != null && track.TrackType == CdTrackType.Data)
-                return 0x04;
-        }
-        return 0x00;
+        if (_disc == null)
+            return 0x00;
+
+        CdTime time = CurrentTime();
+        CdTrack? track = _disc.Cue.FindTrackByTime(time);
+        return track != null && track.TrackType == CdTrackType.Data ? (byte)0x04 : (byte)0x00;
     }
 
     private void WriteTimeToStatus(CdTime time)
@@ -722,7 +796,6 @@ public sealed class SegaCdCddStub
         {
             (State.MotorStopped, null) => State.NoDisc,
             (State.MotorStopped, _) => State.Paused,
-            (_, not null) when _reportType == ReportType.TrackNStartTime => State.ReadingToc,
             _ => _state
         };
 
@@ -772,16 +845,9 @@ public sealed class SegaCdCddStub
         }
 
         CdTime current = CurrentTime();
-        if (seekTime.ToFrames() == current.ToFrames())
-        {
-            _state = nextStatus == ReaderStatus.Paused ? State.Paused : State.PreparingToPlay;
-            _stateTime = seekTime;
-            if (nextStatus == ReaderStatus.Playing)
-                _seekClocks = PlayDelayClocks;
-            return;
-        }
-
-        int seekClocks = Math.Max(7, EstimateSeekClocks(current, seekTime));
+        int seekClocks = seekTime.ToFrames() == current.ToFrames()
+            ? 1
+            : Math.Max(7, EstimateSeekClocks(current, seekTime));
         _seekCurrent = current;
         _seekTarget = seekTime;
         _seekNextStatus = nextStatus;
@@ -937,11 +1003,22 @@ public sealed class SegaCdCddStub
 
     private CdTime EstimateIntermediateSeekTime(CdTime current, CdTime target, int clocksRemaining)
     {
-        int discEndFrames = Math.Max(1, GetDiscEndTime().ToFrames());
-        int diffFrames = (int)Math.Round((double)clocksRemaining / 113.0 * discEndFrames);
-        if (current.ToFrames() < target.ToFrames())
-            return CdTime.FromFrames(Math.Max(0, target.ToFrames() - diffFrames));
-        return CdTime.FromFrames(target.ToFrames() + diffFrames);
+        int currentFrames = current.ToFrames();
+        int targetFrames = target.ToFrames();
+        int delta = targetFrames - currentFrames;
+        if (delta == 0)
+            return target;
+
+        int remaining = Math.Max(1, clocksRemaining);
+        int step = Math.Max(1, (int)Math.Round(Math.Abs(delta) / (double)remaining));
+        int nextFrames = currentFrames + Math.Sign(delta) * step;
+
+        if (delta > 0)
+            nextFrames = Math.Min(nextFrames, targetFrames);
+        else
+            nextFrames = Math.Max(nextFrames, targetFrames);
+
+        return CdTime.FromFrames(nextFrames);
     }
 
     private CdTime GetDiscEndTime()

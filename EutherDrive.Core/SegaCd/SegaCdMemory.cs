@@ -35,6 +35,8 @@ public sealed class SegaCdMemory
     private int _prgFlagMainRemaining = 64;
     private int _prgFlagSubRemaining = 64;
     private int _prg2eLogRemaining = 32;
+    private ushort? _mainHostWordLatch;
+    private ushort? _subHostWordLatch;
     private static readonly bool LogSubComm = string.Equals(
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SCD_LOG_SUBCOMM"),
         "1",
@@ -171,6 +173,7 @@ public sealed class SegaCdMemory
     private readonly BufferedWrite[] _bufferedMainWrites = new BufferedWrite[256];
     private int _bufferedSubWriteCount;
     private int _bufferedMainWriteCount;
+    public Action? MainCommunicationReadSync { get; set; }
     public Func<uint>? MainPcProvider { get; set; }
     public Func<uint>? SubPcProvider { get; set; }
 
@@ -764,9 +767,10 @@ public sealed class SegaCdMemory
             _mainRegProbeRemaining--;
             Console.WriteLine($"[SCD-MAINREG-PROBE] R8 0x{address:X6}");
         }
+        SynchronizeMainCommunicationView(address);
         byte value = address switch
         {
-            0xA12000 => (byte)(((Registers.SoftwareInterruptEnabled ? 1 : 0) << 7) | (Registers.SubSoftwareInterruptPending ? 1 : 0)),
+            0xA12000 => (byte)(((Registers.SoftwareInterruptEnabled ? 1 : 0) << 7) | (Registers.MainToSubInterruptLatched ? 1 : 0)),
             // Bit1: BUSREQ (1=request), Bit0: RESET (1=run)
             0xA12001 => (byte)(((Registers.SubCpuBusReq ? 1 : 0) << 1) | (Registers.SubCpuReset ? 0 : 1)),
             0xA12002 => Registers.PrgRamWriteProtect,
@@ -774,8 +778,8 @@ public sealed class SegaCdMemory
             0xA12004 => (byte)(((Cdc.EndOfDataTransfer ? 1 : 0) << 7) | ((Cdc.DataReady ? 1 : 0) << 6) | Cdc.DeviceDestinationBits),
             0xA12006 => (byte)(Registers.HInterruptVector >> 8),
             0xA12007 => (byte)(Registers.HInterruptVector & 0xFF),
-            0xA12008 => (byte)(Cdc.ReadHostData(ScdCpu.Main) >> 8),
-            0xA12009 => (byte)(Cdc.ReadHostData(ScdCpu.Main) & 0xFF),
+            0xA12008 => ReadMainHostDataByte(highByte: true),
+            0xA12009 => ReadMainHostDataByte(highByte: false),
             0xA1200C => (byte)(Registers.StopwatchCounter >> 8),
             0xA1200D => (byte)(Registers.StopwatchCounter & 0xFF),
             0xA1200E => Registers.MainCpuCommunicationFlags,
@@ -799,12 +803,13 @@ public sealed class SegaCdMemory
             _mainRegProbeRemaining--;
             Console.WriteLine($"[SCD-MAINREG-PROBE] R16 0x{address:X6}");
         }
+        SynchronizeMainCommunicationView(address);
         ushort value = address switch
         {
             0xA12000 or 0xA12002 => (ushort)((ReadMainRegisterByte(address) << 8) | ReadMainRegisterByte(address | 1)),
             0xA12004 => (ushort)(ReadMainRegisterByte(address) << 8),
             0xA12006 => Registers.HInterruptVector,
-            0xA12008 => Cdc.ReadHostData(ScdCpu.Main),
+            0xA12008 => ReadMainHostDataWord(),
             0xA1200C => Registers.StopwatchCounter,
             0xA1200E => (ushort)((Registers.MainCpuCommunicationFlags << 8) | Registers.SubCpuCommunicationFlags),
             >= 0xA12010 and <= 0xA1201F => ReadCommWord(Registers.CommunicationCommands, address),
@@ -815,6 +820,16 @@ public sealed class SegaCdMemory
             Console.WriteLine($"[SCD-MAINREG] R16 0x{address:X6} -> 0x{value:X4}");
         TraceMainStatusRead("R16", address, value);
         return value;
+    }
+
+    private void SynchronizeMainCommunicationView(uint address)
+    {
+        if (address is >= 0xA1200E and <= 0xA1202F)
+        {
+            FlushBufferedSubWrites();
+            MainCommunicationReadSync?.Invoke();
+            FlushBufferedSubWrites();
+        }
     }
 
     private void WriteMainRegisterByte(uint address, byte value)
@@ -829,15 +844,19 @@ public sealed class SegaCdMemory
         switch (address)
         {
             case 0xA12000:
-                bool nextPend = (value & 0x01) != 0;
-                if (LogCommFlags && nextPend != Registers.SubSoftwareInterruptPending)
+                bool requestSubInterrupt = (value & 0x01) != 0;
+                if (LogCommFlags && requestSubInterrupt)
                     Console.WriteLine(
-                        $"[COMM-DEBUG] MAIN W 0xA12000 = 0x{value:X2} (pend={nextPend}) " +
+                        $"[COMM-DEBUG] MAIN W 0xA12000 = 0x{value:X2} (pend->1) " +
                         $"PC=0x{MainPcProvider?.Invoke():X6} SUBPC=0x{SubPcProvider?.Invoke():X6}");
                 AppendTraceLine(
-                    $"[SCD-IRQ-FILE] MAIN A12000=0x{value:X2} pend={nextPend} " +
+                    $"[SCD-IRQ-FILE] MAIN A12000=0x{value:X2} pend={(requestSubInterrupt ? "set" : "noop")} " +
                     $"main_pc=0x{MainPcProvider?.Invoke():X6} sub_pc=0x{SubPcProvider?.Invoke():X6}");
-                Registers.SubSoftwareInterruptPending = nextPend;
+                if (requestSubInterrupt && Registers.SoftwareInterruptEnabled)
+                {
+                    Registers.MainToSubInterruptLatched = true;
+                    Registers.SubSoftwareInterruptPending = true;
+                }
                 break;
             case 0xA12001:
                 Registers.SubCpuBusReq = (value & 0x02) != 0;
@@ -877,6 +896,7 @@ public sealed class SegaCdMemory
                 break;
             case 0xA12008:
             case 0xA12009:
+                _mainHostWordLatch = null;
                 Cdc.WriteHostData(ScdCpu.Main);
                 break;
             case 0xA1200E:
@@ -924,6 +944,7 @@ public sealed class SegaCdMemory
                 Registers.HInterruptVector = value;
                 break;
             case 0xA12008:
+                _mainHostWordLatch = null;
                 Cdc.WriteHostData(ScdCpu.Main);
                 break;
             case 0xA1200E:
@@ -1036,8 +1057,8 @@ public sealed class SegaCdMemory
                 0x0004 => (byte)(((Cdc.EndOfDataTransfer ? 1 : 0) << 7) | ((Cdc.DataReady ? 1 : 0) << 6) | Cdc.DeviceDestinationBits),
                 0x0005 => Cdc.RegisterAddress,
                 0x0007 => Cdc.ReadRegister(),
-                0x0008 => (byte)(Cdc.ReadHostData(ScdCpu.Sub) >> 8),
-                0x0009 => (byte)(Cdc.ReadHostData(ScdCpu.Sub) & 0xFF),
+                0x0008 => ReadSubHostDataByte(highByte: true),
+                0x0009 => ReadSubHostDataByte(highByte: false),
                 0x000E => Registers.MainCpuCommunicationFlags,
                 0x000F => Registers.SubCpuCommunicationFlags,
                 >= 0x0010 and <= 0x001F => ReadCommBuffer(Registers.CommunicationCommands, reg),
@@ -1080,10 +1101,10 @@ public sealed class SegaCdMemory
                 value = Cdc.ReadRegister();
                 break;
             case 0x0008:
-                value = (byte)(Cdc.ReadHostData(ScdCpu.Sub) >> 8);
+                value = ReadSubHostDataByte(highByte: true);
                 break;
             case 0x0009:
-                value = (byte)(Cdc.ReadHostData(ScdCpu.Sub) & 0xFF);
+                value = ReadSubHostDataByte(highByte: false);
                 break;
             case 0x000C:
                 value = (byte)(Registers.StopwatchCounter >> 8);
@@ -1174,7 +1195,7 @@ public sealed class SegaCdMemory
         {
             ushort val = reg switch
             {
-                0x0008 => Cdc.ReadHostData(ScdCpu.Sub),
+                0x0008 => ReadSubHostDataWord(),
                 0x000A => (ushort)Cdc.DmaAddress,
                 0x000C => (ushort)(Registers.StopwatchCounter & 0x0FFF),
                 0x0036 => (ushort)((ReadSubRegisterByte(reg) << 8) | ReadSubRegisterByte(reg | 1)),
@@ -1197,7 +1218,7 @@ public sealed class SegaCdMemory
                 value = ReadSubRegisterByte(reg | 1);
                 break;
             case 0x0008:
-                value = Cdc.ReadHostData(ScdCpu.Sub);
+                value = ReadSubHostDataWord();
                 break;
             case 0x000A:
                 value = (ushort)(Cdc.DmaAddress >> 3);
@@ -1343,6 +1364,7 @@ public sealed class SegaCdMemory
                 break;
             case 0x0008:
             case 0x0009:
+                _subHostWordLatch = null;
                 Cdc.WriteHostData(ScdCpu.Sub);
                 break;
             case 0x000A:
@@ -1487,6 +1509,7 @@ public sealed class SegaCdMemory
                 WriteSubRegisterByte(reg | 1, (byte)value);
                 break;
             case 0x0008:
+                _subHostWordLatch = null;
                 Cdc.WriteHostData(ScdCpu.Sub);
                 break;
             case 0x000A:
@@ -1496,7 +1519,6 @@ public sealed class SegaCdMemory
                 Registers.StopwatchCounter = (ushort)(value & 0x0FFF);
                 break;
             case 0x000E:
-                // Only sub CPU flags are writable by sub CPU word access.
                 AppendTraceLine(
                     $"[SCD-IRQ-FILE] SUB COMM16 reg=0x{reg:X4} val=0x{value:X4} prev=0x{Registers.SubCpuCommunicationFlags:X2} " +
                     $"pc=0x{SubPcProvider?.Invoke():X6}");
@@ -1744,7 +1766,11 @@ public sealed class SegaCdMemory
     public byte GetSubInterruptLevel()
     {
         byte level;
-        if (Registers.CdcInterruptEnabled && Cdc.InterruptPending)
+        if (Registers.SubcodeInterruptEnabled && Cdd.SubcodeInterruptPending)
+        {
+            level = 6;
+        }
+        else if (Registers.CdcInterruptEnabled && Cdc.InterruptPending)
         {
             level = 5;
         }
@@ -1805,6 +1831,7 @@ public sealed class SegaCdMemory
             case 2:
                 if (LogSubInt)
                     Console.WriteLine($"[SCD-SUBINT-ACK2] pc=0x{SubPcProvider?.Invoke():X6}");
+                Registers.MainToSubInterruptLatched = false;
                 Registers.SubSoftwareInterruptPending = false;
                 break;
             case 3:
@@ -1820,6 +1847,36 @@ public sealed class SegaCdMemory
                 Cdd.AcknowledgeSubcodeInterrupt();
                 break;
         }
+    }
+
+    private byte ReadMainHostDataByte(bool highByte)
+    {
+        ushort word = _mainHostWordLatch ??= Cdc.ReadHostData(ScdCpu.Main);
+        byte value = highByte ? (byte)(word >> 8) : (byte)(word & 0xFF);
+        if (!highByte)
+            _mainHostWordLatch = null;
+        return value;
+    }
+
+    private ushort ReadMainHostDataWord()
+    {
+        _mainHostWordLatch = null;
+        return Cdc.ReadHostData(ScdCpu.Main);
+    }
+
+    private byte ReadSubHostDataByte(bool highByte)
+    {
+        ushort word = _subHostWordLatch ??= Cdc.ReadHostData(ScdCpu.Sub);
+        byte value = highByte ? (byte)(word >> 8) : (byte)(word & 0xFF);
+        if (!highByte)
+            _subHostWordLatch = null;
+        return value;
+    }
+
+    private ushort ReadSubHostDataWord()
+    {
+        _subHostWordLatch = null;
+        return Cdc.ReadHostData(ScdCpu.Sub);
     }
 
     private static void AppendTraceLine(string line)

@@ -193,6 +193,12 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private ulong _scdMclkCycles;
     private ulong _genesisMasterClockHz = GenesisMasterClockHzNtsc;
     private uint _subCpuWaitCycles;
+    private long _currentScdFrameCounter = -1;
+    private bool _mainCommReadSyncActive;
+    private bool _mainCommReadSyncValid;
+    private bool _mainCommReadSyncLoggedSubWaitOpcodeWindow;
+    private int _mainCommReadSyncSubSliceTarget;
+    private int _mainCommReadSyncSubCyclesInterleaved;
     private int _z80PendingTicksCarry;
     private double _lastTargetFps = 60.0;
     private double _ymResamplePhase;
@@ -294,6 +300,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
         _bios = SegaCdBios.Load(RegionHint == ConsoleRegion.Auto ? ConsoleRegion.US : RegionHint);
         _memory = new SegaCdMemory(_bios);
         _memory.EnableRamCartridge = EnableRamCartridge;
+        _memory.MainCommunicationReadSync = SyncSubCpuForMainCommunicationRead;
         var disc = CdRom.Open(path, LoadCdIntoRam);
         _memory.SetDisc(disc);
         TryDumpBootSector(disc, path);
@@ -756,6 +763,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
             _lastTargetFps = targetFps;
             _genesisMasterClockHz = lines >= 312 ? GenesisMasterClockHzPal : GenesisMasterClockHzNtsc;
             long frameCounter = vdp?.FrameCounter ?? -1;
+            _currentScdFrameCounter = frameCounter;
             EutherDrive.Core.MdTracerCore.md_main.g_md_bus?.TickZ80SafeBoot(frameCounter);
             bool allowZ80 = EutherDrive.Core.MdTracerCore.md_main.ShouldRunZ80(frameCounter);
             if (mainCycles <= 0)
@@ -1014,7 +1022,12 @@ public sealed class SegaCdAdapter : IEmulatorCore
                                     Console.WriteLine($"[MAIN-STUCK] PC=132C OP={_mainCpu.NextOpcode:X4} w1={w1:X4} w2={w2:X4} w3={w3:X4} D0={state.Data[0]:X8} SR={state.Sr:X4}");
                                 }
 
+                                _mainCommReadSyncValid = true;
+                                _mainCommReadSyncSubSliceTarget = subSlice;
+                                _mainCommReadSyncSubCyclesInterleaved = subCyclesInterleaved;
                                 uint cycles = _mainCpu.ExecuteInstruction(_mainCpuBus!);
+                                subCyclesInterleaved = Math.Max(subCyclesInterleaved, _mainCommReadSyncSubCyclesInterleaved);
+                                _mainCommReadSyncValid = false;
                                 remaining -= (int)cycles;
                                 EutherDrive.Core.MdTracerCore.md_m68k.g_clock_now += (ushort)cycles;
                                 mainCyclesConsumed += cycles;
@@ -1972,6 +1985,55 @@ public sealed class SegaCdAdapter : IEmulatorCore
         }
 
         return budget - remainingBudget;
+    }
+
+    private void SyncSubCpuForMainCommunicationRead()
+    {
+        if (_mainCommReadSyncActive || _memory == null)
+            return;
+
+        if (!_mainCommReadSyncValid || !_useSubM68kEmu || _subCpuBus == null || _memory.SubCpuHalt || _memory.SubCpuReset)
+        {
+            _memory.FlushBufferedSubWrites();
+            return;
+        }
+
+        if (!EnsureSubVectorsReady(_memory))
+        {
+            _memory.FlushBufferedSubWrites();
+            return;
+        }
+
+        _mainCommReadSyncActive = true;
+        try
+        {
+            if (_subCpuNeedsReset)
+            {
+                _subCpu.Reset(_subCpuBus);
+                _subCpuNeedsReset = false;
+                _subCpuWaitCycles = 0;
+            }
+
+            _memory.FlushBufferedSubWrites();
+
+            while (_mainCommReadSyncSubCyclesInterleaved < _mainCommReadSyncSubSliceTarget)
+            {
+                int budget = _mainCommReadSyncSubSliceTarget - _mainCommReadSyncSubCyclesInterleaved;
+                int progressed = RunSubCpuBudget(
+                    budget,
+                    _currentScdFrameCounter,
+                    ref _mainCommReadSyncLoggedSubWaitOpcodeWindow);
+                if (progressed <= 0)
+                    break;
+                _mainCommReadSyncSubCyclesInterleaved += progressed;
+            }
+
+            _memory.FlushBufferedSubWrites();
+        }
+        finally
+        {
+            _mainCommReadSyncActive = false;
+        }
     }
 
     private static void AppendTraceLine(string? path, string line)
