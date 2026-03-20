@@ -251,6 +251,8 @@ namespace ProjectPSX.Devices {
         }
 
         private void SyncTransientTransferState() {
+            currentSector ??= new Sector(Sector.RAW_BUFFER);
+            lastReadSector ??= new Sector(Sector.RAW_BUFFER);
             bufferedSectorGeneration = lastReadSector.hasLoadedData() ? 1 : 0;
             loadedSectorGeneration = currentSector.hasLoadedData() ? bufferedSectorGeneration : 0;
             if (!currentSector.hasData()) {
@@ -545,6 +547,7 @@ namespace ProjectPSX.Devices {
         };
 
         public bool tick(int cycles) {
+            bool triggerInterrupt = false;
             counter += cycles;
 
             if (interruptQueue.Count != 0) {
@@ -562,17 +565,17 @@ namespace ProjectPSX.Devices {
                 if (cdDebug) Console.WriteLine($"[CD INT] Triggering {IF:x8}");
                 edgeTrigger = false;
                 isBusy = false;
-                return true;
+                triggerInterrupt = true;
             }
 
             switch (mode) {
                 case Mode.Idle:
                     counter = 0;
-                    return false;
+                    return triggerInterrupt;
 
                 case Mode.Seek: //Hardcoded seek time...
                     if (counter < GetSeekCycles() || interruptQueue.Count != 0) {
-                        return false;
+                        return triggerInterrupt;
                     }
                     counter = 0;
                     currentSubchannelLba = activeLogicalSeek
@@ -590,14 +593,28 @@ namespace ProjectPSX.Devices {
                     break;
 
                 case Mode.Read:
-                case Mode.Play:
-                    int transferCycles = mode == Mode.Read ? GetReadCycles() : GetPlayCycles();
-                    if (counter < transferCycles || interruptQueue.Count != 0 || IF != 0) {
-                        return false;
+                    int readCycles = GetReadCycles();
+                    if (counter < readCycles || interruptQueue.Count != 0 || IF != 0) {
+                        return triggerInterrupt;
                     }
-                    counter = 0;
+                    counter -= readCycles;
 
                     int deliveredSector = readLoc;
+                    Track currentTrack = cd.getTrackFromLoc(deliveredSector);
+                    if (currentTrack.isAudio && !isCDDA) {
+                        if (cdDebug) {
+                            Console.WriteLine($"[CDROM] Read denied on audio sector lba={deliveredSector} track={currentTrack.number}");
+                        }
+
+                        TraceProtect("read-audio-denied", $"lba={deliveredSector} track={currentTrack.number}");
+                        logicalSeekHoldActive = false;
+                        CompleteFastLoadReadSession();
+                        STAT = 0x06;
+                        mode = Mode.Idle;
+                        QueueInterrupt(Interrupt.INT5_ERROR, response: new byte[] { STAT, 0x04 });
+                        return triggerInterrupt;
+                    }
+
                     byte[] readSector = cd.Read(readLoc++);
                     latchedSubchannelLba = deliveredSector;
                     currentSubchannelLba = deliveredSector;
@@ -611,48 +628,6 @@ namespace ProjectPSX.Devices {
                         Console.ResetColor();
                     }
 
-                    //Handle Mode.Play:
-                    if (mode == Mode.Play) {
-                        if (!mutedAudio) {
-                            applyVolume(readSector);
-                            spu.pushCdBufferSamples(readSector);
-                        }
-
-                        if (isAutoPause && cd.isTrackChange) {
-                            QueueSingleByteInterrupt(Interrupt.INT4_DATA_END, STAT, 1);
-
-                            STAT = 0x2;
-                            mode = Mode.Idle;
-                        }
-
-                        if (isReport) {
-                            SubchannelQ subQ = GetReportedSubchannelQ(GetSubchannelQueryLba());
-                            byte[] reportResponse = new byte[8];
-                            reportResponse[0] = STAT;
-                            reportResponse[1] = subQ.Track;
-                            reportResponse[2] = subQ.Index;
-
-                            if ((subQ.AbsoluteFrame & 0x10) != 0) {
-                                reportResponse[3] = subQ.Minute;
-                                reportResponse[4] = (byte)(subQ.Second | 0x80);
-                                reportResponse[5] = subQ.Frame;
-                            } else {
-                                reportResponse[3] = subQ.AbsoluteMinute;
-                                reportResponse[4] = subQ.AbsoluteSecond;
-                                reportResponse[5] = subQ.AbsoluteFrame;
-                            }
-
-                            reportResponse[6] = 0x80; // peekLo
-                            reportResponse[7] = 0x80; // peekHi
-
-                            QueueInterrupt(Interrupt.INT1_SECOND_RESPONSE_READ_PLAY, 1, response: reportResponse);
-                        }
-
-                        return false; //CDDA without report isn't delivered to CPU and doesn't raise interrupt
-                    }
-
-                    //Handle Mode.Read:
-
                     //first 12 are the sync header
                     sectorHeader.mm = readSector[12];
                     sectorHeader.ss = readSector[13];
@@ -664,25 +639,18 @@ namespace ProjectPSX.Devices {
                     sectorSubHeader.subMode = readSector[18];
                     sectorSubHeader.codingInfo = readSector[19];
 
-                    //if (sectorSubHeader.isVideo) Console.WriteLine("is video");
-                    //if (sectorSubHeader.isData) Console.WriteLine("is data");
-                    //if (sectorSubHeader.isAudio) Console.WriteLine("is audio");
-
                     if (isXAADPCM && sectorSubHeader.isForm2) {
                         if (sectorSubHeader.isEndOfFile) {
                             if (cdDebug) Console.WriteLine("[CDROM] XA ON: End of File!");
-                            //is this even needed? There seems to not be an AutoPause flag like on CDDA
-                            //RR4, Castlevania and others hang sound here if hard stoped to STAT 0x2
                         }
 
                         if (sectorSubHeader.isRealTime && sectorSubHeader.isAudio) {
-
                             if (isXAFilter && (filterFile != sectorSubHeader.file || filterChannel != sectorSubHeader.channel)) {
                                 if (cdDebug) Console.WriteLine("[CDROM] XA Filter: file || channel");
-                                return false;
+                                return triggerInterrupt;
                             }
 
-                            if (cdDebug) Console.WriteLine("[CDROM] XA ON: Realtime + Audio"); //todo flag to pass to SPU?
+                            if (cdDebug) Console.WriteLine("[CDROM] XA ON: Realtime + Audio");
 
                             if (!mutedAudio && !mutedXAADPCM) {
                                 byte[] decodedXaAdpcm = XaAdpcm.Decode(readSector, sectorSubHeader.codingInfo);
@@ -690,11 +658,10 @@ namespace ProjectPSX.Devices {
                                 spu.pushCdBufferSamples(decodedXaAdpcm);
                             }
 
-                            return false;
+                            return triggerInterrupt;
                         }
                     }
 
-                    //If we arived here sector is supposed to be delivered to CPU so slice out sync and header based on flag
                     switch (transferSizeMode) {
                         case TransferSizeMode.Sector2340:
                             PublishReadSector(readSector.AsSpan().Slice(12, 2340), deliveredSector);
@@ -717,19 +684,75 @@ namespace ProjectPSX.Devices {
                     }
 
                     QueueInterrupt(Interrupt.INT1_SECOND_RESPONSE_READ_PLAY, response: new[] { STAT });
+                    break;
 
+                case Mode.Play:
+                    int playCycles = GetPlayCycles();
+                    while (counter >= playCycles && mode == Mode.Play) {
+                        counter -= playCycles;
+
+                        int playSector = readLoc;
+                        byte[] playRawSector = cd.Read(readLoc++);
+                        latchedSubchannelLba = playSector;
+                        currentSubchannelLba = playSector;
+                        logicalSeekHoldActive = false;
+                        bool playSubQValid = TryLatchReportedSubchannelQ(playSector);
+                        TraceProtect("sector", $"lba={playSector} bytes={playRawSector.Length} subqValid={(playSubQValid ? 1 : 0)}");
+
+                        if (cdDebug) {
+                            Console.ForegroundColor = ConsoleColor.DarkGreen;
+                            Console.WriteLine($"Reading readLoc: {readLoc - 1} seekLoc: {seekLoc} size: {playRawSector.Length}");
+                            Console.ResetColor();
+                        }
+
+                        if (!mutedAudio) {
+                            applyVolume(playRawSector);
+                            spu.pushCdBufferSamples(playRawSector);
+                        }
+
+                        if (isAutoPause && cd.isTrackChange) {
+                            QueueSingleByteInterrupt(Interrupt.INT4_DATA_END, STAT, 1);
+
+                            STAT = 0x2;
+                            mode = Mode.Idle;
+                            break;
+                        }
+
+                        if (isReport && IF == 0 && interruptQueue.Count == 0) {
+                            SubchannelQ subQ = GetReportedSubchannelQ(GetSubchannelQueryLba());
+                            byte[] reportResponse = new byte[8];
+                            reportResponse[0] = STAT;
+                            reportResponse[1] = subQ.Track;
+                            reportResponse[2] = subQ.Index;
+
+                            if ((subQ.AbsoluteFrame & 0x10) != 0) {
+                                reportResponse[3] = subQ.Minute;
+                                reportResponse[4] = (byte)(subQ.Second | 0x80);
+                                reportResponse[5] = subQ.Frame;
+                            } else {
+                                reportResponse[3] = subQ.AbsoluteMinute;
+                                reportResponse[4] = subQ.AbsoluteSecond;
+                                reportResponse[5] = subQ.AbsoluteFrame;
+                            }
+
+                            reportResponse[6] = 0x80; // peekLo
+                            reportResponse[7] = 0x80; // peekHi
+
+                            QueueInterrupt(Interrupt.INT1_SECOND_RESPONSE_READ_PLAY, 1, response: reportResponse);
+                        }
+                    }
                     break;
 
                 case Mode.TOC:
                     if (counter < GetTocCycles() || interruptQueue.Count != 0) {
-                        return false;
+                        return triggerInterrupt;
                     }
                     mode = Mode.Idle;
                     QueueSingleByteInterrupt(Interrupt.INT2_SECOND_RESPONSE, STAT, allowFast: true);
                     counter = 0;
                     break;
             }
-            return false;
+            return triggerInterrupt;
 
         }
 

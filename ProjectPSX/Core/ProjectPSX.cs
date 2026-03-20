@@ -190,6 +190,8 @@ namespace ProjectPSX {
             text.Append($"irq=({interruptController.DebugISTAT:x3}/{interruptController.DebugIMASK:x3}) ");
             text.Append($"{bus.DMAController.DebugSummary(2)} ");
             text.Append($"{bus.DMAController.DebugSummary(3)} ");
+            text.Append($"{bus.DMAController.DebugSummary(4)} ");
+            text.Append($"{bus.DMAController.DebugSummary(7)} ");
             text.Append($"{gpu.DebugSummary()} {mdec.DebugSummary()} {cdrom.DebugSummary()}");
             return text.ToString();
         }

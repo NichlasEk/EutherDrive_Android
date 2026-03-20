@@ -58,8 +58,12 @@ public class DMA {
     public object GetChannelStateObject(int index) => channels[index];
 
     public string DebugSummary(int channelIndex) {
-        if ((uint)channelIndex >= 7u) {
+        if ((uint)channelIndex > 7u) {
             return $"ch={channelIndex} invalid";
+        }
+
+        if (channelIndex == 7) {
+            return ((InterruptChannel)channels[7]).DebugSummary();
         }
 
         return ((DmaChannel)channels[channelIndex]).DebugSummary();

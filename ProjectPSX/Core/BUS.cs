@@ -669,12 +669,34 @@ public class BUS {
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetSpuDmaWriteWordCapacity() => spu.GetDmaWriteWordCapacity();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetSpuDmaReadWordAvailability() => spu.GetDmaReadWordAvailability();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int DmaToSpuPartial(Span<uint> dma) {
+            return spu.processDmaWritePartial(dma);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaFromSpu(uint address, int size) {
             var dma = spu.processDmaLoad(size);
             uint physical = address & 0x1F_FFFC;
             var dest = new Span<uint>(ramPtr + physical, size);
             dma.CopyTo(dest);
             ramWriteObserver?.Invoke(physical, size * 4);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe int DmaFromSpuPartial(uint address, int size) {
+            uint physical = address & 0x1F_FFFC;
+            var dest = new Span<uint>(ramPtr + physical, size);
+            int transferred = spu.processDmaLoadPartial(dest);
+            if (transferred > 0) {
+                ramWriteObserver?.Invoke(physical, transferred * 4);
+            }
+            return transferred;
         }
         public unsafe void DmaOTC(uint baseAddress, int size) {
             //uint destAddress = (uint)(baseAddress - ((size - 1) * 4));

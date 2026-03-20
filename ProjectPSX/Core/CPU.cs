@@ -25,6 +25,8 @@ namespace ProjectPSX {
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_WORDS_BEFORE"), 0);
         private static readonly int Cop0TraceWordsAfter = ParseOptionalPositiveInt(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_WORDS_AFTER"), 0);
+        private static readonly bool BiosTraceEnabled =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS_TRACE") == "1";
         private static int s_faultTraceCount;
         private static int s_cop0TraceCount;
 
@@ -169,8 +171,9 @@ namespace ProjectPSX {
             //  mips.disassemble(instr, PC_Now, PC_Predictor);
             //}
 
-            //TTY();
-            //bios.verbose(PC_Now, GPR);
+            if (BiosTraceEnabled) {
+                bios.verbose(PC_Now, GPR);
+            }
 
             return ticks;
         }

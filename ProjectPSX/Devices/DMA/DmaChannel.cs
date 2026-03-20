@@ -26,6 +26,7 @@ public sealed class DmaChannel : Channel {
     private uint pendingBlocks;
     private uint pendingBlockWords;
     private int pendingCycleBudget;
+    private bool deferredCompletionPending;
     public bool HasPendingTransfer => pendingBlocks > 0;
 
     public DmaChannel(int channelNumber, InterruptChannel interrupt, BUS bus) {
@@ -89,6 +90,7 @@ public sealed class DmaChannel : Channel {
             pendingBlocks = 0;
             pendingBlockWords = 0;
             pendingCycleBudget = 0;
+            deferredCompletionPending = false;
         }
 
         handleDMA();
@@ -109,14 +111,15 @@ public sealed class DmaChannel : Channel {
             }
 
             blockCopy(transferWords);
-            finishDMA();
+            ScheduleDeferredCompletion(transferWords);
 
         } else if (syncMode == 1) {
             // HACK:
             // GPUIn: Bypass blocks to elude mdec/gpu desync as MDEC is actually too fast decoding blocks
             if (channelNumber == 2 && transferDirection == 1) {
-                blockCopy(blockSize * blockCount);
-                finishDMA();
+                uint transferWords = blockSize * blockCount;
+                blockCopy(transferWords);
+                ScheduleDeferredCompletion(transferWords);
                 return;
             }
 
@@ -125,9 +128,18 @@ public sealed class DmaChannel : Channel {
             pendingBlockWords = blockSize;
             pendingCycleBudget = 0;
         } else if (syncMode == 2) {
-            linkedList();
-            finishDMA();
+            pendingBlocks = 1;
+            pendingBlockWords = Math.Max(linkedList(), 1u);
+            pendingCycleBudget = 0;
+            deferredCompletionPending = true;
         }
+    }
+
+    private void ScheduleDeferredCompletion(uint transferWords) {
+        pendingBlocks = 1;
+        pendingBlockWords = Math.Max(transferWords, 1u);
+        pendingCycleBudget = 0;
+        deferredCompletionPending = true;
     }
 
     private void finishDMA() {
@@ -168,13 +180,15 @@ public sealed class DmaChannel : Channel {
 
     }
 
-    private void linkedList() {
+    private uint linkedList() {
         uint header = 0;
         uint linkedListHardStop = 0xFFFF; //an arbitrary value to avoid infinity linked lists as we don't run the cpu in between blocks
+        uint totalWords = 0;
 
         while ((header & 0x800000) == 0 && linkedListHardStop-- != 0) {
             header = bus.LoadFromRam(baseAddress);
             var size = header >> 24;
+            totalWords++;
             //Console.WriteLine($"[DMA] [LinkedList] Header: {baseAddress:x8} size: {size}");
 
             if (size > 0) {
@@ -182,12 +196,14 @@ public sealed class DmaChannel : Channel {
                 var load = bus.DmaFromRam(baseAddress, size);
                 //Console.WriteLine($"[DMA] [LinkedList] DMAtoGPU size: {load.Length}");
                 bus.DmaToGpu(load);
+                totalWords += size;
             }
 
             if (baseAddress == (header & 0x1ffffc)) break; //Tekken2 hangs here if not handling this posible forever loop
             baseAddress = header & 0x1ffffc;
         }
 
+        return totalWords;
     }
 
     //0  Start immediately and transfer all at once (used for CDROM, OTC) needs TRIGGER
@@ -197,8 +213,29 @@ public sealed class DmaChannel : Channel {
         //TODO: check if device can actually transfer. Here we assume devices are always
         // capable of processing the dmas and never busy.
         if (pendingBlocks > 0) {
+            if (deferredCompletionPending) {
+                if (cycles > 0) {
+                    pendingCycleBudget += cycles;
+                }
+
+                if ((uint)pendingCycleBudget < pendingBlockWords) {
+                    return;
+                }
+
+                deferredCompletionPending = false;
+                pendingBlocks = 0;
+                pendingBlockWords = 0;
+                finishDMA();
+                return;
+            }
+
             if (syncMode == 1 && (channelNumber == 0 || channelNumber == 1)) {
                 TransferMdecSyncMode1(cycles);
+                return;
+            }
+
+            if (syncMode == 1 && channelNumber == 4) {
+                TransferSpuSyncMode1(cycles);
                 return;
             }
 
@@ -230,6 +267,60 @@ public sealed class DmaChannel : Channel {
 
             if (pendingBlocks == 0) {
                 finishDMA();
+            }
+        }
+    }
+
+    private void TransferSpuSyncMode1(int cycles) {
+        if (cycles > 0) {
+            pendingCycleBudget += cycles;
+        }
+
+        while (pendingBlocks > 0 && pendingCycleBudget > 0) {
+            uint wordsRequested = pendingBlockWords == 0 ? EffectiveBlockSize() : pendingBlockWords;
+            int wordsBudget = Math.Min((int)wordsRequested, pendingCycleBudget);
+            if (wordsBudget <= 0) {
+                return;
+            }
+
+            int deviceWordBudget = transferDirection == 1
+                ? bus.GetSpuDmaWriteWordCapacity()
+                : bus.GetSpuDmaReadWordAvailability();
+            if (deviceWordBudget <= 0) {
+                return;
+            }
+
+            wordsBudget = Math.Min(wordsBudget, deviceWordBudget);
+            if (wordsBudget <= 0) {
+                return;
+            }
+
+            int transferredWords;
+            if (transferDirection == 1) {
+                var dma = bus.DmaFromRam(baseAddress & 0x1F_FFFC, (uint)wordsBudget);
+                transferredWords = bus.DmaToSpuPartial(dma);
+            } else {
+                transferredWords = bus.DmaFromSpuPartial(baseAddress, wordsBudget);
+            }
+
+            if (transferredWords <= 0) {
+                return;
+            }
+
+            pendingCycleBudget -= transferredWords;
+            baseAddress += memoryStep * (uint)transferredWords;
+
+            if ((uint)transferredWords < wordsRequested) {
+                pendingBlockWords = wordsRequested - (uint)transferredWords;
+                return;
+            }
+
+            pendingBlockWords = EffectiveBlockSize();
+            pendingBlocks--;
+
+            if (pendingBlocks == 0) {
+                finishDMA();
+                return;
             }
         }
     }

@@ -2,6 +2,7 @@
 
 namespace ProjectPSX.Devices;
 public sealed class InterruptChannel : Channel {
+    private static readonly bool TraceDmaIrq = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_DMA_IRQ_TRACE") == "1";
 
     // 1F8010F0h DPCR - DMA Control register
     private uint control;
@@ -53,23 +54,36 @@ public sealed class InterruptChannel : Channel {
     }
 
     private void writeInterrupt(uint value) {
+        bool previousMasterFlag = masterFlag;
         forceIRQ = (value >> 15 & 0x1) != 0;
         irqEnable = value >> 16 & 0x7F;
         masterEnable = (value >> 23 & 0x1) != 0;
         irqFlag &= ~(value >> 24 & 0x7F);
 
         masterFlag = updateMasterFlag();
+        UpdatePendingEdge(previousMasterFlag);
+        if (TraceDmaIrq) {
+            Console.WriteLine(
+                $"[DMA-IRQ] write dicr={value:x8} force={(forceIRQ ? 1 : 0)} en={irqEnable:x2} me={(masterEnable ? 1 : 0)} " +
+                $"flag={irqFlag:x2} mf={(masterFlag ? 1 : 0)} edge={(edgeInterruptTrigger ? 1 : 0)} prevMf={(previousMasterFlag ? 1 : 0)} pc={CPU.TraceCurrentPC:x8}");
+        }
     }
 
     public void handleInterrupt(int channel) {
         //IRQ flags in Bit(24 + n) are set upon DMAn completion - but caution - they are set ONLY if enabled in Bit(16 + n).
+        bool previousMasterFlag = masterFlag;
         if ((irqEnable & 1 << channel) != 0) {
             irqFlag |= (uint)(1 << channel);
         }
 
         //Console.WriteLine($"MasterFlag: {masterFlag} irqEnable16: {irqEnable:x8} irqFlag24: {irqFlag:x8} {forceIRQ} {masterEnable} {((irqEnable & irqFlag) > 0)}");
         masterFlag = updateMasterFlag();
-        edgeInterruptTrigger |= masterFlag;
+        UpdatePendingEdge(previousMasterFlag);
+        if (TraceDmaIrq) {
+            Console.WriteLine(
+                $"[DMA-IRQ] handle ch={channel} force={(forceIRQ ? 1 : 0)} en={irqEnable:x2} me={(masterEnable ? 1 : 0)} " +
+                $"flag={irqFlag:x2} mf={(masterFlag ? 1 : 0)} edge={(edgeInterruptTrigger ? 1 : 0)} prevMf={(previousMasterFlag ? 1 : 0)} pc={CPU.TraceCurrentPC:x8}");
+        }
     }
 
     public bool isDMAControlMasterEnabled(int channelNumber) {
@@ -82,12 +96,32 @@ public sealed class InterruptChannel : Channel {
         return forceIRQ || masterEnable && (irqEnable & irqFlag) > 0;
     }
 
+    private void UpdatePendingEdge(bool previousMasterFlag) {
+        if (!previousMasterFlag && masterFlag) {
+            edgeInterruptTrigger = true;
+        } else if (!masterFlag) {
+            // Cancel any not-yet-delivered edge if software already cleared the master condition.
+            edgeInterruptTrigger = false;
+        }
+    }
+
     public bool tick() {
         if (edgeInterruptTrigger) {
             edgeInterruptTrigger = false;
+            if (TraceDmaIrq) {
+                Console.WriteLine(
+                    $"[DMA-IRQ] deliver force={(forceIRQ ? 1 : 0)} en={irqEnable:x2} me={(masterEnable ? 1 : 0)} " +
+                    $"flag={irqFlag:x2} mf={(masterFlag ? 1 : 0)} pc={CPU.TraceCurrentPC:x8}");
+            }
             //Console.WriteLine("[IRQ] Triggering DMA");
             return true;
         }
         return false;
+    }
+
+    public string DebugSummary() {
+        return
+            $"dmairq[dpcr={control:x8} force={(forceIRQ ? 1 : 0)} en={irqEnable:x2} me={(masterEnable ? 1 : 0)} " +
+            $"flag={irqFlag:x2} mf={(masterFlag ? 1 : 0)} edge={(edgeInterruptTrigger ? 1 : 0)}]";
     }
 }

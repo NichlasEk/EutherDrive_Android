@@ -115,14 +115,35 @@ namespace ProjectPSX.Devices {
             int cycles;
             public bool tick(int cyclesTicked) { //todo this needs rework
                 cycles += cyclesTicked;
+                uint oldCounter = counterValue;
                 switch (timerNumber) {
                     case 0:
                         if (syncEnable == 1) {
                             switch (syncMode) {
-                                case 0: if (hblank) return false; break;
-                                case 1: if (hblank) counterValue = 0; break;
-                                case 2: if (hblank) counterValue = 0; if (!hblank) return false; break;
-                                case 3: if (!prevHblank && hblank) syncEnable = 0; else return false; break;
+                                case 0:
+                                    if (hblank) {
+                                        cycles = 0;
+                                        return false;
+                                    }
+                                    break;
+                                case 1:
+                                    if (prevHblank && !hblank) counterValue = 0;
+                                    break;
+                                case 2:
+                                    if (!prevHblank && hblank) counterValue = 0;
+                                    if (!hblank) {
+                                        cycles = 0;
+                                        return false;
+                                    }
+                                    break;
+                                case 3:
+                                    if (prevHblank && !hblank) {
+                                        syncEnable = 0;
+                                    } else if (!hblank) {
+                                        cycles = 0;
+                                        return false;
+                                    }
+                                    break;
                             }
                         } //else free run
 
@@ -135,15 +156,35 @@ namespace ProjectPSX.Devices {
                             cycles = 0;
                         }
 
-                        return handleIrq();
+                        return handleIrq(oldCounter);
 
                     case 1:
                         if (syncEnable == 1) {
                             switch (syncMode) {
-                                case 0: if (vblank) return false; break;
-                                case 1: if (vblank) counterValue = 0; break;
-                                case 2: if (vblank) counterValue = 0; if (!vblank) return false; break;
-                                case 3: if (!prevVblank && vblank) syncEnable = 0; else return false; break;
+                                case 0:
+                                    if (vblank) {
+                                        cycles = 0;
+                                        return false;
+                                    }
+                                    break;
+                                case 1:
+                                    if (prevVblank && !vblank) counterValue = 0;
+                                    break;
+                                case 2:
+                                    if (!prevVblank && vblank) counterValue = 0;
+                                    if (!vblank) {
+                                        cycles = 0;
+                                        return false;
+                                    }
+                                    break;
+                                case 3:
+                                    if (prevVblank && !vblank) {
+                                        syncEnable = 0;
+                                    } else if (!vblank) {
+                                        cycles = 0;
+                                        return false;
+                                    }
+                                    break;
                             }
                         }
 
@@ -154,9 +195,10 @@ namespace ProjectPSX.Devices {
                             if (!prevHblank && hblank) counterValue += 1;
                         }
 
-                        return handleIrq();
+                        return handleIrq(oldCounter);
                     case 2:
-                        if (syncEnable == 1 && syncMode == 0 || syncMode == 3) {
+                        if (syncEnable == 1 && (syncMode == 0 || syncMode == 3)) {
+                            cycles = 0;
                             return false; // counter stoped
                         } //else free run
 
@@ -168,28 +210,30 @@ namespace ProjectPSX.Devices {
                             cycles %= 8;
                         }
 
-                        return handleIrq();
+                        return handleIrq(oldCounter);
                     default:
                         return false;
                 }
 
             }
 
-            private bool handleIrq() {
+            private bool handleIrq(uint oldCounter) {
                 irq = false;
 
-                if (counterValue >= counterTargetValue) {
+                if (counterValue >= counterTargetValue
+                    && (oldCounter < counterTargetValue || counterTargetValue == 0)) {
                     reachedTarget = 1;
-                    if (resetCounterOnTarget == 1) counterValue = 0;
+                    if (resetCounterOnTarget == 1) {
+                        counterValue = counterTargetValue == 0 ? 0 : counterValue % counterTargetValue;
+                    }
                     if (irqWhenCounterTarget == 1) irq = true;
                 }
 
                 if (counterValue >= 0xFFFF) {
                     reachedFFFF = 1;
                     if (irqWhenCounterFFFF == 1) irq = true;
+                    counterValue %= 0xFFFF;
                 }
-
-                counterValue &= 0xFFFF;
 
                 if (!irq) return false;
 

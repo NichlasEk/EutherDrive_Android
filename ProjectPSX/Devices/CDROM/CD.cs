@@ -333,9 +333,14 @@ namespace ProjectPSX.Devices.CdRom {
 
         private static SubchannelQ SynthesizeSubchannelQ(Track track, int loc) {
             bool inPregap = loc < track.lbaStart;
-            int relativeLba = inPregap
-                ? Math.Abs(track.lbaStart - loc)
-                : loc - track.lbaStart;
+            int relativeLba;
+            if (inPregap) {
+                int pregapStart = track.lbaPregapStart;
+                int pregapOffset = Math.Max(0, loc - pregapStart);
+                relativeLba = Math.Max(0, track.pregapSectors - pregapOffset - 1);
+            } else {
+                relativeLba = loc - track.lbaStart;
+            }
 
             (byte mm, byte ss, byte ff) = GetMsfFromLba(relativeLba);
             (byte amm, byte ass, byte aff) = GetMsfFromLba(Math.Max(0, loc));

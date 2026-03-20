@@ -8,6 +8,7 @@ using ProjectPSX.Devices.Spu;
 
 namespace ProjectPSX.Devices {
     public class SPU {
+        private static readonly bool TraceDmaTransfer = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_SPU_DMA_TRACE") == "1";
 
         // Todo:
         // lr sweep envelope
@@ -84,6 +85,12 @@ namespace ProjectPSX.Devices {
         private int spuOutputPointer;
 
         private Sector cdBuffer = new Sector(Sector.XA_BUFFER);
+        private const int DMA_TRANSFER_CYCLES_PER_HALFWORD = 16;
+        private const int DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS = 32;
+        private ushort[] dmaTransferFifo = new ushort[DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS];
+        private int dmaTransferFifoHead;
+        private int dmaTransferFifoCount;
+        private int dmaTransferCycleBudget;
 
         [NonSerialized]
         private unsafe byte* ram = (byte*)Marshal.AllocHGlobal(512 * 1024);
@@ -175,11 +182,26 @@ namespace ProjectPSX.Devices {
 
         private struct Status {
             public ushort register;
-            public bool isSecondHalfCaptureBuffer => ((register >> 11) & 0x1) != 0;
-            public bool dataTransferBusyFlag => ((register >> 10) & 0x1) != 0;
-            public bool dataTransferDmaReadRequest => ((register >> 9) & 0x1) != 0;
-            public bool dataTransferDmaWriteRequest => ((register >> 8) & 0x1) != 0;
-            //  7     Data Transfer DMA Read/Write Request ;seems to be same as SPUCNT.Bit5
+            public bool isSecondHalfCaptureBuffer {
+                get { return ((register >> 11) & 0x1) != 0; }
+                set { register = value ? (ushort)(register | (1 << 11)) : (ushort)(register & ~(1 << 11)); }
+            }
+            public bool dataTransferBusyFlag {
+                get { return ((register >> 10) & 0x1) != 0; }
+                set { register = value ? (ushort)(register | (1 << 10)) : (ushort)(register & ~(1 << 10)); }
+            }
+            public bool dataTransferDmaWriteRequest {
+                get { return ((register >> 9) & 0x1) != 0; }
+                set { register = value ? (ushort)(register | (1 << 9)) : (ushort)(register & ~(1 << 9)); }
+            }
+            public bool dataTransferDmaReadRequest {
+                get { return ((register >> 8) & 0x1) != 0; }
+                set { register = value ? (ushort)(register | (1 << 8)) : (ushort)(register & ~(1 << 8)); }
+            }
+            public bool dataTransferDmaRequest {
+                get { return ((register >> 7) & 0x1) != 0; }
+                set { register = value ? (ushort)(register | (1 << 7)) : (ushort)(register & ~(1 << 7)); }
+            }
             public bool irq9Flag {
                 get { return ((register >> 6) & 0x1) != 0; }
                 set { register = value ? (ushort)(register | (1 << 6)) : (ushort)(register & ~(1 << 6)); }
@@ -329,6 +351,7 @@ namespace ProjectPSX.Devices {
                     break;
 
                 case 0x1F801DAA:
+                    int previousTransferMode = control.soundRamTransferMode;
                     control.register = value;
 
                     if (!control.spuEnabled) {
@@ -345,6 +368,8 @@ namespace ProjectPSX.Devices {
                     //Status 0..5 bits are the same as control
                     status.register &= 0xFFC0;
                     status.register |= (ushort)(value & 0x3F);
+                    HandleTransferModeChange(previousTransferMode, control.soundRamTransferMode);
+                    RefreshDmaTransferStatus();
                     break;
 
                 case 0x1F801DAC:
@@ -353,6 +378,7 @@ namespace ProjectPSX.Devices {
 
                 case 0x1F801DAE:
                     status.register = value;
+                    RefreshDmaTransferStatus();
                     break;
 
                 case 0x1F801DB0:
@@ -612,6 +638,7 @@ namespace ProjectPSX.Devices {
                     return ramDataTransferControl;
 
                 case 0x1F801DAE:
+                    RefreshDmaTransferStatus();
                     return status.register;
 
                 case 0x1F801DB0:
@@ -744,11 +771,66 @@ namespace ProjectPSX.Devices {
             cdBuffer.fillWith(decodedXaAdpcm);
         }
 
+        public int GetDmaWriteWordCapacity() {
+            RefreshDmaTransferStatus();
+            return control.soundRamTransferMode == 2 ? (DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS - dmaTransferFifoCount) / 2 : 0;
+        }
+
+        public int GetDmaReadWordAvailability() {
+            RefreshDmaTransferStatus();
+            return control.soundRamTransferMode == 3 ? dmaTransferFifoCount / 2 : 0;
+        }
+
+        public int processDmaWritePartial(ReadOnlySpan<uint> dma) {
+            if (control.soundRamTransferMode != 2) {
+                RefreshDmaTransferStatus();
+                return 0;
+            }
+
+            int transferableWords = Math.Min(dma.Length, (DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS - dmaTransferFifoCount) / 2);
+            for (int i = 0; i < transferableWords; i++) {
+                uint value = dma[i];
+                PushTransferHalfword((ushort)value);
+                PushTransferHalfword((ushort)(value >> 16));
+            }
+
+            if (TraceDmaTransfer && transferableWords > 0) {
+                Console.WriteLine(
+                    $"[SPU-DMA] fifo-write words={transferableWords} fifo={dmaTransferFifoCount}/{DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS} addr={ramDataTransferAddressInternal:x5} pc={CPU.TraceCurrentPC:x8}");
+            }
+
+            RefreshDmaTransferStatus();
+            return transferableWords;
+        }
+
+        public int processDmaLoadPartial(Span<uint> destination) {
+            if (control.soundRamTransferMode != 3) {
+                RefreshDmaTransferStatus();
+                return 0;
+            }
+
+            int transferableWords = Math.Min(destination.Length, dmaTransferFifoCount / 2);
+            for (int i = 0; i < transferableWords; i++) {
+                uint lo = PopTransferHalfword();
+                uint hi = PopTransferHalfword();
+                destination[i] = lo | (hi << 16);
+            }
+
+            if (TraceDmaTransfer && transferableWords > 0) {
+                Console.WriteLine(
+                    $"[SPU-DMA] fifo-read words={transferableWords} fifo={dmaTransferFifoCount}/{DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS} addr={ramDataTransferAddressInternal:x5} pc={CPU.TraceCurrentPC:x8}");
+            }
+
+            RefreshDmaTransferStatus();
+            return transferableWords;
+        }
+
         private int counter = 0;
         private const int CYCLES_PER_SAMPLE = 0x300; //33868800 / 44100hz
         private int reverbCounter = 0;
         public bool tick(int cycles) {
             counter += cycles;
+            TickDmaTransfer(cycles);
             bool edgeTrigger = false;
 
             while (counter >= CYCLES_PER_SAMPLE) {
@@ -850,6 +932,7 @@ namespace ProjectPSX.Devices {
                 edgeTrigger |= handleCaptureBuffer(2 * 1024 + captureBufferPos, voices[1].latest);
                 edgeTrigger |= handleCaptureBuffer(3 * 1024 + captureBufferPos, voices[3].latest);
                 captureBufferPos = (captureBufferPos + 2) & 0x3FF;
+                status.isSecondHalfCaptureBuffer = captureBufferPos >= 0x200;
 
                 sumLeft = (ClampSigned16(sumLeft) * (mainVolumeLeft << 1)) >> 15;
                 sumRight = (ClampSigned16(sumRight) * (mainVolumeRight << 1)) >> 15;
@@ -868,6 +951,7 @@ namespace ProjectPSX.Devices {
             if (control.irq9Enabled && edgeTrigger) {
                 status.irq9Flag = true;
             }
+            RefreshDmaTransferStatus();
             return control.irq9Enabled && edgeTrigger;
         }
 
@@ -1082,6 +1166,139 @@ namespace ProjectPSX.Devices {
             }
         
             ramDataTransferAddressInternal = (uint)((ramDataTransferAddressInternal + size) & 0x7FFFF);
+        }
+
+        private void HandleTransferModeChange(int previousMode, int nextMode) {
+            if (previousMode == nextMode) {
+                return;
+            }
+
+            if (previousMode == 2 && dmaTransferFifoCount > 0) {
+                FlushPendingDmaWriteFifo();
+            } else if (previousMode == 3 && dmaTransferFifoCount > 0) {
+                ClearTransferFifo();
+            }
+
+            if (nextMode < 2) {
+                ClearTransferFifo();
+            }
+
+            dmaTransferCycleBudget = 0;
+        }
+
+        private void TickDmaTransfer(int cycles) {
+            int transferMode = control.soundRamTransferMode;
+            if (transferMode < 2) {
+                dmaTransferCycleBudget = 0;
+                RefreshDmaTransferStatus();
+                return;
+            }
+
+            bool idle = transferMode == 2
+                ? dmaTransferFifoCount == 0
+                : dmaTransferFifoCount >= DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS;
+            if (idle) {
+                dmaTransferCycleBudget = 0;
+                RefreshDmaTransferStatus();
+                return;
+            }
+
+            dmaTransferCycleBudget += cycles;
+            while (dmaTransferCycleBudget >= DMA_TRANSFER_CYCLES_PER_HALFWORD) {
+                dmaTransferCycleBudget -= DMA_TRANSFER_CYCLES_PER_HALFWORD;
+
+                if (transferMode == 2) {
+                    if (dmaTransferFifoCount == 0) {
+                        break;
+                    }
+
+                    WriteTransferHalfword(PopTransferHalfword());
+                } else {
+                    if (dmaTransferFifoCount >= DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS) {
+                        break;
+                    }
+
+                    PushTransferHalfword(ReadTransferHalfword());
+                }
+            }
+
+            RefreshDmaTransferStatus();
+        }
+
+        private void RefreshDmaTransferStatus() {
+            status.isSecondHalfCaptureBuffer = captureBufferPos >= 0x200;
+
+            switch (control.soundRamTransferMode) {
+                case 2:
+                    status.dataTransferDmaReadRequest = false;
+                    status.dataTransferDmaWriteRequest = dmaTransferFifoCount == 0;
+                    status.dataTransferDmaRequest = status.dataTransferDmaWriteRequest;
+                    status.dataTransferBusyFlag = dmaTransferFifoCount > 0;
+                    break;
+
+                case 3:
+                    status.dataTransferDmaReadRequest = dmaTransferFifoCount >= DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS;
+                    status.dataTransferDmaWriteRequest = false;
+                    status.dataTransferDmaRequest = status.dataTransferDmaReadRequest;
+                    status.dataTransferBusyFlag = dmaTransferFifoCount < DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS;
+                    break;
+
+                default:
+                    status.dataTransferDmaReadRequest = false;
+                    status.dataTransferDmaWriteRequest = false;
+                    status.dataTransferDmaRequest = false;
+                    status.dataTransferBusyFlag = false;
+                    break;
+            }
+        }
+
+        private void ClearTransferFifo() {
+            dmaTransferFifoHead = 0;
+            dmaTransferFifoCount = 0;
+        }
+
+        private void FlushPendingDmaWriteFifo() {
+            while (dmaTransferFifoCount > 0) {
+                WriteTransferHalfword(PopTransferHalfword());
+            }
+        }
+
+        private void PushTransferHalfword(ushort value) {
+            int tail = (dmaTransferFifoHead + dmaTransferFifoCount) % DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS;
+            dmaTransferFifo[tail] = value;
+            dmaTransferFifoCount++;
+        }
+
+        private ushort PopTransferHalfword() {
+            ushort value = dmaTransferFifo[dmaTransferFifoHead];
+            dmaTransferFifoHead = (dmaTransferFifoHead + 1) % DMA_TRANSFER_FIFO_CAPACITY_HALFWORDS;
+            dmaTransferFifoCount--;
+            return value;
+        }
+
+        private ushort ReadTransferHalfword() {
+            uint address = ramDataTransferAddressInternal;
+            ushort value = unchecked((ushort)loadRam(address));
+            MaybeTriggerTransferIrq(address, 2);
+            ramDataTransferAddressInternal = (ramDataTransferAddressInternal + 2) & 0x7FFFF;
+            return value;
+        }
+
+        private void WriteTransferHalfword(ushort value) {
+            uint address = ramDataTransferAddressInternal;
+            writeRam(address, value);
+            MaybeTriggerTransferIrq(address, 2);
+            ramDataTransferAddressInternal = (ramDataTransferAddressInternal + 2) & 0x7FFFF;
+        }
+
+        private void MaybeTriggerTransferIrq(uint startAddress, int sizeBytes) {
+            uint ramIrqAddress32 = (uint)ramIrqAddress << 3;
+            if (ramIrqAddress32 > startAddress && ramIrqAddress32 < (startAddress + (uint)sizeBytes)) {
+                if (control.irq9Enabled) {
+                    status.irq9Flag = true;
+                    interruptController.set(Interrupt.SPU);
+                }
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
