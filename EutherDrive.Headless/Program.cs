@@ -613,8 +613,7 @@ class Program
             if (usePsx)
             {
                 Console.WriteLine("[HEADLESS] Using PSX core");
-                PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
-                PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+                ConfigurePsxAdapterFromEnv();
 
                 var psx = new PsxAdapter();
                 psx.LoadRom(romPath);
@@ -1487,8 +1486,7 @@ class Program
 
         if (usePsx)
         {
-            PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
-            PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+            ConfigurePsxAdapterFromEnv();
 
             var psx = new PsxAdapter();
             psx.LoadRom(romPath);
@@ -1827,8 +1825,7 @@ class Program
 
             if (usePsx)
             {
-                PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
-                PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+                ConfigurePsxAdapterFromEnv();
                 bool tracePsxStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_START") == "1";
                 string? tracePsxStartFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_START_TRACE_FILE");
                 string? tracePsxCodeFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CODE_TRACE_FILE");
@@ -2312,8 +2309,7 @@ class Program
 
             if (usePsx)
             {
-                PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
-                PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+                ConfigurePsxAdapterFromEnv();
 
                 var psx = new PsxAdapter();
                 psx.LoadRom(romPath);
@@ -2557,6 +2553,30 @@ class Program
             || value.Equals("true", StringComparison.OrdinalIgnoreCase)
             || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
             || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ConfigurePsxAdapterFromEnv()
+    {
+        PsxAdapter.BiosPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS");
+        PsxAdapter.SubchannelPatchPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_SBI");
+        PsxAdapter.AnalogControllerEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_ANALOG_PAD");
+        PsxAdapter.FastLoadEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_FAST_LOAD");
+        PsxAdapter.SuperFastBootEnabled = IsEnvEnabled("EUTHERDRIVE_PSX_SUPER_FAST_BOOT");
+        PsxAdapter.VideoStandardMode = ParsePsxVideoStandardModeEnv("EUTHERDRIVE_PSX_VIDEO_STANDARD");
+    }
+
+    private static PsxVideoStandardMode ParsePsxVideoStandardModeEnv(string key)
+    {
+        string? raw = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(raw))
+            return PsxVideoStandardMode.Auto;
+
+        return raw.Trim().ToUpperInvariant() switch
+        {
+            "PAL" => PsxVideoStandardMode.PAL,
+            "NTSC" => PsxVideoStandardMode.NTSC,
+            _ => PsxVideoStandardMode.Auto,
+        };
     }
 
     private static int? ParseOptionalIntEnv(string name)

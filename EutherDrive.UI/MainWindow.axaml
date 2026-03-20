@@ -275,6 +275,12 @@
               <Button Content="Select BIOS…" Click="OnSelectPsxBios"/>
               <Button Classes="ghost" Content="Clear" Click="OnClearPsxBios"/>
             </StackPanel>
+            <TextBlock Text="PSX SBI" FontWeight="Bold"/>
+            <TextBlock Name="PsxSbiPathText" Text="(none)" TextWrapping="Wrap"/>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Select SBI…" Click="OnSelectPsxSbi"/>
+              <Button Classes="ghost" Content="Clear" Click="OnClearPsxSbi"/>
+            </StackPanel>
             <CheckBox Name="PsxAnalogPadCheck"
                       Content="PSX analog pad"
                       IsChecked="False"

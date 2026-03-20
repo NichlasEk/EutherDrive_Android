@@ -31,13 +31,19 @@ namespace ProjectPSX {
         private bool _psxBootBiosExited;
         private double? _frameRateOverrideHz;
 
-        public ProjectPSX(IHostWindow window, string diskFilename, bool analogControllerEnabled = true, bool fastLoadEnabled = false, bool superFastLoadEnabled = false) {
+        public ProjectPSX(
+            IHostWindow window,
+            string diskFilename,
+            bool analogControllerEnabled = true,
+            bool fastLoadEnabled = false,
+            bool superFastLoadEnabled = false,
+            string? subchannelOverridePath = null) {
             controller = new DigitalController(analogControllerEnabled);
             memoryCard = new MemoryCard();
 
             interruptController = new InterruptController();
 
-            cd = new CD(diskFilename);
+            cd = new CD(diskFilename, subchannelOverridePath);
             spu = new SPU(window, interruptController);
             gpu = new GPU(window);
             cdrom = new CDROM(cd, spu);

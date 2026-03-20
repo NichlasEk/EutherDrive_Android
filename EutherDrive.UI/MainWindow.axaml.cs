@@ -123,9 +123,11 @@ public partial class MainWindow : Window
     private string? _romPath;
     private string? _pceBiosPath;
     private string? _psxBiosPath;
+    private string? _psxSbiPath;
     private readonly List<string> _recentRomPaths = new();
     private bool _recentRomUpdating;
     private readonly Dictionary<string, string> _snesSpecialRomPaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _romPsxSbiPaths = new(StringComparer.OrdinalIgnoreCase);
     private static readonly SnesSpecialRomDefinition[] s_snesSpecialRomDefinitions =
     [
         new("DSP1", "DSP1", "EUTHERDRIVE_DSP1_ROM"),
@@ -323,6 +325,7 @@ public partial class MainWindow : Window
     private PsxVideoStandardMode _psxVideoStandardMode = PsxVideoStandardMode.Auto;
     private readonly Dictionary<string, ConsoleRegion> _romRegionOverrides = new(StringComparer.OrdinalIgnoreCase);
     private string? _romRegionKey;
+    private string? _romPsxSbiKey;
     private readonly Dictionary<string, bool> _romSegaCdRamCartOverrides = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _romSegaCdLoadCdToRamOverrides = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _romSegaCdForceNoDiscOverrides = new(StringComparer.OrdinalIgnoreCase);
@@ -484,6 +487,7 @@ public partial class MainWindow : Window
         {
             StatusText.Text = $"Loading from CLI: {romPath}";
             _romPath = romPath;
+            ApplyPsxSbiSelectionForRom(_romPath);
             AddRecentRom(_romPath);
             SaveSettings();
         }
@@ -1443,6 +1447,7 @@ public partial class MainWindow : Window
 
         _romPath = files[0].TryGetLocalPath();
         RomPathText.Text = _romPath ?? files[0].Name;
+        ApplyPsxSbiSelectionForRom(_romPath);
         StatusText.Text = "ROM selected";
         AddRecentRom(_romPath);
         RefreshAutoFireUi();
@@ -1484,6 +1489,58 @@ public partial class MainWindow : Window
             PsxBiosPathText.Text = _psxBiosPath ?? files[0].Name;
         StatusText.Text = "PSX BIOS selected";
         SaveSettings();
+    }
+
+    private async void OnSelectPsxSbi(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_romPsxSbiKey))
+        {
+            StatusText.Text = "Select a PSX ROM first.";
+            return;
+        }
+
+        IStorageFolder? startFolder = null;
+        string? currentPath = !string.IsNullOrWhiteSpace(_psxSbiPath) ? _psxSbiPath : _romPath;
+        if (!string.IsNullOrWhiteSpace(currentPath))
+        {
+            string? folderPath = Path.GetDirectoryName(currentPath);
+            if (!string.IsNullOrWhiteSpace(folderPath))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(folderPath);
+        }
+
+        var options = new FilePickerOpenOptions
+        {
+            Title = "Select PSX SBI / subchannel patch",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("PSX SBI")
+                {
+                    Patterns = new[] { "*.sbi", "*.SBI", "*.lsd", "*.LSD" }
+                }
+            }
+        };
+
+        if (startFolder != null)
+            options.SuggestedStartLocation = startFolder;
+        if (!string.IsNullOrWhiteSpace(currentPath))
+            options.SuggestedFileName = Path.GetFileName(currentPath);
+
+        var files = await StorageProvider.OpenFilePickerAsync(options);
+        if (files.Count == 0)
+            return;
+
+        string? localPath = files[0].TryGetLocalPath();
+        if (string.IsNullOrWhiteSpace(localPath))
+        {
+            StatusText.Text = "PSX SBI must be a local file.";
+            return;
+        }
+
+        _romPsxSbiPaths[_romPsxSbiKey] = localPath;
+        SetEffectivePsxSbiPath(localPath);
+        SaveSettings();
+        StatusText.Text = "PSX SBI saved for this ROM; reload disc to apply.";
     }
 
     private async void OnSelectPceBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -1542,6 +1599,57 @@ public partial class MainWindow : Window
             PsxBiosPathText.Text = "(none)";
         StatusText.Text = "PSX BIOS cleared";
         SaveSettings();
+    }
+
+    private void OnClearPsxSbi(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_romPsxSbiKey))
+        {
+            StatusText.Text = "Select a PSX ROM first.";
+            return;
+        }
+
+        _romPsxSbiPaths.Remove(_romPsxSbiKey);
+        SetEffectivePsxSbiPath(null);
+        SaveSettings();
+        StatusText.Text = "PSX SBI cleared for this ROM; reload disc to apply.";
+    }
+
+    private void ApplyPsxSbiSelectionForRom(string? romPath)
+    {
+        _romPsxSbiKey = GetPsxSbiRomKey(romPath);
+        if (!string.IsNullOrWhiteSpace(_romPsxSbiKey) &&
+            _romPsxSbiPaths.TryGetValue(_romPsxSbiKey, out string? path) &&
+            !string.IsNullOrWhiteSpace(path))
+        {
+            SetEffectivePsxSbiPath(path);
+            return;
+        }
+
+        SetEffectivePsxSbiPath(null);
+    }
+
+    private void SetEffectivePsxSbiPath(string? path)
+    {
+        _psxSbiPath = string.IsNullOrWhiteSpace(path) ? null : path;
+        PsxAdapter.SubchannelPatchPath = _psxSbiPath;
+        if (PsxSbiPathText != null)
+            PsxSbiPathText.Text = _psxSbiPath ?? "(none)";
+    }
+
+    private static string? GetPsxSbiRomKey(string? romPath)
+    {
+        if (string.IsNullOrWhiteSpace(romPath) || !IsPsxRom(romPath))
+            return null;
+
+        try
+        {
+            return Path.GetFullPath(romPath);
+        }
+        catch
+        {
+            return romPath;
+        }
     }
 
     private async void OnShowSnesSpecialRomSettings(object? sender, RoutedEventArgs e)
@@ -1766,6 +1874,7 @@ public partial class MainWindow : Window
         try
         {
             Console.WriteLine($"[UI] Start clicked. romPath='{_romPath}' exists={(!string.IsNullOrWhiteSpace(_romPath) && File.Exists(_romPath))}");
+            ApplyPsxSbiSelectionForRom(_romPath);
             _timer.Stop();
             StopEmuLoop();
             // Deterministic restart: stop audio thread/sink before loading next ROM.
@@ -2063,6 +2172,7 @@ public partial class MainWindow : Window
             _romPath = path;
             if (RomPathText != null)
                 RomPathText.Text = _romPath;
+            ApplyPsxSbiSelectionForRom(_romPath);
             StatusText.Text = "ROM selected (recent)";
             AddRecentRom(_romPath);
             RefreshAutoFireUi();
@@ -2492,6 +2602,7 @@ public partial class MainWindow : Window
 
     private void UpdatePsxRomInfo(string romPath)
     {
+        ApplyPsxSbiSelectionForRom(romPath);
         if (RomInfoText == null)
             return;
 
@@ -3613,6 +3724,7 @@ public partial class MainWindow : Window
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
+        public Dictionary<string, string>? RomPsxSbiPaths { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public bool PsxSuperFastBootEnabled { get; set; }
@@ -3648,6 +3760,7 @@ public partial class MainWindow : Window
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
+        public Dictionary<string, string>? RomPsxSbiPaths { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public bool PsxSuperFastBootEnabled { get; set; }
@@ -3830,10 +3943,21 @@ public partial class MainWindow : Window
                 _romSegaCdForceNoDiscOverrides[entry.Key] = entry.Value;
         }
 
+        _romPsxSbiPaths.Clear();
+        if (settings.RomPsxSbiPaths != null)
+        {
+            foreach (var entry in settings.RomPsxSbiPaths)
+            {
+                if (!string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value))
+                    _romPsxSbiPaths[entry.Key] = entry.Value;
+            }
+        }
+
         RegionOverride = _defaultRegionOverride;
         _frameRateMode = settings.FrameRateMode;
         PsxAdapter.FrameRateMode = _frameRateMode;
         UpdateFrameRateCombo();
+        ApplyPsxSbiSelectionForRom(_romPath);
 
         // Input mappings
         if (settings.InputMappings != null)
@@ -3909,6 +4033,9 @@ public partial class MainWindow : Window
             PsxBiosPath = _psxBiosPath,
             SnesSpecialRomPaths = _snesSpecialRomPaths.Count > 0
                 ? new Dictionary<string, string>(_snesSpecialRomPaths, StringComparer.OrdinalIgnoreCase)
+                : null,
+            RomPsxSbiPaths = _romPsxSbiPaths.Count > 0
+                ? new Dictionary<string, string>(_romPsxSbiPaths, StringComparer.OrdinalIgnoreCase)
                 : null,
             PsxAnalogControllerEnabled = _psxAnalogControllerEnabled,
             PsxFastLoadEnabled = _psxFastLoadEnabled,
@@ -4000,6 +4127,7 @@ public partial class MainWindow : Window
             PceBiosPath = settings.PceBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
             SnesSpecialRomPaths = settings.SnesSpecialRomPaths,
+            RomPsxSbiPaths = settings.RomPsxSbiPaths,
             PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = settings.PsxFastLoadEnabled,
             PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled,
@@ -4034,6 +4162,9 @@ public partial class MainWindow : Window
 
         if (settings.SnesSpecialRomPaths != null && settings.SnesSpecialRomPaths.Count > 0)
             model.SnesSpecialRomPaths = new Dictionary<string, string>(settings.SnesSpecialRomPaths, StringComparer.OrdinalIgnoreCase);
+
+        if (settings.RomPsxSbiPaths != null && settings.RomPsxSbiPaths.Count > 0)
+            model.RomPsxSbiPaths = new Dictionary<string, string>(settings.RomPsxSbiPaths, StringComparer.OrdinalIgnoreCase);
 
         if (settings.RomSegaCdRamCartOverrides != null && settings.RomSegaCdRamCartOverrides.Count > 0)
             model.RomSegaCdRamCartOverrides = new Dictionary<string, bool>(settings.RomSegaCdRamCartOverrides, StringComparer.OrdinalIgnoreCase);
@@ -4125,6 +4256,16 @@ public partial class MainWindow : Window
             {
                 if (!string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value))
                     settings.SnesSpecialRomPaths[entry.Key] = entry.Value;
+            }
+        }
+
+        if (raw.RomPsxSbiPaths != null)
+        {
+            settings.RomPsxSbiPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in raw.RomPsxSbiPaths)
+            {
+                if (!string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value))
+                    settings.RomPsxSbiPaths[entry.Key] = entry.Value;
             }
         }
 
@@ -4300,6 +4441,7 @@ public partial class MainWindow : Window
         _romPath = raw;
         if (RomPathText != null)
             RomPathText.Text = _romPath;
+        ApplyPsxSbiSelectionForRom(_romPath);
     }
 
     private static string GetLegacyLastRomPathSettingsPath()

@@ -19,12 +19,13 @@ namespace ProjectPSX.Devices.CdRom {
         private readonly Dictionary<string, long> subSectorCounts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         private Stream? discSubStream;
         private long discSubSectors;
+        private readonly Dictionary<int, SubchannelQ> discSubchannelOverrides = new Dictionary<int, SubchannelQ>();
 
         public List<Track> tracks;
 
         public bool isTrackChange;
 
-        public CD(string diskFilename) {
+        public CD(string diskFilename, string? subchannelOverridePath = null) {
             string ext = Path.GetExtension(diskFilename);
 
             if (ext == ".bin") {
@@ -45,7 +46,7 @@ namespace ProjectPSX.Devices.CdRom {
                     Console.WriteLine($"Track {i} size: {tracks[i].size} lbaStart: {tracks[i].lbaStart} lbaEnd: {tracks[i].lbaEnd}");
             }
 
-            TryLoadSubchannels(diskFilename);
+            TryLoadSubchannels(diskFilename, subchannelOverridePath);
         }
 
         public byte[] Read(int loc) {
@@ -98,6 +99,10 @@ namespace ProjectPSX.Devices.CdRom {
         }
 
         private bool TryReadSubchannelQ(int loc, Track currentTrack, out SubchannelQ subQ) {
+            if (TryReadDiscOverrideSubchannelQ(loc, out subQ)) {
+                return true;
+            }
+
             if (TryReadDiscSubchannelQ(loc, out subQ)) {
                 return true;
             }
@@ -112,6 +117,10 @@ namespace ProjectPSX.Devices.CdRom {
 
             subQ = default;
             return false;
+        }
+
+        private bool TryReadDiscOverrideSubchannelQ(int loc, out SubchannelQ subQ) {
+            return discSubchannelOverrides.TryGetValue(loc, out subQ);
         }
 
         private bool TryReadDiscSubchannelQ(int loc, out SubchannelQ subQ) {
@@ -159,8 +168,10 @@ namespace ProjectPSX.Devices.CdRom {
             return true;
         }
 
-        private void TryLoadSubchannels(string diskFilename) {
+        private void TryLoadSubchannels(string diskFilename, string? subchannelOverridePath) {
             TryLoadDiscWideSubchannel(diskFilename);
+            if (!TryLoadDiscWideSubchannelOverrideFile(subchannelOverridePath))
+                TryLoadDiscWideSubchannelOverrides(diskFilename);
 
             foreach (Track track in tracks) {
                 if (subStreams.ContainsKey(track.file)) {
@@ -180,6 +191,12 @@ namespace ProjectPSX.Devices.CdRom {
             }
         }
 
+        private void TryLoadDiscWideSubchannelOverrides(string diskFilename) {
+            if (TryLoadDiscWideSubchannelOverrideFile(Path.ChangeExtension(diskFilename, ".sbi")))
+                return;
+            TryLoadDiscWideSubchannelOverrideFile(Path.ChangeExtension(diskFilename, ".lsd"));
+        }
+
         private void TryLoadDiscWideSubchannel(string diskFilename) {
             string subPath = Path.ChangeExtension(diskFilename, ".sub");
             if (!TryOpenSubchannelFile(subPath, out Stream? stream, out long sectors)) {
@@ -190,6 +207,35 @@ namespace ProjectPSX.Devices.CdRom {
             discSubSectors = sectors;
             if (Verbose) {
                 Console.WriteLine($"[CD] Loaded disc subchannel sidecar: {subPath} sectors={sectors}");
+            }
+        }
+
+        private bool TryLoadDiscWideSubchannelOverrideFile(string? path) {
+            if (string.IsNullOrWhiteSpace(path) || !VirtualFileSystem.Exists(path)) {
+                return false;
+            }
+
+            bool isSbi = Path.GetExtension(path).Equals(".sbi", StringComparison.OrdinalIgnoreCase);
+            bool isLsd = Path.GetExtension(path).Equals(".lsd", StringComparison.OrdinalIgnoreCase);
+            if (!isSbi && !isLsd) {
+                return false;
+            }
+            try {
+                byte[] data = VirtualFileSystem.ReadAllBytes(path);
+                int countBefore = discSubchannelOverrides.Count;
+                bool loaded = isSbi
+                    ? TryParseSbiSubchannelOverrides(data, discSubchannelOverrides)
+                    : TryParseLsdSubchannelOverrides(data, discSubchannelOverrides);
+                if (loaded && Verbose) {
+                    Console.WriteLine(
+                        $"[CD] Loaded disc subchannel {(isSbi ? "SBI" : "LSD")} sidecar: {path} entries={discSubchannelOverrides.Count - countBefore}");
+                }
+                return loaded;
+            } catch (Exception ex) {
+                if (Verbose) {
+                    Console.WriteLine($"[CD] Failed loading {(isSbi ? "SBI" : "LSD")} sidecar '{path}': {ex.Message}");
+                }
+                return false;
             }
         }
 
@@ -218,6 +264,65 @@ namespace ProjectPSX.Devices.CdRom {
             }
         }
 
+        private static bool TryParseSbiSubchannelOverrides(byte[] data, Dictionary<int, SubchannelQ> output) {
+            if (data.Length < 4 || data[0] != (byte)'S' || data[1] != (byte)'B' || data[2] != (byte)'I' || data[3] != 0) {
+                return false;
+            }
+
+            const int recordSize = 14;
+            int payloadBytes = data.Length - 4;
+            if ((payloadBytes % recordSize) != 0) {
+                return false;
+            }
+
+            for (int offset = 4; offset < data.Length; offset += recordSize) {
+                TryAddSubchannelOverride(data.AsSpan(offset, recordSize), hasCrc: false, output);
+            }
+
+            return true;
+        }
+
+        private static bool TryParseLsdSubchannelOverrides(byte[] data, Dictionary<int, SubchannelQ> output) {
+            const int recordSize = 15;
+            if (data.Length == 0 || (data.Length % recordSize) != 0) {
+                return false;
+            }
+
+            for (int offset = 0; offset < data.Length; offset += recordSize) {
+                TryAddSubchannelOverride(data.AsSpan(offset, recordSize), hasCrc: true, output);
+            }
+
+            return true;
+        }
+
+        private static void TryAddSubchannelOverride(ReadOnlySpan<byte> entry, bool hasCrc, Dictionary<int, SubchannelQ> output) {
+            int expectedLength = hasCrc ? 15 : 14;
+            if (entry.Length != expectedLength) {
+                return;
+            }
+
+            int mm = BcdToDec(entry[0]);
+            int ss = BcdToDec(entry[1]);
+            int ff = BcdToDec(entry[2]);
+            if (ss >= 60 || ff >= 75) {
+                return;
+            }
+
+            int qOffset = hasCrc ? 3 : 4;
+            int loc = (mm * 60 * 75) + (ss * 75) + ff;
+            output[loc] = new SubchannelQ(
+                entry[qOffset + 0],
+                entry[qOffset + 1],
+                entry[qOffset + 2],
+                entry[qOffset + 3],
+                entry[qOffset + 4],
+                entry[qOffset + 5],
+                entry[qOffset + 6],
+                entry[qOffset + 7],
+                entry[qOffset + 8],
+                entry[qOffset + 9]);
+        }
+
         private static SubchannelQ SynthesizeSubchannelQ(Track track, int loc) {
             bool inPregap = loc < track.lbaStart;
             int relativeLba = inPregap
@@ -243,6 +348,10 @@ namespace ProjectPSX.Devices.CdRom {
 
         private static byte DecToBcd(byte value) {
             return (byte)(value + 6 * (value / 10));
+        }
+
+        private static int BcdToDec(byte value) {
+            return ((value >> 4) * 10) + (value & 0x0F);
         }
 
         private static (byte mm, byte ss, byte ff) GetMsfFromLba(int lba) {

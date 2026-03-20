@@ -23,6 +23,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
     private const int SuperFastBootMinVisibleSamples = 8;
 
     public static string? BiosPath { get; set; }
+    public static string? SubchannelPatchPath { get; set; }
     public static bool AnalogControllerEnabled { get; set; }
     public static bool FastLoadEnabled { get; set; }
     public static bool SuperFastBootEnabled { get; set; }
@@ -239,7 +240,13 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         _host = new PsxHostWindow(this);
         bool superFastBoot = SuperFastBootEnabled && !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
         bool bootFastLoadEnabled = FastLoadEnabled || superFastBoot;
-        _core = new ProjectPSX.ProjectPSX(_host, path, AnalogControllerEnabled, bootFastLoadEnabled, superFastBoot);
+        _core = new ProjectPSX.ProjectPSX(
+            _host,
+            path,
+            AnalogControllerEnabled,
+            bootFastLoadEnabled,
+            superFastBoot,
+            SubchannelPatchPath);
         ApplyConfiguredTimingToCore(_core);
         if (superFastBoot)
             RunSuperFastBoot(_core);
@@ -500,9 +507,10 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
     private static string BuildBootEnvironmentSummary()
     {
         string biosName = string.IsNullOrWhiteSpace(BiosPath) ? "(none)" : Path.GetFileName(BiosPath);
+        string subName = string.IsNullOrWhiteSpace(SubchannelPatchPath) ? "(none)" : Path.GetFileName(SubchannelPatchPath);
         if (string.IsNullOrWhiteSpace(BiosPath) || !VirtualFileSystem.Exists(BiosPath))
         {
-            return $"bios={biosName} biosLen=missing fast={(FastLoadEnabled ? 1 : 0)} super={(SuperFastBootEnabled ? 1 : 0)}";
+            return $"bios={biosName} biosLen=missing sbi={subName} fast={(FastLoadEnabled ? 1 : 0)} super={(SuperFastBootEnabled ? 1 : 0)}";
         }
 
         try
@@ -510,11 +518,11 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             byte[] biosBytes = VirtualFileSystem.ReadAllBytes(BiosPath);
             byte[] hash = SHA256.HashData(biosBytes);
             string shortHash = Convert.ToHexString(hash.AsSpan(0, 4));
-            return $"bios={biosName} biosLen={biosBytes.Length} biosSha={shortHash} fast={(FastLoadEnabled ? 1 : 0)} super={(SuperFastBootEnabled ? 1 : 0)}";
+            return $"bios={biosName} biosLen={biosBytes.Length} biosSha={shortHash} sbi={subName} fast={(FastLoadEnabled ? 1 : 0)} super={(SuperFastBootEnabled ? 1 : 0)}";
         }
         catch
         {
-            return $"bios={biosName} biosLen=err fast={(FastLoadEnabled ? 1 : 0)} super={(SuperFastBootEnabled ? 1 : 0)}";
+            return $"bios={biosName} biosLen=err sbi={subName} fast={(FastLoadEnabled ? 1 : 0)} super={(SuperFastBootEnabled ? 1 : 0)}";
         }
     }
 
