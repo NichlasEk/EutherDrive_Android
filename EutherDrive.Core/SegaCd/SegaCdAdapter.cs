@@ -432,6 +432,19 @@ public sealed class SegaCdAdapter : IEmulatorCore
         File.WriteAllBytes(path, snapshot);
     }
 
+    public void DumpMainRam(string path)
+    {
+        byte[]? mem = md_m68k.g_memory;
+        if (mem == null || mem.Length < 0x1000000)
+            return;
+
+        const int mainRamStart = 0xFF0000;
+        const int mainRamLength = 0x10000;
+        var snapshot = new byte[mainRamLength];
+        Buffer.BlockCopy(mem, mainRamStart, snapshot, 0, mainRamLength);
+        File.WriteAllBytes(path, snapshot);
+    }
+
     public void DumpCdcRam(string path)
     {
         if (_memory == null)
