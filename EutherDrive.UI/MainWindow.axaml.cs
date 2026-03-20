@@ -2852,6 +2852,11 @@ public partial class MainWindow : Window
                 string? region = PsxDiscInfo.MapRegionFromDiscId(fallbackId);
                 if (!string.IsNullOrWhiteSpace(region))
                     sbFallback.AppendLine($"Region: {region}");
+                string? sbiName = string.IsNullOrWhiteSpace(PsxAdapter.SubchannelPatchPath)
+                    ? null
+                    : Path.GetFileName(PsxAdapter.SubchannelPatchPath);
+                if (!string.IsNullOrWhiteSpace(sbiName))
+                    sbFallback.AppendLine($"SBI: {sbiName}");
                 if (!string.IsNullOrWhiteSpace(PsxAdapter.BiosPath))
                     sbFallback.AppendLine($"BIOS: {PsxAdapter.BiosPath}");
                 return sbFallback.ToString().TrimEnd();
@@ -2869,7 +2874,20 @@ public partial class MainWindow : Window
                     sb.AppendLine($"Region: {discInfo.Region}");
             }
             if (!string.IsNullOrWhiteSpace(discInfo.BootFile))
+            {
                 sb.AppendLine($"Boot: {discInfo.BootFile}");
+                string? bootId = PsxDiscInfo.ExtractDiscIdFromBootFile(discInfo.BootFile);
+                if (!string.IsNullOrWhiteSpace(bootId) &&
+                    !string.Equals(bootId, discInfo.DiscId, StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.AppendLine($"Boot ID: {bootId}");
+                }
+            }
+            string? sbi = string.IsNullOrWhiteSpace(PsxAdapter.SubchannelPatchPath)
+                ? null
+                : Path.GetFileName(PsxAdapter.SubchannelPatchPath);
+            if (!string.IsNullOrWhiteSpace(sbi))
+                sb.AppendLine($"SBI: {sbi}");
             if (!string.IsNullOrWhiteSpace(PsxAdapter.BiosPath))
                 sb.AppendLine($"BIOS: {PsxAdapter.BiosPath}");
             return sb.ToString().TrimEnd();
@@ -2896,7 +2914,7 @@ public partial class MainWindow : Window
             while (end < name.Length && (char.IsDigit(name[end]) || name[end] == '-' || name[end] == '_'))
                 end++;
 
-            string id = name.Substring(idx, end - idx).Replace('_', '-');
+            string id = name.Substring(idx, end - idx);
             return id;
         }
         return null;
@@ -2983,7 +3001,7 @@ public partial class MainWindow : Window
         {
             byte[] buffer = new byte[2048];
             long offset = sectorSize == 2352
-                ? (long)lba * 2352 + 16
+                ? (long)lba * 2352 + 24
                 : (long)lba * 2048;
             stream.Seek(offset, SeekOrigin.Begin);
             stream.Read(buffer, 0, buffer.Length);
@@ -3088,11 +3106,12 @@ public partial class MainWindow : Window
 
             file = file.Replace(';', '\0').TrimEnd('\0');
             file = file.Trim();
-            file = file.Replace('_', '-');
             if (file.StartsWith("SL") || file.StartsWith("SC"))
                 return file;
             return null;
         }
+
+        public static string? ExtractDiscIdFromBootFile(string? bootFile) => ExtractDiscId(bootFile);
 
         public static string? MapRegionFromDiscId(string? discId)
         {
