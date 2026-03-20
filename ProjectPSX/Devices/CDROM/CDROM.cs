@@ -87,6 +87,7 @@ namespace ProjectPSX.Devices {
         private byte volumeRtoR = 0xFF;
 
         private bool cdDebug = false;
+        private bool cdRegisterDebug = false;
         private bool protectTrace;
         private string protectTraceFile = string.Empty;
         private bool isLidOpen = false;
@@ -209,6 +210,7 @@ namespace ProjectPSX.Devices {
 
         public void RefreshRuntimeSettings() {
             cdDebug = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_TRACE") == "1";
+            cdRegisterDebug = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_REGISTER_TRACE") == "1";
             protectTrace = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_PROTECT_TRACE") == "1";
             protectTraceFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_PROTECT_TRACE_FILE") ?? string.Empty;
             SyncTransientTransferState();
@@ -228,6 +230,21 @@ namespace ProjectPSX.Devices {
             }
 
             return BitConverter.ToString(values).Replace("-", "");
+        }
+
+        private void LogDiscCommand(string tag, string message) {
+            if (!cdDebug) {
+                return;
+            }
+
+            Console.WriteLine($"[CDROM] [{tag}] {message}");
+        }
+
+        private string DescribeTrack(Track track) {
+            return
+                $"track={track.number} audio={(track.isAudio ? 1 : 0)} " +
+                $"start={track.lbaStart} end={track.lbaEnd} len={track.lba} " +
+                $"pregap={track.pregapSectors} fileStart={track.fileStartSector}";
         }
 
         private void TraceProtect(string tag, string message, bool force = false) {
@@ -273,11 +290,30 @@ namespace ProjectPSX.Devices {
         }
 
         private void TryExposeBufferedSector(string reason) {
-            if (!transferReady || transferActive || !lastReadSector.hasLoadedData()) {
+            if (!transferReady || transferActive) {
                 if (cdDebug) {
                     Console.WriteLine(
                         $"[CDROM] [DATA] Skip expose reason={reason} ready={(transferReady ? 1 : 0)} " +
                         $"active={(transferActive ? 1 : 0)} lastLoaded={(lastReadSector.hasLoadedData() ? 1 : 0)}");
+                }
+                return;
+            }
+
+            if (currentSector.hasData()) {
+                transferActive = true;
+                if (cdDebug) {
+                    Console.WriteLine(
+                        $"[CDROM] [DATA] Resume reason={reason} bytes={currentSector.DebugSize} " +
+                        $"cur={currentSector.DebugPointer}/{currentSector.DebugSize}");
+                }
+                return;
+            }
+
+            if (!lastReadSector.hasLoadedData()) {
+                if (cdDebug) {
+                    Console.WriteLine(
+                        $"[CDROM] [DATA] Skip expose reason={reason} ready={(transferReady ? 1 : 0)} " +
+                        $"active={(transferActive ? 1 : 0)} lastLoaded=0");
                 }
                 return;
             }
@@ -299,6 +335,24 @@ namespace ProjectPSX.Devices {
                     $"[CDROM] [DATA] Exposed reason={reason} lba={bufferedSectorLba} bytes={currentSector.DebugSize} " +
                     $"cur={currentSector.DebugPointer}/{currentSector.DebugSize}");
             }
+        }
+
+        private void OnTransferBufferDrained() {
+            transferActive = false;
+            transferReady = false;
+            currentSector.clear();
+        }
+
+        private bool HasBlockingReadInterrupt() {
+            if (IF != 0) {
+                return true;
+            }
+
+            if (interruptQueue.Count == 0) {
+                return false;
+            }
+
+            return interruptQueue.Peek().delay <= 0;
         }
 
         public void SetFastLoadEnabled(bool enabled) {
@@ -398,12 +452,14 @@ namespace ProjectPSX.Devices {
         }
 
         private void DeliverInterrupt(DelayedInterrupt delayedInterrupt) {
+            bool wasInterruptVisible = (IF & IE) != 0;
+            string responseText = FormatBytes(delayedInterrupt.response);
             TraceProtect(
                 "deliver-pre",
                 $"intr={delayedInterrupt.interrupt:x2} delay={delayedInterrupt.delay} state={(delayedInterrupt.applyStateChange ? 1 : 0)} " +
                 $"nextMode={delayedInterrupt.nextMode} nextRead={delayedInterrupt.nextReadLoc} nextStat={delayedInterrupt.nextStat:x2} " +
                 $"clear={(delayedInterrupt.clearTransferState ? 1 : 0)}/{(delayedInterrupt.clearBufferedSector ? 1 : 0)} " +
-                $"resp={FormatBytes(delayedInterrupt.response)}",
+                $"resp={responseText}",
                 force: true);
             if (delayedInterrupt.applyStateChange) {
                 if (delayedInterrupt.beginFastLoadReadSession) {
@@ -431,9 +487,16 @@ namespace ProjectPSX.Devices {
             }
 
             IF |= delayedInterrupt.interrupt;
+            if (!wasInterruptVisible && (IF & IE) != 0) {
+                edgeTrigger = true;
+            }
+            LogDiscCommand(
+                "IRQ",
+                $"deliver intr={delayedInterrupt.interrupt:x2} resp={responseText} nextMode={delayedInterrupt.nextMode} " +
+                $"nextRead={delayedInterrupt.nextReadLoc} nextStat={delayedInterrupt.nextStat:x2} if={IF:x2} ie={IE:x2}");
             TraceProtect(
                 "deliver-post",
-                $"intr={delayedInterrupt.interrupt:x2} resp={FormatBytes(delayedInterrupt.response)}",
+                $"intr={delayedInterrupt.interrupt:x2} resp={responseText}",
                 force: true);
         }
 
@@ -510,7 +573,6 @@ namespace ProjectPSX.Devices {
         }
 
         private bool edgeTrigger;
-
         private Dictionary<uint, string> commands = new Dictionary<uint, string> {
             [0x00] = "Cmd_00_Invalid",
             [0x01] = "Cmd_01_GetStat",
@@ -558,10 +620,9 @@ namespace ProjectPSX.Devices {
             if (interruptQueue.Count != 0 && IF == 0 && interruptQueue.Peek().delay <= 0) {
                 if (cdDebug) Console.WriteLine($"[CDROM] Interrupt Queue is size: {interruptQueue.Count} dequeue to IF next Interrupt: {interruptQueue.Peek()}");
                 DeliverInterrupt(interruptQueue.Dequeue());
-                //edgeTrigger = true;
             }
 
-            if (/*edgeTrigger &&*/ (IF & IE) != 0) {
+            if (edgeTrigger && (IF & IE) != 0) {
                 if (cdDebug) Console.WriteLine($"[CD INT] Triggering {IF:x8}");
                 edgeTrigger = false;
                 isBusy = false;
@@ -594,13 +655,14 @@ namespace ProjectPSX.Devices {
 
                 case Mode.Read:
                     int readCycles = GetReadCycles();
-                    if (counter < readCycles || interruptQueue.Count != 0 || IF != 0) {
+                    if (counter < readCycles || HasBlockingReadInterrupt()) {
                         return triggerInterrupt;
                     }
                     counter -= readCycles;
 
                     int deliveredSector = readLoc;
                     Track currentTrack = cd.getTrackFromLoc(deliveredSector);
+                    LogDiscCommand("READ", $"lba={deliveredSector} {DescribeTrack(currentTrack)} sizeMode={transferSizeMode}");
                     if (currentTrack.isAudio && !isCDDA) {
                         if (cdDebug) {
                             Console.WriteLine($"[CDROM] Read denied on audio sector lba={deliveredSector} track={currentTrack.number}");
@@ -693,6 +755,8 @@ namespace ProjectPSX.Devices {
 
                         int playSector = readLoc;
                         byte[] playRawSector = cd.Read(readLoc++);
+                        Track playTrack = cd.getTrackFromLoc(playSector);
+                        LogDiscCommand("PLAY", $"lba={playSector} {DescribeTrack(playTrack)} cdda={(isCDDA ? 1 : 0)}");
                         latchedSubchannelLba = playSector;
                         currentSubchannelLba = playSector;
                         logicalSeekHoldActive = false;
@@ -761,7 +825,7 @@ namespace ProjectPSX.Devices {
             lastReadAddr = addr;
             switch (addr) {
                 case 0x1F801800:
-                    if (cdDebug) Console.WriteLine($"[CDROM] [L00] STATUS: {STATUS():x2}");
+                    if (cdRegisterDebug) Console.WriteLine($"[CDROM] [L00] STATUS: {STATUS():x2}");
                     return STATUS();
 
                 case 0x1F801801:
@@ -769,25 +833,27 @@ namespace ProjectPSX.Devices {
                     //if (w == Width.HALF || w == Width.WORD) Console.WriteLine("WARNING RESPONSE BUFFER LOAD " + w);
 
                     if (responseBuffer.Count > 0) {
-                        if (cdDebug) Console.WriteLine("[CDROM] [L01] RESPONSE " + responseBuffer.Peek().ToString("x8"));
+                        if (cdRegisterDebug) Console.WriteLine("[CDROM] [L01] RESPONSE " + responseBuffer.Peek().ToString("x8"));
                         byte response = responseBuffer.Dequeue();
                         TraceProtect("resp-pop", $"value={response:x2}", force: true);
                         return response;
                     }
 
-                    if (cdDebug) Console.WriteLine("[CDROM] [L01] RESPONSE 0xFF");
+                    if (cdRegisterDebug) Console.WriteLine("[CDROM] [L01] RESPONSE 0xFF");
 
                     return 0xFF;
 
                 case 0x1F801802:
-                    if (cdDebug) Console.WriteLine("[CDROM] [L02] DATA");
+                    if (cdRegisterDebug) Console.WriteLine("[CDROM] [L02] DATA");
                     if (!transferActive && transferReady) {
                         TryExposeBufferedSector("data-port");
                     }
+                    if (!transferReady || !currentSector.hasData()) {
+                        return 0;
+                    }
                     byte value8 = currentSector.readByte();
                     if (!currentSector.hasData()) {
-                        transferActive = false;
-                        transferReady = false;
+                        OnTransferBufferDrained();
                     }
                     return value8;
 
@@ -795,14 +861,14 @@ namespace ProjectPSX.Devices {
                     switch (INDEX) {
                         case 0:
                         case 2:
-                            if (cdDebug) Console.WriteLine("[CDROM] [L03.0] IE: {0}", ((uint)(0xe0 | IE)).ToString("x8"));
+                            if (cdRegisterDebug) Console.WriteLine("[CDROM] [L03.0] IE: {0}", ((uint)(0xe0 | IE)).ToString("x8"));
                             return (uint)(0xe0 | IE);
                         case 1:
                         case 3:
-                            if (cdDebug) Console.WriteLine("[CDROM] [L03.1] IF: {0}", ((uint)(0xe0 | IF)).ToString("x8"));
+                            if (cdRegisterDebug) Console.WriteLine("[CDROM] [L03.1] IF: {0}", ((uint)(0xe0 | IF)).ToString("x8"));
                             return (uint)(0xe0 | IF);
                         default:
-                            if (cdDebug) Console.WriteLine("[CDROM] [L03.x] Unimplemented");
+                            if (cdRegisterDebug) Console.WriteLine("[CDROM] [L03.x] Unimplemented");
                             return 0;
                     }
 
@@ -815,47 +881,51 @@ namespace ProjectPSX.Devices {
             lastWriteAddr = addr;
             switch (addr) {
                 case 0x1F801800:
-                    if (cdDebug) Console.WriteLine($"[CDROM] [W00] I: {value:x8}");
+                    if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W00] I: {value:x8}");
                     INDEX = (byte)(value & 0x3);
                     break;
                 case 0x1F801801:
                     if (INDEX == 0) {
-                        if (cdDebug) {
+                        if (cdRegisterDebug) {
                             Console.ForegroundColor = ConsoleColor.Yellow;
                             Console.WriteLine($"[CDROM] [W01.0] [COMMAND] {value:x2} {commands.GetValueOrDefault(value, "---")}");
                             Console.ResetColor();
                         }
                         ExecuteCommand(value);
                     } else if (INDEX == 3) {
-                        if (cdDebug) Console.WriteLine($"[CDROM] [W01.3] pendingVolumeRtoR: {value:x8}");
+                        if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W01.3] pendingVolumeRtoR: {value:x8}");
                         pendingVolumeRtoR = (byte)value;
                     } else {
-                        if (cdDebug) Console.WriteLine($"[CDROM] [Unhandled Write] Index: {INDEX:x8} Access: {addr:x8} Value: {value:x8}");
+                        if (cdRegisterDebug) Console.WriteLine($"[CDROM] [Unhandled Write] Index: {INDEX:x8} Access: {addr:x8} Value: {value:x8}");
                     }
                     break;
                 case 0x1F801802:
                     switch (INDEX) {
                         case 0:
-                            if (cdDebug) Console.WriteLine($"[CDROM] [W02.0] Parameter: {value:x8}");
+                            if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W02.0] Parameter: {value:x8}");
                             parameterBuffer.Enqueue((byte)value);
                             break;
                         case 1:
-                            if (cdDebug) Console.WriteLine($"[CDROM] [W02.1] Set IE: {value:x8}");
+                            if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W02.1] Set IE: {value:x8}");
+                            bool interruptWasVisible = (IF & IE) != 0;
                             IE = (byte)(value & 0x1F);
+                            if (!interruptWasVisible && (IF & IE) != 0) {
+                                edgeTrigger = true;
+                            }
                             break;
 
                         case 2:
-                            if (cdDebug) Console.WriteLine($"[CDROM] [W02.2] pendingVolumeLtoL: {value:x8}");
+                            if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W02.2] pendingVolumeLtoL: {value:x8}");
                             pendingVolumeLtoL = (byte)value;
                             break;
 
                         case 3:
-                            if (cdDebug) Console.WriteLine($"[CDROM] [W02.3] pendingVolumeRtoL: {value:x8}");
+                            if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W02.3] pendingVolumeRtoL: {value:x8}");
                             pendingVolumeRtoL = (byte)value;
                             break;
 
                         default:
-                            if (cdDebug) Console.WriteLine($"[CDROM] [Unhandled Write] Access: {addr:x8} Value: {value:x8}");
+                            if (cdRegisterDebug) Console.WriteLine($"[CDROM] [Unhandled Write] Access: {addr:x8} Value: {value:x8}");
                             break;
                     }
                     break;
@@ -869,7 +939,7 @@ namespace ProjectPSX.Devices {
                             //7   BFRD Want Data(0 = No / Reset Data Fifo, 1 = Yes / Load Data Fifo)
                             if ((value & 0x80) != 0) {
                                 transferReady = true;
-                                if (cdDebug) {
+                                if (cdRegisterDebug) {
                                     Console.WriteLine(
                                         $"[CDROM] [W03.0] Data Request cur={currentSector.DebugPointer}/{currentSector.DebugSize} " +
                                         $"last={lastReadSector.DebugPointer}/{lastReadSector.DebugSize} " +
@@ -877,39 +947,42 @@ namespace ProjectPSX.Devices {
                                 }
                                 TryExposeBufferedSector("request");
                             } else {
-                                if (cdDebug) {
+                                if (cdRegisterDebug) {
                                     Console.ForegroundColor = ConsoleColor.Red;
                                     Console.WriteLine(
                                         $"[CDROM] [W03.0] Data Clear cur={currentSector.DebugPointer}/{currentSector.DebugSize} " +
                                         $"last={lastReadSector.DebugPointer}/{lastReadSector.DebugSize}");
                                     Console.ResetColor();
                                 }
-                                currentSector.clear();
+                                currentSector.rewind();
                                 transferActive = false;
                                 transferReady = false;
+                                // A BFRD clear rewinds the currently exposed sector so the host can
+                                // request it again, while keeping any newer buffered sector queued.
                             }
                             break;
                         case 1:
                             IF &= (byte)~(value & 0x1F);
-                            if (cdDebug) Console.WriteLine($"[CDROM] [W03.1] Set IF: {value:x8} -> IF = {IF:x8}");
+                            if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W03.1] Set IF: {value:x8} -> IF = {IF:x8}");
+                            LogDiscCommand("IRQ", $"ack value={value:x2} if={IF:x2} ie={IE:x2}");
                             TraceProtect("if-ack", $"value={value:x2} newIf={IF:x2}", force: true);
                             if (interruptQueue.Count > 0 && interruptQueue.Peek().delay <= 0) {
                                 DeliverInterrupt(interruptQueue.Dequeue());
                             }
 
                             if ((value & 0x40) == 0x40) {
-                                if (cdDebug) Console.WriteLine($"[CDROM] [W03.1 Parameter Buffer Clear] value {value:x8}");
+                                if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W03.1 Parameter Buffer Clear] value {value:x8}");
                                 parameterBuffer.Clear();
                             }
                             break;
 
                         case 2:
-                            if (cdDebug) Console.WriteLine($"[CDROM] [W03.2] pendingVolumeLtoR: {value:x8}");
+                            if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W03.2] pendingVolumeLtoR: {value:x8}");
                             pendingVolumeLtoR = (byte)value;
                             break;
 
                         case 3:
-                            if (cdDebug) Console.WriteLine($"[CDROM] [W03.3] ApplyVolumes: {value:x8}");
+                            if (cdRegisterDebug) Console.WriteLine($"[CDROM] [W03.3] ApplyVolumes: {value:x8}");
                             mutedXAADPCM = (value & 0x1) != 0;
                             bool applyVolume = (value & 0x20) != 0;
                             if (applyVolume) {
@@ -934,12 +1007,15 @@ namespace ProjectPSX.Devices {
         private void ExecuteCommand(uint value) {
             commandExecCount++;
             lastCommand = (byte)value;
-            if (cdDebug) Console.WriteLine($"[CDROM] Command {value:x4}");
+            if (cdDebug) {
+                string commandText = commands.TryGetValue(value, out string? name) ? name : $"0x{value:X2}";
+                Console.WriteLine($"[CDROM] Command {value:x4} {commandText}");
+            }
             //Console.WriteLine($"PRE STAT {STAT:x2}");
             List<DelayedInterrupt>? preservedAsyncReadInterrupts = null;
             bool preserveAsyncReadInterrupts =
                 (mode == Mode.Read || mode == Mode.Play)
-                && (value == 0x01 || value == 0x10 || value == 0x11 || value == 0x1D);
+                && (value == 0x01 || value == 0x09 || value == 0x10 || value == 0x11 || value == 0x1D);
             if (!preserveAsyncReadInterrupts) {
                 int clearedInterrupts = 0;
                 if (mode == Mode.Read || mode == Mode.Play) {
@@ -1080,6 +1156,7 @@ namespace ProjectPSX.Devices {
                 Console.WriteLine($"[CDROM] setLoc {mm:x2}:{ss:x2}:{ff:x2} Loc: {seekLoc:x8}");
                 Console.ResetColor();
             }
+            LogDiscCommand("SETLOC", $"bcd={mm:x2}:{ss:x2}:{ff:x2} lba={seekLoc}");
 
             QueueSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, STAT);
         }
@@ -1108,6 +1185,8 @@ namespace ProjectPSX.Devices {
             }
 
             Console.WriteLine($"[CDROM] CDDA Play Triggered Track: {track} readLoc: {targetReadLoc}");
+            Track targetTrack = cd.getTrackFromLoc(targetReadLoc);
+            LogDiscCommand("PLAY-CMD", $"reqTrack={track} targetLba={targetReadLoc} {DescribeTrack(targetTrack)}");
             seekLoc = targetReadLoc;
             QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, 0x82, 0x82, Mode.Play, targetReadLoc);
         }
@@ -1120,6 +1199,8 @@ namespace ProjectPSX.Devices {
 
             UnlockFastLoadAfterBootIfReady();
             byte readStat = 0x22;
+            Track targetTrack = cd.getTrackFromLoc(seekLoc);
+            LogDiscCommand("READN", $"targetLba={seekLoc} {DescribeTrack(targetTrack)}");
             QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, readStat, readStat, Mode.Read, seekLoc, beginFastLoadReadSession: true);
         }
 
@@ -1161,8 +1242,7 @@ namespace ProjectPSX.Devices {
                 readLoc,
                 delay: GetPauseCompletionDelay(),
                 allowFast: true,
-                clearTransferState: true,
-                clearBufferedSector: true);
+                clearTransferState: true);
         }
 
         private void Cmd_0A_Init() {
@@ -1324,6 +1404,11 @@ namespace ProjectPSX.Devices {
             }
             //if (cdDebug)
             Console.WriteLine($"[CDROM] getTN First Track: 1 (Hardcoded) - Last Track: {cd.tracks.Count}");
+            if (cdDebug) {
+                foreach (Track track in cd.tracks) {
+                    LogDiscCommand("GETTN", DescribeTrack(track));
+                }
+            }
             //Console.ReadLine();
             QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: new byte[] { STAT, 1, DecToBcd((byte)cd.tracks.Count) });
         }
@@ -1339,11 +1424,13 @@ namespace ProjectPSX.Devices {
             if (track == 0) { //returns CD LBA / End of last track
                 (byte mm, byte ss, byte ff) = getMMSSFFfromLBA(cd.getLBA());
                 QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: new byte[] { STAT, DecToBcd(mm), DecToBcd(ss) });
+                LogDiscCommand("GETTD", $"track=0 discEndLba={cd.getLBA()} msf={mm}:{ss}:{ff}");
                 //if (cdDebug)
                 Console.WriteLine($"[CDROM] getTD Track: {track} STAT: {STAT:x2} {mm}:{ss}");
             } else { //returns Track Start
                 (byte mm, byte ss, byte ff) = getMMSSFFfromLBA(cd.tracks[track - 1].lbaStart);
                 QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: new byte[] { STAT, DecToBcd(mm), DecToBcd(ss) });
+                LogDiscCommand("GETTD", $"track={track} {DescribeTrack(cd.tracks[track - 1])} msf={mm}:{ss}:{ff}");
                 //if (cdDebug)
                 Console.WriteLine($"[CDROM] getTD Track: {track} STAT: {STAT:x2} {mm}:{ss}");
             }
@@ -1358,6 +1445,8 @@ namespace ProjectPSX.Devices {
             UnlockFastLoadAfterBootIfReady();
             CompleteFastLoadReadSession();
             fastLoadLastSeekDistance = Math.Abs(seekLoc - readLoc);
+            Track targetTrack = cd.getTrackFromLoc(seekLoc);
+            LogDiscCommand("SEEKL", $"from={readLoc} to={seekLoc} dist={fastLoadLastSeekDistance} {DescribeTrack(targetTrack)}");
             QueueStatefulSingleByteInterrupt(
                 Interrupt.INT3_FIRST_RESPONSE,
                 0x42,
@@ -1378,6 +1467,8 @@ namespace ProjectPSX.Devices {
             UnlockFastLoadAfterBootIfReady();
             CompleteFastLoadReadSession();
             fastLoadLastSeekDistance = Math.Abs(seekLoc - readLoc);
+            Track targetTrack = cd.getTrackFromLoc(seekLoc);
+            LogDiscCommand("SEEKP", $"from={readLoc} to={seekLoc} dist={fastLoadLastSeekDistance} {DescribeTrack(targetTrack)}");
             QueueStatefulSingleByteInterrupt(
                 Interrupt.INT3_FIRST_RESPONSE,
                 0x42,
@@ -1468,6 +1559,8 @@ namespace ProjectPSX.Devices {
 
             UnlockFastLoadAfterBootIfReady();
             byte readStat = 0x22;
+            Track targetTrack = cd.getTrackFromLoc(seekLoc);
+            LogDiscCommand("READS", $"targetLba={seekLoc} {DescribeTrack(targetTrack)}");
             QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, readStat, readStat, Mode.Read, seekLoc, beginFastLoadReadSession: true);
         }
 
@@ -1619,25 +1712,27 @@ namespace ProjectPSX.Devices {
         public int GetDmaWordCount() => GetTransferBytesRemaining() >> 2;
 
         private int GetTransferBytesRemaining() {
+            if (!transferReady) {
+                return 0;
+            }
+
             int remaining = currentSector.DebugSize - currentSector.DebugPointer;
             if (remaining > 0) {
                 return remaining;
             }
 
-            int loaded = lastReadSector.DebugSize;
-            if (loaded > 0) {
-                return loaded;
+            if (loadedSectorGeneration != bufferedSectorGeneration) {
+                int loaded = lastReadSector.DebugSize;
+                if (loaded > 0) {
+                    return loaded;
+                }
             }
 
-            return transferSizeMode switch {
-                TransferSizeMode.Sector2340 => 2340,
-                TransferSizeMode.Sector2328 => 2328,
-                _ => 2048,
-            };
+            return 0;
         }
 
         private int transferBuffer_hasData() {
-            return currentSector.hasData() ? 1 : 0;
+            return (transferReady && currentSector.hasData()) ? 1 : 0;
         }
 
         private int parametterBuffer_isEmpty() {
@@ -1693,6 +1788,10 @@ namespace ProjectPSX.Devices {
                 TryExposeBufferedSector("dma");
             }
 
+            if (!transferReady || !currentSector.hasData()) {
+                return Span<uint>.Empty;
+            }
+
             int bytesRemaining = GetTransferBytesRemaining();
             int wordsRequested = size == 0 ? (bytesRemaining >> 2) : size;
             int wordsAvailable = bytesRemaining >> 2;
@@ -1709,8 +1808,7 @@ namespace ProjectPSX.Devices {
 
             var dma = currentSector.read(wordsRequested);
             if (!currentSector.hasData()) {
-                transferActive = false;
-                transferReady = false;
+                OnTransferBufferDrained();
             }
             return dma;
         }

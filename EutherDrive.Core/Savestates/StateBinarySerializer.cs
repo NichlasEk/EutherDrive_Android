@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace EutherDrive.Core.Savestates;
 
@@ -210,7 +211,7 @@ internal static class StateBinarySerializer
             return;
         }
 
-        object created = Activator.CreateInstance(type)!;
+        object created = CreateInstanceForRead(type);
         ReadInto(reader, created);
         if (!isReadonly)
             field.SetValue(target, created);
@@ -499,7 +500,7 @@ internal static class StateBinarySerializer
         bool hasObject = reader.ReadBoolean();
         if (!hasObject)
             return null!;
-        object created = Activator.CreateInstance(type)!;
+        object created = CreateInstanceForRead(type);
         ReadInto(reader, created);
         return created;
     }
@@ -514,12 +515,28 @@ internal static class StateBinarySerializer
 
     private static object ReadStruct(BinaryReader reader, Type type)
     {
-        object created = Activator.CreateInstance(type)!;
+        object created = CreateInstanceForRead(type);
         foreach (var field in GetFields(type))
         {
             ReadValueInto(reader, created, field);
         }
         return created;
+    }
+
+    private static object CreateInstanceForRead(Type type)
+    {
+        try
+        {
+            return Activator.CreateInstance(type, nonPublic: true)!;
+        }
+        catch (MissingMethodException)
+        {
+            return RuntimeHelpers.GetUninitializedObject(type);
+        }
+        catch (MemberAccessException)
+        {
+            return RuntimeHelpers.GetUninitializedObject(type);
+        }
     }
 
     private static int[] BuildStrides(int[] lengths)

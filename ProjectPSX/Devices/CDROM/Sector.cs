@@ -59,6 +59,10 @@ namespace ProjectPSX.Devices.CdRom {
         public int DebugPointer => pointer;
         public int DebugSize => size;
 
+        public void rewind() {
+            pointer = 0;
+        }
+
         public void clear() {
             pointer = 0;
             size = 0;
