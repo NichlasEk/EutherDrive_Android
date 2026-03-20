@@ -69,6 +69,27 @@ namespace ProjectPSX.Devices.CdRom {
             }
         }
 
+        public static byte[] TryResolveLicensedRegionCode(CD cd) {
+            try {
+                byte[] systemCnf = TryReadFile(cd, "SYSTEM.CNF;1");
+                if (systemCnf == null) {
+                    return null;
+                }
+
+                string bootPath = TryExtractBootPath(systemCnf);
+                if (string.IsNullOrWhiteSpace(bootPath)) {
+                    return null;
+                }
+
+                string licenseCode = MapLicensedRegionCodeFromBootPath(bootPath);
+                return string.IsNullOrWhiteSpace(licenseCode)
+                    ? null
+                    : Encoding.ASCII.GetBytes(licenseCode);
+            } catch {
+                return null;
+            }
+        }
+
         private static byte[] TryReadFile(CD cd, string path) {
             DirectoryRecord record = TryResolvePath(cd, NormalizeDiscPath(path));
             if (record == null || record.IsDirectory || record.DataLength < 0) {
@@ -227,6 +248,36 @@ namespace ProjectPSX.Devices.CdRom {
             }
 
             return normalized.Trim();
+        }
+
+        private static string MapLicensedRegionCodeFromBootPath(string bootPath) {
+            string normalized = NormalizeDiscPath(bootPath).ToUpperInvariant();
+            int slash = normalized.LastIndexOf('/');
+            string file = slash >= 0 ? normalized.Substring(slash + 1) : normalized;
+            int semicolon = file.IndexOf(';');
+            if (semicolon >= 0) {
+                file = file.Substring(0, semicolon);
+            }
+
+            if (file.StartsWith("SLES", StringComparison.Ordinal)
+                || file.StartsWith("SCES", StringComparison.Ordinal)
+                || file.StartsWith("SCED", StringComparison.Ordinal)) {
+                return "SCEE";
+            }
+
+            if (file.StartsWith("SLUS", StringComparison.Ordinal)
+                || file.StartsWith("SCUS", StringComparison.Ordinal)) {
+                return "SCEA";
+            }
+
+            if (file.StartsWith("SLPS", StringComparison.Ordinal)
+                || file.StartsWith("SCPS", StringComparison.Ordinal)
+                || file.StartsWith("SLPM", StringComparison.Ordinal)
+                || file.StartsWith("PAPX", StringComparison.Ordinal)) {
+                return "SCEI";
+            }
+
+            return string.Empty;
         }
 
         private static bool IdentifiersMatch(string isoIdentifier, string targetSegment) {

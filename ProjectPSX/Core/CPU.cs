@@ -15,7 +15,18 @@ namespace ProjectPSX {
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_FAULT_TRACE_FILE");
         private static readonly int FaultTraceLimit = ParseOptionalPositiveInt(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_FAULT_TRACE_LIMIT"), 64);
+        private static readonly string? Cop0TraceFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_FILE");
+        private static readonly int Cop0TraceLimit = ParseOptionalPositiveInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_LIMIT"), 256);
+        private static readonly int? Cop0TraceRegister = ParseOptionalRegisterIndex(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_REGISTER"));
+        private static readonly int Cop0TraceWordsBefore = ParseOptionalPositiveInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_WORDS_BEFORE"), 0);
+        private static readonly int Cop0TraceWordsAfter = ParseOptionalPositiveInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_WORDS_AFTER"), 0);
         private static int s_faultTraceCount;
+        private static int s_cop0TraceCount;
 
         private uint PC_Now; // PC on current execution as PC and PC Predictor go ahead after fetch. This is handy on Branch Delay so it dosn't give erronious PC-4
         private uint PC = 0xbfc0_0000; // Bios Entry Point
@@ -100,6 +111,7 @@ namespace ProjectPSX {
         public static uint TraceCurrentPC;
         public uint CurrentPC => PC_Now;
         public uint GetRegister(int index) => GPR[index & 31];
+        public uint GetCop0Register(int index) => COP0_GPR[index & 15];
         public uint StackPointer => GPR[29];
         public uint ReturnAddress => GPR[31];
 
@@ -500,6 +512,7 @@ namespace ProjectPSX {
         private static void MFC0(CPU cpu) {
             uint mfc = cpu.instr.rd;
             if (mfc == 3 || mfc >= 5 && mfc <= 9 || mfc >= 11 && mfc <= 15) {
+                TraceCop0Access(cpu, "mfc0", mfc, cpu.COP0_GPR[mfc]);
                 delayedLoad(cpu, cpu.instr.rt, cpu.COP0_GPR[mfc]);
             } else {
                 EXCEPTION(cpu, EX.ILLEGAL_INSTR, cpu.instr.id);
@@ -533,6 +546,8 @@ namespace ProjectPSX {
             } else {
                 cpu.COP0_GPR[register] = value;
             }
+
+            TraceCop0Access(cpu, "mtc0", register, cpu.COP0_GPR[register]);
 
         }
 
@@ -596,6 +611,82 @@ namespace ProjectPSX {
 
         private static int ParseOptionalPositiveInt(string? raw, int fallback) {
             return int.TryParse(raw, out int value) && value > 0 ? value : fallback;
+        }
+
+        private static int? ParseOptionalRegisterIndex(string? raw) {
+            if (string.IsNullOrWhiteSpace(raw)) {
+                return null;
+            }
+
+            if (int.TryParse(raw, out int value) && value >= 0 && value < 16) {
+                return value;
+            }
+
+            return null;
+        }
+
+        private static void TraceCop0Access(CPU cpu, string op, uint register, uint value) {
+            if (string.IsNullOrWhiteSpace(Cop0TraceFile) || s_cop0TraceCount >= Cop0TraceLimit) {
+                return;
+            }
+
+            if (Cop0TraceRegister.HasValue && register != (uint)Cop0TraceRegister.Value) {
+                return;
+            }
+
+            s_cop0TraceCount++;
+            try {
+                string line =
+                    $"[PSX-COP0] op={op} pc={cpu.PC_Now:x8} next={cpu.PC_Predictor:x8} instr={cpu.instr.value:x8} " +
+                    $"rd={register} rt={cpu.instr.rt} rtv={cpu.GPR[cpu.instr.rt]:x8} value={value:x8} " +
+                    $"sr={cpu.COP0_GPR[SR]:x8} cause={cpu.COP0_GPR[CAUSE]:x8} epc={cpu.COP0_GPR[EPC]:x8}";
+                if (Cop0TraceWordsBefore > 0 || Cop0TraceWordsAfter > 0) {
+                    line += " ctx[";
+                    for (int i = -Cop0TraceWordsBefore; i <= Cop0TraceWordsAfter; i++) {
+                        if (i != -Cop0TraceWordsBefore) {
+                            line += " ";
+                        }
+
+                        uint address = unchecked(cpu.PC_Now + (uint)(i * 4));
+                        uint raw = cpu.bus.load32(address);
+                        line += $"{address:x8}:{raw:x8}";
+                    }
+                    line += "]";
+                }
+
+                if (cpu.PC_Now >= 0x8009_6464 && cpu.PC_Now <= 0x8009_6494) {
+                    uint a1 = cpu.GPR[5];
+                    line += $" a1={a1:x8}";
+                    if (TryLoadRamBytes(cpu, a1, 8, out string bytes)) {
+                        line += $" a1bytes={bytes}";
+                    }
+                }
+
+                line += Environment.NewLine;
+                File.AppendAllText(Cop0TraceFile, line);
+            } catch {
+            }
+        }
+
+        private static bool TryLoadRamBytes(CPU cpu, uint address, int count, out string text) {
+            uint physical = address & 0x1FFF_FFFF;
+            bool isMappedRam = physical < 0x0020_0000;
+            bool looksLikeRamPointer = address < 0x0020_0000 || (address >= 0x8000_0000 && address < 0x8020_0000);
+            if (!isMappedRam || !looksLikeRamPointer || count <= 0) {
+                text = string.Empty;
+                return false;
+            }
+
+            Span<byte> bytes = stackalloc byte[count];
+            for (int i = 0; i < count; i++) {
+                uint byteAddress = physical + (uint)i;
+                uint word = cpu.bus.LoadFromRam(byteAddress & ~3u);
+                int shift = (int)((byteAddress & 3u) * 8u);
+                bytes[i] = (byte)((word >> shift) & 0xFFu);
+            }
+
+            text = BitConverter.ToString(bytes.ToArray()).Replace("-", "");
+            return true;
         }
 
         private static void COP2(CPU cpu) {

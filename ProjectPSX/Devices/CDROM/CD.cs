@@ -310,6 +310,13 @@ namespace ProjectPSX.Devices.CdRom {
 
             int qOffset = hasCrc ? 3 : 4;
             int loc = (mm * 60 * 75) + (ss * 75) + ff;
+            ReadOnlySpan<byte> qData = entry.Slice(qOffset, 10);
+            bool hasValidCrc = false;
+            if (hasCrc) {
+                ushort actualCrc = (ushort)(entry[qOffset + 10] | (entry[qOffset + 11] << 8));
+                hasValidCrc = actualCrc == SubchannelQ.ComputeCrc(qData);
+            }
+
             output[loc] = new SubchannelQ(
                 entry[qOffset + 0],
                 entry[qOffset + 1],
@@ -320,7 +327,8 @@ namespace ProjectPSX.Devices.CdRom {
                 entry[qOffset + 6],
                 entry[qOffset + 7],
                 entry[qOffset + 8],
-                entry[qOffset + 9]);
+                entry[qOffset + 9],
+                hasValidCrc);
         }
 
         private static SubchannelQ SynthesizeSubchannelQ(Track track, int loc) {

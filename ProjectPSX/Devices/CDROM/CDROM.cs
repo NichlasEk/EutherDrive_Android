@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using ProjectPSX.Devices.CdRom;
@@ -19,6 +20,14 @@ namespace ProjectPSX.Devices {
         [NonSerialized] private int bufferedSectorGeneration;
         [NonSerialized] private int loadedSectorGeneration;
         [NonSerialized] private int bufferedSectorLba = -1;
+        [NonSerialized] private int latchedSubchannelLba = -1;
+        [NonSerialized] private int currentSubchannelLba = -1;
+        [NonSerialized] private int seekStartSubchannelLba = -1;
+        [NonSerialized] private int lastReportedSubchannelLba = -1;
+        [NonSerialized] private bool hasLastReportedSubchannelQ;
+        [NonSerialized] private SubchannelQ lastReportedSubchannelQ;
+        [NonSerialized] private bool activeLogicalSeek;
+        [NonSerialized] private bool logicalSeekHoldActive;
 
         private bool isBusy;
 
@@ -78,6 +87,8 @@ namespace ProjectPSX.Devices {
         private byte volumeRtoR = 0xFF;
 
         private bool cdDebug = false;
+        private bool protectTrace;
+        private string protectTraceFile = string.Empty;
         private bool isLidOpen = false;
         private byte lastCommand;
         private int registerReadCount;
@@ -97,6 +108,7 @@ namespace ProjectPSX.Devices {
         private int fastLoadSequentialReadSectors;
         private int fastLoadLastReadSector = -1;
         private int fastLoadLastSeekDistance;
+        private readonly byte[] licensedDiscRegionCode = new byte[] { 0x53, 0x43, 0x45, 0x41 };
 
         private struct SectorHeader {
             public byte mm;
@@ -147,6 +159,9 @@ namespace ProjectPSX.Devices {
             public bool beginFastLoadReadSession;
             public bool clearTransferState;
             public bool clearBufferedSector;
+            public bool hasSeekState;
+            public bool logicalSeek;
+            public int seekStartLba;
 
             public DelayedInterrupt(int delay, byte interrupt, byte[]? response = null) {
                 this.delay = delay;
@@ -184,13 +199,55 @@ namespace ProjectPSX.Devices {
         public CDROM(CD cd, SPU spu) {
             this.cd = cd;
             this.spu = spu;
+            byte[] resolvedRegionCode = PsxDiscBootResolver.TryResolveLicensedRegionCode(cd);
+            if (resolvedRegionCode is { Length: 4 }) {
+                licensedDiscRegionCode = resolvedRegionCode;
+            }
             fastLoadAggressiveReads = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_FAST_LOAD_AGGRESSIVE_READS") == "1";
             RefreshRuntimeSettings();
         }
 
         public void RefreshRuntimeSettings() {
             cdDebug = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_TRACE") == "1";
+            protectTrace = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_PROTECT_TRACE") == "1";
+            protectTraceFile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_PROTECT_TRACE_FILE") ?? string.Empty;
             SyncTransientTransferState();
+        }
+
+        private static bool IsProtectTracePc(uint pc) {
+            return
+                (pc >= 0x80082F00 && pc <= 0x80083080)
+                || (pc >= 0x80086100 && pc <= 0x80086220)
+                || (pc >= 0x80096200 && pc <= 0x80096440)
+                || (pc >= 0x80185680 && pc <= 0x80185820);
+        }
+
+        private static string FormatBytes(byte[]? values) {
+            if (values is null || values.Length == 0) {
+                return "-";
+            }
+
+            return BitConverter.ToString(values).Replace("-", "");
+        }
+
+        private void TraceProtect(string tag, string message, bool force = false) {
+            if (!protectTrace) {
+                return;
+            }
+
+            uint pc = global::ProjectPSX.CPU.TraceCurrentPC;
+            if (!force && !IsProtectTracePc(pc)) {
+                return;
+            }
+
+            string line =
+                $"[CDROM][PROTECT] {tag} pc={pc:x8} mode={mode} stat={STAT:x2} if={IF:x2} ie={IE:x2} " +
+                $"read={readLoc} seek={seekLoc} latch={latchedSubchannelLba} subq={currentSubchannelLba} lastq={lastReportedSubchannelLba} hold={(logicalSeekHoldActive ? 1 : 0)} " +
+                $"irqq={interruptQueue.Count} rsp={responseBuffer.Count} {message}";
+            Console.WriteLine(line);
+            if (!string.IsNullOrWhiteSpace(protectTraceFile)) {
+                File.AppendAllText(protectTraceFile, line + Environment.NewLine);
+            }
         }
 
         private void SyncTransientTransferState() {
@@ -289,7 +346,11 @@ namespace ProjectPSX.Devices {
         }
 
         private void QueueInterrupt(byte interrupt, int delay = 50_000, bool allowFast = false, byte[]? response = null) {
-            interruptQueue.Enqueue(new DelayedInterrupt(ScaleQueuedDelay(delay, allowFast), interrupt, response));
+            int scaledDelay = ScaleQueuedDelay(delay, allowFast);
+            interruptQueue.Enqueue(new DelayedInterrupt(scaledDelay, interrupt, response));
+            TraceProtect(
+                "queue",
+                $"intr={interrupt:x2} delay={scaledDelay} allowFast={(allowFast ? 1 : 0)} resp={FormatBytes(response)}");
         }
 
         private void QueueSingleByteInterrupt(byte interrupt, byte value, int delay = 50_000, bool allowFast = false) {
@@ -310,7 +371,10 @@ namespace ProjectPSX.Devices {
             int delay = 50_000,
             bool allowFast = false,
             bool clearTransferState = false,
-            bool clearBufferedSector = false) {
+            bool clearBufferedSector = false,
+            bool hasSeekState = false,
+            bool logicalSeek = false,
+            int seekStartLba = -1) {
             var delayed = new DelayedInterrupt(ScaleQueuedDelay(delay, allowFast), interrupt, new[] { responseValue }) {
                 applyStateChange = true,
                 nextMode = nextMode,
@@ -319,16 +383,39 @@ namespace ProjectPSX.Devices {
                 beginFastLoadReadSession = beginFastLoadReadSession,
                 clearTransferState = clearTransferState,
                 clearBufferedSector = clearBufferedSector,
+                hasSeekState = hasSeekState,
+                logicalSeek = logicalSeek,
+                seekStartLba = seekStartLba,
             };
             interruptQueue.Enqueue(delayed);
+            TraceProtect(
+                "queue-state",
+                $"intr={interrupt:x2} delay={delayed.delay} nextMode={nextMode} nextRead={nextReadLoc} " +
+                $"nextStat={nextStat:x2} fast={(beginFastLoadReadSession ? 1 : 0)} clear={(clearTransferState ? 1 : 0)}/{(clearBufferedSector ? 1 : 0)} " +
+                $"seek={(hasSeekState ? 1 : 0)}/{(logicalSeek ? 1 : 0)} seekStart={seekStartLba} resp={responseValue:x2}");
         }
 
         private void DeliverInterrupt(DelayedInterrupt delayedInterrupt) {
+            TraceProtect(
+                "deliver-pre",
+                $"intr={delayedInterrupt.interrupt:x2} delay={delayedInterrupt.delay} state={(delayedInterrupt.applyStateChange ? 1 : 0)} " +
+                $"nextMode={delayedInterrupt.nextMode} nextRead={delayedInterrupt.nextReadLoc} nextStat={delayedInterrupt.nextStat:x2} " +
+                $"clear={(delayedInterrupt.clearTransferState ? 1 : 0)}/{(delayedInterrupt.clearBufferedSector ? 1 : 0)} " +
+                $"resp={FormatBytes(delayedInterrupt.response)}",
+                force: true);
             if (delayedInterrupt.applyStateChange) {
                 if (delayedInterrupt.beginFastLoadReadSession) {
                     BeginFastLoadReadSession();
                 }
                 readLoc = delayedInterrupt.nextReadLoc;
+                latchedSubchannelLba = -1;
+                if (delayedInterrupt.hasSeekState) {
+                    activeLogicalSeek = delayedInterrupt.logicalSeek;
+                    seekStartSubchannelLba = delayedInterrupt.seekStartLba;
+                } else if (delayedInterrupt.nextMode != Mode.Seek) {
+                    activeLogicalSeek = false;
+                    seekStartSubchannelLba = -1;
+                }
                 STAT = delayedInterrupt.nextStat;
                 mode = delayedInterrupt.nextMode;
             }
@@ -342,6 +429,10 @@ namespace ProjectPSX.Devices {
             }
 
             IF |= delayedInterrupt.interrupt;
+            TraceProtect(
+                "deliver-post",
+                $"intr={delayedInterrupt.interrupt:x2} resp={FormatBytes(delayedInterrupt.response)}",
+                force: true);
         }
 
         private void ResetTransferState(bool clearBufferedSector) {
@@ -349,6 +440,7 @@ namespace ProjectPSX.Devices {
             transferActive = false;
             transferReady = false;
             loadedSectorGeneration = 0;
+            latchedSubchannelLba = -1;
 
             if (!clearBufferedSector) {
                 return;
@@ -360,6 +452,10 @@ namespace ProjectPSX.Devices {
         }
 
         private int GetSeekCycles() {
+            if (activeLogicalSeek && CanFastCompleteLogicalSeek(readLoc)) {
+                return Math.Min(33868800 / 300, 50_000);
+            }
+
             if (!IsFastLoadActive || !fastLoadBulkReadCompleted) {
                 return 33868800 / 3;
             }
@@ -479,6 +575,14 @@ namespace ProjectPSX.Devices {
                         return false;
                     }
                     counter = 0;
+                    currentSubchannelLba = activeLogicalSeek
+                        ? Math.Max(0, readLoc - 2)
+                        : readLoc;
+                    logicalSeekHoldActive = activeLogicalSeek;
+                    activeLogicalSeek = false;
+                    seekStartSubchannelLba = -1;
+                    latchedSubchannelLba = -1;
+                    TryLatchReportedSubchannelQ(currentSubchannelLba);
                     mode = Mode.Idle;
                     STAT = (byte)(STAT & (~0x40));
 
@@ -495,6 +599,11 @@ namespace ProjectPSX.Devices {
 
                     int deliveredSector = readLoc;
                     byte[] readSector = cd.Read(readLoc++);
+                    latchedSubchannelLba = deliveredSector;
+                    currentSubchannelLba = deliveredSector;
+                    logicalSeekHoldActive = false;
+                    bool sectorSubQValid = TryLatchReportedSubchannelQ(deliveredSector);
+                    TraceProtect("sector", $"lba={deliveredSector} bytes={readSector.Length} subqValid={(sectorSubQValid ? 1 : 0)}");
 
                     if (cdDebug) {
                         Console.ForegroundColor = ConsoleColor.DarkGreen;
@@ -517,7 +626,7 @@ namespace ProjectPSX.Devices {
                         }
 
                         if (isReport) {
-                            SubchannelQ subQ = cd.GetSubchannelQ(readLoc);
+                            SubchannelQ subQ = GetReportedSubchannelQ(GetSubchannelQueryLba());
                             byte[] reportResponse = new byte[8];
                             reportResponse[0] = STAT;
                             reportResponse[1] = subQ.Track;
@@ -638,7 +747,9 @@ namespace ProjectPSX.Devices {
 
                     if (responseBuffer.Count > 0) {
                         if (cdDebug) Console.WriteLine("[CDROM] [L01] RESPONSE " + responseBuffer.Peek().ToString("x8"));
-                        return responseBuffer.Dequeue();
+                        byte response = responseBuffer.Dequeue();
+                        TraceProtect("resp-pop", $"value={response:x2}", force: true);
+                        return response;
                     }
 
                     if (cdDebug) Console.WriteLine("[CDROM] [L01] RESPONSE 0xFF");
@@ -758,6 +869,7 @@ namespace ProjectPSX.Devices {
                         case 1:
                             IF &= (byte)~(value & 0x1F);
                             if (cdDebug) Console.WriteLine($"[CDROM] [W03.1] Set IF: {value:x8} -> IF = {IF:x8}");
+                            TraceProtect("if-ack", $"value={value:x2} newIf={IF:x2}", force: true);
                             if (interruptQueue.Count > 0 && interruptQueue.Peek().delay <= 0) {
                                 DeliverInterrupt(interruptQueue.Dequeue());
                             }
@@ -801,12 +913,51 @@ namespace ProjectPSX.Devices {
             lastCommand = (byte)value;
             if (cdDebug) Console.WriteLine($"[CDROM] Command {value:x4}");
             //Console.WriteLine($"PRE STAT {STAT:x2}");
-            bool preserveAsyncReadInterrupts = value == 0x01 && (mode == Mode.Read || mode == Mode.Play);
+            List<DelayedInterrupt>? preservedAsyncReadInterrupts = null;
+            bool preserveAsyncReadInterrupts =
+                (mode == Mode.Read || mode == Mode.Play)
+                && (value == 0x01 || value == 0x10 || value == 0x11 || value == 0x1D);
             if (!preserveAsyncReadInterrupts) {
-                interruptQueue.Clear();
+                int clearedInterrupts = 0;
+                if (mode == Mode.Read || mode == Mode.Play) {
+                    preservedAsyncReadInterrupts = new List<DelayedInterrupt>();
+                    while (interruptQueue.Count > 0) {
+                        DelayedInterrupt delayedInterrupt = interruptQueue.Dequeue();
+                        if (IsPreservableAsyncReadInterrupt(delayedInterrupt)) {
+                            preservedAsyncReadInterrupts.Add(delayedInterrupt);
+                        } else {
+                            clearedInterrupts++;
+                        }
+                    }
+                } else {
+                    clearedInterrupts = interruptQueue.Count;
+                    interruptQueue.Clear();
+                }
+
+                if (clearedInterrupts > 0) {
+                    TraceProtect(
+                        "queue-clear",
+                        $"cmd={value:x2} cleared={clearedInterrupts} preserve=0",
+                        force: true);
+                }
+                if (preservedAsyncReadInterrupts is { Count: > 0 }) {
+                    TraceProtect(
+                        "queue-keep",
+                        $"cmd={value:x2} kept={preservedAsyncReadInterrupts.Count} intr=01",
+                        force: true);
+                }
+            }
+            if (responseBuffer.Count > 0) {
+                TraceProtect(
+                    "rsp-clear",
+                    $"cmd={value:x2} cleared={responseBuffer.Count} preserve={(preserveAsyncReadInterrupts ? 1 : 0)}",
+                    force: true);
             }
             responseBuffer.Clear();
             isBusy = true;
+            TraceProtect(
+                "cmd",
+                $"value={value:x2} preserve={(preserveAsyncReadInterrupts ? 1 : 0)}");
             switch (value) {
                 case 0x00: Cmd_00_Invalid(); break;
                 case 0x01: Cmd_01_GetStat(); break;
@@ -839,6 +990,15 @@ namespace ProjectPSX.Devices {
                 case 0x1F: Cmd_1F_VideoCD(); break;
                 case uint _ when value >= 0x50 && value <= 0x57: Cmd_5x_lockUnlock(); break;
                 default: UnimplementedCDCommand(value); break;
+            }
+            if (preservedAsyncReadInterrupts is { Count: > 0 }) {
+                foreach (DelayedInterrupt delayedInterrupt in preservedAsyncReadInterrupts) {
+                    interruptQueue.Enqueue(delayedInterrupt);
+                }
+                TraceProtect(
+                    "queue-restore",
+                    $"cmd={value:x2} restored={preservedAsyncReadInterrupts.Count} intr=01",
+                    force: true);
             }
             //Console.WriteLine($"POST STAT {STAT:x2}");
         }
@@ -1058,7 +1218,8 @@ namespace ProjectPSX.Devices {
                 sectorSubHeader.codingInfo
             };
 
-            QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: response.ToArray());
+            TraceProtect("getlocl", $"resp={FormatBytes(response.ToArray())}");
+            QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, delay: 1, response: response.ToArray());
         }
 
         private void Cmd_11_GetLocP() {
@@ -1067,7 +1228,8 @@ namespace ProjectPSX.Devices {
                 return;
             }
 
-            SubchannelQ subQ = cd.GetSubchannelQ(readLoc);
+            int queryLba = GetSubchannelQueryLba();
+            SubchannelQ subQ = GetReportedSubchannelQ(queryLba);
 
             if (cdDebug) {
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1090,7 +1252,8 @@ namespace ProjectPSX.Devices {
                 subQ.AbsoluteSecond,
                 subQ.AbsoluteFrame
             };
-            QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: response.ToArray());
+            TraceProtect("getlocp", $"qLba={queryLba} srcLba={lastReportedSubchannelLba} valid={(subQ.HasValidCrc ? 1 : 0)} resp={FormatBytes(response.ToArray())}", force: true);
+            QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, delay: 1, response: response.ToArray());
         }
 
         private void Cmd_1D_GetQ() {
@@ -1099,7 +1262,8 @@ namespace ProjectPSX.Devices {
                 return;
             }
 
-            SubchannelQ subQ = cd.GetSubchannelQ(readLoc);
+            int queryLba = GetSubchannelQueryLba();
+            SubchannelQ subQ = GetReportedSubchannelQ(queryLba);
             Span<byte> response = stackalloc byte[] {
                 subQ.ControlAdr,
                 subQ.Track,
@@ -1112,7 +1276,8 @@ namespace ProjectPSX.Devices {
                 subQ.AbsoluteSecond,
                 subQ.AbsoluteFrame
             };
-            QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, response: response.ToArray());
+            TraceProtect("getq", $"qLba={queryLba} srcLba={lastReportedSubchannelLba} valid={(subQ.HasValidCrc ? 1 : 0)} resp={FormatBytes(response.ToArray())}", force: true);
+            QueueResponseInterrupt(Interrupt.INT3_FIRST_RESPONSE, delay: 1, response: response.ToArray());
         }
 
         private void Cmd_12_SetSession() { //broken
@@ -1170,7 +1335,15 @@ namespace ProjectPSX.Devices {
             UnlockFastLoadAfterBootIfReady();
             CompleteFastLoadReadSession();
             fastLoadLastSeekDistance = Math.Abs(seekLoc - readLoc);
-            QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, 0x42, 0x42, Mode.Seek, seekLoc);
+            QueueStatefulSingleByteInterrupt(
+                Interrupt.INT3_FIRST_RESPONSE,
+                0x42,
+                0x42,
+                Mode.Seek,
+                seekLoc,
+                hasSeekState: true,
+                logicalSeek: true,
+                seekStartLba: GetSeekOriginSubchannelLba());
         }
 
         private void Cmd_16_SeekP() {
@@ -1182,7 +1355,15 @@ namespace ProjectPSX.Devices {
             UnlockFastLoadAfterBootIfReady();
             CompleteFastLoadReadSession();
             fastLoadLastSeekDistance = Math.Abs(seekLoc - readLoc);
-            QueueStatefulSingleByteInterrupt(Interrupt.INT3_FIRST_RESPONSE, 0x42, 0x42, Mode.Seek, seekLoc);
+            QueueStatefulSingleByteInterrupt(
+                Interrupt.INT3_FIRST_RESPONSE,
+                0x42,
+                0x42,
+                Mode.Seek,
+                seekLoc,
+                hasSeekState: true,
+                logicalSeek: false,
+                seekStartLba: GetSeekOriginSubchannelLba());
         }
 
         private void Cmd_19_Test() {
@@ -1247,7 +1428,13 @@ namespace ProjectPSX.Devices {
             }
             QueueInterrupt(
                 Interrupt.INT2_SECOND_RESPONSE,
-                response: new byte[] { 0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x41 });
+                response: new byte[] {
+                    0x02, 0x00, 0x20, 0x00,
+                    licensedDiscRegionCode[0],
+                    licensedDiscRegionCode[1],
+                    licensedDiscRegionCode[2],
+                    licensedDiscRegionCode[3]
+                });
         }
 
         private void Cmd_1B_ReadS() {
@@ -1274,6 +1461,101 @@ namespace ProjectPSX.Devices {
 
         private void Cmd_1F_VideoCD() { //INT5(11h,40h)  ;-Unused/invalid
             QueueResponseInterrupt(Interrupt.INT5_ERROR, response: new byte[] { 0x11, 0x40 });
+        }
+
+        private int GetSubchannelQueryLba() {
+            if (latchedSubchannelLba >= 0) {
+                return latchedSubchannelLba;
+            }
+
+            if (mode == Mode.Seek) {
+                return GetInterpolatedSeekSubchannelLba();
+            }
+
+            return currentSubchannelLba >= 0 ? currentSubchannelLba : readLoc;
+        }
+
+        private bool TryLatchReportedSubchannelQ(int lba) {
+            if (lba < 0) {
+                return false;
+            }
+
+            SubchannelQ subQ = cd.GetSubchannelQ(lba);
+            if (!subQ.HasValidCrc) {
+                return false;
+            }
+
+            lastReportedSubchannelQ = subQ;
+            hasLastReportedSubchannelQ = true;
+            lastReportedSubchannelLba = lba;
+            return true;
+        }
+
+        private SubchannelQ GetReportedSubchannelQ(int lba) {
+            SubchannelQ subQ = cd.GetSubchannelQ(lba);
+            if (subQ.HasValidCrc) {
+                lastReportedSubchannelQ = subQ;
+                hasLastReportedSubchannelQ = true;
+                lastReportedSubchannelLba = lba;
+                return subQ;
+            }
+
+            if (hasLastReportedSubchannelQ) {
+                return lastReportedSubchannelQ;
+            }
+
+            lastReportedSubchannelQ = subQ;
+            lastReportedSubchannelLba = lba;
+            return subQ;
+        }
+
+        private int GetSeekOriginSubchannelLba() {
+            if (latchedSubchannelLba >= 0) {
+                return latchedSubchannelLba;
+            }
+
+            if (currentSubchannelLba >= 0) {
+                return currentSubchannelLba;
+            }
+
+            return readLoc;
+        }
+
+        private int GetInterpolatedSeekSubchannelLba() {
+            int start = seekStartSubchannelLba >= 0 ? seekStartSubchannelLba : readLoc;
+            int target = readLoc;
+            if (start == target) {
+                return target;
+            }
+
+            int totalCycles = Math.Max(GetSeekCycles(), 1);
+            int progressedCycles = Math.Clamp(counter, 0, totalCycles);
+            long delta = target - start;
+            long progressedDistance = (Math.Abs(delta) * progressedCycles) / totalCycles;
+            if (progressedDistance == 0) {
+                progressedDistance = 1;
+            }
+
+            int current = delta < 0
+                ? start - (int)progressedDistance
+                : start + (int)progressedDistance;
+            return delta < 0
+                ? Math.Max(current, target)
+                : Math.Min(current, target);
+        }
+
+        private bool CanFastCompleteLogicalSeek(int targetLba) {
+            if (!logicalSeekHoldActive || currentSubchannelLba < 0) {
+                return false;
+            }
+
+            int expectedHoldLba = Math.Max(0, targetLba - 2);
+            return currentSubchannelLba == expectedHoldLba;
+        }
+
+        private static bool IsPreservableAsyncReadInterrupt(DelayedInterrupt delayedInterrupt) {
+            return delayedInterrupt.interrupt == Interrupt.INT1_SECOND_RESPONSE_READ_PLAY
+                && !delayedInterrupt.applyStateChange;
         }
 
         private void Cmd_5x_lockUnlock() {

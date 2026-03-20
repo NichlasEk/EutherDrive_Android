@@ -165,18 +165,23 @@ namespace ProjectPSX {
             uint a1 = cpu.GetRegister(5);
             uint a2 = cpu.GetRegister(6);
             uint a3 = cpu.GetRegister(7);
+            uint cop0r3 = cpu.GetCop0Register(3);
+            uint cop0r9 = cpu.GetCop0Register(9);
             uint sp = cpu.StackPointer;
             uint ra = cpu.ReturnAddress;
             var text = new StringBuilder();
             text.Append($"pc={cpu.CurrentPC:x8} biosExited={(_psxBootBiosExited ? 1 : 0)} ");
             text.Append($"at={at:x8} v0={v0:x8} v1={v1:x8} ");
             text.Append($"a0={a0:x8} a1={a1:x8} a2={a2:x8} a3={a3:x8} ");
+            text.Append($"c03={cop0r3:x8} c09={cop0r9:x8} ");
             text.Append($"sp={sp:x8} ra={ra:x8} ");
             text.Append($"d370={d370:x8} d374={d374:x8} d378={d378:x8} ");
 
             if (DebugPointerPeeks) {
                 AppendPointerPeek(text, "at", at);
                 AppendPointerPeek(text, "a0", a0);
+                AppendPointerPeek(text, "a1", a1);
+                AppendPointerPeek(text, "a2", a2);
                 AppendPointerPeek(text, "sp", sp);
             }
 
