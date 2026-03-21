@@ -255,6 +255,10 @@ public class PPU : IPPU
     private int _lineModeIndex;
     [NonSerialized]
     private int _lineLayerCount;
+    [NonSerialized]
+    private ushort[] _tilePixelBuffer = [];
+    [NonSerialized]
+    private byte[] _tilePriorityBuffer = [];
 
     private static byte[,] BuildBrightnessTable()
     {
@@ -939,6 +943,10 @@ public class PPU : IPPU
             _clipToBlackCache = new byte[256];
         if (_mathPreventCache.Length != 256)
             _mathPreventCache = new byte[256];
+        if (_tilePixelBuffer.Length != 4 * 8)
+            _tilePixelBuffer = new ushort[4 * 8];
+        if (_tilePriorityBuffer.Length != 4)
+            _tilePriorityBuffer = new byte[4];
     }
 
     private bool IsHiResOutput()
@@ -1591,33 +1599,11 @@ public class PPU : IPPU
             _lastTileFetchedX[l] = x >> 3;
             _lastTileFetchedY[l] = y;
         }
-        int mapWord = _tilemapBuffer[l];
-        if ((mapWord & 0x2000) >> 13 != p)
+        if (_tilePriorityBuffer[l] != p)
         {
             return 0;
         }
-        int paletteNum = (mapWord & 0x1c00) >> 10;
-        int xShift = (mapWord & 0x4000) > 0 ? x & 0x7 : 7 - (x & 0x7);
-        paletteNum += _mode == 0 ? l * 8 : 0;
-        int bits = _bitPerMode[_mode * 4 + l];
-        int mul = 4;
-        int tileData = (_tileBufferP1[l] >> xShift) & 0x1;
-        tileData |= ((_tileBufferP1[l] >> (8 + xShift)) & 0x1) << 1;
-        if (bits > 2)
-        {
-            mul = 16;
-            tileData |= ((_tileBufferP2[l] >> xShift) & 0x1) << 2;
-            tileData |= ((_tileBufferP2[l] >> (8 + xShift)) & 0x1) << 3;
-        }
-        if (bits > 4)
-        {
-            mul = 256;
-            tileData |= ((_tileBufferP3[l] >> xShift) & 0x1) << 4;
-            tileData |= ((_tileBufferP3[l] >> (8 + xShift)) & 0x1) << 5;
-            tileData |= ((_tileBufferP4[l] >> xShift) & 0x1) << 6;
-            tileData |= ((_tileBufferP4[l] >> (8 + xShift)) & 0x1) << 7;
-        }
-        return tileData > 0 ? paletteNum * mul + tileData : 0;
+        return _tilePixelBuffer[(l << 3) | (x & 0x7)];
     }
 
     private void FetchTileInBuffer(int x, int y, int l, bool offset) 
@@ -1668,15 +1654,37 @@ public class PPU : IPPU
             tileNum += 0x10;
         }
         int bits = _bitPerMode[_mode * 4 + l];
-        _tileBufferP1[l] = _vram[(_tileAdr[l] + tileNum * 4 * bits + yRow) & 0x7fff];
-        if (bits > 2)
+        int tileBase = (_tileAdr[l] + tileNum * 4 * bits + yRow) & 0x7fff;
+        int plane1 = _vram[tileBase];
+        int plane2 = bits > 2 ? _vram[(tileBase + 8) & 0x7fff] : 0;
+        int plane3 = bits > 4 ? _vram[(tileBase + 16) & 0x7fff] : 0;
+        int plane4 = bits > 4 ? _vram[(tileBase + 24) & 0x7fff] : 0;
+        int paletteNum = (_tilemapBuffer[l] & 0x1c00) >> 10;
+        paletteNum += _mode == 0 ? l * 8 : 0;
+        int mul = bits > 4 ? 256 : bits > 2 ? 16 : 4;
+        int pixelBase = paletteNum * mul;
+        int pixelOffset = l << 3;
+        _tilePriorityBuffer[l] = (byte)((_tilemapBuffer[l] >> 13) & 0x1);
+        for (int i = 0; i < 8; i++)
         {
-            _tileBufferP2[l] = _vram[(_tileAdr[l] + tileNum * 4 * bits + yRow + 8) & 0x7fff];
-        }
-        if (bits > 4)
-        {
-            _tileBufferP3[l] = _vram[(_tileAdr[l] + tileNum * 4 * bits + yRow + 16) & 0x7fff];
-            _tileBufferP4[l] = _vram[(_tileAdr[l] + tileNum * 4 * bits + yRow + 24) & 0x7fff];
+            int shift = xFlip ? i : 7 - i;
+            int tileData = (plane1 >> shift) & 0x1;
+            tileData |= ((plane1 >> (8 + shift)) & 0x1) << 1;
+            if (bits > 2)
+            {
+                tileData |= ((plane2 >> shift) & 0x1) << 2;
+                tileData |= ((plane2 >> (8 + shift)) & 0x1) << 3;
+            }
+
+            if (bits > 4)
+            {
+                tileData |= ((plane3 >> shift) & 0x1) << 4;
+                tileData |= ((plane3 >> (8 + shift)) & 0x1) << 5;
+                tileData |= ((plane4 >> shift) & 0x1) << 6;
+                tileData |= ((plane4 >> (8 + shift)) & 0x1) << 7;
+            }
+
+            _tilePixelBuffer[pixelOffset + i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
         }
     }
 
