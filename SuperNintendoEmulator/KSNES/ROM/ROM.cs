@@ -20,6 +20,14 @@ public class ROM : IROM
         Mixed
     }
 
+    private enum PlainReadDispatch
+    {
+        None,
+        LoRom,
+        HiRom,
+        ExHiRom
+    }
+
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     public Header Header { get; private set; }
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
@@ -95,6 +103,12 @@ public class ROM : IROM
         ParseTraceOffsets(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_ADDRS"));
     [NonSerialized]
     private TimedCoprocessorDispatch _timedDispatch;
+    [NonSerialized]
+    private PlainReadDispatch _plainReadDispatch;
+    [NonSerialized]
+    private bool _romLengthIsPowerOfTwo;
+    [NonSerialized]
+    private uint _romLengthMask;
 
     [NonSerialized]
     private Timer? _sRAMTimer;
@@ -116,6 +130,8 @@ public class ROM : IROM
     public void LoadROM(byte[] data, Header header)
     {
         _data = data;
+        _romLengthIsPowerOfTwo = _data.Length > 0 && (_data.Length & (_data.Length - 1)) == 0;
+        _romLengthMask = _data.Length > 0 ? (uint)_data.Length - 1U : 0U;
         Header = header;
         _sram = new byte[header.RamSize];
         _hasSram = header.Chips > 0;
@@ -331,6 +347,7 @@ public class ROM : IROM
         }
 
         ConfigureTimedCoprocessorDispatch();
+        ConfigurePlainReadDispatch();
     }
 
     public int RomLength => _data.Length;
@@ -392,6 +409,10 @@ public class ROM : IROM
         if (TraceSnesVectors && bank == 0x00 && (adr == 0xFFEA || adr == 0xFFEB || adr == 0xFFEE || adr == 0xFFEF))
         {
             Console.WriteLine($"[SNES-VEC] read bank=0x{bank:X2} adr=0x{adr:X4}");
+        }
+        if (_plainReadDispatch != PlainReadDispatch.None)
+        {
+            return ReadPlainMapped(bank, adr, SramIndex);
         }
         if (_sa1 != null)
         {
@@ -1183,6 +1204,88 @@ public class ROM : IROM
         _timedDispatch = count <= 1 ? dispatch : TimedCoprocessorDispatch.Mixed;
     }
 
+    private void ConfigurePlainReadDispatch()
+    {
+        if (_cx4 != null
+            || _dsp1 != null
+            || _superFx != null
+            || _sa1 != null
+            || _sdd1 != null
+            || _st010 != null
+            || _st011 != null
+            || _st018 != null
+            || _obc1 != null
+            || _srtc != null
+            || _spc7110 != null)
+        {
+            _plainReadDispatch = PlainReadDispatch.None;
+            return;
+        }
+
+        if (Header.IsExHiRom)
+        {
+            _plainReadDispatch = PlainReadDispatch.ExHiRom;
+        }
+        else if (Header.IsHiRom)
+        {
+            _plainReadDispatch = PlainReadDispatch.HiRom;
+        }
+        else
+        {
+            _plainReadDispatch = PlainReadDispatch.LoRom;
+        }
+    }
+
+    private byte ReadPlainMapped(int bank, int adr, Func<int, int> sramIndex)
+    {
+        return _plainReadDispatch switch
+        {
+            PlainReadDispatch.LoRom => ReadPlainLoRom(bank, adr, sramIndex),
+            PlainReadDispatch.HiRom => ReadPlainHiRom(bank, adr, sramIndex),
+            PlainReadDispatch.ExHiRom => ReadPlainExHiRom(bank, adr, sramIndex),
+            _ => GetOpenBusByte(),
+        };
+    }
+
+    private byte ReadPlainLoRom(int bank, int adr, Func<int, int> sramIndex)
+    {
+        if (adr < 0x8000 && bank >= 0x70 && bank < 0x7e && _hasSram)
+        {
+            int idx = ((bank - 0x70) << 15) | (adr & 0x7fff);
+            return _sram[sramIndex(idx)];
+        }
+
+        return ReadLoRom(bank, adr);
+    }
+
+    private byte ReadPlainHiRom(int bank, int adr, Func<int, int> sramIndex)
+    {
+        if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
+        {
+            int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
+            return _sram[sramIndex(idx)];
+        }
+
+        if (adr >= 0x8000 || (bank >= 0x40 && bank < 0x7e) || bank >= 0xc0)
+            return ReadHiRom(bank, adr);
+
+        return GetOpenBusByte();
+    }
+
+    private byte ReadPlainExHiRom(int bank, int adr, Func<int, int> sramIndex)
+    {
+        if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsExHiRomSramBank(bank))
+        {
+            int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
+            return _sram[sramIndex(idx)];
+        }
+
+        if (adr >= 0x8000 || ((bank >= 0x40 && bank < 0x7e) || bank >= 0xC0))
+            return ReadExHiRom(bank, adr);
+
+        return GetOpenBusByte();
+    }
+
     private void ApplyDspPortConfiguration(DspVariant dspVariant, Header header)
     {
         _dsp1IsHiRom = dspVariant == DspVariant.Dsp1 && header.IsHiRom;
@@ -1239,10 +1342,7 @@ public class ROM : IROM
         if (_data.Length == 0)
             return 0;
         uint mapped = ((address & 0x7F0000) >> 1) | (address & 0x007FFF);
-        uint mask = (uint)_data.Length - 1;
-        if ((_data.Length & (_data.Length - 1)) == 0)
-            return _data[mapped & mask];
-        return _data[mapped % (uint)_data.Length];
+        return ReadWrappedRom(mapped);
     }
 
     private void SaveSRAM(object? state)
@@ -1484,23 +1584,35 @@ public class ROM : IROM
         return offsets;
     }
 
+    private byte GetOpenBusByte()
+    {
+        return (byte)(_system?.OpenBus ?? 0);
+    }
+
+    private byte ReadLoRom(int bank, int adr)
+    {
+        return _data[((bank & (_banks - 1)) << 15) | (adr & 0x7fff)];
+    }
+
+    private byte ReadWrappedRom(uint address)
+    {
+        if (_romLengthIsPowerOfTwo)
+            return _data[address & _romLengthMask];
+
+        return _data[address % (uint)_data.Length];
+    }
+
     private byte ReadHiRom(int bank, int adr)
     {
         uint address = (uint)(((bank & 0x7f) << 16) | (adr & 0xffff));
-        uint mask = (uint)_data.Length - 1;
-        if ((_data.Length & (_data.Length - 1)) == 0)
-            return _data[address & mask];
-        return _data[address % (uint)_data.Length];
+        return ReadWrappedRom(address);
     }
 
     private byte ReadExHiRom(int bank, int adr)
     {
         uint address = (uint)((bank << 16) | (adr & 0xFFFF));
         uint mapped = (address & 0x3FFFFF) | (((address >> 1) & 0x400000) ^ 0x400000);
-        uint mask = (uint)_data.Length - 1;
-        if ((_data.Length & (_data.Length - 1)) == 0)
-            return _data[mapped & mask];
-        return _data[mapped % (uint)_data.Length];
+        return ReadWrappedRom(mapped);
     }
 
     private static bool IsHiRomSramBank(int bank)
