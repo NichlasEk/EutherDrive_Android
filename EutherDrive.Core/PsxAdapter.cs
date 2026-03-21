@@ -226,6 +226,11 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
     private long _frameCounter;
     private RomIdentity? _romIdentity;
     private string _bootEnvironmentSummary = "bios=(none)";
+    private volatile string _framePerfSummary = "PSX draw --";
+    private long _framePerfWindowStartTicks = Stopwatch.GetTimestamp();
+    private long _framePerfAccumulatedTicks;
+    private long _framePerfAccumulatedBytes;
+    private int _framePerfSamples;
     public RomIdentity? RomIdentity => _romIdentity;
 
     public void LoadRom(string path)
@@ -238,6 +243,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             Environment.SetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS", BiosPath);
         _bootEnvironmentSummary = BuildBootEnvironmentSummary();
         _host = new PsxHostWindow(this);
+        ResetFramePerfCounters();
         bool superFastBoot = SuperFastBootEnabled && !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
         bool bootFastLoadEnabled = FastLoadEnabled || superFastBoot;
         _core = new ProjectPSX.ProjectPSX(
@@ -505,6 +511,12 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         }
     }
 
+    public bool TryGetFramePerfSummary(out string summary)
+    {
+        summary = _framePerfSummary;
+        return !string.IsNullOrWhiteSpace(summary);
+    }
+
     private static string BuildBootEnvironmentSummary()
     {
         string biosName = string.IsNullOrWhiteSpace(BiosPath) ? "(none)" : Path.GetFileName(BiosPath);
@@ -612,6 +624,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         if (width <= 0 || height <= 0)
             return;
 
+        long drawStart = Stopwatch.GetTimestamp();
         int stride = width * 4;
         int required = stride * height;
         EnsureWorkFrameCapacity(required);
@@ -628,6 +641,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         if (is24Bit)
         {
             UpdateFrame24(vram1555, dstPixels, width, height, baseX, baseY, vramWidth, vramHeight);
+            UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required);
             return;
         }
 
@@ -662,6 +676,8 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             if (copyWidth < width)
                 dstRow.Slice(copyWidth).Fill(OpaqueBlackPixel);
         }
+
+        UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required);
     }
 
     private static void BlitOpaqueBgrx32(ReadOnlySpan<uint> source, Span<uint> destination)
@@ -744,6 +760,40 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
     private void RotateFrameBuffers()
     {
         (_presentFrameBuffer, _spareFrameBuffer, _workFrameBuffer) = (_workFrameBuffer, _presentFrameBuffer, _spareFrameBuffer);
+    }
+
+    private void ResetFramePerfCounters()
+    {
+        _framePerfWindowStartTicks = Stopwatch.GetTimestamp();
+        _framePerfAccumulatedTicks = 0;
+        _framePerfAccumulatedBytes = 0;
+        _framePerfSamples = 0;
+        _framePerfSummary = "PSX draw --";
+    }
+
+    private void UpdateFramePerfStats(long ticks, int byteCount)
+    {
+        _framePerfAccumulatedTicks += ticks;
+        _framePerfAccumulatedBytes += byteCount;
+        _framePerfSamples++;
+
+        long nowTicks = Stopwatch.GetTimestamp();
+        double windowMs = (nowTicks - _framePerfWindowStartTicks) * 1000.0 / Stopwatch.Frequency;
+        if (windowMs < 250 || _framePerfSamples <= 0)
+        {
+            return;
+        }
+
+        double avgDrawMs = (_framePerfAccumulatedTicks * 1000.0 / Stopwatch.Frequency) / _framePerfSamples;
+        double mbPerSec = windowMs > 0
+            ? (_framePerfAccumulatedBytes / (1024.0 * 1024.0)) / (windowMs / 1000.0)
+            : 0;
+        _framePerfSummary = $"PSX draw:{avgDrawMs:0.0}ms  scanout:{mbPerSec:0.0}MB/s";
+
+        _framePerfWindowStartTicks = nowTicks;
+        _framePerfAccumulatedTicks = 0;
+        _framePerfAccumulatedBytes = 0;
+        _framePerfSamples = 0;
     }
 
     private static double? GetFrameRateOverrideHz(FrameRateMode mode)

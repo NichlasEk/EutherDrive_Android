@@ -55,7 +55,9 @@ public partial class MainView : UserControl
     private volatile bool _emulationThreadRunning;
     private AudioEngine? _audioEngine;
     private WriteableBitmap? _bitmap;
+    private byte[] _captureFrameBuffer = Array.Empty<byte>();
     private byte[] _latestFrameBuffer = Array.Empty<byte>();
+    private byte[] _presentFrameBuffer = Array.Empty<byte>();
     private string? _selectedRomPath;
     private string? _selectedRomDisplayName;
     private volatile string _latestPerfSummary = "Perf idle";
@@ -68,6 +70,9 @@ public partial class MainView : UserControl
     private double _perfAccumulatedEmuMs;
     private double _perfAccumulatedAudioMs;
     private double _perfAccumulatedBlitMs;
+    private long _perfAccumulatedPresentTicks;
+    private long _perfPresentedWindowFrames;
+    private long _perfDroppedWindowFrames;
     private long _emulatedFrames;
     private int _lastFrameWidth;
     private int _lastFrameHeight;
@@ -1120,6 +1125,7 @@ public partial class MainView : UserControl
         }
 
         long serial;
+        long previouslyPresentedSerial;
         int width;
         int height;
         int srcStride;
@@ -1128,7 +1134,8 @@ public partial class MainView : UserControl
         lock (_frameSync)
         {
             serial = _latestFrameSerial;
-            if (serial == 0 || serial == _presentedFrameSerial)
+            previouslyPresentedSerial = _presentedFrameSerial;
+            if (serial == 0 || serial == previouslyPresentedSerial)
             {
                 return;
             }
@@ -1136,39 +1143,39 @@ public partial class MainView : UserControl
             width = _lastFrameWidth;
             height = _lastFrameHeight;
             srcStride = width * 4;
-            frameBuffer = _latestFrameBuffer;
-
-            EnsureBitmap(width, height);
-            ApplyPresentationSizeForCore(_core, width, height);
-            if (_bitmap == null)
-            {
-                return;
-            }
-
-            using var fb = _bitmap.Lock();
-            int dstStride = fb.RowBytes;
-            int rowBytes = Math.Min(srcStride, dstStride);
-            int pixelCount = rowBytes / 4;
-            if (rowBytes <= 0)
-            {
-                return;
-            }
-
-            fixed (byte* srcPtr = frameBuffer)
-            {
-                byte* dstPtr = (byte*)fb.Address.ToPointer();
-                for (int y = 0; y < height; y++)
-                {
-                    uint* srcRow = (uint*)(srcPtr + (y * srcStride));
-                    uint* dstRow = (uint*)(dstPtr + (y * dstStride));
-                    for (int x = 0; x < pixelCount; x++)
-                    {
-                        dstRow[x] = srcRow[x];
-                    }
-                }
-            }
-
+            (_presentFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _presentFrameBuffer);
+            frameBuffer = _presentFrameBuffer;
             _presentedFrameSerial = serial;
+        }
+
+        EnsureBitmap(width, height);
+        ApplyPresentationSizeForCore(_core, width, height);
+        if (_bitmap == null)
+        {
+            return;
+        }
+
+        long presentStart = _perfStopwatch.ElapsedTicks;
+        using var fb = _bitmap.Lock();
+        int dstStride = fb.RowBytes;
+        int rowBytes = Math.Min(srcStride, dstStride);
+        if (rowBytes <= 0)
+        {
+            return;
+        }
+
+        fixed (byte* srcPtr = frameBuffer)
+        {
+            byte* dstPtr = (byte*)fb.Address.ToPointer();
+            CopyFrameRows(srcPtr, srcStride, dstPtr, dstStride, height, rowBytes, clearDestinationTail: false);
+        }
+
+        Interlocked.Add(ref _perfAccumulatedPresentTicks, _perfStopwatch.ElapsedTicks - presentStart);
+        Interlocked.Increment(ref _perfPresentedWindowFrames);
+        long droppedFrames = serial - previouslyPresentedSerial - 1;
+        if (droppedFrames > 0)
+        {
+            Interlocked.Add(ref _perfDroppedWindowFrames, droppedFrames);
         }
 
         InvalidateScreenImages();
@@ -1253,6 +1260,9 @@ public partial class MainView : UserControl
         _perfAccumulatedEmuMs = 0;
         _perfAccumulatedAudioMs = 0;
         _perfAccumulatedBlitMs = 0;
+        Interlocked.Exchange(ref _perfAccumulatedPresentTicks, 0);
+        Interlocked.Exchange(ref _perfPresentedWindowFrames, 0);
+        Interlocked.Exchange(ref _perfDroppedWindowFrames, 0);
         _emulatedFrames = 0;
         _presentedFrameSerial = 0;
         _latestFrameSerial = 0;
@@ -1279,17 +1289,25 @@ public partial class MainView : UserControl
         if (windowMs < 250)
             return;
 
+        long presentTicks = Interlocked.Exchange(ref _perfAccumulatedPresentTicks, 0);
+        long presentedFrames = Interlocked.Exchange(ref _perfPresentedWindowFrames, 0);
+        long droppedFrames = Interlocked.Exchange(ref _perfDroppedWindowFrames, 0);
+        double avgPresentMs = presentedFrames > 0 ? StopwatchTicksToMs(presentTicks) / presentedFrames : 0;
         double avgFrameMs = windowMs / _perfWindowFrames;
         double fps = avgFrameMs > 0 ? 1000.0 / avgFrameMs : 0;
         double avgWorkMs = (_perfAccumulatedEmuMs + _perfAccumulatedAudioMs + _perfAccumulatedBlitMs) / _perfWindowFrames;
         double maxFps = avgWorkMs > 0 ? 1000.0 / avgWorkMs : 0;
         string coreLabel = _core?.GetType().Name ?? "None";
         string perfSummary =
-            $"Perf  FPS:{fps:0}  Max:{maxFps:0}  Work:{avgWorkMs:0.0}ms  Emu:{_perfAccumulatedEmuMs / _perfWindowFrames:0.0}ms  Audio:{_perfAccumulatedAudioMs / _perfWindowFrames:0.0}ms  Blit:{_perfAccumulatedBlitMs / _perfWindowFrames:0.0}ms  Frame:{_emulatedFrames}  Res:{_lastFrameWidth}x{_lastFrameHeight}  Core:{coreLabel}";
+            $"Perf  FPS:{fps:0}  Max:{maxFps:0}  Work:{avgWorkMs:0.0}ms  Emu:{_perfAccumulatedEmuMs / _perfWindowFrames:0.0}ms  Audio:{_perfAccumulatedAudioMs / _perfWindowFrames:0.0}ms  Cap:{_perfAccumulatedBlitMs / _perfWindowFrames:0.0}ms  Present:{avgPresentMs:0.0}ms  Drop:{droppedFrames}  Frame:{_emulatedFrames}  Res:{_lastFrameWidth}x{_lastFrameHeight}  Core:{coreLabel}";
         _latestPerfHeadline = $"FPS {fps:0}  MAX {maxFps:0}";
         if (_core is PsxAdapter psx && psx.TryGetBootProgressSummary(out string psxBoot))
         {
             perfSummary = $"{perfSummary}\n{psxBoot}";
+            if (psx.TryGetFramePerfSummary(out string psxFramePerf))
+            {
+                perfSummary = $"{perfSummary}\n{psxFramePerf}";
+            }
             if (psx.TryGetDebugState(out string psxState))
             {
                 perfSummary = $"{perfSummary}\n{psxState}";
@@ -1363,7 +1381,9 @@ public partial class MainView : UserControl
         ResetPerfCounters();
         lock (_frameSync)
         {
+            _captureFrameBuffer = Array.Empty<byte>();
             _latestFrameBuffer = Array.Empty<byte>();
+            _presentFrameBuffer = Array.Empty<byte>();
         }
         SetScreenSource(null);
         _viewModel.IsRunning = false;
@@ -2103,40 +2123,63 @@ public partial class MainView : UserControl
         }
 
         int dstStride = width * 4;
-        int rowBytes = Math.Min(width * 4, srcStride);
-        int pixelCount = rowBytes / 4;
+        int rowBytes = Math.Min(dstStride, srcStride);
         if (rowBytes <= 0)
         {
             return;
+        }
+
+        int requiredBytes = dstStride * height;
+        EnsureFrameBufferCapacity(ref _captureFrameBuffer, requiredBytes);
+
+        fixed (byte* srcPtr = src)
+        fixed (byte* dstPtr = _captureFrameBuffer)
+        {
+            CopyFrameRows(srcPtr, srcStride, dstPtr, dstStride, height, rowBytes, clearDestinationTail: true);
         }
 
         lock (_frameSync)
         {
             _lastFrameWidth = width;
             _lastFrameHeight = height;
-            int requiredBytes = dstStride * height;
-            if (_latestFrameBuffer.Length < requiredBytes)
-            {
-                _latestFrameBuffer = new byte[requiredBytes];
-            }
-
-            fixed (byte* srcPtr = src)
-            fixed (byte* dstPtr = _latestFrameBuffer)
-            {
-                for (int y = 0; y < height; y++)
-                {
-                    uint* srcRow = (uint*)(srcPtr + (y * srcStride));
-                    uint* dstRow = (uint*)(dstPtr + (y * dstStride));
-
-                    for (int x = 0; x < pixelCount; x++)
-                    {
-                        dstRow[x] = srcRow[x] | 0xFF000000u;
-                    }
-                }
-            }
-
+            (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
             _emulatedFrames++;
             _latestFrameSerial++;
+        }
+    }
+
+    private static void EnsureFrameBufferCapacity(ref byte[] buffer, int requiredBytes)
+    {
+        if (buffer.Length < requiredBytes)
+        {
+            buffer = new byte[requiredBytes];
+        }
+    }
+
+    private static unsafe void CopyFrameRows(byte* srcPtr, int srcStride, byte* dstPtr, int dstStride, int height, int rowBytes, bool clearDestinationTail)
+    {
+        if (height <= 0 || rowBytes <= 0)
+        {
+            return;
+        }
+
+        if (rowBytes == srcStride && rowBytes == dstStride)
+        {
+            long totalBytes = (long)rowBytes * height;
+            Buffer.MemoryCopy(srcPtr, dstPtr, totalBytes, totalBytes);
+            return;
+        }
+
+        for (int y = 0; y < height; y++)
+        {
+            byte* srcRow = srcPtr + (y * srcStride);
+            byte* dstRow = dstPtr + (y * dstStride);
+            Buffer.MemoryCopy(srcRow, dstRow, dstStride, rowBytes);
+
+            if (clearDestinationTail && rowBytes < dstStride)
+            {
+                new Span<byte>(dstRow + rowBytes, dstStride - rowBytes).Clear();
+            }
         }
     }
 
