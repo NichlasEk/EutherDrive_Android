@@ -241,6 +241,20 @@ public class PPU : IPPU
     private int[] _optHorBuffer = [];
     private int[] _optVerBuffer = [];
     private int[] _lastOrigTileX = [];
+    [NonSerialized]
+    private byte[] _windowStateCache = [];
+    [NonSerialized]
+    private byte[] _mainScreenVisibleCache = [];
+    [NonSerialized]
+    private byte[] _subScreenVisibleCache = [];
+    [NonSerialized]
+    private byte[] _clipToBlackCache = [];
+    [NonSerialized]
+    private byte[] _mathPreventCache = [];
+    [NonSerialized]
+    private int _lineModeIndex;
+    [NonSerialized]
+    private int _lineLayerCount;
 
     private static byte[,] BuildBrightnessTable()
     {
@@ -915,6 +929,16 @@ public class PPU : IPPU
             _mode7Ycoords = new int[256];
         if (_pixelOutput.Length != MaxFrameWidth * MaxFrameHeight)
             _pixelOutput = new int[MaxFrameWidth * MaxFrameHeight];
+        if (_windowStateCache.Length != 6 * 256)
+            _windowStateCache = new byte[6 * 256];
+        if (_mainScreenVisibleCache.Length != 5 * 256)
+            _mainScreenVisibleCache = new byte[5 * 256];
+        if (_subScreenVisibleCache.Length != 5 * 256)
+            _subScreenVisibleCache = new byte[5 * 256];
+        if (_clipToBlackCache.Length != 256)
+            _clipToBlackCache = new byte[256];
+        if (_mathPreventCache.Length != 256)
+            _mathPreventCache = new byte[256];
     }
 
     private bool IsHiResOutput()
@@ -1209,6 +1233,7 @@ public class PPU : IPPU
                 GenerateMode7Coords(screenY);
             }
             ResetLineCaches();
+            BuildLineCaches();
             if (trueHiResOutput && !_frameTrueHiResOutput)
             {
                 ExpandBufferedLinesToHiRes(screenY);
@@ -1228,11 +1253,12 @@ public class PPU : IPPU
                 if (!_forcedBlank)
                 {
                     GetColor(false, i, screenY, out ushort color, out int item2, out int item3);
+                    bool mathEnabled = GetMathEnabled(i, item2, item3);
                     mainVisible = item2 < 5;
                     r2 = color & 0x1f;
                     g2 = (color & 0x3e0) >> 5;
                     b2 = (color & 0x7c00) >> 10;
-                    if (_colorClip == 3 || _colorClip == 2 && GetWindowState(i, 5) || _colorClip == 1 && !GetWindowState(i, 5))
+                    if (_clipToBlackCache[i] != 0)
                     {
                         r2 = 0;
                         g2 = 0;
@@ -1241,7 +1267,7 @@ public class PPU : IPPU
                     ushort secondColor = 0;
                     int secondLayer = 5;
                     int secondPixel = 0;
-                    if (_mode == 5 || _mode == 6 || _pseudoHires || GetMathEnabled(i, item2, item3) && _addSub)
+                    if (_mode == 5 || _mode == 6 || _pseudoHires || (mathEnabled && _addSub))
                     {
                         GetColor(true, i, screenY, out secondColor, out secondLayer, out secondPixel);
                         subVisible = secondLayer < 5;
@@ -1249,7 +1275,7 @@ public class PPU : IPPU
                         g1 = (secondColor & 0x3e0) >> 5;
                         b1 = (secondColor & 0x7c00) >> 10;
                     }
-                    if (GetMathEnabled(i, item2, item3))
+                    if (mathEnabled)
                     {
                         if (_subtractColors)
                         {
@@ -1341,11 +1367,52 @@ public class PPU : IPPU
         _lastOrigTileX[1] = -1;
     }
 
+    private void BuildLineCaches()
+    {
+        _lineModeIndex = _layer3Prio && _mode == 1 ? 96 : 12 * _mode;
+        if (_mode7ExBg && _mode == 7)
+            _lineModeIndex = 108;
+        _lineLayerCount = _layercountPerMode[_mode];
+
+        for (int layer = 0; layer < 6; layer++)
+        {
+            int baseIndex = layer << 8;
+            for (int x = 0; x < 256; x++)
+            {
+                _windowStateCache[baseIndex + x] = ComputeWindowState(x, layer) ? (byte)1 : (byte)0;
+            }
+
+            if (layer >= 5)
+                continue;
+
+            bool mainEnabled = _mainScreenEnabled[layer];
+            bool subEnabled = _subScreenEnabled[layer];
+            bool mainUsesWindow = _mainScreenWindow[layer];
+            bool subUsesWindow = _subScreenWindow[layer];
+            int visibleBaseIndex = layer << 8;
+            for (int x = 0; x < 256; x++)
+            {
+                bool windowState = _windowStateCache[baseIndex + x] != 0;
+                _mainScreenVisibleCache[visibleBaseIndex + x] =
+                    mainEnabled && (!mainUsesWindow || !windowState) ? (byte)1 : (byte)0;
+                _subScreenVisibleCache[visibleBaseIndex + x] =
+                    subEnabled && (!subUsesWindow || !windowState) ? (byte)1 : (byte)0;
+            }
+        }
+
+        int colorWindowBase = 5 << 8;
+        for (int x = 0; x < 256; x++)
+        {
+            bool colorWindow = _windowStateCache[colorWindowBase + x] != 0;
+            _clipToBlackCache[x] = ShouldClipToBlack(colorWindow) ? (byte)1 : (byte)0;
+            _mathPreventCache[x] = ShouldPreventMath(colorWindow) ? (byte)1 : (byte)0;
+        }
+    }
+
     private void GetColor(bool sub, int x, int y, out ushort color, out int layer, out int pixel) 
     {
-        int modeIndex = _layer3Prio && _mode == 1 ? 96 : 12 * _mode;
-        modeIndex = _mode7ExBg && _mode == 7 ? 108 : modeIndex;
-        int count = _layercountPerMode[_mode];
+        int modeIndex = _lineModeIndex;
+        int count = _lineLayerCount;
         int j;
         pixel = 0;
         layer = 5;
@@ -1360,7 +1427,9 @@ public class PPU : IPPU
             int lx = x;
             int ly = y;
             layer = _layersPerMode[modeIndex + j];
-            if (!sub && _mainScreenEnabled[layer] && (!_mainScreenWindow[layer] || !GetWindowState(lx, layer)) || sub && _subScreenEnabled[layer] && (!_subScreenWindow[layer] || !GetWindowState(lx, layer)))
+            int visibleIndex = (layer << 8) | x;
+            if ((!sub && _mainScreenVisibleCache[visibleIndex] != 0)
+                || (sub && _subScreenVisibleCache[visibleIndex] != 0))
             {
                 if (_mosaicEnabled[layer])
                 {
@@ -1442,7 +1511,7 @@ public class PPU : IPPU
 
     private bool GetMathEnabled(int x, int l, int pal) 
     {
-        if (_preventMath == 3 || (_preventMath == 2 && GetWindowState(x, 5)) || (_preventMath == 1 && !GetWindowState(x, 5)))
+        if (_mathPreventCache[x] != 0)
         {
             return false;
         }
@@ -1453,7 +1522,17 @@ public class PPU : IPPU
         return false;
     }
 
-    private bool GetWindowState(int x, int l) 
+    private bool ShouldClipToBlack(bool colorWindow)
+    {
+        return _colorClip == 3 || (_colorClip == 2 && colorWindow) || (_colorClip == 1 && !colorWindow);
+    }
+
+    private bool ShouldPreventMath(bool colorWindow)
+    {
+        return _preventMath == 3 || (_preventMath == 2 && colorWindow) || (_preventMath == 1 && !colorWindow);
+    }
+
+    private bool ComputeWindowState(int x, int l) 
     {
         if (!_window1Enabled[l] && !_window2Enabled[l])
         {
