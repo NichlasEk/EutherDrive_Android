@@ -517,196 +517,342 @@ public class CPU : ICPU
 
     private (int, int) GetAdr(int mode) 
     {
+        int pcBank = _r[K] << 16;
+        int dataBank = _r[DBR] << 16;
+        int dpr = _br[DPR];
+        int x = _br[X];
+        int y = _br[Y];
+        int sp = _br[SP];
+        bool dprHasLowByteOffset = (dpr & 0xff) != 0;
+        ushort pc = _br[PC];
+        int adr = 0;
+        int adrh = 0;
+
         switch (mode)
         {
             case IMP:
-                return (0, 0);
+                break;
             case IMM:
-                return ((_r[K] << 16) | _br[PC]++, 0);
+                adr = pcBank | pc;
+                pc++;
+                break;
             case IMMm:
-                if (_m)
+                adr = pcBank | pc;
+                pc++;
+                if (!_m)
                 {
-                    return ((_r[K] << 16) | _br[PC]++, 0);
+                    adrh = pcBank | pc;
+                    pc++;
                 }
-                else
-                {
-                    int low = (_r[K] << 16) | _br[PC]++;
-                    return (low, (_r[K] << 16) | _br[PC]++);
-                }
+                break;
             case IMMx:
-                if (_x)
+                adr = pcBank | pc;
+                pc++;
+                if (!_x)
                 {
-                    return ((_r[K] << 16) | _br[PC]++, 0);
+                    adrh = pcBank | pc;
+                    pc++;
                 }
-                else
-                {
-                    int low = (_r[K] << 16) | _br[PC]++;
-                    return (low, (_r[K] << 16) | _br[PC]++);
-                }
+                break;
             case IMMl:
-                int low2 = (_r[K] << 16) | _br[PC]++;
-                return (low2, (_r[K] << 16) | _br[PC]++);
+                adr = pcBank | pc;
+                pc++;
+                adrh = pcBank | pc;
+                pc++;
+                break;
             case DP:
-                int adr = ReadBus((_r[K] << 16) | _br[PC]++);
-                if ((_br[DPR] & 0xff) != 0)
-                {
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                if (dprHasLowByteOffset)
                     CyclesLeft++;
-                }
-                return ((_br[DPR] + adr) & 0xffff, (_br[DPR] + adr + 1) & 0xffff);
+                int baseAdr = (dpr + operand) & 0xffff;
+                adr = baseAdr;
+                adrh = (baseAdr + 1) & 0xffff;
+                break;
+            }
             case DPX:
-                int adr2 = ReadBus((_r[K] << 16) | _br[PC]++);
-                if ((_br[DPR] & 0xff) != 0)
-                {
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                if (dprHasLowByteOffset)
                     CyclesLeft++;
-                }
-                return ((_br[DPR] + adr2 + _br[X]) & 0xffff, (_br[DPR] + adr2 + _br[X] + 1) & 0xffff);
+                int baseAdr = (dpr + operand + x) & 0xffff;
+                adr = baseAdr;
+                adrh = (baseAdr + 1) & 0xffff;
+                break;
+            }
             case DPY:
-                int adr3 = ReadBus((_r[K] << 16) | _br[PC]++);
-                if ((_br[DPR] & 0xff) != 0)
-                {
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                if (dprHasLowByteOffset)
                     CyclesLeft++;
-                }
-                return ((_br[DPR] + adr3 + _br[Y]) & 0xffff, (_br[DPR] + adr3 + _br[Y] + 1) & 0xffff);
+                int baseAdr = (dpr + operand + y) & 0xffff;
+                adr = baseAdr;
+                adrh = (baseAdr + 1) & 0xffff;
+                break;
+            }
             case IDP:
-                int adr4 = ReadBus((_r[K] << 16) | _br[PC]++);
-                if ((_br[DPR] & 0xff) != 0)
-                {
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                if (dprHasLowByteOffset)
                     CyclesLeft++;
-                }
-                int pointer = ReadBus((_br[DPR] + adr4) & 0xffff);
-                pointer |= ReadBus((_br[DPR] + adr4 + 1) & 0xffff) << 8;
-                return DataBankPair(pointer);
+                int baseAdr = (dpr + operand) & 0xffff;
+                int pointer = ReadBus(baseAdr);
+                pointer |= ReadBus((baseAdr + 1) & 0xffff) << 8;
+                pointer &= 0xffff;
+                adr = dataBank | pointer;
+                adrh = dataBank | ((pointer + 1) & 0xffff);
+                break;
+            }
             case IDX:
-                int adr5 = ReadBus((_r[K] << 16) | _br[PC]++);
-                if ((_br[DPR] & 0xff) != 0)
-                {
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                if (dprHasLowByteOffset)
                     CyclesLeft++;
-                }
-                int pointer2 = ReadBus((_br[DPR] + adr5 + _br[X]) & 0xffff);
-                pointer2 |= ReadBus((_br[DPR] + adr5 + _br[X] + 1) & 0xffff) << 8;
-                return DataBankPair(pointer2);
+                int baseAdr = (dpr + operand + x) & 0xffff;
+                int pointer = ReadBus(baseAdr);
+                pointer |= ReadBus((baseAdr + 1) & 0xffff) << 8;
+                pointer &= 0xffff;
+                adr = dataBank | pointer;
+                adrh = dataBank | ((pointer + 1) & 0xffff);
+                break;
+            }
             case IDY:
-                int adr6 = ReadBus((_r[K] << 16) | _br[PC]++);
-                if ((_br[DPR] & 0xff) != 0)
-                {
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                if (dprHasLowByteOffset)
                     CyclesLeft++;
-                }
-                int pointer3 = ReadBus((_br[DPR] + adr6) & 0xffff);
-                pointer3 |= ReadBus((_br[DPR] + adr6 + 1) & 0xffff) << 8;
-                return DataBankPair(pointer3 + _br[Y]);
+                int baseAdr = (dpr + operand) & 0xffff;
+                int pointer = ReadBus(baseAdr);
+                pointer |= ReadBus((baseAdr + 1) & 0xffff) << 8;
+                int final = (pointer + y) & 0xffff;
+                adr = dataBank | final;
+                adrh = dataBank | ((final + 1) & 0xffff);
+                break;
+            }
             case IDYr:
-                int adr7 = ReadBus((_r[K] << 16) | _br[PC]++);
-                if ((_br[DPR] & 0xff) != 0)
-                {
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                if (dprHasLowByteOffset)
                     CyclesLeft++;
-                }
-                int pointer4 = ReadBus((_br[DPR] + adr7) & 0xffff);
-                pointer4 |= ReadBus((_br[DPR] + adr7 + 1) & 0xffff) << 8;
-                if (pointer4 >> 8 != (pointer4 + _br[Y]) >> 8 || !_x)
-                {
+                int baseAdr = (dpr + operand) & 0xffff;
+                int pointer = ReadBus(baseAdr);
+                pointer |= ReadBus((baseAdr + 1) & 0xffff) << 8;
+                int sum = pointer + y;
+                if (pointer >> 8 != sum >> 8 || !_x)
                     CyclesLeft++;
-                }
-                return DataBankPair(pointer4 + _br[Y]);
+                int final = sum & 0xffff;
+                adr = dataBank | final;
+                adrh = dataBank | ((final + 1) & 0xffff);
+                break;
+            }
             case IDL:
-                int adr8 = ReadBus((_r[K] << 16) | _br[PC]++);
-                if ((_br[DPR] & 0xff) != 0)
-                {
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                if (dprHasLowByteOffset)
                     CyclesLeft++;
-                }
-                int dpBase = (_br[DPR] + adr8) & 0xffff;
-                int pointer5 = ReadBus(dpBase);
-                pointer5 |= ReadBus((dpBase + 1) & 0xffff) << 8;
-                pointer5 |= ReadBus((dpBase + 2) & 0xffff) << 16;
-                return (Wrap24(pointer5), Wrap24(pointer5 + 1));
+                int baseAdr = (dpr + operand) & 0xffff;
+                int pointer = ReadBus(baseAdr);
+                pointer |= ReadBus((baseAdr + 1) & 0xffff) << 8;
+                pointer |= ReadBus((baseAdr + 2) & 0xffff) << 16;
+                adr = pointer & 0xffffff;
+                adrh = (pointer + 1) & 0xffffff;
+                break;
+            }
             case ILY:
-                int adr9 = ReadBus((_r[K] << 16) | _br[PC]++);
-                if ((_br[DPR] & 0xff) != 0)
-                {
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                if (dprHasLowByteOffset)
                     CyclesLeft++;
-                }
-                int pointer6 = ReadBus((_br[DPR] + adr9) & 0xffff);
-                pointer6 |= ReadBus((_br[DPR] + adr9 + 1) & 0xffff) << 8;
-                pointer6 |= ReadBus((_br[DPR] + adr9 + 2) & 0xffff) << 16;
-                return (Wrap24(pointer6 + _br[Y]), Wrap24(pointer6 + _br[Y] + 1));
+                int baseAdr = (dpr + operand) & 0xffff;
+                int pointer = ReadBus(baseAdr);
+                pointer |= ReadBus((baseAdr + 1) & 0xffff) << 8;
+                pointer |= ReadBus((baseAdr + 2) & 0xffff) << 16;
+                int final = (pointer + y) & 0xffffff;
+                adr = final;
+                adrh = (final + 1) & 0xffffff;
+                break;
+            }
             case SR:
-                int adr10 = ReadBus((_r[K] << 16) | _br[PC]++);
-                return ((_br[SP] + adr10) & 0xffff, (_br[SP] + adr10 + 1) & 0xffff);
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                int baseAdr = (sp + operand) & 0xffff;
+                adr = baseAdr;
+                adrh = (baseAdr + 1) & 0xffff;
+                break;
+            }
             case ISY:
-                int adr11 = ReadBus((_r[K] << 16) | _br[PC]++);
-                int pointer7 = ReadBus((_br[SP] + adr11) & 0xffff);
-                pointer7 |= ReadBus((_br[SP] + adr11 + 1) & 0xffff) << 8;
-                return DataBankPair(pointer7 + _br[Y]);
+            {
+                int operand = ReadBus(pcBank | pc);
+                pc++;
+                int baseAdr = (sp + operand) & 0xffff;
+                int pointer = ReadBus(baseAdr);
+                pointer |= ReadBus((baseAdr + 1) & 0xffff) << 8;
+                int final = (pointer + y) & 0xffff;
+                adr = dataBank | final;
+                adrh = dataBank | ((final + 1) & 0xffff);
+                break;
+            }
             case ABS:
-                int adr12 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr12 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                return DataBankPair(adr12);
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int baseAdr = lo | (hi << 8);
+                adr = dataBank | baseAdr;
+                adrh = dataBank | ((baseAdr + 1) & 0xffff);
+                break;
+            }
             case ABX:
-                int adr13 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr13 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                return DataBankPair(adr13 + _br[X]);
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int final = ((lo | (hi << 8)) + x) & 0xffff;
+                adr = dataBank | final;
+                adrh = dataBank | ((final + 1) & 0xffff);
+                break;
+            }
             case ABXr:
-                int adr14 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr14 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                if (adr14 >> 8 != (adr14 + _br[X]) >> 8 || !_x)
-                {
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int baseAdr = lo | (hi << 8);
+                int sum = baseAdr + x;
+                if (baseAdr >> 8 != sum >> 8 || !_x)
                     CyclesLeft++;
-                }
-                return DataBankPair(adr14 + _br[X]);
+                int final = sum & 0xffff;
+                adr = dataBank | final;
+                adrh = dataBank | ((final + 1) & 0xffff);
+                break;
+            }
             case ABY:
-                int adr15 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr15 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                return DataBankPair(adr15 + _br[Y]);
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int final = ((lo | (hi << 8)) + y) & 0xffff;
+                adr = dataBank | final;
+                adrh = dataBank | ((final + 1) & 0xffff);
+                break;
+            }
             case ABYr:
-                int adr16 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr16 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                if (adr16 >> 8 != (adr16 + _br[Y]) >> 8 || !_x)
-                {
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int baseAdr = lo | (hi << 8);
+                int sum = baseAdr + y;
+                if (baseAdr >> 8 != sum >> 8 || !_x)
                     CyclesLeft++;
-                }
-                return DataBankPair(adr16 + _br[Y]);
+                int final = sum & 0xffff;
+                adr = dataBank | final;
+                adrh = dataBank | ((final + 1) & 0xffff);
+                break;
+            }
             case ABL:
-                int adr17 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr17 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                adr17 |= ReadBus((_r[K] << 16) | _br[PC]++) << 16;
-                return (Wrap24(adr17), Wrap24(adr17 + 1));
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int mid = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int baseAdr = lo | (mid << 8) | (hi << 16);
+                adr = baseAdr & 0xffffff;
+                adrh = (baseAdr + 1) & 0xffffff;
+                break;
+            }
             case ALX:
-                int adr18 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr18 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                adr18 |= ReadBus((_r[K] << 16) | _br[PC]++) << 16;
-                int alx = Wrap24(adr18 + _br[X]);
-                return (alx, Wrap24(alx + 1));
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int mid = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int final = (lo | (mid << 8) | (hi << 16)) + x;
+                adr = final & 0xffffff;
+                adrh = (adr + 1) & 0xffffff;
+                break;
+            }
             case IND:
-                int adr19 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr19 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                int pointer8 = ReadBus(adr19);
-                pointer8 |= ReadBus((adr19 + 1) & 0xffff) << 8;
-                return ((_r[K] << 16) + pointer8, 0);
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int indirectAdr = lo | (hi << 8);
+                int pointer = ReadBus(indirectAdr);
+                pointer |= ReadBus((indirectAdr + 1) & 0xffff) << 8;
+                adr = pcBank | pointer;
+                break;
+            }
             case IAX:
-                int adr20 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr20 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                int pointer9 = ReadBus((_r[K] << 16) | ((adr20 + _br[X]) & 0xffff));
-                pointer9 |= ReadBus((_r[K] << 16) | ((adr20 + _br[X] + 1) & 0xffff)) << 8;
-                return ((_r[K] << 16) + pointer9, 0);
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int indirectAdr = (lo | (hi << 8)) + x;
+                int pointer = ReadBus(pcBank | (indirectAdr & 0xffff));
+                pointer |= ReadBus(pcBank | ((indirectAdr + 1) & 0xffff)) << 8;
+                adr = pcBank | pointer;
+                break;
+            }
             case IAL:
-                int adr21 = ReadBus((_r[K] << 16) | _br[PC]++);
-                adr21 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                int pointer10 = ReadBus(adr21);
-                pointer10 |= ReadBus((adr21 + 1) & 0xffff) << 8;
-                pointer10 |= ReadBus((adr21 + 2) & 0xffff) << 16;
-                return (pointer10, 0);
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                int indirectAdr = lo | (hi << 8);
+                adr = ReadBus(indirectAdr);
+                adr |= ReadBus((indirectAdr + 1) & 0xffff) << 8;
+                adr |= ReadBus((indirectAdr + 2) & 0xffff) << 16;
+                break;
+            }
             case REL:
-                int rel = ReadBus((_r[K] << 16) | _br[PC]++);
-                return (GetSigned(rel, true), 0);
+            {
+                int rel = ReadBus(pcBank | pc);
+                pc++;
+                adr = GetSigned(rel, true);
+                break;
+            }
             case RLL:
-                int rel2 = ReadBus((_r[K] << 16) | _br[PC]++);
-                rel2 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
-                return (GetSigned(rel2, false), 0);
+            {
+                int lo = ReadBus(pcBank | pc);
+                pc++;
+                int hi = ReadBus(pcBank | pc);
+                pc++;
+                adr = GetSigned(lo | (hi << 8), false);
+                break;
+            }
             case BM:
-                int dest = ReadBus((_r[K] << 16) | _br[PC]++);
-                int src = ReadBus((_r[K] << 16) | _br[PC]++);
-                return (dest, src);
+                adr = ReadBus(pcBank | pc);
+                pc++;
+                adrh = ReadBus(pcBank | pc);
+                pc++;
+                break;
         }
-        return (0, 0);
+
+        _br[PC] = pc;
+        return (adr, adrh);
     }
 
     private void Adc(int adr, int adrh) 
