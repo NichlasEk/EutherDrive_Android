@@ -689,118 +689,234 @@ namespace ProjectPSX.Devices {
                 int textureDepth = primitive.depth;
                 ushort maskBit1555 = (ushort)(maskWhileDrawing << 15);
 
-                switch (textureDepth) {
-                    case 0:
-                        for (int y = min.y; y < max.y; y++) {
-                            int w0 = w0_row;
-                            int w1 = w1_row;
-                            int w2 = w2_row;
-                            int rowBase = y << 10;
-                            int texX = texXRow;
-                            int texY = texYRow;
+                if (textureWindowIdentity) {
+                    switch (textureDepth) {
+                        case 0:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
 
-                            for (int x = min.x; x < max.x; x++) {
-                                if ((w0 | w1 | w2) >= 0) {
-                                    int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                    int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                    ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = (texX / area) & 0xFF;
+                                        int texelY = (texY / area) & 0xFF;
+                                        ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                    if (rawTexel != 0) {
-                                        int pixelIndex = rowBase + x;
-                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                        vram1555Bits[pixelIndex] = packedTexel;
-                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                        if (rawTexel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                        }
                                     }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
                                 }
 
-                                w0 += A12;
-                                w1 += A20;
-                                w2 += A01;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
                             }
+                            break;
+                        case 1:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
 
-                            w0_row += B12;
-                            w1_row += B20;
-                            w2_row += B01;
-                            texXRow += texXStepY;
-                            texYRow += texYStepY;
-                        }
-                        break;
-                    case 1:
-                        for (int y = min.y; y < max.y; y++) {
-                            int w0 = w0_row;
-                            int w1 = w1_row;
-                            int w2 = w2_row;
-                            int rowBase = y << 10;
-                            int texX = texXRow;
-                            int texY = texYRow;
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = (texX / area) & 0xFF;
+                                        int texelY = (texY / area) & 0xFF;
+                                        ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                            for (int x = min.x; x < max.x; x++) {
-                                if ((w0 | w1 | w2) >= 0) {
-                                    int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                    int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                    ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
-
-                                    if (rawTexel != 0) {
-                                        int pixelIndex = rowBase + x;
-                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                        vram1555Bits[pixelIndex] = packedTexel;
-                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                        if (rawTexel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                        }
                                     }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
                                 }
 
-                                w0 += A12;
-                                w1 += A20;
-                                w2 += A01;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
                             }
+                            break;
+                        default:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
 
-                            w0_row += B12;
-                            w1_row += B20;
-                            w2_row += B01;
-                            texXRow += texXStepY;
-                            texYRow += texYStepY;
-                        }
-                        break;
-                    default:
-                        for (int y = min.y; y < max.y; y++) {
-                            int w0 = w0_row;
-                            int w1 = w1_row;
-                            int w2 = w2_row;
-                            int rowBase = y << 10;
-                            int texX = texXRow;
-                            int texY = texYRow;
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = (texX / area) & 0xFF;
+                                        int texelY = (texY / area) & 0xFF;
+                                        ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
 
-                            for (int x = min.x; x < max.x; x++) {
-                                if ((w0 | w1 | w2) >= 0) {
-                                    int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                    int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                    ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
-
-                                    if (rawTexel != 0) {
-                                        int pixelIndex = rowBase + x;
-                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                        vram1555Bits[pixelIndex] = packedTexel;
-                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                        if (rawTexel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                        }
                                     }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
                                 }
 
-                                w0 += A12;
-                                w1 += A20;
-                                w2 += A01;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
                             }
+                            break;
+                    }
+                } else {
+                    switch (textureDepth) {
+                        case 0:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
 
-                            w0_row += B12;
-                            w1_row += B20;
-                            w2_row += B01;
-                            texXRow += texXStepY;
-                            texYRow += texYStepY;
-                        }
-                        break;
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                        if (rawTexel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                        }
+                                    }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
+                                }
+
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
+                            }
+                            break;
+                        case 1:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
+
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                        if (rawTexel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                        }
+                                    }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
+                                }
+
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
+                            }
+                            break;
+                        default:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
+
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
+
+                                        if (rawTexel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                        }
+                                    }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
+                                }
+
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
+                            }
+                            break;
+                    }
                 }
 
                 return;
@@ -813,118 +929,234 @@ namespace ProjectPSX.Devices {
                 int textureBaseY = primitive.textureBase.y;
                 int textureDepth = primitive.depth;
 
-                switch (textureDepth) {
-                    case 0:
-                        for (int y = min.y; y < max.y; y++) {
-                            int w0 = w0_row;
-                            int w1 = w1_row;
-                            int w2 = w2_row;
-                            int rowBase = y << 10;
-                            int texX = texXRow;
-                            int texY = texYRow;
+                if (textureWindowIdentity) {
+                    switch (textureDepth) {
+                        case 0:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
 
-                            for (int x = min.x; x < max.x; x++) {
-                                if ((w0 | w1 | w2) >= 0) {
-                                    int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                    int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                    int texel = GetTexel4Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = (texX / area) & 0xFF;
+                                        int texelY = (texY / area) & 0xFF;
+                                        int texel = GetTexel4Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                    if (texel != 0) {
-                                        int pixelIndex = rowBase + x;
-                                        int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vramBits[pixelIndex] = color;
-                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        if (texel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            int color = ModulateColor(baseColor, texel) | maskBits;
+                                            vramBits[pixelIndex] = color;
+                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        }
                                     }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
                                 }
 
-                                w0 += A12;
-                                w1 += A20;
-                                w2 += A01;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
                             }
+                            break;
+                        case 1:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
 
-                            w0_row += B12;
-                            w1_row += B20;
-                            w2_row += B01;
-                            texXRow += texXStepY;
-                            texYRow += texYStepY;
-                        }
-                        break;
-                    case 1:
-                        for (int y = min.y; y < max.y; y++) {
-                            int w0 = w0_row;
-                            int w1 = w1_row;
-                            int w2 = w2_row;
-                            int rowBase = y << 10;
-                            int texX = texXRow;
-                            int texY = texYRow;
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = (texX / area) & 0xFF;
+                                        int texelY = (texY / area) & 0xFF;
+                                        int texel = GetTexel8Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                            for (int x = min.x; x < max.x; x++) {
-                                if ((w0 | w1 | w2) >= 0) {
-                                    int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                    int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                    int texel = GetTexel8Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
-
-                                    if (texel != 0) {
-                                        int pixelIndex = rowBase + x;
-                                        int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vramBits[pixelIndex] = color;
-                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        if (texel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            int color = ModulateColor(baseColor, texel) | maskBits;
+                                            vramBits[pixelIndex] = color;
+                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        }
                                     }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
                                 }
 
-                                w0 += A12;
-                                w1 += A20;
-                                w2 += A01;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
                             }
+                            break;
+                        default:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
 
-                            w0_row += B12;
-                            w1_row += B20;
-                            w2_row += B01;
-                            texXRow += texXStepY;
-                            texYRow += texYStepY;
-                        }
-                        break;
-                    default:
-                        for (int y = min.y; y < max.y; y++) {
-                            int w0 = w0_row;
-                            int w1 = w1_row;
-                            int w2 = w2_row;
-                            int rowBase = y << 10;
-                            int texX = texXRow;
-                            int texY = texYRow;
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = (texX / area) & 0xFF;
+                                        int texelY = (texY / area) & 0xFF;
+                                        int texel = GetTexel16Fast(vramBits, texelX, texelY, textureBaseX, textureBaseY);
 
-                            for (int x = min.x; x < max.x; x++) {
-                                if ((w0 | w1 | w2) >= 0) {
-                                    int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                    int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                    int texel = GetTexel16Fast(vramBits, texelX, texelY, textureBaseX, textureBaseY);
-
-                                    if (texel != 0) {
-                                        int pixelIndex = rowBase + x;
-                                        int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vramBits[pixelIndex] = color;
-                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        if (texel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            int color = ModulateColor(baseColor, texel) | maskBits;
+                                            vramBits[pixelIndex] = color;
+                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        }
                                     }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
                                 }
 
-                                w0 += A12;
-                                w1 += A20;
-                                w2 += A01;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
                             }
+                            break;
+                    }
+                } else {
+                    switch (textureDepth) {
+                        case 0:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
 
-                            w0_row += B12;
-                            w1_row += B20;
-                            w2_row += B01;
-                            texXRow += texXStepY;
-                            texYRow += texYStepY;
-                        }
-                        break;
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        int texel = GetTexel4Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                        if (texel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            int color = ModulateColor(baseColor, texel) | maskBits;
+                                            vramBits[pixelIndex] = color;
+                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        }
+                                    }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
+                                }
+
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
+                            }
+                            break;
+                        case 1:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
+
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        int texel = GetTexel8Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                        if (texel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            int color = ModulateColor(baseColor, texel) | maskBits;
+                                            vramBits[pixelIndex] = color;
+                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        }
+                                    }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
+                                }
+
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
+                            }
+                            break;
+                        default:
+                            for (int y = min.y; y < max.y; y++) {
+                                int w0 = w0_row;
+                                int w1 = w1_row;
+                                int w2 = w2_row;
+                                int rowBase = y << 10;
+                                int texX = texXRow;
+                                int texY = texYRow;
+
+                                for (int x = min.x; x < max.x; x++) {
+                                    if ((w0 | w1 | w2) >= 0) {
+                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        int texel = GetTexel16Fast(vramBits, texelX, texelY, textureBaseX, textureBaseY);
+
+                                        if (texel != 0) {
+                                            int pixelIndex = rowBase + x;
+                                            int color = ModulateColor(baseColor, texel) | maskBits;
+                                            vramBits[pixelIndex] = color;
+                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        }
+                                    }
+
+                                    w0 += A12;
+                                    w1 += A20;
+                                    w2 += A01;
+                                    texX += texXStepX;
+                                    texY += texYStepX;
+                                }
+
+                                w0_row += B12;
+                                w1_row += B20;
+                                w2_row += B01;
+                                texXRow += texXStepY;
+                                texYRow += texYStepY;
+                            }
+                            break;
+                    }
                 }
 
                 return;
