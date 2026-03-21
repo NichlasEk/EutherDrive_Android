@@ -392,6 +392,26 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         }
     }
 
+    public bool TrySwapPresentationBuffer(ref byte[] buffer, out int width, out int height, out int stride)
+    {
+        lock (_frameLock)
+        {
+            width = _presentFrameWidth;
+            height = _presentFrameHeight;
+            stride = _presentFrameStride;
+
+            int requiredBytes = stride * height;
+            if (requiredBytes <= 0 || requiredBytes > _presentFrameBuffer.Length)
+                return false;
+
+            if (buffer.Length < requiredBytes)
+                buffer = new byte[requiredBytes];
+
+            (_presentFrameBuffer, buffer) = (buffer, _presentFrameBuffer);
+            return true;
+        }
+    }
+
     public bool TryGetPresentationSize(out double width, out double height)
     {
         width = 0;

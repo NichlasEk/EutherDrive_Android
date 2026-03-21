@@ -76,6 +76,7 @@ public partial class MainView : UserControl
     private long _emulatedFrames;
     private int _lastFrameWidth;
     private int _lastFrameHeight;
+    private int _lastFrameStride;
     private int _bootRequestSerial;
     private bool _bootInProgress;
 
@@ -1142,7 +1143,7 @@ public partial class MainView : UserControl
 
             width = _lastFrameWidth;
             height = _lastFrameHeight;
-            srcStride = width * 4;
+            srcStride = _lastFrameStride > 0 ? _lastFrameStride : width * 4;
             (_presentFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _presentFrameBuffer);
             frameBuffer = _presentFrameBuffer;
             _presentedFrameSerial = serial;
@@ -1268,6 +1269,7 @@ public partial class MainView : UserControl
         _latestFrameSerial = 0;
         _lastFrameWidth = 0;
         _lastFrameHeight = 0;
+        _lastFrameStride = 0;
         _latestPerfSummary = "Perf idle";
         _latestPerfHeadline = "FPS --  MAX --";
         _viewModel.PerfSummary = "Perf idle";
@@ -2116,6 +2118,21 @@ public partial class MainView : UserControl
 
     private unsafe void CaptureLatestFrame(IEmulatorCore core)
     {
+        if (core is PsxAdapter psx && psx.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int swapWidth, out int swapHeight, out int swapStride))
+        {
+            lock (_frameSync)
+            {
+                _lastFrameWidth = swapWidth;
+                _lastFrameHeight = swapHeight;
+                _lastFrameStride = swapStride;
+                (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
+                _emulatedFrames++;
+                _latestFrameSerial++;
+            }
+
+            return;
+        }
+
         var src = core.GetFrameBuffer(out int width, out int height, out int srcStride);
         if (src.IsEmpty || width <= 0 || height <= 0 || srcStride <= 0)
         {
@@ -2142,6 +2159,7 @@ public partial class MainView : UserControl
         {
             _lastFrameWidth = width;
             _lastFrameHeight = height;
+            _lastFrameStride = dstStride;
             (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
             _emulatedFrames++;
             _latestFrameSerial++;
@@ -2215,10 +2233,16 @@ public partial class MainView : UserControl
             targetHeight = adapterHeight;
         }
 
-        ApplyPresentationSize(PortraitScreenHost, targetWidth, targetHeight);
-        ApplyPresentationSize(LandscapeScreenHost, targetWidth, targetHeight);
-        ApplyPresentationSize(PortraitScreenImage, targetWidth, targetHeight);
-        ApplyPresentationSize(LandscapeScreenImage, targetWidth, targetHeight);
+        if (_viewModel.IsLandscapeMode)
+        {
+            ApplyPresentationSize(LandscapeScreenHost, targetWidth, targetHeight);
+            ApplyPresentationSize(LandscapeScreenImage, targetWidth, targetHeight);
+        }
+        else
+        {
+            ApplyPresentationSize(PortraitScreenHost, targetWidth, targetHeight);
+            ApplyPresentationSize(PortraitScreenImage, targetWidth, targetHeight);
+        }
     }
 
     private static void ApplyPresentationSize(Control control, double width, double height)
@@ -2242,8 +2266,14 @@ public partial class MainView : UserControl
 
     private void InvalidateScreenImages()
     {
-        PortraitScreenImage.InvalidateVisual();
-        LandscapeScreenImage.InvalidateVisual();
+        if (_viewModel.IsLandscapeMode)
+        {
+            LandscapeScreenImage.InvalidateVisual();
+        }
+        else
+        {
+            PortraitScreenImage.InvalidateVisual();
+        }
     }
 
     private static IEmulatorCore CreateCoreForRom(string path)
