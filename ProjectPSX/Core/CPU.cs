@@ -27,6 +27,8 @@ namespace ProjectPSX {
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_WORDS_AFTER"), 0);
         private static readonly bool BiosTraceEnabled =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS_TRACE") == "1";
+        private static readonly bool ExperimentalSimpleBlocks =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_ENABLE_SIMPLE_BLOCKS") == "1";
         private static readonly bool TraceCurrentPcEnabled = HasTraceCurrentPcConsumer();
         private static int s_faultTraceCount;
         private static int s_cop0TraceCount;
@@ -203,7 +205,8 @@ namespace ProjectPSX {
             int cpuCycleBudget = Math.Max(1, maxCpuCycles);
             while (cpuCyclesExecuted < cpuCycleBudget) {
                 int remainingCycles = cpuCycleBudget - cpuCyclesExecuted;
-                if (remainingCycles > 1
+                if (ExperimentalSimpleBlocks
+                    && remainingCycles > 1
                     && TryRunCachedSimpleLinearBlock(remainingCycles, out int simpleBlockInstructions, out bool simpleBlockObservedRuntimeRam)) {
                     cpuCyclesExecuted += simpleBlockInstructions;
                     instructionsExecuted += simpleBlockInstructions;
@@ -648,6 +651,10 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void InvalidateCachedLinearBlockMetadata() {
+            if (!ExperimentalSimpleBlocks) {
+                return;
+            }
+
             Array.Clear(_cachedLinearBlockValidMask, 0, _cachedLinearBlockValidMask.Length);
         }
 
