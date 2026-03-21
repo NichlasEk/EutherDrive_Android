@@ -62,4 +62,6 @@ internal sealed class CodeCache
     }
 
     public ushort Cbr => _cbr;
+
+    public uint CachedLines => _cachedLines;
 }

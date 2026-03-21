@@ -80,6 +80,11 @@ public class ROM : IROM
     private int _traceReadPcCount;
     private static readonly bool TraceSnesVectors =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_VECTORS"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceSuperFxBlockedReads =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_BLOCKED_READS"), "1", StringComparison.Ordinal);
+    private static readonly int TraceSuperFxBlockedReadLimit =
+        ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_SUPERFX_BLOCKED_READ_LIMIT", 256);
+    private int _traceSuperFxBlockedReadCount;
     private static readonly Dictionary<string, string> s_specialRomOverrides =
         new(StringComparer.OrdinalIgnoreCase);
     private static readonly object s_specialRomOverridesLock = new();
@@ -424,7 +429,16 @@ public class ROM : IROM
             if (_superFx.Read(address, out byte value))
                 return value;
             if (IsSuperFxMappedAddress(bank, adr))
+            {
+                if (TraceSuperFxBlockedReads && _traceSuperFxBlockedReadCount++ < TraceSuperFxBlockedReadLimit)
+                {
+                    if (snesPc < 0)
+                        TryGetSnesPc(out snesPc, out snesOp);
+                    Console.WriteLine(
+                        $"[SFX-OPENBUS-RD] pc=0x{snesPc:X6} op=0x{snesOp:X2} addr=0x{address:X6} open=0x{(_system?.OpenBus ?? 0):X2}");
+                }
                 return (byte)(_system?.OpenBus ?? 0);
+            }
         }
 
         if (_sdd1 != null)

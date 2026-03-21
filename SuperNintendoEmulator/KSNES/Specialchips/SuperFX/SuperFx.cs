@@ -6,10 +6,21 @@ internal sealed class SuperFx
 {
     private static readonly bool TraceBus =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_BUS"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceRamWatch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_RAM_WATCH"), "1", StringComparison.Ordinal);
+    private static readonly int TraceRamWatchLimit =
+        ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_SUPERFX_RAM_WATCH_LIMIT", 1024);
+    private static readonly int[] TraceRamWatchAddresses =
+        ParseTraceAddresses(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_RAM_WATCH_ADDRS"));
     private static readonly bool AllowSnesRomReadWhileRunning =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SUPERFX_ALLOW_SNES_ROM_READ_WHILE_RUNNING"), "1", StringComparison.Ordinal);
+    private static readonly bool AllowSnesRomReadWhileWaitingOnRam =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SUPERFX_ALLOW_SNES_ROM_READ_WHILE_WAITING_ON_RAM"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceState =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_STATE"), "1", StringComparison.Ordinal);
     private static readonly int TraceBusLimit = 512;
     private static int _traceBusCount;
+    private static int _traceRamWatchCount;
 
     [NonSerialized]
     private readonly byte[] _rom;
@@ -63,7 +74,7 @@ internal sealed class SuperFx
             case (>= 0x00 and <= 0x3F, >= 0x8000 and <= 0xFFFF):
             case (>= 0x80 and <= 0xBF, >= 0x8000 and <= 0xFFFF):
                 {
-                    if (!_gsu.IsRunning() || _gsu.RomAccess == BusAccess.Snes || allowSnesRomReadWhileRunning || AllowSnesRomReadWhileRunning)
+                    if (CanSnesReadRom(allowSnesRomReadWhileRunning))
                     {
                         uint romAddr = MapLoRomAddress(address, (uint)_rom.Length);
                         value = _rom[romAddr % (uint)_rom.Length];
@@ -81,7 +92,7 @@ internal sealed class SuperFx
             case (>= 0x40 and <= 0x5F, _):
             case (>= 0xC0 and <= 0xDF, _):
                 {
-                    if (!_gsu.IsRunning() || _gsu.RomAccess == BusAccess.Snes || allowSnesRomReadWhileRunning || AllowSnesRomReadWhileRunning)
+                    if (CanSnesReadRom(allowSnesRomReadWhileRunning))
                     {
                         uint romAddr = MapHiRomAddress(address, (uint)_rom.Length);
                         value = _rom[romAddr % (uint)_rom.Length];
@@ -101,7 +112,9 @@ internal sealed class SuperFx
                 {
                     if (!_gsu.IsRunning() || _gsu.RamAccess == BusAccess.Snes)
                     {
-                        value = _ram[address & 0x1FFF];
+                        int ramAddr = (int)(address & 0x1FFF);
+                        value = _ram[ramAddr];
+                        TraceWatchedRamAccess("SNES-RD", address, ramAddr, value, 1);
                         return true;
                     }
                     TraceBlockedBus("RAM", address);
@@ -113,7 +126,9 @@ internal sealed class SuperFx
                 {
                     if (!_gsu.IsRunning() || _gsu.RamAccess == BusAccess.Snes)
                     {
-                        value = _ram[address & (_ram.Length - 1)];
+                        int ramAddr = (int)(address & (uint)(_ram.Length - 1));
+                        value = _ram[ramAddr];
+                        TraceWatchedRamAccess("SNES-RD", address, ramAddr, value, 1);
                         return true;
                     }
                     TraceBlockedBus("RAM", address);
@@ -148,7 +163,9 @@ internal sealed class SuperFx
             case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
                 if (!_gsu.IsRunning() || _gsu.RamAccess == BusAccess.Snes)
                 {
-                    _ram[address & 0x1FFF] = value;
+                    int ramAddr = (int)(address & 0x1FFF);
+                    _ram[ramAddr] = value;
+                    TraceWatchedRamAccess("SNES-WR", address, ramAddr, value, 1);
                     wroteRam = true;
                 }
                 return true;
@@ -156,7 +173,9 @@ internal sealed class SuperFx
             case (>= 0xF0 and <= 0xF1, _):
                 if (!_gsu.IsRunning() || _gsu.RamAccess == BusAccess.Snes)
                 {
-                    _ram[address & (_ram.Length - 1)] = value;
+                    int ramAddr = (int)(address & (uint)(_ram.Length - 1));
+                    _ram[ramAddr] = value;
+                    TraceWatchedRamAccess("SNES-WR", address, ramAddr, value, 1);
                     wroteRam = true;
                 }
                 return true;
@@ -191,6 +210,34 @@ internal sealed class SuperFx
 
     public byte[] Ram => _ram;
 
+    public string GetDivergenceSummary()
+    {
+        WaitKind waitKind = Instructions.GetWaitKind(_gsu);
+        MemoryType nextType = Instructions.NextOpcodeMemoryType(_gsu);
+        ulong ramHash = ComputeHash(_ram);
+        string summary = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"sfx(go={(_gsu.IsRunning() ? 1 : 0)} irq={(_gsu.IrqAsserted() ? 1 : 0)} stop={_gsu.StopState} " +
+            $"pbr=0x{_gsu.Pbr:X2} rombr=0x{_gsu.Rombr:X2} r15=0x{_gsu.R[15]:X4} op=0x{_gsu.State.OpcodeBuffer:X2} " +
+            $"next={nextType} wait={waitKind} rom={_gsu.RomAccess} ram={_gsu.RamAccess} alt1={(_gsu.Alt1 ? 1 : 0)} alt2={(_gsu.Alt2 ? 1 : 0)} " +
+            $"justJumped={(_gsu.State.JustJumped ? 1 : 0)} cbr=0x{_gsu.CodeCache.Cbr:X4} lines=0x{_gsu.CodeCache.CachedLines:X8} sfxRam=0x{ramHash:X16})");
+
+        if (!TraceState)
+        {
+            return summary;
+        }
+
+        return string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{summary} regs(r0=0x{_gsu.R[0]:X4} r1=0x{_gsu.R[1]:X4} r2=0x{_gsu.R[2]:X4} r3=0x{_gsu.R[3]:X4} " +
+            $"r4=0x{_gsu.R[4]:X4} r5=0x{_gsu.R[5]:X4} r6=0x{_gsu.R[6]:X4} r7=0x{_gsu.R[7]:X4} " +
+            $"r8=0x{_gsu.R[8]:X4} r9=0x{_gsu.R[9]:X4} r10=0x{_gsu.R[10]:X4} r11=0x{_gsu.R[11]:X4} " +
+            $"r12=0x{_gsu.R[12]:X4} r13=0x{_gsu.R[13]:X4} r14=0x{_gsu.R[14]:X4} z={(_gsu.ZeroFlag ? 1 : 0)} " +
+            $"c={(_gsu.CarryFlag ? 1 : 0)} s={(_gsu.SignFlag ? 1 : 0)} ov={(_gsu.OverflowFlag ? 1 : 0)} " +
+            $"romWait={_gsu.State.RomBufferWaitCycles} ramWait={_gsu.State.RamBufferWaitCycles} " +
+            $"ramAddr=0x{_gsu.State.RamAddressBuffer:X4} romBuf=0x{_gsu.State.RomBuffer:X2} waitCycles={_gsu.WaitCycles})");
+    }
+
     private void TraceBlockedBus(string kind, uint address)
     {
         if (!TraceBus || _traceBusCount >= TraceBusLimit)
@@ -203,6 +250,70 @@ internal sealed class SuperFx
             $"[SFX-BUS-BLOCK] kind={kind} addr=0x{address:X6} go={(_gsu.IsRunning() ? 1 : 0)} " +
             $"rom={_gsu.RomAccess} ram={_gsu.RamAccess} pbr=0x{_gsu.Pbr:X2} rombr=0x{_gsu.Rombr:X2} r15=0x{_gsu.R[15]:X4} " +
             $"nextType={nextType} nextOp=0x{nextOpcode:X2} justJumped={(_gsu.State.JustJumped ? 1 : 0)}");
+    }
+
+    private void TraceWatchedRamAccess(string kind, uint address, int ramAddr, byte value, int width)
+    {
+        if (!TraceRamWatch || _traceRamWatchCount >= TraceRamWatchLimit || !TouchesWatchedRamAddress(ramAddr, width))
+            return;
+
+        _traceRamWatchCount++;
+        string valueText = width == 1 ? $"0x{value:X2}" : $"0x{value:X4}";
+        Console.WriteLine(
+            $"[SFX-RAM] side=SNES kind={kind} snes=0x{address:X6} addr=0x{ramAddr:X4} width={width} val={valueText} " +
+            $"go={(_gsu.IsRunning() ? 1 : 0)} rom={_gsu.RomAccess} ram={_gsu.RamAccess} pbr=0x{_gsu.Pbr:X2} rombr=0x{_gsu.Rombr:X2} r15=0x{_gsu.R[15]:X4}");
+    }
+
+    private bool CanSnesReadRom(bool allowSnesRomReadWhileRunning)
+    {
+        if (!_gsu.IsRunning() || _gsu.RomAccess == BusAccess.Snes || allowSnesRomReadWhileRunning || AllowSnesRomReadWhileRunning)
+            return true;
+
+        return AllowSnesRomReadWhileWaitingOnRam && Instructions.GetWaitKind(_gsu) == WaitKind.Ram;
+    }
+
+    private static bool TouchesWatchedRamAddress(int ramAddr, int width)
+    {
+        if (TraceRamWatchAddresses.Length == 0)
+            return false;
+
+        foreach (int watchAddr in TraceRamWatchAddresses)
+        {
+            if (ramAddr == watchAddr)
+                return true;
+            if (width > 1 && (ramAddr ^ 1) == watchAddr)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static int ParseTraceLimit(string envName, int defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(envName);
+        return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : defaultValue;
+    }
+
+    private static int[] ParseTraceAddresses(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return Array.Empty<int>();
+
+        string[] parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var result = new int[parts.Length];
+        int count = 0;
+        foreach (string part in parts)
+        {
+            string normalized = part.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? part[2..] : part;
+            if (int.TryParse(normalized, System.Globalization.NumberStyles.HexNumber, null, out int parsed))
+                result[count++] = parsed & 0xFFFF;
+        }
+
+        if (count == result.Length)
+            return result;
+
+        Array.Resize(ref result, count);
+        return result;
     }
 
     public static uint MapLoRomAddress(uint address, uint romLen)
@@ -263,5 +374,20 @@ internal sealed class SuperFx
     {
         byte chipsetByte = rom[0x7FD6];
         return chipsetByte == 0x15 || chipsetByte == 0x1A;
+    }
+
+    private static ulong ComputeHash(byte[] data)
+    {
+        const ulong offset = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+
+        ulong hash = offset;
+        foreach (byte value in data)
+        {
+            hash ^= value;
+            hash *= prime;
+        }
+
+        return hash;
     }
 }

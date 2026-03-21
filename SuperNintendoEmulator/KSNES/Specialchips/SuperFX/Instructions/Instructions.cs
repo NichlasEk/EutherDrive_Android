@@ -9,6 +9,13 @@ internal enum MemoryType
     Ram
 }
 
+internal enum WaitKind
+{
+    None,
+    Rom,
+    Ram
+}
+
 internal static class MemoryTypeExtensions
 {
     public static byte AccessCycles(this MemoryType memoryType, ClockSpeed clockSpeed)
@@ -25,17 +32,40 @@ internal static class MemoryTypeExtensions
 internal static class Instructions
 {
     public const byte NopOpcode = 0x01;
+    private static readonly bool TraceCache =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_CACHE"), "1", StringComparison.Ordinal);
+    private static readonly int TraceCacheLimit =
+        ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_SUPERFX_CACHE_LIMIT", 2048);
+    private static readonly int TraceCacheStart =
+        ParseTraceHex("EUTHERDRIVE_TRACE_SNES_SUPERFX_CACHE_START", 0x8C30);
+    private static readonly int TraceCacheEnd =
+        ParseTraceHex("EUTHERDRIVE_TRACE_SNES_SUPERFX_CACHE_END", 0x8C3F);
+    private static readonly bool TraceExec =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_EXEC"), "1", StringComparison.Ordinal);
+    private static readonly int TraceExecLimit =
+        ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_SUPERFX_EXEC_LIMIT", 2048);
+    private static readonly int TraceExecStart =
+        ParseTraceHex("EUTHERDRIVE_TRACE_SNES_SUPERFX_EXEC_START", 0xD0B0);
+    private static readonly int TraceExecEnd =
+        ParseTraceHex("EUTHERDRIVE_TRACE_SNES_SUPERFX_EXEC_END", 0xC860);
+    private static int _traceCacheCount;
+    private static int _traceExecCount;
 
     public static byte Execute(GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         MemoryType memoryType = NextOpcodeMemoryType(gsu);
         byte opcode = gsu.State.OpcodeBuffer;
-        if ((gsu.RomAccess == BusAccess.Snes
-                && (memoryType == MemoryType.Rom || IsRomAccessOpcode(opcode)))
-            || (gsu.RamAccess == BusAccess.Snes
-                && (memoryType == MemoryType.Ram || IsRamAccessOpcode(opcode, gsu.Alt1, gsu.Alt2))))
+        TraceCacheEvent(gsu, "EXEC", gsu.R[15], $"nextType={memoryType} opcode=0x{opcode:X2}");
+        TraceExecEvent(gsu, memoryType, opcode);
+        WaitKind waitKind = GetWaitKind(gsu, memoryType, opcode);
+        if (waitKind != WaitKind.None)
         {
             // GSU is waiting for ROM/RAM access
+            TraceCacheEvent(
+                gsu,
+                waitKind == WaitKind.Ram ? "STALL-RAM" : "STALL-ROM",
+                gsu.R[15],
+                $"opcode=0x{opcode:X2} rom={gsu.RomAccess} ram={gsu.RamAccess}");
             return 1;
         }
 
@@ -43,6 +73,7 @@ internal static class Instructions
 
         if (gsu.State.JustJumped)
         {
+            TraceCacheEvent(gsu, "JUST-JUMPED", gsu.R[15], "refill=to-pc");
             gsu.State.JustJumped = false;
             cycles = (byte)(cycles + FillCacheToPc(gsu, gsu.R[15], rom, ram));
         }
@@ -137,21 +168,29 @@ internal static class Instructions
 
     internal static void FetchOpcode(GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
-        bool isCacheable = gsu.CodeCache.PcIsCacheable(gsu.R[15]);
-        byte? cached = gsu.CodeCache.Get(gsu.R[15]);
+        ushort fetchAddr = gsu.R[15];
+        bool isCacheable = gsu.CodeCache.PcIsCacheable(fetchAddr);
+        byte? cached = gsu.CodeCache.Get(fetchAddr);
         if (isCacheable && cached.HasValue)
         {
             gsu.State.OpcodeBuffer = cached.Value;
+            TraceCacheEvent(gsu, "FETCH-HIT", fetchAddr, $"opcode=0x{cached.Value:X2}");
             gsu.R[15] = unchecked((ushort)(gsu.R[15] + 1));
             return;
         }
 
-        (byte opcode, _) = ReadMemory(gsu.Pbr, gsu.R[15], rom, ram);
+        (byte opcode, MemoryType sourceType) = ReadMemory(gsu.Pbr, fetchAddr, rom, ram);
         gsu.State.OpcodeBuffer = opcode;
+        TraceCacheEvent(
+            gsu,
+            isCacheable ? "FETCH-MISS" : "FETCH-UNCACHED",
+            fetchAddr,
+            $"opcode=0x{opcode:X2} src={sourceType}");
 
         if (isCacheable)
         {
-            gsu.CodeCache.Set(gsu.R[15], opcode);
+            gsu.CodeCache.Set(fetchAddr, opcode);
+            TraceCacheEvent(gsu, "FETCH-SET", fetchAddr, $"opcode=0x{opcode:X2}");
         }
 
         gsu.R[15] = unchecked((ushort)(gsu.R[15] + 1));
@@ -181,6 +220,7 @@ internal static class Instructions
     {
         if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.Get(pc).HasValue)
         {
+            TraceCacheEvent(gsu, "FILL-TO-SKIP", pc, "reason=not-needed");
             return 0;
         }
 
@@ -190,6 +230,7 @@ internal static class Instructions
             ushort cacheAddr = (ushort)((pc & 0xFFF0) | i);
             (byte opcode, _) = ReadMemory(gsu.Pbr, cacheAddr, rom, ram);
             gsu.CodeCache.Set(cacheAddr, opcode);
+            TraceCacheEvent(gsu, "FILL-TO", cacheAddr, $"opcode=0x{opcode:X2}");
         }
 
         return (byte)(gsu.ClockSpeed.MemoryAccessCycles() * count);
@@ -199,11 +240,13 @@ internal static class Instructions
     {
         if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.Get(pc).HasValue)
         {
+            TraceCacheEvent(gsu, "CACHE-PC-SKIP", pc, "reason=not-needed");
             return 0;
         }
 
         (byte opcode, _) = ReadMemory(gsu.Pbr, pc, rom, ram);
         gsu.CodeCache.Set(pc, opcode);
+        TraceCacheEvent(gsu, "CACHE-PC", pc, $"opcode=0x{opcode:X2}");
 
         return gsu.ClockSpeed.MemoryAccessCycles();
     }
@@ -212,11 +255,13 @@ internal static class Instructions
     {
         if ((gsu.R[15] & 0xF) == 0)
         {
+            TraceCacheEvent(gsu, "FILL-FROM-SKIP", gsu.R[15], "reason=line-start");
             return 0;
         }
 
         if (!gsu.CodeCache.PcIsCacheable(gsu.R[15]) || gsu.CodeCache.Get(gsu.R[15]).HasValue)
         {
+            TraceCacheEvent(gsu, "FILL-FROM-SKIP", gsu.R[15], "reason=not-needed");
             return 0;
         }
 
@@ -226,6 +271,7 @@ internal static class Instructions
             ushort cacheAddr = (ushort)((gsu.R[15] & 0xFFF0) | i);
             (byte opcode, _) = ReadMemory(gsu.Pbr, cacheAddr, rom, ram);
             gsu.CodeCache.Set(cacheAddr, opcode);
+            TraceCacheEvent(gsu, "FILL-FROM", cacheAddr, $"opcode=0x{opcode:X2}");
         }
 
         return (byte)(gsu.ClockSpeed.MemoryAccessCycles() * (0x10 - start));
@@ -369,7 +415,9 @@ internal static class Instructions
         byte cycles = 0;
         if (cbr != gsu.CodeCache.Cbr)
         {
+            ushort prevCbr = gsu.CodeCache.Cbr;
             gsu.CodeCache.UpdateCbr(cbr);
+            TraceCacheEvent(gsu, "CBR-UPDATE", cbr, $"from=0x{prevCbr:X4}");
             cycles = (byte)(cycles + FillCacheToPc(gsu, unchecked((ushort)(gsu.R[15] - 1)), rom, ram));
             cycles = (byte)(cycles + CacheAtPc(gsu, unchecked((ushort)(gsu.R[15] - 1)), rom, ram));
             updated = true;
@@ -387,5 +435,90 @@ internal static class Instructions
     {
         int result = value - sub;
         return (byte)(result < 0 ? 0 : result);
+    }
+
+    internal static WaitKind GetWaitKind(GraphicsSupportUnit gsu)
+        => GetWaitKind(gsu, NextOpcodeMemoryType(gsu), gsu.State.OpcodeBuffer);
+
+    private static WaitKind GetWaitKind(GraphicsSupportUnit gsu, MemoryType memoryType, byte opcode)
+    {
+        if (gsu.RomAccess == BusAccess.Snes
+            && (memoryType == MemoryType.Rom || IsRomAccessOpcode(opcode)))
+        {
+            return WaitKind.Rom;
+        }
+
+        if (gsu.RamAccess == BusAccess.Snes
+            && (memoryType == MemoryType.Ram || IsRamAccessOpcode(opcode, gsu.Alt1, gsu.Alt2)))
+        {
+            return WaitKind.Ram;
+        }
+
+        return WaitKind.None;
+    }
+
+    private static void TraceCacheEvent(GraphicsSupportUnit gsu, string evt, ushort address, string extra)
+    {
+        if (!TraceCache || _traceCacheCount >= TraceCacheLimit)
+            return;
+
+        if (address < TraceCacheStart || address > TraceCacheEnd)
+            return;
+
+        _traceCacheCount++;
+        bool cacheable = gsu.CodeCache.PcIsCacheable(address);
+        byte? cached = gsu.CodeCache.Get(address);
+        string cachedValue = cached.HasValue ? $"0x{cached.Value:X2}" : "--";
+        string suffix = string.IsNullOrWhiteSpace(extra) ? string.Empty : $" {extra}";
+        Console.WriteLine(
+            $"[SFX-CACHE] evt={evt} pbr=0x{gsu.Pbr:X2} addr=0x{address:X4} cbr=0x{gsu.CodeCache.Cbr:X4} " +
+            $"lines=0x{gsu.CodeCache.CachedLines:X8} cacheable={(cacheable ? 1 : 0)} cached={(cached.HasValue ? 1 : 0)} " +
+            $"val={cachedValue} r15=0x{gsu.R[15]:X4} go={(gsu.Go ? 1 : 0)} justJumped={(gsu.State.JustJumped ? 1 : 0)}{suffix}");
+    }
+
+    private static void TraceExecEvent(GraphicsSupportUnit gsu, MemoryType memoryType, byte opcode)
+    {
+        if (!TraceExec || _traceExecCount >= TraceExecLimit)
+            return;
+
+        ushort pc = gsu.R[15];
+        if (!PcInTraceExecRange(pc))
+            return;
+
+        _traceExecCount++;
+        Console.WriteLine(
+            $"[SFX-EXEC] pc=0x{pc:X4} op=0x{opcode:X2} next={memoryType} " +
+            $"r0=0x{gsu.R[0]:X4} r1=0x{gsu.R[1]:X4} r2=0x{gsu.R[2]:X4} r3=0x{gsu.R[3]:X4} " +
+            $"r4=0x{gsu.R[4]:X4} r5=0x{gsu.R[5]:X4} r6=0x{gsu.R[6]:X4} r7=0x{gsu.R[7]:X4} " +
+            $"r8=0x{gsu.R[8]:X4} r9=0x{gsu.R[9]:X4} r10=0x{gsu.R[10]:X4} r11=0x{gsu.R[11]:X4} " +
+            $"r12=0x{gsu.R[12]:X4} r13=0x{gsu.R[13]:X4} r14=0x{gsu.R[14]:X4} pbr=0x{gsu.Pbr:X2} rombr=0x{gsu.Rombr:X2} " +
+            $"cbr=0x{gsu.CodeCache.Cbr:X4} z={(gsu.ZeroFlag ? 1 : 0)} c={(gsu.CarryFlag ? 1 : 0)} s={(gsu.SignFlag ? 1 : 0)} ov={(gsu.OverflowFlag ? 1 : 0)} " +
+            $"rom={gsu.RomAccess} ram={gsu.RamAccess} justJumped={(gsu.State.JustJumped ? 1 : 0)}");
+    }
+
+    private static bool PcInTraceExecRange(ushort pc)
+    {
+        if (TraceExecStart <= TraceExecEnd)
+            return pc >= TraceExecStart && pc <= TraceExecEnd;
+
+        return pc >= TraceExecStart || pc <= TraceExecEnd;
+    }
+
+    private static int ParseTraceLimit(string envName, int defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(envName);
+        return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : defaultValue;
+    }
+
+    private static int ParseTraceHex(string envName, int defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(envName);
+        if (string.IsNullOrWhiteSpace(raw))
+            return defaultValue;
+
+        string normalized = raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? raw[2..] : raw;
+        return int.TryParse(normalized, System.Globalization.NumberStyles.HexNumber, null, out int parsed)
+            ? parsed
+            : defaultValue;
     }
 }

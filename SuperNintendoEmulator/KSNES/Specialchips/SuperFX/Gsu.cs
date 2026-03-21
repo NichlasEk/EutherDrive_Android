@@ -325,20 +325,35 @@ internal sealed class GraphicsSupportUnit
 
     private void WriteR(uint address, byte value)
     {
+        uint regAddress = address & 0x1F;
         if (!address.Bit(0))
         {
             RLatch = value;
         }
         else
         {
-            int idx = (int)((address & 0x1F) >> 1);
+            int idx = (int)(regAddress >> 1);
             R[idx] = (ushort)(RLatch | (value << 8));
+            if (TraceBus && _traceBusCount < TraceBusLimit && (idx == 14 || idx == 15))
+            {
+                _traceBusCount++;
+                Console.WriteLine(
+                    $"[SFX-BUS] reg=R{idx} val=0x{R[idx]:X4} go={(Go ? 1 : 0)} rom={RomAccess} ram={RamAccess} " +
+                    $"pbr=0x{Pbr:X2} rombr=0x{Rombr:X2} r15=0x{R[15]:X4}");
+            }
         }
 
-        if ((address & 0x1F) == 0x1F)
+        if (regAddress == 0x1F)
         {
             Go = true;
             State.JustJumped = true;
+            if (TraceBus && _traceBusCount < TraceBusLimit)
+            {
+                _traceBusCount++;
+                Console.WriteLine(
+                    $"[SFX-BUS] reg=GO-START val=0x{R[15]:X4} go={(Go ? 1 : 0)} rom={RomAccess} ram={RamAccess} " +
+                    $"pbr=0x{Pbr:X2} rombr=0x{Rombr:X2} r15=0x{R[15]:X4}");
+            }
         }
     }
 
@@ -368,6 +383,7 @@ internal sealed class GraphicsSupportUnit
     private void WritePbr(byte value)
     {
         Pbr = value;
+        TraceBusState("PBR", value);
     }
 
     private void WriteCfgr(byte value)

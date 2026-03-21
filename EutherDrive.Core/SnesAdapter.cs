@@ -328,6 +328,36 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         return _system.PPU is PPU ppu ? ppu.GetDebugSnapshot() : null;
     }
 
+    public string GetDivergenceCheckpoint()
+    {
+        lock (_stateLock)
+        {
+            ulong frameHash = HashBytes(_frameBuffer.AsSpan(0, Math.Min(_frameBuffer.Length, _frameHeight * _frameStride)));
+            ulong vramHash = 0;
+            ulong cgramHash = 0;
+            ulong oamHash = 0;
+            string ppuSummary = "ppu=none";
+            if (_system.PPU is PPU ppu)
+            {
+                vramHash = ppu.ComputeVramHash();
+                cgramHash = ppu.ComputeCgramHash();
+                oamHash = ppu.ComputeOamHash();
+                ppuSummary = ppu.GetDivergenceSummary();
+            }
+
+            string cpuSummary = _system.CPU is CPU cpu
+                ? $"cpu=0x{cpu.ProgramCounter24:X6}"
+                : "cpu=--";
+
+            string sfxSummary = (_system.ROM as ROM)?.SuperFx is KSNES.Specialchips.SuperFX.SuperFx superFx
+                ? superFx.GetDivergenceSummary()
+                : "sfx=none";
+
+            return $"emuFrame={_frameCounter} {cpuSummary} fb=0x{frameHash:X16} size={_frameWidth}x{_frameHeight} stride={_frameStride} " +
+                $"vram=0x{vramHash:X16} cgram=0x{cgramHash:X16} oam=0x{oamHash:X16} {ppuSummary} {sfxSummary}";
+        }
+    }
+
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
     {
         sampleRate = SnesAudioHandler.SampleRate;
@@ -673,6 +703,21 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         public void Resume()
         {
         }
+    }
+
+    private static ulong HashBytes(ReadOnlySpan<byte> data)
+    {
+        const ulong offset = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+
+        ulong hash = offset;
+        foreach (byte value in data)
+        {
+            hash ^= value;
+            hash *= prime;
+        }
+
+        return hash;
     }
 
     public readonly record struct SnesPpuState(

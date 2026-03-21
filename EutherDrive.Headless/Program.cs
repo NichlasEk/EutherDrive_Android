@@ -428,8 +428,12 @@ class Program
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
                 bool traceSpcWindow = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SPC_WINDOW") == "1";
+                bool traceSnesCheckpoints = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CHECKPOINTS") == "1";
+                int traceSnesCheckpointEvery = Math.Max(1, ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_EVERY") ?? 1);
+                int traceSnesCheckpointStart = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_START_FRAME") ?? 0;
+                int traceSnesCheckpointEnd = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_END_FRAME") ?? int.MaxValue;
                 StreamWriter? snesTraceWriter = null;
-                if (traceSnesFrames)
+                if (traceSnesFrames || traceSnesCheckpoints)
                 {
                     string tracePath = Path.Combine(dumpDir, "headless_snes_trace.log");
                     snesTraceWriter = new StreamWriter(tracePath, append: false, Encoding.UTF8)
@@ -451,6 +455,16 @@ class Program
                 {
                     if (snesPeekAddrs.Length > 0)
                         Trace(DumpSnesPeek(snes, label, snesPeekAddrs));
+                }
+                void TraceCheckpoint(int frame)
+                {
+                    if (!traceSnesCheckpoints)
+                        return;
+                    if (frame < traceSnesCheckpointStart || frame > traceSnesCheckpointEnd)
+                        return;
+                    if (((frame - traceSnesCheckpointStart) % traceSnesCheckpointEvery) != 0)
+                        return;
+                    Trace($"[SNES-CHECKPOINT] frame={frame} {snes.GetDivergenceCheckpoint()}");
                 }
                 bool dumpSnesPpuRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_RAW") == "1";
 
@@ -485,6 +499,7 @@ class Program
                     lastStartPressed = startPressed;
 
                     snes.RunFrame();
+                    TraceCheckpoint(frame);
 
                     if (traceSnesFrames)
                     {
@@ -1696,8 +1711,12 @@ class Program
 
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
+                bool traceSnesCheckpoints = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CHECKPOINTS") == "1";
+                int traceSnesCheckpointEvery = Math.Max(1, ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_EVERY") ?? 1);
+                int traceSnesCheckpointStart = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_START_FRAME") ?? 0;
+                int traceSnesCheckpointEnd = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_END_FRAME") ?? int.MaxValue;
                 StreamWriter? snesTraceWriter = null;
-                if (traceSnesFrames)
+                if (traceSnesFrames || traceSnesCheckpoints)
                 {
                     string tracePath = Path.Combine(dumpDir, "headless_snes_trace.log");
                     snesTraceWriter = new StreamWriter(tracePath, append: false, Encoding.UTF8)
@@ -1715,6 +1734,16 @@ class Program
                 {
                     if (snesPeekAddrs.Length > 0)
                         Trace(DumpSnesPeek(snes, label, snesPeekAddrs));
+                }
+                void TraceCheckpoint(int frame)
+                {
+                    if (!traceSnesCheckpoints)
+                        return;
+                    if (frame < traceSnesCheckpointStart || frame > traceSnesCheckpointEnd)
+                        return;
+                    if (((frame - traceSnesCheckpointStart) % traceSnesCheckpointEvery) != 0)
+                        return;
+                    Trace($"[SNES-CHECKPOINT] frame={frame} {snes.GetDivergenceCheckpoint()}");
                 }
 
                 bool dumpSnesPpuRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_RAW") == "1";
@@ -1750,6 +1779,7 @@ class Program
                     lastStartPressed = startPressed;
 
                     snes.RunFrame();
+                    TraceCheckpoint(frame);
 
                     if (traceSnesFrames)
                     {
