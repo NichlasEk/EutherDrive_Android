@@ -644,6 +644,22 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             return;
         }
 
+        bool fullyInBounds = baseX + width <= vramWidth && baseY + height <= vramHeight;
+        if (fullyInBounds)
+        {
+            int srcIndex = (baseY * vramWidth) + baseX;
+            for (int y = 0; y < height; y++)
+            {
+                BlitOpaque1555(
+                    vram1555.AsSpan(srcIndex, width),
+                    dstPixels.Slice(y * width, width));
+                srcIndex += vramWidth;
+            }
+
+            UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required);
+            return;
+        }
+
         for (int y = 0; y < height; y++)
         {
             Span<uint> dstRow = dstPixels.Slice(y * width, width);
@@ -705,6 +721,30 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
 
     private void UpdateFrame24(ushort[] vram1555, Span<uint> dstPixels, int width, int height, int baseX, int baseY, int vramWidth, int vramHeight)
     {
+        int rowByteBase = baseX * 2;
+        int maxBytes = vramWidth * 2;
+        bool fullyInBounds = baseY + height <= vramHeight && rowByteBase + (width * 3) <= maxBytes;
+        if (fullyInBounds)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                Span<uint> dstRow = dstPixels.Slice(y * width, width);
+                int rowBase = (baseY + y) * vramWidth;
+                int pixelByteIndex = rowByteBase;
+
+                for (int x = 0; x < width; x++)
+                {
+                    byte r = ReadVramByte(vram1555, rowBase, pixelByteIndex);
+                    byte g = ReadVramByte(vram1555, rowBase, pixelByteIndex + 1);
+                    byte b = ReadVramByte(vram1555, rowBase, pixelByteIndex + 2);
+                    dstRow[x] = OpaqueBlackPixel | ((uint)r << 16) | ((uint)g << 8) | b;
+                    pixelByteIndex += 3;
+                }
+            }
+
+            return;
+        }
+
         for (int y = 0; y < height; y++)
         {
             Span<uint> dstRow = dstPixels.Slice(y * width, width);
@@ -716,8 +756,6 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             }
 
             int rowBase = srcY * vramWidth;
-            int rowByteBase = baseX * 2;
-            int maxBytes = vramWidth * 2;
             if (rowByteBase >= maxBytes)
             {
                 ClearFrameRow(dstRow);
@@ -742,6 +780,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static byte ReadVramByte(ushort[] vram1555, int rowBase, int byteIndex)
     {
         int wordOffset = byteIndex >> 1;
