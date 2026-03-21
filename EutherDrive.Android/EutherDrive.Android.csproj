@@ -37,6 +37,15 @@
     <Compile Include="..\EutherDrive.UI\Zuul\JoxRuntime.cs">
       <Link>Zuul\JoxRuntime.cs</Link>
     </Compile>
+    <Compile Include="..\EutherDrive.UI\Rendering\FrameBlitOptions.cs">
+      <Link>Rendering\FrameBlitOptions.cs</Link>
+    </Compile>
+    <Compile Include="..\EutherDrive.UI\Rendering\IGameRenderSurface.cs">
+      <Link>Rendering\IGameRenderSurface.cs</Link>
+    </Compile>
+    <Compile Include="..\EutherDrive.UI\Rendering\WriteableBitmapRenderSurface.cs">
+      <Link>Rendering\WriteableBitmapRenderSurface.cs</Link>
+    </Compile>
     <AvaloniaResource Include="..\EutherDrive.UI\Assets\zuul_svg.jox">
       <Link>Assets/zuul_svg.jox</Link>
     </AvaloniaResource>

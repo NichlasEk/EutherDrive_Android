@@ -20,6 +20,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using EutherDrive.Rendering;
 using EutherDrive.Core;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.SegaCd;
@@ -41,8 +42,7 @@ public partial class MainWindow : Window
     private readonly SavestateService _savestateService;
     private readonly SavestateViewModel _savestateViewModel;
 
-    // EN bitmap som vi alltid blitar till
-    private WriteableBitmap? _wb;
+    private IGameRenderSurface? _renderSurface;
 
     private SdlApi? _sdl;
     private IntPtr _activeGamepad1 = IntPtr.Zero;
@@ -1001,10 +1001,10 @@ public partial class MainWindow : Window
     {
         if (SharpPixelsCheck != null)
             SharpPixelsCheck.IsChecked = _sharpPixelsEnabled;
-        if (ScreenImage == null)
+        if (_renderSurface?.View is not Image renderImage)
             return;
         RenderOptions.SetBitmapInterpolationMode(
-            ScreenImage,
+            renderImage,
             _sharpPixelsEnabled ? BitmapInterpolationMode.None : BitmapInterpolationMode.MediumQuality);
     }
 
@@ -5979,31 +5979,58 @@ public partial class MainWindow : Window
         if (w <= 0 || h <= 0)
             throw new InvalidOperationException($"Core returned invalid size {w}x{h}.");
 
-        // Only recreate bitmap when size actually changes
-        if (_wb == null || _wb.PixelSize.Width != w || _wb.PixelSize.Height != h)
+        _renderSurface ??= CreateRenderSurface();
+        EnsureDesktopRenderViewAttached();
+        bool recreated = _renderSurface.EnsureSize(w, h);
+        if (recreated || ScreenSurfaceHost.Children.Count == 0)
         {
             if (TraceUiRender)
                 Console.WriteLine($"[MainWindow] Recreating bitmap: {_lastPresentedWidth}x{_lastPresentedHeight} -> {w}x{h}");
-            _wb = new WriteableBitmap(
-                new PixelSize(w, h),
-                new Vector(96, 96),
-                PixelFormat.Bgra8888,
-                AlphaFormat.Unpremul);
 
-            ScreenImage.Source = _wb;
             if (ScreenGrid != null)
             {
                 ScreenGrid.Width = w;
                 ScreenGrid.Height = h;
             }
-            ScreenImage.Width = w;
-            ScreenImage.Height = h;
+            ScreenSurfaceHost.Width = w;
+            ScreenSurfaceHost.Height = h;
             if (SplashImage != null && !string.IsNullOrWhiteSpace(_romPath))
                 SplashImage.IsVisible = false;
 
             _lastPresentedWidth = w;
             _lastPresentedHeight = h;
         }
+    }
+
+    private void EnsureDesktopRenderViewAttached()
+    {
+        if (_renderSurface == null)
+            return;
+
+        Control view = _renderSurface.View;
+        if (view.Parent is Panel existingParent && !ReferenceEquals(existingParent, ScreenSurfaceHost))
+            existingParent.Children.Remove(view);
+
+        if (!ScreenSurfaceHost.Children.Contains(view))
+        {
+            ScreenSurfaceHost.Children.Clear();
+            ScreenSurfaceHost.Children.Add(view);
+        }
+
+        view.Width = double.NaN;
+        view.Height = double.NaN;
+    }
+
+    private static IGameRenderSurface CreateRenderSurface()
+    {
+        string? mode = Environment.GetEnvironmentVariable("EUTHERDRIVE_RENDERER");
+        if (string.Equals(mode, "opengl", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mode, "gl", StringComparison.OrdinalIgnoreCase))
+        {
+            return new OpenGlRenderSurface();
+        }
+
+        return new WriteableBitmapRenderSurface();
     }
 
     private long _lastCoreFrameId = -1;
@@ -6026,9 +6053,12 @@ public partial class MainWindow : Window
         if (!clearBitmap)
             return;
 
-        _wb = null;
-        if (ScreenImage != null)
-            ScreenImage.Source = null;
+        if (_renderSurface is IDisposable disposableRenderSurface)
+            disposableRenderSurface.Dispose();
+        else
+            _renderSurface?.Reset();
+        _renderSurface = null;
+        ScreenSurfaceHost.Children.Clear();
     }
 
     private unsafe void RenderFrame(IEmulatorCore core)
@@ -6050,7 +6080,7 @@ public partial class MainWindow : Window
         }
 
         EnsureBitmapFromCore(w, h);
-        if (_wb == null)
+        if (_renderSurface == null)
             return;
 
         ApplyPsxAspectIfNeeded(core, w, h);
@@ -6082,95 +6112,62 @@ public partial class MainWindow : Window
             return;
         }
 
-        long lockStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
-        using var fb = _wb.Lock();
-        if (TracePerf)
-            PerfHotspots.Add(PerfHotspot.UiLock, Stopwatch.GetTimestamp() - lockStart);
-        int dstStride = fb.RowBytes;
-
-        int copyBytesPerRow = Math.Min(w * 4, Math.Min(srcStride, dstStride));
-        if (copyBytesPerRow <= 0)
-            return;
-
         bool forceOpaque = ForceOpaqueCheck?.IsChecked == true;
         bool applyScanlines = _crtScanlinesEnabled;
         bool applyAdvancedPixelFilter = _sharpPixelsEnabled && _advancedPixelFilterEnabled;
         int scanlineStrength = ClampPercent(_crtScanlineStrengthPercent);
         int scanlineDarkenFactor = 256 - ((scanlineStrength * 256) / 100);
 
-        fixed (byte* pSrc0 = src)
+        if (FrameBufferTraceEnabled)
         {
-            byte* pDst0 = (byte*)fb.Address.ToPointer();
-            long blitStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
+            _presentedFrames++;
+            Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} size={w}x{h} stride={srcStride} bytes={src.Length}");
+        }
 
-            if (FrameBufferTraceEnabled)
-            {
-                _presentedFrames++;
-                Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} srcPtr=0x{(nint)pSrc0:X} size={w}x{h} stride={srcStride} bytes={src.Length}");
-            }
+        FrameBlitMetrics metrics = _renderSurface.Present(
+            src,
+            w,
+            h,
+            srcStride,
+            new FrameBlitOptions(
+                ForceOpaque: forceOpaque,
+                ApplyScanlines: applyScanlines,
+                ApplyAdvancedPixelFilter: applyAdvancedPixelFilter,
+                ScanlineDarkenFactor: scanlineDarkenFactor),
+            TracePerf);
 
-            if (copyBytesPerRow == srcStride && copyBytesPerRow == dstStride && !forceOpaque && !applyScanlines && !applyAdvancedPixelFilter)
-            {
-                long totalBytes = (long)copyBytesPerRow * h;
-                Buffer.MemoryCopy(pSrc0, pDst0, totalBytes, totalBytes);
-            }
-            else if (applyAdvancedPixelFilter)
-            {
-                BlitAdvancedPixelFilter(
-                    pSrc0,
-                    pDst0,
-                    h,
-                    srcStride,
-                    dstStride,
-                    copyBytesPerRow,
-                    forceOpaque,
-                    applyScanlines,
-                    scanlineDarkenFactor);
-            }
+        if (TracePerf)
+        {
+            PerfHotspots.Add(PerfHotspot.UiLock, metrics.LockTicks);
+            PerfHotspots.Add(PerfHotspot.UiBlit, metrics.BlitTicks);
+        }
+
+        if (_renderSurface is OpenGlRenderSurface glSurface && glSurface.ShouldFallbackToBitmap(out string fallbackReason))
+        {
+            Console.WriteLine($"[MainWindow] OpenGL fallback -> bitmap: {fallbackReason}");
+            var bitmapSurface = new WriteableBitmapRenderSurface();
+            if (_renderSurface is IDisposable disposableRenderSurface)
+                disposableRenderSurface.Dispose();
             else
-            {
-                for (int y = 0; y < h; y++)
-                {
-                    byte* pSrcRow = pSrc0 + (y * srcStride);
-                    byte* pDstRow = pDst0 + (y * dstStride);
-
-                    bool darkenRow = applyScanlines && ((y & 1) == 1);
-                    if (forceOpaque || darkenRow)
-                    {
-                        // Optional CRT-like scanline darkening + optional alpha force.
-                        for (int x = 0; x < copyBytesPerRow; x += 4)
-                        {
-                            byte b = pSrcRow[x + 0];
-                            byte g = pSrcRow[x + 1];
-                            byte r = pSrcRow[x + 2];
-                            byte a = pSrcRow[x + 3];
-
-                            if (darkenRow)
-                            {
-                                b = (byte)((b * scanlineDarkenFactor) >> 8);
-                                g = (byte)((g * scanlineDarkenFactor) >> 8);
-                                r = (byte)((r * scanlineDarkenFactor) >> 8);
-                            }
-
-                            pDstRow[x + 0] = b;
-                            pDstRow[x + 1] = g;
-                            pDstRow[x + 2] = r;
-                            pDstRow[x + 3] = forceOpaque ? (byte)0xFF : a;
-                        }
-                    }
-                    else
-                    {
-                        Buffer.MemoryCopy(pSrcRow, pDstRow, dstStride, copyBytesPerRow);
-                    }
-                }
-            }
-
-            if (TracePerf)
-                PerfHotspots.Add(PerfHotspot.UiBlit, Stopwatch.GetTimestamp() - blitStart);
+                _renderSurface.Reset();
+            _renderSurface = bitmapSurface;
+            EnsureDesktopRenderViewAttached();
+            _renderSurface.Present(
+                src,
+                w,
+                h,
+                srcStride,
+                new FrameBlitOptions(
+                    ForceOpaque: forceOpaque,
+                    ApplyScanlines: applyScanlines,
+                    ApplyAdvancedPixelFilter: applyAdvancedPixelFilter,
+                    ScanlineDarkenFactor: scanlineDarkenFactor),
+                TracePerf);
         }
 
         // VIKTIGT: tvinga repaint
-        ScreenImage.InvalidateVisual();
+        if (_renderSurface is not OpenGlRenderSurface)
+            _renderSurface.View.InvalidateVisual();
 
         // Log presentation info
         if (TraceUiPresent)
@@ -6188,101 +6185,9 @@ public partial class MainWindow : Window
             _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
     }
 
-    private static unsafe void BlitAdvancedPixelFilter(
-        byte* pSrc0,
-        byte* pDst0,
-        int height,
-        int srcStride,
-        int dstStride,
-        int copyBytesPerRow,
-        bool forceOpaque,
-        bool applyScanlines,
-        int scanlineDarkenFactor)
-    {
-        for (int y = 0; y < height; y++)
-        {
-            byte* pSrcRow = pSrc0 + (y * srcStride);
-            byte* pSrcRowUp = pSrc0 + ((y > 0 ? (y - 1) : y) * srcStride);
-            byte* pSrcRowDown = pSrc0 + ((y + 1 < height ? (y + 1) : y) * srcStride);
-            byte* pDstRow = pDst0 + (y * dstStride);
-            bool darkenRow = applyScanlines && ((y & 1) == 1);
-
-            for (int x = 0; x < copyBytesPerRow; x += 4)
-            {
-                int xLeft = x > 0 ? x - 4 : x;
-                int xRight = x + 4 < copyBytesPerRow ? x + 4 : x;
-
-                byte cb = pSrcRow[x + 0];
-                byte cg = pSrcRow[x + 1];
-                byte cr = pSrcRow[x + 2];
-                byte ca = pSrcRow[x + 3];
-
-                byte lb = pSrcRow[xLeft + 0];
-                byte lg = pSrcRow[xLeft + 1];
-                byte lr = pSrcRow[xLeft + 2];
-
-                byte rb = pSrcRow[xRight + 0];
-                byte rg = pSrcRow[xRight + 1];
-                byte rr = pSrcRow[xRight + 2];
-
-                byte ub = pSrcRowUp[x + 0];
-                byte ug = pSrcRowUp[x + 1];
-                byte ur = pSrcRowUp[x + 2];
-
-                byte db = pSrcRowDown[x + 0];
-                byte dg = pSrcRowDown[x + 1];
-                byte dr = pSrcRowDown[x + 2];
-
-                int cY = Luma(cr, cg, cb);
-                int edge = Math.Abs(cY - Luma(lr, lg, lb))
-                    + Math.Abs(cY - Luma(rr, rg, rb))
-                    + Math.Abs(cY - Luma(ur, ug, ub))
-                    + Math.Abs(cY - Luma(dr, dg, db));
-
-                int gain256 = edge > 96 ? 160 : edge > 48 ? 112 : 72;
-
-                byte b = AdaptiveSharpenChannel(cb, lb, rb, ub, db, gain256);
-                byte g = AdaptiveSharpenChannel(cg, lg, rg, ug, dg, gain256);
-                byte r = AdaptiveSharpenChannel(cr, lr, rr, ur, dr, gain256);
-
-                if (darkenRow)
-                {
-                    b = (byte)((b * scanlineDarkenFactor) >> 8);
-                    g = (byte)((g * scanlineDarkenFactor) >> 8);
-                    r = (byte)((r * scanlineDarkenFactor) >> 8);
-                }
-
-                pDstRow[x + 0] = b;
-                pDstRow[x + 1] = g;
-                pDstRow[x + 2] = r;
-                pDstRow[x + 3] = forceOpaque ? (byte)0xFF : ca;
-            }
-        }
-    }
-
-    private static byte AdaptiveSharpenChannel(byte c, byte l, byte r, byte u, byte d, int gain256)
-    {
-        int center = c;
-        int blur = ((center * 4) + l + r + u + d) >> 3;
-        int detail = center - blur;
-        int sharpened = center + ((detail * gain256) >> 8);
-
-        int minN = Math.Min(center, Math.Min(Math.Min(l, r), Math.Min(u, d)));
-        int maxN = Math.Max(center, Math.Max(Math.Max(l, r), Math.Max(u, d)));
-
-        int low = Math.Max(0, minN - 6);
-        int high = Math.Min(255, maxN + 6);
-        if (sharpened < low) sharpened = low;
-        if (sharpened > high) sharpened = high;
-        return (byte)sharpened;
-    }
-
-    private static int Luma(byte r, byte g, byte b)
-        => ((77 * r) + (150 * g) + (29 * b)) >> 8;
-
     private void ApplyPsxAspectIfNeeded(IEmulatorCore core, int width, int height)
     {
-        if (ScreenGrid == null || ScreenImage == null)
+        if (ScreenGrid == null)
             return;
 
         if (core is not PsxAdapter psx || height <= 0)
@@ -6302,10 +6207,10 @@ public partial class MainWindow : Window
             ScreenGrid.Height = targetHeight;
         }
 
-        if (Math.Abs(ScreenImage.Width - targetWidth) > 0.5 || Math.Abs(ScreenImage.Height - targetHeight) > 0.5)
+        if (Math.Abs(ScreenSurfaceHost.Width - targetWidth) > 0.5 || Math.Abs(ScreenSurfaceHost.Height - targetHeight) > 0.5)
         {
-            ScreenImage.Width = targetWidth;
-            ScreenImage.Height = targetHeight;
+            ScreenSurfaceHost.Width = targetWidth;
+            ScreenSurfaceHost.Height = targetHeight;
         }
     }
 
@@ -7260,16 +7165,15 @@ public partial class MainWindow : Window
 
     private unsafe void StartHeartbeat()
     {
-        if (!_heartbeatEnabled || _heartbeatTimer != null || _wb == null)
+        if (!_heartbeatEnabled || _heartbeatTimer != null || _renderSurface is not WriteableBitmapRenderSurface bitmapSurface || bitmapSurface.Bitmap == null)
             return;
 
         _heartbeatTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Render, (_, _) =>
         {
-            if (_wb == null)
+            if (_renderSurface is not WriteableBitmapRenderSurface activeSurface || activeSurface.Bitmap == null)
                 return;
 
-            using var fb = _wb.Lock();
-            int stride = fb.RowBytes;
+            using var fb = activeSurface.Bitmap.Lock();
             byte* pixel = (byte*)fb.Address.ToPointer();
             byte r = _heartbeatState ? (byte)0 : (byte)0xFF;
             byte g = _heartbeatState ? (byte)0xFF : (byte)0;
@@ -7284,7 +7188,7 @@ public partial class MainWindow : Window
             if ((_heartbeatTicks & 7) == 0)
                 Console.WriteLine("[UI] Heartbeat tick " + _heartbeatTicks);
 
-            ScreenImage.InvalidateVisual();
+            _renderSurface?.View.InvalidateVisual();
         });
         _heartbeatTimer.Start();
     }

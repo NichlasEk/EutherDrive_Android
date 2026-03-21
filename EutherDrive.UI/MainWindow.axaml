@@ -381,9 +381,9 @@
           <Border Name="InputSurface" Background="Transparent" Focusable="True">
             <Viewbox Stretch="Uniform">
               <Grid Name="ScreenGrid" Width="320" Height="224">
-                <Image Name="ScreenImage"
-                       Width="320" Height="224"
-                       Stretch="Fill"/>
+                <Grid Name="ScreenSurfaceHost"
+                      Width="320"
+                      Height="224"/>
                 <Image Name="SplashImage"
                        Source="avares://EutherDrive.UI/Assets/logo_crop.jpeg"
                        Stretch="Uniform"/>

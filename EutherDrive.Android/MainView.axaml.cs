@@ -12,13 +12,14 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
-using Avalonia.Media.Imaging;
+using Avalonia.Media;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using EutherDrive.Audio;
 using EutherDrive.Core;
 using EutherDrive.Core.Savestates;
+using EutherDrive.Rendering;
 using ProjectPSX.IO;
 
 namespace EutherDrive.Android;
@@ -54,7 +55,7 @@ public partial class MainView : UserControl
     private Thread? _emulationThread;
     private volatile bool _emulationThreadRunning;
     private AudioEngine? _audioEngine;
-    private WriteableBitmap? _bitmap;
+    private IGameRenderSurface? _renderSurface;
     private byte[] _captureFrameBuffer = Array.Empty<byte>();
     private byte[] _latestFrameBuffer = Array.Empty<byte>();
     private byte[] _presentFrameBuffer = Array.Empty<byte>();
@@ -98,12 +99,24 @@ public partial class MainView : UserControl
         _viewModel.SettingsHint = "Small BIOS/chip files are imported into app storage. Large disc images are intentionally not cached here.";
         SettingsAboutZuulView.SetActive(false);
         SizeChanged += OnViewSizeChanged;
+        _viewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
     private void OnViewSizeChanged(object? sender, SizeChangedEventArgs e)
     {
         Size size = e.NewSize;
         _viewModel.IsLandscapeMode = size.Width > size.Height && size.Height > 0;
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!string.Equals(e.PropertyName, nameof(MainViewModel.IsLandscapeMode), StringComparison.Ordinal))
+            return;
+
+        AttachRenderSurfaceToActiveHost();
+        if (_lastFrameWidth > 0 && _lastFrameHeight > 0)
+            ApplyPresentationSizeForCore(_core, _lastFrameWidth, _lastFrameHeight);
+        InvalidateScreenImages();
     }
 
     private async void OnPickRom(object? sender, RoutedEventArgs e)
@@ -1160,25 +1173,13 @@ public partial class MainView : UserControl
 
         EnsureBitmap(width, height);
         ApplyPresentationSizeForCore(_core, width, height);
-        if (_bitmap == null)
+        if (_renderSurface == null)
         {
             return;
         }
 
         long presentStart = _perfStopwatch.ElapsedTicks;
-        using var fb = _bitmap.Lock();
-        int dstStride = fb.RowBytes;
-        int rowBytes = Math.Min(srcStride, dstStride);
-        if (rowBytes <= 0)
-        {
-            return;
-        }
-
-        fixed (byte* srcPtr = frameBuffer)
-        {
-            byte* dstPtr = (byte*)fb.Address.ToPointer();
-            CopyFrameRows(srcPtr, srcStride, dstPtr, dstStride, height, rowBytes, clearDestinationTail: false);
-        }
+        _ = _renderSurface.Present(frameBuffer, width, height, srcStride, default, measurePerf: false);
 
         Interlocked.Add(ref _perfAccumulatedPresentTicks, _perfStopwatch.ElapsedTicks - presentStart);
         Interlocked.Increment(ref _perfPresentedWindowFrames);
@@ -1392,7 +1393,11 @@ public partial class MainView : UserControl
         _core = null;
         _audioEngine?.Dispose();
         _audioEngine = null;
-        _bitmap = null;
+        if (_renderSurface is IDisposable disposableRenderSurface)
+            disposableRenderSurface.Dispose();
+        else
+            _renderSurface?.Reset();
+        _renderSurface = null;
         _presentedFrames = 0;
         ResetPerfCounters();
         lock (_frameSync)
@@ -1401,7 +1406,7 @@ public partial class MainView : UserControl
             _latestFrameBuffer = Array.Empty<byte>();
             _presentFrameBuffer = Array.Empty<byte>();
         }
-        SetScreenSource(null);
+        DetachRenderSurfaceFromHosts();
         _viewModel.IsRunning = false;
         _viewModel.ScreenOverlayVisible = true;
 
@@ -2221,18 +2226,9 @@ public partial class MainView : UserControl
 
     private void EnsureBitmap(int width, int height)
     {
-        if (_bitmap != null && _bitmap.PixelSize.Width == width && _bitmap.PixelSize.Height == height)
-        {
-            return;
-        }
-
-        _bitmap = new WriteableBitmap(
-            new PixelSize(width, height),
-            new Vector(96, 96),
-            PixelFormat.Bgra8888,
-            AlphaFormat.Unpremul);
-
-        SetScreenSource(_bitmap);
+        _renderSurface ??= new WriteableBitmapRenderSurface();
+        if (_renderSurface.EnsureSize(width, height) || !IsRenderSurfaceAttachedToExpectedHost())
+            AttachRenderSurfaceToActiveHost();
     }
 
     private void ApplyPresentationSizeForCore(IEmulatorCore? core, int width, int height)
@@ -2266,12 +2262,10 @@ public partial class MainView : UserControl
         if (isLandscape)
         {
             ApplyPresentationSize(LandscapeScreenHost, targetWidth, targetHeight);
-            ApplyPresentationSize(LandscapeScreenImage, targetWidth, targetHeight);
         }
         else
         {
             ApplyPresentationSize(PortraitScreenHost, targetWidth, targetHeight);
-            ApplyPresentationSize(PortraitScreenImage, targetWidth, targetHeight);
         }
 
         _appliedPresentationWidth = targetWidth;
@@ -2292,22 +2286,52 @@ public partial class MainView : UserControl
         }
     }
 
-    private void SetScreenSource(WriteableBitmap? bitmap)
+    private bool IsRenderSurfaceAttachedToExpectedHost()
     {
-        PortraitScreenImage.Source = bitmap;
-        LandscapeScreenImage.Source = bitmap;
+        if (_renderSurface == null)
+            return false;
+
+        Panel expectedHost = _viewModel.IsLandscapeMode ? LandscapeScreenHost : PortraitScreenHost;
+        return ReferenceEquals(_renderSurface.View.Parent, expectedHost) && expectedHost.Children.Contains(_renderSurface.View);
+    }
+
+    private void AttachRenderSurfaceToActiveHost()
+    {
+        if (_renderSurface == null)
+            return;
+
+        Panel targetHost = _viewModel.IsLandscapeMode ? LandscapeScreenHost : PortraitScreenHost;
+        Panel inactiveHost = _viewModel.IsLandscapeMode ? PortraitScreenHost : LandscapeScreenHost;
+        Control view = _renderSurface.View;
+
+        if (view.Parent is Panel existingParent && !ReferenceEquals(existingParent, targetHost))
+            existingParent.Children.Remove(view);
+
+        if (inactiveHost.Children.Contains(view))
+            inactiveHost.Children.Remove(view);
+
+        if (!targetHost.Children.Contains(view))
+        {
+            targetHost.Children.Clear();
+            targetHost.Children.Add(view);
+        }
+
+        view.Width = double.NaN;
+        view.Height = double.NaN;
+    }
+
+    private void DetachRenderSurfaceFromHosts()
+    {
+        if (_renderSurface?.View.Parent is Panel parent)
+            parent.Children.Remove(_renderSurface.View);
+
+        PortraitScreenHost.Children.Clear();
+        LandscapeScreenHost.Children.Clear();
     }
 
     private void InvalidateScreenImages()
     {
-        if (_viewModel.IsLandscapeMode)
-        {
-            LandscapeScreenImage.InvalidateVisual();
-        }
-        else
-        {
-            PortraitScreenImage.InvalidateVisual();
-        }
+        _renderSurface?.View.InvalidateVisual();
     }
 
     private static IEmulatorCore CreateCoreForRom(string path)
