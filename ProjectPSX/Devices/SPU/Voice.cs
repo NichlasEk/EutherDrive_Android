@@ -3,8 +3,8 @@
 namespace ProjectPSX.Devices.Spu {
     public class Voice {
 
-        private static ReadOnlySpan<sbyte> positiveXaAdpcmTable => new sbyte[] { 0, 60, 115, 98, 122 };
-        private static ReadOnlySpan<sbyte> negativeXaAdpcmTable => new sbyte[] { 0, 0, -52, -55, -60 };
+        private static readonly sbyte[] PositiveXaAdpcmTable = { 0, 60, 115, 98, 122 };
+        private static readonly sbyte[] NegativeXaAdpcmTable = { 0, 0, -52, -55, -60 };
 
         public struct Volume {
             public ushort register;
@@ -69,8 +69,14 @@ namespace ProjectPSX.Devices.Spu {
 
         public bool readRamIrq;
 
+        [NonSerialized]
+        private short _cachedVolumeLeft;
+        [NonSerialized]
+        private short _cachedVolumeRight;
+
         public Voice() {
             adsrPhase = Phase.Off;
+            RefreshRuntimeState();
         }
 
         public void keyOn() {
@@ -117,8 +123,8 @@ namespace ProjectPSX.Devices.Spu {
             int filter = (spuAdpcm[0] & 0x70) >> 4; //filter on SPU adpcm is 0-4 vs XA wich is 0-3
             if (filter > 4) filter = 4; //Crash Bandicoot sets this to 7 at the end of the first level and overflows the filter
 
-            int f0 = positiveXaAdpcmTable[filter];
-            int f1 = negativeXaAdpcmTable[filter];
+            int f0 = PositiveXaAdpcmTable[filter];
+            int f1 = NegativeXaAdpcmTable[filter];
 
             //Actual ADPCM decoding is the same as on XA but the layout here is sequencial by nibble where on XA in grouped by nibble line
             int position = 2; //skip shift and flags
@@ -143,12 +149,30 @@ namespace ProjectPSX.Devices.Spu {
             return (value << 28) >> 28;
         }
 
-        internal short processVolume(Volume volume) {
+        private static short ProcessVolume(Volume volume) {
             if (!volume.isSweepMode) {
                 return volume.fixedVolume;
             } else {
                 return 0x7FFF; //todo handle sweep mode volume envelope
             }
+        }
+
+        internal void SetVolumeLeftRegister(ushort value) {
+            volumeLeft.register = value;
+            _cachedVolumeLeft = ProcessVolume(volumeLeft);
+        }
+
+        internal void SetVolumeRightRegister(ushort value) {
+            volumeRight.register = value;
+            _cachedVolumeRight = ProcessVolume(volumeRight);
+        }
+
+        internal short CachedVolumeLeft => _cachedVolumeLeft;
+        internal short CachedVolumeRight => _cachedVolumeRight;
+
+        internal void RefreshRuntimeState() {
+            _cachedVolumeLeft = ProcessVolume(volumeLeft);
+            _cachedVolumeRight = ProcessVolume(volumeRight);
         }
 
         int adsrCounter;

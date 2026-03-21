@@ -12,6 +12,8 @@ namespace ProjectPSX.Devices {
         private uint command;
         private int commandSize;
         private uint[] commandBuffer = new uint[16];
+        [NonSerialized]
+        private ushort[] vramCopyScratch = Array.Empty<ushort>();
         private int pointer;
 
         private int scanLine = 0;
@@ -955,7 +957,9 @@ namespace ProjectPSX.Devices {
 
             // VRAM blits must copy raw 16-bit VRAM words, not the expanded RGB view.
             // Text/CLUT pages are stored as packed indices and get corrupted otherwise.
-            ushort[] copyBuffer = new ushort[w * h];
+            int copyLength = w * h;
+            EnsureVramCopyScratchCapacity(copyLength);
+            ushort[] copyBuffer = vramCopyScratch;
             int copyIndex = 0;
             for (int yPos = 0; yPos < h; yPos++) {
                 for (int xPos = 0; xPos < w; xPos++) {
@@ -976,6 +980,12 @@ namespace ProjectPSX.Devices {
                     vram1555.SetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF, rawColor);
                     vram.SetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF, color1555to8888LUT[rawColor]);
                 }
+            }
+        }
+
+        private void EnsureVramCopyScratchCapacity(int requiredLength) {
+            if (vramCopyScratch.Length < requiredLength) {
+                vramCopyScratch = new ushort[requiredLength];
             }
         }
 

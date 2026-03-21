@@ -249,8 +249,8 @@ namespace ProjectPSX.Devices {
                     uint index = ((addr & 0xFF0) >> 4) - 0xC0;
 
                     switch (addr & 0xF) {
-                        case 0x0: voices[index].volumeLeft.register = value; break;
-                        case 0x2: voices[index].volumeRight.register = value; break;
+                        case 0x0: voices[index].SetVolumeLeftRegister(value); break;
+                        case 0x2: voices[index].SetVolumeRightRegister(value); break;
                         case 0x4: voices[index].pitch = value; break;
                         case 0x6: voices[index].startAddress = value; break;
                         case 0x8: voices[index].adsr.lo = value; break;
@@ -883,12 +883,14 @@ namespace ProjectPSX.Devices {
                     v.tickAdsr(i);
                     v.latest = sample;
 
-                    sumLeft += (sample * v.processVolume(v.volumeLeft)) >> 15;
-                    sumRight += (sample * v.processVolume(v.volumeRight)) >> 15;
+                    short volumeLeft = v.CachedVolumeLeft;
+                    short volumeRight = v.CachedVolumeRight;
+                    sumLeft += (sample * volumeLeft) >> 15;
+                    sumRight += (sample * volumeRight) >> 15;
 
                     if (reverbEnabled && (channelReverbMode & (0x1 << i)) != 0) {
-                        sumLeftReverb += (sample * v.processVolume(v.volumeLeft)) >> 15;
-                        sumRightReverb += (sample * v.processVolume(v.volumeRight)) >> 15;
+                        sumLeftReverb += (sample * volumeLeft) >> 15;
+                        sumRightReverb += (sample * volumeRight) >> 15;
                     }
                 }
 
@@ -1111,6 +1113,12 @@ namespace ProjectPSX.Devices {
             }
 
             return (short)sample;
+        }
+
+        public void RefreshRuntimeState() {
+            for (int i = 0; i < voices.Length; i++) {
+                voices[i].RefreshRuntimeState();
+            }
         }
 
 

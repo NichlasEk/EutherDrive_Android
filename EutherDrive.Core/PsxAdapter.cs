@@ -343,6 +343,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             _core.MDEC.ResyncAfterLoad();
             _core.SPU.LoadRawState(reader);
             StateBinarySerializer.ReadInto(reader, _core.SPU);
+            _core.SPU.RefreshRuntimeState();
 
             lock (_audioLock)
             {
