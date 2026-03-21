@@ -677,10 +677,98 @@ namespace ProjectPSX.Devices {
             }
 
             bool opaqueTexturedFastPath = textured && !shaded && !primitive.isSemiTransparent && !checkMask;
+            bool gouraudTexturedFastPath = textured && shaded && !primitive.isSemiTransparent && !checkMask;
             int baseColor = (int)c0;
             bool passthroughTexturedFastPath =
                 opaqueTexturedFastPath &&
                 (primitive.isRawTextured || (baseColor & 0x00FF_FFFF) == IdentityTextureModulationColor);
+
+            if (textureWindowIdentity) {
+                if (passthroughTexturedFastPath &&
+                    TryRasterizeTrianglePassthroughTexturedIdentity(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY)) {
+                    return;
+                }
+
+                if (opaqueTexturedFastPath &&
+                    TryRasterizeTriangleFlatTexturedIdentity(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        baseColor,
+                        maskBits)) {
+                    return;
+                }
+
+                if (gouraudTexturedFastPath &&
+                    TryRasterizeTriangleGouraudTexturedIdentity(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        shadeRRow,
+                        shadeGRow,
+                        shadeBRow,
+                        shadeRStepX,
+                        shadeGStepX,
+                        shadeBStepX,
+                        shadeRStepY,
+                        shadeGStepY,
+                        shadeBStepY,
+                        maskBits)) {
+                    return;
+                }
+            }
+
             if (passthroughTexturedFastPath) {
                 int clutX = primitive.clut.x;
                 int clutRowBase = primitive.clut.y << 10;
@@ -1240,6 +1328,551 @@ AdvanceTrianglePixel:
                 texXRow += texXStepY;
                 texYRow += texYStepY;
             }
+        }
+
+        private bool TryRasterizeTrianglePassthroughTexturedIdentity(
+            Point2D min,
+            Point2D max,
+            Primitive primitive,
+            int area,
+            int w0Row,
+            int w1Row,
+            int w2Row,
+            int w0StepX,
+            int w1StepX,
+            int w2StepX,
+            int w0StepY,
+            int w1StepY,
+            int w2StepY,
+            int texXRow,
+            int texYRow,
+            int texXStepX,
+            int texYStepX,
+            int texXStepY,
+            int texYStepY) {
+            int spanWidth = max.x - min.x;
+            if (spanWidth <= 0) {
+                return true;
+            }
+
+            int[] vramBits = vram.Bits;
+            ushort[] vram1555Bits = vram1555.Bits;
+            int clutX = primitive.clut.x;
+            int clutRowBase = primitive.clut.y << 10;
+            int textureBaseX = primitive.textureBase.x;
+            int textureBaseY = primitive.textureBase.y;
+            int yStart = min.y;
+            int yEnd = max.y;
+            int xBase = min.x;
+            ushort maskBit1555 = (ushort)(maskWhileDrawing << 15);
+            ulong reciprocal = BuildUnsignedReciprocal(area);
+
+            switch (primitive.depth) {
+                case 0:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
+                                ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                    vram1555Bits[pixelIndex] = packedTexel;
+                                    vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                }
+
+                                pixelIndex++;
+                                texX += texXStepX;
+                                texY += texYStepX;
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+                case 1:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
+                                ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                    vram1555Bits[pixelIndex] = packedTexel;
+                                    vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                }
+
+                                pixelIndex++;
+                                texX += texXStepX;
+                                texY += texYStepX;
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+                default:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
+                                ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                    vram1555Bits[pixelIndex] = packedTexel;
+                                    vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                }
+
+                                pixelIndex++;
+                                texX += texXStepX;
+                                texY += texYStepX;
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+            }
+        }
+
+        private bool TryRasterizeTriangleFlatTexturedIdentity(
+            Point2D min,
+            Point2D max,
+            Primitive primitive,
+            int area,
+            int w0Row,
+            int w1Row,
+            int w2Row,
+            int w0StepX,
+            int w1StepX,
+            int w2StepX,
+            int w0StepY,
+            int w1StepY,
+            int w2StepY,
+            int texXRow,
+            int texYRow,
+            int texXStepX,
+            int texYStepX,
+            int texXStepY,
+            int texYStepY,
+            int baseColor,
+            int maskBits) {
+            int spanWidth = max.x - min.x;
+            if (spanWidth <= 0) {
+                return true;
+            }
+
+            int[] vramBits = vram.Bits;
+            ushort[] vram1555Bits = vram1555.Bits;
+            int clutX = primitive.clut.x;
+            int clutRowBase = primitive.clut.y << 10;
+            int textureBaseX = primitive.textureBase.x;
+            int textureBaseY = primitive.textureBase.y;
+            int yStart = min.y;
+            int yEnd = max.y;
+            int xBase = min.x;
+            ulong reciprocal = BuildUnsignedReciprocal(area);
+
+            switch (primitive.depth) {
+                case 0:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
+                                int texel = GetTexel4Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (texel != 0) {
+                                    int color = ModulateColor(baseColor, texel) | maskBits;
+                                    vramBits[pixelIndex] = color;
+                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                }
+
+                                pixelIndex++;
+                                texX += texXStepX;
+                                texY += texYStepX;
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+                case 1:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
+                                int texel = GetTexel8Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (texel != 0) {
+                                    int color = ModulateColor(baseColor, texel) | maskBits;
+                                    vramBits[pixelIndex] = color;
+                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                }
+
+                                pixelIndex++;
+                                texX += texXStepX;
+                                texY += texYStepX;
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+                default:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
+                                int texel = GetTexel16Fast(vramBits, texelX, texelY, textureBaseX, textureBaseY);
+
+                                if (texel != 0) {
+                                    int color = ModulateColor(baseColor, texel) | maskBits;
+                                    vramBits[pixelIndex] = color;
+                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                }
+
+                                pixelIndex++;
+                                texX += texXStepX;
+                                texY += texYStepX;
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+            }
+        }
+
+        private bool TryRasterizeTriangleGouraudTexturedIdentity(
+            Point2D min,
+            Point2D max,
+            Primitive primitive,
+            int area,
+            int w0Row,
+            int w1Row,
+            int w2Row,
+            int w0StepX,
+            int w1StepX,
+            int w2StepX,
+            int w0StepY,
+            int w1StepY,
+            int w2StepY,
+            int texXRow,
+            int texYRow,
+            int texXStepX,
+            int texYStepX,
+            int texXStepY,
+            int texYStepY,
+            int shadeRRow,
+            int shadeGRow,
+            int shadeBRow,
+            int shadeRStepX,
+            int shadeGStepX,
+            int shadeBStepX,
+            int shadeRStepY,
+            int shadeGStepY,
+            int shadeBStepY,
+            int maskBits) {
+            if (primitive.isRawTextured) {
+                return TryRasterizeTrianglePassthroughTexturedIdentity(
+                    min,
+                    max,
+                    primitive,
+                    area,
+                    w0Row,
+                    w1Row,
+                    w2Row,
+                    w0StepX,
+                    w1StepX,
+                    w2StepX,
+                    w0StepY,
+                    w1StepY,
+                    w2StepY,
+                    texXRow,
+                    texYRow,
+                    texXStepX,
+                    texYStepX,
+                    texXStepY,
+                    texYStepY);
+            }
+
+            int spanWidth = max.x - min.x;
+            if (spanWidth <= 0) {
+                return true;
+            }
+
+            int[] vramBits = vram.Bits;
+            ushort[] vram1555Bits = vram1555.Bits;
+            int clutX = primitive.clut.x;
+            int clutRowBase = primitive.clut.y << 10;
+            int textureBaseX = primitive.textureBase.x;
+            int textureBaseY = primitive.textureBase.y;
+            int yStart = min.y;
+            int yEnd = max.y;
+            int xBase = min.x;
+            ulong reciprocal = BuildUnsignedReciprocal(area);
+
+            switch (primitive.depth) {
+                case 0:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            int shadeR = shadeRRow + spanStart * shadeRStepX;
+                            int shadeG = shadeGRow + spanStart * shadeGStepX;
+                            int shadeB = shadeBRow + spanStart * shadeBStepX;
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
+                                int texel = GetTexel4Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (texel != 0) {
+                                    int color =
+                                        (FastDivideNonNegative(shadeR, area, reciprocal) << 16) |
+                                        (FastDivideNonNegative(shadeG, area, reciprocal) << 8) |
+                                        FastDivideNonNegative(shadeB, area, reciprocal);
+                                    color = ModulateColor(color, texel) | maskBits;
+                                    vramBits[pixelIndex] = color;
+                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                }
+
+                                pixelIndex++;
+                                texX += texXStepX;
+                                texY += texYStepX;
+                                shadeR += shadeRStepX;
+                                shadeG += shadeGStepX;
+                                shadeB += shadeBStepX;
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                        shadeRRow += shadeRStepY;
+                        shadeGRow += shadeGStepY;
+                        shadeBRow += shadeBStepY;
+                    }
+                    return true;
+                case 1:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            int shadeR = shadeRRow + spanStart * shadeRStepX;
+                            int shadeG = shadeGRow + spanStart * shadeGStepX;
+                            int shadeB = shadeBRow + spanStart * shadeBStepX;
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
+                                int texel = GetTexel8Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (texel != 0) {
+                                    int color =
+                                        (FastDivideNonNegative(shadeR, area, reciprocal) << 16) |
+                                        (FastDivideNonNegative(shadeG, area, reciprocal) << 8) |
+                                        FastDivideNonNegative(shadeB, area, reciprocal);
+                                    color = ModulateColor(color, texel) | maskBits;
+                                    vramBits[pixelIndex] = color;
+                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                }
+
+                                pixelIndex++;
+                                texX += texXStepX;
+                                texY += texYStepX;
+                                shadeR += shadeRStepX;
+                                shadeG += shadeGStepX;
+                                shadeB += shadeBStepX;
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                        shadeRRow += shadeRStepY;
+                        shadeGRow += shadeGStepY;
+                        shadeBRow += shadeBStepY;
+                    }
+                    return true;
+                default:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            int shadeR = shadeRRow + spanStart * shadeRStepX;
+                            int shadeG = shadeGRow + spanStart * shadeGStepX;
+                            int shadeB = shadeBRow + spanStart * shadeBStepX;
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
+                                int texel = GetTexel16Fast(vramBits, texelX, texelY, textureBaseX, textureBaseY);
+
+                                if (texel != 0) {
+                                    int color =
+                                        (FastDivideNonNegative(shadeR, area, reciprocal) << 16) |
+                                        (FastDivideNonNegative(shadeG, area, reciprocal) << 8) |
+                                        FastDivideNonNegative(shadeB, area, reciprocal);
+                                    color = ModulateColor(color, texel) | maskBits;
+                                    vramBits[pixelIndex] = color;
+                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                }
+
+                                pixelIndex++;
+                                texX += texXStepX;
+                                texY += texYStepX;
+                                shadeR += shadeRStepX;
+                                shadeG += shadeGStepX;
+                                shadeB += shadeBStepX;
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                        shadeRRow += shadeRStepY;
+                        shadeGRow += shadeGStepY;
+                        shadeBRow += shadeBStepY;
+                    }
+                    return true;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryGetTriangleSpanOffsets(
+            int w0,
+            int w1,
+            int w2,
+            int w0StepX,
+            int w1StepX,
+            int w2StepX,
+            int spanWidth,
+            out int spanStart,
+            out int spanEnd) {
+            spanStart = 0;
+            spanEnd = spanWidth;
+
+            return RestrictTriangleSpanForEdge(w0, w0StepX, spanWidth, ref spanStart, ref spanEnd) &&
+                RestrictTriangleSpanForEdge(w1, w1StepX, spanWidth, ref spanStart, ref spanEnd) &&
+                RestrictTriangleSpanForEdge(w2, w2StepX, spanWidth, ref spanStart, ref spanEnd) &&
+                spanStart < spanEnd;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool RestrictTriangleSpanForEdge(int w, int stepX, int spanWidth, ref int spanStart, ref int spanEnd) {
+            if (stepX > 0) {
+                spanStart = Math.Max(spanStart, CeilDivByPositive(-w, stepX));
+            } else if (stepX < 0) {
+                spanEnd = Math.Min(spanEnd, FloorDivByPositive(w, -stepX) + 1);
+            } else if (w < 0) {
+                return false;
+            }
+
+            if (spanStart < 0) {
+                spanStart = 0;
+            }
+
+            if (spanEnd > spanWidth) {
+                spanEnd = spanWidth;
+            }
+
+            return spanStart < spanEnd;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int CeilDivByPositive(int numerator, int denominator) {
+            return numerator >= 0 ? (numerator + denominator - 1) / denominator : -((-numerator) / denominator);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int FloorDivByPositive(int numerator, int denominator) {
+            return numerator >= 0 ? numerator / denominator : -(((-numerator) + denominator - 1) / denominator);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong BuildUnsignedReciprocal(int divisor) {
+            return ((1UL << 32) + (uint)divisor - 1UL) / (uint)divisor;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int FastDivideNonNegative(int numerator, int divisor, ulong reciprocal) {
+            uint unsignedNumerator = (uint)numerator;
+            uint unsignedDivisor = (uint)divisor;
+            uint quotient = (uint)(((ulong)unsignedNumerator * reciprocal) >> 32);
+
+            if ((ulong)quotient * unsignedDivisor > unsignedNumerator) {
+                quotient--;
+            } else if ((ulong)(quotient + 1U) * unsignedDivisor <= unsignedNumerator) {
+                quotient++;
+            }
+
+            return (int)quotient;
         }
 
         private void GP0_RenderLine(Span<uint> buffer) {
