@@ -230,6 +230,8 @@ public class SNESSystem : ISNESSystem
     private bool _isExecuting;
     [NonSerialized]
     private readonly bool _useFastReadPath;
+    [NonSerialized]
+    private readonly bool _useFastWritePath;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     public SNESSystem(ICPU cpu, IRenderer renderer, IROM rom, IPPU ppu, IAPU apu, IAudioHandler audioHandler)
@@ -258,6 +260,12 @@ public class SNESSystem : ISNESSystem
             && !_traceJoypad
             && !_traceDma
             && !_trace4212;
+        _useFastWritePath = !_traceWramWrites
+            && !_tracePpuBusWrites
+            && !_traceInidisp
+            && !_traceApuPorts
+            && !_traceDma
+            && !_logVerbose;
         EnsureBusTables();
     }
 
@@ -455,88 +463,24 @@ public class SNESSystem : ISNESSystem
 
     public void Write(int adr, int value, bool dma = false)
     {
+        int fullAdr = adr & 0xffffff;
         int accessTime = 0;
         if (!dma)
         {
             _cpuMemOps++;
-            accessTime = GetAccessTime(adr);
+            accessTime = GetAccessTime(fullAdr);
             _cpuCyclesLeft += accessTime;
         }
         OpenBus = value;
-        int fullAdr = adr & 0xffffff;
-        int bank = fullAdr >> 16;
-        adr = fullAdr & 0xffff;
         bool isApuPortAccess = !dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr);
-        if (bank == 0x7e || bank == 0x7f)
-        {
-            _ram[((bank & 0x1) << 16) | adr] = (byte) value;
-            if (_traceWramWrites && ShouldTraceWramWrite(((bank & 0x1) << 16) | adr, adr))
-            {
-                int pc = -1;
-                if (CPU is KSNES.CPU.CPU cpu)
-                    pc = cpu.ProgramCounter24;
-                Console.WriteLine($"[WRAM-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
-            }
-            if (dma && _traceWramWrites && ShouldTraceWramPortAccess(((bank & 0x1) << 16) | adr, adr))
-            {
-                int pc = -1;
-                if (CPU is KSNES.CPU.CPU cpu)
-                    pc = cpu.ProgramCounter24;
-                Console.WriteLine($"[WRAM-DMA] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
-            }
-        }
-        if (adr < 0x8000 && (bank < 0x40 || bank >= 0x80 && bank < 0xc0))
-        {
-            if (adr < 0x2000)
-            {
-                _ram[adr & 0x1fff] = (byte) value;
-                if (_traceWramWrites && ShouldTraceWramWrite(adr, adr))
-                {
-                    int pc = -1;
-                    if (CPU is KSNES.CPU.CPU cpu)
-                        pc = cpu.ProgramCounter24;
-                    Console.WriteLine($"[WRAM-WR] adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
-                }
-                if (_traceWramWrites && ShouldTraceWramPortAccess(adr, adr))
-                {
-                    int pc = -1;
-                    if (CPU is KSNES.CPU.CPU cpu)
-                        pc = cpu.ProgramCounter24;
-                    Console.WriteLine($"[WRAM-WR] adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
-                }
-            }
-            if (adr >= 0x2100 && adr < 0x2200)
-            {
-                WriteBBus(adr & 0xff, value, dma);
-            }
-            if (adr == 0x4016)
-            {
-                bool newStrobe = (value & 0x1) > 0;
-                if (!_joypadStrobe && newStrobe)
-                {
-                    _joypad1Val = _joypad1State;
-                    _joypad2Val = _joypad2State;
-                }
-                _joypadStrobe = newStrobe;
-            }
-            if (adr >= 0x4200 && adr < 0x4380)
-            {
-                if (_traceDma && (adr == 0x420B || adr == 0x420C))
-                {
-                    int pc = -1;
-                    if (CPU is KSNES.CPU.CPU cpu)
-                        pc = cpu.ProgramCounter24;
-                    string reg = adr == 0x420B ? "MDMAEN" : "HDMAEN";
-                    Console.WriteLine($"[DMA-CTL] {reg}=0x{value:X2} pc=0x{pc:X6}");
-                }
-                WriteReg(adr, value);
-            }
-        }
+        if (_useFastWritePath)
+            WwriteFast(fullAdr, value, dma);
+        else
+            Wwrite(fullAdr, value, dma);
         if (isApuPortAccess)
         {
             AdvanceApuForCpuAccess(accessTime);
         }
-        RomImpl.Write(bank, adr, (byte) value);
     }
 
     private void Reset1()
@@ -1962,6 +1906,49 @@ public class SNESSystem : ISNESSystem
         return -1;
     }
 
+    private void WriteJoypadStrobeFast(int value)
+    {
+        bool newStrobe = (value & 0x1) > 0;
+        if (!_joypadStrobe && newStrobe)
+        {
+            _joypad1Val = _joypad1State;
+            _joypad2Val = _joypad2State;
+        }
+        _joypadStrobe = newStrobe;
+    }
+
+    private void WriteBBusFast(int adr, int value, bool dma)
+    {
+        if (adr < 0x34)
+        {
+            PPU.Write(adr, value, dma);
+            return;
+        }
+
+        if (adr >= 0x40 && adr < 0x80)
+        {
+            APU.TryWriteMainCpuPort(adr & 0x3, (byte)value);
+            return;
+        }
+
+        switch (adr)
+        {
+            case 0x80:
+                _ram[_ramAdr] = (byte)value;
+                _ramAdr = (_ramAdr + 1) & 0x1ffff;
+                return;
+            case 0x81:
+                _ramAdr = (_ramAdr & 0x1ff00) | value;
+                return;
+            case 0x82:
+                _ramAdr = (_ramAdr & 0x100ff) | (value << 8);
+                return;
+            case 0x83:
+                _ramAdr = (_ramAdr & 0x0ffff) | ((value & 1) << 16);
+                return;
+        }
+    }
+
     private int RreadFast(int fullAdr)
     {
         int bank = fullAdr >> 16;
@@ -1986,6 +1973,100 @@ public class SNESSystem : ISNESSystem
         }
 
         return RomImpl.Read(bank, adr);
+    }
+
+    private void WwriteFast(int fullAdr, int value, bool dma)
+    {
+        int bank = fullAdr >> 16;
+        int adr = fullAdr & 0xffff;
+        switch ((BusPageKind)_busPageKind[fullAdr >> 8])
+        {
+            case BusPageKind.WramBank:
+                _ram[((bank & 0x1) << 16) | adr] = (byte)value;
+                break;
+            case BusPageKind.LowWram:
+                _ram[adr & 0x1fff] = (byte)value;
+                break;
+            case BusPageKind.BBus:
+                WriteBBusFast(adr & 0xff, value, dma);
+                break;
+            case BusPageKind.JoypadPage:
+                if (adr == 0x4016)
+                    WriteJoypadStrobeFast(value);
+                break;
+            case BusPageKind.CpuRegs:
+                if (adr >= 0x4200 && adr < 0x4380)
+                    WriteReg(adr, value);
+                break;
+        }
+
+        RomImpl.Write(bank, adr, (byte)value);
+    }
+
+    private void Wwrite(int fullAdr, int value, bool dma)
+    {
+        int bank = fullAdr >> 16;
+        int adr = fullAdr & 0xffff;
+        if (bank == 0x7e || bank == 0x7f)
+        {
+            _ram[((bank & 0x1) << 16) | adr] = (byte) value;
+            if (_traceWramWrites && ShouldTraceWramWrite(((bank & 0x1) << 16) | adr, adr))
+            {
+                int pc = -1;
+                if (CPU is KSNES.CPU.CPU cpu)
+                    pc = cpu.ProgramCounter24;
+                Console.WriteLine($"[WRAM-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+            }
+            if (dma && _traceWramWrites && ShouldTraceWramPortAccess(((bank & 0x1) << 16) | adr, adr))
+            {
+                int pc = -1;
+                if (CPU is KSNES.CPU.CPU cpu)
+                    pc = cpu.ProgramCounter24;
+                Console.WriteLine($"[WRAM-DMA] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+            }
+        }
+        if (adr < 0x8000 && (bank < 0x40 || bank >= 0x80 && bank < 0xc0))
+        {
+            if (adr < 0x2000)
+            {
+                _ram[adr & 0x1fff] = (byte) value;
+                if (_traceWramWrites && ShouldTraceWramWrite(adr, adr))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-WR] adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+                }
+                if (_traceWramWrites && ShouldTraceWramPortAccess(adr, adr))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-WR] adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+                }
+            }
+            if (adr >= 0x2100 && adr < 0x2200)
+            {
+                WriteBBus(adr & 0xff, value, dma);
+            }
+            if (adr == 0x4016)
+            {
+                WriteJoypadStrobeFast(value);
+            }
+            if (adr >= 0x4200 && adr < 0x4380)
+            {
+                if (_traceDma && (adr == 0x420B || adr == 0x420C))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    string reg = adr == 0x420B ? "MDMAEN" : "HDMAEN";
+                    Console.WriteLine($"[DMA-CTL] {reg}=0x{value:X2} pc=0x{pc:X6}");
+                }
+                WriteReg(adr, value);
+            }
+        }
+        RomImpl.Write(bank, adr, (byte) value);
     }
 
     private int Rread(int adr) 
