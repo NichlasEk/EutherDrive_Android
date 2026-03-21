@@ -60,12 +60,15 @@ namespace ProjectPSX {
         private const int InstructionCacheWordsPerLine = 4;
         private const int InstructionCacheLineSizeBytes = 16;
         private const int InstructionCacheTotalBytes = InstructionCacheLineCount * InstructionCacheLineSizeBytes;
+        private const int MaxCachedLinearBlockInstructions = 32;
         private readonly uint[] _instructionCacheTags = new uint[InstructionCacheLineCount];
         private readonly bool[] _instructionCacheValid = new bool[InstructionCacheLineCount];
         private readonly uint[] _instructionCacheData = new uint[InstructionCacheLineCount * InstructionCacheWordsPerLine];
         private readonly Instr[] _decodedInstructionCache = new Instr[InstructionCacheLineCount * InstructionCacheWordsPerLine];
         private readonly delegate*<CPU, void>[] _decodedInstructionHandlers = new delegate*<CPU, void>[InstructionCacheLineCount * InstructionCacheWordsPerLine];
         private readonly byte[] _decodedInstructionValidMask = new byte[InstructionCacheLineCount];
+        private readonly byte[] _cachedLinearBlockLength = new byte[InstructionCacheLineCount * InstructionCacheWordsPerLine];
+        private readonly byte[] _cachedLinearBlockValidMask = new byte[InstructionCacheLineCount];
         private bool _instructionCacheEnabled;
         private bool _instructionCacheRuntimeAllowed;
         private delegate*<CPU, void> _currentOpcodeHandler = &NOP;
@@ -200,6 +203,19 @@ namespace ProjectPSX {
             int cpuCycleBudget = Math.Max(1, maxCpuCycles);
             while (cpuCyclesExecuted < cpuCycleBudget) {
                 int remainingCycles = cpuCycleBudget - cpuCyclesExecuted;
+                if (remainingCycles > 1
+                    && TryRunCachedSimpleLinearBlock(remainingCycles, out int simpleBlockInstructions, out bool simpleBlockObservedRuntimeRam)) {
+                    cpuCyclesExecuted += simpleBlockInstructions;
+                    instructionsExecuted += simpleBlockInstructions;
+                    runtimeRamObserved |= simpleBlockObservedRuntimeRam;
+
+                    if (bus.ShouldYieldCpuSlice) {
+                        break;
+                    }
+
+                    continue;
+                }
+
                 if (remainingCycles > 1
                     && TryRunCachedLinearSlice(remainingCycles, out int blockInstructions, out bool blockObservedRuntimeRam)) {
                     cpuCyclesExecuted += blockInstructions;
@@ -346,6 +362,7 @@ namespace ProjectPSX {
             int lineOffset = lineIndex * InstructionCacheWordsPerLine;
 
             if (!_instructionCacheValid[lineIndex] || _instructionCacheTags[lineIndex] != tag) {
+                InvalidateCachedLinearBlockMetadata();
                 uint lineBase = physicalAddress & ~0xFu;
                 _instructionCacheTags[lineIndex] = tag;
                 _instructionCacheValid[lineIndex] = true;
@@ -383,6 +400,7 @@ namespace ProjectPSX {
                 _instructionCacheValid[lineIndex] = true;
                 _instructionCacheTags[lineIndex] = tag;
                 _decodedInstructionValidMask[lineIndex] = 0;
+                InvalidateCachedLinearBlockMetadata();
                 Array.Clear(_instructionCacheData, lineOffset, InstructionCacheWordsPerLine);
             }
 
@@ -422,6 +440,7 @@ namespace ProjectPSX {
         private void FlushInstructionCache() {
             Array.Clear(_instructionCacheValid, 0, _instructionCacheValid.Length);
             Array.Clear(_decodedInstructionValidMask, 0, _decodedInstructionValidMask.Length);
+            InvalidateCachedLinearBlockMetadata();
         }
 
         private void InvalidateInstructionCacheRange(uint physicalAddress, int sizeBytes) {
@@ -449,6 +468,7 @@ namespace ProjectPSX {
                 if (_instructionCacheValid[lineIndex] && _instructionCacheTags[lineIndex] == tag) {
                     _instructionCacheValid[lineIndex] = false;
                     _decodedInstructionValidMask[lineIndex] = 0;
+                    InvalidateCachedLinearBlockMetadata();
                 }
                 lineBase += 0x10;
             }
@@ -456,6 +476,13 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void LoadDecodedInstruction(uint physicalAddress) {
+            int decodedIndex = EnsureDecodedInstruction(physicalAddress);
+            instr = _decodedInstructionCache[decodedIndex];
+            _currentOpcodeHandler = _decodedInstructionHandlers[decodedIndex];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int EnsureDecodedInstruction(uint physicalAddress) {
             int lineIndex = (int)((physicalAddress >> 4) & (InstructionCacheLineCount - 1));
             int wordIndex = (int)((physicalAddress >> 2) & 0x3);
             int lineOffset = lineIndex * InstructionCacheWordsPerLine;
@@ -469,9 +496,7 @@ namespace ProjectPSX {
                 _decodedInstructionValidMask[lineIndex] |= bit;
             }
 
-            int decodedIndex = lineOffset + wordIndex;
-            instr = _decodedInstructionCache[decodedIndex];
-            _currentOpcodeHandler = _decodedInstructionHandlers[decodedIndex];
+            return lineOffset + wordIndex;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -485,6 +510,47 @@ namespace ProjectPSX {
         private void SetCurrentInstruction(uint rawValue) {
             instr.Decode(rawValue);
             _currentOpcodeHandler = ResolveInstructionHandler(in instr);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool TryRunCachedSimpleLinearBlock(int maxCpuCycles, out int instructionsExecuted, out bool runtimeRamObserved) {
+            instructionsExecuted = 0;
+            runtimeRamObserved = false;
+
+            if (maxCpuCycles <= 1 || bus.ShouldYieldCpuSlice || !CanUseCachedLinearStep(PC)) {
+                return false;
+            }
+
+            int blockLength = GetCachedLinearBlockLength(PC & 0x1FFF_FFFF);
+            if (blockLength <= 1) {
+                return false;
+            }
+
+            int runCount = Math.Min(maxCpuCycles, blockLength);
+            for (int i = 0; i < runCount; i++) {
+                uint currentPc = PC;
+                uint physicalPc = currentPc & 0x1FFF_FFFF;
+                int cacheIndex = EnsureDecodedInstruction(physicalPc);
+
+                PC_Now = currentPc;
+                if (TraceCurrentPcEnabled) {
+                    TraceCurrentPC = currentPc;
+                }
+                PC = PC_Predictor;
+                PC_Predictor += 4;
+
+                opcodeIsDelaySlot = opcodeIsBranch;
+                opcodeInDelaySlotTookBranch = opcodeTookBranch;
+                opcodeIsBranch = false;
+                opcodeTookBranch = false;
+
+                instr = _decodedInstructionCache[cacheIndex];
+                _currentOpcodeHandler = _decodedInstructionHandlers[cacheIndex];
+                runtimeRamObserved |= ExecuteDecodedInstruction();
+                instructionsExecuted++;
+            }
+
+            return instructionsExecuted != 0;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -540,6 +606,58 @@ namespace ProjectPSX {
 
             uint physicalPc = currentPc & 0x1FFF_FFFF;
             return physicalPc < 0x1F00_0000;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int GetCachedLinearBlockLength(uint physicalAddress) {
+            int lineIndex = (int)((physicalAddress >> 4) & (InstructionCacheLineCount - 1));
+            int wordIndex = (int)((physicalAddress >> 2) & 0x3);
+            int cacheIndex = lineIndex * InstructionCacheWordsPerLine + wordIndex;
+            byte bit = (byte)(1 << wordIndex);
+
+            if ((_cachedLinearBlockValidMask[lineIndex] & bit) == 0) {
+                _cachedLinearBlockLength[cacheIndex] = (byte)BuildCachedLinearBlockLength(physicalAddress);
+                _cachedLinearBlockValidMask[lineIndex] |= bit;
+            }
+
+            return _cachedLinearBlockLength[cacheIndex];
+        }
+
+        private int BuildCachedLinearBlockLength(uint physicalAddress) {
+            int length = 0;
+            uint currentPhysicalPc = physicalAddress;
+            while (length < MaxCachedLinearBlockInstructions && currentPhysicalPc < 0x1F00_0000) {
+                int cacheIndex = EnsureDecodedInstruction(currentPhysicalPc);
+                if (!CanExecuteInCachedLinearBlock(in _decodedInstructionCache[cacheIndex])) {
+                    break;
+                }
+
+                length++;
+                currentPhysicalPc += 4;
+            }
+
+            return length;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void InvalidateCachedLinearBlockMetadata() {
+            Array.Clear(_cachedLinearBlockValidMask, 0, _cachedLinearBlockValidMask.Length);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool CanExecuteInCachedLinearBlock(in Instr decoded) {
+            return decoded.opcode switch {
+                0x00 => decoded.function switch {
+                    0x00 or 0x02 or 0x03 or 0x04 or 0x06 or 0x07
+                        or 0x10 or 0x11 or 0x12 or 0x13
+                        or 0x18 or 0x19 or 0x1A or 0x1B
+                        or 0x21 or 0x23 or 0x24 or 0x25 or 0x26 or 0x27
+                        or 0x2A or 0x2B => true,
+                    _ => false
+                },
+                0x09 or 0x0A or 0x0B or 0x0C or 0x0D or 0x0E or 0x0F => true,
+                _ => false
+            };
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
