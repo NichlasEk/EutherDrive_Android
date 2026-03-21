@@ -271,6 +271,16 @@
                                Foreground="#5EEAD4" />
                   </Border>
 
+                  <Border HorizontalAlignment="Center"
+                          Background="#A0121923"
+                          CornerRadius="999"
+                          Padding="10,6">
+                    <TextBlock Text="{Binding PerfHeadline}"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               Foreground="#93C5FD" />
+                  </Border>
+
                   <Border HorizontalAlignment="Right"
                           Background="#A0121923"
                           CornerRadius="999"
@@ -531,6 +541,19 @@
                          TextAlignment="Center"
                          Foreground="#91A8BD" />
             </StackPanel>
+          </Border>
+
+          <Border IsVisible="{Binding ScreenHudVisible}"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Top"
+                  Margin="0,14,0,0"
+                  Background="#A0121923"
+                  CornerRadius="999"
+                  Padding="10,6">
+            <TextBlock Text="{Binding PerfHeadline}"
+                       FontSize="12"
+                       FontWeight="Bold"
+                       Foreground="#93C5FD" />
           </Border>
 
           <Grid HorizontalAlignment="Left"

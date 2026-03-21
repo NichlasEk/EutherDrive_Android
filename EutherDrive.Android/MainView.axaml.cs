@@ -59,6 +59,7 @@ public partial class MainView : UserControl
     private string? _selectedRomPath;
     private string? _selectedRomDisplayName;
     private volatile string _latestPerfSummary = "Perf idle";
+    private volatile string _latestPerfHeadline = "FPS --  MAX --";
     private int _presentedFrames;
     private long _latestFrameSerial;
     private long _presentedFrameSerial;
@@ -1064,6 +1065,10 @@ public partial class MainView : UserControl
         {
             _viewModel.PerfSummary = _latestPerfSummary;
         }
+        if (_viewModel.PerfHeadline != _latestPerfHeadline)
+        {
+            _viewModel.PerfHeadline = _latestPerfHeadline;
+        }
 
         long serial;
         int width;
@@ -1205,15 +1210,20 @@ public partial class MainView : UserControl
         _lastFrameWidth = 0;
         _lastFrameHeight = 0;
         _latestPerfSummary = "Perf idle";
+        _latestPerfHeadline = "FPS --  MAX --";
         _viewModel.PerfSummary = "Perf idle";
+        _viewModel.PerfHeadline = "FPS --  MAX --";
     }
 
     private void UpdatePerfStats(long emuTicks, long audioTicks, long blitTicks)
     {
         _perfWindowFrames++;
-        _perfAccumulatedEmuMs += StopwatchTicksToMs(emuTicks);
-        _perfAccumulatedAudioMs += StopwatchTicksToMs(audioTicks);
-        _perfAccumulatedBlitMs += StopwatchTicksToMs(blitTicks);
+        double emuMs = StopwatchTicksToMs(emuTicks);
+        double audioMs = StopwatchTicksToMs(audioTicks);
+        double blitMs = StopwatchTicksToMs(blitTicks);
+        _perfAccumulatedEmuMs += emuMs;
+        _perfAccumulatedAudioMs += audioMs;
+        _perfAccumulatedBlitMs += blitMs;
 
         long nowTicks = _perfStopwatch.ElapsedTicks;
         double windowMs = StopwatchTicksToMs(nowTicks - _perfWindowStartTicks);
@@ -1222,9 +1232,12 @@ public partial class MainView : UserControl
 
         double avgFrameMs = windowMs / _perfWindowFrames;
         double fps = avgFrameMs > 0 ? 1000.0 / avgFrameMs : 0;
+        double avgWorkMs = (_perfAccumulatedEmuMs + _perfAccumulatedAudioMs + _perfAccumulatedBlitMs) / _perfWindowFrames;
+        double maxFps = avgWorkMs > 0 ? 1000.0 / avgWorkMs : 0;
         string coreLabel = _core?.GetType().Name ?? "None";
         string perfSummary =
-            $"Perf  FPS:{fps:0}  Emu:{_perfAccumulatedEmuMs / _perfWindowFrames:0.0}ms  Audio:{_perfAccumulatedAudioMs / _perfWindowFrames:0.0}ms  Blit:{_perfAccumulatedBlitMs / _perfWindowFrames:0.0}ms  Frame:{_emulatedFrames}  Res:{_lastFrameWidth}x{_lastFrameHeight}  Core:{coreLabel}";
+            $"Perf  FPS:{fps:0}  Max:{maxFps:0}  Work:{avgWorkMs:0.0}ms  Emu:{_perfAccumulatedEmuMs / _perfWindowFrames:0.0}ms  Audio:{_perfAccumulatedAudioMs / _perfWindowFrames:0.0}ms  Blit:{_perfAccumulatedBlitMs / _perfWindowFrames:0.0}ms  Frame:{_emulatedFrames}  Res:{_lastFrameWidth}x{_lastFrameHeight}  Core:{coreLabel}";
+        _latestPerfHeadline = $"FPS {fps:0}  MAX {maxFps:0}";
         if (_core is PsxAdapter psx && psx.TryGetBootProgressSummary(out string psxBoot))
         {
             perfSummary = $"{perfSummary}\n{psxBoot}";
@@ -2188,6 +2201,7 @@ public partial class MainView : UserControl
         private string _lastPressedDisplay = "-";
         private string _footerStatus = "Ready for ROM selection.";
         private string _perfSummary = "Perf idle";
+        private string _perfHeadline = "FPS --  MAX --";
         private string _overlaySummary = "D:-  A:-";
         private bool _isFocusMode;
         private bool _isLandscapeMode;
@@ -2280,6 +2294,12 @@ public partial class MainView : UserControl
         {
             get => _perfSummary;
             set => SetField(ref _perfSummary, value);
+        }
+
+        public string PerfHeadline
+        {
+            get => _perfHeadline;
+            set => SetField(ref _perfHeadline, value);
         }
 
         public string OverlaySummary

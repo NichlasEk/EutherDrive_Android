@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics;
 using System.Globalization;
 
@@ -87,6 +88,14 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VSCROLL_USE_HSCROLL"), "1", StringComparison.Ordinal);
         private static readonly bool VScrollUseH40Neg1 =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_VSCROLL_H40_NEG1"), "0", StringComparison.Ordinal);
+        [NonSerialized] private uint[] _planeAColorLine = Array.Empty<uint>();
+        [NonSerialized] private uint[] _planeAPrioLine = Array.Empty<uint>();
+        [NonSerialized] private uint[] _planeBColorLine = Array.Empty<uint>();
+        [NonSerialized] private uint[] _planeBPrioLine = Array.Empty<uint>();
+        [NonSerialized] private uint[] _spriteColorLine = Array.Empty<uint>();
+        [NonSerialized] private uint[] _spritePrioLine = Array.Empty<uint>();
+        [NonSerialized] private sbyte[] _spriteShadowDeltaLine = Array.Empty<sbyte>();
+        [NonSerialized] private bool[] _spriteForceNormalLine = Array.Empty<bool>();
 
         private static int ParseTraceInt(string name, int fallback)
         {
@@ -128,6 +137,21 @@ namespace EutherDrive.Core.MdTracerCore
             if (endPixel < 0) endPixel = 0;
             if (startPixel > activeDisplayPixels) startPixel = activeDisplayPixels;
             if (endPixel > activeDisplayPixels) endPixel = activeDisplayPixels;
+        }
+
+        private void EnsureScanlineBuffers(int width)
+        {
+            if (_planeAColorLine.Length >= width)
+                return;
+
+            _planeAColorLine = new uint[width];
+            _planeAPrioLine = new uint[width];
+            _planeBColorLine = new uint[width];
+            _planeBPrioLine = new uint[width];
+            _spriteColorLine = new uint[width];
+            _spritePrioLine = new uint[width];
+            _spriteShadowDeltaLine = new sbyte[width];
+            _spriteForceNormalLine = new bool[width];
         }
 
         private int GetMaskedWindowBaseByteAddress(int rawWindowBase)
@@ -251,14 +275,15 @@ namespace EutherDrive.Core.MdTracerCore
             TraceNameTableRowDumpIfNeeded();
             int renderLine = GetRenderLine(g_scanline);
             int cellShift = GetCellHeightShift();
-            uint[] planeAColor = new uint[g_display_xsize];
-            uint[] planeAPrio = new uint[g_display_xsize];
-            uint[] planeBColor = new uint[g_display_xsize];
-            uint[] planeBPrio = new uint[g_display_xsize];
-            uint[] spriteColor = new uint[g_display_xsize];
-            uint[] spritePrio = new uint[g_display_xsize];
-            sbyte[] spriteShDelta = new sbyte[g_display_xsize];
-            bool[] spriteForceNormal = new bool[g_display_xsize];
+            EnsureScanlineBuffers(g_display_xsize);
+            uint[] planeAColor = _planeAColorLine;
+            uint[] planeAPrio = _planeAPrioLine;
+            uint[] planeBColor = _planeBColorLine;
+            uint[] planeBPrio = _planeBPrioLine;
+            uint[] spriteColor = _spriteColorLine;
+            uint[] spritePrio = _spritePrioLine;
+            sbyte[] spriteShDelta = _spriteShadowDeltaLine;
+            bool[] spriteForceNormal = _spriteForceNormalLine;
             if (TraceTileFetch && g_scanline == TraceTileFetchScanline && _traceTileFetchFrame != _frameCounter)
             {
                 _traceTileFetchFrame = _frameCounter;
@@ -330,6 +355,14 @@ namespace EutherDrive.Core.MdTracerCore
                 // Default should be normal when shadow mode is enabled.
                 g_game_shadowmap[dx] = shadowEnabled ? 1u : 0u;
                 g_sprite_line_mask[dx] = false;
+                planeAColor[dx] = 0;
+                planeAPrio[dx] = 0;
+                planeBColor[dx] = 0;
+                planeBPrio[dx] = 0;
+                spriteColor[dx] = 0;
+                spritePrio[dx] = 0;
+                spriteShDelta[dx] = 0;
+                spriteForceNormal[dx] = false;
             }
 
             // --- Scroll B ---
