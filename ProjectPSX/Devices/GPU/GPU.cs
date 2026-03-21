@@ -675,12 +675,106 @@ namespace ProjectPSX.Devices {
 
             bool opaqueTexturedFastPath = textured && !shaded && !primitive.isSemiTransparent && !checkMask;
             bool gouraudTexturedFastPath = textured && shaded && !primitive.isSemiTransparent && !checkMask;
+            bool semiTransparentTexturedFastPath = textured && primitive.isSemiTransparent && !checkMask;
+            bool semiTransparentGouraudTexturedFastPath = textured && shaded && primitive.isSemiTransparent && !checkMask;
             int baseColor = (int)c0;
             bool passthroughTexturedFastPath =
                 opaqueTexturedFastPath &&
                 (primitive.isRawTextured || (baseColor & 0x00FF_FFFF) == IdentityTextureModulationColor);
+            bool semiTransparentPassthroughTexturedFastPath =
+                semiTransparentTexturedFastPath &&
+                !shaded &&
+                (primitive.isRawTextured || (baseColor & 0x00FF_FFFF) == IdentityTextureModulationColor);
 
             if (textureWindowIdentity) {
+                if (semiTransparentPassthroughTexturedFastPath &&
+                    TryRasterizeTrianglePassthroughTexturedIdentity(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        primitive.semiTransparencyMode)) {
+                    return;
+                }
+
+                if (semiTransparentTexturedFastPath &&
+                    !shaded &&
+                    TryRasterizeTriangleFlatTexturedIdentity(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        baseColor,
+                        maskBits,
+                        primitive.semiTransparencyMode)) {
+                    return;
+                }
+
+                if (semiTransparentGouraudTexturedFastPath &&
+                    TryRasterizeTriangleGouraudTexturedIdentity(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        shadeRRow,
+                        shadeGRow,
+                        shadeBRow,
+                        shadeRStepX,
+                        shadeGStepX,
+                        shadeBStepX,
+                        shadeRStepY,
+                        shadeGStepY,
+                        shadeBStepY,
+                        maskBits,
+                        primitive.semiTransparencyMode)) {
+                    return;
+                }
+
                 if (passthroughTexturedFastPath &&
                     TryRasterizeTrianglePassthroughTexturedIdentity(
                         min,
@@ -1333,7 +1427,8 @@ AdvanceTrianglePixel:
             int texXStepX,
             int texYStepX,
             int texXStepY,
-            int texYStepY) {
+            int texYStepY,
+            int semiTranspMode = -1) {
             int spanWidth = max.x - min.x;
             if (spanWidth <= 0) {
                 return true;
@@ -1366,8 +1461,12 @@ AdvanceTrianglePixel:
                                 ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                    vram1555Bits[pixelIndex] = packedTexel;
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, semiTranspMode);
+                                    } else {
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                    }
                                 }
 
                                 pixelIndex++;
@@ -1396,8 +1495,12 @@ AdvanceTrianglePixel:
                                 ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                    vram1555Bits[pixelIndex] = packedTexel;
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, semiTranspMode);
+                                    } else {
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                    }
                                 }
 
                                 pixelIndex++;
@@ -1426,8 +1529,12 @@ AdvanceTrianglePixel:
                                 ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                    vram1555Bits[pixelIndex] = packedTexel;
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, semiTranspMode);
+                                    } else {
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                    }
                                 }
 
                                 pixelIndex++;
@@ -1467,7 +1574,8 @@ AdvanceTrianglePixel:
             int texXStepY,
             int texYStepY,
             int baseColor,
-            int maskBits) {
+            int maskBits,
+            int semiTranspMode = -1) {
             int spanWidth = max.x - min.x;
             if (spanWidth <= 0) {
                 return true;
@@ -1504,7 +1612,12 @@ AdvanceTrianglePixel:
                                 ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
                                 }
 
                                 pixelIndex++;
@@ -1533,7 +1646,12 @@ AdvanceTrianglePixel:
                                 ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
                                 }
 
                                 pixelIndex++;
@@ -1562,7 +1680,12 @@ AdvanceTrianglePixel:
                                 ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
                                 }
 
                                 pixelIndex++;
@@ -1610,7 +1733,8 @@ AdvanceTrianglePixel:
             int shadeRStepY,
             int shadeGStepY,
             int shadeBStepY,
-            int maskBits) {
+            int maskBits,
+            int semiTranspMode = -1) {
             if (primitive.isRawTextured) {
                 return TryRasterizeTrianglePassthroughTexturedIdentity(
                     min,
@@ -1631,7 +1755,8 @@ AdvanceTrianglePixel:
                     texXStepX,
                     texYStepX,
                     texXStepY,
-                    texYStepY);
+                    texYStepY,
+                    semiTranspMode);
             }
 
             int spanWidth = max.x - min.x;
@@ -1675,7 +1800,12 @@ AdvanceTrianglePixel:
                                 ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
                                 }
 
                                 pixelIndex++;
@@ -1716,7 +1846,12 @@ AdvanceTrianglePixel:
                                 ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
                                 }
 
                                 pixelIndex++;
@@ -1757,7 +1892,12 @@ AdvanceTrianglePixel:
                                 ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
                                 }
 
                                 pixelIndex++;
@@ -1879,6 +2019,17 @@ AdvanceTrianglePixel:
                 modulate1555RByShade[(shadeR << 5) | (rawTexel & 0x1F)] |
                 modulate1555GByShade[(shadeG << 5) | ((rawTexel >> 5) & 0x1F)] |
                 modulate1555BByShade[(shadeB << 5) | ((rawTexel >> 10) & 0x1F)]);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void WriteSemiTransparentTexturedRawPixel(ushort[] vram1555Bits, int pixelIndex, ushort frontRaw, ushort maskBit1555, int semiTranspMode) {
+            bool shouldBlend = (frontRaw & 0x8000) != 0;
+            frontRaw |= maskBit1555;
+            if (shouldBlend) {
+                frontRaw = BlendRawSemiTransparent1555(vram1555Bits[pixelIndex], frontRaw, semiTranspMode);
+            }
+
+            vram1555Bits[pixelIndex] = frontRaw;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
