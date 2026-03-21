@@ -147,6 +147,8 @@ namespace ProjectPSX.Devices {
         private int postMaskX;
         private int postMaskY;
         private bool textureWindowIdentity = true;
+        private readonly byte[] textureWindowXLut = new byte[256];
+        private readonly byte[] textureWindowYLut = new byte[256];
 
         private ushort drawingAreaLeft;
         private ushort drawingAreaRight;
@@ -185,6 +187,8 @@ namespace ProjectPSX.Devices {
             if (color1555to8888LUT == null || color1555to8888LUT.Length != ushort.MaxValue + 1) {
                 initColorTable();
             }
+
+            RebuildTextureWindowAxisLuts();
 
             int horizontalRes = resolutions[horizontalResolution2 << 2 | horizontalResolution1];
             int verticalRes = isVerticalResolution480 ? 480 : 240;
@@ -1015,8 +1019,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
+                                        int texelX = MaskTexelX(FastDivideNonNegative(texX, area, reciprocal));
+                                        int texelY = MaskTexelY(FastDivideNonNegative(texY, area, reciprocal));
                                         ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1051,8 +1055,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
+                                        int texelX = MaskTexelX(FastDivideNonNegative(texX, area, reciprocal));
+                                        int texelY = MaskTexelY(FastDivideNonNegative(texY, area, reciprocal));
                                         ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1087,8 +1091,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
+                                        int texelX = MaskTexelX(FastDivideNonNegative(texX, area, reciprocal));
+                                        int texelY = MaskTexelY(FastDivideNonNegative(texY, area, reciprocal));
                                         ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1252,8 +1256,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
+                                        int texelX = MaskTexelX(FastDivideNonNegative(texX, area, reciprocal));
+                                        int texelY = MaskTexelY(FastDivideNonNegative(texY, area, reciprocal));
                                         ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1287,8 +1291,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
+                                        int texelX = MaskTexelX(FastDivideNonNegative(texX, area, reciprocal));
+                                        int texelY = MaskTexelY(FastDivideNonNegative(texY, area, reciprocal));
                                         ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1322,8 +1326,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
+                                        int texelX = MaskTexelX(FastDivideNonNegative(texX, area, reciprocal));
+                                        int texelY = MaskTexelY(FastDivideNonNegative(texY, area, reciprocal));
                                         ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1406,10 +1410,10 @@ namespace ProjectPSX.Devices {
                         if (textured) {
                             int sampleX = genericTextureWindowIdentity
                                 ? (texelX & 0xFF)
-                                : maskTexelAxis(texelX, preMaskX, postMaskX);
+                                : MaskTexelX(texelX);
                             int sampleY = genericTextureWindowIdentity
                                 ? (texelY & 0xFF)
-                                : maskTexelAxis(texelY, preMaskY, postMaskY);
+                                : MaskTexelY(texelY);
                             ushort rawTexel = genericTextureDepth switch {
                                 0 => GetTexelRaw4Fast(vram1555Bits, sampleX, sampleY, genericClutX, genericClutRowBase, genericTextureBaseX, genericTextureBaseY),
                                 1 => GetTexelRaw8Fast(vram1555Bits, sampleX, sampleY, genericClutX, genericClutRowBase, genericTextureBaseX, genericTextureBaseY),
@@ -2543,13 +2547,13 @@ AdvanceGenericTrianglePixel:
                             for (int y = yOrigin; y < height; y++) {
                                 int rowBase = y << 10;
                                 int sourceY = y - origin.y;
-                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int maskedV = MaskTexelY(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY));
                                 int sourceX = xOrigin - origin.x;
                                 int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, MaskTexelX(u), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
                                         if (primitive.isSemiTransparent) {
@@ -2568,13 +2572,13 @@ AdvanceGenericTrianglePixel:
                             for (int y = yOrigin; y < height; y++) {
                                 int rowBase = y << 10;
                                 int sourceY = y - origin.y;
-                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int maskedV = MaskTexelY(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY));
                                 int sourceX = xOrigin - origin.x;
                                 int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, MaskTexelX(u), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
                                         if (primitive.isSemiTransparent) {
@@ -2593,13 +2597,13 @@ AdvanceGenericTrianglePixel:
                             for (int y = yOrigin; y < height; y++) {
                                 int rowBase = y << 10;
                                 int sourceY = y - origin.y;
-                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int maskedV = MaskTexelY(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY));
                                 int sourceX = xOrigin - origin.x;
                                 int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
+                                    ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, MaskTexelX(u), maskedV, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
                                         if (primitive.isSemiTransparent) {
@@ -2716,13 +2720,13 @@ AdvanceGenericTrianglePixel:
                             for (int y = yOrigin; y < height; y++) {
                                 int rowBase = y << 10;
                                 int sourceY = y - origin.y;
-                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int maskedV = MaskTexelY(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY));
                                 int sourceX = xOrigin - origin.x;
                                 int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, MaskTexelX(u), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
                                         ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
@@ -2741,13 +2745,13 @@ AdvanceGenericTrianglePixel:
                             for (int y = yOrigin; y < height; y++) {
                                 int rowBase = y << 10;
                                 int sourceY = y - origin.y;
-                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int maskedV = MaskTexelY(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY));
                                 int sourceX = xOrigin - origin.x;
                                 int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, MaskTexelX(u), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
                                         ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
@@ -2766,13 +2770,13 @@ AdvanceGenericTrianglePixel:
                             for (int y = yOrigin; y < height; y++) {
                                 int rowBase = y << 10;
                                 int sourceY = y - origin.y;
-                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int maskedV = MaskTexelY(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY));
                                 int sourceX = xOrigin - origin.x;
                                 int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
+                                    ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, MaskTexelX(u), maskedV, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
                                         ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
@@ -2799,7 +2803,7 @@ AdvanceGenericTrianglePixel:
                 int v = texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY);
                 int sampleV = genericTextureWindowIdentity
                     ? (v & 0xFF)
-                    : maskTexelAxis(v, preMaskY, postMaskY);
+                    : MaskTexelY(v);
                 int sourceX = xOrigin - origin.x;
                 int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
                 int uStep = flipX ? -1 : 1;
@@ -2815,7 +2819,7 @@ AdvanceGenericTrianglePixel:
                     if (primitive.isTextured) {
                         int sampleX = genericTextureWindowIdentity
                             ? (u & 0xFF)
-                            : maskTexelAxis(u, preMaskX, postMaskX);
+                            : MaskTexelX(u);
                         ushort rawTexel = genericTextureDepth switch {
                             0 => GetTexelRaw4Fast(vram1555Bits, sampleX, sampleV, genericClutX, genericClutRowBase, genericTextureBaseX, genericTextureBaseY),
                             1 => GetTexelRaw8Fast(vram1555Bits, sampleX, sampleV, genericClutX, genericClutRowBase, genericTextureBaseX, genericTextureBaseY),
@@ -2950,8 +2954,16 @@ AdvanceGenericTrianglePixel:
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int maskTexelAxis(int axis, int preMaskAxis, int postMaskAxis) {
-            return axis & 0xFF & preMaskAxis | postMaskAxis;
+        private int MaskTexelX(int axis) => textureWindowXLut[axis & 0xFF];
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int MaskTexelY(int axis) => textureWindowYLut[axis & 0xFF];
+
+        private void RebuildTextureWindowAxisLuts() {
+            for (int axis = 0; axis < 256; axis++) {
+                textureWindowXLut[axis] = (byte)((axis & preMaskX) | postMaskX);
+                textureWindowYLut[axis] = (byte)((axis & preMaskY) | postMaskY);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3139,6 +3151,7 @@ AdvanceGenericTrianglePixel:
             postMaskX = (textureWindowOffsetX & textureWindowMaskX) * 8;
             postMaskY = (textureWindowOffsetY & textureWindowMaskY) * 8;
             textureWindowIdentity = textureWindowMaskX == 0 && textureWindowMaskY == 0;
+            RebuildTextureWindowAxisLuts();
         }
 
         private void GP0_E3_SetDrawingAreaTopLeft(uint val) {
