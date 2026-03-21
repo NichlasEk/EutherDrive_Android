@@ -884,6 +884,178 @@ namespace ProjectPSX.Devices {
                         maskBits)) {
                     return;
                 }
+            } else {
+                if (semiTransparentPassthroughTexturedFastPath &&
+                    TryRasterizeTrianglePassthroughTexturedWindowed(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        primitive.semiTransparencyMode)) {
+                    return;
+                }
+
+                if (semiTransparentTexturedFastPath &&
+                    !shaded &&
+                    TryRasterizeTriangleFlatTexturedWindowed(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        baseColor,
+                        maskBits,
+                        primitive.semiTransparencyMode)) {
+                    return;
+                }
+
+                if (semiTransparentGouraudTexturedFastPath &&
+                    TryRasterizeTriangleGouraudTexturedWindowed(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        shadeRRow,
+                        shadeGRow,
+                        shadeBRow,
+                        shadeRStepX,
+                        shadeGStepX,
+                        shadeBStepX,
+                        shadeRStepY,
+                        shadeGStepY,
+                        shadeBStepY,
+                        maskBits,
+                        primitive.semiTransparencyMode)) {
+                    return;
+                }
+
+                if (passthroughTexturedFastPath &&
+                    TryRasterizeTrianglePassthroughTexturedWindowed(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY)) {
+                    return;
+                }
+
+                if (opaqueTexturedFastPath &&
+                    TryRasterizeTriangleFlatTexturedWindowed(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        baseColor,
+                        maskBits)) {
+                    return;
+                }
+
+                if (gouraudTexturedFastPath &&
+                    TryRasterizeTriangleGouraudTexturedWindowed(
+                        min,
+                        max,
+                        primitive,
+                        area,
+                        w0_row,
+                        w1_row,
+                        w2_row,
+                        A12,
+                        A20,
+                        A01,
+                        B12,
+                        B20,
+                        B01,
+                        texXRow,
+                        texYRow,
+                        texXStepX,
+                        texYStepX,
+                        texXStepY,
+                        texYStepY,
+                        shadeRRow,
+                        shadeGRow,
+                        shadeBRow,
+                        shadeRStepX,
+                        shadeGStepX,
+                        shadeBStepX,
+                        shadeRStepY,
+                        shadeGStepY,
+                        shadeBStepY,
+                        maskBits)) {
+                    return;
+                }
             }
 
             if (passthroughTexturedFastPath) {
@@ -1964,6 +2136,520 @@ AdvanceGenericTrianglePixel:
 
                             for (int x = spanStart; x < spanEnd; x++) {
                                 ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
+                                }
+
+                                pixelIndex++;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeRValue, ref shadeRValueRemainder, shadeRQuotientStep, shadeRRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeGValue, ref shadeGValueRemainder, shadeGQuotientStep, shadeGRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeBValue, ref shadeBValueRemainder, shadeBQuotientStep, shadeBRemainderStep, area);
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                        shadeRRow += shadeRStepY;
+                        shadeGRow += shadeGStepY;
+                        shadeBRow += shadeBStepY;
+                    }
+                    return true;
+            }
+        }
+
+        private bool TryRasterizeTrianglePassthroughTexturedWindowed(
+            Point2D min,
+            Point2D max,
+            Primitive primitive,
+            int area,
+            int w0Row,
+            int w1Row,
+            int w2Row,
+            int w0StepX,
+            int w1StepX,
+            int w2StepX,
+            int w0StepY,
+            int w1StepY,
+            int w2StepY,
+            int texXRow,
+            int texYRow,
+            int texXStepX,
+            int texYStepX,
+            int texXStepY,
+            int texYStepY,
+            int semiTranspMode = -1) {
+            int spanWidth = max.x - min.x;
+            if (spanWidth <= 0) {
+                return true;
+            }
+
+            ushort[] vram1555Bits = vram1555.Bits;
+            int clutX = primitive.clut.x;
+            int clutRowBase = primitive.clut.y << 10;
+            int textureBaseX = primitive.textureBase.x;
+            int textureBaseY = primitive.textureBase.y;
+            int yStart = min.y;
+            int yEnd = max.y;
+            int xBase = min.x;
+            ushort maskBit1555 = (ushort)(maskWhileDrawing << 15);
+            ulong reciprocal = BuildUnsignedReciprocal(area);
+            ComputeFloorStep(area, texXStepX, out int texXQuotientStep, out int texXRemainderStep);
+            ComputeFloorStep(area, texYStepX, out int texYQuotientStep, out int texYRemainderStep);
+
+            switch (primitive.depth) {
+                case 0:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, semiTranspMode);
+                                    } else {
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                    }
+                                }
+
+                                pixelIndex++;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+                case 1:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, semiTranspMode);
+                                    } else {
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                    }
+                                }
+
+                                pixelIndex++;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+                default:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, semiTranspMode);
+                                    } else {
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                    }
+                                }
+
+                                pixelIndex++;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+            }
+        }
+
+        private bool TryRasterizeTriangleFlatTexturedWindowed(
+            Point2D min,
+            Point2D max,
+            Primitive primitive,
+            int area,
+            int w0Row,
+            int w1Row,
+            int w2Row,
+            int w0StepX,
+            int w1StepX,
+            int w2StepX,
+            int w0StepY,
+            int w1StepY,
+            int w2StepY,
+            int texXRow,
+            int texYRow,
+            int texXStepX,
+            int texYStepX,
+            int texXStepY,
+            int texYStepY,
+            int baseColor,
+            int maskBits,
+            int semiTranspMode = -1) {
+            int spanWidth = max.x - min.x;
+            if (spanWidth <= 0) {
+                return true;
+            }
+
+            ushort[] vram1555Bits = vram1555.Bits;
+            int clutX = primitive.clut.x;
+            int clutRowBase = primitive.clut.y << 10;
+            int textureBaseX = primitive.textureBase.x;
+            int textureBaseY = primitive.textureBase.y;
+            int yStart = min.y;
+            int yEnd = max.y;
+            int xBase = min.x;
+            ulong reciprocal = BuildUnsignedReciprocal(area);
+            ComputeFloorStep(area, texXStepX, out int texXQuotientStep, out int texXRemainderStep);
+            ComputeFloorStep(area, texYStepX, out int texYQuotientStep, out int texYRemainderStep);
+            ushort maskBit1555 = (ushort)(maskWhileDrawing << 15);
+            Span<ushort> modulateR = stackalloc ushort[32];
+            Span<ushort> modulateG = stackalloc ushort[32];
+            Span<ushort> modulateB = stackalloc ushort[32];
+            BuildModulate1555Tables(baseColor, modulateR, modulateG, modulateB);
+
+            switch (primitive.depth) {
+                case 0:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
+                                }
+
+                                pixelIndex++;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+                case 1:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
+                                }
+
+                                pixelIndex++;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+                default:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
+                                }
+
+                                pixelIndex++;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                    }
+                    return true;
+            }
+        }
+
+        private bool TryRasterizeTriangleGouraudTexturedWindowed(
+            Point2D min,
+            Point2D max,
+            Primitive primitive,
+            int area,
+            int w0Row,
+            int w1Row,
+            int w2Row,
+            int w0StepX,
+            int w1StepX,
+            int w2StepX,
+            int w0StepY,
+            int w1StepY,
+            int w2StepY,
+            int texXRow,
+            int texYRow,
+            int texXStepX,
+            int texYStepX,
+            int texXStepY,
+            int texYStepY,
+            int shadeRRow,
+            int shadeGRow,
+            int shadeBRow,
+            int shadeRStepX,
+            int shadeGStepX,
+            int shadeBStepX,
+            int shadeRStepY,
+            int shadeGStepY,
+            int shadeBStepY,
+            int maskBits,
+            int semiTranspMode = -1) {
+            if (primitive.isRawTextured) {
+                return TryRasterizeTrianglePassthroughTexturedWindowed(
+                    min,
+                    max,
+                    primitive,
+                    area,
+                    w0Row,
+                    w1Row,
+                    w2Row,
+                    w0StepX,
+                    w1StepX,
+                    w2StepX,
+                    w0StepY,
+                    w1StepY,
+                    w2StepY,
+                    texXRow,
+                    texYRow,
+                    texXStepX,
+                    texYStepX,
+                    texXStepY,
+                    texYStepY,
+                    semiTranspMode);
+            }
+
+            int spanWidth = max.x - min.x;
+            if (spanWidth <= 0) {
+                return true;
+            }
+
+            ushort[] vram1555Bits = vram1555.Bits;
+            int clutX = primitive.clut.x;
+            int clutRowBase = primitive.clut.y << 10;
+            int textureBaseX = primitive.textureBase.x;
+            int textureBaseY = primitive.textureBase.y;
+            int yStart = min.y;
+            int yEnd = max.y;
+            int xBase = min.x;
+            ulong reciprocal = BuildUnsignedReciprocal(area);
+            ComputeFloorStep(area, texXStepX, out int texXQuotientStep, out int texXRemainderStep);
+            ComputeFloorStep(area, texYStepX, out int texYQuotientStep, out int texYRemainderStep);
+            ComputeFloorStep(area, shadeRStepX, out int shadeRQuotientStep, out int shadeRRemainderStep);
+            ComputeFloorStep(area, shadeGStepX, out int shadeGQuotientStep, out int shadeGRemainderStep);
+            ComputeFloorStep(area, shadeBStepX, out int shadeBQuotientStep, out int shadeBRemainderStep);
+            ushort maskBit1555 = (ushort)(maskBits >> 9);
+
+            switch (primitive.depth) {
+                case 0:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            int shadeR = shadeRRow + spanStart * shadeRStepX;
+                            int shadeG = shadeGRow + spanStart * shadeGStepX;
+                            int shadeB = shadeBRow + spanStart * shadeBStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+                            InitScaledFloorNonNegative(shadeR, area, reciprocal, out int shadeRValue, out int shadeRValueRemainder);
+                            InitScaledFloorNonNegative(shadeG, area, reciprocal, out int shadeGValue, out int shadeGValueRemainder);
+                            InitScaledFloorNonNegative(shadeB, area, reciprocal, out int shadeBValue, out int shadeBValueRemainder);
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
+                                }
+
+                                pixelIndex++;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeRValue, ref shadeRValueRemainder, shadeRQuotientStep, shadeRRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeGValue, ref shadeGValueRemainder, shadeGQuotientStep, shadeGRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeBValue, ref shadeBValueRemainder, shadeBQuotientStep, shadeBRemainderStep, area);
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                        shadeRRow += shadeRStepY;
+                        shadeGRow += shadeGStepY;
+                        shadeBRow += shadeBStepY;
+                    }
+                    return true;
+                case 1:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            int shadeR = shadeRRow + spanStart * shadeRStepX;
+                            int shadeG = shadeGRow + spanStart * shadeGStepX;
+                            int shadeB = shadeBRow + spanStart * shadeBStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+                            InitScaledFloorNonNegative(shadeR, area, reciprocal, out int shadeRValue, out int shadeRValueRemainder);
+                            InitScaledFloorNonNegative(shadeG, area, reciprocal, out int shadeGValue, out int shadeGValueRemainder);
+                            InitScaledFloorNonNegative(shadeB, area, reciprocal, out int shadeBValue, out int shadeBValueRemainder);
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), clutX, clutRowBase, textureBaseX, textureBaseY);
+
+                                if (rawTexel != 0) {
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
+                                    if (semiTranspMode >= 0) {
+                                        WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
+                                    } else {
+                                        vram1555Bits[pixelIndex] = modulatedTexel;
+                                    }
+                                }
+
+                                pixelIndex++;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeRValue, ref shadeRValueRemainder, shadeRQuotientStep, shadeRRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeGValue, ref shadeGValueRemainder, shadeGQuotientStep, shadeGRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeBValue, ref shadeBValueRemainder, shadeBQuotientStep, shadeBRemainderStep, area);
+                            }
+                        }
+
+                        w0Row += w0StepY;
+                        w1Row += w1StepY;
+                        w2Row += w2StepY;
+                        texXRow += texXStepY;
+                        texYRow += texYStepY;
+                        shadeRRow += shadeRStepY;
+                        shadeGRow += shadeGStepY;
+                        shadeBRow += shadeBStepY;
+                    }
+                    return true;
+                default:
+                    for (int y = yStart; y < yEnd; y++) {
+                        if (TryGetTriangleSpanOffsets(w0Row, w1Row, w2Row, w0StepX, w1StepX, w2StepX, spanWidth, out int spanStart, out int spanEnd)) {
+                            int pixelIndex = (y << 10) + xBase + spanStart;
+                            int texX = texXRow + spanStart * texXStepX;
+                            int texY = texYRow + spanStart * texYStepX;
+                            int shadeR = shadeRRow + spanStart * shadeRStepX;
+                            int shadeG = shadeGRow + spanStart * shadeGStepX;
+                            int shadeB = shadeBRow + spanStart * shadeBStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+                            InitScaledFloorNonNegative(shadeR, area, reciprocal, out int shadeRValue, out int shadeRValueRemainder);
+                            InitScaledFloorNonNegative(shadeG, area, reciprocal, out int shadeGValue, out int shadeGValueRemainder);
+                            InitScaledFloorNonNegative(shadeB, area, reciprocal, out int shadeBValue, out int shadeBValueRemainder);
+
+                            for (int x = spanStart; x < spanEnd; x++) {
+                                ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
                                     ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
