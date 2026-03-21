@@ -1101,6 +1101,11 @@ namespace ProjectPSX.Devices {
                 int textureBaseX = primitive.textureBase.x;
                 int textureBaseY = primitive.textureBase.y;
                 int textureDepth = primitive.depth;
+                ushort maskBit1555 = (ushort)(maskBits >> 9);
+                Span<ushort> modulateR = stackalloc ushort[32];
+                Span<ushort> modulateG = stackalloc ushort[32];
+                Span<ushort> modulateB = stackalloc ushort[32];
+                BuildModulate1555Tables(baseColor, modulateR, modulateG, modulateB);
 
                 if (textureWindowIdentity) {
                     switch (textureDepth) {
@@ -1117,12 +1122,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = (texX / area) & 0xFF;
                                         int texelY = (texY / area) & 0xFF;
-                                        int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                        ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                        if (texel != 0) {
+                                        if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                         }
                                     }
 
@@ -1153,12 +1157,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = (texX / area) & 0xFF;
                                         int texelY = (texY / area) & 0xFF;
-                                        int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                        ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                        if (texel != 0) {
+                                        if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                         }
                                     }
 
@@ -1189,12 +1192,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = (texX / area) & 0xFF;
                                         int texelY = (texY / area) & 0xFF;
-                                        int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, textureBaseX, textureBaseY);
+                                        ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
 
-                                        if (texel != 0) {
+                                        if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                         }
                                     }
 
@@ -1228,12 +1230,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
                                         int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                        int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                        ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                        if (texel != 0) {
+                                        if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                         }
                                     }
 
@@ -1264,12 +1265,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
                                         int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                        int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                        ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                        if (texel != 0) {
+                                        if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                         }
                                     }
 
@@ -1300,12 +1300,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
                                         int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                        int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, textureBaseX, textureBaseY);
+                                        ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
 
-                                        if (texel != 0) {
+                                        if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                         }
                                     }
 
