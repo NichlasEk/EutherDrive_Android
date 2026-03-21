@@ -63,8 +63,12 @@ namespace ProjectPSX {
         private readonly uint[] _instructionCacheTags = new uint[InstructionCacheLineCount];
         private readonly bool[] _instructionCacheValid = new bool[InstructionCacheLineCount];
         private readonly uint[] _instructionCacheData = new uint[InstructionCacheLineCount * InstructionCacheWordsPerLine];
+        private readonly Instr[] _decodedInstructionCache = new Instr[InstructionCacheLineCount * InstructionCacheWordsPerLine];
+        private readonly delegate*<CPU, void>[] _decodedInstructionHandlers = new delegate*<CPU, void>[InstructionCacheLineCount * InstructionCacheWordsPerLine];
+        private readonly byte[] _decodedInstructionValidMask = new byte[InstructionCacheLineCount];
         private bool _instructionCacheEnabled;
         private bool _instructionCacheRuntimeAllowed;
+        private delegate*<CPU, void> _currentOpcodeHandler = &NOP;
 
         private GTE gte;
         [NonSerialized]
@@ -85,24 +89,50 @@ namespace ProjectPSX {
 
         public struct Instr {
             public uint value;                     //raw
-            public uint opcode => value >> 26;     //Instr opcode
+            private byte _opcode;
+            private byte _rs;
+            private byte _rt;
+            private byte _rd;
+            private byte _sa;
+            private byte _function;
+            private byte _id;
+            private ushort _imm;
+            private short _immSigned;
+            private uint _addr;
+
+            public uint opcode => _opcode;
 
             //I-Type
-            public uint rs => (value >> 21) & 0x1F;  //Register Source
-            public uint rt => (value >> 16) & 0x1F;  //Register Target
-            public uint imm => (ushort)value;        //Immediate value
-            public uint imm_s => (uint)(short)value; //Immediate value sign extended
+            public uint rs => _rs;
+            public uint rt => _rt;
+            public uint imm => _imm;
+            public uint imm_s => unchecked((uint)_immSigned);
 
             //R-Type
-            public uint rd => (value >> 11) & 0x1F;
-            public uint sa => (value >> 6) & 0x1F;  //Shift Amount
-            public uint function => value & 0x3F;   //Function
+            public uint rd => _rd;
+            public uint sa => _sa;
+            public uint function => _function;
 
             //J-Type                                       
-            public uint addr => value & 0x3FFFFFF;  //Target Address
+            public uint addr => _addr;
 
             //id / Cop
-            public uint id => opcode & 0x3; //This is used mainly for coprocesor opcode id but its also used on opcodes that trigger exception
+            public uint id => _id;
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void Decode(uint raw) {
+                value = raw;
+                _opcode = (byte)(raw >> 26);
+                _rs = (byte)((raw >> 21) & 0x1F);
+                _rt = (byte)((raw >> 16) & 0x1F);
+                _imm = (ushort)raw;
+                _immSigned = (short)raw;
+                _rd = (byte)((raw >> 11) & 0x1F);
+                _sa = (byte)((raw >> 6) & 0x1F);
+                _function = (byte)(raw & 0x3F);
+                _addr = raw & 0x03FF_FFFF;
+                _id = (byte)(_opcode & 0x3);
+            }
         }
         private Instr instr;
 
@@ -160,7 +190,7 @@ namespace ProjectPSX {
         public int Run() {
             int ticks = fetchDecode();
             if (instr.value != 0) { //Skip Nops
-                opcodeMainTable[instr.opcode](this); //Execute
+                _currentOpcodeHandler(this); //Execute
             }
             MemAccess();
             WriteBack();
@@ -239,15 +269,20 @@ namespace ProjectPSX {
             if (StrictAddressExceptions && (PC_Now & 0x3) != 0) {
                 COP0_GPR[BADA] = PC_Now;
                 EXCEPTION(this, EX.LOAD_ADRESS_ERROR);
+                SetCurrentInstruction(0);
                 return 1;
             }
 
             uint maskedPC = PC_Now & 0x1FFF_FFFF;
             if (maskedPC < 0x1F00_0000) {
-                instr.value = FetchInstructionWord(PC_Now);
+                if (_instructionCacheEnabled && IsInstructionCacheable(PC_Now)) {
+                    LoadDecodedInstruction(maskedPC);
+                } else {
+                    SetCurrentInstruction(FetchInstructionWord(PC_Now));
+                }
                 return 1;
             } else {
-                instr.value = bus.LoadFromBios(maskedPC);
+                SetCurrentInstruction(bus.LoadFromBios(maskedPC));
                 return 20;
             }
         }
@@ -289,6 +324,7 @@ namespace ProjectPSX {
                 uint lineBase = physicalAddress & ~0xFu;
                 _instructionCacheTags[lineIndex] = tag;
                 _instructionCacheValid[lineIndex] = true;
+                _decodedInstructionValidMask[lineIndex] = 0;
                 _instructionCacheData[lineOffset + 0] = bus.LoadFromRam(lineBase + 0);
                 _instructionCacheData[lineOffset + 1] = bus.LoadFromRam(lineBase + 4);
                 _instructionCacheData[lineOffset + 2] = bus.LoadFromRam(lineBase + 8);
@@ -321,11 +357,13 @@ namespace ProjectPSX {
             if (!_instructionCacheValid[lineIndex] || _instructionCacheTags[lineIndex] != tag) {
                 _instructionCacheValid[lineIndex] = true;
                 _instructionCacheTags[lineIndex] = tag;
+                _decodedInstructionValidMask[lineIndex] = 0;
                 Array.Clear(_instructionCacheData, lineOffset, InstructionCacheWordsPerLine);
             }
 
             int wordIndex = (int)((physicalAddress >> 2) & 0x3);
             _instructionCacheData[lineOffset + wordIndex] = value;
+            _decodedInstructionValidMask[lineIndex] &= (byte)~(1 << wordIndex);
         }
 
         private void UpdateInstructionCacheControl() {
@@ -358,6 +396,7 @@ namespace ProjectPSX {
 
         private void FlushInstructionCache() {
             Array.Clear(_instructionCacheValid, 0, _instructionCacheValid.Length);
+            Array.Clear(_decodedInstructionValidMask, 0, _decodedInstructionValidMask.Length);
         }
 
         private void InvalidateInstructionCacheRange(uint physicalAddress, int sizeBytes) {
@@ -384,9 +423,43 @@ namespace ProjectPSX {
                 uint tag = (uint)(lineBase & 0x1FFF_F000u);
                 if (_instructionCacheValid[lineIndex] && _instructionCacheTags[lineIndex] == tag) {
                     _instructionCacheValid[lineIndex] = false;
+                    _decodedInstructionValidMask[lineIndex] = 0;
                 }
                 lineBase += 0x10;
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void LoadDecodedInstruction(uint physicalAddress) {
+            int lineIndex = (int)((physicalAddress >> 4) & (InstructionCacheLineCount - 1));
+            int wordIndex = (int)((physicalAddress >> 2) & 0x3);
+            int lineOffset = lineIndex * InstructionCacheWordsPerLine;
+            uint raw = LoadFromInstructionCache(physicalAddress);
+            byte bit = (byte)(1 << wordIndex);
+
+            if ((_decodedInstructionValidMask[lineIndex] & bit) == 0) {
+                int cacheIndex = lineOffset + wordIndex;
+                _decodedInstructionCache[cacheIndex].Decode(raw);
+                _decodedInstructionHandlers[cacheIndex] = ResolveInstructionHandler(in _decodedInstructionCache[cacheIndex]);
+                _decodedInstructionValidMask[lineIndex] |= bit;
+            }
+
+            int decodedIndex = lineOffset + wordIndex;
+            instr = _decodedInstructionCache[decodedIndex];
+            _currentOpcodeHandler = _decodedInstructionHandlers[decodedIndex];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static delegate*<CPU, void> ResolveInstructionHandler(in Instr decoded) {
+            return decoded.opcode == 0
+                ? opcodeSpecialTable[decoded.function]
+                : opcodeMainTable[decoded.opcode];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void SetCurrentInstruction(uint rawValue) {
+            instr.Decode(rawValue);
+            _currentOpcodeHandler = ResolveInstructionHandler(in instr);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
