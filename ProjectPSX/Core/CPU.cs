@@ -188,6 +188,31 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int Run() {
+            return RunSingleStep(out _);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int RunSlice(int maxCpuCycles, out int instructionsExecuted, out bool runtimeRamObserved) {
+            instructionsExecuted = 0;
+            runtimeRamObserved = false;
+
+            int cpuCyclesExecuted = 0;
+            int cpuCycleBudget = Math.Max(1, maxCpuCycles);
+            while (cpuCyclesExecuted < cpuCycleBudget) {
+                cpuCyclesExecuted += RunSingleStep(out bool stepObservedRuntimeRam);
+                instructionsExecuted++;
+                runtimeRamObserved |= stepObservedRuntimeRam;
+
+                if (bus.ShouldYieldCpuSlice) {
+                    break;
+                }
+            }
+
+            return cpuCyclesExecuted;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int RunSingleStep(out bool runtimeRamObserved) {
             int ticks = fetchDecode();
             if (instr.value != 0) { //Skip Nops
                 _currentOpcodeHandler(this); //Execute
@@ -204,6 +229,8 @@ namespace ProjectPSX {
                 bios.verbose(PC_Now, GPR);
             }
 
+            uint physicalPc = PC_Now & 0x1FFF_FFFF;
+            runtimeRamObserved = physicalPc < 0x1FC0_0000 && physicalPc >= 0x0001_0000;
             return ticks;
         }
 

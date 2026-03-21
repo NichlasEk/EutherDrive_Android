@@ -11,6 +11,10 @@ namespace ProjectPSX {
 
 public class BUS {
         private const uint Sio1StatusDefault = 0x0000_0805;
+        private const uint MemoryCacheControlAddress = 0xFFFE_0130;
+        private const uint MmioStartAddress = 0x1F80_0400;
+        private const uint MmioEndAddressExclusive = 0x1FC0_0000;
+        private const int RecentMmioAccessHysteresisCycles = 96;
         private static readonly bool VerboseBusAccess = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1";
         private static readonly uint? TraceRamReadStart = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_START");
         private static readonly uint? TraceRamReadEnd = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_END");
@@ -36,6 +40,7 @@ public class BUS {
 
         private uint memoryCache;
         private uint memoryCacheWriteCount;
+        private int recentMmioAccessBudget;
         [NonSerialized] private Action<uint, int>? ramWriteObserver;
         [NonSerialized] private Action? memoryCacheControlObserver;
 
@@ -79,6 +84,7 @@ public class BUS {
             new Span<byte>(memoryControl2, 0x10).Clear();
             memoryCache = 0;
             memoryCacheWriteCount = 0;
+            recentMmioAccessBudget = 0;
         }
 
         public void SetRamWriteObserver(Action<uint, int> observer) {
@@ -107,6 +113,7 @@ public class BUS {
             ReadExactly(reader, new Span<byte>(sio, 0x10));
             ReadExactly(reader, new Span<byte>(memoryControl1, 0x40));
             ReadExactly(reader, new Span<byte>(memoryControl2, 0x10));
+            recentMmioAccessBudget = 0;
         }
 
         private static void ReadExactly(BinaryReader reader, Span<byte> buffer) {
@@ -120,12 +127,14 @@ public class BUS {
         }
 
         public unsafe uint load32(uint address) {
-            if (address == 0xFFFE0130) {
+            if (address == MemoryCacheControlAddress) {
+                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
                 return memoryCache;
             }
 
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
+            MarkExecutionSensitiveAccess(addr);
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
                 uint value = load<uint>(physical, ramPtr);
@@ -177,7 +186,7 @@ public class BUS {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe bool TryLoadData32Fast(uint address, out uint value) {
-            if (address == 0xFFFE_0130) {
+            if (address == MemoryCacheControlAddress) {
                 value = memoryCache;
                 return true;
             }
@@ -274,15 +283,17 @@ public class BUS {
         }
 
         public unsafe void write32(uint address, uint value) {
-            if (address == 0xFFFE_0130) {
+            if (address == MemoryCacheControlAddress) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
+                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
                 memoryCacheControlObserver?.Invoke();
                 return;
             }
 
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
+            MarkExecutionSensitiveAccess(addr);
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
                 if (TraceRamWriteEnabled) {
@@ -326,9 +337,10 @@ public class BUS {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe bool TryStoreData32Fast(uint address, uint value) {
-            if (address == 0xFFFE_0130) {
+            if (address == MemoryCacheControlAddress) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
+                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
                 memoryCacheControlObserver?.Invoke();
                 return true;
             }
@@ -358,15 +370,17 @@ public class BUS {
         }
 
         public unsafe void write16(uint address, ushort value) {
-            if (address == 0xFFFE_0130) {
+            if (address == MemoryCacheControlAddress) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
+                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
                 memoryCacheControlObserver?.Invoke();
                 return;
             }
 
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
+            MarkExecutionSensitiveAccess(addr);
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
                 if (TraceRamWriteEnabled) {
@@ -410,9 +424,10 @@ public class BUS {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe bool TryStoreData16Fast(uint address, ushort value) {
-            if (address == 0xFFFE_0130) {
+            if (address == MemoryCacheControlAddress) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
+                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
                 memoryCacheControlObserver?.Invoke();
                 return true;
             }
@@ -442,15 +457,17 @@ public class BUS {
         }
 
         public unsafe void write8(uint address, byte value) {
-            if (address == 0xFFFE_0130) {
+            if (address == MemoryCacheControlAddress) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
+                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
                 memoryCacheControlObserver?.Invoke();
                 return;
             }
 
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
+            MarkExecutionSensitiveAccess(addr);
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
                 if (TraceRamWriteEnabled) {
@@ -494,9 +511,10 @@ public class BUS {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe bool TryStoreData8Fast(uint address, byte value) {
-            if (address == 0xFFFE_0130) {
+            if (address == MemoryCacheControlAddress) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
+                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
                 memoryCacheControlObserver?.Invoke();
                 return true;
             }
@@ -728,6 +746,9 @@ public class BUS {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void tick(int cycles) {
+            if (recentMmioAccessBudget > 0) {
+                recentMmioAccessBudget = Math.Max(0, recentMmioAccessBudget - cycles);
+            }
             if (gpu.tick(cycles)) interruptController.set(Interrupt.VBLANK);
             if (cdrom.HasPendingWork && cdrom.tick(cycles)) interruptController.set(Interrupt.CDROM);
             if (dma.HasPendingWork && dma.tick(cycles)) interruptController.set(Interrupt.DMA);
@@ -771,6 +792,15 @@ public class BUS {
 
         public uint MemoryCacheWriteCount => memoryCacheWriteCount;
         public DMA Dma => dma;
+        public bool ShouldUseTightTickBatch =>
+            recentMmioAccessBudget > 0
+            || interruptController.interruptPending()
+            || dma.HasPendingWork
+            || cdrom.HasPendingWork
+            || joypad.HasPendingWork;
+        public bool ShouldYieldCpuSlice =>
+            recentMmioAccessBudget > 0
+            || interruptController.interruptPending();
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe Span<uint> DmaFromRam(uint addr, uint size) {
@@ -817,6 +847,14 @@ public class BUS {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void DmaToGpu(Span<uint> buffer) {
             gpu.processDma(buffer);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void MarkExecutionSensitiveAccess(uint address) {
+            if (address == MemoryCacheControlAddress
+                || (address >= MmioStartAddress && address < MmioEndAddressExclusive)) {
+                recentMmioAccessBudget = RecentMmioAccessHysteresisCycles;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
