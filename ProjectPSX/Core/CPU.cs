@@ -27,6 +27,7 @@ namespace ProjectPSX {
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_WORDS_AFTER"), 0);
         private static readonly bool BiosTraceEnabled =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS_TRACE") == "1";
+        private static readonly bool TraceCurrentPcEnabled = HasTraceCurrentPcConsumer();
         private static int s_faultTraceCount;
         private static int s_cop0TraceCount;
 
@@ -220,7 +221,9 @@ namespace ProjectPSX {
         private int fetchDecode() {
             //Executable address space is limited to ram and bios on psx
             PC_Now = PC;
-            TraceCurrentPC = PC_Now;
+            if (TraceCurrentPcEnabled) {
+                TraceCurrentPC = PC_Now;
+            }
             PC = PC_Predictor;
             PC_Predictor += 4;
 
@@ -614,6 +617,24 @@ namespace ProjectPSX {
 
         private static int ParseOptionalPositiveInt(string? raw, int fallback) {
             return int.TryParse(raw, out int value) && value > 0 ? value : fallback;
+        }
+
+        private static bool HasTraceCurrentPcConsumer() {
+            return Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1"
+                || HasTraceRange("EUTHERDRIVE_PSX_TRACE_RAM_READ_START", "EUTHERDRIVE_PSX_TRACE_RAM_READ_END")
+                || HasTraceRange("EUTHERDRIVE_PSX_TRACE_RAM_WRITE_START", "EUTHERDRIVE_PSX_TRACE_RAM_WRITE_END")
+                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_CD_DMA") == "1"
+                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_IRQ_TRACE") == "1"
+                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_DMA_IRQ_TRACE") == "1"
+                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_SPU_DMA_TRACE") == "1"
+                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_PROTECT_TRACE") == "1"
+                || !string.IsNullOrWhiteSpace(FaultTraceFile)
+                || !string.IsNullOrWhiteSpace(Cop0TraceFile);
+        }
+
+        private static bool HasTraceRange(string startName, string endName) {
+            return !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(startName))
+                && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(endName));
         }
 
         private static int? ParseOptionalRegisterIndex(string? raw) {

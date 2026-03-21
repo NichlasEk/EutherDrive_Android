@@ -19,6 +19,8 @@ public class BUS {
         private static readonly uint? TraceRamWriteEnd = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_WRITE_END");
         private static readonly int TraceRamWriteLimit = ParseOptionalPositiveInt("EUTHERDRIVE_PSX_TRACE_RAM_WRITE_LIMIT", 4096);
         private static readonly bool TraceCdDma = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_CD_DMA") == "1";
+        private static readonly bool TraceRamReadEnabled = TraceRamReadStart.HasValue && TraceRamReadEnd.HasValue;
+        private static readonly bool TraceRamWriteEnabled = TraceRamWriteStart.HasValue && TraceRamWriteEnd.HasValue;
         private static int s_traceRamReadCount;
         private static int s_traceRamWriteCount;
         private const int SpuTickBatchCycles = 96;
@@ -122,7 +124,9 @@ public class BUS {
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
                 uint value = load<uint>(physical, ramPtr);
-                TraceRamRead(physical, 4, value);
+                if (TraceRamReadEnabled) {
+                    TraceRamRead(physical, 4, value);
+                }
                 return value;
             } else if (addr < 0x1F80_0000) {
                 return load<uint>(addr & 0x7_FFFF, ex1Ptr);
@@ -177,7 +181,9 @@ public class BUS {
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
-                TraceRamWrite(physical, 4, value, "cpu");
+                if (TraceRamWriteEnabled) {
+                    TraceRamWrite(physical, 4, value, "cpu");
+                }
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 4);
             } else if (addr < 0x1F80_0000) {
@@ -225,7 +231,9 @@ public class BUS {
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
-                TraceRamWrite(physical, 2, value, "cpu");
+                if (TraceRamWriteEnabled) {
+                    TraceRamWrite(physical, 2, value, "cpu");
+                }
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 2);
             } else if (addr < 0x1F80_0000) {
@@ -273,7 +281,9 @@ public class BUS {
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
-                TraceRamWrite(physical, 1, value, "cpu");
+                if (TraceRamWriteEnabled) {
+                    TraceRamWrite(physical, 1, value, "cpu");
+                }
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 1);
             } else if (addr < 0x1F80_0000) {
@@ -560,14 +570,18 @@ public class BUS {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe Span<uint> DmaFromRam(uint addr, uint size) {
             uint physical = addr & 0x1F_FFFF;
-            TraceRamDmaRead(physical, size);
+            if (TraceRamReadEnabled) {
+                TraceRamDmaRead(physical, size);
+            }
             return new Span<uint>(ramPtr + physical, (int)size);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaToRam(uint addr, uint value) {
             uint physical = addr & 0x1F_FFFF;
-            TraceRamWrite(physical, 4, value, "dma");
+            if (TraceRamWriteEnabled) {
+                TraceRamWrite(physical, 4, value, "dma");
+            }
             *(uint*)(ramPtr + physical) = value;
             ramWriteObserver?.Invoke(physical, 4);
         }
@@ -576,7 +590,7 @@ public class BUS {
         public unsafe void DmaToRam(uint addr, byte[] buffer, uint size) {
             uint physical = addr & 0x1F_FFFF;
             int byteCount = (int)size * 4;
-            if (ShouldTraceRamWriteRange(physical, (uint)byteCount)) {
+            if (TraceRamWriteEnabled && ShouldTraceRamWriteRange(physical, (uint)byteCount)) {
                 int previewCount = Math.Min(byteCount, 16);
                 string preview = BitConverter.ToString(buffer, 0, previewCount);
                 Console.WriteLine(
@@ -604,7 +618,7 @@ public class BUS {
         public unsafe void DmaFromCD(uint address, int size) {
             var dma = cdrom.processDmaLoad(size);
             uint physical = address & 0x1F_FFFC;
-            if (TraceCdDma || ShouldTraceRamWriteRange(physical, (uint)(dma.Length * 4))) {
+            if (TraceCdDma || (TraceRamWriteEnabled && ShouldTraceRamWriteRange(physical, (uint)(dma.Length * 4)))) {
                 int previewCount = Math.Min(dma.Length, 4);
                 string preview = string.Empty;
                 for (int i = 0; i < previewCount; i++) {
