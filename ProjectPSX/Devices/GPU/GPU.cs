@@ -1249,7 +1249,6 @@ namespace ProjectPSX.Devices {
                     // If p is on or inside all edges, render pixel.
                     if ((w0 | w1 | w2) >= 0) {
                         int pixelIndex = rowBase + x;
-                        int backColor = 0;
                         if (checkMask && (vram1555Bits[pixelIndex] & 0x8000) != 0) {
                             goto AdvanceTrianglePixel;
                         }
@@ -1278,15 +1277,16 @@ namespace ProjectPSX.Devices {
                             color = texel;
                         }
 
-                        if (primitive.isSemiTransparent && (!primitive.isTextured || (color & 0xFF00_0000) != 0)) {
-                            if (!checkMask)
-                                backColor = color1555to8888LUT[vram1555Bits[pixelIndex]];
-                            color = handleSemiTransp(backColor, color, primitive.semiTransparencyMode);
+                        ushort packedColor = PackColor1555(color);
+                        if (primitive.isSemiTransparent && (!primitive.isTextured || (packedColor & 0x8000) != 0)) {
+                            packedColor = BlendRawSemiTransparent1555(vram1555Bits[pixelIndex], packedColor, primitive.semiTransparencyMode);
                         }
 
-                        color |= maskBits;
+                        if (maskBits != 0) {
+                            packedColor |= 0x8000;
+                        }
 
-                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                        vram1555Bits[pixelIndex] = packedColor;
                     }
 
 AdvanceTrianglePixel:
@@ -1882,6 +1882,51 @@ AdvanceTrianglePixel:
                 modulateB[(rawTexel >> 10) & 0x1F]);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ushort BlendRawSemiTransparent1555(ushort backRaw, ushort frontRaw, int semiTranspMode) {
+            if (semiTranspMode == 0) {
+                int rb = (((backRaw & 0x7C1F) + (frontRaw & 0x7C1F)) >> 1) & 0x7C1F;
+                int gBits = (((backRaw & 0x03E0) + (frontRaw & 0x03E0)) >> 1) & 0x03E0;
+                return (ushort)((frontRaw & 0x8000) | rb | gBits);
+            }
+
+            int br = backRaw & 0x1F;
+            int bg = (backRaw >> 5) & 0x1F;
+            int bb = (backRaw >> 10) & 0x1F;
+            int fr = frontRaw & 0x1F;
+            int fg = (frontRaw >> 5) & 0x1F;
+            int fb = (frontRaw >> 10) & 0x1F;
+
+            int r;
+            int g;
+            int b;
+
+            switch (semiTranspMode) {
+                case 1:
+                    r = Clamp5Bit(br + fr);
+                    g = Clamp5Bit(bg + fg);
+                    b = Clamp5Bit(bb + fb);
+                    break;
+                case 2:
+                    r = Clamp5BitSigned(br - fr);
+                    g = Clamp5BitSigned(bg - fg);
+                    b = Clamp5BitSigned(bb - fb);
+                    break;
+                case 3:
+                    r = Clamp5Bit(br + (fr >> 2));
+                    g = Clamp5Bit(bg + (fg >> 2));
+                    b = Clamp5Bit(bb + (fb >> 2));
+                    break;
+                default:
+                    r = fr;
+                    g = fg;
+                    b = fb;
+                    break;
+            }
+
+            return (ushort)((frontRaw & 0x8000) | (b << 10) | (g << 5) | r);
+        }
+
         private static void BuildModulate1555Tables(int baseColor, Span<ushort> modulateR, Span<ushort> modulateG, Span<ushort> modulateB) {
             int baseR = (baseColor >> 16) & 0xFF;
             int baseG = (baseColor >> 8) & 0xFF;
@@ -1893,6 +1938,20 @@ AdvanceTrianglePixel:
                 modulateG[i] = (ushort)((clampToFF((baseG * texel8) >> 7) >> 3) << 5);
                 modulateB[i] = (ushort)((clampToFF((baseB * texel8) >> 7) >> 3) << 10);
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int Clamp5Bit(int value) {
+            return value > 0x1F ? 0x1F : value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int Clamp5BitSigned(int value) {
+            if (value < 0) {
+                return 0;
+            }
+
+            return value > 0x1F ? 0x1F : value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2002,14 +2061,16 @@ AdvanceTrianglePixel:
                 //y = (short)Math.Min(Math.Max(y, drawingAreaTop), drawingAreaBottom);
 
                 if (x >= drawingAreaLeft && x < drawingAreaRight && y >= drawingAreaTop && y < drawingAreaBottom) {
-                    //if (primitive.isSemiTransparent && (!primitive.isTextured || (color & 0xFF00_0000) != 0)) {
+                    ushort packedColor = PackColor1555(color);
                     if (isTransparent) {
-                        color = handleSemiTransp(x, y, color, transparencyMode);
+                        packedColor = BlendRawSemiTransparent1555(vram1555.GetPixel(x, y), packedColor, transparencyMode);
                     }
 
-                    color |= maskWhileDrawing << 24;
+                    if (maskWhileDrawing != 0) {
+                        packedColor |= 0x8000;
+                    }
 
-                    vram1555.SetPixel(x, y, PackColor1555(color));
+                    vram1555.SetPixel(x, y, packedColor);
                 }
 
                 numerator += shortest;
@@ -2442,7 +2503,6 @@ AdvanceTrianglePixel:
                 for (int x = xOrigin; x < width; x++) {
                     int pixelIndex = rowBase + x;
                     //Check background mask
-                    int backColor = 0;
                     if (checkMask && (vram1555Bits[pixelIndex] & 0x8000) != 0) {
                         u += uStep;
                         continue;
@@ -2464,15 +2524,16 @@ AdvanceTrianglePixel:
                         color = texel;
                     }
 
-                    if (primitive.isSemiTransparent && (!primitive.isTextured || (color & 0xFF00_0000) != 0)) {
-                        if (!checkMask)
-                            backColor = color1555to8888LUT[vram1555Bits[pixelIndex]];
-                        color = handleSemiTransp(backColor, color, primitive.semiTransparencyMode);
+                    ushort packedColor = PackColor1555(color);
+                    if (primitive.isSemiTransparent && (!primitive.isTextured || (packedColor & 0x8000) != 0)) {
+                        packedColor = BlendRawSemiTransparent1555(vram1555Bits[pixelIndex], packedColor, primitive.semiTransparencyMode);
                     }
 
-                    color |= maskBits;
+                    if (maskBits != 0) {
+                        packedColor |= 0x8000;
+                    }
 
-                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                    vram1555Bits[pixelIndex] = packedColor;
                     u += uStep;
                 }
 
