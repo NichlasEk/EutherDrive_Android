@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.CPU;
 
@@ -82,7 +83,7 @@ public class CPU : ICPU
             int address = _e
                 ? (0x0100 | ((sp + 1 + i) & 0xFF))
                 : ((sp + 1 + i) & 0xFFFF);
-            stack[i] = (byte)_snes.Read(address);
+            stack[i] = (byte)ReadBus(address);
         }
 
         return $"{regs} STACK=[{string.Join(' ', stack.Select(static b => $"{b:X2}"))}]";
@@ -173,6 +174,8 @@ public class CPU : ICPU
 
     [NonSerialized]
     private ISNESSystem _snes;
+    [NonSerialized]
+    private KSNES.SNESSystem.SNESSystem? _snesImpl;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     public CPU()
@@ -228,13 +231,14 @@ public class CPU : ICPU
     public void SetSystem(ISNESSystem system)
     {
         _snes = system;
+        _snesImpl = system as KSNES.SNESSystem.SNESSystem;
     }
 
     public void Reset()
     {
         _r = new byte[2];
         _br = new ushort[6];
-        _br[PC] = (ushort) (_snes.Read(0xfffc) | (_snes.Read(0xfffd) << 8));
+        _br[PC] = (ushort) (ReadBus(0xfffc) | (ReadBus(0xfffd) << 8));
         _br[SP] = 0x1FF;
         _n = false;
         _v = false;
@@ -266,7 +270,7 @@ public class CPU : ICPU
                 int pcAddr = (_r[K] << 16) | _br[PC];
                 if (_traceWramPc && !_traceWramPcLogged && (pcAddr & 0xFFFF) < 0x2000)
                 {
-                    if (_snes is KSNES.SNESSystem.SNESSystem snes)
+                    if (_snesImpl is { } snes)
                     {
                         int b0 = snes.Peek(pcAddr);
                         int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
@@ -278,7 +282,7 @@ public class CPU : ICPU
                 }
                 if (_tracePc && _tracePcCount < _tracePcLimit)
                 {
-                    if (_snes is KSNES.SNESSystem.SNESSystem snes)
+                    if (_snesImpl is { } snes)
                     {
                         int b0 = snes.Peek(pcAddr);
                         int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
@@ -290,7 +294,7 @@ public class CPU : ICPU
                 }
                 if (_tracePcRange && _tracePcRangeCount < _tracePcRangeLimit && pcAddr >= _tracePcRangeStart && pcAddr <= _tracePcRangeEnd)
                 {
-                    if (_snes is KSNES.SNESSystem.SNESSystem snes)
+                    if (_snesImpl is { } snes)
                     {
                         int b0 = snes.Peek(pcAddr);
                         int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
@@ -300,7 +304,7 @@ public class CPU : ICPU
                         _tracePcRangeCount++;
                     }
                 }
-                int instr = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int instr = ReadBus((_r[K] << 16) | _br[PC]++);
                 CyclesLeft = _cycles[instr];
                 int mode = _modes[instr];
                 bool letRdnmiPollReadRunFirst = NmiWanted && IsImmediateRdnmiPoll(instr);
@@ -341,9 +345,10 @@ public class CPU : ICPU
 
     private bool IsImmediateRdnmiPoll(int opcode)
     {
-        if (opcode != 0xAD || _snes is not KSNES.SNESSystem.SNESSystem snes)
+        if (opcode != 0xAD || _snesImpl is null)
             return false;
 
+        var snes = _snesImpl;
         int operandAddr = (_r[K] << 16) | _br[PC];
         int lo = snes.Peek(operandAddr);
         int hi = snes.Peek((operandAddr + 1) & 0xffffff);
@@ -419,6 +424,21 @@ public class CPU : ICPU
         return ((bank & 0xff) << 16) | (address16 & 0xffff);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int ReadBus(int address)
+    {
+        return _snesImpl != null ? _snesImpl.Read(address) : _snes.Read(address);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WriteBus(int address, int value)
+    {
+        if (_snesImpl != null)
+            _snesImpl.Write(address, value);
+        else
+            _snes.Write(address, value);
+    }
+
     private (int, int) DataBankPair(int address16)
     {
         int lo = BankAddress(_r[DBR], address16);
@@ -437,7 +457,7 @@ public class CPU : ICPU
 
     private void PushByte(int value) 
     {
-        _snes.Write(_br[SP], value);
+        WriteBus(_br[SP], value);
         if (_e)
         {
             _br[SP] = (ushort) (0x0100 | ((_br[SP] - 1) & 0xff));
@@ -458,7 +478,7 @@ public class CPU : ICPU
         {
             _br[SP]++;
         }
-        return _snes.Read(_br[SP]);
+        return ReadBus(_br[SP]);
     }
 
     private void PushWord(int value) 
@@ -476,8 +496,8 @@ public class CPU : ICPU
 
     private int ReadWord(int adr, int adrh) 
     {
-        int value = _snes.Read(adr);
-        value |= _snes.Read(adrh) << 8;
+        int value = ReadBus(adr);
+        value |= ReadBus(adrh) << 8;
         return value;
     }
 
@@ -485,13 +505,13 @@ public class CPU : ICPU
     {
         if (reversed)
         {
-            _snes.Write(adrh, (result & 0xff00) >> 8);
-            _snes.Write(adr, result & 0xff);
+            WriteBus(adrh, (result & 0xff00) >> 8);
+            WriteBus(adr, result & 0xff);
         }
         else
         {
-            _snes.Write(adr, result & 0xff);
-            _snes.Write(adrh, (result & 0xff00) >> 8);
+            WriteBus(adr, result & 0xff);
+            WriteBus(adrh, (result & 0xff00) >> 8);
         }
     }
 
@@ -527,163 +547,163 @@ public class CPU : ICPU
                 int low2 = (_r[K] << 16) | _br[PC]++;
                 return (low2, (_r[K] << 16) | _br[PC]++);
             case DP:
-                int adr = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr = ReadBus((_r[K] << 16) | _br[PC]++);
                 if ((_br[DPR] & 0xff) != 0)
                 {
                     CyclesLeft++;
                 }
                 return ((_br[DPR] + adr) & 0xffff, (_br[DPR] + adr + 1) & 0xffff);
             case DPX:
-                int adr2 = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr2 = ReadBus((_r[K] << 16) | _br[PC]++);
                 if ((_br[DPR] & 0xff) != 0)
                 {
                     CyclesLeft++;
                 }
                 return ((_br[DPR] + adr2 + _br[X]) & 0xffff, (_br[DPR] + adr2 + _br[X] + 1) & 0xffff);
             case DPY:
-                int adr3 = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr3 = ReadBus((_r[K] << 16) | _br[PC]++);
                 if ((_br[DPR] & 0xff) != 0)
                 {
                     CyclesLeft++;
                 }
                 return ((_br[DPR] + adr3 + _br[Y]) & 0xffff, (_br[DPR] + adr3 + _br[Y] + 1) & 0xffff);
             case IDP:
-                int adr4 = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr4 = ReadBus((_r[K] << 16) | _br[PC]++);
                 if ((_br[DPR] & 0xff) != 0)
                 {
                     CyclesLeft++;
                 }
-                int pointer = _snes.Read((_br[DPR] + adr4) & 0xffff);
-                pointer |= _snes.Read((_br[DPR] + adr4 + 1) & 0xffff) << 8;
+                int pointer = ReadBus((_br[DPR] + adr4) & 0xffff);
+                pointer |= ReadBus((_br[DPR] + adr4 + 1) & 0xffff) << 8;
                 return DataBankPair(pointer);
             case IDX:
-                int adr5 = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr5 = ReadBus((_r[K] << 16) | _br[PC]++);
                 if ((_br[DPR] & 0xff) != 0)
                 {
                     CyclesLeft++;
                 }
-                int pointer2 = _snes.Read((_br[DPR] + adr5 + _br[X]) & 0xffff);
-                pointer2 |= _snes.Read((_br[DPR] + adr5 + _br[X] + 1) & 0xffff) << 8;
+                int pointer2 = ReadBus((_br[DPR] + adr5 + _br[X]) & 0xffff);
+                pointer2 |= ReadBus((_br[DPR] + adr5 + _br[X] + 1) & 0xffff) << 8;
                 return DataBankPair(pointer2);
             case IDY:
-                int adr6 = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr6 = ReadBus((_r[K] << 16) | _br[PC]++);
                 if ((_br[DPR] & 0xff) != 0)
                 {
                     CyclesLeft++;
                 }
-                int pointer3 = _snes.Read((_br[DPR] + adr6) & 0xffff);
-                pointer3 |= _snes.Read((_br[DPR] + adr6 + 1) & 0xffff) << 8;
+                int pointer3 = ReadBus((_br[DPR] + adr6) & 0xffff);
+                pointer3 |= ReadBus((_br[DPR] + adr6 + 1) & 0xffff) << 8;
                 return DataBankPair(pointer3 + _br[Y]);
             case IDYr:
-                int adr7 = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr7 = ReadBus((_r[K] << 16) | _br[PC]++);
                 if ((_br[DPR] & 0xff) != 0)
                 {
                     CyclesLeft++;
                 }
-                int pointer4 = _snes.Read((_br[DPR] + adr7) & 0xffff);
-                pointer4 |= _snes.Read((_br[DPR] + adr7 + 1) & 0xffff) << 8;
+                int pointer4 = ReadBus((_br[DPR] + adr7) & 0xffff);
+                pointer4 |= ReadBus((_br[DPR] + adr7 + 1) & 0xffff) << 8;
                 if (pointer4 >> 8 != (pointer4 + _br[Y]) >> 8 || !_x)
                 {
                     CyclesLeft++;
                 }
                 return DataBankPair(pointer4 + _br[Y]);
             case IDL:
-                int adr8 = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr8 = ReadBus((_r[K] << 16) | _br[PC]++);
                 if ((_br[DPR] & 0xff) != 0)
                 {
                     CyclesLeft++;
                 }
                 int dpBase = (_br[DPR] + adr8) & 0xffff;
-                int pointer5 = _snes.Read(dpBase);
-                pointer5 |= _snes.Read((dpBase + 1) & 0xffff) << 8;
-                pointer5 |= _snes.Read((dpBase + 2) & 0xffff) << 16;
+                int pointer5 = ReadBus(dpBase);
+                pointer5 |= ReadBus((dpBase + 1) & 0xffff) << 8;
+                pointer5 |= ReadBus((dpBase + 2) & 0xffff) << 16;
                 return (Wrap24(pointer5), Wrap24(pointer5 + 1));
             case ILY:
-                int adr9 = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr9 = ReadBus((_r[K] << 16) | _br[PC]++);
                 if ((_br[DPR] & 0xff) != 0)
                 {
                     CyclesLeft++;
                 }
-                int pointer6 = _snes.Read((_br[DPR] + adr9) & 0xffff);
-                pointer6 |= _snes.Read((_br[DPR] + adr9 + 1) & 0xffff) << 8;
-                pointer6 |= _snes.Read((_br[DPR] + adr9 + 2) & 0xffff) << 16;
+                int pointer6 = ReadBus((_br[DPR] + adr9) & 0xffff);
+                pointer6 |= ReadBus((_br[DPR] + adr9 + 1) & 0xffff) << 8;
+                pointer6 |= ReadBus((_br[DPR] + adr9 + 2) & 0xffff) << 16;
                 return (Wrap24(pointer6 + _br[Y]), Wrap24(pointer6 + _br[Y] + 1));
             case SR:
-                int adr10 = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int adr10 = ReadBus((_r[K] << 16) | _br[PC]++);
                 return ((_br[SP] + adr10) & 0xffff, (_br[SP] + adr10 + 1) & 0xffff);
             case ISY:
-                int adr11 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                int pointer7 = _snes.Read((_br[SP] + adr11) & 0xffff);
-                pointer7 |= _snes.Read((_br[SP] + adr11 + 1) & 0xffff) << 8;
+                int adr11 = ReadBus((_r[K] << 16) | _br[PC]++);
+                int pointer7 = ReadBus((_br[SP] + adr11) & 0xffff);
+                pointer7 |= ReadBus((_br[SP] + adr11 + 1) & 0xffff) << 8;
                 return DataBankPair(pointer7 + _br[Y]);
             case ABS:
-                int adr12 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr12 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
+                int adr12 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr12 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
                 return DataBankPair(adr12);
             case ABX:
-                int adr13 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr13 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
+                int adr13 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr13 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
                 return DataBankPair(adr13 + _br[X]);
             case ABXr:
-                int adr14 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr14 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
+                int adr14 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr14 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
                 if (adr14 >> 8 != (adr14 + _br[X]) >> 8 || !_x)
                 {
                     CyclesLeft++;
                 }
                 return DataBankPair(adr14 + _br[X]);
             case ABY:
-                int adr15 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr15 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
+                int adr15 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr15 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
                 return DataBankPair(adr15 + _br[Y]);
             case ABYr:
-                int adr16 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr16 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
+                int adr16 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr16 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
                 if (adr16 >> 8 != (adr16 + _br[Y]) >> 8 || !_x)
                 {
                     CyclesLeft++;
                 }
                 return DataBankPair(adr16 + _br[Y]);
             case ABL:
-                int adr17 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr17 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
-                adr17 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 16;
+                int adr17 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr17 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
+                adr17 |= ReadBus((_r[K] << 16) | _br[PC]++) << 16;
                 return (Wrap24(adr17), Wrap24(adr17 + 1));
             case ALX:
-                int adr18 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr18 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
-                adr18 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 16;
+                int adr18 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr18 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
+                adr18 |= ReadBus((_r[K] << 16) | _br[PC]++) << 16;
                 int alx = Wrap24(adr18 + _br[X]);
                 return (alx, Wrap24(alx + 1));
             case IND:
-                int adr19 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr19 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
-                int pointer8 = _snes.Read(adr19);
-                pointer8 |= _snes.Read((adr19 + 1) & 0xffff) << 8;
+                int adr19 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr19 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
+                int pointer8 = ReadBus(adr19);
+                pointer8 |= ReadBus((adr19 + 1) & 0xffff) << 8;
                 return ((_r[K] << 16) + pointer8, 0);
             case IAX:
-                int adr20 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr20 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
-                int pointer9 = _snes.Read((_r[K] << 16) | ((adr20 + _br[X]) & 0xffff));
-                pointer9 |= _snes.Read((_r[K] << 16) | ((adr20 + _br[X] + 1) & 0xffff)) << 8;
+                int adr20 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr20 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
+                int pointer9 = ReadBus((_r[K] << 16) | ((adr20 + _br[X]) & 0xffff));
+                pointer9 |= ReadBus((_r[K] << 16) | ((adr20 + _br[X] + 1) & 0xffff)) << 8;
                 return ((_r[K] << 16) + pointer9, 0);
             case IAL:
-                int adr21 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                adr21 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
-                int pointer10 = _snes.Read(adr21);
-                pointer10 |= _snes.Read((adr21 + 1) & 0xffff) << 8;
-                pointer10 |= _snes.Read((adr21 + 2) & 0xffff) << 16;
+                int adr21 = ReadBus((_r[K] << 16) | _br[PC]++);
+                adr21 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
+                int pointer10 = ReadBus(adr21);
+                pointer10 |= ReadBus((adr21 + 1) & 0xffff) << 8;
+                pointer10 |= ReadBus((adr21 + 2) & 0xffff) << 16;
                 return (pointer10, 0);
             case REL:
-                int rel = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int rel = ReadBus((_r[K] << 16) | _br[PC]++);
                 return (GetSigned(rel, true), 0);
             case RLL:
-                int rel2 = _snes.Read((_r[K] << 16) | _br[PC]++);
-                rel2 |= _snes.Read((_r[K] << 16) | _br[PC]++) << 8;
+                int rel2 = ReadBus((_r[K] << 16) | _br[PC]++);
+                rel2 |= ReadBus((_r[K] << 16) | _br[PC]++) << 8;
                 return (GetSigned(rel2, false), 0);
             case BM:
-                int dest = _snes.Read((_r[K] << 16) | _br[PC]++);
-                int src = _snes.Read((_r[K] << 16) | _br[PC]++);
+                int dest = ReadBus((_r[K] << 16) | _br[PC]++);
+                int src = ReadBus((_r[K] << 16) | _br[PC]++);
                 return (dest, src);
         }
         return (0, 0);
@@ -693,7 +713,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             int result;
             if (_d)
             {
@@ -742,7 +762,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr) ^ 0xff;
+            int value = ReadBus(adr) ^ 0xff;
             int result;
             if (_d)
             {
@@ -791,7 +811,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr) ^ 0xff;
+            int value = ReadBus(adr) ^ 0xff;
             int result = (_br[A] & 0xff) + value + 1;
             _c = result > 0xff;
             SetZAndN(result, _m);
@@ -810,7 +830,7 @@ public class CPU : ICPU
     {
         if (_x)
         {
-            int value = _snes.Read(adr) ^ 0xff;
+            int value = ReadBus(adr) ^ 0xff;
             int result = (_br[X] & 0xff) + value + 1;
             _c = result > 0xff;
             SetZAndN(result, _x);
@@ -829,7 +849,7 @@ public class CPU : ICPU
     {
         if (_x)
         {
-            int value = _snes.Read(adr) ^ 0xff;
+            int value = ReadBus(adr) ^ 0xff;
             int result = (_br[Y] & 0xff) + value + 1;
             _c = result > 0xff;
             SetZAndN(result, _x);
@@ -848,9 +868,9 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int result = (_snes.Read(adr) - 1) & 0xff;
+            int result = (ReadBus(adr) - 1) & 0xff;
             SetZAndN(result, _m);
-            _snes.Write(adr, (byte) result);
+            WriteBus(adr, (byte) result);
         }
         else
         {
@@ -911,9 +931,9 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int result = (_snes.Read(adr) + 1) & 0xff;
+            int result = (ReadBus(adr) + 1) & 0xff;
             SetZAndN(result, _m);
-            _snes.Write(adr, (byte) result);
+            WriteBus(adr, (byte) result);
         }
         else
         {
@@ -974,7 +994,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             _br[A] = (ushort) ((_br[A] & 0xff00) | (_br[A] & value & 0xff));
             SetZAndN(_br[A], _m);
         }
@@ -991,7 +1011,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             _br[A] = (ushort) ((_br[A] & 0xff00) | ((_br[A] ^ value) & 0xff));
             SetZAndN(_br[A], _m);
         }
@@ -1008,7 +1028,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             _br[A] = (ushort) ((_br[A] & 0xff00) | ((_br[A] | value) & 0xff));
             SetZAndN(_br[A], _m);
         }
@@ -1025,7 +1045,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             int result = _br[A] & 0xff & value;
             _z = result == 0;
             _n = (value & 0x80) > 0;
@@ -1046,7 +1066,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             int result = _br[A] & 0xff & value;
             _z = result == 0;
         }
@@ -1063,11 +1083,11 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             int result = _br[A] & 0xff & value;
             value = value & ~(_br[A] & 0xff) & 0xff;
             _z = result == 0;
-            _snes.Write(adr, (byte) value);
+            WriteBus(adr, (byte) value);
         }
         else
         {
@@ -1084,11 +1104,11 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             int result = _br[A] & 0xff & value;
             value = (value | (_br[A] & 0xff)) & 0xff;
             _z = result == 0;
-            _snes.Write(adr, (byte) value);
+            WriteBus(adr, (byte) value);
         }
         else
         {
@@ -1105,11 +1125,11 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             _c = (value & 0x80) > 0;
             value <<= 1;
             SetZAndN(value, _m);
-            _snes.Write(adr, value);
+            WriteBus(adr, value);
         }
         else
         {
@@ -1145,11 +1165,11 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             _c = (value & 0x1) > 0;
             value >>= 1;
             SetZAndN(value, _m);
-            _snes.Write(adr, value);
+            WriteBus(adr, value);
         }
         else
         {
@@ -1185,11 +1205,11 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             value = (value << 1) | (_c ? 1 : 0);
             _c = (value & 0x100) > 0;
             SetZAndN(value, _m);
-            _snes.Write(adr, (byte) value);
+            WriteBus(adr, (byte) value);
         }
         else
         {
@@ -1226,12 +1246,12 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
+            int value = ReadBus(adr);
             int carry = value & 0x1;
             value = (value >> 1) | (_c ? 0x80 : 0);
             _c = carry > 0;
             SetZAndN(value, _m);
-            _snes.Write(adr, (byte) value);
+            WriteBus(adr, (byte) value);
         }
         else
         {
@@ -1368,7 +1388,7 @@ public class CPU : ICPU
         _d = false;
         _r[K] = 0;
         int vector = _e ? 0xfffe : 0xffe6;
-        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
+        _br[PC] = (ushort) (ReadBus(vector) | (ReadBus(vector + 1) << 8));
     }
 
     private void Cop(int adr, int adrh) 
@@ -1381,7 +1401,7 @@ public class CPU : ICPU
         _d = false;
         _r[K] = 0;
         int vector = _e ? 0xfff4 : 0xffe4;
-        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
+        _br[PC] = (ushort) (ReadBus(vector) | (ReadBus(vector + 1) << 8));
     }
 
     private void Abo(int adr, int adrh)
@@ -1394,7 +1414,7 @@ public class CPU : ICPU
         _d = false;
         _r[K] = 0;
         int vector = _e ? 0xfff8 : 0xffe8;
-        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
+        _br[PC] = (ushort) (ReadBus(vector) | (ReadBus(vector + 1) << 8));
     }
 
     private void Nmi(int adr, int adrh)
@@ -1407,7 +1427,7 @@ public class CPU : ICPU
         _d = false;
         _r[K] = 0;
         int vector = _e ? 0xfffa : 0xffea;
-        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
+        _br[PC] = (ushort) (ReadBus(vector) | (ReadBus(vector + 1) << 8));
     }
 
     private void Irq(int adr, int adrh) 
@@ -1420,7 +1440,7 @@ public class CPU : ICPU
         _d = false;
         _r[K] = 0;
         int vector = _e ? 0xfffe : 0xffee;
-        _br[PC] = (ushort) (_snes.Read(vector) | (_snes.Read(vector + 1) << 8));
+        _br[PC] = (ushort) (ReadBus(vector) | (ReadBus(vector + 1) << 8));
     }
 
     private void Rti(int adr, int adrh) 
@@ -1469,13 +1489,13 @@ public class CPU : ICPU
 
     private void Rep(int adr, int adrh)
     {
-        int value = _snes.Read(adr);
+        int value = ReadBus(adr);
         SetP((byte) (GetP() & ~value));
     }
 
     private void Sep(int adr, int adrh) 
     {
-        int value = _snes.Read(adr);
+        int value = ReadBus(adr);
         SetP((byte) (GetP() | value));
     }
 
@@ -1483,8 +1503,8 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            int value = _snes.Read(adr);
-            if (TraceLdaWatch && _snes is KSNES.SNESSystem.SNESSystem && adr >= 0x6040 && adr <= 0x6050)
+            int value = ReadBus(adr);
+            if (TraceLdaWatch && _snesImpl != null && adr >= 0x6040 && adr <= 0x6050)
             {
                 Console.WriteLine($"[LDA-WATCH] adr=0x{adr:X4} val=0x{value:X2} pc=0x{ProgramCounter24:X6} m=1");
             }
@@ -1495,7 +1515,7 @@ public class CPU : ICPU
         {
             CyclesLeft++;
             int value = ReadWord(adr, adrh);
-            if (TraceLdaWatch && _snes is KSNES.SNESSystem.SNESSystem && adr >= 0x6040 && adr <= 0x6050)
+            if (TraceLdaWatch && _snesImpl != null && adr >= 0x6040 && adr <= 0x6050)
             {
                 Console.WriteLine($"[LDA-WATCH] adr=0x{adr:X4} adrh=0x{adrh:X4} val=0x{value:X4} pc=0x{ProgramCounter24:X6} m=0");
             }
@@ -1508,7 +1528,7 @@ public class CPU : ICPU
     {
         if (_x)
         {
-            _br[X] = (ushort) _snes.Read(adr);
+            _br[X] = (ushort) ReadBus(adr);
             if (TraceIndexWatch && adr >= 0x36D0 && adr <= 0x36DF)
             {
                 Console.WriteLine($"[LDX-WATCH] adr=0x{adr:X4} val=0x{_br[X]:X2} pc=0x{ProgramCounter24:X6} x=1 D=0x{_br[DPR]:X4}");
@@ -1531,7 +1551,7 @@ public class CPU : ICPU
     {
         if (_x)
         {
-            _br[Y] = (ushort) _snes.Read(adr);
+            _br[Y] = (ushort) ReadBus(adr);
             if (TraceIndexWatch && adr >= 0x36D0 && adr <= 0x36DF)
             {
                 Console.WriteLine($"[LDY-WATCH] adr=0x{adr:X4} val=0x{_br[Y]:X2} pc=0x{ProgramCounter24:X6} x=1 D=0x{_br[DPR]:X4}");
@@ -1554,7 +1574,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            _snes.Write(adr, (byte) (_br[A] & 0xff));
+            WriteBus(adr, (byte) (_br[A] & 0xff));
         }
         else
         {
@@ -1567,7 +1587,7 @@ public class CPU : ICPU
     {
         if (_x)
         {
-            _snes.Write(adr, (byte) (_br[X] & 0xff));
+            WriteBus(adr, (byte) (_br[X] & 0xff));
         }
         else
         {
@@ -1580,7 +1600,7 @@ public class CPU : ICPU
     {
         if (_x)
         {
-            _snes.Write(adr, (byte) (_br[Y] & 0xff));
+            WriteBus(adr, (byte) (_br[Y] & 0xff));
         }
         else
         {
@@ -1593,7 +1613,7 @@ public class CPU : ICPU
     {
         if (_m)
         {
-            _snes.Write(adr, 0);
+            WriteBus(adr, 0);
         }
         else
         {
@@ -1605,7 +1625,7 @@ public class CPU : ICPU
     private void Mvn(int adr, int adrh) 
     {
         _r[DBR] = (byte) adr;
-        _snes.Write((adr << 16) | _br[Y], _snes.Read((adrh << 16) | _br[X]));
+        WriteBus((adr << 16) | _br[Y], ReadBus((adrh << 16) | _br[X]));
         _br[A]--;
         _br[X]++;
         _br[Y]++;
@@ -1618,7 +1638,7 @@ public class CPU : ICPU
     private void Mvp(int adr, int adrh) 
     {
         _r[DBR] = (byte) adr;
-        _snes.Write((adr << 16) | _br[Y], _snes.Read((adrh << 16) | _br[X]));
+        WriteBus((adr << 16) | _br[Y], ReadBus((adrh << 16) | _br[X]));
         _br[A]--;
         _br[X]--;
         _br[Y]--;
