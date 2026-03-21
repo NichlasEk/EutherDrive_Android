@@ -71,6 +71,8 @@ public partial class MainView : UserControl
     private long _emulatedFrames;
     private int _lastFrameWidth;
     private int _lastFrameHeight;
+    private int _bootRequestSerial;
+    private bool _bootInProgress;
 
     public MainView()
     {
@@ -94,6 +96,7 @@ public partial class MainView : UserControl
 
     private async void OnPickRom(object? sender, RoutedEventArgs e)
     {
+        CancelPendingBoot();
         StopSession(clearSelection: false, footerStatus: "Selecting ROM...");
 
         var topLevel = TopLevel.GetTopLevel(this);
@@ -147,7 +150,7 @@ public partial class MainView : UserControl
         }
     }
 
-    private void OnStartClicked(object? sender, RoutedEventArgs e)
+    private async void OnStartClicked(object? sender, RoutedEventArgs e)
     {
         if (!_viewModel.HasRomLoaded)
         {
@@ -155,15 +158,20 @@ public partial class MainView : UserControl
             return;
         }
 
+        if (_bootInProgress)
+        {
+            _viewModel.FooterStatus = "Boot already in progress.";
+            return;
+        }
+
         try
         {
-            StartCore();
-            _viewModel.IsRunning = true;
-            _viewModel.FooterStatus = "ROM started in Android host.";
+            await StartCoreAsync();
         }
         catch (Exception ex)
         {
             _viewModel.IsRunning = false;
+            _viewModel.StatusPill = _viewModel.HasRomLoaded ? "ROM loaded" : "Idle";
             string details = FormatExceptionForUi(ex);
             _viewModel.FooterStatus = $"Start failed: {details}";
             _viewModel.ScreenOverlayVisible = true;
@@ -174,6 +182,7 @@ public partial class MainView : UserControl
 
     private void OnStopClicked(object? sender, RoutedEventArgs e)
     {
+        CancelPendingBoot();
         StopSession(
             clearSelection: false,
             footerStatus: _viewModel.HasRomLoaded
@@ -951,53 +960,93 @@ public partial class MainView : UserControl
         }
     }
 
-    private void StartCore()
+    private async Task StartCoreAsync()
     {
         if (string.IsNullOrWhiteSpace(_selectedRomPath))
         {
             throw new InvalidOperationException("No ROM selected.");
         }
 
+        int bootRequestSerial = unchecked(++_bootRequestSerial);
+        _bootInProgress = true;
+        string romPath = _selectedRomPath;
+        string romDisplayName = _selectedRomDisplayName ?? Path.GetFileName(romPath);
+
         StopSession(clearSelection: false, footerStatus: null);
         _presentedFrames = 0;
         ResetPerfCounters();
-        _core = CreateCoreForRom(_selectedRomPath);
-        _viewModel.SelectedConsoleLabel = GetConsoleLabelForCore(_core, _selectedRomPath);
+        _viewModel.ScreenOverlayVisible = true;
+        _viewModel.IsRunning = false;
+        _viewModel.StatusPill = "Booting shell";
+        _viewModel.ScreenTitle = "Booting";
+        _viewModel.ScreenDescription = romDisplayName;
+        _viewModel.SelectedConsoleLabel = GuessConsoleLabelFromPath(romPath);
+        _viewModel.FooterStatus = $"Booting {romDisplayName}...";
 
-        if (_core is MdTracerAdapter md)
+        IEmulatorCore? loadedCore = null;
+        try
         {
-            md.PowerCycleAndLoadRom(_selectedRomPath);
-            md.SetMasterVolumePercent(100);
-        }
-        else
-        {
-            _core.LoadRom(_selectedRomPath);
-
-            switch (_core)
+            (IEmulatorCore Core, string ConsoleLabel) bootResult;
+            try
             {
-                case SnesAdapter snes:
-                    snes.SetMasterVolumePercent(100);
-                    break;
-                case PceCdAdapter pce:
-                    pce.SetMasterVolumePercent(100);
-                    break;
-                case NesAdapter nes:
-                    nes.SetMasterVolumePercent(100);
-                    break;
-                case PsxAdapter psx:
-                    psx.SetMasterVolumePercent(100);
-                    break;
-                case N64Adapter n64:
-                    n64.SetMasterVolumePercent(100);
-                    break;
+                bootResult = await Task.Run(() => LoadCoreForRom(romPath));
+            }
+            catch
+            {
+                if (bootRequestSerial != _bootRequestSerial
+                    || !string.Equals(_selectedRomPath, romPath, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                throw;
+            }
+
+            loadedCore = bootResult.Core;
+            string consoleLabel = bootResult.ConsoleLabel;
+
+            if (bootRequestSerial != _bootRequestSerial
+                || !string.Equals(_selectedRomPath, romPath, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _core = loadedCore;
+            loadedCore = null;
+            _viewModel.SelectedConsoleLabel = consoleLabel;
+            InitializeAudio(core: _core);
+            StartEmulationLoop(_core);
+            _frameTimer.Start();
+            _viewModel.IsRunning = true;
+            _viewModel.FooterStatus = "ROM started in Android host.";
+        }
+        finally
+        {
+            if (loadedCore is IDisposable disposableCore)
+            {
+                disposableCore.Dispose();
+            }
+
+            if (bootRequestSerial == _bootRequestSerial)
+            {
+                _bootInProgress = false;
             }
         }
+    }
 
-        _viewModel.ScreenOverlayVisible = true;
-        _viewModel.FooterStatus = $"Booting {_selectedRomDisplayName ?? Path.GetFileName(_selectedRomPath)}...";
-        InitializeAudio(core: _core);
-        StartEmulationLoop(_core);
-        _frameTimer.Start();
+    private void CancelPendingBoot()
+    {
+        if (!_bootInProgress)
+        {
+            return;
+        }
+
+        unchecked
+        {
+            _bootRequestSerial++;
+        }
+
+        _bootInProgress = false;
     }
 
     private void StartEmulationLoop(IEmulatorCore? core)
@@ -1748,6 +1797,21 @@ public partial class MainView : UserControl
     private void OnClearSegaCdBios(object? sender, RoutedEventArgs e) => ClearSystemFile("SEGA CD BIOS");
     private async void OnPickPsxBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("PSX BIOS", "Select PSX BIOS", new[] { "*.bin", "*.*" });
     private void OnClearPsxBios(object? sender, RoutedEventArgs e) => ClearSystemFile("PSX BIOS");
+    private void OnPsxFastLoadToggle(object? sender, RoutedEventArgs e)
+    {
+        _viewModel.PsxFastLoadEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked == true;
+        ApplyPsxExecutionSettings();
+        SaveSettings();
+        _viewModel.FooterStatus = $"PSX fast load {(_viewModel.PsxFastLoadEnabled ? "enabled" : "disabled")}.";
+    }
+
+    private void OnPsxSuperFastBootToggle(object? sender, RoutedEventArgs e)
+    {
+        _viewModel.PsxSuperFastBootEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked == true;
+        ApplyPsxExecutionSettings();
+        SaveSettings();
+        _viewModel.FooterStatus = $"PSX superfast boot {(_viewModel.PsxSuperFastBootEnabled ? "enabled" : "disabled")}. Reboot PSX content to apply.";
+    }
     private async void OnPickDsp1(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("DSP1", "Select DSP1 ROM", new[] { "*.bin", "*.*" });
     private void OnClearDsp1(object? sender, RoutedEventArgs e) => ClearSystemFile("DSP1");
     private async void OnPickDsp2(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("DSP2", "Select DSP2 ROM", new[] { "*.bin", "*.*" });
@@ -1768,8 +1832,7 @@ public partial class MainView : UserControl
         PceCdAdapter.BiosPath = RegisterSystemFileVirtualPath("PCE BIOS", _viewModel.PceBiosPath, _viewModel.PceBiosDisplay);
         string? segaCdBiosPath = RegisterSystemFileVirtualPath("SEGA CD BIOS", _viewModel.SegaCdBiosPath, _viewModel.SegaCdBiosDisplay);
         PsxAdapter.BiosPath = RegisterSystemFileVirtualPath("PSX BIOS", _viewModel.PsxBiosPath, _viewModel.PsxBiosDisplay);
-        PsxAdapter.FastLoadEnabled = false;
-        PsxAdapter.SuperFastBootEnabled = false;
+        ApplyPsxExecutionSettings();
 
         SetEnv("EUTHERDRIVE_PCE_SAVE_DIR", null);
         SetEnv("EUTHERDRIVE_SCD_BIOS", segaCdBiosPath);
@@ -1785,11 +1848,26 @@ public partial class MainView : UserControl
         SetEnv("EUTHERDRIVE_ST018_ROM", _viewModel.St018Path);
     }
 
+    private void ApplyPsxExecutionSettings()
+    {
+        PsxAdapter.FastLoadEnabled = _viewModel.PsxFastLoadEnabled;
+        PsxAdapter.SuperFastBootEnabled = _viewModel.PsxSuperFastBootEnabled;
+
+        if (_core is PsxAdapter psx)
+        {
+            psx.SetFastLoadEnabled(_viewModel.PsxFastLoadEnabled);
+            psx.SetSuperFastBootEnabled(_viewModel.PsxSuperFastBootEnabled);
+        }
+    }
+
     private string? RegisterSystemFileVirtualPath(string key, string? physicalPath, string? displayName)
     {
-        if (_virtualSystemPaths.TryGetValue(key, out string existingPath))
+        if (_virtualSystemPaths.TryGetValue(key, out string? existingPath))
         {
-            VirtualFileSystem.Unregister(existingPath);
+            if (!string.IsNullOrEmpty(existingPath))
+            {
+                VirtualFileSystem.Unregister(existingPath);
+            }
             _virtualSystemPaths.Remove(key);
         }
 
@@ -1819,6 +1897,8 @@ public partial class MainView : UserControl
             SegaCdBiosDisplay = _viewModel.SegaCdBiosDisplay,
             PsxBiosPath = _viewModel.PsxBiosPath,
             PsxBiosDisplay = _viewModel.PsxBiosDisplay,
+            PsxFastLoadEnabled = _viewModel.PsxFastLoadEnabled,
+            PsxSuperFastBootEnabled = _viewModel.PsxSuperFastBootEnabled,
             Dsp1Path = _viewModel.Dsp1Path,
             Dsp1Display = _viewModel.Dsp1Display,
             Dsp2Path = _viewModel.Dsp2Path,
@@ -1860,6 +1940,8 @@ public partial class MainView : UserControl
             _viewModel.SegaCdBiosDisplay = settings.SegaCdBiosDisplay ?? "(none)";
             _viewModel.PsxBiosPath = settings.PsxBiosPath;
             _viewModel.PsxBiosDisplay = settings.PsxBiosDisplay ?? "(none)";
+            _viewModel.PsxFastLoadEnabled = settings.PsxFastLoadEnabled;
+            _viewModel.PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled;
             _viewModel.Dsp1Path = settings.Dsp1Path;
             _viewModel.Dsp1Display = settings.Dsp1Display ?? "(none)";
             _viewModel.Dsp2Path = settings.Dsp2Path;
@@ -2163,6 +2245,57 @@ public partial class MainView : UserControl
         return new MdTracerAdapter();
     }
 
+    private static (IEmulatorCore Core, string ConsoleLabel) LoadCoreForRom(string romPath)
+    {
+        IEmulatorCore core = CreateCoreForRom(romPath);
+        try
+        {
+            if (core is MdTracerAdapter md)
+            {
+                md.PowerCycleAndLoadRom(romPath);
+                md.SetMasterVolumePercent(100);
+            }
+            else
+            {
+                core.LoadRom(romPath);
+                SetDefaultCoreVolume(core);
+            }
+
+            return (core, GetConsoleLabelForCore(core, romPath));
+        }
+        catch
+        {
+            if (core is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+
+            throw;
+        }
+    }
+
+    private static void SetDefaultCoreVolume(IEmulatorCore core)
+    {
+        switch (core)
+        {
+            case SnesAdapter snes:
+                snes.SetMasterVolumePercent(100);
+                break;
+            case PceCdAdapter pce:
+                pce.SetMasterVolumePercent(100);
+                break;
+            case NesAdapter nes:
+                nes.SetMasterVolumePercent(100);
+                break;
+            case PsxAdapter psx:
+                psx.SetMasterVolumePercent(100);
+                break;
+            case N64Adapter n64:
+                n64.SetMasterVolumePercent(100);
+                break;
+        }
+    }
+
     private static string GetConsoleLabelForCore(IEmulatorCore core, string romPath)
     {
         return core switch
@@ -2219,6 +2352,8 @@ public partial class MainView : UserControl
         private string _pceBiosDisplay = "(auto)";
         private string _segaCdBiosDisplay = "(none)";
         private string _psxBiosDisplay = "(none)";
+        private bool _psxFastLoadEnabled;
+        private bool _psxSuperFastBootEnabled;
         private string _dsp1Display = "(none)";
         private string _dsp2Display = "(none)";
         private string _dsp3Display = "(none)";
@@ -2414,6 +2549,8 @@ public partial class MainView : UserControl
         public string PceBiosDisplay { get => _pceBiosDisplay; set => SetField(ref _pceBiosDisplay, value); }
         public string SegaCdBiosDisplay { get => _segaCdBiosDisplay; set => SetField(ref _segaCdBiosDisplay, value); }
         public string PsxBiosDisplay { get => _psxBiosDisplay; set => SetField(ref _psxBiosDisplay, value); }
+        public bool PsxFastLoadEnabled { get => _psxFastLoadEnabled; set => SetField(ref _psxFastLoadEnabled, value); }
+        public bool PsxSuperFastBootEnabled { get => _psxSuperFastBootEnabled; set => SetField(ref _psxSuperFastBootEnabled, value); }
         public string Dsp1Display { get => _dsp1Display; set => SetField(ref _dsp1Display, value); }
         public string Dsp2Display { get => _dsp2Display; set => SetField(ref _dsp2Display, value); }
         public string Dsp3Display { get => _dsp3Display; set => SetField(ref _dsp3Display, value); }
@@ -2565,6 +2702,8 @@ public partial class MainView : UserControl
         public string? SegaCdBiosDisplay { get; set; }
         public string? PsxBiosPath { get; set; }
         public string? PsxBiosDisplay { get; set; }
+        public bool PsxFastLoadEnabled { get; set; }
+        public bool PsxSuperFastBootEnabled { get; set; }
         public string? Dsp1Path { get; set; }
         public string? Dsp1Display { get; set; }
         public string? Dsp2Path { get; set; }

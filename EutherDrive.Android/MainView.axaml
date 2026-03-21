@@ -119,6 +119,12 @@
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
+    <Style Selector="CheckBox.settingsToggle">
+      <Setter Property="Foreground" Value="#EEF6FF" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Margin" Value="0,2,0,0" />
+    </Style>
+
     <Style Selector="Border.debugShell">
       <Setter Property="Background" Value="#E1070D13" />
       <Setter Property="BorderBrush" Value="#4B6A7E" />
@@ -851,6 +857,24 @@
                     <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickPsxBios" />
                     <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearPsxBios" />
                   </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="PSX Boot"
+                               FontWeight="Bold" />
+                    <CheckBox Classes="settingsToggle"
+                              Content="PSX fast load"
+                              IsChecked="{Binding PsxFastLoadEnabled}"
+                              Click="OnPsxFastLoadToggle" />
+                    <CheckBox Classes="settingsToggle"
+                              Content="PSX superfast boot"
+                              IsChecked="{Binding PsxSuperFastBootEnabled}"
+                              Click="OnPsxSuperFastBootToggle" />
+                    <TextBlock Text="Fast load trims normal boot waits. Superfast boot is more aggressive and usually matters on next boot."
+                               Foreground="#91A8BD"
+                               TextWrapping="Wrap" />
+                  </StackPanel>
                 </Border>
 
                 <Border Classes="surface" Padding="12">
