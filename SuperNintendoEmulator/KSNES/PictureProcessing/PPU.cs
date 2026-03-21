@@ -6,6 +6,9 @@ namespace KSNES.PictureProcessing;
 
 public class PPU : IPPU
 {
+    public const int MaxFrameWidth = 512;
+    public const int MaxFrameHeight = 240;
+
     private static readonly bool TracePpu =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU"), "1", StringComparison.Ordinal);
     private static readonly int TracePpuLimit = GetTracePpuLimit();
@@ -32,6 +35,8 @@ public class PPU : IPPU
     private int[] _mode7Xcoords = [];
     private int[] _mode7Ycoords = [];
     private int[] _pixelOutput = [];
+    [NonSerialized]
+    private bool _frameTrueHiResOutput;
 
     [JsonIgnore]
     private readonly int[] _layersPerMode = [
@@ -174,6 +179,8 @@ public class PPU : IPPU
     public bool PseudoHires => _pseudoHires;
     public bool Interlace => _interlace;
     public bool ObjInterlace => _objInterlace;
+    public int PresentWidth => _frameTrueHiResOutput ? 512 : 256;
+    public int PresentHeight => FrameOverscan ? 240 : 224;
     public byte MainScreenMask => _tmRaw;
     public byte SubScreenMask => _tsRaw;
     private bool _evenFrame;
@@ -293,11 +300,7 @@ public class PPU : IPPU
         _cgramFrame = new ushort[0x100];
         _oam = new ushort[0x100];
         _highOam = new ushort[0x10];
-        _spriteLineBuffer = new byte[256];
-        _spritePrioBuffer = new byte[256];
-        _pixelOutput = new int[256 * 240];
-        _mode7Xcoords = new int[256];
-        _mode7Ycoords = new int[256];
+        EnsureRuntimeBuffers();
         _cgramAdr= 0;
         _cgramSecond = false;
         _cgramBuffer = 0;
@@ -383,6 +386,7 @@ public class PPU : IPPU
         _fixedColorB = 0;
         _fixedColorG = 0;
         _fixedColorR = 0;
+        _frameTrueHiResOutput = false;
         _tilemapBuffer = new int[4];
         _tileBufferP1 = new int[4];
         _tileBufferP2 = new int[4];
@@ -398,6 +402,7 @@ public class PPU : IPPU
     public void SetSystem(ISNESSystem snes)
     {
         _snes = snes;
+        EnsureRuntimeBuffers();
     }
 
     public int Read(int adr)
@@ -893,7 +898,46 @@ public class PPU : IPPU
 
     public int[] GetPixels()
     {
+        EnsureRuntimeBuffers();
         return _pixelOutput;
+    }
+
+    public void EnsureRuntimeBuffers()
+    {
+        if (_spriteLineBuffer.Length != 256)
+            _spriteLineBuffer = new byte[256];
+        if (_spritePrioBuffer.Length != 256)
+            _spritePrioBuffer = new byte[256];
+        if (_mode7Xcoords.Length != 256)
+            _mode7Xcoords = new int[256];
+        if (_mode7Ycoords.Length != 256)
+            _mode7Ycoords = new int[256];
+        if (_pixelOutput.Length != MaxFrameWidth * MaxFrameHeight)
+            _pixelOutput = new int[MaxFrameWidth * MaxFrameHeight];
+    }
+
+    private bool IsHiResOutput()
+    {
+        return IsTrueHiResOutput() || _pseudoHires;
+    }
+
+    private bool IsTrueHiResOutput()
+    {
+        return _mode == 5 || _mode == 6;
+    }
+
+    private void ExpandBufferedLinesToHiRes(int toLineInclusive)
+    {
+        for (int y = 0; y < toLineInclusive; y++)
+        {
+            int rowBase = y * MaxFrameWidth;
+            for (int x = 255; x >= 0; x--)
+            {
+                int color = _pixelOutput[rowBase + x];
+                _pixelOutput[rowBase + x * 2] = color;
+                _pixelOutput[rowBase + x * 2 + 1] = color;
+            }
+        }
     }
 
     public ushort[] GetVramDebugCopy()
@@ -1053,9 +1097,13 @@ public class PPU : IPPU
     public void RenderLine(int line) 
     {
         int screenY = line - 1;
+        EnsureRuntimeBuffers();
+        bool hiResOutput = IsHiResOutput();
+        bool trueHiResOutput = IsTrueHiResOutput();
         if (line == 0)
         {
             FrameOverscan = false;
+            _frameTrueHiResOutput = false;
             _spriteLineBuffer =  new byte[256];
             _spritePrioBuffer = new byte[256];
             if (!_forcedBlank)
@@ -1090,6 +1138,11 @@ public class PPU : IPPU
             _optHorBuffer = [0, 0];
             _optVerBuffer = [0, 0];
             _lastOrigTileX = [-1, -1];
+            if (trueHiResOutput && !_frameTrueHiResOutput)
+            {
+                ExpandBufferedLinesToHiRes(screenY);
+                _frameTrueHiResOutput = true;
+            }
             var i = 0;
             while (i < 256)
             {
@@ -1154,7 +1207,7 @@ public class PPU : IPPU
                     // Hi-res / pseudo-hires output is built from both main and sub screens.
                     // We render to a 256-wide buffer, so collapse the two half-pixels into one:
                     // prefer the visible source when only one screen contributes, otherwise blend.
-                    if (_mode == 5 || _mode == 6 || _pseudoHires)
+                    if (!trueHiResOutput && hiResOutput)
                     {
                         if (!mainVisible && subVisible)
                         {
@@ -1170,10 +1223,28 @@ public class PPU : IPPU
                         }
                     }
                 }
-                int realColor = BrightnessTable[_brightness, b2]
+                int mainColor = BrightnessTable[_brightness, b2]
                     | (BrightnessTable[_brightness, g2] << 8)
                     | (BrightnessTable[_brightness, r2] << 16);
-                _pixelOutput[(line - 1) * 256 + i] = (int) (realColor | 0xFF000000);
+                int outputRow = (line - 1) * MaxFrameWidth;
+                if (trueHiResOutput)
+                {
+                    int subColor = BrightnessTable[_brightness, b1]
+                        | (BrightnessTable[_brightness, g1] << 8)
+                        | (BrightnessTable[_brightness, r1] << 16);
+                    _pixelOutput[outputRow + i * 2] = subColor | unchecked((int)0xFF000000);
+                    _pixelOutput[outputRow + i * 2 + 1] = mainColor | unchecked((int)0xFF000000);
+                }
+                else if (_frameTrueHiResOutput)
+                {
+                    int argb = mainColor | unchecked((int)0xFF000000);
+                    _pixelOutput[outputRow + i * 2] = argb;
+                    _pixelOutput[outputRow + i * 2 + 1] = argb;
+                }
+                else
+                {
+                    _pixelOutput[outputRow + i] = mainColor | unchecked((int)0xFF000000);
+                }
                 i++;
             }
             _spriteLineBuffer = new byte[256];
@@ -1273,7 +1344,9 @@ public class PPU : IPPU
         // Use live CGRAM so mid-frame palette changes (for example via HDMA) affect
         // the lines they are meant to. Frame-latching the palette breaks games like
         // Kirby's Dream Land 3 that update HUD/scene colors during active display.
-        ushort color = _cgram[pixel & 0xff];
+        ushort color = (sub && layer == 5)
+            ? (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR)
+            : _cgram[pixel & 0xff];
         if (_directColor && layer < 4 && _bitPerMode[_mode * 4 + layer] == 8)
         {
             int r = ((pixel & 0x7) << 2) | ((pixel & 0x100) >> 7);

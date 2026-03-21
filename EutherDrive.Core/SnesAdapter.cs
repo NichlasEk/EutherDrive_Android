@@ -17,12 +17,14 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
     private const int DefaultWidth = 256;
     private const int DefaultHeight = 224;
     private const int DefaultStride = DefaultWidth * 4;
-
     private readonly SNESSystem _system;
     public SNESSystem System => _system;
     private readonly SnesAudioHandler _audioHandler = new();
     private readonly SnesFrameRenderer _renderer = new();
     private byte[] _frameBuffer = new byte[DefaultHeight * DefaultStride];
+    private int _frameWidth = DefaultWidth;
+    private int _frameHeight = DefaultHeight;
+    private int _frameStride = DefaultStride;
     private short[] _audioBuffer = Array.Empty<short>();
     private string? _romSummary;
     private long _lastAudioLogTicks;
@@ -116,13 +118,17 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
             _audioHandler.EnsureCapacity(samplesPerFrame);
             _system.RunFrameForExternal();
             int[] pixels = _system.PPU.GetPixels();
+            int presentWidth = DefaultWidth;
+            int presentHeight = DefaultHeight;
             if (_system.PPU is PPU ppu)
             {
                 if (!_sawBrightFrame)
                 {
-                    if (ppu.Brightness == 0 && !HasVisiblePixels(pixels))
+                    presentWidth = ppu.PresentWidth;
+                    presentHeight = ppu.PresentHeight;
+                    if (ppu.Brightness == 0 && !HasVisiblePixels(pixels, presentWidth, presentHeight))
                     {
-                        EnsureFrameBuffer();
+                        EnsureFrameBuffer(presentWidth, presentHeight);
                         Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
                         EnsureAudioBuffer(samplesPerFrame);
                         ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
@@ -131,9 +137,14 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
                     }
                     _sawBrightFrame = true;
                 }
+                else
+                {
+                    presentWidth = ppu.PresentWidth;
+                    presentHeight = ppu.PresentHeight;
+                }
             }
-            EnsureFrameBuffer();
-            ConvertArgbToBgra(pixels, _frameBuffer);
+            EnsureFrameBuffer(presentWidth, presentHeight);
+            ConvertArgbToBgra(pixels, _frameBuffer, presentWidth, presentHeight, PPU.MaxFrameWidth);
             EnsureAudioBuffer(samplesPerFrame);
             ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
             TraceAudioIfEnabled();
@@ -141,12 +152,17 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         }
     }
 
-    private static bool HasVisiblePixels(int[] pixels)
+    private static bool HasVisiblePixels(int[] pixels, int width, int height)
     {
-        foreach (int pixel in pixels)
+        int srcStride = PPU.MaxFrameWidth;
+        for (int y = 0; y < height; y++)
         {
-            if ((pixel & 0x00FFFFFF) != 0)
-                return true;
+            int rowBase = y * srcStride;
+            for (int x = 0; x < width; x++)
+            {
+                if ((pixels[rowBase + x] & 0x00FFFFFF) != 0)
+                    return true;
+            }
         }
 
         return false;
@@ -261,9 +277,9 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
-        width = DefaultWidth;
-        height = DefaultHeight;
-        stride = DefaultStride;
+        width = _frameWidth;
+        height = _frameHeight;
+        stride = _frameStride;
         return _frameBuffer;
     }
 
@@ -408,10 +424,13 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
             _system.SetKeyUp2(button);
     }
 
-    private void EnsureFrameBuffer()
+    private void EnsureFrameBuffer(int width, int height)
     {
-        int needed = DefaultHeight * DefaultStride;
-        if (_frameBuffer.Length < needed)
+        _frameWidth = width;
+        _frameHeight = height;
+        _frameStride = width * 4;
+        int needed = height * _frameStride;
+        if (_frameBuffer.Length != needed)
             _frameBuffer = new byte[needed];
     }
 
@@ -598,18 +617,21 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         };
     }
 
-    private static void ConvertArgbToBgra(int[] source, byte[] dest)
+    private static void ConvertArgbToBgra(int[] source, byte[] dest, int width, int height, int sourceStridePixels)
     {
-        int di = 0;
-        int pixelsToCopy = Math.Min(source.Length, dest.Length / 4);
-        for (int i = 0; i < pixelsToCopy; i++)
+        for (int y = 0; y < height; y++)
         {
-            uint argb = unchecked((uint)source[i]);
-            dest[di + 0] = (byte)argb;         // B
-            dest[di + 1] = (byte)(argb >> 8);  // G
-            dest[di + 2] = (byte)(argb >> 16); // R
-            dest[di + 3] = (byte)(argb >> 24); // A
-            di += 4;
+            int srcBase = y * sourceStridePixels;
+            int dstBase = y * width * 4;
+            for (int x = 0; x < width; x++)
+            {
+                uint argb = unchecked((uint)source[srcBase + x]);
+                int di = dstBase + x * 4;
+                dest[di + 0] = (byte)argb;
+                dest[di + 1] = (byte)(argb >> 8);
+                dest[di + 2] = (byte)(argb >> 16);
+                dest[di + 3] = (byte)(argb >> 24);
+            }
         }
     }
 
