@@ -680,6 +680,12 @@ namespace ProjectPSX.Devices {
             int texXRow = 0, texYRow = 0;
             int texXStepX = 0, texYStepX = 0;
             int texXStepY = 0, texYStepY = 0;
+            int genericClutX = primitive.clut.x;
+            int genericClutRowBase = primitive.clut.y << 10;
+            int genericTextureBaseX = primitive.textureBase.x;
+            int genericTextureBaseY = primitive.textureBase.y;
+            int genericTextureDepth = primitive.depth;
+            bool genericTextureWindowIdentity = textureWindowIdentity;
             if (textured) {
                 texXRow = t0.x * u0Row + t1.x * u1Row + t2.x * u2Row;
                 texYRow = t0.y * u0Row + t1.y * u1Row + t2.y * u2Row;
@@ -1396,15 +1402,17 @@ namespace ProjectPSX.Devices {
                         }
 
                         if (textured) {
-                            ushort rawTexel = GetTexelRawFast(
-                                vram1555Bits,
-                                maskTexelAxis(texelX, preMaskX, postMaskX),
-                                maskTexelAxis(texelY, preMaskY, postMaskY),
-                                primitive.clut.x,
-                                primitive.clut.y << 10,
-                                primitive.textureBase.x,
-                                primitive.textureBase.y,
-                                primitive.depth);
+                            int sampleX = genericTextureWindowIdentity
+                                ? (texelX & 0xFF)
+                                : maskTexelAxis(texelX, preMaskX, postMaskX);
+                            int sampleY = genericTextureWindowIdentity
+                                ? (texelY & 0xFF)
+                                : maskTexelAxis(texelY, preMaskY, postMaskY);
+                            ushort rawTexel = genericTextureDepth switch {
+                                0 => GetTexelRaw4Fast(vram1555Bits, sampleX, sampleY, genericClutX, genericClutRowBase, genericTextureBaseX, genericTextureBaseY),
+                                1 => GetTexelRaw8Fast(vram1555Bits, sampleX, sampleY, genericClutX, genericClutRowBase, genericTextureBaseX, genericTextureBaseY),
+                                _ => GetTexelRaw16Fast(vram1555Bits, sampleX, sampleY, genericTextureBaseX, genericTextureBaseY)
+                            };
                             if (rawTexel == 0) {
                                 goto AdvanceGenericTrianglePixel;
                             }
@@ -2394,11 +2402,18 @@ AdvanceGenericTrianglePixel:
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
             ushort genericMaskBit1555 = (ushort)(maskWhileDrawing << 15);
+            ushort genericPackedBaseColor = PackColor1555(baseColor);
             bool flatOpaqueFill = !primitive.isTextured && !primitive.isSemiTransparent;
             bool texturedFastPath = primitive.isTextured && !checkMask;
             bool passthroughTexturedFastPath =
                 texturedFastPath &&
                 (primitive.isRawTextured || (baseColor & 0x00FF_FFFF) == IdentityTextureModulationColor);
+            int genericClutX = primitive.clut.x;
+            int genericClutRowBase = primitive.clut.y << 10;
+            int genericTextureBaseX = primitive.textureBase.x;
+            int genericTextureBaseY = primitive.textureBase.y;
+            int genericTextureDepth = primitive.depth;
+            bool genericTextureWindowIdentity = textureWindowIdentity;
             Span<ushort> genericRectModulateR = stackalloc ushort[32];
             Span<ushort> genericRectModulateG = stackalloc ushort[32];
             Span<ushort> genericRectModulateB = stackalloc ushort[32];
@@ -2780,6 +2795,9 @@ AdvanceGenericTrianglePixel:
                 int rowBase = y << 10;
                 int sourceY = y - origin.y;
                 int v = texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY);
+                int sampleV = genericTextureWindowIdentity
+                    ? (v & 0xFF)
+                    : maskTexelAxis(v, preMaskY, postMaskY);
                 int sourceX = xOrigin - origin.x;
                 int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
                 int uStep = flipX ? -1 : 1;
@@ -2793,15 +2811,14 @@ AdvanceGenericTrianglePixel:
                     }
 
                     if (primitive.isTextured) {
-                        ushort rawTexel = GetTexelRawFast(
-                            vram1555Bits,
-                            maskTexelAxis(u, preMaskX, postMaskX),
-                            maskTexelAxis(v, preMaskY, postMaskY),
-                            primitive.clut.x,
-                            primitive.clut.y << 10,
-                            primitive.textureBase.x,
-                            primitive.textureBase.y,
-                            primitive.depth);
+                        int sampleX = genericTextureWindowIdentity
+                            ? (u & 0xFF)
+                            : maskTexelAxis(u, preMaskX, postMaskX);
+                        ushort rawTexel = genericTextureDepth switch {
+                            0 => GetTexelRaw4Fast(vram1555Bits, sampleX, sampleV, genericClutX, genericClutRowBase, genericTextureBaseX, genericTextureBaseY),
+                            1 => GetTexelRaw8Fast(vram1555Bits, sampleX, sampleV, genericClutX, genericClutRowBase, genericTextureBaseX, genericTextureBaseY),
+                            _ => GetTexelRaw16Fast(vram1555Bits, sampleX, sampleV, genericTextureBaseX, genericTextureBaseY)
+                        };
                         if (rawTexel == 0) {
                             u += uStep;
                             continue;
@@ -2821,8 +2838,7 @@ AdvanceGenericTrianglePixel:
                         continue;
                     }
 
-                    int color = baseColor;
-                    ushort packedColor = PackColor1555(color);
+                    ushort packedColor = genericPackedBaseColor;
                     if (primitive.isSemiTransparent) {
                         packedColor = BlendRawSemiTransparent1555(vram1555Bits[pixelIndex], packedColor, primitive.semiTransparencyMode);
                     }
