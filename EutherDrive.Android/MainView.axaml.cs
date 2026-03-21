@@ -13,6 +13,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
@@ -752,7 +753,7 @@ public partial class MainView : UserControl
         IPointer pointer,
         string fallbackTag)
     {
-        if (pointerMap.TryGetValue(pointer, out string actualTag))
+        if (pointerMap.TryGetValue(pointer, out string? actualTag) && actualTag != null)
         {
             pointerMap.Remove(pointer);
             DecrementPressCountLocked(pressCounts, pressedTags, actualTag);
@@ -1179,7 +1180,13 @@ public partial class MainView : UserControl
         }
 
         long presentStart = _perfStopwatch.ElapsedTicks;
-        _ = _renderSurface.Present(frameBuffer, width, height, srcStride, default, measurePerf: false);
+        _ = _renderSurface.Present(
+            frameBuffer,
+            width,
+            height,
+            srcStride,
+            new FrameBlitOptions(SharpPixels: _viewModel.SharpPixelsEnabled),
+            measurePerf: false);
 
         Interlocked.Add(ref _perfAccumulatedPresentTicks, _perfStopwatch.ElapsedTicks - presentStart);
         Interlocked.Increment(ref _perfPresentedWindowFrames);
@@ -1853,6 +1860,17 @@ public partial class MainView : UserControl
         SaveSettings();
         _viewModel.FooterStatus = $"PSX superfast boot {(_viewModel.PsxSuperFastBootEnabled ? "enabled" : "disabled")}. Reboot PSX content to apply.";
     }
+
+    private void OnSharpPixelsToggle(object? sender, RoutedEventArgs e)
+    {
+        _viewModel.SharpPixelsEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked != false;
+        ApplySharpPixelsSetting();
+        SaveSettings();
+        _viewModel.FooterStatus = _viewModel.SharpPixelsEnabled
+            ? "Sharp pixels enabled."
+            : "Sharp pixels disabled.";
+    }
+
     private async void OnPickDsp1(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("DSP1", "Select DSP1 ROM", new[] { "*.bin", "*.*" });
     private void OnClearDsp1(object? sender, RoutedEventArgs e) => ClearSystemFile("DSP1");
     private async void OnPickDsp2(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("DSP2", "Select DSP2 ROM", new[] { "*.bin", "*.*" });
@@ -1874,6 +1892,7 @@ public partial class MainView : UserControl
         string? segaCdBiosPath = RegisterSystemFileVirtualPath("SEGA CD BIOS", _viewModel.SegaCdBiosPath, _viewModel.SegaCdBiosDisplay);
         PsxAdapter.BiosPath = RegisterSystemFileVirtualPath("PSX BIOS", _viewModel.PsxBiosPath, _viewModel.PsxBiosDisplay);
         ApplyPsxExecutionSettings();
+        ApplySharpPixelsSetting();
 
         SetEnv("EUTHERDRIVE_PCE_SAVE_DIR", null);
         SetEnv("EUTHERDRIVE_SCD_BIOS", segaCdBiosPath);
@@ -1899,6 +1918,16 @@ public partial class MainView : UserControl
             psx.SetFastLoadEnabled(_viewModel.PsxFastLoadEnabled);
             psx.SetSuperFastBootEnabled(_viewModel.PsxSuperFastBootEnabled);
         }
+    }
+
+    private void ApplySharpPixelsSetting()
+    {
+        if (_renderSurface?.View is not Image renderImage)
+            return;
+
+        RenderOptions.SetBitmapInterpolationMode(
+            renderImage,
+            _viewModel.SharpPixelsEnabled ? BitmapInterpolationMode.None : BitmapInterpolationMode.MediumQuality);
     }
 
     private string? RegisterSystemFileVirtualPath(string key, string? physicalPath, string? displayName)
@@ -1940,6 +1969,7 @@ public partial class MainView : UserControl
             PsxBiosDisplay = _viewModel.PsxBiosDisplay,
             PsxFastLoadEnabled = _viewModel.PsxFastLoadEnabled,
             PsxSuperFastBootEnabled = _viewModel.PsxSuperFastBootEnabled,
+            SharpPixelsEnabled = _viewModel.SharpPixelsEnabled,
             Dsp1Path = _viewModel.Dsp1Path,
             Dsp1Display = _viewModel.Dsp1Display,
             Dsp2Path = _viewModel.Dsp2Path,
@@ -1983,6 +2013,7 @@ public partial class MainView : UserControl
             _viewModel.PsxBiosDisplay = settings.PsxBiosDisplay ?? "(none)";
             _viewModel.PsxFastLoadEnabled = settings.PsxFastLoadEnabled;
             _viewModel.PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled;
+            _viewModel.SharpPixelsEnabled = settings.SharpPixelsEnabled;
             _viewModel.Dsp1Path = settings.Dsp1Path;
             _viewModel.Dsp1Display = settings.Dsp1Display ?? "(none)";
             _viewModel.Dsp2Path = settings.Dsp2Path;
@@ -2229,6 +2260,7 @@ public partial class MainView : UserControl
         _renderSurface ??= new WriteableBitmapRenderSurface();
         if (_renderSurface.EnsureSize(width, height) || !IsRenderSurfaceAttachedToExpectedHost())
             AttachRenderSurfaceToActiveHost();
+        ApplySharpPixelsSetting();
     }
 
     private void ApplyPresentationSizeForCore(IEmulatorCore? core, int width, int height)
@@ -2485,6 +2517,7 @@ public partial class MainView : UserControl
         private string _psxBiosDisplay = "(none)";
         private bool _psxFastLoadEnabled;
         private bool _psxSuperFastBootEnabled;
+        private bool _sharpPixelsEnabled = true;
         private string _dsp1Display = "(none)";
         private string _dsp2Display = "(none)";
         private string _dsp3Display = "(none)";
@@ -2682,6 +2715,7 @@ public partial class MainView : UserControl
         public string PsxBiosDisplay { get => _psxBiosDisplay; set => SetField(ref _psxBiosDisplay, value); }
         public bool PsxFastLoadEnabled { get => _psxFastLoadEnabled; set => SetField(ref _psxFastLoadEnabled, value); }
         public bool PsxSuperFastBootEnabled { get => _psxSuperFastBootEnabled; set => SetField(ref _psxSuperFastBootEnabled, value); }
+        public bool SharpPixelsEnabled { get => _sharpPixelsEnabled; set => SetField(ref _sharpPixelsEnabled, value); }
         public string Dsp1Display { get => _dsp1Display; set => SetField(ref _dsp1Display, value); }
         public string Dsp2Display { get => _dsp2Display; set => SetField(ref _dsp2Display, value); }
         public string Dsp3Display { get => _dsp3Display; set => SetField(ref _dsp3Display, value); }
@@ -2835,6 +2869,7 @@ public partial class MainView : UserControl
         public string? PsxBiosDisplay { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public bool PsxSuperFastBootEnabled { get; set; }
+        public bool SharpPixelsEnabled { get; set; } = true;
         public string? Dsp1Path { get; set; }
         public string? Dsp1Display { get; set; }
         public string? Dsp2Path { get; set; }

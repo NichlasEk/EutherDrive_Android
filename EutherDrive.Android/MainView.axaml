@@ -856,6 +856,20 @@
                 </Border>
 
                 <Border Classes="surface" Padding="12">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="Display"
+                               FontWeight="Bold" />
+                    <CheckBox Classes="settingsToggle"
+                              Content="Sharp pixels"
+                              IsChecked="{Binding SharpPixelsEnabled}"
+                              Click="OnSharpPixelsToggle" />
+                    <TextBlock Text="Uses nearest-neighbor scaling for a crisp pixel look. Turn it off for smoother scaling."
+                               Foreground="#91A8BD"
+                               TextWrapping="Wrap" />
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
                   <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
                     <TextBlock Text="DSP1" FontWeight="Bold" VerticalAlignment="Center" />
                     <TextBlock Grid.Column="1" Text="{Binding Dsp1Display}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />

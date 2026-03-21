@@ -23,7 +23,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             return FrameBlitMetrics.None;
 
         long start = measurePerf ? Stopwatch.GetTimestamp() : 0;
-        _control.UpdateFrame(source, width, height, srcStride);
+        _control.UpdateFrame(source, width, height, srcStride, options);
         long blitTicks = measurePerf ? Stopwatch.GetTimestamp() - start : 0;
         return new FrameBlitMetrics(0, blitTicks);
     }
@@ -34,7 +34,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             return FrameBlitMetrics.None;
 
         long start = measurePerf ? Stopwatch.GetTimestamp() : 0;
-        _control.UpdateOwnedFrame(source, width, height, srcStride);
+        _control.UpdateOwnedFrame(source, width, height, srcStride, options);
         long blitTicks = measurePerf ? Stopwatch.GetTimestamp() - start : 0;
         return new FrameBlitMetrics(0, blitTicks);
     }
@@ -50,6 +50,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private const int GlArrayBuffer = 0x8892;
         private const int GlBgra = 0x80E1;
         private const int GlColorBufferBit = 0x00004000;
+        private const int GlClampToEdge = 0x812F;
         private const int GlCullFace = 0x0B44;
         private const int GlFramebuffer = 0x8D40;
         private const int GlFloat = 0x1406;
@@ -65,6 +66,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private const int GlTexture2D = 0x0DE1;
         private const int GlTextureMagFilter = 0x2800;
         private const int GlTextureMinFilter = 0x2801;
+        private const int GlTextureWrapS = 0x2802;
+        private const int GlTextureWrapT = 0x2803;
         private const int GlTriangles = 0x0004;
         private const int GlUnsignedByte = 0x1401;
         private const int GlVertexShader = 0x8B31;
@@ -97,6 +100,12 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private int _vertexArrayId;
         private int _positionLocation = -1;
         private int _uvLocation = -1;
+        private int _samplerLocation = -1;
+        private int _textureSizeLocation = -1;
+        private int _forceOpaqueLocation = -1;
+        private int _advancedFilterLocation = -1;
+        private int _scanlinesLocation = -1;
+        private int _scanlineDarkenLocation = -1;
         private int _presentCount;
         private int _renderCount;
         private readonly bool _traceEnabled = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_GL"), "1", StringComparison.Ordinal);
@@ -105,7 +114,17 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private bool _initAttempted;
         private bool _initSucceeded;
         private bool _renderRequested;
+        private bool _sharpPixelsEnabled = true;
+        private bool _forceOpaque;
+        private bool _applyScanlines;
+        private bool _applyAdvancedPixelFilter;
+        private float _scanlineDarken = 1.0f;
+        private bool _textureUsesNearest = true;
         private TexSubImage2DInvoker? _texSubImage2D;
+        private GetUniformLocationInvoker? _getUniformLocation;
+        private Uniform1iInvoker? _uniform1i;
+        private Uniform1fInvoker? _uniform1f;
+        private Uniform2fInvoker? _uniform2f;
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private unsafe delegate void TexSubImage2DCdecl(
@@ -131,6 +150,30 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             int type,
             IntPtr pixels);
 
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate int GetUniformLocationCdecl(int program, IntPtr name);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate int GetUniformLocationStdCall(int program, IntPtr name);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void Uniform1iCdecl(int location, int value);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate void Uniform1iStdCall(int location, int value);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void Uniform1fCdecl(int location, float value);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate void Uniform1fStdCall(int location, float value);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void Uniform2fCdecl(int location, float value0, float value1);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate void Uniform2fStdCall(int location, float value0, float value1);
+
         public int PixelWidth => _frameWidth;
         public int PixelHeight => _frameHeight;
 
@@ -152,7 +195,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             }
         }
 
-        public void UpdateFrame(ReadOnlySpan<byte> source, int width, int height, int srcStride)
+        public void UpdateFrame(ReadOnlySpan<byte> source, int width, int height, int srcStride, in FrameBlitOptions options)
         {
             EnsureFrameSize(width, height);
             int dstStride = width * 4;
@@ -188,19 +231,20 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 _frameHeight = height;
                 _frameStride = dstStride;
                 _frameDirty = true;
+                ApplyOptionsLocked(options);
             }
 
             _presentCount++;
             QueueRenderRequest();
         }
 
-        public void UpdateOwnedFrame(byte[] source, int width, int height, int srcStride)
+        public void UpdateOwnedFrame(byte[] source, int width, int height, int srcStride, in FrameBlitOptions options)
         {
             EnsureFrameSize(width, height);
             int requiredBytes = checked(width * height * 4);
             if (srcStride != width * 4 || source.Length < requiredBytes)
             {
-                UpdateFrame(source.AsSpan(0, Math.Min(source.Length, requiredBytes)), width, height, srcStride);
+                UpdateFrame(source.AsSpan(0, Math.Min(source.Length, requiredBytes)), width, height, srcStride, options);
                 return;
             }
 
@@ -211,6 +255,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 _frameHeight = height;
                 _frameStride = srcStride;
                 _frameDirty = true;
+                ApplyOptionsLocked(options);
             }
 
             _presentCount++;
@@ -274,9 +319,77 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 #endif
                 varying vec2 vUv;
                 uniform sampler2D uTex;
+                uniform vec2 uTextureSize;
+                uniform float uForceOpaque;
+                uniform float uApplyAdvancedFilter;
+                uniform float uApplyScanlines;
+                uniform float uScanlineDarken;
+
+                float luma(vec3 color)
+                {
+                    return dot(color, vec3(0.299, 0.587, 0.114));
+                }
+
+                vec2 clampTexel(vec2 texelPos)
+                {
+                    return clamp(texelPos, vec2(0.0, 0.0), uTextureSize - vec2(1.0, 1.0));
+                }
+
+                vec4 sampleTexel(vec2 texelPos)
+                {
+                    vec2 uv = (clampTexel(texelPos) + vec2(0.5, 0.5)) / uTextureSize;
+                    return texture2D(uTex, uv);
+                }
+
+                vec3 sharpen(vec2 texelPos)
+                {
+                    vec4 c4 = sampleTexel(texelPos);
+                    vec3 center = c4.rgb;
+                    vec3 left = sampleTexel(texelPos + vec2(-1.0, 0.0)).rgb;
+                    vec3 right = sampleTexel(texelPos + vec2(1.0, 0.0)).rgb;
+                    vec3 up = sampleTexel(texelPos + vec2(0.0, -1.0)).rgb;
+                    vec3 down = sampleTexel(texelPos + vec2(0.0, 1.0)).rgb;
+
+                    float cY = luma(center);
+                    float edge = abs(cY - luma(left))
+                        + abs(cY - luma(right))
+                        + abs(cY - luma(up))
+                        + abs(cY - luma(down));
+                    float gain = edge > (96.0 / 255.0)
+                        ? (160.0 / 256.0)
+                        : edge > (48.0 / 255.0)
+                            ? (112.0 / 256.0)
+                            : (72.0 / 256.0);
+
+                    vec3 blur = ((center * 4.0) + left + right + up + down) / 8.0;
+                    vec3 detail = center - blur;
+                    vec3 sharpened = center + (detail * gain);
+
+                    vec3 minN = min(center, min(min(left, right), min(up, down)));
+                    vec3 maxN = max(center, max(max(left, right), max(up, down)));
+                    vec3 low = max(vec3(0.0), minN - vec3(6.0 / 255.0));
+                    vec3 high = min(vec3(1.0), maxN + vec3(6.0 / 255.0));
+                    return clamp(sharpened, low, high);
+                }
+
                 void main()
                 {
-                    gl_FragColor = texture2D(uTex, vUv);
+                    vec2 texelPos = floor(vUv * uTextureSize);
+                    vec4 color = texture2D(uTex, vUv);
+
+                    if (uApplyAdvancedFilter > 0.5)
+                    {
+                        vec2 centerUv = (clampTexel(texelPos) + vec2(0.5, 0.5)) / uTextureSize;
+                        color = vec4(sharpen(texelPos), texture2D(uTex, centerUv).a);
+                    }
+
+                    if (uApplyScanlines > 0.5 && mod(texelPos.y, 2.0) > 0.5)
+                        color.rgb *= uScanlineDarken;
+
+                    if (uForceOpaque > 0.5)
+                        color.a = 1.0;
+
+                    gl_FragColor = color;
                 }
                 """;
 
@@ -303,6 +416,16 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
 
             _positionLocation = gl.GetAttribLocationString(_programId, "aPos");
             _uvLocation = gl.GetAttribLocationString(_programId, "aUv");
+            _getUniformLocation = GetUniformLocationInvoker.Create(gl.GetProcAddress("glGetUniformLocation"));
+            _uniform1i = Uniform1iInvoker.Create(gl.GetProcAddress("glUniform1i"));
+            _uniform1f = Uniform1fInvoker.Create(gl.GetProcAddress("glUniform1f"));
+            _uniform2f = Uniform2fInvoker.Create(gl.GetProcAddress("glUniform2f"));
+            _samplerLocation = GetUniformLocation("uTex");
+            _textureSizeLocation = GetUniformLocation("uTextureSize");
+            _forceOpaqueLocation = GetUniformLocation("uForceOpaque");
+            _advancedFilterLocation = GetUniformLocation("uApplyAdvancedFilter");
+            _scanlinesLocation = GetUniformLocation("uApplyScanlines");
+            _scanlineDarkenLocation = GetUniformLocation("uScanlineDarken");
 
             _vertexBufferId = gl.GenBuffer();
             gl.BindBuffer(GlArrayBuffer, _vertexBufferId);
@@ -326,6 +449,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             gl.BindTexture(GlTexture2D, _textureId);
             gl.TexParameteri(GlTexture2D, GlTextureMinFilter, GlNearest);
             gl.TexParameteri(GlTexture2D, GlTextureMagFilter, GlNearest);
+            gl.TexParameteri(GlTexture2D, GlTextureWrapS, GlClampToEdge);
+            gl.TexParameteri(GlTexture2D, GlTextureWrapT, GlClampToEdge);
             _textureWidth = 0;
             _textureHeight = 0;
             _texSubImage2D = TexSubImage2DInvoker.Create(gl.GetProcAddress("glTexSubImage2D"));
@@ -366,6 +491,10 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _textureHeight = 0;
             _texSubImage2D = null;
             _usePixelUnpackBuffers = false;
+            _getUniformLocation = null;
+            _uniform1i = null;
+            _uniform1f = null;
+            _uniform2f = null;
 
             if (_programId != 0)
             {
@@ -375,6 +504,12 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
 
             _positionLocation = -1;
             _uvLocation = -1;
+            _samplerLocation = -1;
+            _textureSizeLocation = -1;
+            _forceOpaqueLocation = -1;
+            _advancedFilterLocation = -1;
+            _scanlinesLocation = -1;
+            _scanlineDarkenLocation = -1;
             _initSucceeded = false;
         }
 
@@ -392,8 +527,18 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _programId = 0;
             _positionLocation = -1;
             _uvLocation = -1;
+            _samplerLocation = -1;
+            _textureSizeLocation = -1;
+            _forceOpaqueLocation = -1;
+            _advancedFilterLocation = -1;
+            _scanlinesLocation = -1;
+            _scanlineDarkenLocation = -1;
             _initSucceeded = false;
             _texSubImage2D = null;
+            _getUniformLocation = null;
+            _uniform1i = null;
+            _uniform1f = null;
+            _uniform2f = null;
 
             if (_traceEnabled)
                 Console.WriteLine("[OpenGL] Context lost");
@@ -418,6 +563,11 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             int frameHeight;
             byte[] uploadBytes;
             bool frameDirty;
+            bool sharpPixelsEnabled;
+            bool forceOpaque;
+            bool applyScanlines;
+            bool applyAdvancedPixelFilter;
+            float scanlineDarken;
             lock (_frameSync)
             {
                 frameBytes = _frameBytes;
@@ -425,6 +575,11 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 frameHeight = _frameHeight;
                 uploadBytes = _uploadBytes;
                 frameDirty = _frameDirty;
+                sharpPixelsEnabled = _sharpPixelsEnabled;
+                forceOpaque = _forceOpaque;
+                applyScanlines = _applyScanlines;
+                applyAdvancedPixelFilter = _applyAdvancedPixelFilter;
+                scanlineDarken = _scanlineDarken;
                 _frameDirty = false;
             }
 
@@ -435,6 +590,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             gl.BindTexture(GlTexture2D, _textureId);
             if (_vertexArrayId != 0)
                 gl.BindVertexArray(_vertexArrayId);
+            UpdateTextureFiltering(gl, sharpPixelsEnabled);
 
             if (frameDirty && frameBytes.Length > 0)
             {
@@ -457,6 +613,18 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             }
 
             gl.UseProgram(_programId);
+            if (_samplerLocation >= 0 && _uniform1i != null)
+                _uniform1i.Invoke(_samplerLocation, 0);
+            if (_textureSizeLocation >= 0 && _uniform2f != null)
+                _uniform2f.Invoke(_textureSizeLocation, frameWidth, frameHeight);
+            if (_forceOpaqueLocation >= 0 && _uniform1f != null)
+                _uniform1f.Invoke(_forceOpaqueLocation, forceOpaque ? 1.0f : 0.0f);
+            if (_advancedFilterLocation >= 0 && _uniform1f != null)
+                _uniform1f.Invoke(_advancedFilterLocation, applyAdvancedPixelFilter ? 1.0f : 0.0f);
+            if (_scanlinesLocation >= 0 && _uniform1f != null)
+                _uniform1f.Invoke(_scanlinesLocation, applyScanlines ? 1.0f : 0.0f);
+            if (_scanlineDarkenLocation >= 0 && _uniform1f != null)
+                _uniform1f.Invoke(_scanlineDarkenLocation, scanlineDarken);
             gl.BindBuffer(GlArrayBuffer, _vertexBufferId);
 
             if (_positionLocation >= 0)
@@ -491,6 +659,35 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
 
             if (shouldRequest)
                 RequestNextFrameRendering();
+        }
+
+        private void ApplyOptionsLocked(in FrameBlitOptions options)
+        {
+            _sharpPixelsEnabled = options.SharpPixels;
+            _forceOpaque = options.ForceOpaque;
+            _applyScanlines = options.ApplyScanlines;
+            _applyAdvancedPixelFilter = options.ApplyAdvancedPixelFilter;
+            _scanlineDarken = Math.Clamp(options.ScanlineDarkenFactor / 256f, 0f, 1f);
+        }
+
+        private void UpdateTextureFiltering(GlInterface gl, bool sharpPixelsEnabled)
+        {
+            bool useNearest = sharpPixelsEnabled;
+            if (_textureUsesNearest == useNearest)
+                return;
+
+            int filter = useNearest ? GlNearest : GlLinear;
+            gl.TexParameteri(GlTexture2D, GlTextureMinFilter, filter);
+            gl.TexParameteri(GlTexture2D, GlTextureMagFilter, filter);
+            _textureUsesNearest = useNearest;
+        }
+
+        private int GetUniformLocation(string name)
+        {
+            if (_getUniformLocation == null || _programId == 0)
+                return -1;
+
+            return _getUniformLocation.Invoke(_programId, name);
         }
 
         private static void ConvertBgraToRgba(ReadOnlySpan<byte> source, Span<byte> destination)
@@ -621,6 +818,135 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 }
 
                 _cdecl!(target, level, xoffset, yoffset, width, height, format, type, pixels);
+            }
+        }
+
+        private sealed class GetUniformLocationInvoker
+        {
+            private readonly GetUniformLocationCdecl? _cdecl;
+            private readonly GetUniformLocationStdCall? _stdcall;
+
+            private GetUniformLocationInvoker(GetUniformLocationCdecl callback) => _cdecl = callback;
+            private GetUniformLocationInvoker(GetUniformLocationStdCall callback) => _stdcall = callback;
+
+            public static GetUniformLocationInvoker? Create(IntPtr proc)
+            {
+                if (proc == IntPtr.Zero)
+                    return null;
+
+                if (OperatingSystem.IsWindows())
+                    return new GetUniformLocationInvoker(Marshal.GetDelegateForFunctionPointer<GetUniformLocationStdCall>(proc));
+
+                return new GetUniformLocationInvoker(Marshal.GetDelegateForFunctionPointer<GetUniformLocationCdecl>(proc));
+            }
+
+            public int Invoke(int program, string name)
+            {
+                IntPtr utf8 = Marshal.StringToHGlobalAnsi(name);
+                try
+                {
+                    if (_stdcall != null)
+                        return _stdcall(program, utf8);
+
+                    return _cdecl!(program, utf8);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(utf8);
+                }
+            }
+        }
+
+        private sealed class Uniform1iInvoker
+        {
+            private readonly Uniform1iCdecl? _cdecl;
+            private readonly Uniform1iStdCall? _stdcall;
+
+            private Uniform1iInvoker(Uniform1iCdecl callback) => _cdecl = callback;
+            private Uniform1iInvoker(Uniform1iStdCall callback) => _stdcall = callback;
+
+            public static Uniform1iInvoker? Create(IntPtr proc)
+            {
+                if (proc == IntPtr.Zero)
+                    return null;
+
+                if (OperatingSystem.IsWindows())
+                    return new Uniform1iInvoker(Marshal.GetDelegateForFunctionPointer<Uniform1iStdCall>(proc));
+
+                return new Uniform1iInvoker(Marshal.GetDelegateForFunctionPointer<Uniform1iCdecl>(proc));
+            }
+
+            public void Invoke(int location, int value)
+            {
+                if (_stdcall != null)
+                {
+                    _stdcall(location, value);
+                    return;
+                }
+
+                _cdecl!(location, value);
+            }
+        }
+
+        private sealed class Uniform1fInvoker
+        {
+            private readonly Uniform1fCdecl? _cdecl;
+            private readonly Uniform1fStdCall? _stdcall;
+
+            private Uniform1fInvoker(Uniform1fCdecl callback) => _cdecl = callback;
+            private Uniform1fInvoker(Uniform1fStdCall callback) => _stdcall = callback;
+
+            public static Uniform1fInvoker? Create(IntPtr proc)
+            {
+                if (proc == IntPtr.Zero)
+                    return null;
+
+                if (OperatingSystem.IsWindows())
+                    return new Uniform1fInvoker(Marshal.GetDelegateForFunctionPointer<Uniform1fStdCall>(proc));
+
+                return new Uniform1fInvoker(Marshal.GetDelegateForFunctionPointer<Uniform1fCdecl>(proc));
+            }
+
+            public void Invoke(int location, float value)
+            {
+                if (_stdcall != null)
+                {
+                    _stdcall(location, value);
+                    return;
+                }
+
+                _cdecl!(location, value);
+            }
+        }
+
+        private sealed class Uniform2fInvoker
+        {
+            private readonly Uniform2fCdecl? _cdecl;
+            private readonly Uniform2fStdCall? _stdcall;
+
+            private Uniform2fInvoker(Uniform2fCdecl callback) => _cdecl = callback;
+            private Uniform2fInvoker(Uniform2fStdCall callback) => _stdcall = callback;
+
+            public static Uniform2fInvoker? Create(IntPtr proc)
+            {
+                if (proc == IntPtr.Zero)
+                    return null;
+
+                if (OperatingSystem.IsWindows())
+                    return new Uniform2fInvoker(Marshal.GetDelegateForFunctionPointer<Uniform2fStdCall>(proc));
+
+                return new Uniform2fInvoker(Marshal.GetDelegateForFunctionPointer<Uniform2fCdecl>(proc));
+            }
+
+            public void Invoke(int location, float value0, float value1)
+            {
+                if (_stdcall != null)
+                {
+                    _stdcall(location, value0, value1);
+                    return;
+                }
+
+                _cdecl!(location, value0, value1);
             }
         }
     }

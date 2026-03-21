@@ -3,6 +3,7 @@ using System;
 namespace EutherDrive.Rendering;
 
 public readonly record struct FrameBlitOptions(
+    bool SharpPixels = true,
     bool ForceOpaque = false,
     bool ApplyScanlines = false,
     bool ApplyAdvancedPixelFilter = false,

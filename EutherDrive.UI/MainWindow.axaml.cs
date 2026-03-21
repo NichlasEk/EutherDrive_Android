@@ -6389,6 +6389,7 @@ public partial class MainWindow : Window
         int scanlineStrength = ClampPercent(_crtScanlineStrengthPercent);
         int scanlineDarkenFactor = 256 - ((scanlineStrength * 256) / 100);
         return new FrameBlitOptions(
+            SharpPixels: _sharpPixelsEnabled,
             ForceOpaque: forceOpaque,
             ApplyScanlines: applyScanlines,
             ApplyAdvancedPixelFilter: applyAdvancedPixelFilter,
