@@ -220,7 +220,7 @@ namespace ProjectPSX.Devices {
                         isInterlaceField = !isOddLine;
                     }
 
-                    window.Render(vram.Bits, vram1555.Bits);
+                    window.Render(vram1555.Bits);
                     return true;
                 }
             }
@@ -1346,6 +1346,8 @@ AdvanceTrianglePixel:
             int xBase = min.x;
             ushort maskBit1555 = (ushort)(maskWhileDrawing << 15);
             ulong reciprocal = BuildUnsignedReciprocal(area);
+            ComputeFloorStep(area, texXStepX, out int texXQuotientStep, out int texXRemainderStep);
+            ComputeFloorStep(area, texYStepX, out int texYQuotientStep, out int texYRemainderStep);
 
             switch (primitive.depth) {
                 case 0:
@@ -1354,11 +1356,11 @@ AdvanceTrianglePixel:
                             int pixelIndex = (y << 10) + xBase + spanStart;
                             int texX = texXRow + spanStart * texXStepX;
                             int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
-                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
                                     ushort packedTexel = (ushort)(rawTexel | maskBit1555);
@@ -1366,8 +1368,8 @@ AdvanceTrianglePixel:
                                 }
 
                                 pixelIndex++;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
                             }
                         }
 
@@ -1384,11 +1386,11 @@ AdvanceTrianglePixel:
                             int pixelIndex = (y << 10) + xBase + spanStart;
                             int texX = texXRow + spanStart * texXStepX;
                             int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
-                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
                                     ushort packedTexel = (ushort)(rawTexel | maskBit1555);
@@ -1396,8 +1398,8 @@ AdvanceTrianglePixel:
                                 }
 
                                 pixelIndex++;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
                             }
                         }
 
@@ -1414,11 +1416,11 @@ AdvanceTrianglePixel:
                             int pixelIndex = (y << 10) + xBase + spanStart;
                             int texX = texXRow + spanStart * texXStepX;
                             int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
-                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
+                                ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
                                     ushort packedTexel = (ushort)(rawTexel | maskBit1555);
@@ -1426,8 +1428,8 @@ AdvanceTrianglePixel:
                                 }
 
                                 pixelIndex++;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
                             }
                         }
 
@@ -1477,6 +1479,13 @@ AdvanceTrianglePixel:
             int yEnd = max.y;
             int xBase = min.x;
             ulong reciprocal = BuildUnsignedReciprocal(area);
+            ComputeFloorStep(area, texXStepX, out int texXQuotientStep, out int texXRemainderStep);
+            ComputeFloorStep(area, texYStepX, out int texYQuotientStep, out int texYRemainderStep);
+            ushort maskBit1555 = (ushort)(maskWhileDrawing << 15);
+            Span<ushort> modulateR = stackalloc ushort[32];
+            Span<ushort> modulateG = stackalloc ushort[32];
+            Span<ushort> modulateB = stackalloc ushort[32];
+            BuildModulate1555Tables(baseColor, modulateR, modulateG, modulateB);
 
             switch (primitive.depth) {
                 case 0:
@@ -1485,20 +1494,19 @@ AdvanceTrianglePixel:
                             int pixelIndex = (y << 10) + xBase + spanStart;
                             int texX = texXRow + spanStart * texXStepX;
                             int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
-                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                if (texel != 0) {
-                                    int color = ModulateColor(baseColor, texel) | maskBits;
-                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                if (rawTexel != 0) {
+                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                 }
 
                                 pixelIndex++;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
                             }
                         }
 
@@ -1515,20 +1523,19 @@ AdvanceTrianglePixel:
                             int pixelIndex = (y << 10) + xBase + spanStart;
                             int texX = texXRow + spanStart * texXStepX;
                             int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
-                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                if (texel != 0) {
-                                    int color = ModulateColor(baseColor, texel) | maskBits;
-                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                if (rawTexel != 0) {
+                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                 }
 
                                 pixelIndex++;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
                             }
                         }
 
@@ -1545,20 +1552,19 @@ AdvanceTrianglePixel:
                             int pixelIndex = (y << 10) + xBase + spanStart;
                             int texX = texXRow + spanStart * texXStepX;
                             int texY = texYRow + spanStart * texYStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
-                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, textureBaseX, textureBaseY);
+                                ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
 
-                                if (texel != 0) {
-                                    int color = ModulateColor(baseColor, texel) | maskBits;
-                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                if (rawTexel != 0) {
+                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                 }
 
                                 pixelIndex++;
-                                texX += texXStepX;
-                                texY += texYStepX;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
                             }
                         }
 
@@ -1639,6 +1645,11 @@ AdvanceTrianglePixel:
             int yEnd = max.y;
             int xBase = min.x;
             ulong reciprocal = BuildUnsignedReciprocal(area);
+            ComputeFloorStep(area, texXStepX, out int texXQuotientStep, out int texXRemainderStep);
+            ComputeFloorStep(area, texYStepX, out int texYQuotientStep, out int texYRemainderStep);
+            ComputeFloorStep(area, shadeRStepX, out int shadeRQuotientStep, out int shadeRRemainderStep);
+            ComputeFloorStep(area, shadeGStepX, out int shadeGQuotientStep, out int shadeGRemainderStep);
+            ComputeFloorStep(area, shadeBStepX, out int shadeBQuotientStep, out int shadeBRemainderStep);
 
             switch (primitive.depth) {
                 case 0:
@@ -1650,27 +1661,30 @@ AdvanceTrianglePixel:
                             int shadeR = shadeRRow + spanStart * shadeRStepX;
                             int shadeG = shadeGRow + spanStart * shadeGStepX;
                             int shadeB = shadeBRow + spanStart * shadeBStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+                            InitScaledFloorNonNegative(shadeR, area, reciprocal, out int shadeRValue, out int shadeRValueRemainder);
+                            InitScaledFloorNonNegative(shadeG, area, reciprocal, out int shadeGValue, out int shadeGValueRemainder);
+                            InitScaledFloorNonNegative(shadeB, area, reciprocal, out int shadeBValue, out int shadeBValueRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
-                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (texel != 0) {
                                     int color =
-                                        (FastDivideNonNegative(shadeR, area, reciprocal) << 16) |
-                                        (FastDivideNonNegative(shadeG, area, reciprocal) << 8) |
-                                        FastDivideNonNegative(shadeB, area, reciprocal);
+                                        (shadeRValue << 16) |
+                                        (shadeGValue << 8) |
+                                        shadeBValue;
                                     color = ModulateColor(color, texel) | maskBits;
                                     vram1555Bits[pixelIndex] = PackColor1555(color);
                                 }
 
                                 pixelIndex++;
-                                texX += texXStepX;
-                                texY += texYStepX;
-                                shadeR += shadeRStepX;
-                                shadeG += shadeGStepX;
-                                shadeB += shadeBStepX;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeRValue, ref shadeRValueRemainder, shadeRQuotientStep, shadeRRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeGValue, ref shadeGValueRemainder, shadeGQuotientStep, shadeGRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeBValue, ref shadeBValueRemainder, shadeBQuotientStep, shadeBRemainderStep, area);
                             }
                         }
 
@@ -1693,27 +1707,30 @@ AdvanceTrianglePixel:
                             int shadeR = shadeRRow + spanStart * shadeRStepX;
                             int shadeG = shadeGRow + spanStart * shadeGStepX;
                             int shadeB = shadeBRow + spanStart * shadeBStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+                            InitScaledFloorNonNegative(shadeR, area, reciprocal, out int shadeRValue, out int shadeRValueRemainder);
+                            InitScaledFloorNonNegative(shadeG, area, reciprocal, out int shadeGValue, out int shadeGValueRemainder);
+                            InitScaledFloorNonNegative(shadeB, area, reciprocal, out int shadeBValue, out int shadeBValueRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
-                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (texel != 0) {
                                     int color =
-                                        (FastDivideNonNegative(shadeR, area, reciprocal) << 16) |
-                                        (FastDivideNonNegative(shadeG, area, reciprocal) << 8) |
-                                        FastDivideNonNegative(shadeB, area, reciprocal);
+                                        (shadeRValue << 16) |
+                                        (shadeGValue << 8) |
+                                        shadeBValue;
                                     color = ModulateColor(color, texel) | maskBits;
                                     vram1555Bits[pixelIndex] = PackColor1555(color);
                                 }
 
                                 pixelIndex++;
-                                texX += texXStepX;
-                                texY += texYStepX;
-                                shadeR += shadeRStepX;
-                                shadeG += shadeGStepX;
-                                shadeB += shadeBStepX;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeRValue, ref shadeRValueRemainder, shadeRQuotientStep, shadeRRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeGValue, ref shadeGValueRemainder, shadeGQuotientStep, shadeGRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeBValue, ref shadeBValueRemainder, shadeBQuotientStep, shadeBRemainderStep, area);
                             }
                         }
 
@@ -1736,27 +1753,30 @@ AdvanceTrianglePixel:
                             int shadeR = shadeRRow + spanStart * shadeRStepX;
                             int shadeG = shadeGRow + spanStart * shadeGStepX;
                             int shadeB = shadeBRow + spanStart * shadeBStepX;
+                            InitScaledFloorNonNegative(texX, area, reciprocal, out int texelX, out int texelXRemainder);
+                            InitScaledFloorNonNegative(texY, area, reciprocal, out int texelY, out int texelYRemainder);
+                            InitScaledFloorNonNegative(shadeR, area, reciprocal, out int shadeRValue, out int shadeRValueRemainder);
+                            InitScaledFloorNonNegative(shadeG, area, reciprocal, out int shadeGValue, out int shadeGValueRemainder);
+                            InitScaledFloorNonNegative(shadeB, area, reciprocal, out int shadeBValue, out int shadeBValueRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
-                                int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, textureBaseX, textureBaseY);
+                                int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
 
                                 if (texel != 0) {
                                     int color =
-                                        (FastDivideNonNegative(shadeR, area, reciprocal) << 16) |
-                                        (FastDivideNonNegative(shadeG, area, reciprocal) << 8) |
-                                        FastDivideNonNegative(shadeB, area, reciprocal);
+                                        (shadeRValue << 16) |
+                                        (shadeGValue << 8) |
+                                        shadeBValue;
                                     color = ModulateColor(color, texel) | maskBits;
                                     vram1555Bits[pixelIndex] = PackColor1555(color);
                                 }
 
                                 pixelIndex++;
-                                texX += texXStepX;
-                                texY += texYStepX;
-                                shadeR += shadeRStepX;
-                                shadeG += shadeGStepX;
-                                shadeB += shadeBStepX;
+                                AdvanceScaledFloor(ref texelX, ref texelXRemainder, texXQuotientStep, texXRemainderStep, area);
+                                AdvanceScaledFloor(ref texelY, ref texelYRemainder, texYQuotientStep, texYRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeRValue, ref shadeRValueRemainder, shadeRQuotientStep, shadeRRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeGValue, ref shadeGValueRemainder, shadeGQuotientStep, shadeGRemainderStep, area);
+                                AdvanceScaledFloor(ref shadeBValue, ref shadeBValueRemainder, shadeBQuotientStep, shadeBRemainderStep, area);
                             }
                         }
 
@@ -1827,6 +1847,52 @@ AdvanceTrianglePixel:
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ulong BuildUnsignedReciprocal(int divisor) {
             return ((1UL << 32) + (uint)divisor - 1UL) / (uint)divisor;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void InitScaledFloorNonNegative(int numerator, int divisor, ulong reciprocal, out int quotient, out int remainder) {
+            quotient = FastDivideNonNegative(numerator, divisor, reciprocal);
+            remainder = numerator - quotient * divisor;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void ComputeFloorStep(int divisor, int step, out int quotientStep, out int remainderStep) {
+            quotientStep = FloorDivByPositive(step, divisor);
+            remainderStep = step - quotientStep * divisor;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void AdvanceScaledFloor(ref int quotient, ref int remainder, int quotientStep, int remainderStep, int divisor) {
+            quotient += quotientStep;
+            remainder += remainderStep;
+
+            if (remainder >= divisor) {
+                quotient++;
+                remainder -= divisor;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ushort ModulateRawTexel1555(ushort rawTexel, ushort maskBit1555, Span<ushort> modulateR, Span<ushort> modulateG, Span<ushort> modulateB) {
+            return (ushort)(
+                (rawTexel & 0x8000) |
+                maskBit1555 |
+                modulateR[rawTexel & 0x1F] |
+                modulateG[(rawTexel >> 5) & 0x1F] |
+                modulateB[(rawTexel >> 10) & 0x1F]);
+        }
+
+        private static void BuildModulate1555Tables(int baseColor, Span<ushort> modulateR, Span<ushort> modulateG, Span<ushort> modulateB) {
+            int baseR = (baseColor >> 16) & 0xFF;
+            int baseG = (baseColor >> 8) & 0xFF;
+            int baseB = baseColor & 0xFF;
+
+            for (int i = 0; i < 32; i++) {
+                int texel8 = (i << 3) | (i >> 2);
+                modulateR[i] = (ushort)(clampToFF((baseR * texel8) >> 7) >> 3);
+                modulateG[i] = (ushort)((clampToFF((baseG * texel8) >> 7) >> 3) << 5);
+                modulateB[i] = (ushort)((clampToFF((baseB * texel8) >> 7) >> 3) << 10);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

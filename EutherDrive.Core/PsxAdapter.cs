@@ -15,7 +15,7 @@ namespace EutherDrive.Core;
 public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInputHandler
 {
     private const uint OpaqueBlackPixel = 0xFF000000u;
-    private static readonly uint[] Color1555To8888Lut = BuildColor1555To8888Lut();
+    private static readonly uint[] OpaqueColor1555To8888Lut = BuildOpaqueColor1555To8888Lut();
     private const int SuperFastBootMaxTotalFrames = 2400;
     private const int SuperFastBootMaxPostBiosFrames = 900;
     private const int SuperFastBootRequiredVisibleFrames = 2;
@@ -46,7 +46,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
 
         public PsxHostWindow(PsxAdapter owner) => _owner = owner;
 
-        public void Render(int[] vram, ushort[] vram1555)
+        public void Render(ushort[] vram1555)
         {
             if (!TryGetSourceViewport(out int sourceX, out int sourceY, out int sourceWidth, out int sourceHeight))
             {
@@ -681,19 +681,26 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
 
     private static void BlitOpaque1555(ReadOnlySpan<ushort> source, Span<uint> destination)
     {
-        uint[] lut = Color1555To8888Lut;
+        uint[] lut = OpaqueColor1555To8888Lut;
+        ref ushort sourceRef = ref MemoryMarshal.GetReference(source);
+        ref uint destinationRef = ref MemoryMarshal.GetReference(destination);
+        int length = source.Length;
         int x = 0;
-        int unrolledLength = source.Length - 3;
-        for (; x < unrolledLength; x += 4)
+        int unrolledLength = length - 7;
+        for (; x <= unrolledLength; x += 8)
         {
-            destination[x] = lut[source[x]] | OpaqueBlackPixel;
-            destination[x + 1] = lut[source[x + 1]] | OpaqueBlackPixel;
-            destination[x + 2] = lut[source[x + 2]] | OpaqueBlackPixel;
-            destination[x + 3] = lut[source[x + 3]] | OpaqueBlackPixel;
+            Unsafe.Add(ref destinationRef, x) = lut[Unsafe.Add(ref sourceRef, x)];
+            Unsafe.Add(ref destinationRef, x + 1) = lut[Unsafe.Add(ref sourceRef, x + 1)];
+            Unsafe.Add(ref destinationRef, x + 2) = lut[Unsafe.Add(ref sourceRef, x + 2)];
+            Unsafe.Add(ref destinationRef, x + 3) = lut[Unsafe.Add(ref sourceRef, x + 3)];
+            Unsafe.Add(ref destinationRef, x + 4) = lut[Unsafe.Add(ref sourceRef, x + 4)];
+            Unsafe.Add(ref destinationRef, x + 5) = lut[Unsafe.Add(ref sourceRef, x + 5)];
+            Unsafe.Add(ref destinationRef, x + 6) = lut[Unsafe.Add(ref sourceRef, x + 6)];
+            Unsafe.Add(ref destinationRef, x + 7) = lut[Unsafe.Add(ref sourceRef, x + 7)];
         }
 
-        for (; x < source.Length; x++)
-            destination[x] = lut[source[x]] | OpaqueBlackPixel;
+        for (; x < length; x++)
+            Unsafe.Add(ref destinationRef, x) = lut[Unsafe.Add(ref sourceRef, x)];
     }
 
     private void UpdateFrame24(ushort[] vram1555, Span<uint> dstPixels, int width, int height, int baseX, int baseY, int vramWidth, int vramHeight)
@@ -747,7 +754,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         row.Fill(OpaqueBlackPixel);
     }
 
-    private static uint[] BuildColor1555To8888Lut()
+    private static uint[] BuildOpaqueColor1555To8888Lut()
     {
         uint[] lut = new uint[ushort.MaxValue + 1];
         for (int value = 0; value < lut.Length; value++)
@@ -755,11 +762,10 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             int r = value & 0x1F;
             int g = (value >> 5) & 0x1F;
             int b = (value >> 10) & 0x1F;
-            int a = (value & 0x8000) != 0 ? 0xFF : 0x00;
             uint r8 = (uint)((r << 3) | (r >> 2));
             uint g8 = (uint)((g << 3) | (g >> 2));
             uint b8 = (uint)((b << 3) | (b >> 2));
-            lut[value] = ((uint)a << 24) | (r8 << 16) | (g8 << 8) | b8;
+            lut[value] = OpaqueBlackPixel | (r8 << 16) | (g8 << 8) | b8;
         }
 
         return lut;

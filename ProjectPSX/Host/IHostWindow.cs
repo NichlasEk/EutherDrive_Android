@@ -1,6 +1,6 @@
 ﻿namespace ProjectPSX {
     public interface IHostWindow {
-        void Render(int[] vram, ushort[] vram1555);
+        void Render(ushort[] vram1555);
         void SetDisplayMode(int horizontalRes, int verticalRes, bool is24BitDepth);
         void SetHorizontalRange(ushort displayX1, ushort displayX2);
         void SetVRAMStart(ushort displayVRAMXStart, ushort displayVRAMYStart);
