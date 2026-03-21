@@ -221,6 +221,16 @@ public class BUS {
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanLoadData32Fast(uint address) {
+            if (address == MemoryCacheControlAddress) {
+                return false;
+            }
+
+            uint addr = address & RegionMask[address >> 29];
+            return addr < 0x1F80_0400 || (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe bool TryLoadData16Fast(uint address, out ushort value) {
             uint addr = address & RegionMask[address >> 29];
             if (addr < 0x1F00_0000) {
@@ -252,6 +262,12 @@ public class BUS {
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanLoadData16Fast(uint address) {
+            uint addr = address & RegionMask[address >> 29];
+            return addr < 0x1F80_0400 || (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe bool TryLoadData8Fast(uint address, out byte value) {
             uint addr = address & RegionMask[address >> 29];
             if (addr < 0x1F00_0000) {
@@ -280,6 +296,12 @@ public class BUS {
 
             value = 0;
             return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanLoadData8Fast(uint address) {
+            uint addr = address & RegionMask[address >> 29];
+            return addr < 0x1F80_0400 || (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000);
         }
 
         public unsafe void write32(uint address, uint value) {
@@ -369,6 +391,16 @@ public class BUS {
             return false;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanStoreData32Fast(uint address) {
+            if (address == MemoryCacheControlAddress) {
+                return false;
+            }
+
+            uint addr = address & RegionMask[address >> 29];
+            return addr < 0x1F80_0400;
+        }
+
         public unsafe void write16(uint address, ushort value) {
             if (address == MemoryCacheControlAddress) {
                 memoryCache = value;
@@ -456,6 +488,16 @@ public class BUS {
             return false;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanStoreData16Fast(uint address) {
+            if (address == MemoryCacheControlAddress) {
+                return false;
+            }
+
+            uint addr = address & RegionMask[address >> 29];
+            return addr < 0x1F80_0400;
+        }
+
         public unsafe void write8(uint address, byte value) {
             if (address == MemoryCacheControlAddress) {
                 memoryCache = value;
@@ -541,6 +583,16 @@ public class BUS {
             }
 
             return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanStoreData8Fast(uint address) {
+            if (address == MemoryCacheControlAddress) {
+                return false;
+            }
+
+            uint addr = address & RegionMask[address >> 29];
+            return addr < 0x1F80_0400;
         }
 
         internal unsafe bool loadBios() {

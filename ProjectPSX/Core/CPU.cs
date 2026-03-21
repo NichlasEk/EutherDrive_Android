@@ -517,7 +517,10 @@ namespace ProjectPSX {
             instructionsExecuted = 0;
             runtimeRamObserved = false;
 
-            if (maxCpuCycles <= 1 || bus.ShouldYieldCpuSlice || !CanUseCachedLinearStep(PC)) {
+            if (maxCpuCycles <= 1
+                || bus.ShouldYieldCpuSlice
+                || opcodeIsBranch
+                || !CanUseCachedLinearStep(PC)) {
                 return false;
             }
 
@@ -531,6 +534,10 @@ namespace ProjectPSX {
                 uint currentPc = PC;
                 uint physicalPc = currentPc & 0x1FFF_FFFF;
                 int cacheIndex = EnsureDecodedInstruction(physicalPc);
+                ref readonly Instr decoded = ref _decodedInstructionCache[cacheIndex];
+                if (!CanExecuteCachedSimpleLinearInstructionRuntime(in decoded)) {
+                    break;
+                }
 
                 PC_Now = currentPc;
                 if (TraceCurrentPcEnabled) {
@@ -544,7 +551,7 @@ namespace ProjectPSX {
                 opcodeIsBranch = false;
                 opcodeTookBranch = false;
 
-                instr = _decodedInstructionCache[cacheIndex];
+                instr = decoded;
                 _currentOpcodeHandler = _decodedInstructionHandlers[cacheIndex];
                 runtimeRamObserved |= ExecuteDecodedInstruction();
                 instructionsExecuted++;
@@ -628,7 +635,7 @@ namespace ProjectPSX {
             uint currentPhysicalPc = physicalAddress;
             while (length < MaxCachedLinearBlockInstructions && currentPhysicalPc < 0x1F00_0000) {
                 int cacheIndex = EnsureDecodedInstruction(currentPhysicalPc);
-                if (!CanExecuteInCachedLinearBlock(in _decodedInstructionCache[cacheIndex])) {
+                if (!CanParticipateInCachedLinearBlock(in _decodedInstructionCache[cacheIndex])) {
                     break;
                 }
 
@@ -645,7 +652,22 @@ namespace ProjectPSX {
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool CanExecuteInCachedLinearBlock(in Instr decoded) {
+        private bool CanExecuteCachedSimpleLinearInstructionRuntime(in Instr decoded) {
+            return decoded.opcode switch {
+                0x20 or 0x24 => bus.CanLoadData8Fast(GPR[decoded.rs] + decoded.imm_s),
+                0x21 or 0x25 => CanExecuteFastHalfwordLoad(decoded),
+                0x22 or 0x26 => bus.CanLoadData32Fast((GPR[decoded.rs] + decoded.imm_s) & 0xFFFF_FFFCu),
+                0x23 => CanExecuteFastWordLoad(decoded),
+                0x28 => bus.CanStoreData8Fast(GPR[decoded.rs] + decoded.imm_s),
+                0x29 => CanExecuteFastHalfwordStore(decoded),
+                0x2A or 0x2E => CanExecuteFastWordReadModifyWrite(decoded),
+                0x2B => CanExecuteFastWordStore(decoded),
+                _ => true
+            };
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool CanParticipateInCachedLinearBlock(in Instr decoded) {
             return decoded.opcode switch {
                 0x00 => decoded.function switch {
                     0x00 or 0x02 or 0x03 or 0x04 or 0x06 or 0x07
@@ -655,9 +677,41 @@ namespace ProjectPSX {
                         or 0x2A or 0x2B => true,
                     _ => false
                 },
-                0x09 or 0x0A or 0x0B or 0x0C or 0x0D or 0x0E or 0x0F => true,
+                0x09 or 0x0A or 0x0B or 0x0C or 0x0D or 0x0E or 0x0F
+                    or 0x20 or 0x21 or 0x22 or 0x23 or 0x24 or 0x25 or 0x26
+                    or 0x28 or 0x29 or 0x2A or 0x2B or 0x2E => true,
                 _ => false
             };
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool CanExecuteFastHalfwordLoad(in Instr decoded) {
+            uint address = GPR[decoded.rs] + decoded.imm_s;
+            return (address & 0x1) == 0 && bus.CanLoadData16Fast(address);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool CanExecuteFastWordLoad(in Instr decoded) {
+            uint address = GPR[decoded.rs] + decoded.imm_s;
+            return (address & 0x3) == 0 && bus.CanLoadData32Fast(address);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool CanExecuteFastHalfwordStore(in Instr decoded) {
+            uint address = GPR[decoded.rs] + decoded.imm_s;
+            return (address & 0x1) == 0 && bus.CanStoreData16Fast(address);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool CanExecuteFastWordStore(in Instr decoded) {
+            uint address = GPR[decoded.rs] + decoded.imm_s;
+            return (address & 0x3) == 0 && bus.CanStoreData32Fast(address);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool CanExecuteFastWordReadModifyWrite(in Instr decoded) {
+            uint alignedAddress = (GPR[decoded.rs] + decoded.imm_s) & 0xFFFF_FFFCu;
+            return bus.CanLoadData32Fast(alignedAddress) && bus.CanStoreData32Fast(alignedAddress);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
