@@ -369,8 +369,7 @@ namespace ProjectPSX.Devices {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void drawVRAMPixel(ushort color1555) {
-            if (!checkMaskBeforeDraw || vram.GetPixelRGB888(vramTransfer.x, vramTransfer.y) >> 24 == 0) {
-                vram.SetPixel(vramTransfer.x & 0x3FF, vramTransfer.y & 0x1FF, color1555to8888LUT[color1555]);
+            if (!checkMaskBeforeDraw || (vram1555.GetPixel(vramTransfer.x & 0x3FF, vramTransfer.y & 0x1FF) & 0x8000) == 0) {
                 vram1555.SetPixel(vramTransfer.x & 0x3FF, vramTransfer.y & 0x1FF, color1555);
             }
 
@@ -469,10 +468,8 @@ namespace ProjectPSX.Devices {
             ushort rawColor = PackColor1555(color);
 
             if(x + w <= 0x3FF && y + h <= 0x1FF) {
-                var vramSpan = new Span<int>(vram.Bits);
                 var vram1555Span = new Span<ushort>(vram1555.Bits);
                 for (int yPos = y; yPos < h + y; yPos++) {
-                    vramSpan.Slice(x + (yPos * 1024), w).Fill(color);
                     vram1555Span.Slice(x + (yPos * 1024), w).Fill(rawColor);
                 }
             } else {
@@ -480,7 +477,6 @@ namespace ProjectPSX.Devices {
                     for (int xPos = x; xPos < w + x; xPos++) {
                         int writeX = xPos & 0x3FF;
                         int writeY = yPos & 0x1FF;
-                        vram.SetPixel(writeX, writeY, color);
                         vram1555.SetPixel(writeX, writeY, rawColor);
                     }
                 }
@@ -595,7 +591,6 @@ namespace ProjectPSX.Devices {
             int w0_row = orient2d(v1, v2, min) + bias0;
             int w1_row = orient2d(v2, v0, min) + bias1;
             int w2_row = orient2d(v0, v1, min) + bias2;
-            int[] vramBits = vram.Bits;
             ushort[] vram1555Bits = vram1555.Bits;
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
@@ -617,7 +612,6 @@ namespace ProjectPSX.Devices {
                         if ((w0 | w1 | w2) >= 0) {
                             int pixelIndex = rowBase + x;
                             if (!checkMask || (vram1555Bits[pixelIndex] & 0x8000) == 0) {
-                                vramBits[pixelIndex] = fillColor;
                                 vram1555Bits[pixelIndex] = fillColor1555;
                             }
                         }
@@ -798,7 +792,6 @@ namespace ProjectPSX.Devices {
                                             int pixelIndex = rowBase + x;
                                             ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                             vram1555Bits[pixelIndex] = packedTexel;
-                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                         }
                                     }
 
@@ -835,7 +828,6 @@ namespace ProjectPSX.Devices {
                                             int pixelIndex = rowBase + x;
                                             ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                             vram1555Bits[pixelIndex] = packedTexel;
-                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                         }
                                     }
 
@@ -872,7 +864,6 @@ namespace ProjectPSX.Devices {
                                             int pixelIndex = rowBase + x;
                                             ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                             vram1555Bits[pixelIndex] = packedTexel;
-                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                         }
                                     }
 
@@ -912,7 +903,6 @@ namespace ProjectPSX.Devices {
                                             int pixelIndex = rowBase + x;
                                             ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                             vram1555Bits[pixelIndex] = packedTexel;
-                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                         }
                                     }
 
@@ -949,7 +939,6 @@ namespace ProjectPSX.Devices {
                                             int pixelIndex = rowBase + x;
                                             ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                             vram1555Bits[pixelIndex] = packedTexel;
-                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                         }
                                     }
 
@@ -986,7 +975,6 @@ namespace ProjectPSX.Devices {
                                             int pixelIndex = rowBase + x;
                                             ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                             vram1555Bits[pixelIndex] = packedTexel;
-                                            vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                         }
                                     }
 
@@ -1032,12 +1020,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = (texX / area) & 0xFF;
                                         int texelY = (texY / area) & 0xFF;
-                                        int texel = GetTexel4Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                        int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (texel != 0) {
                                             int pixelIndex = rowBase + x;
                                             int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vramBits[pixelIndex] = color;
                                             vram1555Bits[pixelIndex] = PackColor1555(color);
                                         }
                                     }
@@ -1069,12 +1056,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = (texX / area) & 0xFF;
                                         int texelY = (texY / area) & 0xFF;
-                                        int texel = GetTexel8Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                        int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (texel != 0) {
                                             int pixelIndex = rowBase + x;
                                             int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vramBits[pixelIndex] = color;
                                             vram1555Bits[pixelIndex] = PackColor1555(color);
                                         }
                                     }
@@ -1106,12 +1092,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = (texX / area) & 0xFF;
                                         int texelY = (texY / area) & 0xFF;
-                                        int texel = GetTexel16Fast(vramBits, texelX, texelY, textureBaseX, textureBaseY);
+                                        int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, textureBaseX, textureBaseY);
 
                                         if (texel != 0) {
                                             int pixelIndex = rowBase + x;
                                             int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vramBits[pixelIndex] = color;
                                             vram1555Bits[pixelIndex] = PackColor1555(color);
                                         }
                                     }
@@ -1146,12 +1131,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
                                         int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                        int texel = GetTexel4Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                        int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (texel != 0) {
                                             int pixelIndex = rowBase + x;
                                             int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vramBits[pixelIndex] = color;
                                             vram1555Bits[pixelIndex] = PackColor1555(color);
                                         }
                                     }
@@ -1183,12 +1167,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
                                         int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                        int texel = GetTexel8Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                        int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (texel != 0) {
                                             int pixelIndex = rowBase + x;
                                             int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vramBits[pixelIndex] = color;
                                             vram1555Bits[pixelIndex] = PackColor1555(color);
                                         }
                                     }
@@ -1220,12 +1203,11 @@ namespace ProjectPSX.Devices {
                                     if ((w0 | w1 | w2) >= 0) {
                                         int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
                                         int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
-                                        int texel = GetTexel16Fast(vramBits, texelX, texelY, textureBaseX, textureBaseY);
+                                        int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, textureBaseX, textureBaseY);
 
                                         if (texel != 0) {
                                             int pixelIndex = rowBase + x;
                                             int color = ModulateColor(baseColor, texel) | maskBits;
-                                            vramBits[pixelIndex] = color;
                                             vram1555Bits[pixelIndex] = PackColor1555(color);
                                         }
                                     }
@@ -1298,13 +1280,12 @@ namespace ProjectPSX.Devices {
 
                         if (primitive.isSemiTransparent && (!primitive.isTextured || (color & 0xFF00_0000) != 0)) {
                             if (!checkMask)
-                                backColor = vramBits[pixelIndex];
+                                backColor = color1555to8888LUT[vram1555Bits[pixelIndex]];
                             color = handleSemiTransp(backColor, color, primitive.semiTransparencyMode);
                         }
 
                         color |= maskBits;
 
-                        vramBits[pixelIndex] = color;
                         vram1555Bits[pixelIndex] = PackColor1555(color);
                     }
 
@@ -1355,7 +1336,6 @@ AdvanceTrianglePixel:
                 return true;
             }
 
-            int[] vramBits = vram.Bits;
             ushort[] vram1555Bits = vram1555.Bits;
             int clutX = primitive.clut.x;
             int clutRowBase = primitive.clut.y << 10;
@@ -1383,7 +1363,6 @@ AdvanceTrianglePixel:
                                 if (rawTexel != 0) {
                                     ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                     vram1555Bits[pixelIndex] = packedTexel;
-                                    vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                 }
 
                                 pixelIndex++;
@@ -1414,7 +1393,6 @@ AdvanceTrianglePixel:
                                 if (rawTexel != 0) {
                                     ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                     vram1555Bits[pixelIndex] = packedTexel;
-                                    vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                 }
 
                                 pixelIndex++;
@@ -1445,7 +1423,6 @@ AdvanceTrianglePixel:
                                 if (rawTexel != 0) {
                                     ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                     vram1555Bits[pixelIndex] = packedTexel;
-                                    vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                 }
 
                                 pixelIndex++;
@@ -1491,7 +1468,6 @@ AdvanceTrianglePixel:
                 return true;
             }
 
-            int[] vramBits = vram.Bits;
             ushort[] vram1555Bits = vram1555.Bits;
             int clutX = primitive.clut.x;
             int clutRowBase = primitive.clut.y << 10;
@@ -1513,11 +1489,10 @@ AdvanceTrianglePixel:
                             for (int x = spanStart; x < spanEnd; x++) {
                                 int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
                                 int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel4Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (texel != 0) {
                                     int color = ModulateColor(baseColor, texel) | maskBits;
-                                    vramBits[pixelIndex] = color;
                                     vram1555Bits[pixelIndex] = PackColor1555(color);
                                 }
 
@@ -1544,11 +1519,10 @@ AdvanceTrianglePixel:
                             for (int x = spanStart; x < spanEnd; x++) {
                                 int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
                                 int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel8Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (texel != 0) {
                                     int color = ModulateColor(baseColor, texel) | maskBits;
-                                    vramBits[pixelIndex] = color;
                                     vram1555Bits[pixelIndex] = PackColor1555(color);
                                 }
 
@@ -1575,11 +1549,10 @@ AdvanceTrianglePixel:
                             for (int x = spanStart; x < spanEnd; x++) {
                                 int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
                                 int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel16Fast(vramBits, texelX, texelY, textureBaseX, textureBaseY);
+                                int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, textureBaseX, textureBaseY);
 
                                 if (texel != 0) {
                                     int color = ModulateColor(baseColor, texel) | maskBits;
-                                    vramBits[pixelIndex] = color;
                                     vram1555Bits[pixelIndex] = PackColor1555(color);
                                 }
 
@@ -1657,7 +1630,6 @@ AdvanceTrianglePixel:
                 return true;
             }
 
-            int[] vramBits = vram.Bits;
             ushort[] vram1555Bits = vram1555.Bits;
             int clutX = primitive.clut.x;
             int clutRowBase = primitive.clut.y << 10;
@@ -1682,7 +1654,7 @@ AdvanceTrianglePixel:
                             for (int x = spanStart; x < spanEnd; x++) {
                                 int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
                                 int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel4Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (texel != 0) {
                                     int color =
@@ -1690,7 +1662,6 @@ AdvanceTrianglePixel:
                                         (FastDivideNonNegative(shadeG, area, reciprocal) << 8) |
                                         FastDivideNonNegative(shadeB, area, reciprocal);
                                     color = ModulateColor(color, texel) | maskBits;
-                                    vramBits[pixelIndex] = color;
                                     vram1555Bits[pixelIndex] = PackColor1555(color);
                                 }
 
@@ -1726,7 +1697,7 @@ AdvanceTrianglePixel:
                             for (int x = spanStart; x < spanEnd; x++) {
                                 int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
                                 int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel8Fast(vramBits, vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (texel != 0) {
                                     int color =
@@ -1734,7 +1705,6 @@ AdvanceTrianglePixel:
                                         (FastDivideNonNegative(shadeG, area, reciprocal) << 8) |
                                         FastDivideNonNegative(shadeB, area, reciprocal);
                                     color = ModulateColor(color, texel) | maskBits;
-                                    vramBits[pixelIndex] = color;
                                     vram1555Bits[pixelIndex] = PackColor1555(color);
                                 }
 
@@ -1770,7 +1740,7 @@ AdvanceTrianglePixel:
                             for (int x = spanStart; x < spanEnd; x++) {
                                 int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
                                 int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
-                                int texel = GetTexel16Fast(vramBits, texelX, texelY, textureBaseX, textureBaseY);
+                                int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX, texelY, textureBaseX, textureBaseY);
 
                                 if (texel != 0) {
                                     int color =
@@ -1778,7 +1748,6 @@ AdvanceTrianglePixel:
                                         (FastDivideNonNegative(shadeG, area, reciprocal) << 8) |
                                         FastDivideNonNegative(shadeB, area, reciprocal);
                                     color = ModulateColor(color, texel) | maskBits;
-                                    vramBits[pixelIndex] = color;
                                     vram1555Bits[pixelIndex] = PackColor1555(color);
                                 }
 
@@ -1974,7 +1943,6 @@ AdvanceTrianglePixel:
 
                     color |= maskWhileDrawing << 24;
 
-                    vram.SetPixel(x, y, color);
                     vram1555.SetPixel(x, y, PackColor1555(color));
                 }
 
@@ -2073,7 +2041,6 @@ AdvanceTrianglePixel:
             bool flipY = isTexturedRectangleYFlipped;
 
             int baseColor = GetRgbColor(bgrColor);
-            int[] vramBits = vram.Bits;
             ushort[] vram1555Bits = vram1555.Bits;
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
@@ -2091,7 +2058,6 @@ AdvanceTrianglePixel:
                 if (!checkMask) {
                     for (int y = yOrigin; y < height; y++) {
                         int rowBase = (y << 10) + xOrigin;
-                        Array.Fill(vramBits, fillColor, rowBase, rowWidth);
                         Array.Fill(vram1555Bits, fillColor1555, rowBase, rowWidth);
                     }
                 } else {
@@ -2103,7 +2069,6 @@ AdvanceTrianglePixel:
                                 continue;
                             }
 
-                            vramBits[pixelIndex] = fillColor;
                             vram1555Bits[pixelIndex] = fillColor1555;
                         }
                     }
@@ -2137,7 +2102,6 @@ AdvanceTrianglePixel:
                                         int pixelIndex = rowBase + x;
                                         ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                         vram1555Bits[pixelIndex] = packedTexel;
-                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                     }
 
                                     u += uStep;
@@ -2159,7 +2123,6 @@ AdvanceTrianglePixel:
                                         int pixelIndex = rowBase + x;
                                         ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                         vram1555Bits[pixelIndex] = packedTexel;
-                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                     }
 
                                     u += uStep;
@@ -2181,7 +2144,6 @@ AdvanceTrianglePixel:
                                         int pixelIndex = rowBase + x;
                                         ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                         vram1555Bits[pixelIndex] = packedTexel;
-                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                     }
 
                                     u += uStep;
@@ -2206,7 +2168,6 @@ AdvanceTrianglePixel:
                                         int pixelIndex = rowBase + x;
                                         ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                         vram1555Bits[pixelIndex] = packedTexel;
-                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                     }
 
                                     u += uStep;
@@ -2228,7 +2189,6 @@ AdvanceTrianglePixel:
                                         int pixelIndex = rowBase + x;
                                         ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                         vram1555Bits[pixelIndex] = packedTexel;
-                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                     }
 
                                     u += uStep;
@@ -2250,7 +2210,6 @@ AdvanceTrianglePixel:
                                         int pixelIndex = rowBase + x;
                                         ushort packedTexel = (ushort)(rawTexel | maskBit1555);
                                         vram1555Bits[pixelIndex] = packedTexel;
-                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
                                     }
 
                                     u += uStep;
@@ -2282,11 +2241,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel4Fast(vramBits, vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (texel != 0) {
                                         int pixelIndex = rowBase + x;
                                         int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vramBits[pixelIndex] = color;
                                         vram1555Bits[pixelIndex] = PackColor1555(color);
                                     }
 
@@ -2304,11 +2262,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel8Fast(vramBits, vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (texel != 0) {
                                         int pixelIndex = rowBase + x;
                                         int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vramBits[pixelIndex] = color;
                                         vram1555Bits[pixelIndex] = PackColor1555(color);
                                     }
 
@@ -2326,11 +2283,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel16Fast(vramBits, u & 0xFF, wrappedV, textureBaseX, textureBaseY);
+                                    int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, u & 0xFF, wrappedV, textureBaseX, textureBaseY);
                                     if (texel != 0) {
                                         int pixelIndex = rowBase + x;
                                         int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vramBits[pixelIndex] = color;
                                         vram1555Bits[pixelIndex] = PackColor1555(color);
                                     }
 
@@ -2351,11 +2307,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel4Fast(vramBits, vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (texel != 0) {
                                         int pixelIndex = rowBase + x;
                                         int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vramBits[pixelIndex] = color;
                                         vram1555Bits[pixelIndex] = PackColor1555(color);
                                     }
 
@@ -2373,11 +2328,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel8Fast(vramBits, vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (texel != 0) {
                                         int pixelIndex = rowBase + x;
                                         int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vramBits[pixelIndex] = color;
                                         vram1555Bits[pixelIndex] = PackColor1555(color);
                                     }
 
@@ -2395,11 +2349,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel16Fast(vramBits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
+                                    int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
                                     if (texel != 0) {
                                         int pixelIndex = rowBase + x;
                                         int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vramBits[pixelIndex] = color;
                                         vram1555Bits[pixelIndex] = PackColor1555(color);
                                     }
 
@@ -2448,13 +2401,12 @@ AdvanceTrianglePixel:
 
                     if (primitive.isSemiTransparent && (!primitive.isTextured || (color & 0xFF00_0000) != 0)) {
                         if (!checkMask)
-                            backColor = vramBits[pixelIndex];
+                            backColor = color1555to8888LUT[vram1555Bits[pixelIndex]];
                         color = handleSemiTransp(backColor, color, primitive.semiTransparencyMode);
                     }
 
                     color |= maskBits;
 
-                    vramBits[pixelIndex] = color;
                     vram1555Bits[pixelIndex] = PackColor1555(color);
                     u += uStep;
                 }
@@ -2500,7 +2452,6 @@ AdvanceTrianglePixel:
 
                     rawColor |= (ushort)(maskWhileDrawing << 15);
                     vram1555.SetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF, rawColor);
-                    vram.SetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF, color1555to8888LUT[rawColor]);
                 }
             }
         }
@@ -2564,8 +2515,8 @@ AdvanceTrianglePixel:
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int getTexel(int x, int y, Point2D clut, Point2D textureBase, int depth) {
             return GetTexelFast(
-                vram.Bits,
                 vram1555.Bits,
+                color1555to8888LUT,
                 x,
                 y,
                 clut.x,
@@ -2577,8 +2528,8 @@ AdvanceTrianglePixel:
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static int GetTexelFast(
-            int[] vramBits,
             ushort[] vram1555Bits,
+            int[] color1555to8888LUT,
             int x,
             int y,
             int clutX,
@@ -2587,9 +2538,9 @@ AdvanceTrianglePixel:
             int textureBaseY,
             int depth) {
             return depth switch {
-                0 => GetTexel4Fast(vramBits, vram1555Bits, x, y, clutX, clutRowBase, textureBaseX, textureBaseY),
-                1 => GetTexel8Fast(vramBits, vram1555Bits, x, y, clutX, clutRowBase, textureBaseX, textureBaseY),
-                _ => GetTexel16Fast(vramBits, x, y, textureBaseX, textureBaseY)
+                0 => GetTexel4Fast(vram1555Bits, color1555to8888LUT, x, y, clutX, clutRowBase, textureBaseX, textureBaseY),
+                1 => GetTexel8Fast(vram1555Bits, color1555to8888LUT, x, y, clutX, clutRowBase, textureBaseX, textureBaseY),
+                _ => GetTexel16Fast(vram1555Bits, color1555to8888LUT, x, y, textureBaseX, textureBaseY)
             };
         }
 
@@ -2612,8 +2563,8 @@ AdvanceTrianglePixel:
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static int GetTexel4Fast(
-            int[] vramBits,
             ushort[] vram1555Bits,
+            int[] color1555to8888LUT,
             int x,
             int y,
             int clutX,
@@ -2621,13 +2572,13 @@ AdvanceTrianglePixel:
             int textureBaseX,
             int textureBaseY) {
             int textureRowBase = (y + textureBaseY) << 10;
-            return vramBits[clutRowBase + clutX + ((vram1555Bits[textureRowBase + textureBaseX + (x >> 2)] >> ((x & 3) << 2)) & 0xF)];
+            return color1555to8888LUT[vram1555Bits[clutRowBase + clutX + ((vram1555Bits[textureRowBase + textureBaseX + (x >> 2)] >> ((x & 3) << 2)) & 0xF)]];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static int GetTexel8Fast(
-            int[] vramBits,
             ushort[] vram1555Bits,
+            int[] color1555to8888LUT,
             int x,
             int y,
             int clutX,
@@ -2635,17 +2586,18 @@ AdvanceTrianglePixel:
             int textureBaseX,
             int textureBaseY) {
             int textureRowBase = (y + textureBaseY) << 10;
-            return vramBits[clutRowBase + clutX + ((vram1555Bits[textureRowBase + textureBaseX + (x >> 1)] >> ((x & 1) << 3)) & 0xFF)];
+            return color1555to8888LUT[vram1555Bits[clutRowBase + clutX + ((vram1555Bits[textureRowBase + textureBaseX + (x >> 1)] >> ((x & 1) << 3)) & 0xFF)]];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static int GetTexel16Fast(
-            int[] vramBits,
+            ushort[] vram1555Bits,
+            int[] color1555to8888LUT,
             int x,
             int y,
             int textureBaseX,
             int textureBaseY) {
-            return vramBits[((y + textureBaseY) << 10) + textureBaseX + x];
+            return color1555to8888LUT[vram1555Bits[((y + textureBaseY) << 10) + textureBaseX + x]];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2688,19 +2640,19 @@ AdvanceTrianglePixel:
         private int get4bppTexel(int x, int y, Point2D clut, Point2D textureBase) {
             ushort index = vram1555.GetPixel(x / 4 + textureBase.x, y + textureBase.y);
             int p = (index >> (x & 3) * 4) & 0xF;
-            return vram.GetPixelRGB888(clut.x + p, clut.y);
+            return color1555to8888LUT[vram1555.GetPixel(clut.x + p, clut.y)];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int get8bppTexel(int x, int y, Point2D clut, Point2D textureBase) {
             ushort index = vram1555.GetPixel(x / 2 + textureBase.x, y + textureBase.y);
             int p = (index >> (x & 1) * 8) & 0xFF;
-            return vram.GetPixelRGB888(clut.x + p, clut.y);
+            return color1555to8888LUT[vram1555.GetPixel(clut.x + p, clut.y)];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int get16bppTexel(int x, int y, Point2D textureBase) {
-            return vram.GetPixelRGB888(x + textureBase.x, y + textureBase.y);
+            return color1555to8888LUT[vram1555.GetPixel(x + textureBase.x, y + textureBase.y)];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2903,7 +2855,7 @@ AdvanceTrianglePixel:
         }
 
         private int handleSemiTransp(int x, int y, int color, int semiTranspMode) {
-            color0.val = (uint)vram.GetPixelRGB888(x, y); //back
+            color0.val = (uint)color1555to8888LUT[vram1555.GetPixel(x, y)]; //back
             return handleSemiTransp((int)color0.val, color, semiTranspMode);
         }
 

@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -16,7 +15,7 @@ namespace EutherDrive.Core;
 public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInputHandler
 {
     private const uint OpaqueBlackPixel = 0xFF000000u;
-    private static readonly Vector<uint> OpaqueAlphaVector = new(0xFF000000u);
+    private static readonly uint[] Color1555To8888Lut = BuildColor1555To8888Lut();
     private const int SuperFastBootMaxTotalFrames = 2400;
     private const int SuperFastBootMaxPostBiosFrames = 900;
     private const int SuperFastBootRequiredVisibleFrames = 2;
@@ -57,7 +56,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
                 sourceHeight = _displayHeight;
             }
 
-            _owner.UpdateFrame(vram, vram1555, sourceWidth, sourceHeight, (ushort)sourceX, (ushort)sourceY, _is24Bit);
+            _owner.UpdateFrame(vram1555, sourceWidth, sourceHeight, (ushort)sourceX, (ushort)sourceY, _is24Bit);
         }
 
         public void SetDisplayMode(int horizontalRes, int verticalRes, bool is24BitDepth)
@@ -619,7 +618,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             _core.JoyPadUp(button);
     }
 
-    private void UpdateFrame(int[] vram, ushort[] vram1555, int width, int height, ushort vramX, ushort vramY, bool is24Bit)
+    private void UpdateFrame(ushort[] vram1555, int width, int height, ushort vramX, ushort vramY, bool is24Bit)
     {
         if (width <= 0 || height <= 0)
             return;
@@ -669,8 +668,8 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
                 continue;
             }
 
-            BlitOpaqueBgrx32(
-                MemoryMarshal.Cast<int, uint>(vram.AsSpan(srcRow + baseX, copyWidth)),
+            BlitOpaque1555(
+                vram1555.AsSpan(srcRow + baseX, copyWidth),
                 dstRow.Slice(0, copyWidth));
 
             if (copyWidth < width)
@@ -680,20 +679,21 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required);
     }
 
-    private static void BlitOpaqueBgrx32(ReadOnlySpan<uint> source, Span<uint> destination)
+    private static void BlitOpaque1555(ReadOnlySpan<ushort> source, Span<uint> destination)
     {
+        uint[] lut = Color1555To8888Lut;
         int x = 0;
-        if (Vector.IsHardwareAccelerated)
+        int unrolledLength = source.Length - 3;
+        for (; x < unrolledLength; x += 4)
         {
-            int vectorWidth = Vector<uint>.Count;
-            for (; x <= source.Length - vectorWidth; x += vectorWidth)
-            {
-                (new Vector<uint>(source.Slice(x, vectorWidth)) | OpaqueAlphaVector).CopyTo(destination.Slice(x, vectorWidth));
-            }
+            destination[x] = lut[source[x]] | OpaqueBlackPixel;
+            destination[x + 1] = lut[source[x + 1]] | OpaqueBlackPixel;
+            destination[x + 2] = lut[source[x + 2]] | OpaqueBlackPixel;
+            destination[x + 3] = lut[source[x + 3]] | OpaqueBlackPixel;
         }
 
         for (; x < source.Length; x++)
-            destination[x] = source[x] | OpaqueBlackPixel;
+            destination[x] = lut[source[x]] | OpaqueBlackPixel;
     }
 
     private void UpdateFrame24(ushort[] vram1555, Span<uint> dstPixels, int width, int height, int baseX, int baseY, int vramWidth, int vramHeight)
@@ -745,6 +745,24 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
     private static void ClearFrameRow(Span<uint> row)
     {
         row.Fill(OpaqueBlackPixel);
+    }
+
+    private static uint[] BuildColor1555To8888Lut()
+    {
+        uint[] lut = new uint[ushort.MaxValue + 1];
+        for (int value = 0; value < lut.Length; value++)
+        {
+            int r = value & 0x1F;
+            int g = (value >> 5) & 0x1F;
+            int b = (value >> 10) & 0x1F;
+            int a = (value & 0x8000) != 0 ? 0xFF : 0x00;
+            uint r8 = (uint)((r << 3) | (r >> 2));
+            uint g8 = (uint)((g << 3) | (g >> 2));
+            uint b8 = (uint)((b << 3) | (b >> 2));
+            lut[value] = ((uint)a << 24) | (r8 << 16) | (g8 << 8) | b8;
+        }
+
+        return lut;
     }
 
     private void EnsureWorkFrameCapacity(int required)
