@@ -2294,6 +2294,11 @@ AdvanceTrianglePixel:
                 int textureBaseX = primitive.textureBase.x;
                 int textureBaseY = primitive.textureBase.y;
                 int textureDepth = primitive.depth;
+                ushort maskBit1555 = (ushort)(maskWhileDrawing << 15);
+                Span<ushort> modulateR = stackalloc ushort[32];
+                Span<ushort> modulateG = stackalloc ushort[32];
+                Span<ushort> modulateB = stackalloc ushort[32];
+                BuildModulate1555Tables(baseColor, modulateR, modulateG, modulateB);
 
                 if (textureWindowIdentity) {
                     switch (textureDepth) {
@@ -2307,11 +2312,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
-                                    if (texel != 0) {
+                                    ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                     }
 
                                     u += uStep;
@@ -2328,11 +2332,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
-                                    if (texel != 0) {
+                                    ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                     }
 
                                     u += uStep;
@@ -2349,11 +2352,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, u & 0xFF, wrappedV, textureBaseX, textureBaseY);
-                                    if (texel != 0) {
+                                    ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, u & 0xFF, wrappedV, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                     }
 
                                     u += uStep;
@@ -2373,11 +2375,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
-                                    if (texel != 0) {
+                                    ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                     }
 
                                     u += uStep;
@@ -2394,11 +2395,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
-                                    if (texel != 0) {
+                                    ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                     }
 
                                     u += uStep;
@@ -2415,11 +2415,10 @@ AdvanceTrianglePixel:
                                 int uStep = flipX ? -1 : 1;
 
                                 for (int x = xOrigin; x < width; x++) {
-                                    int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
-                                    if (texel != 0) {
+                                    ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        int color = ModulateColor(baseColor, texel) | maskBits;
-                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
                                     }
 
                                     u += uStep;
