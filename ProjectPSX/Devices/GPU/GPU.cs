@@ -889,6 +889,7 @@ namespace ProjectPSX.Devices {
                 int textureBaseY = primitive.textureBase.y;
                 int textureDepth = primitive.depth;
                 ushort maskBit1555 = (ushort)(maskWhileDrawing << 15);
+                ulong reciprocal = BuildUnsignedReciprocal(area);
 
                 if (textureWindowIdentity) {
                     switch (textureDepth) {
@@ -903,8 +904,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = (texX / area) & 0xFF;
-                                        int texelY = (texY / area) & 0xFF;
+                                        int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                        int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
                                         ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -939,8 +940,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = (texX / area) & 0xFF;
-                                        int texelY = (texY / area) & 0xFF;
+                                        int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                        int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
                                         ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -975,8 +976,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = (texX / area) & 0xFF;
-                                        int texelY = (texY / area) & 0xFF;
+                                        int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                        int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
                                         ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1014,8 +1015,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
                                         ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1050,8 +1051,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
                                         ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1086,8 +1087,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
                                         ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1124,6 +1125,7 @@ namespace ProjectPSX.Devices {
                 int textureBaseY = primitive.textureBase.y;
                 int textureDepth = primitive.depth;
                 ushort maskBit1555 = (ushort)(maskBits >> 9);
+                ulong reciprocal = BuildUnsignedReciprocal(area);
                 Span<ushort> modulateR = stackalloc ushort[32];
                 Span<ushort> modulateG = stackalloc ushort[32];
                 Span<ushort> modulateB = stackalloc ushort[32];
@@ -1142,8 +1144,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = (texX / area) & 0xFF;
-                                        int texelY = (texY / area) & 0xFF;
+                                        int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                        int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
                                         ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1177,8 +1179,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = (texX / area) & 0xFF;
-                                        int texelY = (texY / area) & 0xFF;
+                                        int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                        int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
                                         ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1212,8 +1214,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = (texX / area) & 0xFF;
-                                        int texelY = (texY / area) & 0xFF;
+                                        int texelX = FastDivideNonNegative(texX, area, reciprocal) & 0xFF;
+                                        int texelY = FastDivideNonNegative(texY, area, reciprocal) & 0xFF;
                                         ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1250,8 +1252,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
                                         ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1285,8 +1287,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
                                         ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX, texelY, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
@@ -1320,8 +1322,8 @@ namespace ProjectPSX.Devices {
 
                                 for (int x = min.x; x < max.x; x++) {
                                     if ((w0 | w1 | w2) >= 0) {
-                                        int texelX = maskTexelAxis(texX / area, preMaskX, postMaskX);
-                                        int texelY = maskTexelAxis(texY / area, preMaskY, postMaskY);
+                                        int texelX = maskTexelAxis(FastDivideNonNegative(texX, area, reciprocal), preMaskX, postMaskX);
+                                        int texelY = maskTexelAxis(FastDivideNonNegative(texY, area, reciprocal), preMaskY, postMaskY);
                                         ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX, texelY, textureBaseX, textureBaseY);
 
                                         if (rawTexel != 0) {
