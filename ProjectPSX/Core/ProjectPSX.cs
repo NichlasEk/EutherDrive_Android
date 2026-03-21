@@ -30,6 +30,11 @@ namespace ProjectPSX {
         private Exp2 exp2;
         private bool _psxBootBiosExited;
         private double? _frameRateOverrideHz;
+        private int _lastFrameInstructionCount;
+        private int _lastFrameCpuCycles;
+        private int _lastFrameBusTicks;
+        private int _lastFrameBusCycles;
+        private int _lastFrameInterruptChecks;
 
         public ProjectPSX(
             IHostWindow window,
@@ -75,7 +80,12 @@ namespace ProjectPSX {
             int cpuCyclesThisFrame = 0;
             int pendingBusCycles = 0;
             int cpuCyclesPerFrame = GetCpuCyclesPerFrame();
+            int instructionCount = 0;
+            int busTicks = 0;
+            int busCycles = 0;
+            int interruptChecks = 0;
             while (cpuCyclesThisFrame < cpuCyclesPerFrame) {
+                instructionCount++;
                 int cpuCycles = cpu.Run();
                 cpuCyclesThisFrame += cpuCycles;
                 pendingBusCycles += cpuCycles * MIPS_UNDERCLOCK;
@@ -88,20 +98,34 @@ namespace ProjectPSX {
 
                 bool busFlushed = false;
                 if (pendingBusCycles >= BusTickBatchCycles) {
-                    bus.tick(pendingBusCycles);
+                    int flushCycles = pendingBusCycles;
+                    bus.tick(flushCycles);
                     pendingBusCycles = 0;
                     busFlushed = true;
+                    busTicks++;
+                    busCycles += flushCycles;
                 }
 
                 if (busFlushed || bus.interruptController.interruptPending()) {
+                    interruptChecks++;
                     cpu.handleInterrupts();
                 }
             }
 
             if (pendingBusCycles > 0) {
-                bus.tick(pendingBusCycles);
+                int flushCycles = pendingBusCycles;
+                bus.tick(flushCycles);
+                busTicks++;
+                busCycles += flushCycles;
+                interruptChecks++;
                 cpu.handleInterrupts();
             }
+
+            _lastFrameInstructionCount = instructionCount;
+            _lastFrameCpuCycles = cpuCyclesThisFrame;
+            _lastFrameBusTicks = busTicks;
+            _lastFrameBusCycles = busCycles;
+            _lastFrameInterruptChecks = interruptChecks;
         }
 
         public void JoyPadUp(GamepadInputsEnum button) => controller.handleJoyPadUp(button);
@@ -192,6 +216,7 @@ namespace ProjectPSX {
             AppendConfiguredPeeks(text);
 
             text.Append($"irq=({interruptController.DebugISTAT:x3}/{interruptController.DebugIMASK:x3}) ");
+            text.Append($"perf(instr={_lastFrameInstructionCount} cpuCy={_lastFrameCpuCycles} busTicks={_lastFrameBusTicks} busCy={_lastFrameBusCycles} irqChk={_lastFrameInterruptChecks}) ");
             text.Append($"{bus.DMAController.DebugSummary(2)} ");
             text.Append($"{bus.DMAController.DebugSummary(3)} ");
             text.Append($"{bus.DMAController.DebugSummary(4)} ");

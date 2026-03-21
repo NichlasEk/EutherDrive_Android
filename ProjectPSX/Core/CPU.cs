@@ -761,13 +761,13 @@ namespace ProjectPSX {
 
         private static void LB(CPU cpu) { //todo redo this as it unnecesary load32
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
-            uint value = (uint)(sbyte)cpu.LoadData32(addr);
+            uint value = (uint)(sbyte)cpu.LoadData8(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
         private static void LBU(CPU cpu) {
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
-            uint value = (byte)cpu.LoadData32(addr);
+            uint value = cpu.LoadData8(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
@@ -778,7 +778,7 @@ namespace ProjectPSX {
                 cpu.COP0_GPR[BADA] = addr;
                 EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
             } else {
-                uint value = (uint)(short)cpu.LoadData32(addr);
+                uint value = (uint)(short)cpu.LoadData16(addr);
                 delayedLoad(cpu, cpu.instr.rt, value);
             }
         }
@@ -790,7 +790,7 @@ namespace ProjectPSX {
                 cpu.COP0_GPR[BADA] = addr;
                 EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
             } else {
-                uint value = (ushort)cpu.LoadData32(addr);
+                uint value = cpu.LoadData16(addr);
                 delayedLoad(cpu, cpu.instr.rt, value);
             }
         }
@@ -1051,31 +1051,50 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private uint LoadData32(uint virtualAddress) {
-            if (!ExperimentalInstructionCache) {
-                if (!dontIsolateCache) {
-                    return 0;
-                }
-
-                return bus.load32(virtualAddress);
-            }
-
             if (!dontIsolateCache) {
                 return 0;
+            }
+
+            if (bus.TryLoadData32Fast(virtualAddress, out uint fastValue)) {
+                return fastValue;
             }
 
             return bus.load32(virtualAddress);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private uint LoadData16(uint virtualAddress) {
+            if (!dontIsolateCache) {
+                return 0;
+            }
+
+            if (bus.TryLoadData16Fast(virtualAddress, out ushort fastValue)) {
+                return fastValue;
+            }
+
+            return (ushort)bus.load32(virtualAddress);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private uint LoadData8(uint virtualAddress) {
+            if (!dontIsolateCache) {
+                return 0;
+            }
+
+            if (bus.TryLoadData8Fast(virtualAddress, out byte fastValue)) {
+                return fastValue;
+            }
+
+            return (byte)bus.load32(virtualAddress);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData32(uint virtualAddress, uint value) {
-            if (!ExperimentalInstructionCache) {
-                if (dontIsolateCache) {
-                    bus.write32(virtualAddress, value);
-                }
+            if (!dontIsolateCache) {
                 return;
             }
 
-            if (!dontIsolateCache) {
+            if (bus.TryStoreData32Fast(virtualAddress, value)) {
                 return;
             }
 
@@ -1084,14 +1103,11 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData16(uint virtualAddress, ushort value) {
-            if (!ExperimentalInstructionCache) {
-                if (dontIsolateCache) {
-                    bus.write16(virtualAddress, value);
-                }
+            if (!dontIsolateCache) {
                 return;
             }
 
-            if (!dontIsolateCache) {
+            if (bus.TryStoreData16Fast(virtualAddress, value)) {
                 return;
             }
 
@@ -1100,14 +1116,11 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData8(uint virtualAddress, byte value) {
-            if (!ExperimentalInstructionCache) {
-                if (dontIsolateCache) {
-                    bus.write8(virtualAddress, value);
-                }
+            if (!dontIsolateCache) {
                 return;
             }
 
-            if (!dontIsolateCache) {
+            if (bus.TryStoreData8Fast(virtualAddress, value)) {
                 return;
             }
 

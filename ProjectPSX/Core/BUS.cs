@@ -175,6 +175,104 @@ public class BUS {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryLoadData32Fast(uint address, out uint value) {
+            if (address == 0xFFFE_0130) {
+                value = memoryCache;
+                return true;
+            }
+
+            uint addr = address & RegionMask[address >> 29];
+            if (addr < 0x1F00_0000) {
+                uint physical = addr & 0x1F_FFFF;
+                value = load<uint>(physical, ramPtr);
+                if (TraceRamReadEnabled) {
+                    TraceRamRead(physical, 4, value);
+                }
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                value = load<uint>(addr & 0x7_FFFF, ex1Ptr);
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                value = load<uint>(addr & 0x3FF, scrathpadPtr);
+                return true;
+            }
+
+            if (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000) {
+                value = load<uint>(addr & 0x7_FFFF, biosPtr);
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryLoadData16Fast(uint address, out ushort value) {
+            uint addr = address & RegionMask[address >> 29];
+            if (addr < 0x1F00_0000) {
+                uint physical = addr & 0x1F_FFFF;
+                value = load<ushort>(physical, ramPtr);
+                if (TraceRamReadEnabled) {
+                    TraceRamRead(physical, 2, value);
+                }
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                value = load<ushort>(addr & 0x7_FFFF, ex1Ptr);
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                value = load<ushort>(addr & 0x3FF, scrathpadPtr);
+                return true;
+            }
+
+            if (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000) {
+                value = load<ushort>(addr & 0x7_FFFF, biosPtr);
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryLoadData8Fast(uint address, out byte value) {
+            uint addr = address & RegionMask[address >> 29];
+            if (addr < 0x1F00_0000) {
+                uint physical = addr & 0x1F_FFFF;
+                value = load<byte>(physical, ramPtr);
+                if (TraceRamReadEnabled) {
+                    TraceRamRead(physical, 1, value);
+                }
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                value = load<byte>(addr & 0x7_FFFF, ex1Ptr);
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                value = load<byte>(addr & 0x3FF, scrathpadPtr);
+                return true;
+            }
+
+            if (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000) {
+                value = load<byte>(addr & 0x7_FFFF, biosPtr);
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
         public unsafe void write32(uint address, uint value) {
             if (address == 0xFFFE_0130) {
                 memoryCache = value;
@@ -226,10 +324,44 @@ public class BUS {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryStoreData32Fast(uint address, uint value) {
+            if (address == 0xFFFE_0130) {
+                memoryCache = value;
+                memoryCacheWriteCount++;
+                memoryCacheControlObserver?.Invoke();
+                return true;
+            }
+
+            uint addr = address & RegionMask[address >> 29];
+            if (addr < 0x1F00_0000) {
+                uint physical = addr & 0x1F_FFFF;
+                if (TraceRamWriteEnabled) {
+                    TraceRamWrite(physical, 4, value, "cpu");
+                }
+                write(physical, value, ramPtr);
+                ramWriteObserver?.Invoke(physical, 4);
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                write(addr & 0x7_FFFF, value, ex1Ptr);
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                write(addr & 0x3FF, value, scrathpadPtr);
+                return true;
+            }
+
+            return false;
+        }
+
         public unsafe void write16(uint address, ushort value) {
             if (address == 0xFFFE_0130) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
+                memoryCacheControlObserver?.Invoke();
                 return;
             }
 
@@ -276,10 +408,44 @@ public class BUS {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryStoreData16Fast(uint address, ushort value) {
+            if (address == 0xFFFE_0130) {
+                memoryCache = value;
+                memoryCacheWriteCount++;
+                memoryCacheControlObserver?.Invoke();
+                return true;
+            }
+
+            uint addr = address & RegionMask[address >> 29];
+            if (addr < 0x1F00_0000) {
+                uint physical = addr & 0x1F_FFFF;
+                if (TraceRamWriteEnabled) {
+                    TraceRamWrite(physical, 2, value, "cpu");
+                }
+                write(physical, value, ramPtr);
+                ramWriteObserver?.Invoke(physical, 2);
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                write(addr & 0x7_FFFF, value, ex1Ptr);
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                write(addr & 0x3FF, value, scrathpadPtr);
+                return true;
+            }
+
+            return false;
+        }
+
         public unsafe void write8(uint address, byte value) {
             if (address == 0xFFFE_0130) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
+                memoryCacheControlObserver?.Invoke();
                 return;
             }
 
@@ -324,6 +490,39 @@ public class BUS {
                 if (VerboseBusAccess)
                     Console.WriteLine($"[BUS] Write8 Unsupported: {addr:x8}");
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryStoreData8Fast(uint address, byte value) {
+            if (address == 0xFFFE_0130) {
+                memoryCache = value;
+                memoryCacheWriteCount++;
+                memoryCacheControlObserver?.Invoke();
+                return true;
+            }
+
+            uint addr = address & RegionMask[address >> 29];
+            if (addr < 0x1F00_0000) {
+                uint physical = addr & 0x1F_FFFF;
+                if (TraceRamWriteEnabled) {
+                    TraceRamWrite(physical, 1, value, "cpu");
+                }
+                write(physical, value, ramPtr);
+                ramWriteObserver?.Invoke(physical, 1);
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                write(addr & 0x7_FFFF, value, ex1Ptr);
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                write(addr & 0x3FF, value, scrathpadPtr);
+                return true;
+            }
+
+            return false;
         }
 
         internal unsafe bool loadBios() {
