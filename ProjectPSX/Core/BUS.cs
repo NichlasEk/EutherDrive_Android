@@ -37,6 +37,7 @@ public class BUS {
         private uint memoryCache;
         private uint memoryCacheWriteCount;
         [NonSerialized] private Action<uint, int>? ramWriteObserver;
+        [NonSerialized] private Action? memoryCacheControlObserver;
 
         //Other Subsystems
         [NonSerialized] public InterruptController interruptController;
@@ -82,6 +83,10 @@ public class BUS {
 
         public void SetRamWriteObserver(Action<uint, int> observer) {
             ramWriteObserver = observer;
+        }
+
+        public void SetMemoryCacheControlObserver(Action observer) {
+            memoryCacheControlObserver = observer;
         }
 
         public unsafe void SaveRawState(BinaryWriter writer) {
@@ -174,6 +179,7 @@ public class BUS {
             if (address == 0xFFFE_0130) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
+                memoryCacheControlObserver?.Invoke();
                 return;
             }
 

@@ -154,6 +154,10 @@ namespace ProjectPSX {
             set => _psxBootBiosExited = value;
         }
 
+        public void RefreshRuntimeStateAfterLoad() {
+            cpu.RefreshRuntimeStateAfterLoad();
+        }
+
         public string DebugStartSummary() {
             uint d370 = bus.LoadFromRam(0x0003_D370);
             uint d374 = bus.LoadFromRam(0x0003_D374);

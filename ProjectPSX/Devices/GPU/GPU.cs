@@ -597,6 +597,82 @@ namespace ProjectPSX.Devices {
             ushort[] vram1555Bits = vram1555.Bits;
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
+            bool flatOpaqueFill = !primitive.isShaded && !primitive.isTextured && !primitive.isSemiTransparent;
+
+            if (flatOpaqueFill) {
+                int fillColor = (int)c0 | maskBits;
+                ushort fillColor1555 = PackColor1555(fillColor);
+
+                for (int y = min.y; y < max.y; y++) {
+                    int w0 = w0_row;
+                    int w1 = w1_row;
+                    int w2 = w2_row;
+                    int rowBase = y << 10;
+
+                    for (int x = min.x; x < max.x; x++) {
+                        if ((w0 | w1 | w2) >= 0) {
+                            int pixelIndex = rowBase + x;
+                            if (!checkMask || (vram1555Bits[pixelIndex] & 0x8000) == 0) {
+                                vramBits[pixelIndex] = fillColor;
+                                vram1555Bits[pixelIndex] = fillColor1555;
+                            }
+                        }
+
+                        w0 += A12;
+                        w1 += A20;
+                        w2 += A01;
+                    }
+
+                    w0_row += B12;
+                    w1_row += B20;
+                    w2_row += B01;
+                }
+
+                return;
+            }
+
+            bool shaded = primitive.isShaded;
+            bool textured = primitive.isTextured;
+            int u0Row = w0_row - bias0;
+            int u1Row = w1_row - bias1;
+            int u2Row = w2_row - bias2;
+
+            int shadeRRow = 0, shadeGRow = 0, shadeBRow = 0;
+            int shadeRStepX = 0, shadeGStepX = 0, shadeBStepX = 0;
+            int shadeRStepY = 0, shadeGStepY = 0, shadeBStepY = 0;
+            if (shaded) {
+                int c0r = (int)(c0 >> 16) & 0xFF;
+                int c0g = (int)(c0 >> 8) & 0xFF;
+                int c0b = (int)c0 & 0xFF;
+                int c1r = (int)(c1 >> 16) & 0xFF;
+                int c1g = (int)(c1 >> 8) & 0xFF;
+                int c1b = (int)c1 & 0xFF;
+                int c2r = (int)(c2 >> 16) & 0xFF;
+                int c2g = (int)(c2 >> 8) & 0xFF;
+                int c2b = (int)c2 & 0xFF;
+
+                shadeRRow = c0r * u0Row + c1r * u1Row + c2r * u2Row;
+                shadeGRow = c0g * u0Row + c1g * u1Row + c2g * u2Row;
+                shadeBRow = c0b * u0Row + c1b * u1Row + c2b * u2Row;
+                shadeRStepX = c0r * A12 + c1r * A20 + c2r * A01;
+                shadeGStepX = c0g * A12 + c1g * A20 + c2g * A01;
+                shadeBStepX = c0b * A12 + c1b * A20 + c2b * A01;
+                shadeRStepY = c0r * B12 + c1r * B20 + c2r * B01;
+                shadeGStepY = c0g * B12 + c1g * B20 + c2g * B01;
+                shadeBStepY = c0b * B12 + c1b * B20 + c2b * B01;
+            }
+
+            int texXRow = 0, texYRow = 0;
+            int texXStepX = 0, texYStepX = 0;
+            int texXStepY = 0, texYStepY = 0;
+            if (textured) {
+                texXRow = t0.x * u0Row + t1.x * u1Row + t2.x * u2Row;
+                texYRow = t0.y * u0Row + t1.y * u1Row + t2.y * u2Row;
+                texXStepX = t0.x * A12 + t1.x * A20 + t2.x * A01;
+                texYStepX = t0.y * A12 + t1.y * A20 + t2.y * A01;
+                texXStepY = t0.x * B12 + t1.x * B20 + t2.x * B01;
+                texYStepY = t0.y * B12 + t1.y * B20 + t2.y * B01;
+            }
 
             // Rasterize
             for (int y = min.y; y < max.y; y++) {
@@ -605,61 +681,40 @@ namespace ProjectPSX.Devices {
                 int w1 = w1_row;
                 int w2 = w2_row;
                 int rowBase = y << 10;
+                int shadeR = shadeRRow;
+                int shadeG = shadeGRow;
+                int shadeB = shadeBRow;
+                int texX = texXRow;
+                int texY = texYRow;
 
                 for (int x = min.x; x < max.x; x++) {
                     // If p is on or inside all edges, render pixel.
                     if ((w0 | w1 | w2) >= 0) {
-                        //Adjustements per triangle instead of per pixel can be done at area level
-                        //but it still does some little by 1 error apreciable on some textured quads
-                        //I assume it could be handled recalculating AXX and BXX offsets but those maths are beyond my scope
-
-                        //Check background mask
                         int pixelIndex = rowBase + x;
                         int backColor = 0;
-                        if (checkMask) {
-                            backColor = vramBits[pixelIndex];
-                            color0.val = (uint)backColor;
-                            if (color0.m != 0) {
-                                w0 += A12;
-                                w1 += A20;
-                                w2 += A01;
-                                continue;
-                            }
+                        if (checkMask && (vram1555Bits[pixelIndex] & 0x8000) != 0) {
+                            goto AdvanceTrianglePixel;
                         }
 
-                        // reset default color of the triangle calculated outside the for as it gets overwriten as follows...
                         int color = (int)c0;
 
-                        if (primitive.isShaded) {
-                            color0.val = c0;
-                            color1.val = c1;
-                            color2.val = c2;
-
-                            int r = interpolate(w0 - bias0, w1 - bias1, w2 - bias2, color0.r, color1.r, color2.r, area);
-                            int g = interpolate(w0 - bias0, w1 - bias1, w2 - bias2, color0.g, color1.g, color2.g, area);
-                            int b = interpolate(w0 - bias0, w1 - bias1, w2 - bias2, color0.b, color1.b, color2.b, area);
+                        if (shaded) {
+                            int r = shadeR / area;
+                            int g = shadeG / area;
+                            int b = shadeB / area;
                             color = r << 16 | g << 8 | b;
                         }
 
-                        if (primitive.isTextured) {
-                            int texelX = interpolate(w0 - bias0, w1 - bias1, w2 - bias2, t0.x, t1.x, t2.x, area);
-                            int texelY = interpolate(w0 - bias0, w1 - bias1, w2 - bias2, t0.y, t1.y, t2.y, area);
+                        if (textured) {
+                            int texelX = texX / area;
+                            int texelY = texY / area;
                             int texel = getTexel(maskTexelAxis(texelX, preMaskX, postMaskX), maskTexelAxis(texelY, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
                             if (texel == 0) {
-                                w0 += A12;
-                                w1 += A20;
-                                w2 += A01;
-                                continue;
+                                goto AdvanceTrianglePixel;
                             }
 
                             if (!primitive.isRawTextured) {
-                                color0.val = (uint)color;
-                                color1.val = (uint)texel;
-                                color1.r = clampToFF(color0.r * color1.r >> 7);
-                                color1.g = clampToFF(color0.g * color1.g >> 7);
-                                color1.b = clampToFF(color0.b * color1.b >> 7);
-
-                                texel = (int)color1.val;
+                                texel = ModulateColor(color, texel);
                             }
 
                             color = texel;
@@ -676,15 +731,26 @@ namespace ProjectPSX.Devices {
                         vramBits[pixelIndex] = color;
                         vram1555Bits[pixelIndex] = PackColor1555(color);
                     }
-                    // One step to the right
+
+AdvanceTrianglePixel:
                     w0 += A12;
                     w1 += A20;
                     w2 += A01;
+                    shadeR += shadeRStepX;
+                    shadeG += shadeGStepX;
+                    shadeB += shadeBStepX;
+                    texX += texXStepX;
+                    texY += texYStepX;
                 }
                 // One row step
                 w0_row += B12;
                 w1_row += B20;
                 w2_row += B01;
+                shadeRRow += shadeRStepY;
+                shadeGRow += shadeGStepY;
+                shadeBRow += shadeBStepY;
+                texXRow += texXStepY;
+                texYRow += texYStepY;
             }
         }
 
@@ -876,6 +942,10 @@ namespace ProjectPSX.Devices {
             int yOrigin = Math.Max(origin.y, drawingAreaTop);
             int width = Math.Min(size.x, drawingAreaRight + 1);
             int height = Math.Min(size.y, drawingAreaBottom + 1);
+            if (xOrigin >= width || yOrigin >= height) {
+                return;
+            }
+
             int rectWidth = size.x - origin.x;
             int rectHeight = size.y - origin.y;
             bool flipX = isTexturedRectangleXFlipped;
@@ -886,40 +956,65 @@ namespace ProjectPSX.Devices {
             ushort[] vram1555Bits = vram1555.Bits;
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
+            bool flatOpaqueFill = !primitive.isTextured && !primitive.isSemiTransparent;
+
+            if (flatOpaqueFill) {
+                int fillColor = baseColor | maskBits;
+                ushort fillColor1555 = PackColor1555(fillColor);
+                int rowWidth = width - xOrigin;
+
+                if (!checkMask) {
+                    for (int y = yOrigin; y < height; y++) {
+                        int rowBase = (y << 10) + xOrigin;
+                        Array.Fill(vramBits, fillColor, rowBase, rowWidth);
+                        Array.Fill(vram1555Bits, fillColor1555, rowBase, rowWidth);
+                    }
+                } else {
+                    for (int y = yOrigin; y < height; y++) {
+                        int rowBase = y << 10;
+                        for (int x = xOrigin; x < width; x++) {
+                            int pixelIndex = rowBase + x;
+                            if ((vram1555Bits[pixelIndex] & 0x8000) != 0) {
+                                continue;
+                            }
+
+                            vramBits[pixelIndex] = fillColor;
+                            vram1555Bits[pixelIndex] = fillColor1555;
+                        }
+                    }
+                }
+
+                return;
+            }
 
             for (int y = yOrigin; y < height; y++) {
                 int rowBase = y << 10;
                 int sourceY = y - origin.y;
                 int v = texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY);
+                int sourceX = xOrigin - origin.x;
+                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                int uStep = flipX ? -1 : 1;
 
                 for (int x = xOrigin; x < width; x++) {
                     int pixelIndex = rowBase + x;
                     //Check background mask
                     int backColor = 0;
-                    if (checkMask) {
-                        backColor = vramBits[pixelIndex];
-                        color0.val = (uint)backColor;
-                        if (color0.m != 0) continue;
+                    if (checkMask && (vram1555Bits[pixelIndex] & 0x8000) != 0) {
+                        u += uStep;
+                        continue;
                     }
 
                     int color = baseColor;
 
                     if (primitive.isTextured) {
-                        int sourceX = x - origin.x;
-                        int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
                         int texel = getTexel(maskTexelAxis(u, preMaskX, postMaskX), maskTexelAxis(v, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
                         if (texel == 0) {
+                            u += uStep;
                             continue;
                         }
 
                         if (!primitive.isRawTextured) {
-                            color0.val = (uint)color;
-                            color1.val = (uint)texel;
-                            color1.r = clampToFF(color0.r * color1.r >> 7);
-                            color1.g = clampToFF(color0.g * color1.g >> 7);
-                            color1.b = clampToFF(color0.b * color1.b >> 7);
-
-                            texel = (int)color1.val;
+                            texel = ModulateColor(color, texel);
                         }
 
                         color = texel;
@@ -935,6 +1030,7 @@ namespace ProjectPSX.Devices {
 
                     vramBits[pixelIndex] = color;
                     vram1555Bits[pixelIndex] = PackColor1555(color);
+                    u += uStep;
                 }
 
             }
@@ -1320,6 +1416,14 @@ namespace ProjectPSX.Devices {
             int g = ((color >> 8) & 0xFF) >> 3;
             int b = (color & 0xFF) >> 3;
             return (ushort)(((m != 0 ? 1 : 0) << 15) | (b << 10) | (g << 5) | r);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int ModulateColor(int color, int texel) {
+            int r = clampToFF(((color >> 16) & 0xFF) * ((texel >> 16) & 0xFF) >> 7);
+            int g = clampToFF(((color >> 8) & 0xFF) * ((texel >> 8) & 0xFF) >> 7);
+            int b = clampToFF((color & 0xFF) * (texel & 0xFF) >> 7);
+            return (texel & unchecked((int)0xFF00_0000)) | (r << 16) | (g << 8) | b;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

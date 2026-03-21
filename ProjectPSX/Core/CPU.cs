@@ -63,10 +63,7 @@ namespace ProjectPSX {
         private readonly uint[] _instructionCacheTags = new uint[InstructionCacheLineCount];
         private readonly bool[] _instructionCacheValid = new bool[InstructionCacheLineCount];
         private readonly uint[] _instructionCacheData = new uint[InstructionCacheLineCount * InstructionCacheWordsPerLine];
-        private uint _lastObservedMemoryCacheWriteCount;
         private bool _instructionCacheEnabled;
-        private bool _lastInstructionCacheIsolation;
-        private bool _lastInstructionCacheRuntimeAllowed;
         private bool _instructionCacheRuntimeAllowed;
 
         private GTE gte;
@@ -123,6 +120,7 @@ namespace ProjectPSX {
             bios = new BIOS_Disassembler(bus);
             mips = new MIPS_Disassembler(ref HI, ref LO, GPR, COP0_GPR);
             gte = new GTE();
+            bus.SetMemoryCacheControlObserver(OnMemoryCacheControlChanged);
 
             COP0_GPR[15] = 0x2; //PRID Processor ID
             FlushInstructionCache();
@@ -184,6 +182,12 @@ namespace ProjectPSX {
                 return;
             }
             _instructionCacheRuntimeAllowed = true;
+            UpdateInstructionCacheControl();
+        }
+
+        public void RefreshRuntimeStateAfterLoad() {
+            dontIsolateCache = (COP0_GPR[SR] & 0x0001_0000) == 0;
+            UpdateInstructionCacheControl();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -257,8 +261,6 @@ namespace ProjectPSX {
                     : bus.LoadFromBios(physicalAddress);
             }
 
-            RefreshInstructionCacheControl();
-
             uint physical = virtualPc & 0x1FFF_FFFF;
             if (physical >= 0x1F00_0000) {
                 return bus.LoadFromBios(physical);
@@ -326,22 +328,15 @@ namespace ProjectPSX {
             _instructionCacheData[lineOffset + wordIndex] = value;
         }
 
-        private void RefreshInstructionCacheControl() {
+        private void UpdateInstructionCacheControl() {
             if (!ExperimentalInstructionCache) {
                 _instructionCacheEnabled = false;
                 return;
             }
 
             bool cacheIsolation = (COP0_GPR[SR] & 0x0001_0000) != 0;
-            uint writeCount = bus.MemoryCacheWriteCount;
-            if (writeCount == _lastObservedMemoryCacheWriteCount
-                && cacheIsolation == _lastInstructionCacheIsolation
-                && _instructionCacheRuntimeAllowed == _lastInstructionCacheRuntimeAllowed) {
-                return;
-            }
-
             uint cacheControl = bus.MemoryCacheControl;
-            bool cacheControlWritten = writeCount != 0;
+            bool cacheControlWritten = bus.MemoryCacheWriteCount != 0;
             bool instructionCacheEnabled = _instructionCacheRuntimeAllowed
                 && cacheControlWritten
                 && (cacheControl & 0x0000_0800) != 0;
@@ -355,9 +350,10 @@ namespace ProjectPSX {
             }
 
             _instructionCacheEnabled = instructionCacheEnabled;
-            _lastObservedMemoryCacheWriteCount = writeCount;
-            _lastInstructionCacheIsolation = cacheIsolation;
-            _lastInstructionCacheRuntimeAllowed = _instructionCacheRuntimeAllowed;
+        }
+
+        private void OnMemoryCacheControlChanged() {
+            UpdateInstructionCacheControl();
         }
 
         private void FlushInstructionCache() {
@@ -540,6 +536,7 @@ namespace ProjectPSX {
                 bool currentIEC = (value & 0x1) == 1;
 
                 cpu.COP0_GPR[SR] = value;
+                cpu.UpdateInstructionCacheControl();
 
                 uint IM = (value >> 8) & 0x3;
                 uint IP = (cpu.COP0_GPR[CAUSE] >> 8) & 0x3;

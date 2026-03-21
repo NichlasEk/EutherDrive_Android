@@ -341,6 +341,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             StateBinarySerializer.ReadInto(reader, _core.Timers);
             StateBinarySerializer.ReadInto(reader, _core.MDEC);
             _core.MDEC.ResyncAfterLoad();
+            _core.RefreshRuntimeStateAfterLoad();
             _core.SPU.LoadRawState(reader);
             StateBinarySerializer.ReadInto(reader, _core.SPU);
             _core.SPU.RefreshRuntimeState();
