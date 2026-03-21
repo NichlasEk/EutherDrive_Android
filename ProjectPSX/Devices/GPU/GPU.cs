@@ -21,6 +21,9 @@ namespace ProjectPSX.Devices {
         private static readonly int[] resolutions = { 256, 320, 512, 640, 384 };//gpustat res index
         private static readonly int[] dotClockDiv = { 10, 8, 5, 4, 7 };
         private const int IdentityTextureModulationColor = 0x00808080;
+        private static readonly ushort[] modulate1555RByShade = BuildDynamicModulate1555Table(0);
+        private static readonly ushort[] modulate1555GByShade = BuildDynamicModulate1555Table(5);
+        private static readonly ushort[] modulate1555BByShade = BuildDynamicModulate1555Table(10);
 
         [NonSerialized]
         private IHostWindow window;
@@ -1650,6 +1653,7 @@ AdvanceTrianglePixel:
             ComputeFloorStep(area, shadeRStepX, out int shadeRQuotientStep, out int shadeRRemainderStep);
             ComputeFloorStep(area, shadeGStepX, out int shadeGQuotientStep, out int shadeGRemainderStep);
             ComputeFloorStep(area, shadeBStepX, out int shadeBQuotientStep, out int shadeBRemainderStep);
+            ushort maskBit1555 = (ushort)(maskBits >> 9);
 
             switch (primitive.depth) {
                 case 0:
@@ -1668,15 +1672,10 @@ AdvanceTrianglePixel:
                             InitScaledFloorNonNegative(shadeB, area, reciprocal, out int shadeBValue, out int shadeBValueRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texel = GetTexel4Fast(vram1555Bits, color1555to8888LUT, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                if (texel != 0) {
-                                    int color =
-                                        (shadeRValue << 16) |
-                                        (shadeGValue << 8) |
-                                        shadeBValue;
-                                    color = ModulateColor(color, texel) | maskBits;
-                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                if (rawTexel != 0) {
+                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
                                 }
 
                                 pixelIndex++;
@@ -1714,15 +1713,10 @@ AdvanceTrianglePixel:
                             InitScaledFloorNonNegative(shadeB, area, reciprocal, out int shadeBValue, out int shadeBValueRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texel = GetTexel8Fast(vram1555Bits, color1555to8888LUT, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
-                                if (texel != 0) {
-                                    int color =
-                                        (shadeRValue << 16) |
-                                        (shadeGValue << 8) |
-                                        shadeBValue;
-                                    color = ModulateColor(color, texel) | maskBits;
-                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                if (rawTexel != 0) {
+                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
                                 }
 
                                 pixelIndex++;
@@ -1760,15 +1754,10 @@ AdvanceTrianglePixel:
                             InitScaledFloorNonNegative(shadeB, area, reciprocal, out int shadeBValue, out int shadeBValueRemainder);
 
                             for (int x = spanStart; x < spanEnd; x++) {
-                                int texel = GetTexel16Fast(vram1555Bits, color1555to8888LUT, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
+                                ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
 
-                                if (texel != 0) {
-                                    int color =
-                                        (shadeRValue << 16) |
-                                        (shadeGValue << 8) |
-                                        shadeBValue;
-                                    color = ModulateColor(color, texel) | maskBits;
-                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                if (rawTexel != 0) {
+                                    vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, shadeRValue, shadeGValue, shadeBValue);
                                 }
 
                                 pixelIndex++;
@@ -1883,6 +1872,16 @@ AdvanceTrianglePixel:
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ushort ModulateRawTexel1555(ushort rawTexel, ushort maskBit1555, int shadeR, int shadeG, int shadeB) {
+            return (ushort)(
+                (rawTexel & 0x8000) |
+                maskBit1555 |
+                modulate1555RByShade[(shadeR << 5) | (rawTexel & 0x1F)] |
+                modulate1555GByShade[(shadeG << 5) | ((rawTexel >> 5) & 0x1F)] |
+                modulate1555BByShade[(shadeB << 5) | ((rawTexel >> 10) & 0x1F)]);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ushort BlendRawSemiTransparent1555(ushort backRaw, ushort frontRaw, int semiTranspMode) {
             if (semiTranspMode == 0) {
                 int rb = (((backRaw & 0x7C1F) + (frontRaw & 0x7C1F)) >> 1) & 0x7C1F;
@@ -1925,6 +1924,21 @@ AdvanceTrianglePixel:
             }
 
             return (ushort)((frontRaw & 0x8000) | (b << 10) | (g << 5) | r);
+        }
+
+        private static ushort[] BuildDynamicModulate1555Table(int shift) {
+            ushort[] table = new ushort[256 * 32];
+
+            for (int shade = 0; shade < 256; shade++) {
+                int shadeBase = shade << 5;
+                for (int texel = 0; texel < 32; texel++) {
+                    int texel8 = (texel << 3) | (texel >> 2);
+                    int modulated = clampToFF((shade * texel8) >> 7) >> 3;
+                    table[shadeBase | texel] = (ushort)(modulated << shift);
+                }
+            }
+
+            return table;
         }
 
         private static void BuildModulate1555Tables(int baseColor, Span<ushort> modulateR, Span<ushort> modulateG, Span<ushort> modulateB) {
