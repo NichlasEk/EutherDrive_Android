@@ -2973,27 +2973,45 @@ AdvanceGenericTrianglePixel:
                 dx2 = 0;
             }
 
+            ushort[] vram1555Bits = vram1555.Bits;
+            int startColor = (int)color1;
+            int endColor = (int)color2;
+            int rAcc = ((startColor >> 16) & 0xFF) << 16;
+            int gAcc = ((startColor >> 8) & 0xFF) << 16;
+            int bAcc = (startColor & 0xFF) << 16;
+            int rStep = 0;
+            int gStep = 0;
+            int bStep = 0;
+            if (longest > 0) {
+                rStep = ((((endColor >> 16) & 0xFF) - ((startColor >> 16) & 0xFF)) << 16) / longest;
+                gStep = ((((endColor >> 8) & 0xFF) - ((startColor >> 8) & 0xFF)) << 16) / longest;
+                bStep = (((endColor & 0xFF) - (startColor & 0xFF)) << 16) / longest;
+            }
+
             int numerator = longest >> 1;
 
             for (int i = 0; i <= longest; i++) {
-                float ratio = (float)i / longest;
-                int color = interpolate(color1, color2, ratio);
-
                 //x = (short)Math.Min(Math.Max(x, drawingAreaLeft), drawingAreaRight); //this generates glitches on RR4
                 //y = (short)Math.Min(Math.Max(y, drawingAreaTop), drawingAreaBottom);
 
                 if (x >= drawingAreaLeft && x < drawingAreaRight && y >= drawingAreaTop && y < drawingAreaBottom) {
+                    int color = ((rAcc >> 16) << 16) | ((gAcc >> 16) << 8) | (bAcc >> 16);
                     ushort packedColor = PackColor1555(color);
+                    int pixelIndex = (y << 10) + x;
                     if (isTransparent) {
-                        packedColor = BlendRawSemiTransparent1555(vram1555.GetPixel(x, y), packedColor, transparencyMode);
+                        packedColor = BlendRawSemiTransparent1555(vram1555Bits[pixelIndex], packedColor, transparencyMode);
                     }
 
                     if (maskWhileDrawing != 0) {
                         packedColor |= 0x8000;
                     }
 
-                    vram1555.SetPixel(x, y, packedColor);
+                    vram1555Bits[pixelIndex] = packedColor;
                 }
+
+                rAcc += rStep;
+                gAcc += gStep;
+                bAcc += bStep;
 
                 numerator += shortest;
                 if (!(numerator < longest)) {
@@ -3566,24 +3584,29 @@ AdvanceGenericTrianglePixel:
             int copyLength = w * h;
             EnsureVramCopyScratchCapacity(copyLength);
             ushort[] copyBuffer = vramCopyScratch;
+            ushort[] vram1555Bits = vram1555.Bits;
             int copyIndex = 0;
             for (int yPos = 0; yPos < h; yPos++) {
+                int sourceRowBase = ((sy + yPos) & 0x1FF) << 10;
                 for (int xPos = 0; xPos < w; xPos++) {
-                    copyBuffer[copyIndex++] = vram1555.GetPixel((sx + xPos) & 0x3FF, (sy + yPos) & 0x1FF);
+                    int sourceIndex = sourceRowBase + ((sx + xPos) & 0x3FF);
+                    copyBuffer[copyIndex++] = vram1555Bits[sourceIndex];
                 }
             }
 
             copyIndex = 0;
             for (int yPos = 0; yPos < h; yPos++) {
+                int destRowBase = ((dy + yPos) & 0x1FF) << 10;
                 for (int xPos = 0; xPos < w; xPos++) {
+                    int destIndex = destRowBase + ((dx + xPos) & 0x3FF);
                     ushort rawColor = copyBuffer[copyIndex++];
                     if (checkMaskBeforeDraw) {
-                        ushort destColor = vram1555.GetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF);
+                        ushort destColor = vram1555Bits[destIndex];
                         if ((destColor & 0x8000) != 0) continue;
                     }
 
                     rawColor |= (ushort)(maskWhileDrawing << 15);
-                    vram1555.SetPixel((dx + xPos) & 0x3FF, (dy + yPos) & 0x1FF, rawColor);
+                    vram1555Bits[destIndex] = rawColor;
                 }
             }
         }
