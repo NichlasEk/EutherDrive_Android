@@ -956,6 +956,32 @@ public class PPU : IPPU
         return (ushort[])_oam.Clone();
     }
 
+    public ulong ComputeVramHash()
+    {
+        return ComputeHash(_vram);
+    }
+
+    public ulong ComputeCgramHash()
+    {
+        return ComputeHash(_cgram);
+    }
+
+    public ulong ComputeOamHash()
+    {
+        ulong hash = ComputeHash(_oam);
+        hash = MixHash(hash, ComputeHash(_highOam));
+        return hash;
+    }
+
+    public string GetDivergenceSummary()
+    {
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"ppu(blank={(_forcedBlank ? 1 : 0)} bright={_brightness} mode={_mode} tm=0x{_tmRaw:X2} ts=0x{_tsRaw:X2} " +
+            $"pseudo={(_pseudoHires ? 1 : 0)} interlace={(_interlace ? 1 : 0)} objInterlace={(_objInterlace ? 1 : 0)} " +
+            $"{GetBgDivergenceSummary(0)} {GetBgDivergenceSummary(1)} {GetBgDivergenceSummary(2)})");
+    }
+
     public string GetDebugSnapshot()
     {
         return string.Join(
@@ -1002,6 +1028,46 @@ public class PPU : IPPU
                 $"bg{layer + 1} tile0 word=0x{tilemapWord:X4} num=0x{tileNum:X3} pal={(tilemapWord >> 10) & 0x7} prio={((tilemapWord >> 13) & 0x1)} xflip={((tilemapWord >> 14) & 0x1)} yflip={((tilemapWord >> 15) & 0x1)}",
                 $"bg{layer + 1} tiledata[{tileNum:X3}]=[{GetVramWindow(tileWordBase, Math.Min(bits << 2, 8))}]"
             });
+    }
+
+    private string GetBgDivergenceSummary(int layer)
+    {
+        if (layer < 0 || layer >= 4)
+            return $"bg{layer + 1}=invalid";
+
+        int mapAddr = _tilemapAdr.Length > layer ? _tilemapAdr[layer] & 0x7fff : 0;
+        int tileAddr = _tileAdr.Length > layer ? _tileAdr[layer] & 0x7fff : 0;
+        int hoff = _bgHoff.Length > layer ? _bgHoff[layer] : 0;
+        int voff = _bgVoff.Length > layer ? _bgVoff[layer] : 0;
+        int bits = _bitPerMode[_mode * 4 + layer];
+        int wide = _tilemapWider.Length > layer && _tilemapWider[layer] ? 1 : 0;
+        int high = _tilemapHigher.Length > layer && _tilemapHigher[layer] ? 1 : 0;
+        int big = _bigTiles.Length > layer && _bigTiles[layer] ? 1 : 0;
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"bg{layer + 1}(map=0x{mapAddr:X4} tile=0x{tileAddr:X4} hoff=0x{hoff:X4} voff=0x{voff:X4} bits={bits} wide={wide} high={high} big={big})");
+    }
+
+    private static ulong ComputeHash(ushort[] values)
+    {
+        const ulong offset = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+
+        ulong hash = offset;
+        foreach (ushort value in values)
+        {
+            hash ^= (byte)value;
+            hash *= prime;
+            hash ^= (byte)(value >> 8);
+            hash *= prime;
+        }
+
+        return hash;
+    }
+
+    private static ulong MixHash(ulong left, ulong right)
+    {
+        return left ^ (right + 0x9E3779B97F4A7C15UL + (left << 6) + (left >> 2));
     }
 
     private static string BoolArrayString(bool[] values, int count)
@@ -1095,6 +1161,22 @@ public class PPU : IPPU
         }
     }
 
+    public void PrepareSpriteLine(int line)
+    {
+        EnsureRuntimeBuffers();
+        Array.Clear(_spriteLineBuffer, 0, _spriteLineBuffer.Length);
+        Array.Clear(_spritePrioBuffer, 0, _spritePrioBuffer.Length);
+
+        if (line < 0 || line >= (FrameOverscan ? 240 : 225) || _forcedBlank)
+        {
+            return;
+        }
+
+        _rangeOver = false;
+        _timeOver = false;
+        EvaluateSprites(line);
+    }
+
     public void RenderLine(int line) 
     {
         int screenY = line - 1;
@@ -1105,14 +1187,6 @@ public class PPU : IPPU
         {
             FrameOverscan = false;
             _frameTrueHiResOutput = false;
-            _spriteLineBuffer =  new byte[256];
-            _spritePrioBuffer = new byte[256];
-            if (!_forcedBlank)
-            {
-                _rangeOver = false;
-                _timeOver = false;
-                EvaluateSprites(0);
-            }
         }
         else if (line == (FrameOverscan ? 240 : 225))
         {
@@ -1153,7 +1227,7 @@ public class PPU : IPPU
                 var subVisible = false;
                 if (!_forcedBlank)
                 {
-                    var (color, item2, item3) = GetColor(false, i, screenY);
+                    GetColor(false, i, screenY, out ushort color, out int item2, out int item3);
                     mainVisible = item2 < 5;
                     r2 = color & 0x1f;
                     g2 = (color & 0x3e0) >> 5;
@@ -1164,30 +1238,32 @@ public class PPU : IPPU
                         g2 = 0;
                         b2 = 0;
                     }
-                    var secondLay = (0, 5, 0);
+                    ushort secondColor = 0;
+                    int secondLayer = 5;
+                    int secondPixel = 0;
                     if (_mode == 5 || _mode == 6 || _pseudoHires || GetMathEnabled(i, item2, item3) && _addSub)
                     {
-                        secondLay = GetColor(true, i, screenY);
-                        subVisible = secondLay.Item2 < 5;
-                        r1 = secondLay.Item1 & 0x1f;
-                        g1 = (secondLay.Item1 & 0x3e0) >> 5;
-                        b1 = (secondLay.Item1 & 0x7c00) >> 10;
+                        GetColor(true, i, screenY, out secondColor, out secondLayer, out secondPixel);
+                        subVisible = secondLayer < 5;
+                        r1 = secondColor & 0x1f;
+                        g1 = (secondColor & 0x3e0) >> 5;
+                        b1 = (secondColor & 0x7c00) >> 10;
                     }
                     if (GetMathEnabled(i, item2, item3))
                     {
                         if (_subtractColors)
                         {
-                            r2 -= _addSub && secondLay.Item2 < 5 ? r1 : _fixedColorR;
-                            g2 -= _addSub && secondLay.Item2 < 5 ? g1 : _fixedColorG;
-                            b2 -= _addSub && secondLay.Item2 < 5 ? b1 : _fixedColorB;
+                            r2 -= _addSub && secondLayer < 5 ? r1 : _fixedColorR;
+                            g2 -= _addSub && secondLayer < 5 ? g1 : _fixedColorG;
+                            b2 -= _addSub && secondLayer < 5 ? b1 : _fixedColorB;
                         }
                         else
                         {
-                            r2 += _addSub && secondLay.Item2 < 5 ? r1 : _fixedColorR;
-                            g2 += _addSub && secondLay.Item2 < 5 ? g1 : _fixedColorG;
-                            b2 += _addSub && secondLay.Item2 < 5 ? b1 : _fixedColorB;
+                            r2 += _addSub && secondLayer < 5 ? r1 : _fixedColorR;
+                            g2 += _addSub && secondLayer < 5 ? g1 : _fixedColorG;
+                            b2 += _addSub && secondLayer < 5 ? b1 : _fixedColorB;
                         }
-                        if (_halfColors && (secondLay.Item2 < 5 || !_addSub))
+                        if (_halfColors && (secondLayer < 5 || !_addSub))
                         {
                             r2 >>= 1;
                             g2 >>= 1;
@@ -1244,14 +1320,6 @@ public class PPU : IPPU
                 }
                 i++;
             }
-            _spriteLineBuffer = new byte[256];
-            _spritePrioBuffer = new byte[256];
-            if (!_forcedBlank)
-            {
-                _rangeOver = false;
-                _timeOver = false;
-                EvaluateSprites(line);
-            }
         }
     }
 
@@ -1273,14 +1341,14 @@ public class PPU : IPPU
         _lastOrigTileX[1] = -1;
     }
 
-    private (ushort, int, int) GetColor(bool sub, int x, int y) 
+    private void GetColor(bool sub, int x, int y, out ushort color, out int layer, out int pixel) 
     {
         int modeIndex = _layer3Prio && _mode == 1 ? 96 : 12 * _mode;
         modeIndex = _mode7ExBg && _mode == 7 ? 108 : modeIndex;
         int count = _layercountPerMode[_mode];
         int j;
-        var pixel = 0;
-        var layer = 5;
+        pixel = 0;
+        layer = 5;
         // Vertical hi-res BG sampling only applies in modes 5/6. In other modes,
         // interlace affects field/frame output rather than doubling BG fetch Y.
         if (_interlace && (_mode == 5 || _mode == 6))
@@ -1359,7 +1427,7 @@ public class PPU : IPPU
         // Use live CGRAM so mid-frame palette changes (for example via HDMA) affect
         // the lines they are meant to. Frame-latching the palette breaks games like
         // Kirby's Dream Land 3 that update HUD/scene colors during active display.
-        ushort color = (sub && layer == 5)
+        color = (sub && layer == 5)
             ? (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR)
             : _cgram[pixel & 0xff];
         if (_directColor && layer < 4 && _bitPerMode[_mode * 4 + layer] == 8)
@@ -1369,7 +1437,7 @@ public class PPU : IPPU
             int b = ((pixel & 0xc0) >> 3) | ((pixel & 0x400) >> 8);
             color = (ushort) ((b << 10) | (g << 5) | r);
         }
-        return (color, layer, pixel);
+        return;
     }
 
     private bool GetMathEnabled(int x, int l, int pal) 

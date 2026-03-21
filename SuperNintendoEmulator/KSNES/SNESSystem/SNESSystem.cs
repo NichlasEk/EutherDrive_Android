@@ -19,8 +19,26 @@ public class SNESSystem : ISNESSystem
     [field: NonSerialized] public IAPU APU { get; private set; }
 
     [JsonIgnore]
-    [field: NonSerialized]
-    public IROM ROM { get; set; }
+    [NonSerialized]
+    private IROM _rom = null!;
+
+    [JsonIgnore]
+    [NonSerialized]
+    private KSNES.ROM.ROM? _romImpl;
+
+    [JsonIgnore]
+    public IROM ROM
+    {
+        get => _rom;
+        set
+        {
+            _rom = value;
+            _romImpl = value as KSNES.ROM.ROM;
+        }
+    }
+
+    [JsonIgnore]
+    private KSNES.ROM.ROM RomImpl => _romImpl ?? throw new InvalidOperationException("SNES ROM is not initialized.");
 
     private byte[] _ram = [];
 
@@ -410,7 +428,7 @@ public class SNESSystem : ISNESSystem
         {
             AdvanceApuForCpuAccess(accessTime);
         }
-        ROM.Write(bank, adr, (byte) value);
+        RomImpl.Write(bank, adr, (byte) value);
     }
 
     private void Reset1()
@@ -490,7 +508,7 @@ public class SNESSystem : ISNESSystem
         _hdmaDoTransfer = new bool[8];
         _hdmaTerminated = new bool[8];
         OpenBus = 0;
-        ROM.ResetCoprocessor();
+        RomImpl.ResetCoprocessor();
     }
 
     public void ResyncAfterLoad()
@@ -524,7 +542,7 @@ public class SNESSystem : ISNESSystem
             rom = MirrorRomToNextPowerOfTwo(rom);
             header.RomSize = rom.Length;
         }
-        ROM.LoadROM(rom, header);
+        RomImpl.LoadROM(rom, header);
     }
 
     private static byte[] MirrorRomToNextPowerOfTwo(byte[] rom)
@@ -550,19 +568,11 @@ public class SNESSystem : ISNESSystem
 
     private void Cycle(bool noPpu) 
     {
-        Cycles += 2;
+        if (TryRunFastCpuWindow(noPpu))
+            return;
+
+        AdvanceBaseClocksForStep();
         bool queueNmiForNextCpuSlot = false;
-        int apuStepMclks = 2;
-        if (_apuBorrowedMainCycles > 0)
-        {
-            int borrowed = Math.Min(apuStepMclks, _apuBorrowedMainCycles);
-            apuStepMclks -= borrowed;
-            _apuBorrowedMainCycles -= borrowed;
-        }
-        if (apuStepMclks > 0)
-        {
-            _apuMasterCyclesProduct += ApuMasterClockFrequency * (ulong)apuStepMclks;
-        }
         int currentLineMclks = GetCurrentLineMclks();
         int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
         if (XPos == 0)
@@ -618,6 +628,7 @@ public class SNESSystem : ISNESSystem
             if (!_inVblank)
             {
                 HandleHdma();
+                PPU.PrepareSpriteLine(YPos);
             }
         }
 
@@ -643,7 +654,7 @@ public class SNESSystem : ISNESSystem
             CPU.NmiWanted = true;
         }
         
-        CPU.IrqWanted = _inIrq || ROM.IrqWanted;
+        CPU.IrqWanted = _inIrq || RomImpl.IrqWanted;
         if (XPos == 512 && !noPpu)
         {
             PPU.RenderLine(YPos);
@@ -664,25 +675,143 @@ public class SNESSystem : ISNESSystem
                 _autoJoyTimer = 0;
             }
         }
-        ROM.RunCoprocessor(Cycles);
+        RomImpl.RunCoprocessor(Cycles);
         CatchUpApu();
-        XPos += 2;
-        if (XPos == currentLineMclks)
+        AdvanceBeamPosition(currentLineMclks);
+    }
+
+    private bool TryRunFastCpuWindow(bool noPpu)
+    {
+        if (_hdmaTimer > 0
+            || _dmaTimer > 0
+            || _gpdmaState != GpDmaState.Idle
+            || _hIrqEnabled
+            || _vIrqEnabled
+            || _autoJoyBusy
+            || _autoJoyPendingStart)
         {
-            XPos = 0;
-            YPos++;
-            int maxV = IsPal ? 312 : 262;
-            if (YPos == maxV)
-            {
-                YPos = 0;
-                _oddFrame = !_oddFrame;
-                // The PPU is no longer in VBlank once the frame wraps back to scanline 0.
-                // Clear both the live VBlank state and the RDNMI latch at frame wrap.
-                _inNmi = false;
-                _vblankNmiFlag = false;
-                _inVblank = false;
-                _autoJoyPendingStart = false;
-            }
+            return false;
+        }
+
+        int currentLineMclks = GetCurrentLineMclks();
+        int endX = GetFastCpuWindowEnd(currentLineMclks, noPpu);
+        if (endX <= XPos)
+            return false;
+
+        bool cpuCanRun = XPos < 536 || XPos >= 576;
+        int chunkMclks = endX - XPos;
+        if (cpuCanRun)
+        {
+            // Only fast-forward while the CPU is between instruction boundaries. Once
+            // `_cpuCyclesLeft` reaches zero we must fall back to the regular 2-mclk path
+            // so CPU register writes, DMA enables, and interrupt sampling still happen at
+            // their exact cycle edges.
+            int cpuWaitMclks = _cpuCyclesLeft & ~0x1;
+            if (cpuWaitMclks <= 0)
+                return false;
+
+            chunkMclks = Math.Min(chunkMclks, cpuWaitMclks);
+        }
+
+        chunkMclks &= ~0x1;
+        if (chunkMclks <= 0)
+            return false;
+
+        AdvanceBaseClocks(chunkMclks);
+        if (cpuCanRun)
+            _cpuCyclesLeft -= chunkMclks;
+        RomImpl.RunCoprocessor(Cycles);
+        CatchUpApu();
+        CPU.IrqWanted = _inIrq || RomImpl.IrqWanted;
+        AdvanceBeamPositionBy(chunkMclks, currentLineMclks);
+        _lastIrqHTime = GetIrqHTime();
+
+        return true;
+    }
+
+    private int GetFastCpuWindowEnd(int currentLineMclks, bool noPpu)
+    {
+        if (XPos == 0 || XPos == 4 || XPos == 1096 || XPos == 1104 || (!noPpu && XPos == 512))
+            return XPos;
+
+        if (XPos < 4)
+            return 4;
+
+        if (XPos < 512)
+            return noPpu ? 536 : 512;
+
+        if (XPos < 536)
+            return 536;
+
+        if (XPos < 576)
+            return 576;
+
+        if (XPos < 1096)
+            return 1096;
+
+        if (XPos < 1104)
+            return 1104;
+
+        if (XPos < currentLineMclks)
+            return currentLineMclks;
+
+        return XPos;
+    }
+
+    private void AdvanceBaseClocksForStep()
+    {
+        AdvanceBaseClocks(2);
+    }
+
+    private void AdvanceBaseClocks(int mainMasterCycles)
+    {
+        if (mainMasterCycles <= 0)
+            return;
+
+        Cycles += (ulong)mainMasterCycles;
+        int apuStepMclks = mainMasterCycles;
+        if (_apuBorrowedMainCycles > 0)
+        {
+            int borrowed = Math.Min(apuStepMclks, _apuBorrowedMainCycles);
+            apuStepMclks -= borrowed;
+            _apuBorrowedMainCycles -= borrowed;
+        }
+        if (apuStepMclks > 0)
+        {
+            _apuMasterCyclesProduct += ApuMasterClockFrequency * (ulong)apuStepMclks;
+        }
+    }
+
+    private void AdvanceBeamPosition(int currentLineMclks)
+    {
+        AdvanceBeamPositionBy(2, currentLineMclks);
+    }
+
+    private void AdvanceBeamPositionBy(int mainMasterCycles, int currentLineMclks)
+    {
+        if (mainMasterCycles <= 0)
+            return;
+
+        int newX = XPos + mainMasterCycles;
+        if (newX < currentLineMclks)
+        {
+            XPos = newX;
+            return;
+        }
+
+        XPos = 0;
+        YPos++;
+        int maxV = IsPal ? 312 : 262;
+        if (YPos == maxV)
+        {
+            YPos = 0;
+            _oddFrame = !_oddFrame;
+            // The PPU is no longer in VBlank once the frame wraps back to scanline 0.
+            // Clear both the live VBlank state and the RDNMI latch at frame wrap.
+            _inNmi = false;
+            _vblankNmiFlag = false;
+            _inVblank = false;
+            _autoJoyPendingStart = false;
         }
     }
 
@@ -950,7 +1079,7 @@ public class SNESSystem : ISNESSystem
 
         if (_gpdmaChannel >= 8)
         {
-            if (_dmaNotifyCount > 0 && ROM is KSNES.ROM.ROM finalRom)
+            if (_dmaNotifyCount > 0)
             {
                 for (int i = 0; i < 8; i++)
                 {
@@ -959,7 +1088,7 @@ public class SNESSystem : ISNESSystem
 
                     _dmaNotifyActive[i] = false;
                     _dmaNotifyCount--;
-                    finalRom.NotifyDmaEnd((byte)i);
+                    RomImpl.NotifyDmaEnd((byte)i);
                 }
             }
             _gpdmaState = GpDmaState.Idle;
@@ -973,12 +1102,9 @@ public class SNESSystem : ISNESSystem
         if (!_dmaFromB[channel] && !_dmaNotifyActive[channel])
         {
             uint sourceAddress = (uint)((_dmaAadrBank[channel] << 16) | _dmaAadr[channel]);
-            if (ROM is KSNES.ROM.ROM rom)
-            {
-                rom.NotifyDmaStart((byte)channel, sourceAddress);
-                _dmaNotifyActive[channel] = true;
-                _dmaNotifyCount++;
-            }
+            RomImpl.NotifyDmaStart((byte)channel, sourceAddress);
+            _dmaNotifyActive[channel] = true;
+            _dmaNotifyCount++;
         }
 
         int tableOff = _dmaMode[channel] * 4 + (_gpdmaBytesCopied & 0x3);
@@ -1269,7 +1395,7 @@ public class SNESSystem : ISNESSystem
         if (IsDmaForbiddenBusAAccess(address))
             return OpenBus;
 
-        if (ROM is KSNES.ROM.ROM rom && rom.TryReadForDma(address, out int dmaValue))
+        if (RomImpl.TryReadForDma(address, out int dmaValue))
             return dmaValue;
 
         return Read(address, true);
@@ -1757,7 +1883,7 @@ public class SNESSystem : ISNESSystem
                 return ReadReg(adr);
             }
         }
-        return ROM.Read(bank, adr);
+        return RomImpl.Read(bank, adr);
     }
 
     public int Peek(int adr)
