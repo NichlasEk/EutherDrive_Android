@@ -1336,30 +1336,58 @@ namespace ProjectPSX.Devices {
                 return;
             }
 
-            // Rasterize
-            for (int y = min.y; y < max.y; y++) {
-                // Barycentric coordinates at start of row
-                int w0 = w0_row;
-                int w1 = w1_row;
-                int w2 = w2_row;
-                int rowBase = y << 10;
-                int shadeR = shadeRRow;
-                int shadeG = shadeGRow;
-                int shadeB = shadeBRow;
-                int texX = texXRow;
-                int texY = texYRow;
+            int genericSpanWidth = max.x - min.x;
+            ulong genericReciprocal = 0;
+            int genericTexXQuotientStep = 0, genericTexXRemainderStep = 0;
+            int genericTexYQuotientStep = 0, genericTexYRemainderStep = 0;
+            int genericShadeRQuotientStep = 0, genericShadeRRemainderStep = 0;
+            int genericShadeGQuotientStep = 0, genericShadeGRemainderStep = 0;
+            int genericShadeBQuotientStep = 0, genericShadeBRemainderStep = 0;
 
-                for (int x = min.x; x < max.x; x++) {
-                    // If p is on or inside all edges, render pixel.
-                    if ((w0 | w1 | w2) >= 0) {
-                        int pixelIndex = rowBase + x;
+            if (genericSpanWidth > 0 && (textured || shaded)) {
+                genericReciprocal = BuildUnsignedReciprocal(area);
+                if (textured) {
+                    ComputeFloorStep(area, texXStepX, out genericTexXQuotientStep, out genericTexXRemainderStep);
+                    ComputeFloorStep(area, texYStepX, out genericTexYQuotientStep, out genericTexYRemainderStep);
+                }
+
+                if (shaded) {
+                    ComputeFloorStep(area, shadeRStepX, out genericShadeRQuotientStep, out genericShadeRRemainderStep);
+                    ComputeFloorStep(area, shadeGStepX, out genericShadeGQuotientStep, out genericShadeGRemainderStep);
+                    ComputeFloorStep(area, shadeBStepX, out genericShadeBQuotientStep, out genericShadeBRemainderStep);
+                }
+            }
+
+            for (int y = min.y; y < max.y; y++) {
+                if (TryGetTriangleSpanOffsets(w0_row, w1_row, w2_row, A12, A20, A01, genericSpanWidth, out int spanStart, out int spanEnd)) {
+                    int pixelIndex = (y << 10) + min.x + spanStart;
+
+                    int texelX = 0, texelY = 0;
+                    int texelXRemainder = 0, texelYRemainder = 0;
+                    if (textured) {
+                        int texX = texXRow + spanStart * texXStepX;
+                        int texY = texYRow + spanStart * texYStepX;
+                        InitScaledFloorNonNegative(texX, area, genericReciprocal, out texelX, out texelXRemainder);
+                        InitScaledFloorNonNegative(texY, area, genericReciprocal, out texelY, out texelYRemainder);
+                    }
+
+                    int shadeRValue = 0, shadeGValue = 0, shadeBValue = 0;
+                    int shadeRValueRemainder = 0, shadeGValueRemainder = 0, shadeBValueRemainder = 0;
+                    if (shaded) {
+                        int shadeR = shadeRRow + spanStart * shadeRStepX;
+                        int shadeG = shadeGRow + spanStart * shadeGStepX;
+                        int shadeB = shadeBRow + spanStart * shadeBStepX;
+                        InitScaledFloorNonNegative(shadeR, area, genericReciprocal, out shadeRValue, out shadeRValueRemainder);
+                        InitScaledFloorNonNegative(shadeG, area, genericReciprocal, out shadeGValue, out shadeGValueRemainder);
+                        InitScaledFloorNonNegative(shadeB, area, genericReciprocal, out shadeBValue, out shadeBValueRemainder);
+                    }
+
+                    for (int x = spanStart; x < spanEnd; x++) {
                         if (checkMask && (vram1555Bits[pixelIndex] & 0x8000) != 0) {
-                            goto AdvanceTrianglePixel;
+                            goto AdvanceGenericTrianglePixel;
                         }
 
                         if (textured) {
-                            int texelX = texX / area;
-                            int texelY = texY / area;
                             ushort rawTexel = GetTexelRawFast(
                                 vram1555Bits,
                                 maskTexelAxis(texelX, preMaskX, postMaskX),
@@ -1370,17 +1398,14 @@ namespace ProjectPSX.Devices {
                                 primitive.textureBase.y,
                                 primitive.depth);
                             if (rawTexel == 0) {
-                                goto AdvanceTrianglePixel;
+                                goto AdvanceGenericTrianglePixel;
                             }
 
                             ushort packedTexturedColor;
                             if (primitive.isRawTextured) {
                                 packedTexturedColor = rawTexel;
                             } else if (shaded) {
-                                int r = shadeR / area;
-                                int g = shadeG / area;
-                                int b = shadeB / area;
-                                packedTexturedColor = ModulateRawTexel1555(rawTexel, 0, r, g, b);
+                                packedTexturedColor = ModulateRawTexel1555(rawTexel, 0, shadeRValue, shadeGValue, shadeBValue);
                             } else {
                                 packedTexturedColor = ModulateRawTexel1555(rawTexel, 0, genericFlatModulateR, genericFlatModulateG, genericFlatModulateB);
                             }
@@ -1391,16 +1416,12 @@ namespace ProjectPSX.Devices {
                                 vram1555Bits[pixelIndex] = (ushort)(packedTexturedColor | genericMaskBit1555);
                             }
 
-                            goto AdvanceTrianglePixel;
+                            goto AdvanceGenericTrianglePixel;
                         }
 
-                        int color = (int)c0;
-                        if (shaded) {
-                            int r = shadeR / area;
-                            int g = shadeG / area;
-                            int b = shadeB / area;
-                            color = r << 16 | g << 8 | b;
-                        }
+                        int color = shaded
+                            ? (shadeRValue << 16) | (shadeGValue << 8) | shadeBValue
+                            : (int)c0;
 
                         ushort packedColor = PackColor1555(color);
                         if (primitive.isSemiTransparent) {
@@ -1412,19 +1433,22 @@ namespace ProjectPSX.Devices {
                         }
 
                         vram1555Bits[pixelIndex] = packedColor;
-                    }
 
-AdvanceTrianglePixel:
-                    w0 += A12;
-                    w1 += A20;
-                    w2 += A01;
-                    shadeR += shadeRStepX;
-                    shadeG += shadeGStepX;
-                    shadeB += shadeBStepX;
-                    texX += texXStepX;
-                    texY += texYStepX;
+AdvanceGenericTrianglePixel:
+                        pixelIndex++;
+                        if (textured) {
+                            AdvanceScaledFloor(ref texelX, ref texelXRemainder, genericTexXQuotientStep, genericTexXRemainderStep, area);
+                            AdvanceScaledFloor(ref texelY, ref texelYRemainder, genericTexYQuotientStep, genericTexYRemainderStep, area);
+                        }
+
+                        if (shaded) {
+                            AdvanceScaledFloor(ref shadeRValue, ref shadeRValueRemainder, genericShadeRQuotientStep, genericShadeRRemainderStep, area);
+                            AdvanceScaledFloor(ref shadeGValue, ref shadeGValueRemainder, genericShadeGQuotientStep, genericShadeGRemainderStep, area);
+                            AdvanceScaledFloor(ref shadeBValue, ref shadeBValueRemainder, genericShadeBQuotientStep, genericShadeBRemainderStep, area);
+                        }
+                    }
                 }
-                // One row step
+
                 w0_row += B12;
                 w1_row += B20;
                 w2_row += B01;
