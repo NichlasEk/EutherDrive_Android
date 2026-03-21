@@ -293,6 +293,24 @@ public partial class MainWindow : Window
         new("A", "A"),
         new("B", "B")
     ];
+    private sealed record InputActionDefinition(string Action, string Display, string? Symbol = null, string? SymbolColor = null);
+    private static readonly InputActionDefinition[] s_psxActionDefinitions =
+    [
+        new("Up", "Up"),
+        new("Down", "Down"),
+        new("Left", "Left"),
+        new("Right", "Right"),
+        new("B", "Circle", "\u25CB", "#E25555"),
+        new("A", "Cross", "\u00D7", "#5BA7FF"),
+        new("X", "Triangle", "\u25B3", "#65C96B"),
+        new("C", "Square", "\u25A1", "#F08EC7"),
+        new("Y", "L1"),
+        new("L2", "L2"),
+        new("Z", "R1"),
+        new("R2", "R2"),
+        new("Start", "Start"),
+        new("Mode", "Select")
+    ];
     private int _autoFireRateHz = AutoFireRateDefault;
     private int _autoFireMask;
     private readonly Dictionary<string, HashSet<string>> _autoFireSelectionsByProfile = new(StringComparer.Ordinal);
@@ -3391,7 +3409,9 @@ public partial class MainWindow : Window
             set.KeyboardMappings["C"] = Key.C;       // Square
             set.KeyboardMappings["X"] = Key.A;       // Triangle
             set.KeyboardMappings["Y"] = Key.Q;       // L1
+            set.KeyboardMappings["L2"] = Key.D1;     // L2
             set.KeyboardMappings["Z"] = Key.W;       // R1
+            set.KeyboardMappings["R2"] = Key.D3;     // R2
             set.KeyboardMappings["Start"] = Key.Enter;
             set.KeyboardMappings["Mode"] = Key.RightShift; // Select
 
@@ -3404,7 +3424,9 @@ public partial class MainWindow : Window
             set.GamepadMappings["C"] = GamepadButton.X;
             set.GamepadMappings["X"] = GamepadButton.Y;
             set.GamepadMappings["Y"] = GamepadButton.LeftShoulder;
+            set.GamepadMappings["L2"] = GamepadButton.LeftTrigger;
             set.GamepadMappings["Z"] = GamepadButton.RightShoulder;
+            set.GamepadMappings["R2"] = GamepadButton.RightTrigger;
             set.GamepadMappings["Start"] = GamepadButton.Start;
             set.GamepadMappings["Mode"] = GamepadButton.Back;
         }
@@ -3413,6 +3435,9 @@ public partial class MainWindow : Window
     private sealed class MappingItem
     {
         public string Action { get; set; } = "";
+        public string ActionDisplay { get; set; } = "";
+        public string? ActionSymbol { get; set; }
+        public IBrush? ActionSymbolBrush { get; set; }
         public Key KeyboardKey { get; set; }
         public GamepadButton GamepadButton1 { get; set; }
         public GamepadButton GamepadButton2 { get; set; }
@@ -3458,7 +3483,7 @@ public partial class MainWindow : Window
             BuildMappingItems(Mappings.MdSms, _mdItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "Start", "Pause", "X", "Y", "Z", "Mode" });
             BuildMappingItems(Mappings.Snes, _snesItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R", "Start", "Select" });
             BuildMappingItems(Mappings.Pce, _pceItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "X", "Y", "Z", "Start", "Select" });
-            BuildMappingItems(Mappings.Psx, _psxItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "X", "Y", "Z", "Start", "Mode" });
+            BuildMappingItems(Mappings.Psx, _psxItems, s_psxActionDefinitions);
 
             BuildUi();
         }
@@ -3563,7 +3588,7 @@ public partial class MainWindow : Window
                     _ => "Gamepad"
                 };
                 string keyText = device == RecordingDevice.Keyboard ? "key" : "button";
-                _recordingHint.Text = $"Recording for {item.Action} ({deviceText}). Press a {keyText} or Escape to cancel...";
+                _recordingHint.Text = $"Recording for {item.ActionDisplay} ({deviceText}). Press a {keyText} or Escape to cancel...";
                 _recordingHint.IsVisible = true;
             }
             // Focus the window to capture keys
@@ -3650,8 +3675,70 @@ public partial class MainWindow : Window
                 set.KeyboardMappings.TryGetValue(action, out Key key);
                 set.GamepadMappings.TryGetValue(action, out GamepadButton gp1);
                 set.Gamepad2Mappings.TryGetValue(action, out GamepadButton gp2);
-                target.Add(new MappingItem { Action = action, KeyboardKey = key, GamepadButton1 = gp1, GamepadButton2 = gp2 });
+                target.Add(new MappingItem
+                {
+                    Action = action,
+                    ActionDisplay = action,
+                    KeyboardKey = key,
+                    GamepadButton1 = gp1,
+                    GamepadButton2 = gp2
+                });
             }
+        }
+
+        private void BuildMappingItems(InputMappingSet set, List<MappingItem> target, InputActionDefinition[] actions)
+        {
+            foreach (InputActionDefinition action in actions)
+            {
+                set.KeyboardMappings.TryGetValue(action.Action, out Key key);
+                set.GamepadMappings.TryGetValue(action.Action, out GamepadButton gp1);
+                set.Gamepad2Mappings.TryGetValue(action.Action, out GamepadButton gp2);
+                target.Add(new MappingItem
+                {
+                    Action = action.Action,
+                    ActionDisplay = action.Display,
+                    ActionSymbol = action.Symbol,
+                    ActionSymbolBrush = action.SymbolColor != null ? new SolidColorBrush(Color.Parse(action.SymbolColor)) : null,
+                    KeyboardKey = key,
+                    GamepadButton1 = gp1,
+                    GamepadButton2 = gp2
+                });
+            }
+        }
+
+        private static Control BuildActionControl(MappingItem item)
+        {
+            if (string.IsNullOrWhiteSpace(item.ActionSymbol))
+            {
+                return new TextBlock
+                {
+                    Text = item.ActionDisplay,
+                    Margin = new Thickness(4),
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                };
+            }
+
+            var panel = new StackPanel
+            {
+                Orientation = Avalonia.Layout.Orientation.Horizontal,
+                Spacing = 8,
+                Margin = new Thickness(4),
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            };
+            panel.Children.Add(new TextBlock
+            {
+                Text = item.ActionSymbol,
+                FontSize = 18,
+                FontWeight = Avalonia.Media.FontWeight.Bold,
+                Foreground = item.ActionSymbolBrush ?? new SolidColorBrush(Colors.White),
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            });
+            panel.Children.Add(new TextBlock
+            {
+                Text = item.ActionDisplay,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            });
+            return panel;
         }
 
         private Control BuildMappingGrid(List<MappingItem> items)
@@ -3674,7 +3761,10 @@ public partial class MainWindow : Window
                 var item = items[i];
                 int row = i + 1;
 
-                AddTextBlock(grid, row, 0, item.Action, false);
+                Control actionControl = BuildActionControl(item);
+                Grid.SetRow(actionControl, row);
+                Grid.SetColumn(actionControl, 0);
+                grid.Children.Add(actionControl);
 
                 var keyButton = new Button
                 {
@@ -3985,6 +4075,7 @@ public partial class MainWindow : Window
             NormalizeMappingSet(_inputMappings.MdSms, includePause: true);
             NormalizeMappingSet(_inputMappings.Snes, includePause: false);
             NormalizeMappingSet(_inputMappings.Pce, includePause: false);
+            NormalizePsxMappingSet(_inputMappings.Psx);
         }
         RefreshAutoFireUi();
         UpdateYmResampleUi();
@@ -4015,6 +4106,20 @@ public partial class MainWindow : Window
         set.KeyboardMappings.Remove("Reset");
         set.GamepadMappings.Remove("Reset");
         set.Gamepad2Mappings?.Remove("Reset");
+    }
+
+    private static void NormalizePsxMappingSet(InputMappingSet set)
+    {
+        NormalizeMappingSet(set, includePause: false);
+
+        if (!set.KeyboardMappings.ContainsKey("L2"))
+            set.KeyboardMappings["L2"] = Key.D1;
+        if (!set.KeyboardMappings.ContainsKey("R2"))
+            set.KeyboardMappings["R2"] = Key.D3;
+        if (!set.GamepadMappings.ContainsKey("L2"))
+            set.GamepadMappings["L2"] = GamepadButton.LeftTrigger;
+        if (!set.GamepadMappings.ContainsKey("R2"))
+            set.GamepadMappings["R2"] = GamepadButton.RightTrigger;
     }
 
     private static int ClampPercent(int value)
@@ -5427,6 +5532,8 @@ public partial class MainWindow : Window
         bool y;
         bool z;
         bool mode;
+        bool l2 = false;
+        bool r2 = false;
         bool up2 = false;
         bool down2 = false;
         bool left2 = false;
@@ -5455,6 +5562,11 @@ public partial class MainWindow : Window
         x     = mappingSet.KeyboardMappings.TryGetValue("X", out Key xKey) && IsKeyDownMapped(xKey);
         y     = mappingSet.KeyboardMappings.TryGetValue("Y", out Key yKey) && IsKeyDownMapped(yKey);
         z     = mappingSet.KeyboardMappings.TryGetValue("Z", out Key zKey) && IsKeyDownMapped(zKey);
+        if (isPsx)
+        {
+            l2 = mappingSet.KeyboardMappings.TryGetValue("L2", out Key l2Key) && IsKeyDownMapped(l2Key);
+            r2 = mappingSet.KeyboardMappings.TryGetValue("R2", out Key r2Key) && IsKeyDownMapped(r2Key);
+        }
         if (isPce || isNes)
             mode = mappingSet.KeyboardMappings.TryGetValue("Select", out Key selKey) && IsKeyDownMapped(selKey);
         else
@@ -5496,6 +5608,13 @@ public partial class MainWindow : Window
             y |= IsGamepadButtonPressed(gpY);
         if (mappingSet.GamepadMappings.TryGetValue("Z", out GamepadButton gpZ) && gpZ != GamepadButton.None)
             z |= IsGamepadButtonPressed(gpZ);
+        if (isPsx)
+        {
+            if (mappingSet.GamepadMappings.TryGetValue("L2", out GamepadButton gpL2) && gpL2 != GamepadButton.None)
+                l2 |= IsGamepadButtonPressed(gpL2);
+            if (mappingSet.GamepadMappings.TryGetValue("R2", out GamepadButton gpR2) && gpR2 != GamepadButton.None)
+                r2 |= IsGamepadButtonPressed(gpR2);
+        }
         if (isPce || isNes)
         {
             if (mappingSet.GamepadMappings.TryGetValue("Select", out GamepadButton gpSelPce) && gpSelPce != GamepadButton.None)
@@ -5582,6 +5701,28 @@ public partial class MainWindow : Window
             y = IsAutoFireActive(nowTicks, autoRate);
         if ((autoMask & AutoFireBitZ) != 0 && z)
             z = IsAutoFireActive(nowTicks, autoRate);
+
+        if (isPsx && core is IExtendedInputHandler extendedInputHandler)
+        {
+            extendedInputHandler.SetExtendedInputState(new ExtendedInputState(
+                Up: up,
+                Down: down,
+                Left: left,
+                Right: right,
+                South: a,
+                East: b,
+                West: c,
+                North: x,
+                Start: start,
+                Select: mode,
+                Menu: false,
+                L1: y,
+                L2: l2,
+                R1: z,
+                R2: r2,
+                PadType: padType));
+            return;
+        }
 
         MdTracerAdapter.SetPad2Mirror(_pad2MirrorEnabled);
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
