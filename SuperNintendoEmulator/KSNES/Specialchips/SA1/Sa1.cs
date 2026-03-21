@@ -145,6 +145,7 @@ public sealed class Sa1
     }
 
     public byte[] Bwram => _bwram;
+    public bool RequiresSnesAccessPc => _traceIramWatch || _traceBwramWatch || _traceBwramBlockedWrites;
 
     public ICPU GetCpu() => _cpu;
 
@@ -710,8 +711,9 @@ public sealed class Sa1
         return null;
     }
 
-    public void SnesWrite(uint address, byte value, int snesPc = -1)
+    public bool TrySnesWrite(uint address, byte value, out bool touchesBwram, int snesPc = -1)
     {
+        touchesBwram = false;
         uint bank = (address >> 16) & 0xFF;
         uint offset = address & 0xFFFF;
         switch (bank, offset)
@@ -719,7 +721,7 @@ public sealed class Sa1
             case (<= 0x3F, >= 0x2200 and <= 0x22FF):
             case (>= 0x80 and <= 0xBF, >= 0x2200 and <= 0x22FF):
                 _registers.SnesWrite(address, value, _mmc, _rom, _iram);
-                break;
+                return true;
             case (<= 0x3F, >= 0x3000 and <= 0x37FF):
             case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
                 {
@@ -728,11 +730,12 @@ public sealed class Sa1
                     if (_registers.SnesIramWritesEnabled[writeProtectIdx])
                         _iram[(int)iramAddr] = value;
                     TraceIramWatch("SNES", "W", address, value, snesPc);
-                    break;
+                    return true;
                 }
             case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
             case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
                 {
+                    touchesBwram = true;
                     uint bwramAddr = (_mmc.SnesBwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
                     {
@@ -744,10 +747,11 @@ public sealed class Sa1
                         TraceBwramWatch("SNES", "W(BLOCKED)", address, bwramAddr, value, snesPc);
                         TraceBwramBlockedWrite("SNES", address, bwramAddr, value, snesPc);
                     }
-                    break;
+                    return true;
                 }
             case (>= 0x40 and <= 0x5F, _):
                 {
+                    touchesBwram = true;
                     uint bwramAddr = address & (uint)(_bwram.Length - 1);
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: true))
                     {
@@ -759,9 +763,16 @@ public sealed class Sa1
                         TraceBwramWatch("SNES", "W(BLOCKED)", address, bwramAddr, value, snesPc);
                         TraceBwramBlockedWrite("SNES", address, bwramAddr, value, snesPc);
                     }
-                    break;
+                    return true;
                 }
         }
+
+        return false;
+    }
+
+    public void SnesWrite(uint address, byte value, int snesPc = -1)
+    {
+        TrySnesWrite(address, value, out _, snesPc);
     }
 
     internal byte ReadSa1Cpu(uint address, out bool bwramWait)
