@@ -56,8 +56,6 @@ public partial class MainView : UserControl
     private AudioEngine? _audioEngine;
     private WriteableBitmap? _bitmap;
     private byte[] _latestFrameBuffer = Array.Empty<byte>();
-    private byte[] _captureFrameBuffer = Array.Empty<byte>();
-    private byte[] _presentFrameBuffer = Array.Empty<byte>();
     private string? _selectedRomPath;
     private string? _selectedRomDisplayName;
     private volatile string _latestPerfSummary = "Perf idle";
@@ -1138,30 +1136,39 @@ public partial class MainView : UserControl
             width = _lastFrameWidth;
             height = _lastFrameHeight;
             srcStride = width * 4;
-            (_presentFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _presentFrameBuffer);
-            frameBuffer = _presentFrameBuffer;
+            frameBuffer = _latestFrameBuffer;
+
+            EnsureBitmap(width, height);
+            ApplyPresentationSizeForCore(_core, width, height);
+            if (_bitmap == null)
+            {
+                return;
+            }
+
+            using var fb = _bitmap.Lock();
+            int dstStride = fb.RowBytes;
+            int rowBytes = Math.Min(srcStride, dstStride);
+            int pixelCount = rowBytes / 4;
+            if (rowBytes <= 0)
+            {
+                return;
+            }
+
+            fixed (byte* srcPtr = frameBuffer)
+            {
+                byte* dstPtr = (byte*)fb.Address.ToPointer();
+                for (int y = 0; y < height; y++)
+                {
+                    uint* srcRow = (uint*)(srcPtr + (y * srcStride));
+                    uint* dstRow = (uint*)(dstPtr + (y * dstStride));
+                    for (int x = 0; x < pixelCount; x++)
+                    {
+                        dstRow[x] = srcRow[x];
+                    }
+                }
+            }
+
             _presentedFrameSerial = serial;
-        }
-
-        EnsureBitmap(width, height);
-        ApplyPresentationSizeForCore(_core, width, height);
-        if (_bitmap == null)
-        {
-            return;
-        }
-
-        using var fb = _bitmap.Lock();
-        int dstStride = fb.RowBytes;
-        int rowBytes = Math.Min(srcStride, dstStride);
-        if (rowBytes <= 0)
-        {
-            return;
-        }
-
-        fixed (byte* srcPtr = frameBuffer)
-        {
-            byte* dstPtr = (byte*)fb.Address.ToPointer();
-            CopyFrameRows(srcPtr, srcStride, dstPtr, dstStride, rowBytes, height);
         }
 
         InvalidateScreenImages();
@@ -1277,11 +1284,10 @@ public partial class MainView : UserControl
         double avgWorkMs = (_perfAccumulatedEmuMs + _perfAccumulatedAudioMs + _perfAccumulatedBlitMs) / _perfWindowFrames;
         double maxFps = avgWorkMs > 0 ? 1000.0 / avgWorkMs : 0;
         string coreLabel = _core?.GetType().Name ?? "None";
-        bool includeCoreDebugDetails = _viewModel.DebugVisible;
         string perfSummary =
             $"Perf  FPS:{fps:0}  Max:{maxFps:0}  Work:{avgWorkMs:0.0}ms  Emu:{_perfAccumulatedEmuMs / _perfWindowFrames:0.0}ms  Audio:{_perfAccumulatedAudioMs / _perfWindowFrames:0.0}ms  Blit:{_perfAccumulatedBlitMs / _perfWindowFrames:0.0}ms  Frame:{_emulatedFrames}  Res:{_lastFrameWidth}x{_lastFrameHeight}  Core:{coreLabel}";
         _latestPerfHeadline = $"FPS {fps:0}  MAX {maxFps:0}";
-        if (includeCoreDebugDetails && _core is PsxAdapter psx && psx.TryGetBootProgressSummary(out string psxBoot))
+        if (_core is PsxAdapter psx && psx.TryGetBootProgressSummary(out string psxBoot))
         {
             perfSummary = $"{perfSummary}\n{psxBoot}";
             if (psx.TryGetDebugState(out string psxState))
@@ -1358,8 +1364,6 @@ public partial class MainView : UserControl
         lock (_frameSync)
         {
             _latestFrameBuffer = Array.Empty<byte>();
-            _captureFrameBuffer = Array.Empty<byte>();
-            _presentFrameBuffer = Array.Empty<byte>();
         }
         SetScreenSource(null);
         _viewModel.IsRunning = false;
@@ -2106,57 +2110,33 @@ public partial class MainView : UserControl
             return;
         }
 
-        int requiredBytes = dstStride * height;
-        byte[] captureBuffer = _captureFrameBuffer;
-        if (captureBuffer.Length < requiredBytes)
-        {
-            captureBuffer = new byte[requiredBytes];
-        }
-
-        fixed (byte* srcPtr = src)
-        fixed (byte* dstPtr = captureBuffer)
-        {
-            if (core is PsxAdapter)
-            {
-                CopyFrameRows(srcPtr, srcStride, dstPtr, dstStride, rowBytes, height);
-            }
-            else
-            {
-                CopyFrameRowsWithOpaqueAlpha(srcPtr, srcStride, dstPtr, dstStride, pixelCount, height);
-            }
-        }
-
         lock (_frameSync)
         {
             _lastFrameWidth = width;
             _lastFrameHeight = height;
-            (_latestFrameBuffer, captureBuffer) = (captureBuffer, _latestFrameBuffer);
-            _captureFrameBuffer = captureBuffer;
+            int requiredBytes = dstStride * height;
+            if (_latestFrameBuffer.Length < requiredBytes)
+            {
+                _latestFrameBuffer = new byte[requiredBytes];
+            }
+
+            fixed (byte* srcPtr = src)
+            fixed (byte* dstPtr = _latestFrameBuffer)
+            {
+                for (int y = 0; y < height; y++)
+                {
+                    uint* srcRow = (uint*)(srcPtr + (y * srcStride));
+                    uint* dstRow = (uint*)(dstPtr + (y * dstStride));
+
+                    for (int x = 0; x < pixelCount; x++)
+                    {
+                        dstRow[x] = srcRow[x] | 0xFF000000u;
+                    }
+                }
+            }
+
             _emulatedFrames++;
             _latestFrameSerial++;
-        }
-    }
-
-    private static unsafe void CopyFrameRows(byte* srcPtr, int srcStride, byte* dstPtr, int dstStride, int rowBytes, int height)
-    {
-        for (int y = 0; y < height; y++)
-        {
-            byte* srcRow = srcPtr + (y * srcStride);
-            byte* dstRow = dstPtr + (y * dstStride);
-            Buffer.MemoryCopy(srcRow, dstRow, rowBytes, rowBytes);
-        }
-    }
-
-    private static unsafe void CopyFrameRowsWithOpaqueAlpha(byte* srcPtr, int srcStride, byte* dstPtr, int dstStride, int pixelCount, int height)
-    {
-        for (int y = 0; y < height; y++)
-        {
-            uint* srcRow = (uint*)(srcPtr + (y * srcStride));
-            uint* dstRow = (uint*)(dstPtr + (y * dstStride));
-            for (int x = 0; x < pixelCount; x++)
-            {
-                dstRow[x] = srcRow[x] | 0xFF000000u;
-            }
         }
     }
 

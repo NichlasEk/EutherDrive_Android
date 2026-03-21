@@ -27,9 +27,6 @@ namespace ProjectPSX {
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_WORDS_AFTER"), 0);
         private static readonly bool BiosTraceEnabled =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS_TRACE") == "1";
-        private static readonly bool ExperimentalSimpleBlocks =
-            Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_ENABLE_SIMPLE_BLOCKS") == "1";
-        private static readonly bool TraceCurrentPcEnabled = HasTraceCurrentPcConsumer();
         private static int s_faultTraceCount;
         private static int s_cop0TraceCount;
 
@@ -62,18 +59,14 @@ namespace ProjectPSX {
         private const int InstructionCacheWordsPerLine = 4;
         private const int InstructionCacheLineSizeBytes = 16;
         private const int InstructionCacheTotalBytes = InstructionCacheLineCount * InstructionCacheLineSizeBytes;
-        private const int MaxCachedLinearBlockInstructions = 32;
         private readonly uint[] _instructionCacheTags = new uint[InstructionCacheLineCount];
         private readonly bool[] _instructionCacheValid = new bool[InstructionCacheLineCount];
         private readonly uint[] _instructionCacheData = new uint[InstructionCacheLineCount * InstructionCacheWordsPerLine];
-        private readonly Instr[] _decodedInstructionCache = new Instr[InstructionCacheLineCount * InstructionCacheWordsPerLine];
-        private readonly delegate*<CPU, void>[] _decodedInstructionHandlers = new delegate*<CPU, void>[InstructionCacheLineCount * InstructionCacheWordsPerLine];
-        private readonly byte[] _decodedInstructionValidMask = new byte[InstructionCacheLineCount];
-        private readonly byte[] _cachedLinearBlockLength = new byte[InstructionCacheLineCount * InstructionCacheWordsPerLine];
-        private readonly byte[] _cachedLinearBlockValidMask = new byte[InstructionCacheLineCount];
+        private uint _lastObservedMemoryCacheWriteCount;
         private bool _instructionCacheEnabled;
+        private bool _lastInstructionCacheIsolation;
+        private bool _lastInstructionCacheRuntimeAllowed;
         private bool _instructionCacheRuntimeAllowed;
-        private delegate*<CPU, void> _currentOpcodeHandler = &NOP;
 
         private GTE gte;
         [NonSerialized]
@@ -94,50 +87,24 @@ namespace ProjectPSX {
 
         public struct Instr {
             public uint value;                     //raw
-            private byte _opcode;
-            private byte _rs;
-            private byte _rt;
-            private byte _rd;
-            private byte _sa;
-            private byte _function;
-            private byte _id;
-            private ushort _imm;
-            private short _immSigned;
-            private uint _addr;
-
-            public uint opcode => _opcode;
+            public uint opcode => value >> 26;     //Instr opcode
 
             //I-Type
-            public uint rs => _rs;
-            public uint rt => _rt;
-            public uint imm => _imm;
-            public uint imm_s => unchecked((uint)_immSigned);
+            public uint rs => (value >> 21) & 0x1F;  //Register Source
+            public uint rt => (value >> 16) & 0x1F;  //Register Target
+            public uint imm => (ushort)value;        //Immediate value
+            public uint imm_s => (uint)(short)value; //Immediate value sign extended
 
             //R-Type
-            public uint rd => _rd;
-            public uint sa => _sa;
-            public uint function => _function;
+            public uint rd => (value >> 11) & 0x1F;
+            public uint sa => (value >> 6) & 0x1F;  //Shift Amount
+            public uint function => value & 0x3F;   //Function
 
             //J-Type                                       
-            public uint addr => _addr;
+            public uint addr => value & 0x3FFFFFF;  //Target Address
 
             //id / Cop
-            public uint id => _id;
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void Decode(uint raw) {
-                value = raw;
-                _opcode = (byte)(raw >> 26);
-                _rs = (byte)((raw >> 21) & 0x1F);
-                _rt = (byte)((raw >> 16) & 0x1F);
-                _imm = (ushort)raw;
-                _immSigned = (short)raw;
-                _rd = (byte)((raw >> 11) & 0x1F);
-                _sa = (byte)((raw >> 6) & 0x1F);
-                _function = (byte)(raw & 0x3F);
-                _addr = raw & 0x03FF_FFFF;
-                _id = (byte)(_opcode & 0x3);
-            }
+            public uint id => opcode & 0x3; //This is used mainly for coprocesor opcode id but its also used on opcodes that trigger exception
         }
         private Instr instr;
 
@@ -155,7 +122,6 @@ namespace ProjectPSX {
             bios = new BIOS_Disassembler(bus);
             mips = new MIPS_Disassembler(ref HI, ref LO, GPR, COP0_GPR);
             gte = new GTE();
-            bus.SetMemoryCacheControlObserver(OnMemoryCacheControlChanged);
 
             COP0_GPR[15] = 0x2; //PRID Processor ID
             FlushInstructionCache();
@@ -193,61 +159,22 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int Run() {
-            return RunSingleStep(out _);
-        }
+            int ticks = fetchDecode();
+            if (instr.value != 0) { //Skip Nops
+                opcodeMainTable[instr.opcode](this); //Execute
+            }
+            MemAccess();
+            WriteBack();
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int RunSlice(int maxCpuCycles, out int instructionsExecuted, out bool runtimeRamObserved) {
-            instructionsExecuted = 0;
-            runtimeRamObserved = false;
+            //if (debug) {
+            //  mips.PrintRegs();
+            //  mips.disassemble(instr, PC_Now, PC_Predictor);
+            //}
 
-            int cpuCyclesExecuted = 0;
-            int cpuCycleBudget = Math.Max(1, maxCpuCycles);
-            while (cpuCyclesExecuted < cpuCycleBudget) {
-                int remainingCycles = cpuCycleBudget - cpuCyclesExecuted;
-                if (ExperimentalSimpleBlocks
-                    && remainingCycles > 1
-                    && TryRunCachedSimpleLinearBlock(remainingCycles, out int simpleBlockInstructions, out bool simpleBlockObservedRuntimeRam)) {
-                    cpuCyclesExecuted += simpleBlockInstructions;
-                    instructionsExecuted += simpleBlockInstructions;
-                    runtimeRamObserved |= simpleBlockObservedRuntimeRam;
-
-                    if (bus.ShouldYieldCpuSlice) {
-                        break;
-                    }
-
-                    continue;
-                }
-
-                if (remainingCycles > 1
-                    && TryRunCachedLinearSlice(remainingCycles, out int blockInstructions, out bool blockObservedRuntimeRam)) {
-                    cpuCyclesExecuted += blockInstructions;
-                    instructionsExecuted += blockInstructions;
-                    runtimeRamObserved |= blockObservedRuntimeRam;
-
-                    if (bus.ShouldYieldCpuSlice) {
-                        break;
-                    }
-
-                    continue;
-                }
-
-                cpuCyclesExecuted += RunSingleStep(out bool stepObservedRuntimeRam);
-                instructionsExecuted++;
-                runtimeRamObserved |= stepObservedRuntimeRam;
-
-                if (bus.ShouldYieldCpuSlice) {
-                    break;
-                }
+            if (BiosTraceEnabled) {
+                bios.verbose(PC_Now, GPR);
             }
 
-            return cpuCyclesExecuted;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int RunSingleStep(out bool runtimeRamObserved) {
-            int ticks = fetchDecode();
-            runtimeRamObserved = ExecuteDecodedInstruction();
             return ticks;
         }
 
@@ -256,12 +183,6 @@ namespace ProjectPSX {
                 return;
             }
             _instructionCacheRuntimeAllowed = true;
-            UpdateInstructionCacheControl();
-        }
-
-        public void RefreshRuntimeStateAfterLoad() {
-            dontIsolateCache = (COP0_GPR[SR] & 0x0001_0000) == 0;
-            UpdateInstructionCacheControl();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -299,9 +220,7 @@ namespace ProjectPSX {
         private int fetchDecode() {
             //Executable address space is limited to ram and bios on psx
             PC_Now = PC;
-            if (TraceCurrentPcEnabled) {
-                TraceCurrentPC = PC_Now;
-            }
+            TraceCurrentPC = PC_Now;
             PC = PC_Predictor;
             PC_Predictor += 4;
 
@@ -313,20 +232,15 @@ namespace ProjectPSX {
             if (StrictAddressExceptions && (PC_Now & 0x3) != 0) {
                 COP0_GPR[BADA] = PC_Now;
                 EXCEPTION(this, EX.LOAD_ADRESS_ERROR);
-                SetCurrentInstruction(0);
                 return 1;
             }
 
             uint maskedPC = PC_Now & 0x1FFF_FFFF;
             if (maskedPC < 0x1F00_0000) {
-                if (_instructionCacheEnabled && IsInstructionCacheable(PC_Now)) {
-                    LoadDecodedInstruction(maskedPC);
-                } else {
-                    SetCurrentInstruction(FetchInstructionWord(PC_Now));
-                }
+                instr.value = FetchInstructionWord(PC_Now);
                 return 1;
             } else {
-                SetCurrentInstruction(bus.LoadFromBios(maskedPC));
+                instr.value = bus.LoadFromBios(maskedPC);
                 return 20;
             }
         }
@@ -339,6 +253,8 @@ namespace ProjectPSX {
                     ? bus.LoadFromRam(physicalAddress)
                     : bus.LoadFromBios(physicalAddress);
             }
+
+            RefreshInstructionCacheControl();
 
             uint physical = virtualPc & 0x1FFF_FFFF;
             if (physical >= 0x1F00_0000) {
@@ -365,11 +281,9 @@ namespace ProjectPSX {
             int lineOffset = lineIndex * InstructionCacheWordsPerLine;
 
             if (!_instructionCacheValid[lineIndex] || _instructionCacheTags[lineIndex] != tag) {
-                InvalidateCachedLinearBlockMetadata();
                 uint lineBase = physicalAddress & ~0xFu;
                 _instructionCacheTags[lineIndex] = tag;
                 _instructionCacheValid[lineIndex] = true;
-                _decodedInstructionValidMask[lineIndex] = 0;
                 _instructionCacheData[lineOffset + 0] = bus.LoadFromRam(lineBase + 0);
                 _instructionCacheData[lineOffset + 1] = bus.LoadFromRam(lineBase + 4);
                 _instructionCacheData[lineOffset + 2] = bus.LoadFromRam(lineBase + 8);
@@ -402,25 +316,29 @@ namespace ProjectPSX {
             if (!_instructionCacheValid[lineIndex] || _instructionCacheTags[lineIndex] != tag) {
                 _instructionCacheValid[lineIndex] = true;
                 _instructionCacheTags[lineIndex] = tag;
-                _decodedInstructionValidMask[lineIndex] = 0;
-                InvalidateCachedLinearBlockMetadata();
                 Array.Clear(_instructionCacheData, lineOffset, InstructionCacheWordsPerLine);
             }
 
             int wordIndex = (int)((physicalAddress >> 2) & 0x3);
             _instructionCacheData[lineOffset + wordIndex] = value;
-            _decodedInstructionValidMask[lineIndex] &= (byte)~(1 << wordIndex);
         }
 
-        private void UpdateInstructionCacheControl() {
+        private void RefreshInstructionCacheControl() {
             if (!ExperimentalInstructionCache) {
                 _instructionCacheEnabled = false;
                 return;
             }
 
             bool cacheIsolation = (COP0_GPR[SR] & 0x0001_0000) != 0;
+            uint writeCount = bus.MemoryCacheWriteCount;
+            if (writeCount == _lastObservedMemoryCacheWriteCount
+                && cacheIsolation == _lastInstructionCacheIsolation
+                && _instructionCacheRuntimeAllowed == _lastInstructionCacheRuntimeAllowed) {
+                return;
+            }
+
             uint cacheControl = bus.MemoryCacheControl;
-            bool cacheControlWritten = bus.MemoryCacheWriteCount != 0;
+            bool cacheControlWritten = writeCount != 0;
             bool instructionCacheEnabled = _instructionCacheRuntimeAllowed
                 && cacheControlWritten
                 && (cacheControl & 0x0000_0800) != 0;
@@ -434,16 +352,13 @@ namespace ProjectPSX {
             }
 
             _instructionCacheEnabled = instructionCacheEnabled;
-        }
-
-        private void OnMemoryCacheControlChanged() {
-            UpdateInstructionCacheControl();
+            _lastObservedMemoryCacheWriteCount = writeCount;
+            _lastInstructionCacheIsolation = cacheIsolation;
+            _lastInstructionCacheRuntimeAllowed = _instructionCacheRuntimeAllowed;
         }
 
         private void FlushInstructionCache() {
             Array.Clear(_instructionCacheValid, 0, _instructionCacheValid.Length);
-            Array.Clear(_decodedInstructionValidMask, 0, _decodedInstructionValidMask.Length);
-            InvalidateCachedLinearBlockMetadata();
         }
 
         private void InvalidateInstructionCacheRange(uint physicalAddress, int sizeBytes) {
@@ -470,276 +385,9 @@ namespace ProjectPSX {
                 uint tag = (uint)(lineBase & 0x1FFF_F000u);
                 if (_instructionCacheValid[lineIndex] && _instructionCacheTags[lineIndex] == tag) {
                     _instructionCacheValid[lineIndex] = false;
-                    _decodedInstructionValidMask[lineIndex] = 0;
-                    InvalidateCachedLinearBlockMetadata();
                 }
                 lineBase += 0x10;
             }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void LoadDecodedInstruction(uint physicalAddress) {
-            int decodedIndex = EnsureDecodedInstruction(physicalAddress);
-            instr = _decodedInstructionCache[decodedIndex];
-            _currentOpcodeHandler = _decodedInstructionHandlers[decodedIndex];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int EnsureDecodedInstruction(uint physicalAddress) {
-            int lineIndex = (int)((physicalAddress >> 4) & (InstructionCacheLineCount - 1));
-            int wordIndex = (int)((physicalAddress >> 2) & 0x3);
-            int lineOffset = lineIndex * InstructionCacheWordsPerLine;
-            uint raw = LoadFromInstructionCache(physicalAddress);
-            byte bit = (byte)(1 << wordIndex);
-
-            if ((_decodedInstructionValidMask[lineIndex] & bit) == 0) {
-                int cacheIndex = lineOffset + wordIndex;
-                _decodedInstructionCache[cacheIndex].Decode(raw);
-                _decodedInstructionHandlers[cacheIndex] = ResolveInstructionHandler(in _decodedInstructionCache[cacheIndex]);
-                _decodedInstructionValidMask[lineIndex] |= bit;
-            }
-
-            return lineOffset + wordIndex;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static delegate*<CPU, void> ResolveInstructionHandler(in Instr decoded) {
-            return decoded.opcode == 0
-                ? opcodeSpecialTable[decoded.function]
-                : opcodeMainTable[decoded.opcode];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetCurrentInstruction(uint rawValue) {
-            instr.Decode(rawValue);
-            _currentOpcodeHandler = ResolveInstructionHandler(in instr);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool TryRunCachedSimpleLinearBlock(int maxCpuCycles, out int instructionsExecuted, out bool runtimeRamObserved) {
-            instructionsExecuted = 0;
-            runtimeRamObserved = false;
-
-            if (maxCpuCycles <= 1
-                || bus.ShouldYieldCpuSlice
-                || opcodeIsBranch
-                || !CanUseCachedLinearStep(PC)) {
-                return false;
-            }
-
-            int blockLength = GetCachedLinearBlockLength(PC & 0x1FFF_FFFF);
-            if (blockLength <= 1) {
-                return false;
-            }
-
-            int runCount = Math.Min(maxCpuCycles, blockLength);
-            for (int i = 0; i < runCount; i++) {
-                uint currentPc = PC;
-                uint physicalPc = currentPc & 0x1FFF_FFFF;
-                int cacheIndex = EnsureDecodedInstruction(physicalPc);
-                ref readonly Instr decoded = ref _decodedInstructionCache[cacheIndex];
-                if (!CanExecuteCachedSimpleLinearInstructionRuntime(in decoded)) {
-                    break;
-                }
-
-                PC_Now = currentPc;
-                if (TraceCurrentPcEnabled) {
-                    TraceCurrentPC = currentPc;
-                }
-                PC = PC_Predictor;
-                PC_Predictor += 4;
-
-                opcodeIsDelaySlot = opcodeIsBranch;
-                opcodeInDelaySlotTookBranch = opcodeTookBranch;
-                opcodeIsBranch = false;
-                opcodeTookBranch = false;
-
-                instr = decoded;
-                _currentOpcodeHandler = _decodedInstructionHandlers[cacheIndex];
-                runtimeRamObserved |= ExecuteDecodedInstruction();
-                instructionsExecuted++;
-            }
-
-            return instructionsExecuted != 0;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool TryRunCachedLinearSlice(int maxCpuCycles, out int instructionsExecuted, out bool runtimeRamObserved) {
-            instructionsExecuted = 0;
-            runtimeRamObserved = false;
-
-            if (maxCpuCycles <= 0 || !CanUseCachedLinearStep(PC)) {
-                return false;
-            }
-
-            while (instructionsExecuted < maxCpuCycles) {
-                uint currentPc = PC;
-                if (!CanUseCachedLinearStep(currentPc)) {
-                    break;
-                }
-
-                uint physicalPc = currentPc & 0x1FFF_FFFF;
-                uint expectedNextPc = unchecked(currentPc + 4);
-                uint expectedNextPredictor = unchecked(currentPc + 8);
-
-                PC_Now = currentPc;
-                if (TraceCurrentPcEnabled) {
-                    TraceCurrentPC = currentPc;
-                }
-                PC = PC_Predictor;
-                PC_Predictor += 4;
-
-                opcodeIsDelaySlot = opcodeIsBranch;
-                opcodeInDelaySlotTookBranch = opcodeTookBranch;
-                opcodeIsBranch = false;
-                opcodeTookBranch = false;
-
-                LoadDecodedInstruction(physicalPc);
-                runtimeRamObserved |= ExecuteDecodedInstruction();
-                instructionsExecuted++;
-
-                if (bus.ShouldYieldCpuSlice
-                    || PC != expectedNextPc
-                    || PC_Predictor != expectedNextPredictor) {
-                    break;
-                }
-            }
-
-            return instructionsExecuted != 0;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool CanUseCachedLinearStep(uint currentPc) {
-            if (!_instructionCacheEnabled || !IsInstructionCacheable(currentPc) || (currentPc & 0x3) != 0) {
-                return false;
-            }
-
-            uint physicalPc = currentPc & 0x1FFF_FFFF;
-            return physicalPc < 0x1F00_0000;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetCachedLinearBlockLength(uint physicalAddress) {
-            int lineIndex = (int)((physicalAddress >> 4) & (InstructionCacheLineCount - 1));
-            int wordIndex = (int)((physicalAddress >> 2) & 0x3);
-            int cacheIndex = lineIndex * InstructionCacheWordsPerLine + wordIndex;
-            byte bit = (byte)(1 << wordIndex);
-
-            if ((_cachedLinearBlockValidMask[lineIndex] & bit) == 0) {
-                _cachedLinearBlockLength[cacheIndex] = (byte)BuildCachedLinearBlockLength(physicalAddress);
-                _cachedLinearBlockValidMask[lineIndex] |= bit;
-            }
-
-            return _cachedLinearBlockLength[cacheIndex];
-        }
-
-        private int BuildCachedLinearBlockLength(uint physicalAddress) {
-            int length = 0;
-            uint currentPhysicalPc = physicalAddress;
-            while (length < MaxCachedLinearBlockInstructions && currentPhysicalPc < 0x1F00_0000) {
-                int cacheIndex = EnsureDecodedInstruction(currentPhysicalPc);
-                if (!CanParticipateInCachedLinearBlock(in _decodedInstructionCache[cacheIndex])) {
-                    break;
-                }
-
-                length++;
-                currentPhysicalPc += 4;
-            }
-
-            return length;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void InvalidateCachedLinearBlockMetadata() {
-            if (!ExperimentalSimpleBlocks) {
-                return;
-            }
-
-            Array.Clear(_cachedLinearBlockValidMask, 0, _cachedLinearBlockValidMask.Length);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool CanExecuteCachedSimpleLinearInstructionRuntime(in Instr decoded) {
-            return decoded.opcode switch {
-                0x20 or 0x24 => bus.CanLoadData8Fast(GPR[decoded.rs] + decoded.imm_s),
-                0x21 or 0x25 => CanExecuteFastHalfwordLoad(decoded),
-                0x22 or 0x26 => bus.CanLoadData32Fast((GPR[decoded.rs] + decoded.imm_s) & 0xFFFF_FFFCu),
-                0x23 => CanExecuteFastWordLoad(decoded),
-                0x28 => bus.CanStoreData8Fast(GPR[decoded.rs] + decoded.imm_s),
-                0x29 => CanExecuteFastHalfwordStore(decoded),
-                0x2A or 0x2E => CanExecuteFastWordReadModifyWrite(decoded),
-                0x2B => CanExecuteFastWordStore(decoded),
-                _ => true
-            };
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool CanParticipateInCachedLinearBlock(in Instr decoded) {
-            return decoded.opcode switch {
-                0x00 => decoded.function switch {
-                    0x00 or 0x02 or 0x03 or 0x04 or 0x06 or 0x07
-                        or 0x10 or 0x11 or 0x12 or 0x13
-                        or 0x18 or 0x19 or 0x1A or 0x1B
-                        or 0x21 or 0x23 or 0x24 or 0x25 or 0x26 or 0x27
-                        or 0x2A or 0x2B => true,
-                    _ => false
-                },
-                0x09 or 0x0A or 0x0B or 0x0C or 0x0D or 0x0E or 0x0F
-                    or 0x20 or 0x21 or 0x22 or 0x23 or 0x24 or 0x25 or 0x26
-                    or 0x28 or 0x29 or 0x2A or 0x2B or 0x2E => true,
-                _ => false
-            };
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool CanExecuteFastHalfwordLoad(in Instr decoded) {
-            uint address = GPR[decoded.rs] + decoded.imm_s;
-            return (address & 0x1) == 0 && bus.CanLoadData16Fast(address);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool CanExecuteFastWordLoad(in Instr decoded) {
-            uint address = GPR[decoded.rs] + decoded.imm_s;
-            return (address & 0x3) == 0 && bus.CanLoadData32Fast(address);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool CanExecuteFastHalfwordStore(in Instr decoded) {
-            uint address = GPR[decoded.rs] + decoded.imm_s;
-            return (address & 0x1) == 0 && bus.CanStoreData16Fast(address);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool CanExecuteFastWordStore(in Instr decoded) {
-            uint address = GPR[decoded.rs] + decoded.imm_s;
-            return (address & 0x3) == 0 && bus.CanStoreData32Fast(address);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool CanExecuteFastWordReadModifyWrite(in Instr decoded) {
-            uint alignedAddress = (GPR[decoded.rs] + decoded.imm_s) & 0xFFFF_FFFCu;
-            return bus.CanLoadData32Fast(alignedAddress) && bus.CanStoreData32Fast(alignedAddress);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool ExecuteDecodedInstruction() {
-            if (instr.value != 0) { //Skip Nops
-                _currentOpcodeHandler(this); //Execute
-            }
-            MemAccess();
-            WriteBack();
-
-            //if (debug) {
-            //  mips.PrintRegs();
-            //  mips.disassemble(instr, PC_Now, PC_Predictor);
-            //}
-
-            if (BiosTraceEnabled) {
-                bios.verbose(PC_Now, GPR);
-            }
-
-            uint physicalPc = PC_Now & 0x1FFF_FFFF;
-            return physicalPc < 0x1FC0_0000 && physicalPc >= 0x0001_0000;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -889,7 +537,6 @@ namespace ProjectPSX {
                 bool currentIEC = (value & 0x1) == 1;
 
                 cpu.COP0_GPR[SR] = value;
-                cpu.UpdateInstructionCacheControl();
 
                 uint IM = (value >> 8) & 0x3;
                 uint IP = (cpu.COP0_GPR[CAUSE] >> 8) & 0x3;
@@ -967,24 +614,6 @@ namespace ProjectPSX {
 
         private static int ParseOptionalPositiveInt(string? raw, int fallback) {
             return int.TryParse(raw, out int value) && value > 0 ? value : fallback;
-        }
-
-        private static bool HasTraceCurrentPcConsumer() {
-            return Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1"
-                || HasTraceRange("EUTHERDRIVE_PSX_TRACE_RAM_READ_START", "EUTHERDRIVE_PSX_TRACE_RAM_READ_END")
-                || HasTraceRange("EUTHERDRIVE_PSX_TRACE_RAM_WRITE_START", "EUTHERDRIVE_PSX_TRACE_RAM_WRITE_END")
-                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_CD_DMA") == "1"
-                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_IRQ_TRACE") == "1"
-                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_DMA_IRQ_TRACE") == "1"
-                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_SPU_DMA_TRACE") == "1"
-                || Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_CD_PROTECT_TRACE") == "1"
-                || !string.IsNullOrWhiteSpace(FaultTraceFile)
-                || !string.IsNullOrWhiteSpace(Cop0TraceFile);
-        }
-
-        private static bool HasTraceRange(string startName, string endName) {
-            return !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(startName))
-                && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(endName));
         }
 
         private static int? ParseOptionalRegisterIndex(string? raw) {
@@ -1114,13 +743,13 @@ namespace ProjectPSX {
 
         private static void LB(CPU cpu) { //todo redo this as it unnecesary load32
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
-            uint value = (uint)(sbyte)cpu.LoadData8(addr);
+            uint value = (uint)(sbyte)cpu.LoadData32(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
         private static void LBU(CPU cpu) {
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
-            uint value = cpu.LoadData8(addr);
+            uint value = (byte)cpu.LoadData32(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
@@ -1131,7 +760,7 @@ namespace ProjectPSX {
                 cpu.COP0_GPR[BADA] = addr;
                 EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
             } else {
-                uint value = (uint)(short)cpu.LoadData16(addr);
+                uint value = (uint)(short)cpu.LoadData32(addr);
                 delayedLoad(cpu, cpu.instr.rt, value);
             }
         }
@@ -1143,7 +772,7 @@ namespace ProjectPSX {
                 cpu.COP0_GPR[BADA] = addr;
                 EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
             } else {
-                uint value = cpu.LoadData16(addr);
+                uint value = (ushort)cpu.LoadData32(addr);
                 delayedLoad(cpu, cpu.instr.rt, value);
             }
         }
@@ -1404,50 +1033,31 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private uint LoadData32(uint virtualAddress) {
-            if (!dontIsolateCache) {
-                return 0;
+            if (!ExperimentalInstructionCache) {
+                if (!dontIsolateCache) {
+                    return 0;
+                }
+
+                return bus.load32(virtualAddress);
             }
 
-            if (bus.TryLoadData32Fast(virtualAddress, out uint fastValue)) {
-                return fastValue;
+            if (!dontIsolateCache) {
+                return 0;
             }
 
             return bus.load32(virtualAddress);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private uint LoadData16(uint virtualAddress) {
-            if (!dontIsolateCache) {
-                return 0;
-            }
-
-            if (bus.TryLoadData16Fast(virtualAddress, out ushort fastValue)) {
-                return fastValue;
-            }
-
-            return (ushort)bus.load32(virtualAddress);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private uint LoadData8(uint virtualAddress) {
-            if (!dontIsolateCache) {
-                return 0;
-            }
-
-            if (bus.TryLoadData8Fast(virtualAddress, out byte fastValue)) {
-                return fastValue;
-            }
-
-            return (byte)bus.load32(virtualAddress);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData32(uint virtualAddress, uint value) {
-            if (!dontIsolateCache) {
+            if (!ExperimentalInstructionCache) {
+                if (dontIsolateCache) {
+                    bus.write32(virtualAddress, value);
+                }
                 return;
             }
 
-            if (bus.TryStoreData32Fast(virtualAddress, value)) {
+            if (!dontIsolateCache) {
                 return;
             }
 
@@ -1456,11 +1066,14 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData16(uint virtualAddress, ushort value) {
-            if (!dontIsolateCache) {
+            if (!ExperimentalInstructionCache) {
+                if (dontIsolateCache) {
+                    bus.write16(virtualAddress, value);
+                }
                 return;
             }
 
-            if (bus.TryStoreData16Fast(virtualAddress, value)) {
+            if (!dontIsolateCache) {
                 return;
             }
 
@@ -1469,11 +1082,14 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData8(uint virtualAddress, byte value) {
-            if (!dontIsolateCache) {
+            if (!ExperimentalInstructionCache) {
+                if (dontIsolateCache) {
+                    bus.write8(virtualAddress, value);
+                }
                 return;
             }
 
-            if (bus.TryStoreData8Fast(virtualAddress, value)) {
+            if (!dontIsolateCache) {
                 return;
             }
 

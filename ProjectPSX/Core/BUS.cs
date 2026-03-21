@@ -11,10 +11,6 @@ namespace ProjectPSX {
 
 public class BUS {
         private const uint Sio1StatusDefault = 0x0000_0805;
-        private const uint MemoryCacheControlAddress = 0xFFFE_0130;
-        private const uint MmioStartAddress = 0x1F80_0400;
-        private const uint MmioEndAddressExclusive = 0x1FC0_0000;
-        private const int RecentMmioAccessHysteresisCycles = 96;
         private static readonly bool VerboseBusAccess = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1";
         private static readonly uint? TraceRamReadStart = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_START");
         private static readonly uint? TraceRamReadEnd = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_END");
@@ -23,8 +19,6 @@ public class BUS {
         private static readonly uint? TraceRamWriteEnd = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_WRITE_END");
         private static readonly int TraceRamWriteLimit = ParseOptionalPositiveInt("EUTHERDRIVE_PSX_TRACE_RAM_WRITE_LIMIT", 4096);
         private static readonly bool TraceCdDma = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_CD_DMA") == "1";
-        private static readonly bool TraceRamReadEnabled = TraceRamReadStart.HasValue && TraceRamReadEnd.HasValue;
-        private static readonly bool TraceRamWriteEnabled = TraceRamWriteStart.HasValue && TraceRamWriteEnd.HasValue;
         private static int s_traceRamReadCount;
         private static int s_traceRamWriteCount;
         private const int SpuTickBatchCycles = 96;
@@ -40,9 +34,7 @@ public class BUS {
 
         private uint memoryCache;
         private uint memoryCacheWriteCount;
-        private int recentMmioAccessBudget;
         [NonSerialized] private Action<uint, int>? ramWriteObserver;
-        [NonSerialized] private Action? memoryCacheControlObserver;
 
         //Other Subsystems
         [NonSerialized] public InterruptController interruptController;
@@ -84,15 +76,10 @@ public class BUS {
             new Span<byte>(memoryControl2, 0x10).Clear();
             memoryCache = 0;
             memoryCacheWriteCount = 0;
-            recentMmioAccessBudget = 0;
         }
 
         public void SetRamWriteObserver(Action<uint, int> observer) {
             ramWriteObserver = observer;
-        }
-
-        public void SetMemoryCacheControlObserver(Action observer) {
-            memoryCacheControlObserver = observer;
         }
 
         public unsafe void SaveRawState(BinaryWriter writer) {
@@ -113,7 +100,6 @@ public class BUS {
             ReadExactly(reader, new Span<byte>(sio, 0x10));
             ReadExactly(reader, new Span<byte>(memoryControl1, 0x40));
             ReadExactly(reader, new Span<byte>(memoryControl2, 0x10));
-            recentMmioAccessBudget = 0;
         }
 
         private static void ReadExactly(BinaryReader reader, Span<byte> buffer) {
@@ -127,20 +113,16 @@ public class BUS {
         }
 
         public unsafe uint load32(uint address) {
-            if (address == MemoryCacheControlAddress) {
-                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
+            if (address == 0xFFFE0130) {
                 return memoryCache;
             }
 
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
-            MarkExecutionSensitiveAccess(addr);
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
                 uint value = load<uint>(physical, ramPtr);
-                if (TraceRamReadEnabled) {
-                    TraceRamRead(physical, 4, value);
-                }
+                TraceRamRead(physical, 4, value);
                 return value;
             } else if (addr < 0x1F80_0000) {
                 return load<uint>(addr & 0x7_FFFF, ex1Ptr);
@@ -184,143 +166,18 @@ public class BUS {
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe bool TryLoadData32Fast(uint address, out uint value) {
-            if (address == MemoryCacheControlAddress) {
-                value = memoryCache;
-                return true;
-            }
-
-            uint addr = address & RegionMask[address >> 29];
-            if (addr < 0x1F00_0000) {
-                uint physical = addr & 0x1F_FFFF;
-                value = load<uint>(physical, ramPtr);
-                if (TraceRamReadEnabled) {
-                    TraceRamRead(physical, 4, value);
-                }
-                return true;
-            }
-
-            if (addr < 0x1F80_0000) {
-                value = load<uint>(addr & 0x7_FFFF, ex1Ptr);
-                return true;
-            }
-
-            if (addr < 0x1F80_0400) {
-                value = load<uint>(addr & 0x3FF, scrathpadPtr);
-                return true;
-            }
-
-            if (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000) {
-                value = load<uint>(addr & 0x7_FFFF, biosPtr);
-                return true;
-            }
-
-            value = 0;
-            return false;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool CanLoadData32Fast(uint address) {
-            if (address == MemoryCacheControlAddress) {
-                return false;
-            }
-
-            uint addr = address & RegionMask[address >> 29];
-            return addr < 0x1F80_0400 || (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe bool TryLoadData16Fast(uint address, out ushort value) {
-            uint addr = address & RegionMask[address >> 29];
-            if (addr < 0x1F00_0000) {
-                uint physical = addr & 0x1F_FFFF;
-                value = load<ushort>(physical, ramPtr);
-                if (TraceRamReadEnabled) {
-                    TraceRamRead(physical, 2, value);
-                }
-                return true;
-            }
-
-            if (addr < 0x1F80_0000) {
-                value = load<ushort>(addr & 0x7_FFFF, ex1Ptr);
-                return true;
-            }
-
-            if (addr < 0x1F80_0400) {
-                value = load<ushort>(addr & 0x3FF, scrathpadPtr);
-                return true;
-            }
-
-            if (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000) {
-                value = load<ushort>(addr & 0x7_FFFF, biosPtr);
-                return true;
-            }
-
-            value = 0;
-            return false;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool CanLoadData16Fast(uint address) {
-            uint addr = address & RegionMask[address >> 29];
-            return addr < 0x1F80_0400 || (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe bool TryLoadData8Fast(uint address, out byte value) {
-            uint addr = address & RegionMask[address >> 29];
-            if (addr < 0x1F00_0000) {
-                uint physical = addr & 0x1F_FFFF;
-                value = load<byte>(physical, ramPtr);
-                if (TraceRamReadEnabled) {
-                    TraceRamRead(physical, 1, value);
-                }
-                return true;
-            }
-
-            if (addr < 0x1F80_0000) {
-                value = load<byte>(addr & 0x7_FFFF, ex1Ptr);
-                return true;
-            }
-
-            if (addr < 0x1F80_0400) {
-                value = load<byte>(addr & 0x3FF, scrathpadPtr);
-                return true;
-            }
-
-            if (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000) {
-                value = load<byte>(addr & 0x7_FFFF, biosPtr);
-                return true;
-            }
-
-            value = 0;
-            return false;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool CanLoadData8Fast(uint address) {
-            uint addr = address & RegionMask[address >> 29];
-            return addr < 0x1F80_0400 || (addr >= 0x1FC0_0000 && addr < 0x1FC8_0000);
-        }
-
         public unsafe void write32(uint address, uint value) {
-            if (address == MemoryCacheControlAddress) {
+            if (address == 0xFFFE_0130) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
-                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
-                memoryCacheControlObserver?.Invoke();
                 return;
             }
 
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
-            MarkExecutionSensitiveAccess(addr);
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
-                if (TraceRamWriteEnabled) {
-                    TraceRamWrite(physical, 4, value, "cpu");
-                }
+                TraceRamWrite(physical, 4, value, "cpu");
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 4);
             } else if (addr < 0x1F80_0000) {
@@ -357,67 +214,18 @@ public class BUS {
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe bool TryStoreData32Fast(uint address, uint value) {
-            if (address == MemoryCacheControlAddress) {
-                memoryCache = value;
-                memoryCacheWriteCount++;
-                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
-                memoryCacheControlObserver?.Invoke();
-                return true;
-            }
-
-            uint addr = address & RegionMask[address >> 29];
-            if (addr < 0x1F00_0000) {
-                uint physical = addr & 0x1F_FFFF;
-                if (TraceRamWriteEnabled) {
-                    TraceRamWrite(physical, 4, value, "cpu");
-                }
-                write(physical, value, ramPtr);
-                ramWriteObserver?.Invoke(physical, 4);
-                return true;
-            }
-
-            if (addr < 0x1F80_0000) {
-                write(addr & 0x7_FFFF, value, ex1Ptr);
-                return true;
-            }
-
-            if (addr < 0x1F80_0400) {
-                write(addr & 0x3FF, value, scrathpadPtr);
-                return true;
-            }
-
-            return false;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool CanStoreData32Fast(uint address) {
-            if (address == MemoryCacheControlAddress) {
-                return false;
-            }
-
-            uint addr = address & RegionMask[address >> 29];
-            return addr < 0x1F80_0400;
-        }
-
         public unsafe void write16(uint address, ushort value) {
-            if (address == MemoryCacheControlAddress) {
+            if (address == 0xFFFE_0130) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
-                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
-                memoryCacheControlObserver?.Invoke();
                 return;
             }
 
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
-            MarkExecutionSensitiveAccess(addr);
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
-                if (TraceRamWriteEnabled) {
-                    TraceRamWrite(physical, 2, value, "cpu");
-                }
+                TraceRamWrite(physical, 2, value, "cpu");
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 2);
             } else if (addr < 0x1F80_0000) {
@@ -454,67 +262,18 @@ public class BUS {
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe bool TryStoreData16Fast(uint address, ushort value) {
-            if (address == MemoryCacheControlAddress) {
-                memoryCache = value;
-                memoryCacheWriteCount++;
-                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
-                memoryCacheControlObserver?.Invoke();
-                return true;
-            }
-
-            uint addr = address & RegionMask[address >> 29];
-            if (addr < 0x1F00_0000) {
-                uint physical = addr & 0x1F_FFFF;
-                if (TraceRamWriteEnabled) {
-                    TraceRamWrite(physical, 2, value, "cpu");
-                }
-                write(physical, value, ramPtr);
-                ramWriteObserver?.Invoke(physical, 2);
-                return true;
-            }
-
-            if (addr < 0x1F80_0000) {
-                write(addr & 0x7_FFFF, value, ex1Ptr);
-                return true;
-            }
-
-            if (addr < 0x1F80_0400) {
-                write(addr & 0x3FF, value, scrathpadPtr);
-                return true;
-            }
-
-            return false;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool CanStoreData16Fast(uint address) {
-            if (address == MemoryCacheControlAddress) {
-                return false;
-            }
-
-            uint addr = address & RegionMask[address >> 29];
-            return addr < 0x1F80_0400;
-        }
-
         public unsafe void write8(uint address, byte value) {
-            if (address == MemoryCacheControlAddress) {
+            if (address == 0xFFFE_0130) {
                 memoryCache = value;
                 memoryCacheWriteCount++;
-                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
-                memoryCacheControlObserver?.Invoke();
                 return;
             }
 
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
-            MarkExecutionSensitiveAccess(addr);
             if (addr < 0x1F00_0000) {
                 uint physical = addr & 0x1F_FFFF;
-                if (TraceRamWriteEnabled) {
-                    TraceRamWrite(physical, 1, value, "cpu");
-                }
+                TraceRamWrite(physical, 1, value, "cpu");
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 1);
             } else if (addr < 0x1F80_0000) {
@@ -549,50 +308,6 @@ public class BUS {
                 if (VerboseBusAccess)
                     Console.WriteLine($"[BUS] Write8 Unsupported: {addr:x8}");
             }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe bool TryStoreData8Fast(uint address, byte value) {
-            if (address == MemoryCacheControlAddress) {
-                memoryCache = value;
-                memoryCacheWriteCount++;
-                MarkExecutionSensitiveAccess(MemoryCacheControlAddress);
-                memoryCacheControlObserver?.Invoke();
-                return true;
-            }
-
-            uint addr = address & RegionMask[address >> 29];
-            if (addr < 0x1F00_0000) {
-                uint physical = addr & 0x1F_FFFF;
-                if (TraceRamWriteEnabled) {
-                    TraceRamWrite(physical, 1, value, "cpu");
-                }
-                write(physical, value, ramPtr);
-                ramWriteObserver?.Invoke(physical, 1);
-                return true;
-            }
-
-            if (addr < 0x1F80_0000) {
-                write(addr & 0x7_FFFF, value, ex1Ptr);
-                return true;
-            }
-
-            if (addr < 0x1F80_0400) {
-                write(addr & 0x3FF, value, scrathpadPtr);
-                return true;
-            }
-
-            return false;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool CanStoreData8Fast(uint address) {
-            if (address == MemoryCacheControlAddress) {
-                return false;
-            }
-
-            uint addr = address & RegionMask[address >> 29];
-            return addr < 0x1F80_0400;
         }
 
         internal unsafe bool loadBios() {
@@ -798,9 +513,6 @@ public class BUS {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void tick(int cycles) {
-            if (recentMmioAccessBudget > 0) {
-                recentMmioAccessBudget = Math.Max(0, recentMmioAccessBudget - cycles);
-            }
             if (gpu.tick(cycles)) interruptController.set(Interrupt.VBLANK);
             if (cdrom.HasPendingWork && cdrom.tick(cycles)) interruptController.set(Interrupt.CDROM);
             if (dma.HasPendingWork && dma.tick(cycles)) interruptController.set(Interrupt.DMA);
@@ -844,31 +556,18 @@ public class BUS {
 
         public uint MemoryCacheWriteCount => memoryCacheWriteCount;
         public DMA Dma => dma;
-        public bool ShouldUseTightTickBatch =>
-            recentMmioAccessBudget > 0
-            || interruptController.interruptPending()
-            || dma.HasPendingWork
-            || cdrom.HasPendingWork
-            || joypad.HasPendingWork;
-        public bool ShouldYieldCpuSlice =>
-            recentMmioAccessBudget > 0
-            || interruptController.interruptPending();
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe Span<uint> DmaFromRam(uint addr, uint size) {
             uint physical = addr & 0x1F_FFFF;
-            if (TraceRamReadEnabled) {
-                TraceRamDmaRead(physical, size);
-            }
+            TraceRamDmaRead(physical, size);
             return new Span<uint>(ramPtr + physical, (int)size);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaToRam(uint addr, uint value) {
             uint physical = addr & 0x1F_FFFF;
-            if (TraceRamWriteEnabled) {
-                TraceRamWrite(physical, 4, value, "dma");
-            }
+            TraceRamWrite(physical, 4, value, "dma");
             *(uint*)(ramPtr + physical) = value;
             ramWriteObserver?.Invoke(physical, 4);
         }
@@ -877,7 +576,7 @@ public class BUS {
         public unsafe void DmaToRam(uint addr, byte[] buffer, uint size) {
             uint physical = addr & 0x1F_FFFF;
             int byteCount = (int)size * 4;
-            if (TraceRamWriteEnabled && ShouldTraceRamWriteRange(physical, (uint)byteCount)) {
+            if (ShouldTraceRamWriteRange(physical, (uint)byteCount)) {
                 int previewCount = Math.Min(byteCount, 16);
                 string preview = BitConverter.ToString(buffer, 0, previewCount);
                 Console.WriteLine(
@@ -902,18 +601,10 @@ public class BUS {
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void MarkExecutionSensitiveAccess(uint address) {
-            if (address == MemoryCacheControlAddress
-                || (address >= MmioStartAddress && address < MmioEndAddressExclusive)) {
-                recentMmioAccessBudget = RecentMmioAccessHysteresisCycles;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void DmaFromCD(uint address, int size) {
             var dma = cdrom.processDmaLoad(size);
             uint physical = address & 0x1F_FFFC;
-            if (TraceCdDma || (TraceRamWriteEnabled && ShouldTraceRamWriteRange(physical, (uint)(dma.Length * 4)))) {
+            if (TraceCdDma || ShouldTraceRamWriteRange(physical, (uint)(dma.Length * 4))) {
                 int previewCount = Math.Min(dma.Length, 4);
                 string preview = string.Empty;
                 for (int i = 0; i < previewCount; i++) {
