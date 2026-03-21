@@ -29,4 +29,19 @@
     <ProjectReference Include="..\EutherDrive.Core\EutherDrive.Core.csproj" />
     <ProjectReference Include="..\EutherDrive.Audio\EutherDrive.Audio.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\EutherDrive.UI\Zuul\JoxFile.cs">
+      <Link>Zuul\JoxFile.cs</Link>
+    </Compile>
+    <Compile Include="..\EutherDrive.UI\Zuul\JoxRuntime.cs">
+      <Link>Zuul\JoxRuntime.cs</Link>
+    </Compile>
+    <AvaloniaResource Include="..\EutherDrive.UI\Assets\zuul_svg.jox">
+      <Link>Assets/zuul_svg.jox</Link>
+    </AvaloniaResource>
+    <AvaloniaResource Include="..\EutherDrive.UI\Assets\jox.wav">
+      <Link>Assets/jox.wav</Link>
+    </AvaloniaResource>
+  </ItemGroup>
 </Project>

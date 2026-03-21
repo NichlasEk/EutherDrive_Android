@@ -96,6 +96,7 @@ public partial class MainView : UserControl
         LoadSettings();
         ApplySettings();
         _viewModel.SettingsHint = "Small BIOS/chip files are imported into app storage. Large disc images are intentionally not cached here.";
+        SettingsAboutZuulView.SetActive(false);
         SizeChanged += OnViewSizeChanged;
     }
 
@@ -205,17 +206,20 @@ public partial class MainView : UserControl
     {
         _viewModel.DebugVisible = false;
         _viewModel.SettingsVisible = true;
+        SettingsAboutZuulView.SetActive(true);
     }
 
     private void OnCloseSettings(object? sender, RoutedEventArgs e)
     {
         _viewModel.SettingsVisible = false;
+        SettingsAboutZuulView.SetActive(false);
     }
 
     private void OnOpenDebug(object? sender, RoutedEventArgs e)
     {
         _viewModel.SettingsVisible = false;
         _viewModel.DebugVisible = true;
+        SettingsAboutZuulView.SetActive(false);
     }
 
     private void OnCloseDebug(object? sender, PointerPressedEventArgs e)

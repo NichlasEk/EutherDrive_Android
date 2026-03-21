@@ -1,5 +1,6 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:zuul="clr-namespace:EutherDrive.Android.Zuul"
              x:Class="EutherDrive.Android.MainView">
   <UserControl.Styles>
     <Style Selector="Border.surface">
@@ -549,19 +550,6 @@
             </StackPanel>
           </Border>
 
-          <Border IsVisible="{Binding ScreenHudVisible}"
-                  HorizontalAlignment="Center"
-                  VerticalAlignment="Top"
-                  Margin="0,14,0,0"
-                  Background="#A0121923"
-                  CornerRadius="999"
-                  Padding="10,6">
-            <TextBlock Text="{Binding PerfHeadline}"
-                       FontSize="12"
-                       FontWeight="Bold"
-                       Foreground="#93C5FD" />
-          </Border>
-
           <Grid HorizontalAlignment="Left"
                 VerticalAlignment="Top"
                 Margin="22,14,0,0"
@@ -813,7 +801,7 @@
                 VerticalAlignment="Center"
                 MaxWidth="720"
                 Padding="18">
-          <Grid RowDefinitions="Auto,*,Auto" RowSpacing="14">
+          <Grid RowDefinitions="Auto,*" RowSpacing="14">
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
               <StackPanel Spacing="4">
                 <TextBlock Text="System Files"
@@ -939,13 +927,43 @@
                     <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearSt018" />
                   </Grid>
                 </Border>
+
+                <TextBlock Text="{Binding SettingsHint}"
+                           Foreground="#91A8BD"
+                           TextWrapping="Wrap" />
+
+                <Border Classes="surface" Padding="14">
+                  <StackPanel Spacing="10">
+                    <StackPanel Spacing="3">
+                      <TextBlock Text="About"
+                                 FontSize="22"
+                                 FontWeight="Black"
+                                 FontStyle="Italic"
+                                 Foreground="#EEF6FF" />
+                      <TextBlock Text="Desktop About-rutan ligger nu fast längst ner här också."
+                                 Foreground="#91A8BD"
+                                 TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <Border Background="#05080C"
+                            BorderBrush="#5E2A2A"
+                            BorderThickness="1"
+                            CornerRadius="18"
+                            Padding="10">
+                      <zuul:ZuulView x:Name="SettingsAboutZuulView"
+                                     Height="220"
+                                     HorizontalAlignment="Stretch" />
+                    </Border>
+
+                    <TextBlock Text="Made by Nichlas and AI"
+                               HorizontalAlignment="Center"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Foreground="#EEF6FF" />
+                  </StackPanel>
+                </Border>
               </StackPanel>
             </ScrollViewer>
-
-            <TextBlock Grid.Row="2"
-                       Text="{Binding SettingsHint}"
-                       Foreground="#91A8BD"
-                       TextWrapping="Wrap" />
           </Grid>
         </Border>
       </Grid>
