@@ -107,11 +107,13 @@ public class ROM : IROM
         {
             int ramLen = KSNES.Specialchips.SuperFX.SuperFx.GuessRamLen(_data);
             _sram = new byte[ramLen];
+            Array.Fill(_sram, (byte)0xFF);
             _sramSize = _sram.Length;
             _superFxHasBattery = KSNES.Specialchips.SuperFX.SuperFx.HasBattery(_data);
             _hasSram = _superFxHasBattery;
             _superFxOverclock = (ulong)ParseTraceLimit("EUTHERDRIVE_SUPERFX_OVERCLOCK", 1);
             _superFx = new KSNES.Specialchips.SuperFX.SuperFx(_data, _sram, _superFxOverclock);
+            Console.WriteLine($"[SuperFX] Initialized successfully. Chipset=0x{header.ChipsetByte:X2} Overclock={_superFxOverclock} SRAM={_sram.Length}.");
         }
         else
         {
@@ -171,11 +173,11 @@ public class ROM : IROM
         }
 
         bool hasDsp =
+            _superFx == null &&
             _spc7110 == null &&
             !header.IsExHiRom &&
             header.ExCoprocessor == 0 &&
-            header.Chips >= 3 &&
-            header.Chips <= 5;
+            IsDspChipset(header.ChipsetByte);
         if (hasDsp)
         {
             if (_system == null)
@@ -325,14 +327,21 @@ public class ROM : IROM
         if (new FileInfo(fileName).Exists)
         {
             byte[] data = File.ReadAllBytes(fileName);
-            int copy = Math.Min(data.Length, _sram.Length);
-            if (copy > 0)
+            if (_superFx != null && data.Length != _sram.Length)
             {
-                Buffer.BlockCopy(data, 0, _sram, 0, copy);
+                Console.WriteLine($"[SuperFX] Ignoring SRAM file with unexpected length {data.Length}; expected {_sram.Length}.");
             }
-            if (data.Length != _sram.Length)
+            else
             {
-                Console.WriteLine($"[SRAM] Loaded size {data.Length} != expected {_sram.Length}. Truncated to {copy}.");
+                int copy = Math.Min(data.Length, _sram.Length);
+                if (copy > 0)
+                {
+                    Buffer.BlockCopy(data, 0, _sram, 0, copy);
+                }
+                if (data.Length != _sram.Length)
+                {
+                    Console.WriteLine($"[SRAM] Loaded size {data.Length} != expected {_sram.Length}. Truncated to {copy}.");
+                }
             }
         }
 
@@ -1165,6 +1174,11 @@ public class ROM : IROM
     private static bool IsSt01xChipset(int chipsetByte, int exCoprocessor)
     {
         return chipsetByte == 0xF6 && exCoprocessor == 0x01;
+    }
+
+    private static bool IsDspChipset(int chipsetByte)
+    {
+        return chipsetByte is 0x03 or 0x04 or 0x05;
     }
 
     private static DspVariant GuessDspVariant(byte[] rom)

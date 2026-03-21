@@ -514,7 +514,7 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         string romSize = $"{header.RomSize / 1024} KB";
         string ramSize = $"{header.RamSize / 1024} KB";
         string region = _romRegionHint == ConsoleRegion.Auto ? "?" : _romRegionHint.ToString();
-        return $"SNES: {name} | ROM {romSize} | RAM {ramSize} | Region {region} | Speed 0x{header.Speed:X} | Type 0x{header.Type:X} | Chips 0x{header.Chips:X}";
+        return $"SNES: {name} | ROM {romSize} | RAM {ramSize} | Region {region} | Speed 0x{header.Speed:X} | Type 0x{header.Type:X} | Chips 0x{header.Chips:X} | Chipset 0x{header.ChipsetByte:X2}";
     }
 
     public double GetTargetFps(ConsoleRegion overrideRegion)

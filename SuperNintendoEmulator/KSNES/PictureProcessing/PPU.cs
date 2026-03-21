@@ -1195,7 +1195,9 @@ public class PPU : IPPU
         int j;
         var pixel = 0;
         var layer = 5;
-        if (_interlace)
+        // Vertical hi-res BG sampling only applies in modes 5/6. In other modes,
+        // interlace affects field/frame output rather than doubling BG fetch Y.
+        if (_interlace && (_mode == 5 || _mode == 6))
         {
             y = y * 2 + (_evenFrame ? 1 : 0);
         }
