@@ -77,6 +77,11 @@ public partial class MainView : UserControl
     private int _lastFrameWidth;
     private int _lastFrameHeight;
     private int _lastFrameStride;
+    private double _lastPresentationWidth;
+    private double _lastPresentationHeight;
+    private double _appliedPresentationWidth = double.NaN;
+    private double _appliedPresentationHeight = double.NaN;
+    private bool? _appliedPresentationLandscape;
     private int _bootRequestSerial;
     private bool _bootInProgress;
 
@@ -1270,6 +1275,11 @@ public partial class MainView : UserControl
         _lastFrameWidth = 0;
         _lastFrameHeight = 0;
         _lastFrameStride = 0;
+        _lastPresentationWidth = 0;
+        _lastPresentationHeight = 0;
+        _appliedPresentationWidth = double.NaN;
+        _appliedPresentationHeight = double.NaN;
+        _appliedPresentationLandscape = null;
         _latestPerfSummary = "Perf idle";
         _latestPerfHeadline = "FPS --  MAX --";
         _viewModel.PerfSummary = "Perf idle";
@@ -2118,13 +2128,15 @@ public partial class MainView : UserControl
 
     private unsafe void CaptureLatestFrame(IEmulatorCore core)
     {
-        if (core is PsxAdapter psx && psx.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int swapWidth, out int swapHeight, out int swapStride))
+        if (core is PsxAdapter psx && psx.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int swapWidth, out int swapHeight, out int swapStride, out double swapPresentationWidth, out double swapPresentationHeight))
         {
             lock (_frameSync)
             {
                 _lastFrameWidth = swapWidth;
                 _lastFrameHeight = swapHeight;
                 _lastFrameStride = swapStride;
+                _lastPresentationWidth = swapPresentationWidth;
+                _lastPresentationHeight = swapPresentationHeight;
                 (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
                 _emulatedFrames++;
                 _latestFrameSerial++;
@@ -2160,6 +2172,8 @@ public partial class MainView : UserControl
             _lastFrameWidth = width;
             _lastFrameHeight = height;
             _lastFrameStride = dstStride;
+            _lastPresentationWidth = 0;
+            _lastPresentationHeight = 0;
             (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
             _emulatedFrames++;
             _latestFrameSerial++;
@@ -2224,16 +2238,28 @@ public partial class MainView : UserControl
             return;
         }
 
-        double targetWidth = width;
-        double targetHeight = height;
+        double targetWidth = _lastPresentationWidth > 0 ? _lastPresentationWidth : width;
+        double targetHeight = _lastPresentationHeight > 0 ? _lastPresentationHeight : height;
 
-        if (core is PsxAdapter psx && psx.TryGetPresentationSize(out double adapterWidth, out double adapterHeight))
+        if (_lastPresentationWidth <= 0 && _lastPresentationHeight <= 0
+            && core is PsxAdapter psx
+            && psx.TryGetPresentationSize(out double adapterWidth, out double adapterHeight))
         {
             targetWidth = adapterWidth;
             targetHeight = adapterHeight;
         }
 
-        if (_viewModel.IsLandscapeMode)
+        bool isLandscape = _viewModel.IsLandscapeMode;
+        if (_appliedPresentationLandscape == isLandscape
+            && !double.IsNaN(_appliedPresentationWidth)
+            && !double.IsNaN(_appliedPresentationHeight)
+            && Math.Abs(_appliedPresentationWidth - targetWidth) <= 0.5
+            && Math.Abs(_appliedPresentationHeight - targetHeight) <= 0.5)
+        {
+            return;
+        }
+
+        if (isLandscape)
         {
             ApplyPresentationSize(LandscapeScreenHost, targetWidth, targetHeight);
             ApplyPresentationSize(LandscapeScreenImage, targetWidth, targetHeight);
@@ -2243,6 +2269,10 @@ public partial class MainView : UserControl
             ApplyPresentationSize(PortraitScreenHost, targetWidth, targetHeight);
             ApplyPresentationSize(PortraitScreenImage, targetWidth, targetHeight);
         }
+
+        _appliedPresentationWidth = targetWidth;
+        _appliedPresentationHeight = targetHeight;
+        _appliedPresentationLandscape = isLandscape;
     }
 
     private static void ApplyPresentationSize(Control control, double width, double height)
