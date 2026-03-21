@@ -199,6 +199,20 @@ namespace ProjectPSX {
             int cpuCyclesExecuted = 0;
             int cpuCycleBudget = Math.Max(1, maxCpuCycles);
             while (cpuCyclesExecuted < cpuCycleBudget) {
+                int remainingCycles = cpuCycleBudget - cpuCyclesExecuted;
+                if (remainingCycles > 1
+                    && TryRunCachedLinearSlice(remainingCycles, out int blockInstructions, out bool blockObservedRuntimeRam)) {
+                    cpuCyclesExecuted += blockInstructions;
+                    instructionsExecuted += blockInstructions;
+                    runtimeRamObserved |= blockObservedRuntimeRam;
+
+                    if (bus.ShouldYieldCpuSlice) {
+                        break;
+                    }
+
+                    continue;
+                }
+
                 cpuCyclesExecuted += RunSingleStep(out bool stepObservedRuntimeRam);
                 instructionsExecuted++;
                 runtimeRamObserved |= stepObservedRuntimeRam;
@@ -214,23 +228,7 @@ namespace ProjectPSX {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int RunSingleStep(out bool runtimeRamObserved) {
             int ticks = fetchDecode();
-            if (instr.value != 0) { //Skip Nops
-                _currentOpcodeHandler(this); //Execute
-            }
-            MemAccess();
-            WriteBack();
-
-            //if (debug) {
-            //  mips.PrintRegs();
-            //  mips.disassemble(instr, PC_Now, PC_Predictor);
-            //}
-
-            if (BiosTraceEnabled) {
-                bios.verbose(PC_Now, GPR);
-            }
-
-            uint physicalPc = PC_Now & 0x1FFF_FFFF;
-            runtimeRamObserved = physicalPc < 0x1FC0_0000 && physicalPc >= 0x0001_0000;
+            runtimeRamObserved = ExecuteDecodedInstruction();
             return ticks;
         }
 
@@ -487,6 +485,82 @@ namespace ProjectPSX {
         private void SetCurrentInstruction(uint rawValue) {
             instr.Decode(rawValue);
             _currentOpcodeHandler = ResolveInstructionHandler(in instr);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool TryRunCachedLinearSlice(int maxCpuCycles, out int instructionsExecuted, out bool runtimeRamObserved) {
+            instructionsExecuted = 0;
+            runtimeRamObserved = false;
+
+            if (maxCpuCycles <= 0 || !CanUseCachedLinearStep(PC)) {
+                return false;
+            }
+
+            while (instructionsExecuted < maxCpuCycles) {
+                uint currentPc = PC;
+                if (!CanUseCachedLinearStep(currentPc)) {
+                    break;
+                }
+
+                uint physicalPc = currentPc & 0x1FFF_FFFF;
+                uint expectedNextPc = unchecked(currentPc + 4);
+                uint expectedNextPredictor = unchecked(currentPc + 8);
+
+                PC_Now = currentPc;
+                if (TraceCurrentPcEnabled) {
+                    TraceCurrentPC = currentPc;
+                }
+                PC = PC_Predictor;
+                PC_Predictor += 4;
+
+                opcodeIsDelaySlot = opcodeIsBranch;
+                opcodeInDelaySlotTookBranch = opcodeTookBranch;
+                opcodeIsBranch = false;
+                opcodeTookBranch = false;
+
+                LoadDecodedInstruction(physicalPc);
+                runtimeRamObserved |= ExecuteDecodedInstruction();
+                instructionsExecuted++;
+
+                if (bus.ShouldYieldCpuSlice
+                    || PC != expectedNextPc
+                    || PC_Predictor != expectedNextPredictor) {
+                    break;
+                }
+            }
+
+            return instructionsExecuted != 0;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool CanUseCachedLinearStep(uint currentPc) {
+            if (!_instructionCacheEnabled || !IsInstructionCacheable(currentPc) || (currentPc & 0x3) != 0) {
+                return false;
+            }
+
+            uint physicalPc = currentPc & 0x1FFF_FFFF;
+            return physicalPc < 0x1F00_0000;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool ExecuteDecodedInstruction() {
+            if (instr.value != 0) { //Skip Nops
+                _currentOpcodeHandler(this); //Execute
+            }
+            MemAccess();
+            WriteBack();
+
+            //if (debug) {
+            //  mips.PrintRegs();
+            //  mips.disassemble(instr, PC_Now, PC_Predictor);
+            //}
+
+            if (BiosTraceEnabled) {
+                bios.verbose(PC_Now, GPR);
+            }
+
+            uint physicalPc = PC_Now & 0x1FFF_FFFF;
+            return physicalPc < 0x1FC0_0000 && physicalPc >= 0x0001_0000;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
