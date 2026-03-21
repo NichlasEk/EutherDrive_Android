@@ -134,6 +134,7 @@ namespace ProjectPSX.Devices {
         private int preMaskY;
         private int postMaskX;
         private int postMaskY;
+        private bool textureWindowIdentity = true;
 
         private ushort drawingAreaLeft;
         private ushort drawingAreaRight;
@@ -1254,73 +1255,144 @@ AdvanceTrianglePixel:
                 int textureDepth = primitive.depth;
                 ushort maskBit1555 = (ushort)(maskWhileDrawing << 15);
 
-                switch (textureDepth) {
-                    case 0:
-                        for (int y = yOrigin; y < height; y++) {
-                            int rowBase = y << 10;
-                            int sourceY = y - origin.y;
-                            int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
-                            int sourceX = xOrigin - origin.x;
-                            int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
-                            int uStep = flipX ? -1 : 1;
+                if (textureWindowIdentity) {
+                    switch (textureDepth) {
+                        case 0:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int wrappedV = (texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY)) & 0xFF;
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
 
-                            for (int x = xOrigin; x < width; x++) {
-                                ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
-                                if (rawTexel != 0) {
-                                    int pixelIndex = rowBase + x;
-                                    ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                    vram1555Bits[pixelIndex] = packedTexel;
-                                    vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                for (int x = xOrigin; x < width; x++) {
+                                    ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                    }
+
+                                    u += uStep;
                                 }
-
-                                u += uStep;
                             }
-                        }
-                        break;
-                    case 1:
-                        for (int y = yOrigin; y < height; y++) {
-                            int rowBase = y << 10;
-                            int sourceY = y - origin.y;
-                            int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
-                            int sourceX = xOrigin - origin.x;
-                            int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
-                            int uStep = flipX ? -1 : 1;
+                            break;
+                        case 1:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int wrappedV = (texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY)) & 0xFF;
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
 
-                            for (int x = xOrigin; x < width; x++) {
-                                ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
-                                if (rawTexel != 0) {
-                                    int pixelIndex = rowBase + x;
-                                    ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                    vram1555Bits[pixelIndex] = packedTexel;
-                                    vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                for (int x = xOrigin; x < width; x++) {
+                                    ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                    }
+
+                                    u += uStep;
                                 }
-
-                                u += uStep;
                             }
-                        }
-                        break;
-                    default:
-                        for (int y = yOrigin; y < height; y++) {
-                            int rowBase = y << 10;
-                            int sourceY = y - origin.y;
-                            int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
-                            int sourceX = xOrigin - origin.x;
-                            int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
-                            int uStep = flipX ? -1 : 1;
+                            break;
+                        default:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int wrappedV = (texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY)) & 0xFF;
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
 
-                            for (int x = xOrigin; x < width; x++) {
-                                ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
-                                if (rawTexel != 0) {
-                                    int pixelIndex = rowBase + x;
-                                    ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                    vram1555Bits[pixelIndex] = packedTexel;
-                                    vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                for (int x = xOrigin; x < width; x++) {
+                                    ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, u & 0xFF, wrappedV, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                    }
+
+                                    u += uStep;
                                 }
-
-                                u += uStep;
                             }
-                        }
-                        break;
+                            break;
+                    }
+                } else {
+                    switch (textureDepth) {
+                        case 0:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
+
+                                for (int x = xOrigin; x < width; x++) {
+                                    ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                    }
+
+                                    u += uStep;
+                                }
+                            }
+                            break;
+                        case 1:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
+
+                                for (int x = xOrigin; x < width; x++) {
+                                    ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                    }
+
+                                    u += uStep;
+                                }
+                            }
+                            break;
+                        default:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
+
+                                for (int x = xOrigin; x < width; x++) {
+                                    ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
+                                    if (rawTexel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        vramBits[pixelIndex] = color1555to8888LUT[packedTexel];
+                                    }
+
+                                    u += uStep;
+                                }
+                            }
+                            break;
+                    }
                 }
 
                 return;
@@ -1333,73 +1405,144 @@ AdvanceTrianglePixel:
                 int textureBaseY = primitive.textureBase.y;
                 int textureDepth = primitive.depth;
 
-                switch (textureDepth) {
-                    case 0:
-                        for (int y = yOrigin; y < height; y++) {
-                            int rowBase = y << 10;
-                            int sourceY = y - origin.y;
-                            int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
-                            int sourceX = xOrigin - origin.x;
-                            int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
-                            int uStep = flipX ? -1 : 1;
+                if (textureWindowIdentity) {
+                    switch (textureDepth) {
+                        case 0:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int wrappedV = (texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY)) & 0xFF;
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
 
-                            for (int x = xOrigin; x < width; x++) {
-                                int texel = GetTexel4Fast(vramBits, vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
-                                if (texel != 0) {
-                                    int pixelIndex = rowBase + x;
-                                    int color = ModulateColor(baseColor, texel) | maskBits;
-                                    vramBits[pixelIndex] = color;
-                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                for (int x = xOrigin; x < width; x++) {
+                                    int texel = GetTexel4Fast(vramBits, vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (texel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        int color = ModulateColor(baseColor, texel) | maskBits;
+                                        vramBits[pixelIndex] = color;
+                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                    }
+
+                                    u += uStep;
                                 }
-
-                                u += uStep;
                             }
-                        }
-                        break;
-                    case 1:
-                        for (int y = yOrigin; y < height; y++) {
-                            int rowBase = y << 10;
-                            int sourceY = y - origin.y;
-                            int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
-                            int sourceX = xOrigin - origin.x;
-                            int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
-                            int uStep = flipX ? -1 : 1;
+                            break;
+                        case 1:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int wrappedV = (texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY)) & 0xFF;
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
 
-                            for (int x = xOrigin; x < width; x++) {
-                                int texel = GetTexel8Fast(vramBits, vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
-                                if (texel != 0) {
-                                    int pixelIndex = rowBase + x;
-                                    int color = ModulateColor(baseColor, texel) | maskBits;
-                                    vramBits[pixelIndex] = color;
-                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                for (int x = xOrigin; x < width; x++) {
+                                    int texel = GetTexel8Fast(vramBits, vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (texel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        int color = ModulateColor(baseColor, texel) | maskBits;
+                                        vramBits[pixelIndex] = color;
+                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                    }
+
+                                    u += uStep;
                                 }
-
-                                u += uStep;
                             }
-                        }
-                        break;
-                    default:
-                        for (int y = yOrigin; y < height; y++) {
-                            int rowBase = y << 10;
-                            int sourceY = y - origin.y;
-                            int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
-                            int sourceX = xOrigin - origin.x;
-                            int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
-                            int uStep = flipX ? -1 : 1;
+                            break;
+                        default:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int wrappedV = (texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY)) & 0xFF;
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
 
-                            for (int x = xOrigin; x < width; x++) {
-                                int texel = GetTexel16Fast(vramBits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
-                                if (texel != 0) {
-                                    int pixelIndex = rowBase + x;
-                                    int color = ModulateColor(baseColor, texel) | maskBits;
-                                    vramBits[pixelIndex] = color;
-                                    vram1555Bits[pixelIndex] = PackColor1555(color);
+                                for (int x = xOrigin; x < width; x++) {
+                                    int texel = GetTexel16Fast(vramBits, u & 0xFF, wrappedV, textureBaseX, textureBaseY);
+                                    if (texel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        int color = ModulateColor(baseColor, texel) | maskBits;
+                                        vramBits[pixelIndex] = color;
+                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                    }
+
+                                    u += uStep;
                                 }
-
-                                u += uStep;
                             }
-                        }
-                        break;
+                            break;
+                    }
+                } else {
+                    switch (textureDepth) {
+                        case 0:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
+
+                                for (int x = xOrigin; x < width; x++) {
+                                    int texel = GetTexel4Fast(vramBits, vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (texel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        int color = ModulateColor(baseColor, texel) | maskBits;
+                                        vramBits[pixelIndex] = color;
+                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                    }
+
+                                    u += uStep;
+                                }
+                            }
+                            break;
+                        case 1:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
+
+                                for (int x = xOrigin; x < width; x++) {
+                                    int texel = GetTexel8Fast(vramBits, vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
+                                    if (texel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        int color = ModulateColor(baseColor, texel) | maskBits;
+                                        vramBits[pixelIndex] = color;
+                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                    }
+
+                                    u += uStep;
+                                }
+                            }
+                            break;
+                        default:
+                            for (int y = yOrigin; y < height; y++) {
+                                int rowBase = y << 10;
+                                int sourceY = y - origin.y;
+                                int maskedV = maskTexelAxis(texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY), preMaskY, postMaskY);
+                                int sourceX = xOrigin - origin.x;
+                                int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                                int uStep = flipX ? -1 : 1;
+
+                                for (int x = xOrigin; x < width; x++) {
+                                    int texel = GetTexel16Fast(vramBits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
+                                    if (texel != 0) {
+                                        int pixelIndex = rowBase + x;
+                                        int color = ModulateColor(baseColor, texel) | maskBits;
+                                        vramBits[pixelIndex] = color;
+                                        vram1555Bits[pixelIndex] = PackColor1555(color);
+                                    }
+
+                                    u += uStep;
+                                }
+                            }
+                            break;
+                    }
                 }
 
                 return;
@@ -1578,7 +1721,6 @@ AdvanceTrianglePixel:
             int textureBaseX,
             int textureBaseY,
             int depth) {
-            int textureRowBase = (y + textureBaseY) << 10;
             return depth switch {
                 0 => GetTexel4Fast(vramBits, vram1555Bits, x, y, clutX, clutRowBase, textureBaseX, textureBaseY),
                 1 => GetTexel8Fast(vramBits, vram1555Bits, x, y, clutX, clutRowBase, textureBaseX, textureBaseY),
@@ -1596,7 +1738,6 @@ AdvanceTrianglePixel:
             int textureBaseX,
             int textureBaseY,
             int depth) {
-            int textureRowBase = (y + textureBaseY) << 10;
             return depth switch {
                 0 => GetTexelRaw4Fast(vram1555Bits, x, y, clutX, clutRowBase, textureBaseX, textureBaseY),
                 1 => GetTexelRaw8Fast(vram1555Bits, x, y, clutX, clutRowBase, textureBaseX, textureBaseY),
@@ -1738,6 +1879,7 @@ AdvanceTrianglePixel:
             preMaskY = ~(textureWindowMaskY * 8);
             postMaskX = (textureWindowOffsetX & textureWindowMaskX) * 8;
             postMaskY = (textureWindowOffsetY & textureWindowMaskY) * 8;
+            textureWindowIdentity = textureWindowMaskX == 0 && textureWindowMaskY == 0;
         }
 
         private void GP0_E3_SetDrawingAreaTopLeft(uint val) {
@@ -1902,14 +2044,15 @@ AdvanceTrianglePixel:
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int handleSemiTransp(int backColor, int color, int semiTranspMode) {
+            if (semiTranspMode == 0) {
+                int rb = (((backColor & 0x00FF_00FF) + (color & 0x00FF_00FF)) >> 1) & 0x00FF_00FF;
+                int g = (((backColor & 0x0000_FF00) + (color & 0x0000_FF00)) >> 1) & 0x0000_FF00;
+                return (color & unchecked((int)0xFF00_0000)) | rb | g;
+            }
+
             color0.val = (uint)backColor; //back
             color1.val = (uint)color; //front
             switch (semiTranspMode) {
-                case 0: //0.5 x B + 0.5 x F    ;aka B/2+F/2
-                    color1.r = (byte)((color0.r + color1.r) >> 1);
-                    color1.g = (byte)((color0.g + color1.g) >> 1);
-                    color1.b = (byte)((color0.b + color1.b) >> 1);
-                    break;
                 case 1://1.0 x B + 1.0 x F    ;aka B+F
                     color1.r = clampToFF(color0.r + color1.r);
                     color1.g = clampToFF(color0.g + color1.g);
