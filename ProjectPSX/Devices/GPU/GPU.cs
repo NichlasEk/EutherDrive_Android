@@ -597,9 +597,17 @@ namespace ProjectPSX.Devices {
             ushort[] vram1555Bits = vram1555.Bits;
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
+            ushort genericMaskBit1555 = (ushort)(maskWhileDrawing << 15);
             bool shaded = primitive.isShaded;
             bool textured = primitive.isTextured;
             bool flatOpaqueFill = !primitive.isShaded && !primitive.isTextured && !primitive.isSemiTransparent;
+            Span<ushort> genericFlatModulateR = stackalloc ushort[32];
+            Span<ushort> genericFlatModulateG = stackalloc ushort[32];
+            Span<ushort> genericFlatModulateB = stackalloc ushort[32];
+
+            if (textured && !primitive.isRawTextured && !shaded) {
+                BuildModulate1555Tables((int)c0, genericFlatModulateR, genericFlatModulateG, genericFlatModulateB);
+            }
 
             if (flatOpaqueFill) {
                 int fillColor = (int)c0 | maskBits;
@@ -1349,8 +1357,44 @@ namespace ProjectPSX.Devices {
                             goto AdvanceTrianglePixel;
                         }
 
-                        int color = (int)c0;
+                        if (textured) {
+                            int texelX = texX / area;
+                            int texelY = texY / area;
+                            ushort rawTexel = GetTexelRawFast(
+                                vram1555Bits,
+                                maskTexelAxis(texelX, preMaskX, postMaskX),
+                                maskTexelAxis(texelY, preMaskY, postMaskY),
+                                primitive.clut.x,
+                                primitive.clut.y << 10,
+                                primitive.textureBase.x,
+                                primitive.textureBase.y,
+                                primitive.depth);
+                            if (rawTexel == 0) {
+                                goto AdvanceTrianglePixel;
+                            }
 
+                            ushort packedTexturedColor;
+                            if (primitive.isRawTextured) {
+                                packedTexturedColor = rawTexel;
+                            } else if (shaded) {
+                                int r = shadeR / area;
+                                int g = shadeG / area;
+                                int b = shadeB / area;
+                                packedTexturedColor = ModulateRawTexel1555(rawTexel, 0, r, g, b);
+                            } else {
+                                packedTexturedColor = ModulateRawTexel1555(rawTexel, 0, genericFlatModulateR, genericFlatModulateG, genericFlatModulateB);
+                            }
+
+                            if (primitive.isSemiTransparent) {
+                                WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, packedTexturedColor, genericMaskBit1555, primitive.semiTransparencyMode);
+                            } else {
+                                vram1555Bits[pixelIndex] = (ushort)(packedTexturedColor | genericMaskBit1555);
+                            }
+
+                            goto AdvanceTrianglePixel;
+                        }
+
+                        int color = (int)c0;
                         if (shaded) {
                             int r = shadeR / area;
                             int g = shadeG / area;
@@ -1358,23 +1402,8 @@ namespace ProjectPSX.Devices {
                             color = r << 16 | g << 8 | b;
                         }
 
-                        if (textured) {
-                            int texelX = texX / area;
-                            int texelY = texY / area;
-                            int texel = getTexel(maskTexelAxis(texelX, preMaskX, postMaskX), maskTexelAxis(texelY, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
-                            if (texel == 0) {
-                                goto AdvanceTrianglePixel;
-                            }
-
-                            if (!primitive.isRawTextured) {
-                                texel = ModulateColor(color, texel);
-                            }
-
-                            color = texel;
-                        }
-
                         ushort packedColor = PackColor1555(color);
-                        if (primitive.isSemiTransparent && (!primitive.isTextured || (packedColor & 0x8000) != 0)) {
+                        if (primitive.isSemiTransparent) {
                             packedColor = BlendRawSemiTransparent1555(vram1555Bits[pixelIndex], packedColor, primitive.semiTransparencyMode);
                         }
 
@@ -2335,11 +2364,19 @@ AdvanceTrianglePixel:
             ushort[] vram1555Bits = vram1555.Bits;
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
+            ushort genericMaskBit1555 = (ushort)(maskWhileDrawing << 15);
             bool flatOpaqueFill = !primitive.isTextured && !primitive.isSemiTransparent;
             bool texturedFastPath = primitive.isTextured && !checkMask;
             bool passthroughTexturedFastPath =
                 texturedFastPath &&
                 (primitive.isRawTextured || (baseColor & 0x00FF_FFFF) == IdentityTextureModulationColor);
+            Span<ushort> genericRectModulateR = stackalloc ushort[32];
+            Span<ushort> genericRectModulateG = stackalloc ushort[32];
+            Span<ushort> genericRectModulateB = stackalloc ushort[32];
+
+            if (primitive.isTextured && !primitive.isRawTextured) {
+                BuildModulate1555Tables(baseColor, genericRectModulateR, genericRectModulateG, genericRectModulateB);
+            }
 
             if (flatOpaqueFill) {
                 int fillColor = baseColor | maskBits;
@@ -2726,24 +2763,38 @@ AdvanceTrianglePixel:
                         continue;
                     }
 
-                    int color = baseColor;
-
                     if (primitive.isTextured) {
-                        int texel = getTexel(maskTexelAxis(u, preMaskX, postMaskX), maskTexelAxis(v, preMaskY, postMaskY), primitive.clut, primitive.textureBase, primitive.depth);
-                        if (texel == 0) {
+                        ushort rawTexel = GetTexelRawFast(
+                            vram1555Bits,
+                            maskTexelAxis(u, preMaskX, postMaskX),
+                            maskTexelAxis(v, preMaskY, postMaskY),
+                            primitive.clut.x,
+                            primitive.clut.y << 10,
+                            primitive.textureBase.x,
+                            primitive.textureBase.y,
+                            primitive.depth);
+                        if (rawTexel == 0) {
                             u += uStep;
                             continue;
                         }
 
-                        if (!primitive.isRawTextured) {
-                            texel = ModulateColor(color, texel);
+                        ushort packedTexturedColor = primitive.isRawTextured
+                            ? rawTexel
+                            : ModulateRawTexel1555(rawTexel, 0, genericRectModulateR, genericRectModulateG, genericRectModulateB);
+
+                        if (primitive.isSemiTransparent) {
+                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, packedTexturedColor, genericMaskBit1555, primitive.semiTransparencyMode);
+                        } else {
+                            vram1555Bits[pixelIndex] = (ushort)(packedTexturedColor | genericMaskBit1555);
                         }
 
-                        color = texel;
+                        u += uStep;
+                        continue;
                     }
 
+                    int color = baseColor;
                     ushort packedColor = PackColor1555(color);
-                    if (primitive.isSemiTransparent && (!primitive.isTextured || (packedColor & 0x8000) != 0)) {
+                    if (primitive.isSemiTransparent) {
                         packedColor = BlendRawSemiTransparent1555(vram1555Bits[pixelIndex], packedColor, primitive.semiTransparencyMode);
                     }
 
