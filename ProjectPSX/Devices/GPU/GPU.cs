@@ -24,6 +24,15 @@ namespace ProjectPSX.Devices {
         private static readonly ushort[] modulate1555RByShade = BuildDynamicModulate1555Table(0);
         private static readonly ushort[] modulate1555GByShade = BuildDynamicModulate1555Table(5);
         private static readonly ushort[] modulate1555BByShade = BuildDynamicModulate1555Table(10);
+        private static readonly ushort[] blend1555AddR = BuildSemiTransparentBlend1555Table(0, 1);
+        private static readonly ushort[] blend1555AddG = BuildSemiTransparentBlend1555Table(5, 1);
+        private static readonly ushort[] blend1555AddB = BuildSemiTransparentBlend1555Table(10, 1);
+        private static readonly ushort[] blend1555SubR = BuildSemiTransparentBlend1555Table(0, 2);
+        private static readonly ushort[] blend1555SubG = BuildSemiTransparentBlend1555Table(5, 2);
+        private static readonly ushort[] blend1555SubB = BuildSemiTransparentBlend1555Table(10, 2);
+        private static readonly ushort[] blend1555QuarterAddR = BuildSemiTransparentBlend1555Table(0, 3);
+        private static readonly ushort[] blend1555QuarterAddG = BuildSemiTransparentBlend1555Table(5, 3);
+        private static readonly ushort[] blend1555QuarterAddB = BuildSemiTransparentBlend1555Table(10, 3);
 
         [NonSerialized]
         private IHostWindow window;
@@ -612,24 +621,23 @@ namespace ProjectPSX.Devices {
             if (flatOpaqueFill) {
                 int fillColor = (int)c0 | maskBits;
                 ushort fillColor1555 = PackColor1555(fillColor);
+                int fillSpanWidth = max.x - min.x;
 
                 for (int y = min.y; y < max.y; y++) {
-                    int w0 = w0_row;
-                    int w1 = w1_row;
-                    int w2 = w2_row;
-                    int rowBase = y << 10;
+                    if (TryGetTriangleSpanOffsets(w0_row, w1_row, w2_row, A12, A20, A01, fillSpanWidth, out int spanStart, out int spanEnd)) {
+                        int pixelIndex = (y << 10) + min.x + spanStart;
+                        int spanLength = spanEnd - spanStart;
 
-                    for (int x = min.x; x < max.x; x++) {
-                        if ((w0 | w1 | w2) >= 0) {
-                            int pixelIndex = rowBase + x;
-                            if (!checkMask || (vram1555Bits[pixelIndex] & 0x8000) == 0) {
-                                vram1555Bits[pixelIndex] = fillColor1555;
+                        if (!checkMask) {
+                            Array.Fill(vram1555Bits, fillColor1555, pixelIndex, spanLength);
+                        } else {
+                            int spanLimit = pixelIndex + spanLength;
+                            for (; pixelIndex < spanLimit; pixelIndex++) {
+                                if ((vram1555Bits[pixelIndex] & 0x8000) == 0) {
+                                    vram1555Bits[pixelIndex] = fillColor1555;
+                                }
                             }
                         }
-
-                        w0 += A12;
-                        w1 += A20;
-                        w2 += A01;
                     }
 
                     w0_row += B12;
@@ -2092,41 +2100,32 @@ AdvanceGenericTrianglePixel:
                 return (ushort)((frontRaw & 0x8000) | rb | gBits);
             }
 
-            int br = backRaw & 0x1F;
-            int bg = (backRaw >> 5) & 0x1F;
-            int bb = (backRaw >> 10) & 0x1F;
-            int fr = frontRaw & 0x1F;
-            int fg = (frontRaw >> 5) & 0x1F;
-            int fb = (frontRaw >> 10) & 0x1F;
-
-            int r;
-            int g;
-            int b;
+            int rIndex = ((backRaw & 0x1F) << 5) | (frontRaw & 0x1F);
+            int gIndex = (((backRaw >> 5) & 0x1F) << 5) | ((frontRaw >> 5) & 0x1F);
+            int bIndex = (((backRaw >> 10) & 0x1F) << 5) | ((frontRaw >> 10) & 0x1F);
 
             switch (semiTranspMode) {
                 case 1:
-                    r = Clamp5Bit(br + fr);
-                    g = Clamp5Bit(bg + fg);
-                    b = Clamp5Bit(bb + fb);
-                    break;
+                    return (ushort)(
+                        (frontRaw & 0x8000) |
+                        blend1555AddR[rIndex] |
+                        blend1555AddG[gIndex] |
+                        blend1555AddB[bIndex]);
                 case 2:
-                    r = Clamp5BitSigned(br - fr);
-                    g = Clamp5BitSigned(bg - fg);
-                    b = Clamp5BitSigned(bb - fb);
-                    break;
+                    return (ushort)(
+                        (frontRaw & 0x8000) |
+                        blend1555SubR[rIndex] |
+                        blend1555SubG[gIndex] |
+                        blend1555SubB[bIndex]);
                 case 3:
-                    r = Clamp5Bit(br + (fr >> 2));
-                    g = Clamp5Bit(bg + (fg >> 2));
-                    b = Clamp5Bit(bb + (fb >> 2));
-                    break;
+                    return (ushort)(
+                        (frontRaw & 0x8000) |
+                        blend1555QuarterAddR[rIndex] |
+                        blend1555QuarterAddG[gIndex] |
+                        blend1555QuarterAddB[bIndex]);
                 default:
-                    r = fr;
-                    g = fg;
-                    b = fb;
-                    break;
+                    return frontRaw;
             }
-
-            return (ushort)((frontRaw & 0x8000) | (b << 10) | (g << 5) | r);
         }
 
         private static ushort[] BuildDynamicModulate1555Table(int shift) {
@@ -2144,6 +2143,26 @@ AdvanceGenericTrianglePixel:
             return table;
         }
 
+        private static ushort[] BuildSemiTransparentBlend1555Table(int shift, int semiTranspMode) {
+            ushort[] table = new ushort[32 * 32];
+
+            for (int back = 0; back < 32; back++) {
+                int rowBase = back << 5;
+                for (int front = 0; front < 32; front++) {
+                    int blended = semiTranspMode switch {
+                        1 => Math.Min(0x1F, back + front),
+                        2 => Math.Max(0, back - front),
+                        3 => Math.Min(0x1F, back + (front >> 2)),
+                        _ => front
+                    };
+
+                    table[rowBase | front] = (ushort)(blended << shift);
+                }
+            }
+
+            return table;
+        }
+
         private static void BuildModulate1555Tables(int baseColor, Span<ushort> modulateR, Span<ushort> modulateG, Span<ushort> modulateB) {
             int baseR = (baseColor >> 16) & 0xFF;
             int baseG = (baseColor >> 8) & 0xFF;
@@ -2155,20 +2174,6 @@ AdvanceGenericTrianglePixel:
                 modulateG[i] = (ushort)((clampToFF((baseG * texel8) >> 7) >> 3) << 5);
                 modulateB[i] = (ushort)((clampToFF((baseB * texel8) >> 7) >> 3) << 10);
             }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int Clamp5Bit(int value) {
-            return value > 0x1F ? 0x1F : value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int Clamp5BitSigned(int value) {
-            if (value < 0) {
-                return 0;
-            }
-
-            return value > 0x1F ? 0x1F : value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
