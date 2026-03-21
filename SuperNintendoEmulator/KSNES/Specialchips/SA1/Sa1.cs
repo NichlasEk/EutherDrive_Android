@@ -273,8 +273,7 @@ public sealed class Sa1
                 _registers.TickDma(_mmc, _rom, _iram, _bwram);
         }
 
-        for (ulong i = 0; i < sa1Cycles; i++)
-            _timer.Tick();
+        _timer.Advance(sa1Cycles);
     }
 
     public void ResyncTo(ulong snesCycles)
@@ -1056,6 +1055,7 @@ public sealed class Sa1
         private sealed class NullPpu : IPPU
         {
             public void CheckOverscan(int line) { }
+            public void PrepareSpriteLine(int line) { }
             public void RenderLine(int line) { }
             public int Read(int adr) => 0;
             public void Write(int adr, int value, bool dma = false) { }

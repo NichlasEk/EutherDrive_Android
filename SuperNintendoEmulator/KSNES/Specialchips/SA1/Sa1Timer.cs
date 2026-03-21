@@ -128,6 +128,60 @@ internal sealed class Sa1Timer
             IrqPending = true;
     }
 
+    public void Advance(ulong cycles)
+    {
+        if (cycles == 0)
+            return;
+
+        ulong maxHCpuTicks = MaxHCpuTicks;
+        ulong maxV = MaxV;
+        ulong startH = HCpuTicks;
+        ulong startV = V;
+        ulong totalH = startH + cycles;
+        ulong wraps = totalH / maxHCpuTicks;
+
+        switch (IrqMode)
+        {
+            case Sa1TimerIrqMode.H:
+                ulong hDistance = DistanceToNextValue(startH, IrqHTimeCpuTicks, maxHCpuTicks);
+                if (hDistance <= cycles)
+                    IrqPending = true;
+                break;
+
+            case Sa1TimerIrqMode.V:
+                if (wraps > 0)
+                {
+                    ulong vDistance = DistanceToNextValue(startV, IrqVTime, maxV);
+                    if (vDistance <= wraps)
+                        IrqPending = true;
+                }
+                break;
+
+            case Sa1TimerIrqMode.Hv:
+                ulong firstHitDistance = DistanceToNextValue(startH, IrqHTimeCpuTicks, maxHCpuTicks);
+                if (firstHitDistance <= cycles)
+                {
+                    ulong wrapsAtFirstHit = (startH + firstHitDistance) / maxHCpuTicks;
+                    ulong hitCount = 1 + ((cycles - firstHitDistance) / maxHCpuTicks);
+                    ulong firstHitV = (startV + wrapsAtFirstHit) % maxV;
+                    ulong vDistance = (IrqVTime + maxV - firstHitV) % maxV;
+                    if (vDistance < hitCount)
+                        IrqPending = true;
+                }
+                break;
+        }
+
+        HCpuTicks = (ushort)(totalH % maxHCpuTicks);
+        V = (ushort)((startV + wraps) % maxV);
+    }
+
+    private static ulong DistanceToNextValue(ulong current, ushort target, ulong modulo)
+    {
+        ulong targetValue = target;
+        ulong distance = (targetValue + modulo - current) % modulo;
+        return distance == 0 ? modulo : distance;
+    }
+
     public void Reset()
     {
         HCpuTicks = 0;

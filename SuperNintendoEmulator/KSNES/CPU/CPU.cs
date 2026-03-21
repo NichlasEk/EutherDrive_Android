@@ -325,14 +325,7 @@ public class CPU : ICPU
                     mode = _modes[instr];
                 }
                 var (item1, item2) = GetAdr(mode);
-                if (_functions[instr] == null)
-                {
-                    Uni();
-                }
-                else
-                {
-                    _functions[instr](item1, item2);
-                }
+                _functions[instr](item1, item2);
             }
             else
             {
@@ -695,8 +688,6 @@ public class CPU : ICPU
         }
         return (0, 0);
     }
-
-    private static void Uni() { }
 
     private void Adc(int adr, int adrh) 
     {
