@@ -37,6 +37,12 @@ namespace EutherDrive.UI;
 
 public partial class MainWindow : Window
 {
+    private enum RenderBackendMode
+    {
+        Bitmap,
+        OpenGl
+    }
+
     private IEmulatorCore? _core;
     private readonly object _coreAudioLock = new();
     private readonly SavestateService _savestateService;
@@ -105,6 +111,9 @@ public partial class MainWindow : Window
     private bool _crtScanlinesEnabled;
     private int _crtScanlineStrengthPercent = DefaultCrtScanlineStrengthPercent;
     private bool _updatingCrtScanlineUi;
+    private RenderBackendMode _renderBackendMode = GetDefaultRenderBackendMode();
+    private bool _updatingRenderBackendUi;
+    private string? _renderBackendFallbackReason;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
     private readonly Stopwatch _earlyMagentaTimer = new();
     private bool _earlyMagentaReported;
@@ -119,6 +128,7 @@ public partial class MainWindow : Window
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_UI_BLIT") == "1";
     private readonly Action _presentOnUiAction;
     private IEmulatorCore? _pendingPresentCore;
+    private byte[] _glSwapPresentBuffer = Array.Empty<byte>();
 
     private string? _romPath;
     private string? _pceBiosPath;
@@ -469,6 +479,7 @@ public partial class MainWindow : Window
         UpdateSpeedUi();
         UpdateSmsOverscanUi();
         UpdateSegaCdOptionsUi();
+        UpdateRenderBackendUi();
         UpdateSharpPixelsUi();
         UpdateAdvancedPixelFilterUi();
         UpdateCrtScanlinesUi();
@@ -734,6 +745,47 @@ public partial class MainWindow : Window
         _renderSkipEnabled = RenderSkipCheck?.IsChecked == true;
         _renderSkipCounter = 0;
         SaveSettings();
+    }
+
+    private void OnRenderBackendSliderChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_updatingRenderBackendUi)
+            return;
+
+        RenderBackendMode mode = e.NewValue >= 0.5 ? RenderBackendMode.OpenGl : RenderBackendMode.Bitmap;
+        SetRenderBackendMode(mode, save: true);
+    }
+
+    private void SetRenderBackendMode(RenderBackendMode mode, bool save)
+    {
+        if (_renderBackendMode == mode)
+        {
+            UpdateRenderBackendUi();
+            return;
+        }
+
+        _renderBackendMode = mode;
+        _renderBackendFallbackReason = null;
+        UpdateRenderBackendUi();
+
+        bool hadSurface = _renderSurface != null;
+        bool hasCore = _core != null;
+        if (hadSurface || hasCore)
+        {
+            ResetPresentationState(clearBitmap: true);
+            if (_core != null)
+            {
+                EnsureBitmapFromCore();
+                RenderFrame(_core);
+            }
+        }
+
+        StatusText.Text = mode == RenderBackendMode.OpenGl
+            ? "Renderer: OpenGL"
+            : "Renderer: Bitmap";
+
+        if (save)
+            SaveSettings();
     }
 
     private void UpdateSpeedUi()
@@ -1006,6 +1058,56 @@ public partial class MainWindow : Window
         RenderOptions.SetBitmapInterpolationMode(
             renderImage,
             _sharpPixelsEnabled ? BitmapInterpolationMode.None : BitmapInterpolationMode.MediumQuality);
+    }
+
+    private void UpdateRenderBackendUi()
+    {
+        _updatingRenderBackendUi = true;
+        try
+        {
+            if (RenderBackendSlider != null)
+                RenderBackendSlider.Value = _renderBackendMode == RenderBackendMode.OpenGl ? 1 : 0;
+
+            if (RenderBackendBitmapLabel != null)
+            {
+                RenderBackendBitmapLabel.Opacity = _renderBackendMode == RenderBackendMode.Bitmap ? 1.0 : 0.45;
+                RenderBackendBitmapLabel.Foreground = _renderBackendMode == RenderBackendMode.Bitmap
+                    ? new SolidColorBrush(Color.Parse("#E9F3FF"))
+                    : new SolidColorBrush(Color.Parse("#7F90A7"));
+            }
+
+            if (RenderBackendOpenGlLabel != null)
+            {
+                RenderBackendOpenGlLabel.Opacity = _renderBackendMode == RenderBackendMode.OpenGl ? 1.0 : 0.45;
+                RenderBackendOpenGlLabel.Foreground = _renderBackendMode == RenderBackendMode.OpenGl
+                    ? new SolidColorBrush(Color.Parse("#7BF0D5"))
+                    : new SolidColorBrush(Color.Parse("#7F90A7"));
+            }
+
+            if (RenderBackendStateText != null)
+            {
+                bool requestedOpenGl = _renderBackendMode == RenderBackendMode.OpenGl;
+                bool activeOpenGl = _renderSurface is OpenGlRenderSurface;
+                string stateText = requestedOpenGl
+                    ? (activeOpenGl
+                        ? "Active: OpenGL"
+                        : string.IsNullOrWhiteSpace(_renderBackendFallbackReason)
+                            ? "Active: Bitmap fallback"
+                            : $"Active: Bitmap fallback ({_renderBackendFallbackReason})")
+                    : "Active: Bitmap";
+
+                RenderBackendStateText.Text = stateText;
+                RenderBackendStateText.Foreground = requestedOpenGl && !activeOpenGl
+                    ? new SolidColorBrush(Color.Parse("#FF9A8A"))
+                    : activeOpenGl
+                        ? new SolidColorBrush(Color.Parse("#7BF0D5"))
+                        : new SolidColorBrush(Color.Parse("#9FB3C8"));
+            }
+        }
+        finally
+        {
+            _updatingRenderBackendUi = false;
+        }
     }
 
     private void UpdateAdvancedPixelFilterUi()
@@ -3832,6 +3934,7 @@ public partial class MainWindow : Window
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
+        public RenderBackendMode RenderBackendMode { get; set; } = GetDefaultRenderBackendMode();
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public Dictionary<string, string>? RomPsxSbiPaths { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
@@ -3868,6 +3971,7 @@ public partial class MainWindow : Window
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
+        public string? RenderBackendMode { get; set; }
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public Dictionary<string, string>? RomPsxSbiPaths { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
@@ -3962,6 +4066,8 @@ public partial class MainWindow : Window
         PsxAdapter.AnalogControllerEnabled = _psxAnalogControllerEnabled;
         if (PsxAnalogPadCheck != null)
             PsxAnalogPadCheck.IsChecked = _psxAnalogControllerEnabled;
+        _renderBackendMode = settings.RenderBackendMode;
+        UpdateRenderBackendUi();
         _psxFastLoadEnabled = settings.PsxFastLoadEnabled;
         PsxAdapter.FastLoadEnabled = _psxFastLoadEnabled;
         if (PsxFastLoadCheck != null)
@@ -4155,6 +4261,7 @@ public partial class MainWindow : Window
             RecentRomPaths = _recentRomPaths.ToList(),
             PceBiosPath = _pceBiosPath,
             PsxBiosPath = _psxBiosPath,
+            RenderBackendMode = _renderBackendMode,
             SnesSpecialRomPaths = _snesSpecialRomPaths.Count > 0
                 ? new Dictionary<string, string>(_snesSpecialRomPaths, StringComparer.OrdinalIgnoreCase)
                 : null,
@@ -4250,6 +4357,7 @@ public partial class MainWindow : Window
             RecentRomPaths = settings.RecentRomPaths,
             PceBiosPath = settings.PceBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
+            RenderBackendMode = settings.RenderBackendMode.ToString(),
             SnesSpecialRomPaths = settings.SnesSpecialRomPaths,
             RomPsxSbiPaths = settings.RomPsxSbiPaths,
             PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled,
@@ -4346,6 +4454,7 @@ public partial class MainWindow : Window
             RecentRomPaths = raw.RecentRomPaths,
             PceBiosPath = raw.PceBiosPath,
             PsxBiosPath = raw.PsxBiosPath,
+            RenderBackendMode = ParseRenderBackendMode(raw.RenderBackendMode),
             PsxAnalogControllerEnabled = raw.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = raw.PsxFastLoadEnabled,
             PsxSuperFastBootEnabled = raw.PsxSuperFastBootEnabled,
@@ -4458,6 +4567,24 @@ public partial class MainWindow : Window
         any |= ApplyTomlMappings(raw.PsxGamepad2Mappings, mappings.Psx.Gamepad2Mappings);
 
         return any ? mappings : null;
+    }
+
+    private static RenderBackendMode GetDefaultRenderBackendMode()
+    {
+        string? mode = Environment.GetEnvironmentVariable("EUTHERDRIVE_RENDERER");
+        return ParseRenderBackendMode(mode);
+    }
+
+    private static RenderBackendMode ParseRenderBackendMode(string? raw)
+    {
+        if (string.Equals(raw, "opengl", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(raw, "gl", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(raw, "OpenGl", StringComparison.OrdinalIgnoreCase))
+        {
+            return RenderBackendMode.OpenGl;
+        }
+
+        return RenderBackendMode.Bitmap;
     }
 
     private static bool ApplyTomlMappings(Dictionary<string, string>? raw, Dictionary<string, Key> target)
@@ -5979,7 +6106,11 @@ public partial class MainWindow : Window
         if (w <= 0 || h <= 0)
             throw new InvalidOperationException($"Core returned invalid size {w}x{h}.");
 
-        _renderSurface ??= CreateRenderSurface();
+        if (_renderSurface == null)
+        {
+            _renderSurface = CreateRenderSurface();
+            UpdateRenderBackendUi();
+        }
         EnsureDesktopRenderViewAttached();
         bool recreated = _renderSurface.EnsureSize(w, h);
         if (recreated || ScreenSurfaceHost.Children.Count == 0)
@@ -6021,16 +6152,11 @@ public partial class MainWindow : Window
         view.Height = double.NaN;
     }
 
-    private static IGameRenderSurface CreateRenderSurface()
+    private IGameRenderSurface CreateRenderSurface()
     {
-        string? mode = Environment.GetEnvironmentVariable("EUTHERDRIVE_RENDERER");
-        if (string.Equals(mode, "opengl", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(mode, "gl", StringComparison.OrdinalIgnoreCase))
-        {
-            return new OpenGlRenderSurface();
-        }
-
-        return new WriteableBitmapRenderSurface();
+        return _renderBackendMode == RenderBackendMode.OpenGl
+            ? new OpenGlRenderSurface()
+            : new WriteableBitmapRenderSurface();
     }
 
     private long _lastCoreFrameId = -1;
@@ -6044,6 +6170,7 @@ public partial class MainWindow : Window
     private void ResetPresentationState(bool clearBitmap)
     {
         _pendingPresentCore = null;
+        _glSwapPresentBuffer = Array.Empty<byte>();
         _lastCoreFrameId = -1;
         _presentTickCounter = 0;
         _lastPresentedWidth = 0;
@@ -6059,6 +6186,7 @@ public partial class MainWindow : Window
             _renderSurface?.Reset();
         _renderSurface = null;
         ScreenSurfaceHost.Children.Clear();
+        UpdateRenderBackendUi();
     }
 
     private unsafe void RenderFrame(IEmulatorCore core)
@@ -6067,23 +6195,9 @@ public partial class MainWindow : Window
             return;
 
         long renderStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
-        var src = core.GetFrameBuffer(out var w, out var h, out var srcStride);
         long currentFrameId = TryGetCoreFrameCounter(core) ?? _presentTickCounter;
         if (core is InterlaceTestCore itc)
             currentFrameId = itc.GetFrameId();
-        if (src.IsEmpty || srcStride <= 0 || w <= 0 || h <= 0)
-        {
-            if (TraceUiPresent)
-                Console.WriteLine($"[MainWindow] Present tick={_presentTickCounter}: EMPTY");
-            _presentTickCounter++;
-            return;
-        }
-
-        EnsureBitmapFromCore(w, h);
-        if (_renderSurface == null)
-            return;
-
-        ApplyPsxAspectIfNeeded(core, w, h);
 
         // Check if this is actually a new frame
         bool isNewFrame = currentFrameId != _lastCoreFrameId;
@@ -6113,10 +6227,28 @@ public partial class MainWindow : Window
         }
 
         bool forceOpaque = ForceOpaqueCheck?.IsChecked == true;
-        bool applyScanlines = _crtScanlinesEnabled;
-        bool applyAdvancedPixelFilter = _sharpPixelsEnabled && _advancedPixelFilterEnabled;
-        int scanlineStrength = ClampPercent(_crtScanlineStrengthPercent);
-        int scanlineDarkenFactor = 256 - ((scanlineStrength * 256) / 100);
+        var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
+
+        if (_renderSurface is OpenGlRenderSurface glSurface
+            && core is PsxAdapter psx
+            && TryRenderPsxOpenGlFrame(psx, glSurface, blitOptions, renderStart))
+        {
+            return;
+        }
+
+        var src = core.GetFrameBuffer(out var w, out var h, out var srcStride);
+        if (src.IsEmpty || srcStride <= 0 || w <= 0 || h <= 0)
+        {
+            if (TraceUiPresent)
+                Console.WriteLine($"[MainWindow] Present tick={_presentTickCounter}: EMPTY");
+            return;
+        }
+
+        EnsureBitmapFromCore(w, h);
+        if (_renderSurface == null)
+            return;
+
+        ApplyPsxAspectIfNeeded(core, w, h);
 
         if (FrameBufferTraceEnabled)
         {
@@ -6129,11 +6261,7 @@ public partial class MainWindow : Window
             w,
             h,
             srcStride,
-            new FrameBlitOptions(
-                ForceOpaque: forceOpaque,
-                ApplyScanlines: applyScanlines,
-                ApplyAdvancedPixelFilter: applyAdvancedPixelFilter,
-                ScanlineDarkenFactor: scanlineDarkenFactor),
+            blitOptions,
             TracePerf);
 
         if (TracePerf)
@@ -6142,7 +6270,7 @@ public partial class MainWindow : Window
             PerfHotspots.Add(PerfHotspot.UiBlit, metrics.BlitTicks);
         }
 
-        if (_renderSurface is OpenGlRenderSurface glSurface && glSurface.ShouldFallbackToBitmap(out string fallbackReason))
+        if (_renderSurface is OpenGlRenderSurface activeGlSurface && activeGlSurface.ShouldFallbackToBitmap(out string fallbackReason))
         {
             Console.WriteLine($"[MainWindow] OpenGL fallback -> bitmap: {fallbackReason}");
             var bitmapSurface = new WriteableBitmapRenderSurface();
@@ -6151,17 +6279,15 @@ public partial class MainWindow : Window
             else
                 _renderSurface.Reset();
             _renderSurface = bitmapSurface;
+            _renderBackendFallbackReason = fallbackReason;
             EnsureDesktopRenderViewAttached();
+            UpdateRenderBackendUi();
             _renderSurface.Present(
                 src,
                 w,
                 h,
                 srcStride,
-                new FrameBlitOptions(
-                    ForceOpaque: forceOpaque,
-                    ApplyScanlines: applyScanlines,
-                    ApplyAdvancedPixelFilter: applyAdvancedPixelFilter,
-                    ScanlineDarkenFactor: scanlineDarkenFactor),
+                blitOptions,
                 TracePerf);
         }
 
@@ -6185,6 +6311,108 @@ public partial class MainWindow : Window
             _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
     }
 
+    private bool TryRenderPsxOpenGlFrame(PsxAdapter psx, OpenGlRenderSurface glSurface, in FrameBlitOptions options, long renderStart)
+    {
+        if (!psx.TrySwapPresentationBuffer(ref _glSwapPresentBuffer, out int width, out int height, out int srcStride, out double presentationWidth, out double presentationHeight))
+            return false;
+
+        EnsureBitmapFromCore(width, height);
+        if (_renderSurface != glSurface)
+            return false;
+
+        ApplyPresentationSize(
+            presentationWidth > 0 ? presentationWidth : Math.Round(height * (4.0 / 3.0)),
+            presentationHeight > 0 ? presentationHeight : height);
+
+        if (FrameBufferTraceEnabled)
+        {
+            _presentedFrames++;
+            Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} size={width}x{height} stride={srcStride} bytes={srcStride * height} glswap=1");
+        }
+
+        FrameBlitMetrics metrics = glSurface.PresentOwnedBuffer(
+            _glSwapPresentBuffer,
+            width,
+            height,
+            srcStride,
+            options,
+            TracePerf);
+
+        if (TracePerf)
+        {
+            PerfHotspots.Add(PerfHotspot.UiLock, metrics.LockTicks);
+            PerfHotspots.Add(PerfHotspot.UiBlit, metrics.BlitTicks);
+        }
+
+        if (glSurface.ShouldFallbackToBitmap(out string fallbackReason))
+        {
+            Console.WriteLine($"[MainWindow] OpenGL fallback -> bitmap: {fallbackReason}");
+            var bitmapSurface = new WriteableBitmapRenderSurface();
+            if (_renderSurface is IDisposable disposableRenderSurface)
+                disposableRenderSurface.Dispose();
+            else
+                _renderSurface.Reset();
+            _renderSurface = bitmapSurface;
+            _renderBackendFallbackReason = fallbackReason;
+            EnsureDesktopRenderViewAttached();
+            UpdateRenderBackendUi();
+            _renderSurface.Present(
+                _glSwapPresentBuffer,
+                width,
+                height,
+                srcStride,
+                options,
+                TracePerf);
+        }
+
+        if (TraceUiPresent)
+            Console.WriteLine($"[MainWindow] Present WxH={width}x{height} stride={srcStride} glswap=1");
+
+        if (!_earlyMagentaReported && _earlyMagentaTimer.IsRunning)
+        {
+            _earlyMagentaReported = true;
+            _earlyMagentaTimer.Stop();
+            if (TraceUiPresent)
+                Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
+        }
+
+        if (TraceUiProfile)
+            _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
+
+        return true;
+    }
+
+    private FrameBlitOptions CreateCurrentFrameBlitOptions(bool forceOpaque)
+    {
+        bool applyScanlines = _crtScanlinesEnabled;
+        bool applyAdvancedPixelFilter = _sharpPixelsEnabled && _advancedPixelFilterEnabled;
+        int scanlineStrength = ClampPercent(_crtScanlineStrengthPercent);
+        int scanlineDarkenFactor = 256 - ((scanlineStrength * 256) / 100);
+        return new FrameBlitOptions(
+            ForceOpaque: forceOpaque,
+            ApplyScanlines: applyScanlines,
+            ApplyAdvancedPixelFilter: applyAdvancedPixelFilter,
+            ScanlineDarkenFactor: scanlineDarkenFactor);
+    }
+
+    private void ApplyPresentationSize(double targetWidth, double targetHeight)
+    {
+        if (ScreenGrid == null || targetWidth <= 0 || targetHeight <= 0)
+            return;
+
+        if (Math.Abs(ScreenGrid.Width - targetWidth) > 0.5 || Math.Abs(ScreenGrid.Height - targetHeight) > 0.5)
+        {
+            ScreenGrid.Width = targetWidth;
+            ScreenGrid.Height = targetHeight;
+        }
+
+        if (Math.Abs(ScreenSurfaceHost.Width - targetWidth) > 0.5 || Math.Abs(ScreenSurfaceHost.Height - targetHeight) > 0.5)
+        {
+            ScreenSurfaceHost.Width = targetWidth;
+            ScreenSurfaceHost.Height = targetHeight;
+        }
+    }
+
     private void ApplyPsxAspectIfNeeded(IEmulatorCore core, int width, int height)
     {
         if (ScreenGrid == null)
@@ -6200,18 +6428,7 @@ public partial class MainWindow : Window
             targetWidth = adapterWidth;
             targetHeight = adapterHeight;
         }
-
-        if (Math.Abs(ScreenGrid.Width - targetWidth) > 0.5 || Math.Abs(ScreenGrid.Height - targetHeight) > 0.5)
-        {
-            ScreenGrid.Width = targetWidth;
-            ScreenGrid.Height = targetHeight;
-        }
-
-        if (Math.Abs(ScreenSurfaceHost.Width - targetWidth) > 0.5 || Math.Abs(ScreenSurfaceHost.Height - targetHeight) > 0.5)
-        {
-            ScreenSurfaceHost.Width = targetWidth;
-            ScreenSurfaceHost.Height = targetHeight;
-        }
+        ApplyPresentationSize(targetWidth, targetHeight);
     }
 
     private void PresentPendingFrame()

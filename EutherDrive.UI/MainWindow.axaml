@@ -37,6 +37,25 @@
               <ComboBox Name="RecentRomCombo" Width="180" SelectionChanged="OnRecentRomSelected"/>
             </StackPanel>
           </Border>
+          <Border Classes="panel" Padding="8,5">
+            <StackPanel Spacing="3">
+              <TextBlock Classes="deck-label" Text="RENDERER"/>
+              <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                <TextBlock Name="RenderBackendBitmapLabel" Classes="kicker" Text="Bitmap" VerticalAlignment="Center"/>
+                <Slider Name="RenderBackendSlider"
+                        Minimum="0"
+                        Maximum="1"
+                        Width="64"
+                        Value="0"
+                        ValueChanged="OnRenderBackendSliderChanged"/>
+                <TextBlock Name="RenderBackendOpenGlLabel" Classes="kicker" Text="OpenGL" VerticalAlignment="Center"/>
+              </StackPanel>
+              <TextBlock Name="RenderBackendStateText"
+                         Classes="kicker"
+                         Text="Active: Bitmap"
+                         Opacity="0.8"/>
+            </StackPanel>
+          </Border>
           <StackPanel Spacing="6" VerticalAlignment="Top">
             <StackPanel Orientation="Horizontal" Spacing="6">
               <Button Classes="action compact" Content="Start" Click="OnStart"/>

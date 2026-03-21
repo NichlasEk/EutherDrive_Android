@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Avalonia.Controls;
 using Avalonia.OpenGL;
 using Avalonia.OpenGL.Controls;
@@ -27,6 +28,17 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         return new FrameBlitMetrics(0, blitTicks);
     }
 
+    public FrameBlitMetrics PresentOwnedBuffer(byte[] source, int width, int height, int srcStride, in FrameBlitOptions options, bool measurePerf)
+    {
+        if (source.Length == 0 || width <= 0 || height <= 0 || srcStride <= 0)
+            return FrameBlitMetrics.None;
+
+        long start = measurePerf ? Stopwatch.GetTimestamp() : 0;
+        _control.UpdateOwnedFrame(source, width, height, srcStride);
+        long blitTicks = measurePerf ? Stopwatch.GetTimestamp() - start : 0;
+        return new FrameBlitMetrics(0, blitTicks);
+    }
+
     public bool ShouldFallbackToBitmap(out string reason) => _control.ShouldFallbackToBitmap(out reason);
 
     public void Reset() => _control.ResetFrame();
@@ -44,9 +56,11 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private const int GlFragmentShader = 0x8B30;
         private const int GlLinear = 0x2601;
         private const int GlNearest = 0x2600;
+        private const int GlPixelUnpackBuffer = 0x88EC;
         private const int GlRgba = 0x1908;
         private const int GlScissorTest = 0x0C11;
         private const int GlStaticDraw = 0x88E4;
+        private const int GlStreamDraw = 0x88E0;
         private const int GlTexture0 = 0x84C0;
         private const int GlTexture2D = 0x0DE1;
         private const int GlTextureMagFilter = 0x2800;
@@ -65,12 +79,19 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
              1f,  1f, 1f, 0f
         };
 
+        private readonly object _frameSync = new();
         private byte[] _frameBytes = Array.Empty<byte>();
         private byte[] _uploadBytes = Array.Empty<byte>();
         private int _frameWidth;
         private int _frameHeight;
+        private int _frameStride;
         private bool _frameDirty;
         private int _textureId;
+        private int _textureWidth;
+        private int _textureHeight;
+        private readonly int[] _pixelUnpackBufferIds = new int[2];
+        private int _pixelUnpackBufferIndex;
+        private bool _usePixelUnpackBuffers;
         private int _programId;
         private int _vertexBufferId;
         private int _vertexArrayId;
@@ -79,9 +100,36 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private int _presentCount;
         private int _renderCount;
         private readonly bool _traceEnabled = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_GL"), "1", StringComparison.Ordinal);
+        private readonly bool _enablePixelUnpackBuffers = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GL_ENABLE_PBO"), "1", StringComparison.Ordinal);
         private readonly bool _useSafeRgbaUpload = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GL_SAFE_UPLOAD"), "1", StringComparison.Ordinal);
         private bool _initAttempted;
         private bool _initSucceeded;
+        private bool _renderRequested;
+        private TexSubImage2DInvoker? _texSubImage2D;
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private unsafe delegate void TexSubImage2DCdecl(
+            int target,
+            int level,
+            int xoffset,
+            int yoffset,
+            int width,
+            int height,
+            int format,
+            int type,
+            IntPtr pixels);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private unsafe delegate void TexSubImage2DStdCall(
+            int target,
+            int level,
+            int xoffset,
+            int yoffset,
+            int width,
+            int height,
+            int format,
+            int type,
+            IntPtr pixels);
 
         public int PixelWidth => _frameWidth;
         public int PixelHeight => _frameHeight;
@@ -91,41 +139,82 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             if (width <= 0 || height <= 0)
                 return false;
 
-            bool recreated = width != _frameWidth || height != _frameHeight;
-            _frameWidth = width;
-            _frameHeight = height;
-            int requiredBytes = checked(width * height * 4);
-            if (_frameBytes.Length != requiredBytes)
-                _frameBytes = new byte[requiredBytes];
-            if (_uploadBytes.Length != requiredBytes)
-                _uploadBytes = new byte[requiredBytes];
-            return recreated;
+            lock (_frameSync)
+            {
+                bool recreated = width != _frameWidth || height != _frameHeight;
+                _frameWidth = width;
+                _frameHeight = height;
+                _frameStride = width * 4;
+                int requiredBytes = checked(width * height * 4);
+                if (_uploadBytes.Length != requiredBytes)
+                    _uploadBytes = new byte[requiredBytes];
+                return recreated;
+            }
         }
 
         public void UpdateFrame(ReadOnlySpan<byte> source, int width, int height, int srcStride)
         {
             EnsureFrameSize(width, height);
             int dstStride = width * 4;
-            if (dstStride <= 0 || _frameBytes.Length < dstStride * height)
+            int requiredBytes = dstStride * height;
+            byte[] frameBytes;
+            lock (_frameSync)
+            {
+                if (_frameBytes.Length != requiredBytes)
+                    _frameBytes = new byte[requiredBytes];
+                frameBytes = _frameBytes;
+            }
+
+            if (dstStride <= 0 || frameBytes.Length < requiredBytes)
                 return;
 
             if (srcStride == dstStride)
             {
-                source[..Math.Min(source.Length, dstStride * height)].CopyTo(_frameBytes);
+                source[..Math.Min(source.Length, requiredBytes)].CopyTo(frameBytes);
             }
             else
             {
                 for (int y = 0; y < height; y++)
                 {
                     ReadOnlySpan<byte> srcRow = source.Slice(y * srcStride, dstStride);
-                    Span<byte> dstRow = _frameBytes.AsSpan(y * dstStride, dstStride);
+                    Span<byte> dstRow = frameBytes.AsSpan(y * dstStride, dstStride);
                     srcRow.CopyTo(dstRow);
                 }
             }
 
+            lock (_frameSync)
+            {
+                _frameWidth = width;
+                _frameHeight = height;
+                _frameStride = dstStride;
+                _frameDirty = true;
+            }
+
             _presentCount++;
-            _frameDirty = true;
-            RequestNextFrameRendering();
+            QueueRenderRequest();
+        }
+
+        public void UpdateOwnedFrame(byte[] source, int width, int height, int srcStride)
+        {
+            EnsureFrameSize(width, height);
+            int requiredBytes = checked(width * height * 4);
+            if (srcStride != width * 4 || source.Length < requiredBytes)
+            {
+                UpdateFrame(source.AsSpan(0, Math.Min(source.Length, requiredBytes)), width, height, srcStride);
+                return;
+            }
+
+            lock (_frameSync)
+            {
+                _frameBytes = source;
+                _frameWidth = width;
+                _frameHeight = height;
+                _frameStride = srcStride;
+                _frameDirty = true;
+            }
+
+            _presentCount++;
+            QueueRenderRequest();
         }
 
         public bool ShouldFallbackToBitmap(out string reason)
@@ -148,12 +237,16 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
 
         public void ResetFrame()
         {
-            _frameWidth = 0;
-            _frameHeight = 0;
-            _frameBytes = Array.Empty<byte>();
-            _uploadBytes = Array.Empty<byte>();
-            _frameDirty = false;
-            RequestNextFrameRendering();
+            lock (_frameSync)
+            {
+                _frameWidth = 0;
+                _frameHeight = 0;
+                _frameStride = 0;
+                _frameBytes = Array.Empty<byte>();
+                _uploadBytes = Array.Empty<byte>();
+                _frameDirty = false;
+            }
+            QueueRenderRequest();
         }
 
         public void DisposeSurface()
@@ -233,10 +326,20 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             gl.BindTexture(GlTexture2D, _textureId);
             gl.TexParameteri(GlTexture2D, GlTextureMinFilter, GlNearest);
             gl.TexParameteri(GlTexture2D, GlTextureMagFilter, GlNearest);
+            _textureWidth = 0;
+            _textureHeight = 0;
+            _texSubImage2D = TexSubImage2DInvoker.Create(gl.GetProcAddress("glTexSubImage2D"));
+            _usePixelUnpackBuffers = _enablePixelUnpackBuffers && !_useSafeRgbaUpload && _texSubImage2D != null && SupportsPixelUnpackBuffers(gl.Version);
+            if (_usePixelUnpackBuffers)
+            {
+                _pixelUnpackBufferIds[0] = gl.GenBuffer();
+                _pixelUnpackBufferIds[1] = gl.GenBuffer();
+                _pixelUnpackBufferIndex = 0;
+            }
             _initSucceeded = true;
 
             if (_traceEnabled)
-                Console.WriteLine($"[OpenGL] Init ok renderer={gl.Renderer} version={gl.Version} safeUpload={_useSafeRgbaUpload}");
+                Console.WriteLine($"[OpenGL] Init ok renderer={gl.Renderer} version={gl.Version} safeUpload={_useSafeRgbaUpload} texSub={(_texSubImage2D != null)} pbo={_usePixelUnpackBuffers}");
         }
 
         protected override void OnOpenGlDeinit(GlInterface gl)
@@ -258,6 +361,11 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 gl.DeleteTexture(_textureId);
                 _textureId = 0;
             }
+            DeletePixelUnpackBuffers(gl);
+            _textureWidth = 0;
+            _textureHeight = 0;
+            _texSubImage2D = null;
+            _usePixelUnpackBuffers = false;
 
             if (_programId != 0)
             {
@@ -275,10 +383,17 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _vertexArrayId = 0;
             _vertexBufferId = 0;
             _textureId = 0;
+            _textureWidth = 0;
+            _textureHeight = 0;
+            _pixelUnpackBufferIds[0] = 0;
+            _pixelUnpackBufferIds[1] = 0;
+            _pixelUnpackBufferIndex = 0;
+            _usePixelUnpackBuffers = false;
             _programId = 0;
             _positionLocation = -1;
             _uvLocation = -1;
             _initSucceeded = false;
+            _texSubImage2D = null;
 
             if (_traceEnabled)
                 Console.WriteLine("[OpenGL] Context lost");
@@ -289,6 +404,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _renderCount++;
             int viewportWidth = Math.Max(1, (int)Math.Round(Bounds.Width));
             int viewportHeight = Math.Max(1, (int)Math.Round(Bounds.Height));
+            lock (_frameSync)
+                _renderRequested = false;
             gl.BindFramebuffer(GlFramebuffer, fb);
             gl.Viewport(0, 0, viewportWidth, viewportHeight);
             gl.Disable(GlScissorTest);
@@ -296,7 +413,22 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             gl.ClearColor(0f, 0f, 0f, 1f);
             gl.Clear(GlColorBufferBit);
 
-            if (_frameWidth <= 0 || _frameHeight <= 0 || _textureId == 0 || _programId == 0 || _vertexBufferId == 0)
+            byte[] frameBytes;
+            int frameWidth;
+            int frameHeight;
+            byte[] uploadBytes;
+            bool frameDirty;
+            lock (_frameSync)
+            {
+                frameBytes = _frameBytes;
+                frameWidth = _frameWidth;
+                frameHeight = _frameHeight;
+                uploadBytes = _uploadBytes;
+                frameDirty = _frameDirty;
+                _frameDirty = false;
+            }
+
+            if (frameWidth <= 0 || frameHeight <= 0 || _textureId == 0 || _programId == 0 || _vertexBufferId == 0)
                 return;
 
             gl.ActiveTexture(GlTexture0);
@@ -304,43 +436,24 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             if (_vertexArrayId != 0)
                 gl.BindVertexArray(_vertexArrayId);
 
-            if (_frameDirty && _frameBytes.Length > 0)
+            if (frameDirty && frameBytes.Length > 0)
             {
+                EnsureTextureStorage(gl, frameWidth, frameHeight);
                 if (_useSafeRgbaUpload)
                 {
-                    ConvertBgraToRgba(_frameBytes, _uploadBytes);
-                    fixed (byte* pUpload = _uploadBytes)
+                    ConvertBgraToRgba(frameBytes, uploadBytes);
+                    fixed (byte* pUpload = uploadBytes)
                     {
-                        gl.TexImage2D(
-                            GlTexture2D,
-                            0,
-                            GlRgba,
-                            _frameWidth,
-                            _frameHeight,
-                            0,
-                            GlRgba,
-                            GlUnsignedByte,
-                            (IntPtr)pUpload);
+                        UploadTexturePixels(gl, frameWidth, frameHeight, (IntPtr)pUpload, GlRgba);
                     }
                 }
                 else
                 {
-                    fixed (byte* pFrame = _frameBytes)
+                    fixed (byte* pFrame = frameBytes)
                     {
-                        gl.TexImage2D(
-                            GlTexture2D,
-                            0,
-                            GlRgba,
-                            _frameWidth,
-                            _frameHeight,
-                            0,
-                            GlBgra,
-                            GlUnsignedByte,
-                            (IntPtr)pFrame);
+                        UploadTexturePixels(gl, frameWidth, frameHeight, (IntPtr)pFrame, GlBgra);
                     }
                 }
-
-                _frameDirty = false;
             }
 
             gl.UseProgram(_programId);
@@ -361,7 +474,23 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             gl.DrawArrays(GlTriangles, 0, (IntPtr)6);
 
             if (_traceEnabled && (_renderCount <= 5 || (_renderCount % 60) == 0))
-                Console.WriteLine($"[OpenGL] Render frame#{_renderCount} fb={fb} tex={_textureId} size={_frameWidth}x{_frameHeight} viewport={viewportWidth}x{viewportHeight} dirty={_frameDirty}");
+                Console.WriteLine($"[OpenGL] Render frame#{_renderCount} fb={fb} tex={_textureId} size={frameWidth}x{frameHeight} viewport={viewportWidth}x{viewportHeight} dirty={frameDirty}");
+        }
+
+        private void QueueRenderRequest()
+        {
+            bool shouldRequest = false;
+            lock (_frameSync)
+            {
+                if (!_renderRequested)
+                {
+                    _renderRequested = true;
+                    shouldRequest = true;
+                }
+            }
+
+            if (shouldRequest)
+                RequestNextFrameRendering();
         }
 
         private static void ConvertBgraToRgba(ReadOnlySpan<byte> source, Span<byte> destination)
@@ -373,6 +502,125 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 destination[i + 1] = source[i + 1];
                 destination[i + 2] = source[i + 0];
                 destination[i + 3] = source[i + 3];
+            }
+        }
+
+        private void EnsureTextureStorage(GlInterface gl, int frameWidth, int frameHeight)
+        {
+            if (_textureWidth == frameWidth && _textureHeight == frameHeight)
+                return;
+
+            gl.TexImage2D(
+                GlTexture2D,
+                0,
+                GlRgba,
+                frameWidth,
+                frameHeight,
+                0,
+                _useSafeRgbaUpload ? GlRgba : GlBgra,
+                GlUnsignedByte,
+                IntPtr.Zero);
+
+            _textureWidth = frameWidth;
+            _textureHeight = frameHeight;
+
+            if (_traceEnabled)
+                Console.WriteLine($"[OpenGL] Alloc texture {_textureWidth}x{_textureHeight}");
+        }
+
+        private void UploadTexturePixels(GlInterface gl, int frameWidth, int frameHeight, IntPtr pixels, int format)
+        {
+            int byteCount = checked(frameWidth * frameHeight * 4);
+            if (_usePixelUnpackBuffers && _pixelUnpackBufferIds[0] != 0 && byteCount > 0 && _texSubImage2D != null)
+            {
+                int pboId = _pixelUnpackBufferIds[_pixelUnpackBufferIndex];
+                _pixelUnpackBufferIndex = (_pixelUnpackBufferIndex + 1) % _pixelUnpackBufferIds.Length;
+                gl.BindBuffer(GlPixelUnpackBuffer, pboId);
+                gl.BufferData(GlPixelUnpackBuffer, (IntPtr)byteCount, pixels, GlStreamDraw);
+                _texSubImage2D.Invoke(GlTexture2D, 0, 0, 0, frameWidth, frameHeight, format, GlUnsignedByte, IntPtr.Zero);
+                gl.BindBuffer(GlPixelUnpackBuffer, 0);
+                return;
+            }
+
+            if (_texSubImage2D != null)
+            {
+                _texSubImage2D.Invoke(GlTexture2D, 0, 0, 0, frameWidth, frameHeight, format, GlUnsignedByte, pixels);
+                return;
+            }
+
+            gl.TexImage2D(
+                GlTexture2D,
+                0,
+                GlRgba,
+                frameWidth,
+                frameHeight,
+                0,
+                format,
+                GlUnsignedByte,
+                pixels);
+        }
+
+        private void DeletePixelUnpackBuffers(GlInterface gl)
+        {
+            for (int i = 0; i < _pixelUnpackBufferIds.Length; i++)
+            {
+                if (_pixelUnpackBufferIds[i] != 0)
+                {
+                    gl.DeleteBuffer(_pixelUnpackBufferIds[i]);
+                    _pixelUnpackBufferIds[i] = 0;
+                }
+            }
+            _pixelUnpackBufferIndex = 0;
+        }
+
+        private static bool SupportsPixelUnpackBuffers(string? version)
+        {
+            if (string.IsNullOrWhiteSpace(version))
+                return false;
+
+            if (version.Contains("OpenGL ES 2", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            return true;
+        }
+
+        private sealed class TexSubImage2DInvoker
+        {
+            private readonly TexSubImage2DCdecl? _cdecl;
+            private readonly TexSubImage2DStdCall? _stdcall;
+
+            private TexSubImage2DInvoker(TexSubImage2DCdecl callback)
+            {
+                _cdecl = callback;
+            }
+
+            private TexSubImage2DInvoker(TexSubImage2DStdCall callback)
+            {
+                _stdcall = callback;
+            }
+
+            public static TexSubImage2DInvoker? Create(IntPtr proc)
+            {
+                if (proc == IntPtr.Zero)
+                    return null;
+
+                if (OperatingSystem.IsWindows())
+                {
+                    return new TexSubImage2DInvoker(Marshal.GetDelegateForFunctionPointer<TexSubImage2DStdCall>(proc));
+                }
+
+                return new TexSubImage2DInvoker(Marshal.GetDelegateForFunctionPointer<TexSubImage2DCdecl>(proc));
+            }
+
+            public void Invoke(int target, int level, int xoffset, int yoffset, int width, int height, int format, int type, IntPtr pixels)
+            {
+                if (_stdcall != null)
+                {
+                    _stdcall(target, level, xoffset, yoffset, width, height, format, type, pixels);
+                    return;
+                }
+
+                _cdecl!(target, level, xoffset, yoffset, width, height, format, type, pixels);
             }
         }
     }
