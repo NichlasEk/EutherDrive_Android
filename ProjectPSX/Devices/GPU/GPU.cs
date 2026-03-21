@@ -597,6 +597,8 @@ namespace ProjectPSX.Devices {
             ushort[] vram1555Bits = vram1555.Bits;
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
+            bool shaded = primitive.isShaded;
+            bool textured = primitive.isTextured;
             bool flatOpaqueFill = !primitive.isShaded && !primitive.isTextured && !primitive.isSemiTransparent;
 
             if (flatOpaqueFill) {
@@ -631,8 +633,6 @@ namespace ProjectPSX.Devices {
                 return;
             }
 
-            bool shaded = primitive.isShaded;
-            bool textured = primitive.isTextured;
             int u0Row = w0_row - bias0;
             int u1Row = w1_row - bias1;
             int u2Row = w2_row - bias2;
@@ -672,6 +672,65 @@ namespace ProjectPSX.Devices {
                 texYStepX = t0.y * A12 + t1.y * A20 + t2.y * A01;
                 texXStepY = t0.x * B12 + t1.x * B20 + t2.x * B01;
                 texYStepY = t0.y * B12 + t1.y * B20 + t2.y * B01;
+            }
+
+            bool opaqueTexturedFastPath = textured && !shaded && !primitive.isSemiTransparent && !checkMask;
+            if (opaqueTexturedFastPath) {
+                int clutX = primitive.clut.x;
+                int clutRowBase = primitive.clut.y << 10;
+                int textureBaseX = primitive.textureBase.x;
+                int textureBaseY = primitive.textureBase.y;
+                int textureDepth = primitive.depth;
+                bool rawTextured = primitive.isRawTextured;
+                int baseColor = (int)c0;
+
+                for (int y = min.y; y < max.y; y++) {
+                    int w0 = w0_row;
+                    int w1 = w1_row;
+                    int w2 = w2_row;
+                    int rowBase = y << 10;
+                    int texX = texXRow;
+                    int texY = texYRow;
+
+                    for (int x = min.x; x < max.x; x++) {
+                        if ((w0 | w1 | w2) >= 0) {
+                            int texelX = texX / area;
+                            int texelY = texY / area;
+                            int texel = GetTexelFast(
+                                vramBits,
+                                vram1555Bits,
+                                maskTexelAxis(texelX, preMaskX, postMaskX),
+                                maskTexelAxis(texelY, preMaskY, postMaskY),
+                                clutX,
+                                clutRowBase,
+                                textureBaseX,
+                                textureBaseY,
+                                textureDepth);
+
+                            if (texel != 0) {
+                                int pixelIndex = rowBase + x;
+                                int color = rawTextured ? texel : ModulateColor(baseColor, texel);
+                                color |= maskBits;
+                                vramBits[pixelIndex] = color;
+                                vram1555Bits[pixelIndex] = PackColor1555(color);
+                            }
+                        }
+
+                        w0 += A12;
+                        w1 += A20;
+                        w2 += A01;
+                        texX += texXStepX;
+                        texY += texYStepX;
+                    }
+
+                    w0_row += B12;
+                    w1_row += B20;
+                    w2_row += B01;
+                    texXRow += texXStepY;
+                    texYRow += texYStepY;
+                }
+
+                return;
             }
 
             // Rasterize
@@ -957,6 +1016,7 @@ AdvanceTrianglePixel:
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
             bool flatOpaqueFill = !primitive.isTextured && !primitive.isSemiTransparent;
+            bool opaqueTexturedFastPath = primitive.isTextured && !primitive.isSemiTransparent && !checkMask;
 
             if (flatOpaqueFill) {
                 int fillColor = baseColor | maskBits;
@@ -981,6 +1041,49 @@ AdvanceTrianglePixel:
                             vramBits[pixelIndex] = fillColor;
                             vram1555Bits[pixelIndex] = fillColor1555;
                         }
+                    }
+                }
+
+                return;
+            }
+
+            if (opaqueTexturedFastPath) {
+                int clutX = primitive.clut.x;
+                int clutRowBase = primitive.clut.y << 10;
+                int textureBaseX = primitive.textureBase.x;
+                int textureBaseY = primitive.textureBase.y;
+                int textureDepth = primitive.depth;
+                bool rawTextured = primitive.isRawTextured;
+
+                for (int y = yOrigin; y < height; y++) {
+                    int rowBase = y << 10;
+                    int sourceY = y - origin.y;
+                    int v = texture.y + (flipY ? (rectHeight - 1 - sourceY) : sourceY);
+                    int sourceX = xOrigin - origin.x;
+                    int u = texture.x + (flipX ? (rectWidth - 1 - sourceX) : sourceX);
+                    int uStep = flipX ? -1 : 1;
+
+                    for (int x = xOrigin; x < width; x++) {
+                        int texel = GetTexelFast(
+                            vramBits,
+                            vram1555Bits,
+                            maskTexelAxis(u, preMaskX, postMaskX),
+                            maskTexelAxis(v, preMaskY, postMaskY),
+                            clutX,
+                            clutRowBase,
+                            textureBaseX,
+                            textureBaseY,
+                            textureDepth);
+
+                        if (texel != 0) {
+                            int pixelIndex = rowBase + x;
+                            int color = rawTextured ? texel : ModulateColor(baseColor, texel);
+                            color |= maskBits;
+                            vramBits[pixelIndex] = color;
+                            vram1555Bits[pixelIndex] = PackColor1555(color);
+                        }
+
+                        u += uStep;
                     }
                 }
 
@@ -1137,13 +1240,35 @@ AdvanceTrianglePixel:
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int getTexel(int x, int y, Point2D clut, Point2D textureBase, int depth) {
-            if (depth == 0) {
-                return get4bppTexel(x, y, clut, textureBase);
-            } else if (depth == 1) {
-                return get8bppTexel(x, y, clut, textureBase);
-            } else {
-                return get16bppTexel(x, y, textureBase);
-            }
+            return GetTexelFast(
+                vram.Bits,
+                vram1555.Bits,
+                x,
+                y,
+                clut.x,
+                clut.y << 10,
+                textureBase.x,
+                textureBase.y,
+                depth);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int GetTexelFast(
+            int[] vramBits,
+            ushort[] vram1555Bits,
+            int x,
+            int y,
+            int clutX,
+            int clutRowBase,
+            int textureBaseX,
+            int textureBaseY,
+            int depth) {
+            int textureRowBase = (y + textureBaseY) << 10;
+            return depth switch {
+                0 => vramBits[clutRowBase + clutX + ((vram1555Bits[textureRowBase + textureBaseX + (x >> 2)] >> ((x & 3) << 2)) & 0xF)],
+                1 => vramBits[clutRowBase + clutX + ((vram1555Bits[textureRowBase + textureBaseX + (x >> 1)] >> ((x & 1) << 3)) & 0xFF)],
+                _ => vramBits[textureRowBase + textureBaseX + x]
+            };
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

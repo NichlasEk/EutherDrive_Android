@@ -111,18 +111,16 @@ namespace ProjectPSX.Devices.Spu {
             decodedSamples[1] = decodedSamples[decodedSamples.Length - 2];
             decodedSamples[0] = decodedSamples[decodedSamples.Length - 3];
 
-            byte* block = ram + (currentAddress * 8);
-            spuAdpcm[0] = block[0];
-            spuAdpcm[1] = block[1];
+            new Span<byte>(ram, 1024 * 512).Slice(currentAddress * 8, 16).CopyTo(spuAdpcm);
 
             //ramIrqAddress is >> 8 so we only need to check for currentAddress and + 1
             readRamIrq |= currentAddress == ramIrqAddress || currentAddress + 1 == ramIrqAddress;
 
-            int headerShift = block[0] & 0x0F;
+            int headerShift = spuAdpcm[0] & 0x0F;
             if (headerShift > 12) headerShift = 9;
             int shift = 12 - headerShift;
 
-            int filter = (block[0] & 0x70) >> 4; //filter on SPU adpcm is 0-4 vs XA wich is 0-3
+            int filter = (spuAdpcm[0] & 0x70) >> 4; //filter on SPU adpcm is 0-4 vs XA wich is 0-3
             if (filter > 4) filter = 4; //Crash Bandicoot sets this to 7 at the end of the first level and overflows the filter
 
             int f0 = PositiveXaAdpcmTable[filter];
@@ -134,7 +132,7 @@ namespace ProjectPSX.Devices.Spu {
             for (int i = 0; i < 28; i++) {
                 nibble = (nibble + 1) & 0x1;
 
-                int t = signed4bit((byte)((block[position] >> (nibble * 4)) & 0x0F));
+                int t = signed4bit((byte)((spuAdpcm[position] >> (nibble * 4)) & 0x0F));
                 int s = (t << shift) + ((old * f0 + older * f1 + 32) / 64);
                 short sample = (short)Math.Clamp(s, -0x8000, 0x7FFF);
 

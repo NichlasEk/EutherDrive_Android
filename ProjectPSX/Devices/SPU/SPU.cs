@@ -1,6 +1,5 @@
 ﻿using System;
 using System.IO;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
@@ -96,8 +95,6 @@ namespace ProjectPSX.Devices {
         [NonSerialized]
         private unsafe byte* ram = (byte*)Marshal.AllocHGlobal(512 * 1024);
         private Voice[] voices = new Voice[24];
-        [NonSerialized]
-        private uint _activeVoiceMask;
 
         private short mainVolumeLeft;
         private short mainVolumeRight;
@@ -225,8 +222,6 @@ namespace ProjectPSX.Devices {
             for (int i = 0; i < voices.Length; i++) {
                 voices[i] = new Voice();
             }
-
-            RebuildActiveVoiceMask();
         }
 
         public unsafe void SaveRawState(BinaryWriter writer) {
@@ -365,7 +360,6 @@ namespace ProjectPSX.Devices {
                             v.adsrVolume = 0;
                         }
 
-                        RebuildActiveVoiceMask();
                     }
 
                     //Irq Flag is reseted on ack
@@ -854,30 +848,21 @@ namespace ProjectPSX.Devices {
                 keyOn = 0;
                 keyOff = 0;
                 bool reverbEnabled = control.reverbMasterEnabled;
-                uint noiseMask = channelNoiseMode;
-                bool noiseEnabled = noiseMask != 0;
-                uint reverbMask = reverbEnabled ? channelReverbMode : 0;
-                uint processMask = _activeVoiceMask | edgeKeyOn | edgeKeyOff;
-                uint processedVoiceMask = processMask;
-                uint nextActiveVoiceMask = 0;
+                bool noiseEnabled = channelNoiseMode != 0;
 
                 if (noiseEnabled) {
                     tickNoiseGenerator();
                 }
 
-                while (processMask != 0) {
-                    int i = BitOperations.TrailingZeroCount(processMask);
-                    uint voiceMask = 1u << i;
-                    processMask &= processMask - 1;
-
+                for (int i = 0; i < voices.Length; i++) {
                     Voice v = voices[i];
 
-                    if ((edgeKeyOff & voiceMask) != 0) {
+                    if ((edgeKeyOff & (0x1 << i)) != 0) {
                         v.keyOff();
                     }
 
-                    if ((edgeKeyOn & voiceMask) != 0) {
-                        endx &= ~voiceMask;
+                    if ((edgeKeyOn & (0x1 << i)) != 0) {
+                        endx &= ~(uint)(0x1 << i);
                         v.keyOn();
                     }
 
@@ -887,7 +872,7 @@ namespace ProjectPSX.Devices {
                     }
 
                     short sample;
-                    if ((noiseMask & voiceMask) != 0) {
+                    if ((channelNoiseMode & (0x1 << i)) != 0) {
                         sample = (short)noiseLevel;
                     } else {
                         sample = sampleVoice(i);
@@ -898,16 +883,13 @@ namespace ProjectPSX.Devices {
                     sample = (short)((sample * v.adsrVolume) >> 15);
                     v.tickAdsr(i);
                     v.latest = sample;
-                    if (v.adsrPhase != Voice.Phase.Off) {
-                        nextActiveVoiceMask |= voiceMask;
-                    }
 
                     short volumeLeft = v.CachedVolumeLeft;
                     short volumeRight = v.CachedVolumeRight;
                     sumLeft += (sample * volumeLeft) >> 15;
                     sumRight += (sample * volumeRight) >> 15;
 
-                    if ((reverbMask & voiceMask) != 0) {
+                    if (reverbEnabled && (channelReverbMode & (0x1 << i)) != 0) {
                         sumLeftReverb += (sample * volumeLeft) >> 15;
                         sumRightReverb += (sample * volumeRight) >> 15;
                     }
@@ -954,8 +936,6 @@ namespace ProjectPSX.Devices {
                 edgeTrigger |= handleCaptureBuffer(3 * 1024 + captureBufferPos, voices[3].latest);
                 captureBufferPos = (captureBufferPos + 2) & 0x3FF;
                 status.isSecondHalfCaptureBuffer = captureBufferPos >= 0x200;
-                ClearVoiceLatest(processedVoiceMask & ~nextActiveVoiceMask);
-                _activeVoiceMask = nextActiveVoiceMask;
 
                 sumLeft = (ClampSigned16(sumLeft) * (mainVolumeLeft << 1)) >> 15;
                 sumRight = (ClampSigned16(sumRight) * (mainVolumeRight << 1)) >> 15;
@@ -1139,42 +1119,6 @@ namespace ProjectPSX.Devices {
         public void RefreshRuntimeState() {
             for (int i = 0; i < voices.Length; i++) {
                 voices[i].RefreshRuntimeState();
-            }
-
-            RebuildActiveVoiceMask();
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private uint RefreshActiveVoiceMaskInline() {
-            uint activeMask = 0;
-            for (int i = 0; i < voices.Length; i++) {
-                if (voices[i].adsrPhase != Voice.Phase.Off) {
-                    activeMask |= 1u << i;
-                }
-            }
-
-            _activeVoiceMask = activeMask;
-            return activeMask;
-        }
-
-        private void RebuildActiveVoiceMask() {
-            uint inactiveMask = 0;
-            for (int i = 0; i < voices.Length; i++) {
-                if (voices[i].adsrPhase == Voice.Phase.Off) {
-                    inactiveMask |= 1u << i;
-                }
-            }
-
-            _activeVoiceMask = RefreshActiveVoiceMaskInline();
-            ClearVoiceLatest(inactiveMask);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ClearVoiceLatest(uint mask) {
-            while (mask != 0) {
-                int index = BitOperations.TrailingZeroCount(mask);
-                mask &= mask - 1;
-                voices[index].latest = 0;
             }
         }
 

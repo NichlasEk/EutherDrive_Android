@@ -11,8 +11,7 @@ namespace ProjectPSX {
         const int MIPS_UNDERCLOCK = 3; //Testing: This compensates the ausence of HALT instruction on MIPS Architecture, may broke some games.
         const double FPS_PAL = PSX_MHZ / ((3406.0 * 314.0 * 7.0) / 11.0);
         const double FPS_NTSC = PSX_MHZ / ((3413.0 * 263.0 * 7.0) / 11.0);
-        private static readonly int TightBusTickBatchCycles = ParseBusTickBatchCycles();
-        private static readonly int RelaxedBusTickBatchCycles = ParseRelaxedBusTickBatchCycles(TightBusTickBatchCycles);
+        private static readonly int BusTickBatchCycles = ParseBusTickBatchCycles();
         private static readonly uint[] DebugPeekAddresses = ParseOptionalHexAddrEnv("EUTHERDRIVE_PSX_TRACE_PEEK_ADDRS");
         private static readonly bool DebugPointerPeeks = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_POINTER_PEEKS") == "1";
 
@@ -32,7 +31,6 @@ namespace ProjectPSX {
         private bool _psxBootBiosExited;
         private double? _frameRateOverrideHz;
         private int _lastFrameInstructionCount;
-        private int _lastFrameCpuSlices;
         private int _lastFrameCpuCycles;
         private int _lastFrameBusTicks;
         private int _lastFrameBusCycles;
@@ -83,50 +81,47 @@ namespace ProjectPSX {
             int pendingBusCycles = 0;
             int cpuCyclesPerFrame = GetCpuCyclesPerFrame();
             int instructionCount = 0;
-            int cpuSlices = 0;
             int busTicks = 0;
             int busCycles = 0;
             int interruptChecks = 0;
             while (cpuCyclesThisFrame < cpuCyclesPerFrame) {
-                int targetBusTickBatchCycles = bus.ShouldUseTightTickBatch
-                    ? TightBusTickBatchCycles
-                    : RelaxedBusTickBatchCycles;
-
-                if (pendingBusCycles >= targetBusTickBatchCycles) {
-                    FlushPendingBusCycles(ref pendingBusCycles, ref busTicks, ref busCycles, ref interruptChecks);
-                    continue;
-                }
-
-                int remainingCpuCycles = cpuCyclesPerFrame - cpuCyclesThisFrame;
-                int busBudgetCycles = Math.Max(1, targetBusTickBatchCycles - pendingBusCycles);
-                int cpuSliceBudget = Math.Max(1, Math.Min(remainingCpuCycles, (busBudgetCycles + (MIPS_UNDERCLOCK - 1)) / MIPS_UNDERCLOCK));
-
-                int cpuCycles = cpu.RunSlice(cpuSliceBudget, out int sliceInstructions, out bool runtimeRamObserved);
-                instructionCount += sliceInstructions;
-                cpuSlices++;
+                instructionCount++;
+                int cpuCycles = cpu.Run();
                 cpuCyclesThisFrame += cpuCycles;
                 pendingBusCycles += cpuCycles * MIPS_UNDERCLOCK;
-
-                if (!_psxBootBiosExited && runtimeRamObserved) {
+                uint physicalPc = cpu.CurrentPC & 0x1FFF_FFFF;
+                if (!_psxBootBiosExited && physicalPc < 0x1FC0_0000 && physicalPc >= 0x0001_0000) {
                     _psxBootBiosExited = true;
                     cdrom.NotifyBiosExited();
                     cpu.NotifyBiosExited();
                 }
 
-                if (pendingBusCycles >= targetBusTickBatchCycles) {
-                    FlushPendingBusCycles(ref pendingBusCycles, ref busTicks, ref busCycles, ref interruptChecks);
-                } else if (bus.interruptController.interruptPending()) {
+                bool busFlushed = false;
+                if (pendingBusCycles >= BusTickBatchCycles) {
+                    int flushCycles = pendingBusCycles;
+                    bus.tick(flushCycles);
+                    pendingBusCycles = 0;
+                    busFlushed = true;
+                    busTicks++;
+                    busCycles += flushCycles;
+                }
+
+                if (busFlushed || bus.interruptController.interruptPending()) {
                     interruptChecks++;
                     cpu.handleInterrupts();
                 }
             }
 
             if (pendingBusCycles > 0) {
-                FlushPendingBusCycles(ref pendingBusCycles, ref busTicks, ref busCycles, ref interruptChecks);
+                int flushCycles = pendingBusCycles;
+                bus.tick(flushCycles);
+                busTicks++;
+                busCycles += flushCycles;
+                interruptChecks++;
+                cpu.handleInterrupts();
             }
 
             _lastFrameInstructionCount = instructionCount;
-            _lastFrameCpuSlices = cpuSlices;
             _lastFrameCpuCycles = cpuCyclesThisFrame;
             _lastFrameBusTicks = busTicks;
             _lastFrameBusCycles = busCycles;
@@ -221,7 +216,7 @@ namespace ProjectPSX {
             AppendConfiguredPeeks(text);
 
             text.Append($"irq=({interruptController.DebugISTAT:x3}/{interruptController.DebugIMASK:x3}) ");
-            text.Append($"perf(instr={_lastFrameInstructionCount} slices={_lastFrameCpuSlices} cpuCy={_lastFrameCpuCycles} busTicks={_lastFrameBusTicks} busCy={_lastFrameBusCycles} irqChk={_lastFrameInterruptChecks}) ");
+            text.Append($"perf(instr={_lastFrameInstructionCount} cpuCy={_lastFrameCpuCycles} busTicks={_lastFrameBusTicks} busCy={_lastFrameBusCycles} irqChk={_lastFrameInterruptChecks}) ");
             text.Append($"{bus.DMAController.DebugSummary(2)} ");
             text.Append($"{bus.DMAController.DebugSummary(3)} ");
             text.Append($"{bus.DMAController.DebugSummary(4)} ");
@@ -264,34 +259,8 @@ namespace ProjectPSX {
                 : fallback;
         }
 
-        private static int ParseRelaxedBusTickBatchCycles(int tightFallback) {
-            const int fallback = 24;
-            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_RELAXED_BUS_TICK_BATCH_CYCLES");
-            if (string.IsNullOrWhiteSpace(raw)) {
-                return Math.Max(tightFallback, fallback);
-            }
-
-            return int.TryParse(raw, out int parsed) && parsed > 0
-                ? Math.Max(tightFallback, parsed)
-                : Math.Max(tightFallback, fallback);
-        }
-
         private int GetCpuCyclesPerFrame() {
             return (int)Math.Round((PSX_MHZ / GetTargetFps()) / MIPS_UNDERCLOCK);
-        }
-
-        private void FlushPendingBusCycles(ref int pendingBusCycles, ref int busTicks, ref int busCycles, ref int interruptChecks) {
-            if (pendingBusCycles <= 0) {
-                return;
-            }
-
-            int flushCycles = pendingBusCycles;
-            pendingBusCycles = 0;
-            bus.tick(flushCycles);
-            busTicks++;
-            busCycles += flushCycles;
-            interruptChecks++;
-            cpu.handleInterrupts();
         }
 
         private void AppendConfiguredPeeks(StringBuilder text) {
