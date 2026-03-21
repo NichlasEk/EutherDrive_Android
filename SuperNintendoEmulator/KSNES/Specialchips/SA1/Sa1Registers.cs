@@ -750,7 +750,8 @@ internal sealed class Sa1Registers
 
         if (VarlenBitsRemaining < 16)
         {
-            uint romAddr = mmc.MapRomAddress(VarlenBitStartAddress) ?? 0;
+            uint romAddr = 0;
+            mmc.TryMapRomAddress(VarlenBitStartAddress, out romAddr);
             byte lsb = romAddr < rom.Length ? rom[romAddr] : (byte)0;
             byte msb = romAddr + 1 < rom.Length ? rom[romAddr + 1] : (byte)0;
             ushort word = (ushort)(lsb | (msb << 8));
@@ -766,12 +767,10 @@ internal sealed class Sa1Registers
     private void WriteVdaHigh(byte value, Sa1Mmc mmc, byte[] rom)
     {
         Sa1Utils.SetHighByte(ref VarlenBitStartAddress, value);
-        uint? romAddr = mmc.MapRomAddress(VarlenBitStartAddress);
-        if (romAddr.HasValue)
+        if (mmc.TryMapRomAddress(VarlenBitStartAddress, out uint romAddr))
         {
-            uint addr = romAddr.Value;
-            byte lsb = addr < rom.Length ? rom[addr] : (byte)0;
-            byte msb = addr + 1 < rom.Length ? rom[addr + 1] : (byte)0;
+            byte lsb = romAddr < rom.Length ? rom[romAddr] : (byte)0;
+            byte msb = romAddr + 1 < rom.Length ? rom[romAddr + 1] : (byte)0;
             VarlenBitData = (ushort)(lsb | (msb << 8));
             VarlenBitStartAddress = (VarlenBitStartAddress + 2) & 0xFFFFFF;
             VarlenBitsRemaining = 16;
@@ -955,14 +954,12 @@ internal sealed class Sa1Registers
         {
             case DmaSourceDevice.Rom:
                 {
-                    uint? romAddr = mmc.MapRomAddress(DmaSourceAddress);
-                    if (!romAddr.HasValue)
+                    if (!mmc.TryMapRomAddress(DmaSourceAddress, out uint romAddr))
                     {
                         DmaState = DmaState.Idle;
                         return;
                     }
-                    uint addr = romAddr.Value;
-                    sourceByte = addr < rom.Length ? rom[addr] : (byte)0;
+                    sourceByte = romAddr < rom.Length ? rom[romAddr] : (byte)0;
                     break;
                 }
             case DmaSourceDevice.Iram:

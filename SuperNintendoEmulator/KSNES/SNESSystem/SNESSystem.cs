@@ -1988,7 +1988,7 @@ public class SNESSystem : ISNESSystem
                 break;
         }
 
-        return RomImpl.Read(bank, adr);
+        return RomImpl.ReadFast(fullAdr);
     }
 
     private void WwriteFast(int fullAdr, int value, bool dma, BusPageKind pageKind)
@@ -2016,7 +2016,7 @@ public class SNESSystem : ISNESSystem
                 break;
         }
 
-        RomImpl.Write(bank, adr, (byte)value);
+        RomImpl.WriteFast(fullAdr, (byte)value);
     }
 
     private void Wwrite(int fullAdr, int value, bool dma)

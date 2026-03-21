@@ -345,9 +345,8 @@ public sealed class Sa1
         {
             return ReadBwramBitmap(address);
         }
-        uint? romAddr = _mmc.MapRomAddress(address);
-        if (romAddr.HasValue && romAddr.Value < _rom.Length)
-            return _rom[(int)romAddr.Value];
+        if (_mmc.TryMapRomAddress(address, out uint romAddr) && romAddr < _rom.Length)
+            return _rom[(int)romAddr];
         return -1;
     }
 
@@ -675,8 +674,7 @@ public sealed class Sa1
                     if (isVectorBank && offset == 0xFFEF && irqSource == InterruptVectorSource.IoPorts)
                         return _registers.SnesIrqVector.Msb();
 
-                    uint? romAddr = _mmc.MapRomAddress(address);
-                    return romAddr.HasValue && romAddr.Value < _rom.Length ? _rom[(int)romAddr.Value] : (byte?)null;
+                    return _mmc.TryMapRomAddress(address, out uint romAddr) && romAddr < _rom.Length ? _rom[(int)romAddr] : (byte?)null;
                 }
             case (<= 0x3F, >= 0x2300 and <= 0x230F):
             case (>= 0x80 and <= 0xBF, >= 0x2300 and <= 0x230F):
@@ -822,8 +820,7 @@ public sealed class Sa1
                     return value;
                 }
                 {
-                    uint? romAddr = _mmc.MapRomAddress(address);
-                    byte value = romAddr.HasValue && romAddr.Value < _rom.Length ? _rom[(int)romAddr.Value] : (byte)0;
+                    byte value = _mmc.TryMapRomAddress(address, out uint romAddr) && romAddr < _rom.Length ? _rom[(int)romAddr] : (byte)0;
                     TraceSa1("R", address, value, "ROM", romAddr);
                     return value;
                 }

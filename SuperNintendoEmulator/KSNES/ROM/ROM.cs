@@ -28,6 +28,32 @@ public class ROM : IROM
         ExHiRom
     }
 
+    private enum BasePageKind : byte
+    {
+        OpenBus,
+        RomDirect,
+        RomWrapped,
+        SramDirect,
+        SramWrapped
+    }
+
+    private enum FastCartridgeDispatch : byte
+    {
+        Base,
+        Cx4,
+        Dsp1,
+        SuperFx,
+        Sa1,
+        Sdd1,
+        St010,
+        St011,
+        St018,
+        Obc1,
+        Srtc,
+        Spc7110,
+        Mixed
+    }
+
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     public Header Header { get; private set; }
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
@@ -109,6 +135,14 @@ public class ROM : IROM
     private bool _romLengthIsPowerOfTwo;
     [NonSerialized]
     private uint _romLengthMask;
+    [NonSerialized]
+    private byte[] _basePageKind = [];
+    [NonSerialized]
+    private int[] _basePageBase = [];
+    [NonSerialized]
+    private FastCartridgeDispatch _fastCartridgeDispatch;
+    [NonSerialized]
+    private bool _fastCartridgeRequiresSlowPath;
 
     [NonSerialized]
     private Timer? _sRAMTimer;
@@ -348,6 +382,8 @@ public class ROM : IROM
 
         ConfigureTimedCoprocessorDispatch();
         ConfigurePlainReadDispatch();
+        ConfigureBasePageTable();
+        ConfigureFastCartridgeDispatch();
     }
 
     public int RomLength => _data.Length;
@@ -556,69 +592,11 @@ public class ROM : IROM
         {
             return srtcValue;
         }
-
-        if (Header.IsExHiRom)
-        {
-            if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsExHiRomSramBank(bank))
-            {
-                int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
-                return _sram[SramIndex(idx)];
-            }
-
-            if (adr >= 0x8000 || ((bank >= 0x40 && bank < 0x7e) || bank >= 0xC0))
-                return ReadExHiRom(bank, adr);
-
-            return (byte)(_system?.OpenBus ?? 0);
-        }
-
-        if (Header.IsHiRom)
-        {
-            if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
-            {
-                int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
-                return _sram[SramIndex(idx)];
-            }
-
-            // HiROM exposes full 64KB ROM windows in banks 40-7D and C0-FF.
-            if (adr >= 0x8000 || (bank >= 0x40 && bank < 0x7e) || bank >= 0xc0)
-            {
-                byte value = ReadHiRom(bank, adr);
-                if (traceExactDspRead)
-                {
-                    _traceDsp1ExactReadCount++;
-                    Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=HiROM val=0x{value:X2}");
-                }
-                return value;
-            }
-            byte hiOpenBus = (byte)(_system?.OpenBus ?? 0);
-            if (traceExactDspRead)
-            {
-                _traceDsp1ExactReadCount++;
-                Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=OpenBusHi val=0x{hiOpenBus:X2}");
-            }
-            return hiOpenBus;
-        }
-
-        if (adr < 0x8000)
-        {
-            if (bank >= 0x70 && bank < 0x7e && _hasSram)
-            {
-                int idx = ((bank - 0x70) << 15) | (adr & 0x7fff);
-                return _sram[SramIndex(idx)];
-            }
-        }
-        byte loRomValue = _data[((bank & (_banks - 1)) << 15) | (adr & 0x7fff)];
-        if (traceExactDspRead)
-        {
-            _traceDsp1ExactReadCount++;
-            Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source=LoROM val=0x{loRomValue:X2}");
-        }
-        return loRomValue;
+        return ReadBasePage(bank, adr, traceExactDspRead);
     }
 
     public void Write(int bank, int adr, byte value)
     {
-        int SramIndex(int idx) => _sramSize <= 0 ? 0 : idx % _sramSize;
         if (_sa1 != null)
         {
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
@@ -740,35 +718,329 @@ public class ROM : IROM
         {
             return;
         }
+        WriteBasePage(bank, adr, value);
+    }
 
-        if (Header.IsExHiRom)
+    internal byte ReadFast(int fullAdr)
+    {
+        if (_fastCartridgeRequiresSlowPath)
+            return Read((fullAdr >> 16) & 0xFF, fullAdr & 0xFFFF);
+
+        int bank = (fullAdr >> 16) & 0xFF;
+        int adr = fullAdr & 0xFFFF;
+        return _fastCartridgeDispatch switch
         {
-            if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsExHiRomSramBank(bank))
-            {
-                int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
-                _sram[SramIndex(idx)] = value;
-                _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
-            }
+            FastCartridgeDispatch.Base => ReadBasePage(bank, adr, traceExactDspRead: false),
+            FastCartridgeDispatch.Cx4 => ReadFastCx4(bank, adr),
+            FastCartridgeDispatch.Dsp1 => ReadFastDsp1(bank, adr),
+            FastCartridgeDispatch.SuperFx => ReadFastSuperFx(bank, adr),
+            FastCartridgeDispatch.Sa1 => ReadFastSa1(bank, adr),
+            FastCartridgeDispatch.Sdd1 => ReadFastSdd1(bank, adr),
+            FastCartridgeDispatch.St010 => ReadFastSt010(bank, adr),
+            FastCartridgeDispatch.St011 => ReadFastSt011(bank, adr),
+            FastCartridgeDispatch.St018 => ReadFastSt018(bank, adr),
+            FastCartridgeDispatch.Obc1 => ReadFastObc1(bank, adr),
+            FastCartridgeDispatch.Srtc => ReadFastSrtc(bank, adr),
+            FastCartridgeDispatch.Spc7110 => ReadFastSpc7110(bank, adr),
+            _ => Read(bank, adr)
+        };
+    }
+
+    internal void WriteFast(int fullAdr, byte value)
+    {
+        if (_fastCartridgeRequiresSlowPath)
+        {
+            Write((fullAdr >> 16) & 0xFF, fullAdr & 0xFFFF, value);
             return;
         }
 
-        if (Header.IsHiRom)
+        int bank = (fullAdr >> 16) & 0xFF;
+        int adr = fullAdr & 0xFFFF;
+        switch (_fastCartridgeDispatch)
         {
-            if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
-            {
-                int idx = ((bank & 0x1f) << 13) | (adr & 0x1fff);
-                _sram[SramIndex(idx)] = value;
+            case FastCartridgeDispatch.Base:
+                WriteBasePage(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.Cx4:
+                WriteFastCx4(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.Dsp1:
+                WriteFastDsp1(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.SuperFx:
+                WriteFastSuperFx(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.Sa1:
+                WriteFastSa1(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.Sdd1:
+                WriteFastSdd1(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.St010:
+                WriteFastSt010(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.St011:
+                WriteFastSt011(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.St018:
+                WriteFastSt018(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.Obc1:
+                WriteFastObc1(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.Srtc:
+                WriteFastSrtc(bank, adr, value);
+                return;
+            case FastCartridgeDispatch.Spc7110:
+                WriteFastSpc7110(bank, adr, value);
+                return;
+            default:
+                Write(bank, adr, value);
+                return;
+        }
+    }
+
+    private byte ReadFastSa1(int bank, int adr)
+    {
+        byte? sa1Value = _sa1!.SnesRead((uint)((bank << 16) | (adr & 0xFFFF)));
+        return sa1Value ?? ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastSa1(int bank, int adr, byte value)
+    {
+        if (_sa1!.TrySnesWrite((uint)((bank << 16) | (adr & 0xFFFF)), value, out bool touchesBwram))
+        {
+            if (_hasSram && touchesBwram)
                 _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
-            }
             return;
         }
 
-        if (adr < 0x8000 && bank >= 0x70 && bank < 0x7e && _hasSram)
+        WriteBasePage(bank, adr, value);
+    }
+
+    private byte ReadFastSuperFx(int bank, int adr)
+    {
+        uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+        if (_superFx!.Read(address, out byte value))
+            return value;
+        if (IsSuperFxMappedAddress(bank, adr))
+            return GetOpenBusByte();
+        return ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastSuperFx(int bank, int adr, byte value)
+    {
+        uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+        if (_superFx!.Write(address, value, out bool wroteRam))
         {
-            int idx = ((bank - 0x70) << 15) | (adr & 0x7fff);
-            _sram[SramIndex(idx)] = value;
+            if (wroteRam && _hasSram)
+                _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            return;
+        }
+
+        WriteBasePage(bank, adr, value);
+    }
+
+    private byte ReadFastSdd1(int bank, int adr)
+    {
+        return _sdd1!.Read((uint)((bank << 16) | (adr & 0xFFFF)), out byte value)
+            ? value
+            : ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastSdd1(int bank, int adr, byte value)
+    {
+        if (_sdd1!.Write((uint)((bank << 16) | (adr & 0xFFFF)), value, out bool wroteRam))
+        {
+            if (wroteRam && _hasSram)
+                _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            return;
+        }
+
+        WriteBasePage(bank, adr, value);
+    }
+
+    private byte ReadFastSpc7110(int bank, int adr)
+    {
+        return _spc7110!.Read((uint)((bank << 16) | (adr & 0xFFFF)), out byte value)
+            ? value
+            : ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastSpc7110(int bank, int adr, byte value)
+    {
+        if (_spc7110!.Write((uint)((bank << 16) | (adr & 0xFFFF)), value, out bool wroteRam))
+        {
+            if (wroteRam && _hasSram)
+                _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            else if (_spc7110.Rtc != null && ((bank & 0x7F) <= 0x3F) && (adr == 0x4840 || adr == 0x4841))
+                SaveSpc7110Rtc();
+            return;
+        }
+
+        WriteBasePage(bank, adr, value);
+    }
+
+    private byte ReadFastCx4(int bank, int adr)
+    {
+        if ((bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
+            return _cx4!.Read(adr);
+        if (adr < 0x8000 && _hasSram && ((bank >= 0x70 && bank < 0x7e) || bank >= 0xf0))
+            return _sram[SramIndex(((bank & 0x0f) << 15) | (adr & 0x7fff))];
+
+        int maskedBank = bank & 0x7f;
+        return adr >= 0x8000 || maskedBank >= 0x40
+            ? _data[((maskedBank & (_banks - 1)) << 15) | (adr & 0x7fff)]
+            : GetOpenBusByte();
+    }
+
+    private void WriteFastCx4(int bank, int adr, byte value)
+    {
+        if ((bank & 0x7f) < 0x40 && adr >= 0x6000 && adr < 0x8000)
+        {
+            _cx4!.Write(adr, value);
+            return;
+        }
+        if (adr < 0x8000 && _hasSram && ((bank >= 0x70 && bank < 0x7e) || bank >= 0xf0))
+        {
+            _sram[SramIndex(((bank & 0x0f) << 15) | (adr & 0x7fff))] = value;
             _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
         }
+    }
+
+    private byte ReadFastDsp1(int bank, int adr)
+    {
+        return TryReadDsp1(bank, adr, out byte value)
+            ? value
+            : ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastDsp1(int bank, int adr, byte value)
+    {
+        if (!TryWriteDsp1(bank, adr, value))
+            WriteBasePage(bank, adr, value);
+    }
+
+    private byte ReadFastSt010(int bank, int adr)
+    {
+        return TryReadSt010(bank, adr, out byte value)
+            ? value
+            : ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastSt010(int bank, int adr, byte value)
+    {
+        if (!TryWriteSt010(bank, adr, value))
+            WriteBasePage(bank, adr, value);
+    }
+
+    private byte ReadFastSt011(int bank, int adr)
+    {
+        return TryReadSt011(bank, adr, out byte value)
+            ? value
+            : ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastSt011(int bank, int adr, byte value)
+    {
+        if (!TryWriteSt011(bank, adr, value))
+            WriteBasePage(bank, adr, value);
+    }
+
+    private byte ReadFastSt018(int bank, int adr)
+    {
+        return TryReadSt018(bank, adr, out byte value)
+            ? value
+            : ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastSt018(int bank, int adr, byte value)
+    {
+        if (!TryWriteSt018(bank, adr, value))
+            WriteBasePage(bank, adr, value);
+    }
+
+    private byte ReadFastObc1(int bank, int adr)
+    {
+        return TryReadObc1(bank, adr, out byte value)
+            ? value
+            : ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastObc1(int bank, int adr, byte value)
+    {
+        if (!TryWriteObc1(bank, adr, value))
+            WriteBasePage(bank, adr, value);
+    }
+
+    private byte ReadFastSrtc(int bank, int adr)
+    {
+        return TryReadSrtc(bank, adr, out byte value)
+            ? value
+            : ReadBasePage(bank, adr, traceExactDspRead: false);
+    }
+
+    private void WriteFastSrtc(int bank, int adr, byte value)
+    {
+        if (!TryWriteSrtc(bank, adr, value))
+            WriteBasePage(bank, adr, value);
+    }
+
+    private int SramIndex(int idx)
+    {
+        return _sramSize <= 0 ? 0 : idx % _sramSize;
+    }
+
+    private byte ReadBasePage(int bank, int adr, bool traceExactDspRead)
+    {
+        int pageIndex = (bank << 8) | ((adr >> 8) & 0xFF);
+        int offset = adr & 0xFF;
+        byte value = (BasePageKind)_basePageKind[pageIndex] switch
+        {
+            BasePageKind.RomDirect => _data[_basePageBase[pageIndex] + offset],
+            BasePageKind.RomWrapped => _data[(_basePageBase[pageIndex] + offset) % _data.Length],
+            BasePageKind.SramDirect => _sram[_basePageBase[pageIndex] + offset],
+            BasePageKind.SramWrapped => _sram[(_basePageBase[pageIndex] + offset) % _sramSize],
+            _ => GetOpenBusByte()
+        };
+
+        if (traceExactDspRead)
+        {
+            _traceDsp1ExactReadCount++;
+            Console.WriteLine($"[DSP1-EXACT-RD] addr=0x{bank:X2}{adr:X4} source={GetExactBaseReadSource((BasePageKind)_basePageKind[pageIndex])} val=0x{value:X2}");
+        }
+
+        return value;
+    }
+
+    private void WriteBasePage(int bank, int adr, byte value)
+    {
+        int pageIndex = (bank << 8) | ((adr >> 8) & 0xFF);
+        int offset = adr & 0xFF;
+        switch ((BasePageKind)_basePageKind[pageIndex])
+        {
+            case BasePageKind.SramDirect:
+                _sram[_basePageBase[pageIndex] + offset] = value;
+                _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                break;
+            case BasePageKind.SramWrapped:
+                _sram[(_basePageBase[pageIndex] + offset) % _sramSize] = value;
+                _sRAMTimer ??= new Timer(SaveSRAM, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                break;
+        }
+    }
+
+    private string GetExactBaseReadSource(BasePageKind kind)
+    {
+        if (kind == BasePageKind.OpenBus)
+            return Header.IsHiRom ? "OpenBusHi" : "OpenBus";
+        if (kind == BasePageKind.SramDirect || kind == BasePageKind.SramWrapped)
+            return "SRAM";
+        if (Header.IsExHiRom)
+            return "ExHiROM";
+        if (Header.IsHiRom)
+            return "HiROM";
+        return "LoROM";
     }
 
     private bool IsNearDspPort(int bank, int adr)
@@ -1250,15 +1522,178 @@ public class ROM : IROM
         }
     }
 
+    private void ConfigureBasePageTable()
+    {
+        _basePageKind = new byte[0x10000];
+        _basePageBase = new int[0x10000];
+
+        for (int bank = 0; bank < 0x100; bank++)
+        {
+            int bankBase = bank << 8;
+            for (int page = 0; page < 0x100; page++)
+            {
+                int pageIndex = bankBase | page;
+                int adr = page << 8;
+                if (Header.IsExHiRom)
+                {
+                    ConfigureExHiRomBasePage(pageIndex, bank, adr);
+                }
+                else if (Header.IsHiRom)
+                {
+                    ConfigureHiRomBasePage(pageIndex, bank, adr);
+                }
+                else
+                {
+                    ConfigureLoRomBasePage(pageIndex, bank, adr);
+                }
+            }
+        }
+    }
+
+    private void ConfigureLoRomBasePage(int pageIndex, int bank, int adr)
+    {
+        if (adr < 0x8000 && bank >= 0x70 && bank < 0x7e && _hasSram)
+        {
+            ConfigureSramPage(pageIndex, ((bank - 0x70) << 15) | (adr & 0x7fff));
+            return;
+        }
+
+        ConfigureRomPage(pageIndex, (uint)(((bank & (_banks - 1)) << 15) | (adr & 0x7fff)));
+    }
+
+    private void ConfigureHiRomBasePage(int pageIndex, int bank, int adr)
+    {
+        if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsHiRomSramBank(bank))
+        {
+            ConfigureSramPage(pageIndex, ((bank & 0x1f) << 13) | (adr & 0x1fff));
+            return;
+        }
+
+        if (adr >= 0x8000 || (bank >= 0x40 && bank < 0x7e) || bank >= 0xc0)
+        {
+            ConfigureRomPage(pageIndex, (uint)(((bank & 0x7f) << 16) | (adr & 0xffff)));
+        }
+    }
+
+    private void ConfigureExHiRomBasePage(int pageIndex, int bank, int adr)
+    {
+        if (adr >= 0x6000 && adr < 0x8000 && _hasSram && IsExHiRomSramBank(bank))
+        {
+            ConfigureSramPage(pageIndex, ((bank & 0x1f) << 13) | (adr & 0x1fff));
+            return;
+        }
+
+        if (adr >= 0x8000 || ((bank >= 0x40 && bank < 0x7e) || bank >= 0xC0))
+        {
+            uint address = (uint)((bank << 16) | (adr & 0xFFFF));
+            uint mapped = (address & 0x3FFFFF) | (((address >> 1) & 0x400000) ^ 0x400000);
+            ConfigureRomPage(pageIndex, mapped);
+        }
+    }
+
+    private void ConfigureRomPage(int pageIndex, uint mappedAddress)
+    {
+        if (_data.Length == 0)
+            return;
+
+        int pageBase = _romLengthIsPowerOfTwo
+            ? (int)(mappedAddress & _romLengthMask)
+            : (int)(mappedAddress % (uint)_data.Length);
+        _basePageBase[pageIndex] = pageBase;
+        _basePageKind[pageIndex] = (byte)(pageBase + 0x100 <= _data.Length
+            ? BasePageKind.RomDirect
+            : BasePageKind.RomWrapped);
+    }
+
+    private void ConfigureSramPage(int pageIndex, int mappedAddress)
+    {
+        if (_sramSize <= 0)
+            return;
+
+        int pageBase = mappedAddress % _sramSize;
+        _basePageBase[pageIndex] = pageBase;
+        _basePageKind[pageIndex] = (byte)(pageBase + 0x100 <= _sramSize
+            ? BasePageKind.SramDirect
+            : BasePageKind.SramWrapped);
+    }
+
+    private void ConfigureFastCartridgeDispatch()
+    {
+        int count = 0;
+        FastCartridgeDispatch dispatch = FastCartridgeDispatch.Base;
+
+        if (_cx4 != null)
+        {
+            dispatch = FastCartridgeDispatch.Cx4;
+            count++;
+        }
+        if (_dsp1 != null)
+        {
+            dispatch = FastCartridgeDispatch.Dsp1;
+            count++;
+        }
+        if (_superFx != null)
+        {
+            dispatch = FastCartridgeDispatch.SuperFx;
+            count++;
+        }
+        if (_sa1 != null)
+        {
+            dispatch = FastCartridgeDispatch.Sa1;
+            count++;
+        }
+        if (_sdd1 != null)
+        {
+            dispatch = FastCartridgeDispatch.Sdd1;
+            count++;
+        }
+        if (_st010 != null)
+        {
+            dispatch = FastCartridgeDispatch.St010;
+            count++;
+        }
+        if (_st011 != null)
+        {
+            dispatch = FastCartridgeDispatch.St011;
+            count++;
+        }
+        if (_st018 != null)
+        {
+            dispatch = FastCartridgeDispatch.St018;
+            count++;
+        }
+        if (_obc1 != null)
+        {
+            dispatch = FastCartridgeDispatch.Obc1;
+            count++;
+        }
+        if (_srtc != null)
+        {
+            dispatch = FastCartridgeDispatch.Srtc;
+            count++;
+        }
+        if (_spc7110 != null)
+        {
+            dispatch = FastCartridgeDispatch.Spc7110;
+            count++;
+        }
+
+        _fastCartridgeDispatch = count <= 1 ? dispatch : FastCartridgeDispatch.Mixed;
+        _fastCartridgeRequiresSlowPath =
+            TraceCx4Bus ||
+            TraceDsp1Bus ||
+            TraceDsp1NearMiss ||
+            TraceDsp1ExactReads ||
+            TraceReadPcWindow ||
+            TraceSnesVectors ||
+            TraceSuperFxBlockedReads ||
+            Sa1Trace.IsEnabled ||
+            _traceSa1BwramWatch;
+    }
+
     private byte ReadPlainMapped(int bank, int adr, Func<int, int> sramIndex)
     {
-        return _plainReadDispatch switch
-        {
-            PlainReadDispatch.LoRom => ReadPlainLoRom(bank, adr, sramIndex),
-            PlainReadDispatch.HiRom => ReadPlainHiRom(bank, adr, sramIndex),
-            PlainReadDispatch.ExHiRom => ReadPlainExHiRom(bank, adr, sramIndex),
-            _ => GetOpenBusByte(),
-        };
+        return ReadBasePage(bank, adr, traceExactDspRead: false);
     }
 
     private byte ReadPlainLoRom(int bank, int adr, Func<int, int> sramIndex)

@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace KSNES.Specialchips.SA1;
 
 internal enum BwramMapSource
@@ -24,12 +26,21 @@ internal static class BwramBitmapBitsExtensions
 
 internal sealed class Sa1Mmc
 {
+    private enum RomMapKind : byte
+    {
+        None,
+        LoRom,
+        Linear
+    }
+
     private const uint DefaultBankCAddr = 0x000000;
     private const uint DefaultBankDAddr = 0x100000;
     private const uint DefaultBankEAddr = 0x200000;
     private const uint DefaultBankFAddr = 0x300000;
     private static readonly bool TraceBwramWatch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal);
+    private readonly uint[] _romBankBase = new uint[256];
+    private readonly byte[] _romBankKind = new byte[256];
 
     public uint BankCBaseAddr = DefaultBankCAddr;
     public bool BankCLoRomMapped;
@@ -48,22 +59,43 @@ internal sealed class Sa1Mmc
     public BwramMapSource Sa1BwramSource = BwramMapSource.Normal;
     public BwramBitmapBits BwramBitmapFormat = BwramBitmapBits.Four;
 
+    public Sa1Mmc()
+    {
+        System.Array.Fill(_romBankKind, (byte)RomMapKind.None);
+        WriteCxb(0x00);
+        WriteDxb(0x01);
+        WriteExb(0x02);
+        WriteFxb(0x03);
+    }
+
     public uint? MapRomAddress(uint address)
     {
-        uint bank = (address >> 16) & 0xFF;
-        uint offset = address & 0xFFFF;
-        return (bank, offset) switch
+        return TryMapRomAddress(address, out uint romAddress) ? romAddress : (uint?)null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryMapRomAddress(uint address, out uint romAddress)
+    {
+        int bank = (int)((address >> 16) & 0xFF);
+        RomMapKind kind = (RomMapKind)_romBankKind[bank];
+        switch (kind)
         {
-            (>= 0x00 and <= 0x1F, >= 0x8000) => LoRomMapAddress(LoRomBankCAddr, address),
-            (>= 0x20 and <= 0x3F, >= 0x8000) => LoRomMapAddress(LoRomBankDAddr, address),
-            (>= 0x80 and <= 0x9F, >= 0x8000) => LoRomMapAddress(LoRomBankEAddr, address),
-            (>= 0xA0 and <= 0xBF, >= 0x8000) => LoRomMapAddress(LoRomBankFAddr, address),
-            (>= 0xC0 and <= 0xCF, _) => BankCBaseAddr | (address & 0xFFFFF),
-            (>= 0xD0 and <= 0xDF, _) => BankDBaseAddr | (address & 0xFFFFF),
-            (>= 0xE0 and <= 0xEF, _) => BankEBaseAddr | (address & 0xFFFFF),
-            (>= 0xF0 and <= 0xFF, _) => BankFBaseAddr | (address & 0xFFFFF),
-            _ => (uint?)null
-        };
+            case RomMapKind.LoRom:
+                if ((address & 0xFFFF) < 0x8000)
+                {
+                    romAddress = 0;
+                    return false;
+                }
+
+                romAddress = _romBankBase[bank] | (address & 0x7FFF) | ((address & 0x1F0000) >> 1);
+                return true;
+            case RomMapKind.Linear:
+                romAddress = _romBankBase[bank] | (address & 0xFFFFF);
+                return true;
+            default:
+                romAddress = 0;
+                return false;
+        }
     }
 
     public void WriteCxb(byte value)
@@ -71,6 +103,8 @@ internal sealed class Sa1Mmc
         BankCBaseAddr = (uint)(value & 0x07) << 20;
         BankCLoRomMapped = value.Bit(7);
         LoRomBankCAddr = BankCLoRomMapped ? BankCBaseAddr : DefaultBankCAddr;
+        UpdateLoRomBanks(0x00, LoRomBankCAddr);
+        UpdateLinearBanks(0xC0, BankCBaseAddr);
     }
 
     public void WriteDxb(byte value)
@@ -78,6 +112,8 @@ internal sealed class Sa1Mmc
         BankDBaseAddr = (uint)(value & 0x07) << 20;
         BankDLoRomMapped = value.Bit(7);
         LoRomBankDAddr = BankDLoRomMapped ? BankDBaseAddr : DefaultBankDAddr;
+        UpdateLoRomBanks(0x20, LoRomBankDAddr);
+        UpdateLinearBanks(0xD0, BankDBaseAddr);
     }
 
     public void WriteExb(byte value)
@@ -85,6 +121,8 @@ internal sealed class Sa1Mmc
         BankEBaseAddr = (uint)(value & 0x07) << 20;
         BankELoRomMapped = value.Bit(7);
         LoRomBankEAddr = BankELoRomMapped ? BankEBaseAddr : DefaultBankEAddr;
+        UpdateLoRomBanks(0x80, LoRomBankEAddr);
+        UpdateLinearBanks(0xE0, BankEBaseAddr);
     }
 
     public void WriteFxb(byte value)
@@ -92,6 +130,8 @@ internal sealed class Sa1Mmc
         BankFBaseAddr = (uint)(value & 0x07) << 20;
         BankFLoRomMapped = value.Bit(7);
         LoRomBankFAddr = BankFLoRomMapped ? BankFBaseAddr : DefaultBankFAddr;
+        UpdateLoRomBanks(0xA0, LoRomBankFAddr);
+        UpdateLinearBanks(0xF0, BankFBaseAddr);
     }
 
     public void WriteBmaps(byte value)
@@ -121,5 +161,25 @@ internal sealed class Sa1Mmc
     private static uint LoRomMapAddress(uint baseAddr, uint address)
     {
         return baseAddr | (address & 0x7FFF) | ((address & 0x1F0000) >> 1);
+    }
+
+    private void UpdateLoRomBanks(int startBank, uint baseAddr)
+    {
+        for (int i = 0; i < 0x20; i++)
+        {
+            int bank = startBank + i;
+            _romBankBase[bank] = baseAddr;
+            _romBankKind[bank] = (byte)RomMapKind.LoRom;
+        }
+    }
+
+    private void UpdateLinearBanks(int startBank, uint baseAddr)
+    {
+        for (int i = 0; i < 0x10; i++)
+        {
+            int bank = startBank + i;
+            _romBankBase[bank] = baseAddr;
+            _romBankKind[bank] = (byte)RomMapKind.Linear;
+        }
     }
 }

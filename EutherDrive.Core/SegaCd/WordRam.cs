@@ -62,7 +62,6 @@ public sealed class WordRam
     private int _subBufferedCount;
     private bool _subBlockedRead;
     private bool _swapRequest;
-
     private WordRamMode _mode = WordRamMode.TwoM;
     private WordRamPriorityMode _priorityMode = WordRamPriorityMode.Off;
     private ScdCpu _owner2m = ScdCpu.Main;
@@ -103,9 +102,6 @@ public sealed class WordRam
         if (_mode == WordRamMode.TwoM)
         {
             dmna = _owner2m == ScdCpu.Sub;
-            // RET bit: 1 if Sub CPU has returned the Word RAM, or if Main CPU owns it.
-            // When Sub CPU requests Word RAM, it writes 0 to RET, which we might need to track if we want to model the exact handshake.
-            // For now, standard emulation practice: if Main CPU owns it, RET=1. If Sub CPU owns it, RET=0 until Sub CPU returns it.
             ret = _owner2m == ScdCpu.Main;
         }
         else
@@ -121,8 +117,6 @@ public sealed class WordRam
     public void MainCpuWriteControl(byte value)
     {
         bool dmna = (value & 0x02) != 0;
-        // In 2M mode, DMNA=1 hands Word RAM to the sub CPU.
-        // DMNA=0 does not immediately give it back to the main CPU.
         if (dmna)
         {
             _owner2m = ScdCpu.Sub;
@@ -142,8 +136,6 @@ public sealed class WordRam
         _mode = (value & 0x04) != 0 ? WordRamMode.OneM : WordRamMode.TwoM;
         bool ret = (value & 0x01) != 0;
 
-        // RET=1 always returns 2M Word RAM ownership to the main CPU, even
-        // when the register write also switches the hardware into 1M mode.
         if (ret)
         {
             _owner2m = ScdCpu.Main;

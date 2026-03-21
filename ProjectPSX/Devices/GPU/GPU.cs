@@ -617,10 +617,16 @@ namespace ProjectPSX.Devices {
             int genericFlatShadeR = 0;
             int genericFlatShadeG = 0;
             int genericFlatShadeB = 0;
+            Span<ushort> genericFlatModulateR = default;
+            Span<ushort> genericFlatModulateG = default;
+            Span<ushort> genericFlatModulateB = default;
             if (textured && !primitive.isRawTextured && !shaded) {
                 genericFlatShadeR = ((int)c0 >> 16) & 0xFF;
                 genericFlatShadeG = ((int)c0 >> 8) & 0xFF;
                 genericFlatShadeB = (int)c0 & 0xFF;
+                genericFlatModulateR = modulate1555RByShade.AsSpan(genericFlatShadeR << 5, 32);
+                genericFlatModulateG = modulate1555GByShade.AsSpan(genericFlatShadeG << 5, 32);
+                genericFlatModulateB = modulate1555BByShade.AsSpan(genericFlatShadeB << 5, 32);
             }
 
             if (flatOpaqueFill) {
@@ -1306,6 +1312,9 @@ namespace ProjectPSX.Devices {
                 int baseShadeR = (baseColor >> 16) & 0xFF;
                 int baseShadeG = (baseColor >> 8) & 0xFF;
                 int baseShadeB = baseColor & 0xFF;
+                Span<ushort> baseModulateR = modulate1555RByShade.AsSpan(baseShadeR << 5, 32);
+                Span<ushort> baseModulateG = modulate1555GByShade.AsSpan(baseShadeG << 5, 32);
+                Span<ushort> baseModulateB = modulate1555BByShade.AsSpan(baseShadeB << 5, 32);
 
                 if (textureWindowIdentity) {
                     switch (textureDepth) {
@@ -1326,7 +1335,7 @@ namespace ProjectPSX.Devices {
 
                                         if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         }
                                     }
 
@@ -1361,7 +1370,7 @@ namespace ProjectPSX.Devices {
 
                                         if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         }
                                     }
 
@@ -1396,7 +1405,7 @@ namespace ProjectPSX.Devices {
 
                                         if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         }
                                     }
 
@@ -1434,7 +1443,7 @@ namespace ProjectPSX.Devices {
 
                                         if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         }
                                     }
 
@@ -1469,7 +1478,7 @@ namespace ProjectPSX.Devices {
 
                                         if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         }
                                     }
 
@@ -1504,7 +1513,7 @@ namespace ProjectPSX.Devices {
 
                                         if (rawTexel != 0) {
                                             int pixelIndex = rowBase + x;
-                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                            vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         }
                                     }
 
@@ -1601,7 +1610,7 @@ namespace ProjectPSX.Devices {
                             } else if (shaded) {
                                 packedTexturedColor = ModulateRawTexel1555(rawTexel, 0, shadeRValue, shadeGValue, shadeBValue);
                             } else {
-                                packedTexturedColor = ModulateRawTexel1555(rawTexel, 0, genericFlatShadeR, genericFlatShadeG, genericFlatShadeB);
+                                packedTexturedColor = ModulateRawTexel1555(rawTexel, 0, genericFlatModulateR, genericFlatModulateG, genericFlatModulateB);
                             }
 
                             if (primitive.isSemiTransparent) {
@@ -1842,6 +1851,9 @@ AdvanceGenericTrianglePixel:
             int baseShadeR = (baseColor >> 16) & 0xFF;
             int baseShadeG = (baseColor >> 8) & 0xFF;
             int baseShadeB = baseColor & 0xFF;
+            Span<ushort> baseModulateR = modulate1555RByShade.AsSpan(baseShadeR << 5, 32);
+            Span<ushort> baseModulateG = modulate1555GByShade.AsSpan(baseShadeG << 5, 32);
+            Span<ushort> baseModulateB = modulate1555BByShade.AsSpan(baseShadeB << 5, 32);
 
             switch (primitive.depth) {
                 case 0:
@@ -1857,7 +1869,7 @@ AdvanceGenericTrianglePixel:
                                 ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                     if (semiTranspMode >= 0) {
                                         WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
                                     } else {
@@ -1891,7 +1903,7 @@ AdvanceGenericTrianglePixel:
                                 ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                     if (semiTranspMode >= 0) {
                                         WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
                                     } else {
@@ -1925,7 +1937,7 @@ AdvanceGenericTrianglePixel:
                                 ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, texelX & 0xFF, texelY & 0xFF, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                     if (semiTranspMode >= 0) {
                                         WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
                                     } else {
@@ -2355,6 +2367,9 @@ AdvanceGenericTrianglePixel:
             int baseShadeR = (baseColor >> 16) & 0xFF;
             int baseShadeG = (baseColor >> 8) & 0xFF;
             int baseShadeB = baseColor & 0xFF;
+            Span<ushort> baseModulateR = modulate1555RByShade.AsSpan(baseShadeR << 5, 32);
+            Span<ushort> baseModulateG = modulate1555GByShade.AsSpan(baseShadeG << 5, 32);
+            Span<ushort> baseModulateB = modulate1555BByShade.AsSpan(baseShadeB << 5, 32);
 
             switch (primitive.depth) {
                 case 0:
@@ -2370,7 +2385,7 @@ AdvanceGenericTrianglePixel:
                                 ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                     if (semiTranspMode >= 0) {
                                         WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
                                     } else {
@@ -2404,7 +2419,7 @@ AdvanceGenericTrianglePixel:
                                 ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), clutX, clutRowBase, textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                     if (semiTranspMode >= 0) {
                                         WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
                                     } else {
@@ -2438,7 +2453,7 @@ AdvanceGenericTrianglePixel:
                                 ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, MaskTexelX(texelX), MaskTexelY(texelY), textureBaseX, textureBaseY);
 
                                 if (rawTexel != 0) {
-                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                    ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                     if (semiTranspMode >= 0) {
                                         WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, semiTranspMode);
                                     } else {
@@ -3112,10 +3127,16 @@ AdvanceGenericTrianglePixel:
             int genericRectShadeR = 0;
             int genericRectShadeG = 0;
             int genericRectShadeB = 0;
+            Span<ushort> genericRectModulateR = default;
+            Span<ushort> genericRectModulateG = default;
+            Span<ushort> genericRectModulateB = default;
             if (primitive.isTextured && !primitive.isRawTextured) {
                 genericRectShadeR = (baseColor >> 16) & 0xFF;
                 genericRectShadeG = (baseColor >> 8) & 0xFF;
                 genericRectShadeB = baseColor & 0xFF;
+                genericRectModulateR = modulate1555RByShade.AsSpan(genericRectShadeR << 5, 32);
+                genericRectModulateG = modulate1555GByShade.AsSpan(genericRectShadeG << 5, 32);
+                genericRectModulateB = modulate1555BByShade.AsSpan(genericRectShadeB << 5, 32);
             }
 
             if (flatOpaqueFill) {
@@ -3324,6 +3345,9 @@ AdvanceGenericTrianglePixel:
                 int baseShadeR = (baseColor >> 16) & 0xFF;
                 int baseShadeG = (baseColor >> 8) & 0xFF;
                 int baseShadeB = baseColor & 0xFF;
+                Span<ushort> baseModulateR = modulate1555RByShade.AsSpan(baseShadeR << 5, 32);
+                Span<ushort> baseModulateG = modulate1555GByShade.AsSpan(baseShadeG << 5, 32);
+                Span<ushort> baseModulateB = modulate1555BByShade.AsSpan(baseShadeB << 5, 32);
 
                 if (textureWindowIdentity) {
                     switch (textureDepth) {
@@ -3340,7 +3364,7 @@ AdvanceGenericTrianglePixel:
                                     ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         if (primitive.isSemiTransparent) {
                                             WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
                                         } else {
@@ -3365,7 +3389,7 @@ AdvanceGenericTrianglePixel:
                                     ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         if (primitive.isSemiTransparent) {
                                             WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
                                         } else {
@@ -3390,7 +3414,7 @@ AdvanceGenericTrianglePixel:
                                     ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, u & 0xFF, wrappedV, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         if (primitive.isSemiTransparent) {
                                             WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
                                         } else {
@@ -3418,7 +3442,7 @@ AdvanceGenericTrianglePixel:
                                     ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, MaskTexelX(u), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         if (primitive.isSemiTransparent) {
                                             WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
                                         } else {
@@ -3443,7 +3467,7 @@ AdvanceGenericTrianglePixel:
                                     ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, MaskTexelX(u), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         if (primitive.isSemiTransparent) {
                                             WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
                                         } else {
@@ -3468,7 +3492,7 @@ AdvanceGenericTrianglePixel:
                                     ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, MaskTexelX(u), maskedV, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseShadeR, baseShadeG, baseShadeB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, baseModulateR, baseModulateG, baseModulateB);
                                         if (primitive.isSemiTransparent) {
                                             WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
                                         } else {
@@ -3521,7 +3545,7 @@ AdvanceGenericTrianglePixel:
 
                         ushort packedTexturedColor = primitive.isRawTextured
                             ? rawTexel
-                            : ModulateRawTexel1555(rawTexel, 0, genericRectShadeR, genericRectShadeG, genericRectShadeB);
+                            : ModulateRawTexel1555(rawTexel, 0, genericRectModulateR, genericRectModulateG, genericRectModulateB);
 
                         if (primitive.isSemiTransparent) {
                             WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, packedTexturedColor, genericMaskBit1555, primitive.semiTransparencyMode);

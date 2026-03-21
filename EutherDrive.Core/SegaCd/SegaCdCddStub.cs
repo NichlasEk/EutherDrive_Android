@@ -624,7 +624,13 @@ public sealed class SegaCdCddStub
         switch (_status[1])
         {
             case 0x0F:
-                if (_state is not State.Seeking and not State.TrackSkipping and not State.TrayOpening and not State.TrayOpen and not State.TrayClosing and not State.NoDisc)
+                if (_state is not State.Seeking
+                    and not State.PreparingToPlay
+                    and not State.TrackSkipping
+                    and not State.TrayOpening
+                    and not State.TrayOpen
+                    and not State.TrayClosing
+                    and not State.NoDisc)
                 {
                     _status[1] = 0x00;
                     WriteTimeAndFlags(CurrentTime());
