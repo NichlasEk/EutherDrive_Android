@@ -2337,9 +2337,9 @@ AdvanceTrianglePixel:
             bool checkMask = checkMaskBeforeDraw;
             int maskBits = maskWhileDrawing << 24;
             bool flatOpaqueFill = !primitive.isTextured && !primitive.isSemiTransparent;
-            bool opaqueTexturedFastPath = primitive.isTextured && !primitive.isSemiTransparent && !checkMask;
+            bool texturedFastPath = primitive.isTextured && !checkMask;
             bool passthroughTexturedFastPath =
-                opaqueTexturedFastPath &&
+                texturedFastPath &&
                 (primitive.isRawTextured || (baseColor & 0x00FF_FFFF) == IdentityTextureModulationColor);
 
             if (flatOpaqueFill) {
@@ -2392,8 +2392,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, primitive.semiTransparencyMode);
+                                        } else {
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2413,8 +2417,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, primitive.semiTransparencyMode);
+                                        } else {
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2434,8 +2442,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, u & 0xFF, wrappedV, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, primitive.semiTransparencyMode);
+                                        } else {
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2458,8 +2470,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, primitive.semiTransparencyMode);
+                                        } else {
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2479,8 +2495,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, primitive.semiTransparencyMode);
+                                        } else {
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2500,8 +2520,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        ushort packedTexel = (ushort)(rawTexel | maskBit1555);
-                                        vram1555Bits[pixelIndex] = packedTexel;
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, rawTexel, maskBit1555, primitive.semiTransparencyMode);
+                                        } else {
+                                            ushort packedTexel = (ushort)(rawTexel | maskBit1555);
+                                            vram1555Bits[pixelIndex] = packedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2514,7 +2538,7 @@ AdvanceTrianglePixel:
                 return;
             }
 
-            if (opaqueTexturedFastPath) {
+            if (texturedFastPath) {
                 int clutX = primitive.clut.x;
                 int clutRowBase = primitive.clut.y << 10;
                 int textureBaseX = primitive.textureBase.x;
@@ -2541,7 +2565,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
+                                        } else {
+                                            vram1555Bits[pixelIndex] = modulatedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2561,7 +2590,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, u & 0xFF, wrappedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
+                                        } else {
+                                            vram1555Bits[pixelIndex] = modulatedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2581,7 +2615,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, u & 0xFF, wrappedV, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
+                                        } else {
+                                            vram1555Bits[pixelIndex] = modulatedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2604,7 +2643,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw4Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
+                                        } else {
+                                            vram1555Bits[pixelIndex] = modulatedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2624,7 +2668,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw8Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, clutX, clutRowBase, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
+                                        } else {
+                                            vram1555Bits[pixelIndex] = modulatedTexel;
+                                        }
                                     }
 
                                     u += uStep;
@@ -2644,7 +2693,12 @@ AdvanceTrianglePixel:
                                     ushort rawTexel = GetTexelRaw16Fast(vram1555Bits, maskTexelAxis(u, preMaskX, postMaskX), maskedV, textureBaseX, textureBaseY);
                                     if (rawTexel != 0) {
                                         int pixelIndex = rowBase + x;
-                                        vram1555Bits[pixelIndex] = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        ushort modulatedTexel = ModulateRawTexel1555(rawTexel, maskBit1555, modulateR, modulateG, modulateB);
+                                        if (primitive.isSemiTransparent) {
+                                            WriteSemiTransparentTexturedRawPixel(vram1555Bits, pixelIndex, modulatedTexel, 0, primitive.semiTransparencyMode);
+                                        } else {
+                                            vram1555Bits[pixelIndex] = modulatedTexel;
+                                        }
                                     }
 
                                     u += uStep;
