@@ -392,11 +392,12 @@ public class PPU : IPPU
         _tileBufferP2 = new int[4];
         _tileBufferP3 = new int[4];
         _tileBufferP4 = new int[4];
-        _lastTileFetchedX = [-1, -1, -1, -1];
-        _lastTileFetchedY = [-1, -1, -1, -1];
         _optHorBuffer = new int[2];
         _optVerBuffer = new int[2];
-        _lastOrigTileX = [-1, -1];
+        _lastTileFetchedX = new int[4];
+        _lastTileFetchedY = new int[4];
+        _lastOrigTileX = new int[2];
+        ResetLineCaches();
     }
 
     public void SetSystem(ISNESSystem snes)
@@ -1133,11 +1134,7 @@ public class PPU : IPPU
             {
                 GenerateMode7Coords(screenY);
             }
-            _lastTileFetchedX = [-1, -1, -1, -1];
-            _lastTileFetchedY = [-1, -1, -1, -1];
-            _optHorBuffer = [0, 0];
-            _optVerBuffer = [0, 0];
-            _lastOrigTileX = [-1, -1];
+            ResetLineCaches();
             if (trueHiResOutput && !_frameTrueHiResOutput)
             {
                 ExpandBufferedLinesToHiRes(screenY);
@@ -1256,6 +1253,24 @@ public class PPU : IPPU
                 EvaluateSprites(line);
             }
         }
+    }
+
+    private void ResetLineCaches()
+    {
+        _lastTileFetchedX[0] = -1;
+        _lastTileFetchedX[1] = -1;
+        _lastTileFetchedX[2] = -1;
+        _lastTileFetchedX[3] = -1;
+        _lastTileFetchedY[0] = -1;
+        _lastTileFetchedY[1] = -1;
+        _lastTileFetchedY[2] = -1;
+        _lastTileFetchedY[3] = -1;
+        _optHorBuffer[0] = 0;
+        _optHorBuffer[1] = 0;
+        _optVerBuffer[0] = 0;
+        _optVerBuffer[1] = 0;
+        _lastOrigTileX[0] = -1;
+        _lastOrigTileX[1] = -1;
     }
 
     private (ushort, int, int) GetColor(bool sub, int x, int y) 

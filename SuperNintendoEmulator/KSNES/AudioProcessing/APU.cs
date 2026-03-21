@@ -52,6 +52,7 @@ public class APU : IAPU
     private const int OutputFrequency = 32040;
     private const int TargetFrequency = 44100;
     private const int ResampleRingSize = 8192;
+    private const int ResampleRingMask = ResampleRingSize - 1;
     private readonly float[] _resampleRingL = new float[ResampleRingSize];
     private readonly float[] _resampleRingR = new float[ResampleRingSize];
     private int _resampleRead;
@@ -384,37 +385,59 @@ public class APU : IAPU
         if (outCount <= 0)
             return;
 
+        float[] ringL = _resampleRingL;
+        float[] ringR = _resampleRingR;
+        int read = _resampleRead;
+        int write = _resampleWrite;
+        int count = _resampleCount;
+        double pos = _resamplePos;
         double step = OutputFrequency / (double)TargetFrequency;
         for (int i = 0; i < outCount; i++)
         {
-            if (_resampleCount <= 1)
+            if (count <= 1)
             {
                 left[i] = 0f;
                 right[i] = 0f;
                 continue;
             }
 
-            int idx = (int)_resamplePos;
-            if (idx + 1 >= _resampleCount)
-                idx = _resampleCount - 2;
-            double frac = _resamplePos - idx;
+            int idx = (int)pos;
+            if (idx + 1 >= count)
+                idx = count - 2;
+            double frac = pos - idx;
 
-            float l0 = PeekResample(_resampleRingL, idx);
-            float l1 = PeekResample(_resampleRingL, idx + 1);
-            float r0 = PeekResample(_resampleRingR, idx);
-            float r1 = PeekResample(_resampleRingR, idx + 1);
+            int ringIdx0 = (read + idx) & ResampleRingMask;
+            int ringIdx1 = (ringIdx0 + 1) & ResampleRingMask;
+            float l0 = ringL[ringIdx0];
+            float l1 = ringL[ringIdx1];
+            float r0 = ringR[ringIdx0];
+            float r1 = ringR[ringIdx1];
 
             left[i] = (float)(l0 + (l1 - l0) * frac);
             right[i] = (float)(r0 + (r1 - r0) * frac);
 
-            _resamplePos += step;
-            int advance = (int)_resamplePos;
+            pos += step;
+            int advance = (int)pos;
             if (advance > 0)
             {
-                _resamplePos -= advance;
-                AdvanceResampleRead(advance);
+                pos -= advance;
+                if (advance >= count)
+                {
+                    read = write;
+                    count = 0;
+                    pos = 0;
+                }
+                else
+                {
+                    read = (read + advance) & ResampleRingMask;
+                    count -= advance;
+                }
             }
         }
+
+        _resampleRead = read;
+        _resampleCount = count;
+        _resamplePos = pos;
     }
 
     private void AppendResampleSample(float left, float right)
@@ -424,15 +447,14 @@ public class APU : IAPU
 
         _resampleRingL[_resampleWrite] = left;
         _resampleRingR[_resampleWrite] = right;
-        _resampleWrite = (_resampleWrite + 1) % ResampleRingSize;
+        _resampleWrite = (_resampleWrite + 1) & ResampleRingMask;
         _resampleCount = Math.Min(ResampleRingSize, _resampleCount + 1);
     }
 
     private float PeekResample(float[] ring, int index)
     {
         int pos = _resampleRead + index;
-        if (pos >= ResampleRingSize)
-            pos -= ResampleRingSize;
+        pos &= ResampleRingMask;
         return ring[pos];
     }
 
@@ -447,7 +469,7 @@ public class APU : IAPU
             _resamplePos = 0;
             return;
         }
-        _resampleRead = (_resampleRead + count) % ResampleRingSize;
+        _resampleRead = (_resampleRead + count) & ResampleRingMask;
         _resampleCount -= count;
     }
 

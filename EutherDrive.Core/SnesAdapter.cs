@@ -619,19 +619,16 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
 
     private static void ConvertArgbToBgra(int[] source, byte[] dest, int width, int height, int sourceStridePixels)
     {
+        int bytesPerRow = width * sizeof(int);
+        if (width == sourceStridePixels)
+        {
+            Buffer.BlockCopy(source, 0, dest, 0, height * bytesPerRow);
+            return;
+        }
+
         for (int y = 0; y < height; y++)
         {
-            int srcBase = y * sourceStridePixels;
-            int dstBase = y * width * 4;
-            for (int x = 0; x < width; x++)
-            {
-                uint argb = unchecked((uint)source[srcBase + x]);
-                int di = dstBase + x * 4;
-                dest[di + 0] = (byte)argb;
-                dest[di + 1] = (byte)(argb >> 8);
-                dest[di + 2] = (byte)(argb >> 16);
-                dest[di + 3] = (byte)(argb >> 24);
-            }
+            Buffer.BlockCopy(source, y * sourceStridePixels * sizeof(int), dest, y * bytesPerRow, bytesPerRow);
         }
     }
 

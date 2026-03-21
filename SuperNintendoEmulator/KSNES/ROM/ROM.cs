@@ -7,6 +7,19 @@ namespace KSNES.ROM;
 
 public class ROM : IROM
 {
+    private enum TimedCoprocessorDispatch
+    {
+        None,
+        Cx4,
+        Dsp1,
+        St010,
+        St011,
+        St018,
+        SuperFx,
+        Sa1,
+        Mixed
+    }
+
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     public Header Header { get; private set; }
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
@@ -75,6 +88,8 @@ public class ROM : IROM
     [NonSerialized]
     private readonly HashSet<uint> _traceSa1BwramOffsets =
         ParseTraceOffsets(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_ADDRS"));
+    [NonSerialized]
+    private TimedCoprocessorDispatch _timedDispatch;
 
     [NonSerialized]
     private Timer? _sRAMTimer;
@@ -309,6 +324,8 @@ public class ROM : IROM
         {
             _srtc = null;
         }
+
+        ConfigureTimedCoprocessorDispatch();
     }
 
     public int RomLength => _data.Length;
@@ -1031,27 +1048,125 @@ public class ROM : IROM
 
     public void RunCoprocessor(ulong snesCycles)
     {
-        _cx4?.RunTo(snesCycles);
-        _dsp1?.RunTo(snesCycles);
-        _st010?.RunTo(snesCycles);
-        _st011?.RunTo(snesCycles);
-        _st018?.RunTo(snesCycles);
-        _superFx?.Tick(snesCycles);
-        _sa1?.Tick(snesCycles);
+        switch (_timedDispatch)
+        {
+            case TimedCoprocessorDispatch.None:
+                return;
+            case TimedCoprocessorDispatch.Cx4:
+                _cx4!.RunTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.Dsp1:
+                _dsp1!.RunTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.St010:
+                _st010!.RunTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.St011:
+                _st011!.RunTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.St018:
+                _st018!.RunTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.SuperFx:
+                _superFx!.Tick(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.Sa1:
+                _sa1!.Tick(snesCycles);
+                return;
+            default:
+                _cx4?.RunTo(snesCycles);
+                _dsp1?.RunTo(snesCycles);
+                _st010?.RunTo(snesCycles);
+                _st011?.RunTo(snesCycles);
+                _st018?.RunTo(snesCycles);
+                _superFx?.Tick(snesCycles);
+                _sa1?.Tick(snesCycles);
+                return;
+        }
     }
 
     public void ResyncCoprocessors(ulong snesCycles)
     {
+        ConfigureTimedCoprocessorDispatch();
         if (_dsp1 != null)
         {
             ApplyDspPortConfiguration(GuessDspVariant(_data), Header);
         }
-        _dsp1?.ResyncTo(snesCycles);
-        _st010?.ResyncTo(snesCycles);
-        _st011?.ResyncTo(snesCycles);
-        _st018?.ResyncTo(snesCycles);
-        _superFx?.ResyncTo(snesCycles);
-        _sa1?.ResyncTo(snesCycles);
+        switch (_timedDispatch)
+        {
+            case TimedCoprocessorDispatch.None:
+                return;
+            case TimedCoprocessorDispatch.Dsp1:
+                _dsp1!.ResyncTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.St010:
+                _st010!.ResyncTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.St011:
+                _st011!.ResyncTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.St018:
+                _st018!.ResyncTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.SuperFx:
+                _superFx!.ResyncTo(snesCycles);
+                return;
+            case TimedCoprocessorDispatch.Sa1:
+                _sa1!.ResyncTo(snesCycles);
+                return;
+            default:
+                _dsp1?.ResyncTo(snesCycles);
+                _st010?.ResyncTo(snesCycles);
+                _st011?.ResyncTo(snesCycles);
+                _st018?.ResyncTo(snesCycles);
+                _superFx?.ResyncTo(snesCycles);
+                _sa1?.ResyncTo(snesCycles);
+                return;
+        }
+    }
+
+    private void ConfigureTimedCoprocessorDispatch()
+    {
+        int count = 0;
+        TimedCoprocessorDispatch dispatch = TimedCoprocessorDispatch.None;
+
+        if (_cx4 != null)
+        {
+            dispatch = TimedCoprocessorDispatch.Cx4;
+            count++;
+        }
+        if (_dsp1 != null)
+        {
+            dispatch = TimedCoprocessorDispatch.Dsp1;
+            count++;
+        }
+        if (_st010 != null)
+        {
+            dispatch = TimedCoprocessorDispatch.St010;
+            count++;
+        }
+        if (_st011 != null)
+        {
+            dispatch = TimedCoprocessorDispatch.St011;
+            count++;
+        }
+        if (_st018 != null)
+        {
+            dispatch = TimedCoprocessorDispatch.St018;
+            count++;
+        }
+        if (_superFx != null)
+        {
+            dispatch = TimedCoprocessorDispatch.SuperFx;
+            count++;
+        }
+        if (_sa1 != null)
+        {
+            dispatch = TimedCoprocessorDispatch.Sa1;
+            count++;
+        }
+
+        _timedDispatch = count <= 1 ? dispatch : TimedCoprocessorDispatch.Mixed;
     }
 
     private void ApplyDspPortConfiguration(DspVariant dspVariant, Header header)
