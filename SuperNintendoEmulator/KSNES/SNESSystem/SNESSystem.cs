@@ -612,6 +612,9 @@ public class SNESSystem : ISNESSystem
         else if (XPos == 1096)
         {
             _inHblank = true;
+        }
+        else if (XPos == 1104)
+        {
             if (!_inVblank)
             {
                 HandleHdma();
@@ -979,6 +982,17 @@ public class SNESSystem : ISNESSystem
         }
 
         int tableOff = _dmaMode[channel] * 4 + (_gpdmaBytesCopied & 0x3);
+        if (_traceDma)
+        {
+            int pc = -1;
+            if (CPU is KSNES.CPU.CPU cpu)
+                pc = cpu.ProgramCounter24;
+            Console.WriteLine(
+                $"[GPDMA-STATE] ch={channel} bytes={_gpdmaBytesCopied} size=0x{_dmaSize[channel]:X4} " +
+                $"mode={_dmaMode[channel]} bbus=0x{_dmaBadr[channel]:X2} offs={_dmaOffs[tableOff]} " +
+                $"fromB={(_dmaFromB[channel] ? 1 : 0)} fixed={(_dmaFixed[channel] ? 1 : 0)} dec={(_dmaDec[channel] ? 1 : 0)} " +
+                $"a=0x{_dmaAadrBank[channel]:X2}:0x{_dmaAadr[channel]:X4} xy=({XPos},{YPos}) pc=0x{pc:X6}");
+        }
         if (_dmaFromB[channel])
         {
             QueueDmaWriteBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel],
@@ -1060,6 +1074,19 @@ public class SNESSystem : ISNESSystem
             {
                 _dmaActive[i] = false;
                 _hdmaTimer += 8;
+                if (_traceDma)
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    int sourceBank = _hdmaInd[i] ? _hdmaIndBank[i] : _dmaAadrBank[i];
+                    int sourceAddr = _hdmaInd[i] ? _dmaSize[i] : _hdmaTableAdr[i];
+                    Console.WriteLine(
+                        $"[HDMA-STATE] ch={i} do={(_hdmaDoTransfer[i] ? 1 : 0)} rep=0x{_hdmaRepCount[i]:X2} " +
+                        $"mode={_dmaMode[i]} bbus=0x{_dmaBadr[i]:X2} ind={(_hdmaInd[i] ? 1 : 0)} fromB={(_dmaFromB[i] ? 1 : 0)} " +
+                        $"tabBank=0x{_dmaAadrBank[i]:X2} tabAdr=0x{_hdmaTableAdr[i]:X4} srcBank=0x{sourceBank:X2} srcAdr=0x{sourceAddr:X4} " +
+                        $"xy=({XPos},{YPos}) pc=0x{pc:X6}");
+                }
                 if (_hdmaDoTransfer[i])
                 {
                     for (var j = 0; j < _dmaOffLengths[_dmaMode[i]]; j++)
@@ -1239,7 +1266,13 @@ public class SNESSystem : ISNESSystem
 
     private int DmaReadBusA(int address)
     {
-        return IsDmaForbiddenBusAAccess(address) ? OpenBus : Read(address, true);
+        if (IsDmaForbiddenBusAAccess(address))
+            return OpenBus;
+
+        if (ROM is KSNES.ROM.ROM rom && rom.TryReadForDma(address, out int dmaValue))
+            return dmaValue;
+
+        return Read(address, true);
     }
 
     private void QueueDmaWriteBusA(int address, int value)
@@ -1247,18 +1280,12 @@ public class SNESSystem : ISNESSystem
         if (IsDmaForbiddenBusAAccess(address))
             return;
 
-        _pendingDmaWriteValid = true;
-        _pendingDmaWriteBusB = false;
-        _pendingDmaWriteAddress = address;
-        _pendingDmaWriteValue = value;
+        Write(address, value, true);
     }
 
     private void QueueDmaWriteBusB(int address, int value)
     {
-        _pendingDmaWriteValid = true;
-        _pendingDmaWriteBusB = true;
-        _pendingDmaWriteAddress = address & 0xff;
-        _pendingDmaWriteValue = value;
+        WriteBBus(address & 0xff, value, true);
     }
 
     private void ApplyPendingDmaWrite()

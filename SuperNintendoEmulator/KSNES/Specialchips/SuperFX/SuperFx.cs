@@ -4,6 +4,13 @@ namespace KSNES.Specialchips.SuperFX;
 
 internal sealed class SuperFx
 {
+    private static readonly bool TraceBus =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_BUS"), "1", StringComparison.Ordinal);
+    private static readonly bool AllowSnesRomReadWhileRunning =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SUPERFX_ALLOW_SNES_ROM_READ_WHILE_RUNNING"), "1", StringComparison.Ordinal);
+    private static readonly int TraceBusLimit = 512;
+    private static int _traceBusCount;
+
     [NonSerialized]
     private readonly byte[] _rom;
     private readonly byte[] _ram;
@@ -20,7 +27,7 @@ internal sealed class SuperFx
         _lastSnesCycles = 0;
     }
 
-    public bool Read(uint address, out byte value)
+    public bool Read(uint address, out byte value, bool allowSnesRomReadWhileRunning = false)
     {
         byte bank = (byte)(address >> 16);
         ushort offset = (ushort)(address & 0xFFFF);
@@ -56,7 +63,7 @@ internal sealed class SuperFx
             case (>= 0x00 and <= 0x3F, >= 0x8000 and <= 0xFFFF):
             case (>= 0x80 and <= 0xBF, >= 0x8000 and <= 0xFFFF):
                 {
-                    if (!_gsu.IsRunning() || _gsu.RomAccess == BusAccess.Snes)
+                    if (!_gsu.IsRunning() || _gsu.RomAccess == BusAccess.Snes || allowSnesRomReadWhileRunning || AllowSnesRomReadWhileRunning)
                     {
                         uint romAddr = MapLoRomAddress(address, (uint)_rom.Length);
                         value = _rom[romAddr % (uint)_rom.Length];
@@ -67,13 +74,14 @@ internal sealed class SuperFx
                         value = vec;
                         return true;
                     }
+                    TraceBlockedBus("ROM", address);
                     value = 0;
                     return false;
                 }
             case (>= 0x40 and <= 0x5F, _):
             case (>= 0xC0 and <= 0xDF, _):
                 {
-                    if (!_gsu.IsRunning() || _gsu.RomAccess == BusAccess.Snes)
+                    if (!_gsu.IsRunning() || _gsu.RomAccess == BusAccess.Snes || allowSnesRomReadWhileRunning || AllowSnesRomReadWhileRunning)
                     {
                         uint romAddr = MapHiRomAddress(address, (uint)_rom.Length);
                         value = _rom[romAddr % (uint)_rom.Length];
@@ -84,6 +92,7 @@ internal sealed class SuperFx
                         value = vec;
                         return true;
                     }
+                    TraceBlockedBus("ROM", address);
                     value = 0;
                     return false;
                 }
@@ -95,6 +104,7 @@ internal sealed class SuperFx
                         value = _ram[address & 0x1FFF];
                         return true;
                     }
+                    TraceBlockedBus("RAM", address);
                     value = 0;
                     return false;
                 }
@@ -106,6 +116,7 @@ internal sealed class SuperFx
                         value = _ram[address & (_ram.Length - 1)];
                         return true;
                     }
+                    TraceBlockedBus("RAM", address);
                     value = 0;
                     return false;
                 }
@@ -173,7 +184,26 @@ internal sealed class SuperFx
         _lastSnesCycles = 0;
     }
 
+    public void ResyncTo(ulong snesCycles)
+    {
+        _lastSnesCycles = snesCycles;
+    }
+
     public byte[] Ram => _ram;
+
+    private void TraceBlockedBus(string kind, uint address)
+    {
+        if (!TraceBus || _traceBusCount >= TraceBusLimit)
+            return;
+
+        _traceBusCount++;
+        MemoryType nextType = Instructions.NextOpcodeMemoryType(_gsu);
+        byte nextOpcode = _gsu.State.OpcodeBuffer;
+        Console.WriteLine(
+            $"[SFX-BUS-BLOCK] kind={kind} addr=0x{address:X6} go={(_gsu.IsRunning() ? 1 : 0)} " +
+            $"rom={_gsu.RomAccess} ram={_gsu.RamAccess} pbr=0x{_gsu.Pbr:X2} rombr=0x{_gsu.Rombr:X2} r15=0x{_gsu.R[15]:X4} " +
+            $"nextType={nextType} nextOp=0x{nextOpcode:X2} justJumped={(_gsu.State.JustJumped ? 1 : 0)}");
+    }
 
     public static uint MapLoRomAddress(uint address, uint romLen)
     {

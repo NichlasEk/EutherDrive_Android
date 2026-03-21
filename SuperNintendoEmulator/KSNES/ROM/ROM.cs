@@ -406,6 +406,8 @@ public class ROM : IROM
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             if (_superFx.Read(address, out byte value))
                 return value;
+            if (IsSuperFxMappedAddress(bank, adr))
+                return (byte)(_system?.OpenBus ?? 0);
         }
 
         if (_sdd1 != null)
@@ -1006,6 +1008,27 @@ public class ROM : IROM
         _srtc?.ResetState();
     }
 
+    public bool TryReadForDma(int fullAddress, out int value)
+    {
+        value = 0;
+
+        if (_superFx == null)
+            return false;
+
+        int bank = (fullAddress >> 16) & 0xFF;
+        int adr = fullAddress & 0xFFFF;
+        if (!IsSuperFxMappedAddress(bank, adr))
+            return false;
+
+        if (_superFx.Read((uint)fullAddress, out byte dmaValue, allowSnesRomReadWhileRunning: true))
+        {
+            value = dmaValue;
+            return true;
+        }
+
+        return false;
+    }
+
     public void RunCoprocessor(ulong snesCycles)
     {
         _cx4?.RunTo(snesCycles);
@@ -1027,6 +1050,7 @@ public class ROM : IROM
         _st010?.ResyncTo(snesCycles);
         _st011?.ResyncTo(snesCycles);
         _st018?.ResyncTo(snesCycles);
+        _superFx?.ResyncTo(snesCycles);
         _sa1?.ResyncTo(snesCycles);
     }
 
@@ -1180,6 +1204,27 @@ public class ROM : IROM
     {
         return chipsetByte is 0x03 or 0x04 or 0x05;
     }
+
+    private static bool IsSuperFxMappedAddress(int bank, int adr)
+    {
+        int bankMasked = bank & 0x7F;
+
+        if (bankMasked <= 0x3F)
+        {
+            if ((adr >= 0x3000 && adr <= 0x30FF) || (adr >= 0x3100 && adr <= 0x32FF) || (adr >= 0x3300 && adr <= 0x34FF))
+                return true;
+            if (adr >= 0x6000 && adr <= 0x7FFF)
+                return true;
+            if (adr >= 0x8000)
+                return true;
+        }
+
+        if (bankMasked <= 0x5F)
+            return true;
+
+        return bankMasked is 0x70 or 0x71;
+    }
+
 
     private static DspVariant GuessDspVariant(byte[] rom)
     {

@@ -137,6 +137,11 @@ internal sealed class GsuState
 
 internal sealed class GraphicsSupportUnit
 {
+    private static readonly bool TraceBus =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_BUS"), "1", StringComparison.Ordinal);
+    private static readonly int TraceBusLimit = 512;
+    private static int _traceBusCount;
+
     private const byte VersionRegister = 0x04;
 
     public ushort[] R = new ushort[16];
@@ -356,6 +361,8 @@ internal sealed class GraphicsSupportUnit
         {
             State.JustJumped = true;
         }
+
+        TraceBusState("SFR", value);
     }
 
     private void WritePbr(byte value)
@@ -389,11 +396,24 @@ internal sealed class GraphicsSupportUnit
             ColorGradient = ColorGradientColorsExtensions.FromByte(value);
             ScreenHeight = ScreenHeightExtensions.FromByte(value);
         }
+
+        TraceBusState("SCMR", value);
     }
 
     private static ushort MapSnesCodeCacheAddress(uint address, ushort cbr)
     {
         uint snesOffset = (address & 0xFFFF) - 0x3100;
         return (ushort)((snesOffset - (cbr & 0x1FF)) & 0x1FF);
+    }
+
+    private void TraceBusState(string reg, byte value)
+    {
+        if (!TraceBus || _traceBusCount >= TraceBusLimit)
+            return;
+
+        _traceBusCount++;
+        Console.WriteLine(
+            $"[SFX-BUS] reg={reg} val=0x{value:X2} go={(Go ? 1 : 0)} rom={RomAccess} ram={RamAccess} " +
+            $"pbr=0x{Pbr:X2} rombr=0x{Rombr:X2} r15=0x{R[15]:X4}");
     }
 }
