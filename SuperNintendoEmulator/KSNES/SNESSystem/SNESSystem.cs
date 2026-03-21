@@ -14,6 +14,16 @@ public class SNESSystem : ISNESSystem
         Transfer
     }
 
+    private enum BusPageKind : byte
+    {
+        Rom,
+        WramBank,
+        LowWram,
+        BBus,
+        JoypadPage,
+        CpuRegs
+    }
+
     [field: NonSerialized] public ICPU CPU { get; private set; }
     [field: NonSerialized] public IPPU PPU { get; private set; }
     [field: NonSerialized] public IAPU APU { get; private set; }
@@ -41,6 +51,10 @@ public class SNESSystem : ISNESSystem
     private KSNES.ROM.ROM RomImpl => _romImpl ?? throw new InvalidOperationException("SNES ROM is not initialized.");
 
     private byte[] _ram = [];
+    [NonSerialized]
+    private byte[] _accessTimeByPage = [];
+    [NonSerialized]
+    private byte[] _busPageKind = [];
 
     [JsonIgnore]
     private readonly int[] _dmaOffs = [
@@ -168,6 +182,12 @@ public class SNESSystem : ISNESSystem
     [NonSerialized]
     private int _traceJoypadCount;
     [NonSerialized]
+    private readonly bool _trace4212 =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_4212"), "1", StringComparison.Ordinal);
+    [NonSerialized]
+    private readonly bool _logVerbose =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal);
+    [NonSerialized]
     private readonly bool _traceSgngIrqWindow =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SGNG_IRQ_WINDOW"), "1", StringComparison.Ordinal);
     [NonSerialized]
@@ -208,6 +228,8 @@ public class SNESSystem : ISNESSystem
 
     [JsonIgnore]
     private bool _isExecuting;
+    [NonSerialized]
+    private readonly bool _useFastReadPath;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     public SNESSystem(ICPU cpu, IRenderer renderer, IROM rom, IPPU ppu, IAPU apu, IAudioHandler audioHandler)
@@ -227,6 +249,91 @@ public class SNESSystem : ISNESSystem
             limit > 0)
         {
             _tracePpuBusLimit = limit;
+        }
+
+        _useFastReadPath = !_traceWramWrites
+            && !_traceApuPorts
+            && !_traceStarOceanApuLoop
+            && !_traceStarOcean4212Loop
+            && !_traceJoypad
+            && !_traceDma
+            && !_trace4212;
+        EnsureBusTables();
+    }
+
+    private void EnsureBusTables()
+    {
+        if (_busPageKind.Length != 1 << 16)
+        {
+            _busPageKind = new byte[1 << 16];
+            BuildBusPageKindTable();
+        }
+
+        if (_accessTimeByPage.Length != 1 << 16)
+            _accessTimeByPage = new byte[1 << 16];
+
+        RebuildAccessTimeTable();
+    }
+
+    private void BuildBusPageKindTable()
+    {
+        Array.Fill(_busPageKind, (byte)BusPageKind.Rom);
+        for (int bank = 0; bank < 0x100; bank++)
+        {
+            int baseIndex = bank << 8;
+            if (bank == 0x7e || bank == 0x7f)
+            {
+                for (int page = 0; page < 0x100; page++)
+                    _busPageKind[baseIndex + page] = (byte)BusPageKind.WramBank;
+                continue;
+            }
+
+            bool isLowMirrorBank = bank < 0x40 || (bank >= 0x80 && bank < 0xc0);
+            if (!isLowMirrorBank)
+                continue;
+
+            for (int page = 0; page < 0x20; page++)
+                _busPageKind[baseIndex + page] = (byte)BusPageKind.LowWram;
+            _busPageKind[baseIndex + 0x21] = (byte)BusPageKind.BBus;
+            _busPageKind[baseIndex + 0x40] = (byte)BusPageKind.JoypadPage;
+            _busPageKind[baseIndex + 0x42] = (byte)BusPageKind.CpuRegs;
+            _busPageKind[baseIndex + 0x43] = (byte)BusPageKind.CpuRegs;
+        }
+    }
+
+    private void RebuildAccessTimeTable()
+    {
+        for (int bank = 0; bank < 0x100; bank++)
+        {
+            int baseIndex = bank << 8;
+            if (bank >= 0x40 && bank < 0x80)
+            {
+                for (int page = 0; page < 0x100; page++)
+                    _accessTimeByPage[baseIndex + page] = 8;
+                continue;
+            }
+
+            if (bank >= 0xc0)
+            {
+                byte fastRomTime = _fastMem ? (byte)6 : (byte)8;
+                for (int page = 0; page < 0x100; page++)
+                    _accessTimeByPage[baseIndex + page] = fastRomTime;
+                continue;
+            }
+
+            byte highRomTime = _fastMem && bank >= 0x80 ? (byte)6 : (byte)8;
+            for (int page = 0; page < 0x100; page++)
+            {
+                _accessTimeByPage[baseIndex + page] = page switch
+                {
+                    < 0x20 => 8,
+                    < 0x40 => 6,
+                    < 0x42 => 12,
+                    < 0x60 => 6,
+                    < 0x80 => 8,
+                    _ => highRomTime
+                };
+            }
         }
     }
 
@@ -329,15 +436,16 @@ public class SNESSystem : ISNESSystem
 
     public int Read(int adr, bool dma = false)
     {
+        int fullAdr = adr & 0xffffff;
         int accessTime = 0;
         if (!dma)
         {
             _cpuMemOps++;
-            accessTime = GetAccessTime(adr);
+            accessTime = GetAccessTime(fullAdr);
             _cpuCyclesLeft += accessTime;
         }
-        int val = Rread(adr);
-        if (!dma && accessTime > 0 && IsCpuApuPortAccess(adr))
+        int val = _useFastReadPath ? RreadFast(fullAdr) : Rread(fullAdr);
+        if (!dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr))
         {
             AdvanceApuForCpuAccess(accessTime);
         }
@@ -444,6 +552,7 @@ public class SNESSystem : ISNESSystem
         _dmaUnusedByte = new byte[8];
         _dmaNotifyActive = new bool[8];
         _dmaNotifyCount = 0;
+        EnsureBusTables();
     }
 
     private void Reset2()
@@ -509,6 +618,7 @@ public class SNESSystem : ISNESSystem
         _hdmaTerminated = new bool[8];
         OpenBus = 0;
         RomImpl.ResetCoprocessor();
+        EnsureBusTables();
     }
 
     public void ResyncAfterLoad()
@@ -516,6 +626,7 @@ public class SNESSystem : ISNESSystem
         // Savestates already serialize the live beam position and interrupt/DMA state.
         // Clobbering those latched values on load breaks late-frame states that rely on
         // pending IRQ/NMI/autojoy activity to reproduce the next frame correctly.
+        EnsureBusTables();
     }
 
     private void LoadRom(byte[] rom)
@@ -583,7 +694,7 @@ public class SNESSystem : ISNESSystem
 
             if (YPos == vBlankStart)
             {
-                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
+                if (_logVerbose)
                 {
                     Console.WriteLine($"[VBLANK-START] Y={YPos} IsPal={IsPal} Overscan={PPU.FrameOverscan} Start={vBlankStart}");
                 }
@@ -604,7 +715,7 @@ public class SNESSystem : ISNESSystem
             }
             else if (YPos == 0)
             {
-                if (_inVblank && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
+                if (_inVblank && _logVerbose)
                 {
                     Console.WriteLine($"[VBLANK-END] Y={YPos} X={XPos}");
                 }
@@ -1311,7 +1422,7 @@ public class SNESSystem : ISNESSystem
                         Console.WriteLine($"[SO-4212] pc=0x{pc:X6} val=0x{val3:X2} v={GetCurrentVblankFlag()} h={GetCurrentHblankFlag()} autojoy={_autoJoyBusy} xy=({XPos},{YPos})");
                     }
                 }
-                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_4212"), "1", StringComparison.Ordinal))
+                if (_trace4212)
                 {
                     Console.WriteLine($"[4212] R val=0x{val3:X2} vblank={GetCurrentVblankFlag()} hblank={GetCurrentHblankFlag()} autojoy={_autoJoyBusy} Y={YPos} X={XPos}");
                 }
@@ -1447,7 +1558,7 @@ public class SNESSystem : ISNESSystem
         switch (adr)
         {
             case 0x4200:
-                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_LOG_VERBOSE"), "1", StringComparison.Ordinal))
+                if (_logVerbose)
                 {
                     int pcLog = CPU is KSNES.CPU.CPU cpuLog ? cpuLog.ProgramCounter24 : -1;
                     Console.WriteLine($"[SNES-REG] W 0x4200 val=0x{value:X2} PC=0x{pcLog:X6}");
@@ -1573,6 +1684,7 @@ public class SNESSystem : ISNESSystem
                 return;
             case 0x420d:
                 _fastMem = (value & 0x1) > 0;
+                RebuildAccessTimeTable();
                 return;
         }
 
@@ -1829,6 +1941,53 @@ public class SNESSystem : ISNESSystem
         Console.WriteLine(message);
     }
 
+    private int ReadJoypadPortFast(int adr)
+    {
+        if (adr == 0x4016)
+        {
+            int val = _joypad1Val & 0x1;
+            _joypad1Val >>= 1;
+            _joypad1Val |= 0x8000;
+            return val | (OpenBus & 0xfc);
+        }
+
+        if (adr == 0x4017)
+        {
+            int val = _joypad2Val & 0x1;
+            _joypad2Val >>= 1;
+            _joypad2Val |= 0x8000;
+            return 0x1c | val | (OpenBus & 0xe0);
+        }
+
+        return -1;
+    }
+
+    private int RreadFast(int fullAdr)
+    {
+        int bank = fullAdr >> 16;
+        int adr = fullAdr & 0xffff;
+        switch ((BusPageKind)_busPageKind[fullAdr >> 8])
+        {
+            case BusPageKind.WramBank:
+                return _ram[((bank & 0x1) << 16) | adr];
+            case BusPageKind.LowWram:
+                return _ram[adr & 0x1fff];
+            case BusPageKind.BBus:
+                return ReadBBus(adr & 0xff);
+            case BusPageKind.JoypadPage:
+                int joypadValue = ReadJoypadPortFast(adr);
+                if (joypadValue >= 0)
+                    return joypadValue;
+                break;
+            case BusPageKind.CpuRegs:
+                if (adr >= 0x4200 && adr < 0x4380)
+                    return ReadReg(adr);
+                break;
+        }
+
+        return RomImpl.Read(bank, adr);
+    }
+
     private int Rread(int adr) 
     {
         adr &= 0xffffff;
@@ -1898,38 +2057,7 @@ public class SNESSystem : ISNESSystem
 
     private int GetAccessTime(int adr)
     {
-        adr &= 0xffffff;
-        int bank = adr >> 16;
-        adr &= 0xffff;
-        if (bank >= 0x40 && bank < 0x80)
-        {
-            return 8;
-        }
-        if (bank >= 0xc0)
-        {
-            return _fastMem ? 6 : 8;
-        }
-        if (adr < 0x2000)
-        {
-            return 8;
-        }
-        if (adr < 0x4000)
-        {
-            return 6;
-        }
-        if (adr < 0x4200)
-        {
-            return 12;
-        }
-        if (adr < 0x6000)
-        {
-            return 6;
-        }
-        if (adr < 0x8000)
-        {
-            return 8;
-        }
-        return _fastMem && bank >= 0x80 ? 6 : 8;
+        return _accessTimeByPage[(adr & 0xffffff) >> 8];
     }
 
     private int GetDmaStartAlignmentDelay()
