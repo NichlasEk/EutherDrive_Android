@@ -52,9 +52,12 @@ public class SNESSystem : ISNESSystem
 
     private byte[] _ram = [];
     [NonSerialized]
-    private byte[] _accessTimeByPage = [];
-    [NonSerialized]
     private byte[] _busPageKind = [];
+    [NonSerialized]
+    private ushort[] _busPageData = [];
+
+    private const int BusPageAccessMask = 0xff;
+    private const int BusPageKindShift = 8;
 
     [JsonIgnore]
     private readonly int[] _dmaOffs = [
@@ -277,8 +280,8 @@ public class SNESSystem : ISNESSystem
             BuildBusPageKindTable();
         }
 
-        if (_accessTimeByPage.Length != 1 << 16)
-            _accessTimeByPage = new byte[1 << 16];
+        if (_busPageData.Length != 1 << 16)
+            _busPageData = new ushort[1 << 16];
 
         RebuildAccessTimeTable();
     }
@@ -317,7 +320,7 @@ public class SNESSystem : ISNESSystem
             if (bank >= 0x40 && bank < 0x80)
             {
                 for (int page = 0; page < 0x100; page++)
-                    _accessTimeByPage[baseIndex + page] = 8;
+                    SetBusPageData(baseIndex + page, 8);
                 continue;
             }
 
@@ -325,14 +328,14 @@ public class SNESSystem : ISNESSystem
             {
                 byte fastRomTime = _fastMem ? (byte)6 : (byte)8;
                 for (int page = 0; page < 0x100; page++)
-                    _accessTimeByPage[baseIndex + page] = fastRomTime;
+                    SetBusPageData(baseIndex + page, fastRomTime);
                 continue;
             }
 
             byte highRomTime = _fastMem && bank >= 0x80 ? (byte)6 : (byte)8;
             for (int page = 0; page < 0x100; page++)
             {
-                _accessTimeByPage[baseIndex + page] = page switch
+                byte accessTime = page switch
                 {
                     < 0x20 => 8,
                     < 0x40 => 6,
@@ -341,8 +344,19 @@ public class SNESSystem : ISNESSystem
                     < 0x80 => 8,
                     _ => highRomTime
                 };
+                SetBusPageData(baseIndex + page, accessTime);
             }
         }
+    }
+
+    private void SetBusPageData(int pageIndex, byte accessTime)
+    {
+        _busPageData[pageIndex] = (ushort)(accessTime | (_busPageKind[pageIndex] << BusPageKindShift));
+    }
+
+    private BusPageKind GetBusPageKind(ushort pageData)
+    {
+        return (BusPageKind)(pageData >> BusPageKindShift);
     }
 
     public ISNESSystem Merge(ISNESSystem system)
@@ -445,14 +459,15 @@ public class SNESSystem : ISNESSystem
     public int Read(int adr, bool dma = false)
     {
         int fullAdr = adr & 0xffffff;
+        ushort pageData = _busPageData[fullAdr >> 8];
         int accessTime = 0;
         if (!dma)
         {
             _cpuMemOps++;
-            accessTime = GetAccessTime(fullAdr);
+            accessTime = pageData & BusPageAccessMask;
             _cpuCyclesLeft += accessTime;
         }
-        int val = _useFastReadPath ? RreadFast(fullAdr) : Rread(fullAdr);
+        int val = _useFastReadPath ? RreadFast(fullAdr, GetBusPageKind(pageData)) : Rread(fullAdr);
         if (!dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr))
         {
             AdvanceApuForCpuAccess(accessTime);
@@ -464,17 +479,18 @@ public class SNESSystem : ISNESSystem
     public void Write(int adr, int value, bool dma = false)
     {
         int fullAdr = adr & 0xffffff;
+        ushort pageData = _busPageData[fullAdr >> 8];
         int accessTime = 0;
         if (!dma)
         {
             _cpuMemOps++;
-            accessTime = GetAccessTime(fullAdr);
+            accessTime = pageData & BusPageAccessMask;
             _cpuCyclesLeft += accessTime;
         }
         OpenBus = value;
         bool isApuPortAccess = !dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr);
         if (_useFastWritePath)
-            WwriteFast(fullAdr, value, dma);
+            WwriteFast(fullAdr, value, dma, GetBusPageKind(pageData));
         else
             Wwrite(fullAdr, value, dma);
         if (isApuPortAccess)
@@ -1949,11 +1965,11 @@ public class SNESSystem : ISNESSystem
         }
     }
 
-    private int RreadFast(int fullAdr)
+    private int RreadFast(int fullAdr, BusPageKind pageKind)
     {
         int bank = fullAdr >> 16;
         int adr = fullAdr & 0xffff;
-        switch ((BusPageKind)_busPageKind[fullAdr >> 8])
+        switch (pageKind)
         {
             case BusPageKind.WramBank:
                 return _ram[((bank & 0x1) << 16) | adr];
@@ -1975,11 +1991,11 @@ public class SNESSystem : ISNESSystem
         return RomImpl.Read(bank, adr);
     }
 
-    private void WwriteFast(int fullAdr, int value, bool dma)
+    private void WwriteFast(int fullAdr, int value, bool dma, BusPageKind pageKind)
     {
         int bank = fullAdr >> 16;
         int adr = fullAdr & 0xffff;
-        switch ((BusPageKind)_busPageKind[fullAdr >> 8])
+        switch (pageKind)
         {
             case BusPageKind.WramBank:
                 _ram[((bank & 0x1) << 16) | adr] = (byte)value;
@@ -2138,7 +2154,7 @@ public class SNESSystem : ISNESSystem
 
     private int GetAccessTime(int adr)
     {
-        return _accessTimeByPage[(adr & 0xffffff) >> 8];
+        return _busPageData[(adr & 0xffffff) >> 8] & BusPageAccessMask;
     }
 
     private int GetDmaStartAlignmentDelay()
