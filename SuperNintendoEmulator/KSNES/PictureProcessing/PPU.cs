@@ -256,6 +256,8 @@ public class PPU : IPPU
     [NonSerialized]
     private int _lineLayerCount;
     [NonSerialized]
+    private bool _lineCachesDirty = true;
+    [NonSerialized]
     private ushort[] _tilePixelBuffer = [];
     [NonSerialized]
     private byte[] _tilePriorityBuffer = [];
@@ -304,6 +306,11 @@ public class PPU : IPPU
     {
         _bgVoff[layer] = (value << 8) | _offPrev1;
         _offPrev1 = value;
+    }
+
+    private void MarkLineCachesDirty()
+    {
+        _lineCachesDirty = true;
     }
 
     private void SetCurrentOamAddress(int address)
@@ -428,6 +435,7 @@ public class PPU : IPPU
         _lastTileFetchedX = new int[4];
         _lastTileFetchedY = new int[4];
         _lastOrigTileX = new int[2];
+        _lineCachesDirty = true;
         ResetLineCaches();
     }
 
@@ -637,6 +645,7 @@ public class PPU : IPPU
                 _bigTiles[1] = (value & 0x20) > 0;
                 _bigTiles[2] = (value & 0x40) > 0;
                 _bigTiles[3] = (value & 0x80) > 0;
+                MarkLineCachesDirty();
                 TracePpuWrite($"[PPU] BGMODE=0x{value:X2} mode={_mode} l3prio={_layer3Prio}");
                 return;
             case 0x06:
@@ -810,6 +819,7 @@ public class PPU : IPPU
                 _window1Enabled[1] = (value & 0x20) > 0;
                 _window2Inversed[1] = (value & 0x40) > 0;
                 _window2Enabled[1] = (value & 0x80) > 0;
+                MarkLineCachesDirty();
                 return;
             case 0x24:
                 _window1Inversed[2] = (value & 0x01) > 0;
@@ -820,6 +830,7 @@ public class PPU : IPPU
                 _window1Enabled[3] = (value & 0x20) > 0;
                 _window2Inversed[3] = (value & 0x40) > 0;
                 _window2Enabled[3] = (value & 0x80) > 0;
+                MarkLineCachesDirty();
                 return;
             case 0x25:
                 _window1Inversed[4] = (value & 0x01) > 0;
@@ -830,28 +841,35 @@ public class PPU : IPPU
                 _window1Enabled[5] = (value & 0x20) > 0;
                 _window2Inversed[5] = (value & 0x40) > 0;
                 _window2Enabled[5] = (value & 0x80) > 0;
+                MarkLineCachesDirty();
                 return;
             case 0x26:
                 _window1Left = value;
+                MarkLineCachesDirty();
                 return;
             case 0x27:
                 _window1Right = value;
+                MarkLineCachesDirty();
                 return;
             case 0x28:
                 _window2Left = value;
+                MarkLineCachesDirty();
                 return;
             case 0x29:
                 _window2Right = value;
+                MarkLineCachesDirty();
                 return;
             case 0x2a:
                 _windowMaskLogic[0] = value & 0x3;
                 _windowMaskLogic[1] = (value & 0xc) >> 2;
                 _windowMaskLogic[2] = (value & 0x30) >> 4;
                 _windowMaskLogic[3] = (value & 0xc0) >> 6;
+                MarkLineCachesDirty();
                 return;
             case 0x2b:
                 _windowMaskLogic[4] = value & 0x3;
                 _windowMaskLogic[5] = (value & 0xc) >> 2;
+                MarkLineCachesDirty();
                 return;
             case 0x2c:
                 _tmRaw = (byte)value;
@@ -860,6 +878,7 @@ public class PPU : IPPU
                 _mainScreenEnabled[2] = (value & 0x4) > 0;
                 _mainScreenEnabled[3] = (value & 0x8) > 0;
                 _mainScreenEnabled[4] = (value & 0x10) > 0;
+                MarkLineCachesDirty();
                 TracePpuWrite($"[PPU] TM=0x{value:X2}");
                 return;
             case 0x2d:
@@ -869,6 +888,7 @@ public class PPU : IPPU
                 _subScreenEnabled[2] = (value & 0x4) > 0;
                 _subScreenEnabled[3] = (value & 0x8) > 0;
                 _subScreenEnabled[4] = (value & 0x10) > 0;
+                MarkLineCachesDirty();
                 TracePpuWrite($"[PPU] TS=0x{value:X2}");
                 return;
             case 0x2e:
@@ -877,6 +897,7 @@ public class PPU : IPPU
                 _mainScreenWindow[2] = (value & 0x4) > 0;
                 _mainScreenWindow[3] = (value & 0x8) > 0;
                 _mainScreenWindow[4] = (value & 0x10) > 0;
+                MarkLineCachesDirty();
                 return;
             case 0x2f:
                 _subScreenWindow[0] = (value & 0x1) > 0;
@@ -884,12 +905,14 @@ public class PPU : IPPU
                 _subScreenWindow[2] = (value & 0x4) > 0;
                 _subScreenWindow[3] = (value & 0x8) > 0;
                 _subScreenWindow[4] = (value & 0x10) > 0;
+                MarkLineCachesDirty();
                 return;
             case 0x30:
                 _colorClip = (value & 0xc0) >> 6;
                 _preventMath = (value & 0x30) >> 4;
                 _addSub = (value & 0x2) > 0;
                 _directColor = (value & 0x1) > 0;
+                MarkLineCachesDirty();
                 TracePpuWrite($"[PPU] CGWSEL=0x{value:X2} clip={_colorClip} prevent={_preventMath} addSub={_addSub} directColor={_directColor}");
                 return;
             case 0x31:
@@ -924,6 +947,7 @@ public class PPU : IPPU
                 _overscan = (value & 0x04) > 0;
                 _objInterlace = (value & 0x02) > 0;
                 _interlace = (value & 0x01) > 0;
+                MarkLineCachesDirty();
                 return;
         }
     }
@@ -1237,6 +1261,7 @@ public class PPU : IPPU
         {
             FrameOverscan = false;
             _frameTrueHiResOutput = false;
+            _lineCachesDirty = true;
         }
         else if (line == (FrameOverscan ? 240 : 225))
         {
@@ -1265,7 +1290,11 @@ public class PPU : IPPU
             if (trueHiResOutput)
                 PerfTrueHiResLines++;
             ResetLineCaches();
-            BuildLineCaches();
+            if (_lineCachesDirty)
+            {
+                BuildLineCaches();
+                _lineCachesDirty = false;
+            }
             if (trueHiResOutput && !_frameTrueHiResOutput)
             {
                 ExpandBufferedLinesToHiRes(screenY);
