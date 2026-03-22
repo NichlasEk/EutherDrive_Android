@@ -27,6 +27,7 @@ namespace ProjectPSX {
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_COP0_TRACE_WORDS_AFTER"), 0);
         private static readonly bool BiosTraceEnabled =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BIOS_TRACE") == "1";
+        private static readonly bool TraceCurrentPcEnabled = HasTraceCurrentPcConsumers();
         private static int s_faultTraceCount;
         private static int s_cop0TraceCount;
 
@@ -306,7 +307,9 @@ namespace ProjectPSX {
         private int fetchDecode() {
             //Executable address space is limited to ram and bios on psx
             PC_Now = PC;
-            TraceCurrentPC = PC_Now;
+            if (TraceCurrentPcEnabled) {
+                TraceCurrentPC = PC_Now;
+            }
             PC = PC_Predictor;
             PC_Predictor += 4;
 
@@ -500,6 +503,7 @@ namespace ProjectPSX {
 
         public void ResyncAfterLoad() {
             _instructionCacheControlDirty = true;
+            FlushInstructionCache();
             RefreshInstructionCacheControl();
         }
 
@@ -534,9 +538,10 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void MemAccess() {
-            if (delayedMemoryLoad.register != memoryLoad.register) { //if loadDelay on same reg it is lost/overwritten (amidog tests)
+            uint register = memoryLoad.register;
+            if (register != 0 && delayedMemoryLoad.register != register) { //if loadDelay on same reg it is lost/overwritten (amidog tests)
                 ref uint r0 = ref MemoryMarshal.GetArrayDataReference(GPR);
-                Unsafe.Add(ref r0, (nint)memoryLoad.register) = memoryLoad.value;
+                Unsafe.Add(ref r0, (nint)register) = memoryLoad.value;
             }
             memoryLoad = delayedMemoryLoad;
             delayedMemoryLoad.register = 0;
@@ -544,10 +549,12 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void WriteBack() {
-            ref uint r0 = ref MemoryMarshal.GetArrayDataReference(GPR);
-            Unsafe.Add(ref r0, (nint)writeBack.register) = writeBack.value;
-            writeBack.register = 0;
-            r0 = 0;
+            uint register = writeBack.register;
+            if (register != 0) {
+                ref uint r0 = ref MemoryMarshal.GetArrayDataReference(GPR);
+                Unsafe.Add(ref r0, (nint)register) = writeBack.value;
+                writeBack.register = 0;
+            }
         }
 
         // Non Implemented by the CPU Opcodes
@@ -759,6 +766,28 @@ namespace ProjectPSX {
 
         private static int ParseOptionalPositiveInt(string? raw, int fallback) {
             return int.TryParse(raw, out int value) && value > 0 ? value : fallback;
+        }
+
+        private static bool HasTraceCurrentPcConsumers() {
+            var env = Environment.GetEnvironmentVariables();
+            foreach (System.Collections.DictionaryEntry entry in env) {
+                string? key = entry.Key as string;
+                string? value = entry.Value as string;
+                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value)) {
+                    continue;
+                }
+
+                if (key == "EUTHERDRIVE_TRACE_VERBOSE"
+                    || key == "EUTHERDRIVE_PSX_IRQ_TRACE"
+                    || key == "EUTHERDRIVE_PSX_BIOS_TRACE"
+                    || key.StartsWith("EUTHERDRIVE_PSX_TRACE_", StringComparison.Ordinal)
+                    || key.StartsWith("EUTHERDRIVE_PSX_FAULT_TRACE", StringComparison.Ordinal)
+                    || key.StartsWith("EUTHERDRIVE_PSX_COP0_TRACE", StringComparison.Ordinal)) {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static int? ParseOptionalRegisterIndex(string? raw) {
@@ -1286,14 +1315,18 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void setGPR(uint regN, uint value) {
-            writeBack.register = regN;
-            writeBack.value = value;
+            if (regN != 0) {
+                writeBack.register = regN;
+                writeBack.value = value;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void delayedLoad(CPU cpu, uint regN, uint value) {
-            cpu.delayedMemoryLoad.register = regN;
-            cpu.delayedMemoryLoad.value = value;
+            if (regN != 0) {
+                cpu.delayedMemoryLoad.register = regN;
+                cpu.delayedMemoryLoad.value = value;
+            }
         }
 
         private void TTY() {
