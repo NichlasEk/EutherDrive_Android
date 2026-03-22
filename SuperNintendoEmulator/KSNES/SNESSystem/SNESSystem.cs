@@ -705,6 +705,7 @@ public class SNESSystem : ISNESSystem
             // HVBJOY reports HBlank during the first 4 master cycles of each scanline.
             _inHblank = true;
             _ppuImpl.CheckOverscan(YPos);
+            vBlankStart = IsPal ? 240 : (_ppuImpl.FrameOverscan ? 240 : 225);
 
             if (YPos == vBlankStart)
             {
