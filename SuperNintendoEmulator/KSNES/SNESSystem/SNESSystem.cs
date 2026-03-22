@@ -693,9 +693,6 @@ public class SNESSystem : ISNESSystem
 
     private void Cycle(bool noPpu) 
     {
-        if (TryRunFastCpuWindow(noPpu))
-            return;
-
         AdvanceBaseClocksForStep();
         bool queueNmiForNextCpuSlot = false;
         int currentLineMclks = GetCurrentLineMclks();
