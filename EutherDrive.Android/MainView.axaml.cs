@@ -22,6 +22,7 @@ using EutherDrive.Core;
 using EutherDrive.Core.Savestates;
 using EutherDrive.Rendering;
 using ProjectPSX.IO;
+using Tomlyn;
 
 namespace EutherDrive.Android;
 
@@ -31,6 +32,8 @@ public partial class MainView : UserControl
     private const int AndroidAudioBufferFrames = 16384;
     private const int AndroidAudioBatchFrames = 256;
     private const double TargetFrameRate = 60.0;
+    private const string SettingsFileName = "android-settings.toml";
+    private const string LegacyJsonSettingsFileName = "android-settings.json";
 
     private readonly MainViewModel _viewModel = new();
     private readonly object _inputSync = new();
@@ -50,6 +53,7 @@ public partial class MainView : UserControl
     private readonly DispatcherTimer _frameTimer;
     private readonly string _appDataDir;
     private readonly string _settingsPath;
+    private readonly string _legacyJsonSettingsPath;
     private readonly SavestateService _savestateService;
     private readonly Stopwatch _perfStopwatch = Stopwatch.StartNew();
     private IEmulatorCore? _core;
@@ -91,7 +95,8 @@ public partial class MainView : UserControl
     {
         InitializeComponent();
         _appDataDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        _settingsPath = Path.Combine(_appDataDir, "android-settings.json");
+        _settingsPath = Path.Combine(_appDataDir, SettingsFileName);
+        _legacyJsonSettingsPath = Path.Combine(_appDataDir, LegacyJsonSettingsFileName);
         _savestateService = new SavestateService(Path.Combine(_appDataDir, "savestates"));
         DataContext = _viewModel;
         _frameTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => PresentLatestFrame());
@@ -1987,52 +1992,98 @@ public partial class MainView : UserControl
         };
 
         Directory.CreateDirectory(_appDataDir);
-        File.WriteAllText(_settingsPath, JsonSerializer.Serialize(settings));
+        File.WriteAllText(_settingsPath, Toml.FromModel(settings));
     }
 
     private void LoadSettings()
     {
-        if (!File.Exists(_settingsPath))
+        if (TryLoadTomlSettings(_settingsPath, out AndroidSettings? settings) && settings != null)
+        {
+            ApplyLoadedSettings(settings);
+            return;
+        }
+
+        if (TryMigrateJsonSettings(out settings) && settings != null)
+        {
+            ApplyLoadedSettings(settings);
+            return;
+        }
+
+        if (!File.Exists(_settingsPath) && !File.Exists(_legacyJsonSettingsPath))
         {
             return;
         }
 
+        _viewModel.SettingsHint = "Settings file was unreadable and will be recreated on next save.";
+    }
+
+    private bool TryLoadTomlSettings(string path, out AndroidSettings? settings)
+    {
+        settings = null;
+        if (!File.Exists(path))
+            return false;
+
         try
         {
-            AndroidSettings? settings = JsonSerializer.Deserialize<AndroidSettings>(File.ReadAllText(_settingsPath));
-            if (settings == null)
-            {
-                return;
-            }
-
-            _viewModel.PceBiosPath = settings.PceBiosPath;
-            _viewModel.PceBiosDisplay = settings.PceBiosDisplay ?? "(auto)";
-            _viewModel.SegaCdBiosPath = settings.SegaCdBiosPath;
-            _viewModel.SegaCdBiosDisplay = settings.SegaCdBiosDisplay ?? "(none)";
-            _viewModel.PsxBiosPath = settings.PsxBiosPath;
-            _viewModel.PsxBiosDisplay = settings.PsxBiosDisplay ?? "(none)";
-            _viewModel.PsxFastLoadEnabled = settings.PsxFastLoadEnabled;
-            _viewModel.PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled;
-            _viewModel.SharpPixelsEnabled = settings.SharpPixelsEnabled;
-            _viewModel.Dsp1Path = settings.Dsp1Path;
-            _viewModel.Dsp1Display = settings.Dsp1Display ?? "(none)";
-            _viewModel.Dsp2Path = settings.Dsp2Path;
-            _viewModel.Dsp2Display = settings.Dsp2Display ?? "(none)";
-            _viewModel.Dsp3Path = settings.Dsp3Path;
-            _viewModel.Dsp3Display = settings.Dsp3Display ?? "(none)";
-            _viewModel.Dsp4Path = settings.Dsp4Path;
-            _viewModel.Dsp4Display = settings.Dsp4Display ?? "(none)";
-            _viewModel.St010Path = settings.St010Path;
-            _viewModel.St010Display = settings.St010Display ?? "(none)";
-            _viewModel.St011Path = settings.St011Path;
-            _viewModel.St011Display = settings.St011Display ?? "(none)";
-            _viewModel.St018Path = settings.St018Path;
-            _viewModel.St018Display = settings.St018Display ?? "(none)";
+            settings = Toml.ToModel<AndroidSettings>(File.ReadAllText(path));
+            return settings != null;
         }
         catch
         {
-            _viewModel.SettingsHint = "Settings file was unreadable and will be recreated on next save.";
+            settings = null;
+            return false;
         }
+    }
+
+    private bool TryMigrateJsonSettings(out AndroidSettings? settings)
+    {
+        settings = null;
+        if (!File.Exists(_legacyJsonSettingsPath))
+            return false;
+
+        try
+        {
+            settings = JsonSerializer.Deserialize<AndroidSettings>(File.ReadAllText(_legacyJsonSettingsPath));
+            if (settings == null)
+                return false;
+
+            Directory.CreateDirectory(_appDataDir);
+            File.WriteAllText(_settingsPath, Toml.FromModel(settings));
+            File.Move(_legacyJsonSettingsPath, _legacyJsonSettingsPath + ".bak", overwrite: true);
+            return true;
+        }
+        catch
+        {
+            settings = null;
+            return false;
+        }
+    }
+
+    private void ApplyLoadedSettings(AndroidSettings settings)
+    {
+        _viewModel.PceBiosPath = settings.PceBiosPath;
+        _viewModel.PceBiosDisplay = settings.PceBiosDisplay ?? "(auto)";
+        _viewModel.SegaCdBiosPath = settings.SegaCdBiosPath;
+        _viewModel.SegaCdBiosDisplay = settings.SegaCdBiosDisplay ?? "(none)";
+        _viewModel.PsxBiosPath = settings.PsxBiosPath;
+        _viewModel.PsxBiosDisplay = settings.PsxBiosDisplay ?? "(none)";
+        _viewModel.PsxFastLoadEnabled = settings.PsxFastLoadEnabled;
+        _viewModel.PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled;
+        _viewModel.SharpPixelsEnabled = settings.SharpPixelsEnabled;
+        _viewModel.Dsp1Path = settings.Dsp1Path;
+        _viewModel.Dsp1Display = settings.Dsp1Display ?? "(none)";
+        _viewModel.Dsp2Path = settings.Dsp2Path;
+        _viewModel.Dsp2Display = settings.Dsp2Display ?? "(none)";
+        _viewModel.Dsp3Path = settings.Dsp3Path;
+        _viewModel.Dsp3Display = settings.Dsp3Display ?? "(none)";
+        _viewModel.Dsp4Path = settings.Dsp4Path;
+        _viewModel.Dsp4Display = settings.Dsp4Display ?? "(none)";
+        _viewModel.St010Path = settings.St010Path;
+        _viewModel.St010Display = settings.St010Display ?? "(none)";
+        _viewModel.St011Path = settings.St011Path;
+        _viewModel.St011Display = settings.St011Display ?? "(none)";
+        _viewModel.St018Path = settings.St018Path;
+        _viewModel.St018Display = settings.St018Display ?? "(none)";
     }
 
     private void ApplyOverlayInput(IEmulatorCore core)

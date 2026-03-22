@@ -11,6 +11,13 @@ namespace EutherDrive.Rendering;
 
 public sealed class WriteableBitmapRenderSurface : IGameRenderSurface, IDisposable
 {
+    private const int AdvancedFilterStrongEdgeThreshold = 84;
+    private const int AdvancedFilterMediumEdgeThreshold = 40;
+    private const int AdvancedFilterStrongGain256 = 208;
+    private const int AdvancedFilterMediumGain256 = 152;
+    private const int AdvancedFilterBaseGain256 = 96;
+    private const int AdvancedFilterClampSlack = 10;
+
     private readonly Image _image = new()
     {
         Stretch = Stretch.Fill,
@@ -209,7 +216,11 @@ public sealed class WriteableBitmapRenderSurface : IGameRenderSurface, IDisposab
                     + Math.Abs(cY - Luma(ur, ug, ub))
                     + Math.Abs(cY - Luma(dr, dg, db));
 
-                int gain256 = edge > 96 ? 160 : edge > 48 ? 112 : 72;
+                int gain256 = edge > AdvancedFilterStrongEdgeThreshold
+                    ? AdvancedFilterStrongGain256
+                    : edge > AdvancedFilterMediumEdgeThreshold
+                        ? AdvancedFilterMediumGain256
+                        : AdvancedFilterBaseGain256;
 
                 byte b = AdaptiveSharpenChannel(cb, lb, rb, ub, db, gain256);
                 byte g = AdaptiveSharpenChannel(cg, lg, rg, ug, dg, gain256);
@@ -233,15 +244,15 @@ public sealed class WriteableBitmapRenderSurface : IGameRenderSurface, IDisposab
     private static byte AdaptiveSharpenChannel(byte c, byte l, byte r, byte u, byte d, int gain256)
     {
         int center = c;
-        int blur = ((center * 4) + l + r + u + d) >> 3;
+        int blur = ((center * 2) + l + r + u + d) / 6;
         int detail = center - blur;
         int sharpened = center + ((detail * gain256) >> 8);
 
         int minN = Math.Min(center, Math.Min(Math.Min(l, r), Math.Min(u, d)));
         int maxN = Math.Max(center, Math.Max(Math.Max(l, r), Math.Max(u, d)));
 
-        int low = Math.Max(0, minN - 6);
-        int high = Math.Min(255, maxN + 6);
+        int low = Math.Max(0, minN - AdvancedFilterClampSlack);
+        int high = Math.Min(255, maxN + AdvancedFilterClampSlack);
         if (sharpened < low) sharpened = low;
         if (sharpened > high) sharpened = high;
         return (byte)sharpened;

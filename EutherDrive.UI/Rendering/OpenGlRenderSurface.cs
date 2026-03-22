@@ -355,20 +355,20 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                         + abs(cY - luma(right))
                         + abs(cY - luma(up))
                         + abs(cY - luma(down));
-                    float gain = edge > (96.0 / 255.0)
-                        ? (160.0 / 256.0)
-                        : edge > (48.0 / 255.0)
-                            ? (112.0 / 256.0)
-                            : (72.0 / 256.0);
+                    float gain = edge > (84.0 / 255.0)
+                        ? (208.0 / 256.0)
+                        : edge > (40.0 / 255.0)
+                            ? (152.0 / 256.0)
+                            : (96.0 / 256.0);
 
-                    vec3 blur = ((center * 4.0) + left + right + up + down) / 8.0;
+                    vec3 blur = ((center * 2.0) + left + right + up + down) / 6.0;
                     vec3 detail = center - blur;
                     vec3 sharpened = center + (detail * gain);
 
                     vec3 minN = min(center, min(min(left, right), min(up, down)));
                     vec3 maxN = max(center, max(max(left, right), max(up, down)));
-                    vec3 low = max(vec3(0.0), minN - vec3(6.0 / 255.0));
-                    vec3 high = min(vec3(1.0), maxN + vec3(6.0 / 255.0));
+                    vec3 low = max(vec3(0.0), minN - vec3(10.0 / 255.0));
+                    vec3 high = min(vec3(1.0), maxN + vec3(10.0 / 255.0));
                     return clamp(sharpened, low, high);
                 }
 

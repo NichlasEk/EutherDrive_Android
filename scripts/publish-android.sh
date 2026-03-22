@@ -28,7 +28,6 @@ dotnet publish "$PROJECT_FILE" \
   -p:EmbedAssembliesIntoApk=true \
   -p:AndroidUseSharedRuntime=false \
   -p:AndroidFastDeploymentType=None \
-  -p:PublishTrimmed=false \
   -o "$OUTPUT_DIR" \
   "$@"
 

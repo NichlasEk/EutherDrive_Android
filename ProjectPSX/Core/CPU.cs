@@ -557,6 +557,12 @@ namespace ProjectPSX {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static uint ReadGpr(CPU cpu, uint regN) {
+            ref uint r0 = ref MemoryMarshal.GetArrayDataReference(cpu.GPR);
+            return Unsafe.Add(ref r0, (nint)regN);
+        }
+
         // Non Implemented by the CPU Opcodes
         private static void NOP(CPU cpu) { /*nop*/ }
 
@@ -571,7 +577,7 @@ namespace ProjectPSX {
             uint op = cpu.instr.rt;
 
             bool should_link = (op & 0x1E) == 0x10;
-            bool should_branch = (int)(cpu.GPR[cpu.instr.rs] ^ (op << 31)) < 0;
+            bool should_branch = (int)(ReadGpr(cpu, cpu.instr.rs) ^ (op << 31)) < 0;
 
             if (should_link) cpu.GPR[31] = cpu.PC_Predictor;
             if (should_branch) BRANCH(cpu);
@@ -591,34 +597,34 @@ namespace ProjectPSX {
 
         private static void BEQ(CPU cpu) {
             cpu.opcodeIsBranch = true;
-            if (cpu.GPR[cpu.instr.rs] == cpu.GPR[cpu.instr.rt]) {
+            if (ReadGpr(cpu, cpu.instr.rs) == ReadGpr(cpu, cpu.instr.rt)) {
                 BRANCH(cpu);
             }
         }
 
         private static void BNE(CPU cpu) {
             cpu.opcodeIsBranch = true;
-            if (cpu.GPR[cpu.instr.rs] != cpu.GPR[cpu.instr.rt]) {
+            if (ReadGpr(cpu, cpu.instr.rs) != ReadGpr(cpu, cpu.instr.rt)) {
                 BRANCH(cpu);
             }
         }
 
         private static void BLEZ(CPU cpu) {
             cpu.opcodeIsBranch = true;
-            if (((int)cpu.GPR[cpu.instr.rs]) <= 0) {
+            if (((int)ReadGpr(cpu, cpu.instr.rs)) <= 0) {
                 BRANCH(cpu);
             }
         }
 
         private static void BGTZ(CPU cpu) {
             cpu.opcodeIsBranch = true;
-            if (((int)cpu.GPR[cpu.instr.rs]) > 0) {
+            if (((int)ReadGpr(cpu, cpu.instr.rs)) > 0) {
                 BRANCH(cpu);
             }
         }
 
         private static void ADDI(CPU cpu) {
-            uint rs = cpu.GPR[cpu.instr.rs];
+            uint rs = ReadGpr(cpu, cpu.instr.rs);
             uint imm_s = cpu.instr.imm_s;
             uint result = rs + imm_s;
 
@@ -633,23 +639,23 @@ namespace ProjectPSX {
 #endif
         }
 
-        private static void ADDIU(CPU cpu) => cpu.setGPR(cpu.instr.rt, cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s);
+        private static void ADDIU(CPU cpu) => cpu.setGPR(cpu.instr.rt, ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s);
 
         private static void SLTI(CPU cpu) {
-            bool condition = (int)cpu.GPR[cpu.instr.rs] < (int)cpu.instr.imm_s;
+            bool condition = (int)ReadGpr(cpu, cpu.instr.rs) < (int)cpu.instr.imm_s;
             cpu.setGPR(cpu.instr.rt, condition ? 1u : 0u);
         }
 
         private static void SLTIU(CPU cpu) {
-            bool condition = cpu.GPR[cpu.instr.rs] < cpu.instr.imm_s;
+            bool condition = ReadGpr(cpu, cpu.instr.rs) < cpu.instr.imm_s;
             cpu.setGPR(cpu.instr.rt, condition ? 1u : 0u);
         }
 
-        private static void ANDI(CPU cpu) => cpu.setGPR(cpu.instr.rt, cpu.GPR[cpu.instr.rs] & cpu.instr.imm);
+        private static void ANDI(CPU cpu) => cpu.setGPR(cpu.instr.rt, ReadGpr(cpu, cpu.instr.rs) & cpu.instr.imm);
 
-        private static void ORI(CPU cpu) => cpu.setGPR(cpu.instr.rt, cpu.GPR[cpu.instr.rs] | cpu.instr.imm);
+        private static void ORI(CPU cpu) => cpu.setGPR(cpu.instr.rt, ReadGpr(cpu, cpu.instr.rs) | cpu.instr.imm);
 
-        private static void XORI(CPU cpu) => cpu.setGPR(cpu.instr.rt, cpu.GPR[cpu.instr.rs] ^ cpu.instr.imm);
+        private static void XORI(CPU cpu) => cpu.setGPR(cpu.instr.rt, ReadGpr(cpu, cpu.instr.rs) ^ cpu.instr.imm);
 
         private static void LUI(CPU cpu) => cpu.setGPR(cpu.instr.rt, cpu.instr.imm << 16);
 
@@ -673,7 +679,7 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void MTC0(CPU cpu) {
-            uint value = cpu.GPR[cpu.instr.rt];
+            uint value = ReadGpr(cpu, cpu.instr.rt);
             uint register = cpu.instr.rd;
 
             if (register == CAUSE) { //only bits 8 and 9 are writable
@@ -887,14 +893,14 @@ namespace ProjectPSX {
         private static void CFC2(CPU cpu) => delayedLoad(cpu, cpu.instr.rt, cpu.gte.loadControl(cpu.instr.rd));
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void MTC2(CPU cpu) => cpu.gte.writeData(cpu.instr.rd, cpu.GPR[cpu.instr.rt]);
+        private static void MTC2(CPU cpu) => cpu.gte.writeData(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rt));
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void CTC2(CPU cpu) => cpu.gte.writeControl(cpu.instr.rd, cpu.GPR[cpu.instr.rt]);
+        private static void CTC2(CPU cpu) => cpu.gte.writeControl(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rt));
 
         private static void LWC2(CPU cpu) {
             cpu._perfLoad32Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x3) != 0) {
                 cpu.COP0_GPR[BADA] = addr;
@@ -907,7 +913,7 @@ namespace ProjectPSX {
 
         private static void SWC2(CPU cpu) {
             cpu._perfStore32Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x3) != 0) {
                 cpu.COP0_GPR[BADA] = addr;
@@ -919,21 +925,21 @@ namespace ProjectPSX {
 
         private static void LB(CPU cpu) {
             cpu._perfLoad8Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
             uint value = (uint)(sbyte)cpu.LoadData8(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
         private static void LBU(CPU cpu) {
             cpu._perfLoad8Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
             uint value = cpu.LoadData8(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
         private static void LH(CPU cpu) {
             cpu._perfLoad16Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x1) != 0) {
                 cpu.COP0_GPR[BADA] = addr;
@@ -946,7 +952,7 @@ namespace ProjectPSX {
 
         private static void LHU(CPU cpu) {
             cpu._perfLoad16Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x1) != 0) {
                 cpu.COP0_GPR[BADA] = addr;
@@ -959,7 +965,7 @@ namespace ProjectPSX {
 
         private static void LW(CPU cpu) {
             cpu._perfLoad32Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x3) != 0) {
                 cpu.COP0_GPR[BADA] = addr;
@@ -972,11 +978,11 @@ namespace ProjectPSX {
 
         private static void LWL(CPU cpu) {
             cpu._perfLoad32Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
             uint aligned_load = cpu.LoadData32(aligned_addr);
 
-            uint LRValue = cpu.GPR[cpu.instr.rt];
+            uint LRValue = ReadGpr(cpu, cpu.instr.rt);
 
             if (cpu.instr.rt == cpu.memoryLoad.register) {
                 LRValue = cpu.memoryLoad.value;
@@ -991,11 +997,11 @@ namespace ProjectPSX {
 
         private static void LWR(CPU cpu) {
             cpu._perfLoad32Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
             uint aligned_load = cpu.LoadData32(aligned_addr);
 
-            uint LRValue = cpu.GPR[cpu.instr.rt];
+            uint LRValue = ReadGpr(cpu, cpu.instr.rt);
 
             if (cpu.instr.rt == cpu.memoryLoad.register) {
                 LRValue = cpu.memoryLoad.value;
@@ -1010,56 +1016,58 @@ namespace ProjectPSX {
 
         private static void SB(CPU cpu) {
             cpu._perfStore8Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
-            cpu.StoreData8(addr, (byte)cpu.GPR[cpu.instr.rt]);
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
+            cpu.StoreData8(addr, (byte)ReadGpr(cpu, cpu.instr.rt));
         }
 
         private static void SH(CPU cpu) {
             cpu._perfStore16Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x1) != 0) {
                 cpu.COP0_GPR[BADA] = addr;
                 EXCEPTION(cpu, EX.STORE_ADRESS_ERROR, cpu.instr.id);
             } else {
-                cpu.StoreData16(addr, (ushort)cpu.GPR[cpu.instr.rt]);
+                cpu.StoreData16(addr, (ushort)ReadGpr(cpu, cpu.instr.rt));
             }
         }
 
         private static void SW(CPU cpu) {
             cpu._perfStore32Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x3) != 0) {
                 cpu.COP0_GPR[BADA] = addr;
                 EXCEPTION(cpu, EX.STORE_ADRESS_ERROR, cpu.instr.id);
             } else {
-                cpu.StoreData32(addr, cpu.GPR[cpu.instr.rt]);
+                cpu.StoreData32(addr, ReadGpr(cpu, cpu.instr.rt));
             }
         }
 
         private static void SWR(CPU cpu) {
             cpu._perfStore32Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
             uint aligned_load = cpu.LoadData32(aligned_addr);
+            uint rt = ReadGpr(cpu, cpu.instr.rt);
 
             int shift = (int)((addr & 0x3) << 3);
             uint mask = (uint)0x00FF_FFFF >> (24 - shift);
-            uint value = (aligned_load & mask) | (cpu.GPR[cpu.instr.rt] << shift);
+            uint value = (aligned_load & mask) | (rt << shift);
 
             cpu.StoreData32(aligned_addr, value);
         }
 
         private static void SWL(CPU cpu) {
             cpu._perfStore32Ops++;
-            uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
+            uint addr = ReadGpr(cpu, cpu.instr.rs) + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
             uint aligned_load = cpu.LoadData32(aligned_addr);
+            uint rt = ReadGpr(cpu, cpu.instr.rt);
 
             int shift = (int)((addr & 0x3) << 3);
             uint mask = 0xFFFF_FF00 << shift;
-            uint value = (aligned_load & mask) | (cpu.GPR[cpu.instr.rt] >> (24 - shift));
+            uint value = (aligned_load & mask) | (rt >> (24 - shift));
 
             cpu.StoreData32(aligned_addr, value);
         }
@@ -1073,23 +1081,23 @@ namespace ProjectPSX {
 
         // Special Table Opcodes (Nested on Opcode 0x00 with additional function param)
 
-        private static void SLL(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.GPR[cpu.instr.rt] << (int)cpu.instr.sa);
+        private static void SLL(CPU cpu) => cpu.setGPR(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rt) << (int)cpu.instr.sa);
 
-        private static void SRL(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.GPR[cpu.instr.rt] >> (int)cpu.instr.sa);
+        private static void SRL(CPU cpu) => cpu.setGPR(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rt) >> (int)cpu.instr.sa);
 
-        private static void SRA(CPU cpu) => cpu.setGPR(cpu.instr.rd, (uint)((int)cpu.GPR[cpu.instr.rt] >> (int)cpu.instr.sa));
+        private static void SRA(CPU cpu) => cpu.setGPR(cpu.instr.rd, (uint)((int)ReadGpr(cpu, cpu.instr.rt) >> (int)cpu.instr.sa));
 
-        private static void SLLV(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.GPR[cpu.instr.rt] << (int)(cpu.GPR[cpu.instr.rs] & 0x1F));
+        private static void SLLV(CPU cpu) => cpu.setGPR(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rt) << (int)(ReadGpr(cpu, cpu.instr.rs) & 0x1F));
 
-        private static void SRLV(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.GPR[cpu.instr.rt] >> (int)(cpu.GPR[cpu.instr.rs] & 0x1F));
+        private static void SRLV(CPU cpu) => cpu.setGPR(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rt) >> (int)(ReadGpr(cpu, cpu.instr.rs) & 0x1F));
 
-        private static void SRAV(CPU cpu) => cpu.setGPR(cpu.instr.rd, (uint)((int)cpu.GPR[cpu.instr.rt] >> (int)(cpu.GPR[cpu.instr.rs] & 0x1F)));
+        private static void SRAV(CPU cpu) => cpu.setGPR(cpu.instr.rd, (uint)((int)ReadGpr(cpu, cpu.instr.rt) >> (int)(ReadGpr(cpu, cpu.instr.rs) & 0x1F)));
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void JR(CPU cpu) {
             cpu.opcodeIsBranch = true;
             cpu.opcodeTookBranch = true;
-            cpu.PC_Predictor = cpu.GPR[cpu.instr.rs];
+            cpu.PC_Predictor = ReadGpr(cpu, cpu.instr.rs);
         }
 
         private static void SYSCALL(CPU cpu) => EXCEPTION(cpu, EX.SYSCALL, cpu.instr.id);
@@ -1103,29 +1111,29 @@ namespace ProjectPSX {
 
         private static void MFHI(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.HI);
 
-        private static void MTHI(CPU cpu) => cpu.HI = cpu.GPR[cpu.instr.rs];
+        private static void MTHI(CPU cpu) => cpu.HI = ReadGpr(cpu, cpu.instr.rs);
 
         private static void MFLO(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.LO);
 
-        private static void MTLO(CPU cpu) => cpu.LO = cpu.GPR[cpu.instr.rs];
+        private static void MTLO(CPU cpu) => cpu.LO = ReadGpr(cpu, cpu.instr.rs);
 
         private static void MULT(CPU cpu) {
-            long value = (long)(int)cpu.GPR[cpu.instr.rs] * (long)(int)cpu.GPR[cpu.instr.rt]; //sign extend to pass amidog cpu test
+            long value = (long)(int)ReadGpr(cpu, cpu.instr.rs) * (long)(int)ReadGpr(cpu, cpu.instr.rt); //sign extend to pass amidog cpu test
 
             cpu.HI = (uint)(value >> 32);
             cpu.LO = (uint)value;
         }
 
         private static void MULTU(CPU cpu) {
-            ulong value = (ulong)cpu.GPR[cpu.instr.rs] * (ulong)cpu.GPR[cpu.instr.rt]; //sign extend to pass amidog cpu test
+            ulong value = (ulong)ReadGpr(cpu, cpu.instr.rs) * (ulong)ReadGpr(cpu, cpu.instr.rt); //sign extend to pass amidog cpu test
 
             cpu.HI = (uint)(value >> 32);
             cpu.LO = (uint)value;
         }
 
         private static void DIV(CPU cpu) {
-            int n = (int)cpu.GPR[cpu.instr.rs];
-            int d = (int)cpu.GPR[cpu.instr.rt];
+            int n = (int)ReadGpr(cpu, cpu.instr.rs);
+            int d = (int)ReadGpr(cpu, cpu.instr.rt);
 
             if (d == 0) {
                 cpu.HI = (uint)n;
@@ -1144,8 +1152,8 @@ namespace ProjectPSX {
         }
 
         private static void DIVU(CPU cpu) {
-            uint n = cpu.GPR[cpu.instr.rs];
-            uint d = cpu.GPR[cpu.instr.rt];
+            uint n = ReadGpr(cpu, cpu.instr.rs);
+            uint d = ReadGpr(cpu, cpu.instr.rt);
 
             if (d == 0) {
                 cpu.HI = n;
@@ -1157,8 +1165,8 @@ namespace ProjectPSX {
         }
 
         private static void ADD(CPU cpu) {
-            uint rs = cpu.GPR[cpu.instr.rs];
-            uint rt = cpu.GPR[cpu.instr.rt];
+            uint rs = ReadGpr(cpu, cpu.instr.rs);
+            uint rt = ReadGpr(cpu, cpu.instr.rt);
             uint result = rs + rt;
 
 #if CPU_EXCEPTIONS
@@ -1172,11 +1180,11 @@ namespace ProjectPSX {
 #endif
         }
 
-        private static void ADDU(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.GPR[cpu.instr.rs] + cpu.GPR[cpu.instr.rt]);
+        private static void ADDU(CPU cpu) => cpu.setGPR(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rs) + ReadGpr(cpu, cpu.instr.rt));
 
         private static void SUB(CPU cpu) {
-            uint rs = cpu.GPR[cpu.instr.rs];
-            uint rt = cpu.GPR[cpu.instr.rt];
+            uint rs = ReadGpr(cpu, cpu.instr.rs);
+            uint rt = ReadGpr(cpu, cpu.instr.rt);
             uint result = rs - rt;
 
 #if CPU_EXCEPTIONS
@@ -1190,23 +1198,23 @@ namespace ProjectPSX {
 #endif
         }
 
-        private static void SUBU(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.GPR[cpu.instr.rs] - cpu.GPR[cpu.instr.rt]);
+        private static void SUBU(CPU cpu) => cpu.setGPR(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rs) - ReadGpr(cpu, cpu.instr.rt));
 
-        private static void AND(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.GPR[cpu.instr.rs] & cpu.GPR[cpu.instr.rt]);
+        private static void AND(CPU cpu) => cpu.setGPR(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rs) & ReadGpr(cpu, cpu.instr.rt));
 
-        private static void OR(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.GPR[cpu.instr.rs] | cpu.GPR[cpu.instr.rt]);
+        private static void OR(CPU cpu) => cpu.setGPR(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rs) | ReadGpr(cpu, cpu.instr.rt));
 
-        private static void XOR(CPU cpu) => cpu.setGPR(cpu.instr.rd, cpu.GPR[cpu.instr.rs] ^ cpu.GPR[cpu.instr.rt]);
+        private static void XOR(CPU cpu) => cpu.setGPR(cpu.instr.rd, ReadGpr(cpu, cpu.instr.rs) ^ ReadGpr(cpu, cpu.instr.rt));
 
-        private static void NOR(CPU cpu) => cpu.setGPR(cpu.instr.rd, ~(cpu.GPR[cpu.instr.rs] | cpu.GPR[cpu.instr.rt]));
+        private static void NOR(CPU cpu) => cpu.setGPR(cpu.instr.rd, ~(ReadGpr(cpu, cpu.instr.rs) | ReadGpr(cpu, cpu.instr.rt)));
 
         private static void SLT(CPU cpu) {
-            bool condition = (int)cpu.GPR[cpu.instr.rs] < (int)cpu.GPR[cpu.instr.rt];
+            bool condition = (int)ReadGpr(cpu, cpu.instr.rs) < (int)ReadGpr(cpu, cpu.instr.rt);
             cpu.setGPR(cpu.instr.rd, condition ? 1u : 0u);
         }
 
         private static void SLTU(CPU cpu) {
-            bool condition = cpu.GPR[cpu.instr.rs] < cpu.GPR[cpu.instr.rt];
+            bool condition = ReadGpr(cpu, cpu.instr.rs) < ReadGpr(cpu, cpu.instr.rt);
             cpu.setGPR(cpu.instr.rd, condition ? 1u : 0u);
         }
 

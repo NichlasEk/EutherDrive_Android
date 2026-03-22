@@ -33,6 +33,7 @@
     <PackageReference Include="Avalonia.Android" Version="11.3.2" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.2" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.2" />
+    <PackageReference Include="Tomlyn" Version="0.16.2" />
   </ItemGroup>
 
   <ItemGroup>
