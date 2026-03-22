@@ -199,9 +199,7 @@ namespace ProjectPSX.Devices {
         private ushort n;
         public bool rl_decode_block(short[] blk, byte[] qt) {
             if (blockPointer >= 63) { //Start of new block
-                for (int i = 0; i < blk.Length; i++) {
-                    blk[i] = 0;
-                }
+                Array.Clear(blk, 0, blk.Length);
 
                 if (inBuffer.Count == 0) return false;
                 n = inBuffer.Dequeue();

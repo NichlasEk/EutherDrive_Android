@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 
 namespace ProjectPSX.Devices; 
 public class DMA {
@@ -37,6 +38,7 @@ public class DMA {
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool tick(int cycles) {
         uint mask = pendingTransferMask;
         while (mask != 0) {

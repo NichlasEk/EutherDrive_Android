@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 
 namespace ProjectPSX.Devices {
     public class TIMERS {
@@ -31,6 +32,7 @@ namespace ProjectPSX.Devices {
             return timer[timerNumber].load(addr);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool tick(int timerNumber, int cycles) {
             return timer[timerNumber].tick(cycles);
         }
@@ -40,6 +42,7 @@ namespace ProjectPSX.Devices {
             timer[1].syncGPU(sync);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public uint tickAll((int dotDiv, bool hblank, bool vblank) sync, int cycles) {
             timer[0].syncGPU(sync);
             timer[1].syncGPU(sync);

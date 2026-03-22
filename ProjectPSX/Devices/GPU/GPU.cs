@@ -273,6 +273,7 @@ namespace ProjectPSX.Devices {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool tick(int cycles) {
             //Video clock is the cpu clock multiplied by 11/7.
             videoCycles += cycles * 11 / 7;

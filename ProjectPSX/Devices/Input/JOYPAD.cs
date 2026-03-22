@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Runtime.CompilerServices;
 
 namespace ProjectPSX {
     public class JOYPAD {
@@ -73,6 +74,7 @@ namespace ProjectPSX {
         private int ackCounter;
         public bool HasPendingWork => transferActive || ackCounter > 0 || interruptRequest;
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool tick(int cycles) {
             if (transferActive) {
                 if (!TXreadyFlag1) {

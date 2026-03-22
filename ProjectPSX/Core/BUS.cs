@@ -217,6 +217,7 @@ public class BUS {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe uint load32(uint address) {
             if (address == 0xFFFE0130) {
                 _perfReadOpsMmio++;
@@ -327,6 +328,7 @@ public class BUS {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void write32(uint address, uint value) {
             if (address == 0xFFFE_0130) {
                 _perfWriteOpsMmio++;
@@ -424,6 +426,7 @@ public class BUS {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void write16(uint address, ushort value) {
             if (address == 0xFFFE_0130) {
                 _perfWriteOpsMmio++;
@@ -521,6 +524,7 @@ public class BUS {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void write8(uint address, byte value) {
             if (address == 0xFFFE_0130) {
                 _perfWriteOpsMmio++;

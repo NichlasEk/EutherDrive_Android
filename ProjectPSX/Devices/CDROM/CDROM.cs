@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -575,6 +576,7 @@ namespace ProjectPSX.Devices {
             [0x1F] = "Cmd_1F_VideoCD",
         };
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool tick(int cycles) {
             bool triggerInterrupt = false;
             counter += cycles;

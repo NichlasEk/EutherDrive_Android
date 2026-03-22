@@ -862,6 +862,7 @@ namespace ProjectPSX.Devices {
                 _perfCdSamplePairsMixed);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool tick(int cycles) {
             counter += cycles;
             TickDmaTransfer(cycles);
