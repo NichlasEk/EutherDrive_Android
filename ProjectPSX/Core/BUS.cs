@@ -13,6 +13,10 @@ public class BUS {
         public readonly struct PerfSnapshot {
             public readonly int TickCalls;
             public readonly int TickCycles;
+            public readonly int ReadOpsFast;
+            public readonly int ReadOpsMmio;
+            public readonly int WriteOpsFast;
+            public readonly int WriteOpsMmio;
             public readonly int Load32Ram;
             public readonly int Load32Ex1;
             public readonly int Load32Scratchpad;
@@ -34,6 +38,10 @@ public class BUS {
             public PerfSnapshot(
                 int tickCalls,
                 int tickCycles,
+                int readOpsFast,
+                int readOpsMmio,
+                int writeOpsFast,
+                int writeOpsMmio,
                 int load32Ram,
                 int load32Ex1,
                 int load32Scratchpad,
@@ -53,6 +61,10 @@ public class BUS {
                 int write8Mmio) {
                 TickCalls = tickCalls;
                 TickCycles = tickCycles;
+                ReadOpsFast = readOpsFast;
+                ReadOpsMmio = readOpsMmio;
+                WriteOpsFast = writeOpsFast;
+                WriteOpsMmio = writeOpsMmio;
                 Load32Ram = load32Ram;
                 Load32Ex1 = load32Ex1;
                 Load32Scratchpad = load32Scratchpad;
@@ -113,6 +125,10 @@ public class BUS {
         private int spuCycleAccumulator;
         private int _perfTickCalls;
         private int _perfTickCycles;
+        private int _perfReadOpsFast;
+        private int _perfReadOpsMmio;
+        private int _perfWriteOpsFast;
+        private int _perfWriteOpsMmio;
         private int _perfLoad32Ram;
         private int _perfLoad32Ex1;
         private int _perfLoad32Scratchpad;
@@ -198,6 +214,7 @@ public class BUS {
 
         public unsafe uint load32(uint address) {
             if (address == 0xFFFE0130) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return memoryCache;
@@ -206,78 +223,97 @@ public class BUS {
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
+                _perfReadOpsFast++;
                 _perfLoad32Ram++;
                 uint physical = addr & 0x1F_FFFF;
                 uint value = load<uint>(physical, ramPtr);
                 TraceRamRead(physical, 4, value);
                 return value;
             } else if (addr < 0x1F80_0000) {
+                _perfReadOpsFast++;
                 _perfLoad32Ex1++;
                 return load<uint>(addr & 0x7_FFFF, ex1Ptr);
             } else if (addr < 0x1f80_0400) {
+                _perfReadOpsFast++;
                 _perfLoad32Scratchpad++;
                 return load<uint>(addr & 0x3FF, scrathpadPtr);
             } else if (addr < 0x1F80_1040) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return load<uint>(addr & 0xF, memoryControl1);
             } else if (addr < 0x1F80_1050) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return joypad.load(addr);
             } else if (addr < 0x1F80_1060) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 if (addr == 0x1F80_1054) return Sio1StatusDefault;
                 return load<uint>(addr & 0xF, sio);
             } else if (addr < 0x1F80_1070) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return load<uint>(addr & 0xF, memoryControl2);
             } else if (addr < 0x1F80_1080) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return interruptController.load(addr);
             } else if (addr < 0x1F80_1100) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return dma.load(addr);
             } else if (addr < 0x1F80_1140) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return timers.load(addr);
             } else if (addr <= 0x1F80_1803) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return cdrom.load(addr);
             } else if (addr == 0x1F80_1810) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return gpu.loadGPUREAD();
             } else if (addr == 0x1F80_1814) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return gpu.loadGPUSTAT();
             } else if (addr == 0x1F80_1820) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return mdec.readMDEC0_Data();
             } else if (addr == 0x1F80_1824) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return mdec.readMDEC1_Status();
             } else if (addr < 0x1F80_2000) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return spu.load(addr);
             } else if (addr < 0x1F80_4000) {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 return exp2.load(addr);
             } else if (addr < 0x1FC8_0000) {
+                _perfReadOpsFast++;
                 _perfLoad32Bios++;
                 return load<uint>(addr & 0x7_FFFF, biosPtr);
             } else {
+                _perfReadOpsMmio++;
                 _perfLoad32Mmio++;
                 NoteCpuMmioAccess();
                 if (VerboseBusAccess)
@@ -288,6 +324,7 @@ public class BUS {
 
         public unsafe void write32(uint address, uint value) {
             if (address == 0xFFFE_0130) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 memoryCache = value;
@@ -298,66 +335,82 @@ public class BUS {
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
+                _perfWriteOpsFast++;
                 _perfWrite32Ram++;
                 uint physical = addr & 0x1F_FFFF;
                 TraceRamWrite(physical, 4, value, "cpu");
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 4);
             } else if (addr < 0x1F80_0000) {
+                _perfWriteOpsFast++;
                 _perfWrite32Ex1++;
                 write(addr & 0x7_FFFF, value, ex1Ptr);
             } else if (addr < 0x1f80_0400) {
+                _perfWriteOpsFast++;
                 _perfWrite32Scratchpad++;
                 write(addr & 0x3FF, value, scrathpadPtr);
             } else if (addr < 0x1F80_1040) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 write(addr & 0x3F, value, memoryControl1);
             } else if (addr < 0x1F80_1050) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 joypad.write(addr, value);
             } else if (addr < 0x1F80_1060) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 write(addr & 0xF, value, sio);
             } else if (addr < 0x1F80_1070) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 write(addr & 0xF, value, memoryControl2);
             } else if (addr < 0x1F80_1080) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 interruptController.write(addr, value);
             } else if (addr < 0x1F80_1100) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 dma.write(addr, value);
             } else if (addr < 0x1F80_1140) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 timers.write(addr, value);
             } else if (addr < 0x1F80_1810) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 cdrom.write(addr, value);
             } else if (addr < 0x1F80_1820) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 gpu.write(addr, value);
             } else if (addr < 0x1F80_1830) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 mdec.write(addr, value);
             } else if (addr < 0x1F80_2000) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 spu.write(addr, (ushort)value);
             } else if (addr < 0x1F80_4000) {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 exp2.write(addr, value);
             } else {
+                _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
                 if (VerboseBusAccess)
@@ -367,6 +420,7 @@ public class BUS {
 
         public unsafe void write16(uint address, ushort value) {
             if (address == 0xFFFE_0130) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 memoryCache = value;
@@ -377,66 +431,82 @@ public class BUS {
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
+                _perfWriteOpsFast++;
                 _perfWrite16Ram++;
                 uint physical = addr & 0x1F_FFFF;
                 TraceRamWrite(physical, 2, value, "cpu");
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 2);
             } else if (addr < 0x1F80_0000) {
+                _perfWriteOpsFast++;
                 _perfWrite16Ex1++;
                 write(addr & 0x7_FFFF, value, ex1Ptr);
             } else if (addr < 0x1F80_0400) {
+                _perfWriteOpsFast++;
                 _perfWrite16Scratchpad++;
                 write(addr & 0x3FF, value, scrathpadPtr);
             } else if (addr < 0x1F80_1040) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 write(addr & 0x3F, value, memoryControl1);
             } else if (addr < 0x1F80_1050) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 joypad.write(addr, value);
             } else if (addr < 0x1F80_1060) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 write(addr & 0xF, value, sio);
             } else if (addr < 0x1F80_1070) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 write(addr & 0xF, value, memoryControl2);
             } else if (addr < 0x1F80_1080) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 interruptController.write(addr, value);
             } else if (addr < 0x1F80_1100) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 dma.write(addr, value);
             } else if (addr < 0x1F80_1140) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 timers.write(addr, value);
             } else if (addr < 0x1F80_1810) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 cdrom.write(addr, value);
             } else if (addr < 0x1F80_1820) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 gpu.write(addr, value);
             } else if (addr < 0x1F80_1830) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 mdec.write(addr, value);
             } else if (addr < 0x1F80_2000) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 spu.write(addr, value);
             } else if (addr < 0x1F80_4000) {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 exp2.write(addr, value);
             } else {
+                _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
                 if (VerboseBusAccess)
@@ -446,6 +516,7 @@ public class BUS {
 
         public unsafe void write8(uint address, byte value) {
             if (address == 0xFFFE_0130) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 memoryCache = value;
@@ -456,66 +527,82 @@ public class BUS {
             uint i = address >> 29;
             uint addr = address & RegionMask[i];
             if (addr < 0x1F00_0000) {
+                _perfWriteOpsFast++;
                 _perfWrite8Ram++;
                 uint physical = addr & 0x1F_FFFF;
                 TraceRamWrite(physical, 1, value, "cpu");
                 write(physical, value, ramPtr);
                 ramWriteObserver?.Invoke(physical, 1);
             } else if (addr < 0x1F80_0000) {
+                _perfWriteOpsFast++;
                 _perfWrite8Ex1++;
                 write(addr & 0x7_FFFF, value, ex1Ptr);
             } else if (addr < 0x1f80_0400) {
+                _perfWriteOpsFast++;
                 _perfWrite8Scratchpad++;
                 write(addr & 0x3FF, value, scrathpadPtr);
             } else if (addr < 0x1F80_1040) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 write(addr & 0x3F, value, memoryControl1);
             } else if (addr < 0x1F80_1050) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 joypad.write(addr, value);
             } else if (addr < 0x1F80_1060) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 write(addr & 0xF, value, sio);
             } else if (addr < 0x1F80_1070) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 write(addr & 0xF, value, memoryControl2);
             } else if (addr < 0x1F80_1080) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 interruptController.write(addr, value);
             } else if (addr < 0x1F80_1100) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 dma.write(addr, value);
             } else if (addr < 0x1F80_1140) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 timers.write(addr, value);
             } else if (addr < 0x1F80_1810) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 cdrom.write(addr, value);
             } else if (addr < 0x1F80_1820) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 gpu.write(addr, value);
             } else if (addr < 0x1F80_1830) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 mdec.write(addr, value);
             } else if (addr < 0x1F80_2000) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 spu.write(addr, value);
             } else if (addr < 0x1F80_4000) {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 exp2.write(addr, value);
             } else {
+                _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
                 if (VerboseBusAccess)
@@ -754,6 +841,10 @@ public class BUS {
         public void ResetPerfCounters() {
             _perfTickCalls = 0;
             _perfTickCycles = 0;
+            _perfReadOpsFast = 0;
+            _perfReadOpsMmio = 0;
+            _perfWriteOpsFast = 0;
+            _perfWriteOpsMmio = 0;
             _perfLoad32Ram = 0;
             _perfLoad32Ex1 = 0;
             _perfLoad32Scratchpad = 0;
@@ -777,6 +868,10 @@ public class BUS {
             return new PerfSnapshot(
                 _perfTickCalls,
                 _perfTickCycles,
+                _perfReadOpsFast,
+                _perfReadOpsMmio,
+                _perfWriteOpsFast,
+                _perfWriteOpsMmio,
                 _perfLoad32Ram,
                 _perfLoad32Ex1,
                 _perfLoad32Scratchpad,
@@ -814,12 +909,211 @@ public class BUS {
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryLoad8Fast(uint address, out byte value) {
+            uint i = address >> 29;
+            uint addr = address & RegionMask[i];
+            if (addr < 0x1F00_0000) {
+                _perfReadOpsFast++;
+                uint physical = addr & 0x1F_FFFF;
+                value = *(ramPtr + physical);
+                TraceRamRead(physical, 1, value);
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                _perfReadOpsFast++;
+                value = *(ex1Ptr + (addr & 0x7_FFFF));
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                _perfReadOpsFast++;
+                value = *(scrathpadPtr + (addr & 0x3FF));
+                return true;
+            }
+
+            if (addr < 0x1FC8_0000 && addr >= 0x1FC0_0000) {
+                _perfReadOpsFast++;
+                value = *(biosPtr + (addr & 0x7_FFFF));
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryLoad16Fast(uint address, out ushort value) {
+            uint i = address >> 29;
+            uint addr = address & RegionMask[i];
+            if (addr < 0x1F00_0000) {
+                _perfReadOpsFast++;
+                uint physical = addr & 0x1F_FFFF;
+                value = Unsafe.ReadUnaligned<ushort>(ramPtr + physical);
+                TraceRamRead(physical, 2, value);
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                _perfReadOpsFast++;
+                value = Unsafe.ReadUnaligned<ushort>(ex1Ptr + (addr & 0x7_FFFF));
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                _perfReadOpsFast++;
+                value = Unsafe.ReadUnaligned<ushort>(scrathpadPtr + (addr & 0x3FF));
+                return true;
+            }
+
+            if (addr < 0x1FC8_0000 && addr >= 0x1FC0_0000) {
+                _perfReadOpsFast++;
+                value = Unsafe.ReadUnaligned<ushort>(biosPtr + (addr & 0x7_FFFF));
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryLoad32Fast(uint address, out uint value) {
+            uint i = address >> 29;
+            uint addr = address & RegionMask[i];
+            if (addr < 0x1F00_0000) {
+                _perfReadOpsFast++;
+                _perfLoad32Ram++;
+                uint physical = addr & 0x1F_FFFF;
+                value = Unsafe.ReadUnaligned<uint>(ramPtr + physical);
+                TraceRamRead(physical, 4, value);
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                _perfReadOpsFast++;
+                _perfLoad32Ex1++;
+                value = Unsafe.ReadUnaligned<uint>(ex1Ptr + (addr & 0x7_FFFF));
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                _perfReadOpsFast++;
+                _perfLoad32Scratchpad++;
+                value = Unsafe.ReadUnaligned<uint>(scrathpadPtr + (addr & 0x3FF));
+                return true;
+            }
+
+            if (addr < 0x1FC8_0000 && addr >= 0x1FC0_0000) {
+                _perfReadOpsFast++;
+                _perfLoad32Bios++;
+                value = Unsafe.ReadUnaligned<uint>(biosPtr + (addr & 0x7_FFFF));
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryStore32Fast(uint address, uint value) {
+            uint i = address >> 29;
+            uint addr = address & RegionMask[i];
+            if (addr < 0x1F00_0000) {
+                _perfWriteOpsFast++;
+                _perfWrite32Ram++;
+                uint physical = addr & 0x1F_FFFF;
+                TraceRamWrite(physical, 4, value, "cpu");
+                Unsafe.WriteUnaligned(ramPtr + physical, value);
+                ramWriteObserver?.Invoke(physical, 4);
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                _perfWriteOpsFast++;
+                _perfWrite32Ex1++;
+                Unsafe.WriteUnaligned(ex1Ptr + (addr & 0x7_FFFF), value);
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                _perfWriteOpsFast++;
+                _perfWrite32Scratchpad++;
+                Unsafe.WriteUnaligned(scrathpadPtr + (addr & 0x3FF), value);
+                return true;
+            }
+
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryStore16Fast(uint address, ushort value) {
+            uint i = address >> 29;
+            uint addr = address & RegionMask[i];
+            if (addr < 0x1F00_0000) {
+                _perfWriteOpsFast++;
+                _perfWrite16Ram++;
+                uint physical = addr & 0x1F_FFFF;
+                TraceRamWrite(physical, 2, value, "cpu");
+                Unsafe.WriteUnaligned(ramPtr + physical, value);
+                ramWriteObserver?.Invoke(physical, 2);
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                _perfWriteOpsFast++;
+                _perfWrite16Ex1++;
+                Unsafe.WriteUnaligned(ex1Ptr + (addr & 0x7_FFFF), value);
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                _perfWriteOpsFast++;
+                _perfWrite16Scratchpad++;
+                Unsafe.WriteUnaligned(scrathpadPtr + (addr & 0x3FF), value);
+                return true;
+            }
+
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool TryStore8Fast(uint address, byte value) {
+            uint i = address >> 29;
+            uint addr = address & RegionMask[i];
+            if (addr < 0x1F00_0000) {
+                _perfWriteOpsFast++;
+                _perfWrite8Ram++;
+                uint physical = addr & 0x1F_FFFF;
+                TraceRamWrite(physical, 1, value, "cpu");
+                *(ramPtr + physical) = value;
+                ramWriteObserver?.Invoke(physical, 1);
+                return true;
+            }
+
+            if (addr < 0x1F80_0000) {
+                _perfWriteOpsFast++;
+                _perfWrite8Ex1++;
+                *(ex1Ptr + (addr & 0x7_FFFF)) = value;
+                return true;
+            }
+
+            if (addr < 0x1F80_0400) {
+                _perfWriteOpsFast++;
+                _perfWrite8Scratchpad++;
+                *(scrathpadPtr + (addr & 0x3FF)) = value;
+                return true;
+            }
+
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe uint LoadFromRam(uint addr) {
             return *(uint*)(ramPtr + (addr & 0x1F_FFFF));
         }
 
         public DMA DMAController => dma;
-        public bool RequiresFrequentSync => _cpuTightSyncBudgetCycles > 0 || cdrom.HasPendingWork || dma.HasPendingWork || joypad.HasPendingWork;
+        public bool RequiresFrequentSync => _cpuTightSyncBudgetCycles > 0 || cdrom.RequiresFrequentSync || dma.HasPendingWork || joypad.HasPendingWork;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe uint LoadFromBios(uint addr) {

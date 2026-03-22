@@ -147,6 +147,21 @@ namespace ProjectPSX.Devices {
         private int counter;
         private Queue<DelayedInterrupt> interruptQueue = new Queue<DelayedInterrupt>();
         public bool HasPendingWork => mode != Mode.Idle || interruptQueue.Count != 0 || (IF & IE) != 0;
+        public bool RequiresFrequentSync {
+            get {
+                if (interruptQueue.Count != 0 || IF != 0 || edgeTrigger) {
+                    return true;
+                }
+
+                return mode switch {
+                    Mode.Seek => true,
+                    Mode.TOC => true,
+                    Mode.Read => counter + 96 >= GetReadCycles(),
+                    Mode.Play => (isReport && counter + 96 >= GetPlayCycles()) || cd.isTrackChange,
+                    _ => false,
+                };
+            }
+        }
 
         private sealed class DelayedInterrupt {
             public int delay;

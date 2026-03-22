@@ -316,13 +316,10 @@ namespace ProjectPSX {
             _perfICacheMisses += cpuPerf.ICacheMisses;
             _perfBusTickCalls += busPerf.TickCalls;
             _perfBusTickCycles += busPerf.TickCycles;
-            _perfBusFastReads += busPerf.Load32Ram + busPerf.Load32Ex1 + busPerf.Load32Scratchpad + busPerf.Load32Bios;
-            _perfBusMmioReads += busPerf.Load32Mmio;
-            _perfBusFastWrites +=
-                busPerf.Write32Ram + busPerf.Write16Ram + busPerf.Write8Ram +
-                busPerf.Write32Ex1 + busPerf.Write16Ex1 + busPerf.Write8Ex1 +
-                busPerf.Write32Scratchpad + busPerf.Write16Scratchpad + busPerf.Write8Scratchpad;
-            _perfBusMmioWrites += busPerf.Write32Mmio + busPerf.Write16Mmio + busPerf.Write8Mmio;
+            _perfBusFastReads += busPerf.ReadOpsFast;
+            _perfBusMmioReads += busPerf.ReadOpsMmio;
+            _perfBusFastWrites += busPerf.WriteOpsFast;
+            _perfBusMmioWrites += busPerf.WriteOpsMmio;
             _perfGpuTriangles += gpuPerf.TrianglePrimitives;
             _perfGpuRectangles += gpuPerf.RectanglePrimitives;
             _perfGpuLines += gpuPerf.LineSegments;

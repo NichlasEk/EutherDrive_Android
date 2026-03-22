@@ -843,17 +843,17 @@ namespace ProjectPSX {
             }
         }
 
-        private static void LB(CPU cpu) { //todo redo this as it unnecesary load32
+        private static void LB(CPU cpu) {
             cpu._perfLoad8Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
-            uint value = (uint)(sbyte)cpu.LoadData32(addr);
+            uint value = (uint)(sbyte)cpu.LoadData8(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
         private static void LBU(CPU cpu) {
             cpu._perfLoad8Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
-            uint value = (byte)cpu.LoadData32(addr);
+            uint value = cpu.LoadData8(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
@@ -865,7 +865,7 @@ namespace ProjectPSX {
                 cpu.COP0_GPR[BADA] = addr;
                 EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
             } else {
-                uint value = (uint)(short)cpu.LoadData32(addr);
+                uint value = (uint)(short)cpu.LoadData16(addr);
                 delayedLoad(cpu, cpu.instr.rt, value);
             }
         }
@@ -878,7 +878,7 @@ namespace ProjectPSX {
                 cpu.COP0_GPR[BADA] = addr;
                 EXCEPTION(cpu, EX.LOAD_ADRESS_ERROR, cpu.instr.id);
             } else {
-                uint value = (ushort)cpu.LoadData32(addr);
+                uint value = cpu.LoadData16(addr);
                 delayedLoad(cpu, cpu.instr.rt, value);
             }
         }
@@ -1152,6 +1152,10 @@ namespace ProjectPSX {
                     return 0;
                 }
 
+                if (bus.TryLoad32Fast(virtualAddress, out uint fastValue)) {
+                    return fastValue;
+                }
+
                 return bus.load32(virtualAddress);
             }
 
@@ -1159,19 +1163,81 @@ namespace ProjectPSX {
                 return 0;
             }
 
+            if (bus.TryLoad32Fast(virtualAddress, out uint cachedFastValue)) {
+                return cachedFastValue;
+            }
+
             return bus.load32(virtualAddress);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private byte LoadData8(uint virtualAddress) {
+            if (!ExperimentalInstructionCache) {
+                if (!dontIsolateCache) {
+                    return 0;
+                }
+
+                if (bus.TryLoad8Fast(virtualAddress, out byte fastValue)) {
+                    return fastValue;
+                }
+
+                return (byte)bus.load32(virtualAddress);
+            }
+
+            if (!dontIsolateCache) {
+                return 0;
+            }
+
+            if (bus.TryLoad8Fast(virtualAddress, out byte cachedFastValue)) {
+                return cachedFastValue;
+            }
+
+            return (byte)bus.load32(virtualAddress);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private ushort LoadData16(uint virtualAddress) {
+            if (!ExperimentalInstructionCache) {
+                if (!dontIsolateCache) {
+                    return 0;
+                }
+
+                if (bus.TryLoad16Fast(virtualAddress, out ushort fastValue)) {
+                    return fastValue;
+                }
+
+                return (ushort)bus.load32(virtualAddress);
+            }
+
+            if (!dontIsolateCache) {
+                return 0;
+            }
+
+            if (bus.TryLoad16Fast(virtualAddress, out ushort cachedFastValue)) {
+                return cachedFastValue;
+            }
+
+            return (ushort)bus.load32(virtualAddress);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData32(uint virtualAddress, uint value) {
             if (!ExperimentalInstructionCache) {
                 if (dontIsolateCache) {
+                    if (bus.TryStore32Fast(virtualAddress, value)) {
+                        return;
+                    }
+
                     bus.write32(virtualAddress, value);
                 }
                 return;
             }
 
             if (!dontIsolateCache) {
+                return;
+            }
+
+            if (bus.TryStore32Fast(virtualAddress, value)) {
                 return;
             }
 
@@ -1182,12 +1248,20 @@ namespace ProjectPSX {
         private void StoreData16(uint virtualAddress, ushort value) {
             if (!ExperimentalInstructionCache) {
                 if (dontIsolateCache) {
+                    if (bus.TryStore16Fast(virtualAddress, value)) {
+                        return;
+                    }
+
                     bus.write16(virtualAddress, value);
                 }
                 return;
             }
 
             if (!dontIsolateCache) {
+                return;
+            }
+
+            if (bus.TryStore16Fast(virtualAddress, value)) {
                 return;
             }
 
@@ -1198,12 +1272,20 @@ namespace ProjectPSX {
         private void StoreData8(uint virtualAddress, byte value) {
             if (!ExperimentalInstructionCache) {
                 if (dontIsolateCache) {
+                    if (bus.TryStore8Fast(virtualAddress, value)) {
+                        return;
+                    }
+
                     bus.write8(virtualAddress, value);
                 }
                 return;
             }
 
             if (!dontIsolateCache) {
+                return;
+            }
+
+            if (bus.TryStore8Fast(virtualAddress, value)) {
                 return;
             }
 
