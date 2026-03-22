@@ -33,9 +33,9 @@ public partial class MainView : UserControl
     private const int AndroidAudioBatchFrames = 256;
     private const int AndroidAudioPullMaxFrames = 2048;
     private const double TargetFrameRate = 60.0;
-    private const double JoystickDeadZoneRatio = 0.34;
-    private const double JoystickAxisEngageRatio = 0.46;
-    private const double JoystickDiagonalRatio = 0.72;
+    private const double JoystickDeadZoneRatio = 0.20;
+    private const double JoystickAxisEngageRatio = 0.28;
+    private const double JoystickDiagonalRatio = 0.56;
     private const double JoystickPadding = 10.0;
     private const string SettingsFileName = "android-settings.toml";
     private const string LegacyJsonSettingsFileName = "android-settings.json";
@@ -47,10 +47,12 @@ public partial class MainView : UserControl
     private readonly HashSet<string> _pressedDirections = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pressedActions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<IPointer, HashSet<string>> _dpadPointerDirections = new();
+    private readonly Dictionary<IPointer, double> _dpadPointerIntensity = new();
     private readonly Dictionary<IPointer, string> _directionPointers = new();
     private readonly Dictionary<IPointer, string> _actionPointers = new();
     private readonly Dictionary<string, int> _directionPressCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _actionPressCounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _joystickDirectionPulseFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<IPointer> _facePointers = new();
     private readonly HashSet<string> _selectedVirtualPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _directionLatchFrames = new(StringComparer.OrdinalIgnoreCase);
@@ -700,7 +702,8 @@ public partial class MainView : UserControl
     private void UpdateDPadPointerLocked(Control control, IPointer pointer, Point point)
     {
         ReleaseDPadPointerLocked(pointer);
-        var directions = ResolveJoystickDirections(control, point, out double thumbOffsetX, out double thumbOffsetY);
+        var directions = ResolveJoystickDirections(control, point, out double thumbOffsetX, out double thumbOffsetY, out double normalizedDistance);
+        _dpadPointerIntensity[pointer] = normalizedDistance;
         UpdateDPadThumbLocked(control, thumbOffsetX, thumbOffsetY, active: true);
 
         if (directions.Count == 0)
@@ -729,10 +732,12 @@ public partial class MainView : UserControl
     {
         if (!_dpadPointerDirections.TryGetValue(pointer, out HashSet<string>? directions))
         {
+            _dpadPointerIntensity.Remove(pointer);
             return;
         }
 
         _dpadPointerDirections.Remove(pointer);
+        _dpadPointerIntensity.Remove(pointer);
         foreach (string direction in directions)
         {
             DecrementPressCountLocked(_directionPressCounts, _pressedDirections, direction);
@@ -839,10 +844,11 @@ public partial class MainView : UserControl
         SetFaceVisualState(LandscapeFaceY, y);
     }
 
-    private HashSet<string> ResolveJoystickDirections(Control control, Point point, out double thumbOffsetX, out double thumbOffsetY)
+    private HashSet<string> ResolveJoystickDirections(Control control, Point point, out double thumbOffsetX, out double thumbOffsetY, out double normalizedDistance)
     {
         thumbOffsetX = 0;
         thumbOffsetY = 0;
+        normalizedDistance = 0;
 
         double width = control.Bounds.Width;
         double height = control.Bounds.Height;
@@ -872,8 +878,9 @@ public partial class MainView : UserControl
 
         thumbOffsetX = dx;
         thumbOffsetY = dy;
+        normalizedDistance = distance / travelRadius;
 
-        if ((distance / travelRadius) < JoystickDeadZoneRatio)
+        if (normalizedDistance < JoystickDeadZoneRatio)
         {
             return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
@@ -1582,11 +1589,13 @@ public partial class MainView : UserControl
         lock (_inputSync)
         {
             _dpadPointerDirections.Clear();
+            _dpadPointerIntensity.Clear();
             _directionPointers.Clear();
             _actionPointers.Clear();
             _facePointers.Clear();
             _directionPressCounts.Clear();
             _actionPressCounts.Clear();
+            _joystickDirectionPulseFrames.Clear();
             _pressedDirections.Clear();
             _pressedActions.Clear();
             _directionLatchFrames.Clear();
@@ -2131,6 +2140,14 @@ public partial class MainView : UserControl
         _viewModel.FooterStatus = $"PSX superfast boot {(_viewModel.PsxSuperFastBootEnabled ? "enabled" : "disabled")}. Reboot PSX content to apply.";
     }
 
+    private void OnPsxAnalogControllerToggle(object? sender, RoutedEventArgs e)
+    {
+        _viewModel.PsxAnalogControllerEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked == true;
+        ApplyPsxExecutionSettings();
+        SaveSettings();
+        _viewModel.FooterStatus = $"PSX analog pad mode {(_viewModel.PsxAnalogControllerEnabled ? "enabled" : "disabled")}. Reboot the game if it does not detect the controller change live.";
+    }
+
     private void OnSharpPixelsToggle(object? sender, RoutedEventArgs e)
     {
         _viewModel.SharpPixelsEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked != false;
@@ -2180,11 +2197,13 @@ public partial class MainView : UserControl
 
     private void ApplyPsxExecutionSettings()
     {
+        PsxAdapter.AnalogControllerEnabled = _viewModel.PsxAnalogControllerEnabled;
         PsxAdapter.FastLoadEnabled = _viewModel.PsxFastLoadEnabled;
         PsxAdapter.SuperFastBootEnabled = _viewModel.PsxSuperFastBootEnabled;
 
         if (_core is PsxAdapter psx)
         {
+            psx.SetAnalogControllerEnabled(_viewModel.PsxAnalogControllerEnabled);
             psx.SetFastLoadEnabled(_viewModel.PsxFastLoadEnabled);
             psx.SetSuperFastBootEnabled(_viewModel.PsxSuperFastBootEnabled);
         }
@@ -2237,6 +2256,7 @@ public partial class MainView : UserControl
             SegaCdBiosDisplay = _viewModel.SegaCdBiosDisplay,
             PsxBiosPath = _viewModel.PsxBiosPath,
             PsxBiosDisplay = _viewModel.PsxBiosDisplay,
+            PsxAnalogControllerEnabled = _viewModel.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = _viewModel.PsxFastLoadEnabled,
             PsxSuperFastBootEnabled = _viewModel.PsxSuperFastBootEnabled,
             SharpPixelsEnabled = _viewModel.SharpPixelsEnabled,
@@ -2332,6 +2352,7 @@ public partial class MainView : UserControl
         _viewModel.SegaCdBiosDisplay = settings.SegaCdBiosDisplay ?? "(none)";
         _viewModel.PsxBiosPath = settings.PsxBiosPath;
         _viewModel.PsxBiosDisplay = settings.PsxBiosDisplay ?? "(none)";
+        _viewModel.PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled;
         _viewModel.PsxFastLoadEnabled = settings.PsxFastLoadEnabled;
         _viewModel.PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled;
         _viewModel.SharpPixelsEnabled = settings.SharpPixelsEnabled;
@@ -2358,12 +2379,22 @@ public partial class MainView : UserControl
             PadType padType = core is MdTracerAdapter or EutherDrive.Core.SegaCd.SegaCdAdapter
                 ? PadType.SixButton
                 : PadType.ThreeButton;
+            bool throttlePsxJoystickDirections = core is PsxAdapter;
+
+            if (throttlePsxJoystickDirections)
+            {
+                StepJoystickDirectionPulseFramesLocked();
+            }
+            else if (_joystickDirectionPulseFrames.Count != 0)
+            {
+                _joystickDirectionPulseFrames.Clear();
+            }
 
             var input = new ExtendedInputState(
-                Up: IsDirectionActiveLocked("Up"),
-                Down: IsDirectionActiveLocked("Down"),
-                Left: IsDirectionActiveLocked("Left"),
-                Right: IsDirectionActiveLocked("Right"),
+                Up: IsDirectionActiveLocked("Up", throttlePsxJoystickDirections),
+                Down: IsDirectionActiveLocked("Down", throttlePsxJoystickDirections),
+                Left: IsDirectionActiveLocked("Left", throttlePsxJoystickDirections),
+                Right: IsDirectionActiveLocked("Right", throttlePsxJoystickDirections),
                 South: IsActionActiveLocked("A"),
                 East: IsActionActiveLocked("B"),
                 West: IsActionActiveLocked("Y"),
@@ -2401,6 +2432,28 @@ public partial class MainView : UserControl
 
             AdvanceLatchFrames(_directionLatchFrames, _pressedDirections);
             AdvanceLatchFrames(_actionLatchFrames, _pressedActions);
+        }
+    }
+
+    private void StepJoystickDirectionPulseFramesLocked()
+    {
+        foreach (string tag in new[] { "Up", "Down", "Left", "Right" })
+        {
+            if (TryGetJoystickOnlyDirectionStrengthLocked(tag, out _))
+            {
+                if (_joystickDirectionPulseFrames.TryGetValue(tag, out int frames))
+                {
+                    _joystickDirectionPulseFrames[tag] = frames + 1;
+                }
+                else
+                {
+                    _joystickDirectionPulseFrames[tag] = 0;
+                }
+            }
+            else
+            {
+                _joystickDirectionPulseFrames.Remove(tag);
+            }
         }
     }
 
@@ -2442,10 +2495,25 @@ public partial class MainView : UserControl
         }
     }
 
-    private bool IsDirectionActiveLocked(string tag)
+    private bool IsDirectionActiveLocked(string tag, bool throttleJoystickDirections = false)
     {
-        return _pressedDirections.Contains(tag)
-            || (_directionLatchFrames.TryGetValue(tag, out int frames) && frames > 0);
+        if (_pressedDirections.Contains(tag))
+        {
+            if (!throttleJoystickDirections)
+            {
+                return true;
+            }
+
+            if (TryGetJoystickOnlyDirectionStrengthLocked(tag, out double strength)
+                && _joystickDirectionPulseFrames.TryGetValue(tag, out int pulseFrame))
+            {
+                return IsJoystickDirectionPulseActive(strength, pulseFrame);
+            }
+
+            return true;
+        }
+
+        return _directionLatchFrames.TryGetValue(tag, out int frames) && frames > 0;
     }
 
     private bool IsActionActiveLocked(string tag)
@@ -2466,6 +2534,67 @@ public partial class MainView : UserControl
         }
 
         return active.Count == 0 ? "-" : string.Join(" ", active);
+    }
+
+    private bool TryGetJoystickOnlyDirectionStrengthLocked(string tag, out double strength)
+    {
+        strength = 0;
+        if (!_directionPressCounts.TryGetValue(tag, out int totalCount) || totalCount <= 0)
+        {
+            return false;
+        }
+
+        int joystickCount = 0;
+        foreach ((IPointer pointer, HashSet<string> directions) in _dpadPointerDirections)
+        {
+            if (!directions.Contains(tag))
+            {
+                continue;
+            }
+
+            joystickCount++;
+            if (_dpadPointerIntensity.TryGetValue(pointer, out double pointerStrength) && pointerStrength > strength)
+            {
+                strength = pointerStrength;
+            }
+        }
+
+        if (joystickCount <= 0 || joystickCount != totalCount)
+        {
+            return false;
+        }
+
+        if (strength <= 0)
+        {
+            strength = 1;
+        }
+
+        return true;
+    }
+
+    private static bool IsJoystickDirectionPulseActive(double strength, int pulseFrame)
+    {
+        if (strength >= 0.90)
+        {
+            return true;
+        }
+
+        if (strength >= 0.74)
+        {
+            return pulseFrame % 3 != 2;
+        }
+
+        if (strength >= 0.56)
+        {
+            return pulseFrame % 2 == 0;
+        }
+
+        if (strength >= 0.40)
+        {
+            return pulseFrame % 3 == 0;
+        }
+
+        return pulseFrame % 4 == 0;
     }
 
     private string FormatActiveActionsLocked()
@@ -2848,6 +2977,7 @@ public partial class MainView : UserControl
         private string _pceBiosDisplay = "(auto)";
         private string _segaCdBiosDisplay = "(none)";
         private string _psxBiosDisplay = "(none)";
+        private bool _psxAnalogControllerEnabled;
         private bool _psxFastLoadEnabled;
         private bool _psxSuperFastBootEnabled;
         private bool _sharpPixelsEnabled = true;
@@ -3046,6 +3176,7 @@ public partial class MainView : UserControl
         public string PceBiosDisplay { get => _pceBiosDisplay; set => SetField(ref _pceBiosDisplay, value); }
         public string SegaCdBiosDisplay { get => _segaCdBiosDisplay; set => SetField(ref _segaCdBiosDisplay, value); }
         public string PsxBiosDisplay { get => _psxBiosDisplay; set => SetField(ref _psxBiosDisplay, value); }
+        public bool PsxAnalogControllerEnabled { get => _psxAnalogControllerEnabled; set => SetField(ref _psxAnalogControllerEnabled, value); }
         public bool PsxFastLoadEnabled { get => _psxFastLoadEnabled; set => SetField(ref _psxFastLoadEnabled, value); }
         public bool PsxSuperFastBootEnabled { get => _psxSuperFastBootEnabled; set => SetField(ref _psxSuperFastBootEnabled, value); }
         public bool SharpPixelsEnabled { get => _sharpPixelsEnabled; set => SetField(ref _sharpPixelsEnabled, value); }
@@ -3200,6 +3331,7 @@ public partial class MainView : UserControl
         public string? SegaCdBiosDisplay { get; set; }
         public string? PsxBiosPath { get; set; }
         public string? PsxBiosDisplay { get; set; }
+        public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public bool PsxSuperFastBootEnabled { get; set; }
         public bool SharpPixelsEnabled { get; set; } = true;

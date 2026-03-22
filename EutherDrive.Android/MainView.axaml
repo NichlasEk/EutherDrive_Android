@@ -942,7 +942,14 @@
                               Content="PSX superfast boot"
                               IsChecked="{Binding PsxSuperFastBootEnabled}"
                               Click="OnPsxSuperFastBootToggle" />
+                    <CheckBox Classes="settingsToggle"
+                              Content="PSX analog pad mode"
+                              IsChecked="{Binding PsxAnalogControllerEnabled}"
+                              Click="OnPsxAnalogControllerToggle" />
                     <TextBlock Text="Fast load trims normal boot waits. Superfast boot is more aggressive and usually matters on next boot."
+                               Foreground="#91A8BD"
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="Analog pad mode changes the reported PSX controller type. Current Android overlay input is still digital for now."
                                Foreground="#91A8BD"
                                TextWrapping="Wrap" />
                   </StackPanel>
