@@ -47,6 +47,13 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
     private bool _sawBrightFrame;
     private const float DcBlockCoeff = 0.995f;
     private double _audioSampleAccumulator;
+    private volatile string _framePerfSummary = "SNES draw --";
+    private long _framePerfWindowStartTicks = Stopwatch.GetTimestamp();
+    private long _framePerfAccumulatedCoreTicks;
+    private long _framePerfAccumulatedBlitTicks;
+    private long _framePerfAccumulatedPcmTicks;
+    private long _framePerfAccumulatedBytes;
+    private int _framePerfSamples;
 
     public string? RomSummary => _romSummary;
     public ConsoleRegion RomRegionHint => _romRegionHint;
@@ -73,6 +80,7 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         _audioSampleAccumulator = 0;
         _frameCounter = 0;
         _romSummary = BuildRomSummary();
+        ResetFramePerfCounters();
         if (File.Exists(path))
         {
             byte[] data = File.ReadAllBytes(path);
@@ -95,6 +103,7 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         _lpLastL = 0;
         _lpLastR = 0;
         _frameCounter = 0;
+        ResetFramePerfCounters();
     }
 
     public void SetRegionOverride(ConsoleRegion region)
@@ -116,7 +125,9 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         {
             int samplesPerFrame = GetSamplesPerFrame();
             _audioHandler.EnsureCapacity(samplesPerFrame);
+            long coreStart = Stopwatch.GetTimestamp();
             _system.RunFrameForExternal();
+            long coreTicks = Stopwatch.GetTimestamp() - coreStart;
             int[] pixels = _system.PPU.GetPixels();
             int presentWidth = DefaultWidth;
             int presentHeight = DefaultHeight;
@@ -131,7 +142,10 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
                         EnsureFrameBuffer(presentWidth, presentHeight);
                         Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
                         EnsureAudioBuffer(samplesPerFrame);
+                        long pcmStart = Stopwatch.GetTimestamp();
                         ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
+                        long pcmTicks = Stopwatch.GetTimestamp() - pcmStart;
+                        UpdateFramePerfStats(coreTicks, 0, pcmTicks, 0);
                         TraceAudioIfEnabled();
                         return;
                     }
@@ -144,9 +158,14 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
                 }
             }
             EnsureFrameBuffer(presentWidth, presentHeight);
+            long blitStart = Stopwatch.GetTimestamp();
             ConvertArgbToBgra(pixels, _frameBuffer, presentWidth, presentHeight, PPU.MaxFrameWidth);
+            long blitTicks = Stopwatch.GetTimestamp() - blitStart;
             EnsureAudioBuffer(samplesPerFrame);
+            long pcmStart2 = Stopwatch.GetTimestamp();
             ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
+            long pcmTicks2 = Stopwatch.GetTimestamp() - pcmStart2;
+            UpdateFramePerfStats(coreTicks, blitTicks, pcmTicks2, presentHeight * _frameStride);
             TraceAudioIfEnabled();
             _frameCounter++;
         }
@@ -350,6 +369,23 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
     public string? GetPpuDebugSnapshot()
     {
         return _system.PPU is PPU ppu ? ppu.GetDebugSnapshot() : null;
+    }
+
+    public bool TryGetFramePerfSummary(out string summary)
+    {
+        summary = _framePerfSummary;
+        if (_system is SNESSystem snesSystem)
+        {
+            string corePerf = snesSystem.GetPerfSummary();
+            if (!string.IsNullOrWhiteSpace(corePerf))
+            {
+                summary = string.IsNullOrWhiteSpace(summary)
+                    ? corePerf
+                    : $"{summary}\n{corePerf}";
+            }
+        }
+
+        return !string.IsNullOrWhiteSpace(summary);
     }
 
     public string GetDivergenceCheckpoint()
@@ -684,6 +720,46 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         {
             Buffer.BlockCopy(source, y * sourceStridePixels * sizeof(int), dest, y * bytesPerRow, bytesPerRow);
         }
+    }
+
+    private void ResetFramePerfCounters()
+    {
+        _framePerfWindowStartTicks = Stopwatch.GetTimestamp();
+        _framePerfAccumulatedCoreTicks = 0;
+        _framePerfAccumulatedBlitTicks = 0;
+        _framePerfAccumulatedPcmTicks = 0;
+        _framePerfAccumulatedBytes = 0;
+        _framePerfSamples = 0;
+        _framePerfSummary = "SNES draw --";
+    }
+
+    private void UpdateFramePerfStats(long coreTicks, long blitTicks, long pcmTicks, int byteCount)
+    {
+        _framePerfAccumulatedCoreTicks += coreTicks;
+        _framePerfAccumulatedBlitTicks += blitTicks;
+        _framePerfAccumulatedPcmTicks += pcmTicks;
+        _framePerfAccumulatedBytes += byteCount;
+        _framePerfSamples++;
+
+        long nowTicks = Stopwatch.GetTimestamp();
+        double windowMs = (nowTicks - _framePerfWindowStartTicks) * 1000.0 / Stopwatch.Frequency;
+        if (windowMs < 250 || _framePerfSamples <= 0)
+            return;
+
+        double avgCoreMs = (_framePerfAccumulatedCoreTicks * 1000.0 / Stopwatch.Frequency) / _framePerfSamples;
+        double avgBlitMs = (_framePerfAccumulatedBlitTicks * 1000.0 / Stopwatch.Frequency) / _framePerfSamples;
+        double avgPcmMs = (_framePerfAccumulatedPcmTicks * 1000.0 / Stopwatch.Frequency) / _framePerfSamples;
+        double mbPerSec = windowMs > 0
+            ? (_framePerfAccumulatedBytes / (1024.0 * 1024.0)) / (windowMs / 1000.0)
+            : 0;
+        _framePerfSummary = $"SNES core:{avgCoreMs:0.0}ms  scanout:{avgBlitMs:0.0}ms  pcm:{avgPcmMs:0.0}ms  copy:{mbPerSec:0.0}MB/s";
+
+        _framePerfWindowStartTicks = nowTicks;
+        _framePerfAccumulatedCoreTicks = 0;
+        _framePerfAccumulatedBlitTicks = 0;
+        _framePerfAccumulatedPcmTicks = 0;
+        _framePerfAccumulatedBytes = 0;
+        _framePerfSamples = 0;
     }
 
     private sealed class SnesFrameRenderer : IRenderer

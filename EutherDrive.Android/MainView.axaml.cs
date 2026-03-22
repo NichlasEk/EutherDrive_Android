@@ -1361,6 +1361,21 @@ public partial class MainView : UserControl
                 perfSummary = $"{perfSummary}\n{compactCodeWindow}";
             }
         }
+        else if (_core is SnesAdapter snes && snes.TryGetFramePerfSummary(out string snesFramePerf))
+        {
+            perfSummary = $"{perfSummary}\n{snesFramePerf}";
+            string? ppuSnapshot = snes.GetPpuDebugSnapshot();
+            if (!string.IsNullOrWhiteSpace(ppuSnapshot))
+            {
+                string compactPpu = string.Join(
+                    '\n',
+                    ppuSnapshot
+                        .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Take(6));
+                if (!string.IsNullOrWhiteSpace(compactPpu))
+                    perfSummary = $"{perfSummary}\n{compactPpu}";
+            }
+        }
 
         _latestPerfSummary = perfSummary;
 

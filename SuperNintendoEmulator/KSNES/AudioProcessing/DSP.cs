@@ -11,6 +11,12 @@ public sealed class DSP : IDSP
 
     [NonSerialized]
     private IAPU? _apu;
+    [NonSerialized]
+    internal ulong PerfCycles;
+    [NonSerialized]
+    internal ulong PerfProducedSamples;
+    [NonSerialized]
+    internal ulong PerfEchoWrites;
 
     private const int BrrBlockLen = 9;
     private const int BrrBufferLen = 12;
@@ -695,11 +701,13 @@ public sealed class DSP : IDSP
         _echo.Reset();
         for (int i = 0; i < 8; i++)
             _voices[i].Reset();
+        ResetPerfCounters();
     }
 
     public void Cycle()
     {
         if (_apu == null) return;
+        PerfCycles++;
         var audioRam = _apu.RAM;
         var voices = _voices;
         var voiceSamplesL = _voiceSamplesL;
@@ -729,7 +737,10 @@ public sealed class DSP : IDSP
             sumR = Clamp16(sumR);
         }
 
-        var (echoL, echoR) = _echo.DoFilter(registers.EchoBufferWritesEnabled, audioRam, voiceSamplesL, voiceSamplesR);
+        bool echoWritesEnabled = registers.EchoBufferWritesEnabled;
+        var (echoL, echoR) = _echo.DoFilter(echoWritesEnabled, audioRam, voiceSamplesL, voiceSamplesR);
+        if (echoWritesEnabled)
+            PerfEchoWrites++;
 
         sumL = (sumL * registers.MasterVolumeL) >> 7;
         sumR = (sumR * registers.MasterVolumeR) >> 7;
@@ -752,7 +763,15 @@ public sealed class DSP : IDSP
             SamplesL[SampleOffset] = outL / 32768f;
             SamplesR[SampleOffset] = outR / 32768f;
             SampleOffset++;
+            PerfProducedSamples++;
         }
+    }
+
+    internal void ResetPerfCounters()
+    {
+        PerfCycles = 0;
+        PerfProducedSamples = 0;
+        PerfEchoWrites = 0;
     }
 
     public byte Read(int adr)

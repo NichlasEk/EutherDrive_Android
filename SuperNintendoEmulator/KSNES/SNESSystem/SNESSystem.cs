@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
+using System.Diagnostics;
 using KSNES.AudioProcessing;
 using KSNES.PictureProcessing;
 
@@ -168,6 +169,28 @@ public class SNESSystem : ISNESSystem
     private bool _pendingDmaWriteBusB;
     private int _pendingDmaWriteAddress;
     private int _pendingDmaWriteValue;
+    [NonSerialized]
+    private long _perfFrameTicks;
+    [NonSerialized]
+    private long _perfPpuTicks;
+    [NonSerialized]
+    private ulong _perfCpuReads;
+    [NonSerialized]
+    private ulong _perfCpuWrites;
+    [NonSerialized]
+    private ulong _perfDmaReads;
+    [NonSerialized]
+    private ulong _perfDmaWrites;
+    [NonSerialized]
+    private ulong _perfCpuSlots;
+    [NonSerialized]
+    private ulong _perfFastCpuWindowHits;
+    [NonSerialized]
+    private ulong _perfFastCpuWindowMclks;
+    [NonSerialized]
+    private ulong _perfDmaBytes;
+    [NonSerialized]
+    private ulong _perfHdmaRuns;
 
     private readonly bool _tracePpuBusWrites =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_BUS"), "1", StringComparison.Ordinal);
@@ -426,12 +449,15 @@ public class SNESSystem : ISNESSystem
 
     public void RunFrameForExternal()
     {
+        ResetPerfCounters();
+        long frameStart = Stopwatch.GetTimestamp();
         RunFrame(false);
         Renderer?.RenderBuffer(_ppuImpl.GetPixels());
         _apuImpl.SetSamples(AudioHandler.SampleBufferL, AudioHandler.SampleBufferR);
         AudioHandler.NextBuffer();
         ROM.RunCoprocessor(Cycles);
         FrameRendered?.Invoke(this, EventArgs.Empty);
+        _perfFrameTicks = Stopwatch.GetTimestamp() - frameStart;
     }
 
     public void StopEmulation()
@@ -481,9 +507,14 @@ public class SNESSystem : ISNESSystem
         int accessTime = 0;
         if (!dma)
         {
+            _perfCpuReads++;
             _cpuMemOps++;
             accessTime = pageData & BusPageAccessMask;
             _cpuCyclesLeft += accessTime;
+        }
+        else
+        {
+            _perfDmaReads++;
         }
         int val = _useFastReadPath ? RreadFast(fullAdr, GetBusPageKind(pageData)) : Rread(fullAdr);
         if (!dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr))
@@ -501,9 +532,14 @@ public class SNESSystem : ISNESSystem
         int accessTime = 0;
         if (!dma)
         {
+            _perfCpuWrites++;
             _cpuMemOps++;
             accessTime = pageData & BusPageAccessMask;
             _cpuCyclesLeft += accessTime;
+        }
+        else
+        {
+            _perfDmaWrites++;
         }
         OpenBus = value;
         bool isApuPortAccess = !dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr);
@@ -746,7 +782,9 @@ public class SNESSystem : ISNESSystem
         _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
         if (XPos == 512 && !noPpu)
         {
+            long ppuStart = Stopwatch.GetTimestamp();
             _ppuImpl.RenderLine(YPos);
+            _perfPpuTicks += Stopwatch.GetTimestamp() - ppuStart;
         }
         if (_autoJoyPendingStart && YPos == vBlankStart && XPos == 130)
         {
@@ -774,8 +812,6 @@ public class SNESSystem : ISNESSystem
         if (_hdmaTimer > 0
             || _dmaTimer > 0
             || _gpdmaState != GpDmaState.Idle
-            || _hIrqEnabled
-            || _vIrqEnabled
             || _autoJoyBusy
             || _autoJoyPendingStart)
         {
@@ -784,6 +820,9 @@ public class SNESSystem : ISNESSystem
 
         int currentLineMclks = GetCurrentLineMclks();
         int endX = GetFastCpuWindowEnd(currentLineMclks, noPpu);
+        int irqBoundaryX = GetFastCpuWindowIrqBoundary(currentLineMclks);
+        if (irqBoundaryX < endX)
+            endX = irqBoundaryX;
         if (endX <= XPos)
             return false;
 
@@ -809,6 +848,8 @@ public class SNESSystem : ISNESSystem
         AdvanceBaseClocks(chunkMclks);
         if (cpuCanRun)
             _cpuCyclesLeft -= chunkMclks;
+        _perfFastCpuWindowHits++;
+        _perfFastCpuWindowMclks += (ulong)chunkMclks;
         RomImpl.RunCoprocessor(Cycles);
         CatchUpApu();
         _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
@@ -816,6 +857,40 @@ public class SNESSystem : ISNESSystem
         _lastIrqHTime = GetIrqHTime();
 
         return true;
+    }
+
+    private int GetFastCpuWindowIrqBoundary(int currentLineMclks)
+    {
+        const int irqOffsetMclks = 10;
+
+        if (!_hIrqEnabled && !_vIrqEnabled)
+            return int.MaxValue;
+
+        if (_hIrqEnabled)
+        {
+            int irqX = (_hTimer * 4) + irqOffsetMclks;
+            if (irqX >= 0 && irqX < currentLineMclks)
+            {
+                int preIrqX = Math.Max(0, irqX - 2);
+                if (_vIrqEnabled)
+                {
+                    if (YPos == _vTimer && XPos < preIrqX)
+                        return preIrqX;
+                }
+                else if (XPos < preIrqX)
+                {
+                    return preIrqX;
+                }
+            }
+
+            return int.MaxValue;
+        }
+
+        int vOnlyBoundaryX = Math.Max(0, irqOffsetMclks - 2);
+        if (YPos == _vTimer && XPos < vOnlyBoundaryX)
+            return vOnlyBoundaryX;
+
+        return int.MaxValue;
     }
 
     private int GetFastCpuWindowEnd(int currentLineMclks, bool noPpu)
@@ -1060,6 +1135,7 @@ public class SNESSystem : ISNESSystem
     {
         if (_cpuCyclesLeft == 0)
         {
+            _perfCpuSlots++;
             _cpuImpl.CyclesLeft = 0;
             _cpuMemOps = 0;
             _cpuImpl.Cycle();
@@ -1218,6 +1294,7 @@ public class SNESSystem : ISNESSystem
             QueueDmaWriteBusB((_dmaBadr[channel] + _dmaOffs[tableOff]) & 0xff,
                 DmaReadBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel]));
         }
+        _perfDmaBytes++;
 
         _dmaTimer = 4;
         if (_gpdmaBytesCopied == 0)
@@ -1282,6 +1359,7 @@ public class SNESSystem : ISNESSystem
 
     private void HandleHdma()
     {
+        _perfHdmaRuns++;
         _hdmaTimer = 18;
         for (var i = 0; i < 8; i++)
         {
@@ -1306,6 +1384,7 @@ public class SNESSystem : ISNESSystem
                 {
                     for (var j = 0; j < _dmaOffLengths[_dmaMode[i]]; j++)
                     {
+                        _perfDmaBytes++;
                         int tableOff = _dmaMode[i] * 4 + j;
                         _hdmaTimer += 8;
                         if (_hdmaInd[i])
@@ -1358,6 +1437,36 @@ public class SNESSystem : ISNESSystem
                 }
             }
         }
+    }
+
+    private void ResetPerfCounters()
+    {
+        _perfFrameTicks = 0;
+        _perfPpuTicks = 0;
+        _perfCpuReads = 0;
+        _perfCpuWrites = 0;
+        _perfDmaReads = 0;
+        _perfDmaWrites = 0;
+        _perfCpuSlots = 0;
+        _perfFastCpuWindowHits = 0;
+        _perfFastCpuWindowMclks = 0;
+        _perfDmaBytes = 0;
+        _perfHdmaRuns = 0;
+        _cpuImpl.ResetPerfCounters();
+        _ppuImpl.ResetPerfCounters();
+        _apuImpl.ResetPerfCounters();
+    }
+
+    public string GetPerfSummary()
+    {
+        double frameMs = _perfFrameTicks * 1000.0 / Stopwatch.Frequency;
+        double ppuMs = _perfPpuTicks * 1000.0 / Stopwatch.Frequency;
+        double sampleMs = _apuImpl.PerfSetSamplesTicks * 1000.0 / Stopwatch.Frequency;
+        return
+            $"SNES frame:{frameMs:0.0}ms  ppu:{ppuMs:0.0}ms  sample:{sampleMs:0.0}ms\n" +
+            $"SNES core  instr:{_cpuImpl.PerfInstructions}  slot:{_perfCpuSlots}  rd/wr:{_perfCpuReads}/{_perfCpuWrites}  dmaRW:{_perfDmaReads}/{_perfDmaWrites}  fast:{_perfFastCpuWindowHits}/{_perfFastCpuWindowMclks}m  dmaB:{_perfDmaBytes}  hdma:{_perfHdmaRuns}\n" +
+            $"SNES ppu  lines:{_ppuImpl.PerfRenderedLines}  hi:{_ppuImpl.PerfHiResLines}  true:{_ppuImpl.PerfTrueHiResLines}  m7:{_ppuImpl.PerfMode7Lines}  pix:{_ppuImpl.PerfOutputPixels}\n" +
+            $"SNES dsp  cyc:{_apuImpl.DspImpl.PerfCycles}  samp:{_apuImpl.DspImpl.PerfProducedSamples}  echo:{_apuImpl.DspImpl.PerfEchoWrites}  out:{_apuImpl.PerfSetSamplesOutputs}";
     }
 
     private int ReadReg(int adr) 

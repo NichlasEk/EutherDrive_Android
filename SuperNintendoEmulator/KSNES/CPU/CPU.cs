@@ -176,6 +176,8 @@ public class CPU : ICPU
     private ISNESSystem _snes;
     [NonSerialized]
     private KSNES.SNESSystem.SNESSystem? _snesImpl;
+    [NonSerialized]
+    internal ulong PerfInstructions;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     public CPU()
@@ -255,6 +257,7 @@ public class CPU : ICPU
         _stopped = false;
         _waiting = false;
         CyclesLeft = 7;
+        PerfInstructions = 0;
     }
 
     public void Cycle() 
@@ -329,6 +332,7 @@ public class CPU : ICPU
                     mode = _modes[instr];
                 }
                 var (item1, item2) = GetAdr(mode);
+                PerfInstructions++;
                 _functions[instr](item1, item2);
             }
             else
@@ -341,6 +345,11 @@ public class CPU : ICPU
             }
         }
         CyclesLeft--;
+    }
+
+    internal void ResetPerfCounters()
+    {
+        PerfInstructions = 0;
     }
 
     private bool IsImmediateRdnmiPoll(int opcode)

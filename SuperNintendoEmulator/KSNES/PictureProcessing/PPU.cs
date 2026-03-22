@@ -261,6 +261,16 @@ public class PPU : IPPU
     private byte[] _tilePriorityBuffer = [];
     [NonSerialized]
     private bool _runtimeBuffersReady;
+    [NonSerialized]
+    internal ulong PerfRenderedLines;
+    [NonSerialized]
+    internal ulong PerfMode7Lines;
+    [NonSerialized]
+    internal ulong PerfHiResLines;
+    [NonSerialized]
+    internal ulong PerfTrueHiResLines;
+    [NonSerialized]
+    internal ulong PerfOutputPixels;
 
     private static byte[] BuildBrightnessTable()
     {
@@ -1239,6 +1249,7 @@ public class PPU : IPPU
         }
         else if (line > 0 && line < (FrameOverscan ? 240 : 225))
         {
+            PerfRenderedLines++;
             if (line == 1)
             {
                 _mosaicStartLine = 0;
@@ -1246,8 +1257,13 @@ public class PPU : IPPU
             }
             if (_mode == 7)
             {
+                PerfMode7Lines++;
                 GenerateMode7Coords(screenY);
             }
+            if (hiResOutput)
+                PerfHiResLines++;
+            if (trueHiResOutput)
+                PerfTrueHiResLines++;
             ResetLineCaches();
             BuildLineCaches();
             if (trueHiResOutput && !_frameTrueHiResOutput)
@@ -1366,7 +1382,17 @@ public class PPU : IPPU
                 }
                 i++;
             }
+            PerfOutputPixels += (ulong)(trueHiResOutput || _frameTrueHiResOutput ? 512 : 256);
         }
+    }
+
+    internal void ResetPerfCounters()
+    {
+        PerfRenderedLines = 0;
+        PerfMode7Lines = 0;
+        PerfHiResLines = 0;
+        PerfTrueHiResLines = 0;
+        PerfOutputPixels = 0;
     }
 
     private void ResetLineCaches()

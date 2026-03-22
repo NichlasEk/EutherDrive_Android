@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 
 namespace KSNES.AudioProcessing;
 
@@ -79,6 +80,10 @@ public class APU : IAPU
     private int _timer3target;
     private byte _timer3counter;
     private bool _timer3enabled;
+    [NonSerialized]
+    internal ulong PerfSetSamplesOutputs;
+    [NonSerialized]
+    internal long PerfSetSamplesTicks;
 
     public APU(ISPC700 spc, IDSP dsp)
     {
@@ -91,6 +96,7 @@ public class APU : IAPU
 
     public ISPC700 Spc => _spc;
     public IDSP Dsp => _dsp;
+    internal DSP DspImpl => _dspImpl;
     public void Attach()
     {
         _spcImpl.SetAPU(this);
@@ -132,6 +138,8 @@ public class APU : IAPU
         _resampleWrite = 0;
         _resampleCount = 0;
         _resamplePos = 0;
+        PerfSetSamplesOutputs = 0;
+        PerfSetSamplesTicks = 0;
     }
 
     public void ResyncAfterLoad()
@@ -389,9 +397,13 @@ public class APU : IAPU
 
     public void SetSamples(float[] left, float[] right)
     {
+        long startTicks = Stopwatch.GetTimestamp();
         int outCount = Math.Min(left.Length, right.Length);
         if (outCount <= 0)
+        {
+            PerfSetSamplesTicks += Stopwatch.GetTimestamp() - startTicks;
             return;
+        }
 
         float[] ringL = _resampleRingL;
         float[] ringR = _resampleRingR;
@@ -446,6 +458,15 @@ public class APU : IAPU
         _resampleRead = read;
         _resampleCount = count;
         _resamplePos = pos;
+        PerfSetSamplesOutputs += (ulong)outCount;
+        PerfSetSamplesTicks += Stopwatch.GetTimestamp() - startTicks;
+    }
+
+    internal void ResetPerfCounters()
+    {
+        PerfSetSamplesOutputs = 0;
+        PerfSetSamplesTicks = 0;
+        _dspImpl.ResetPerfCounters();
     }
 
     private void AppendResampleSample(float left, float right)
