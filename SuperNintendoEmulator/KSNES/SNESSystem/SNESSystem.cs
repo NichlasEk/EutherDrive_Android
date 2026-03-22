@@ -93,6 +93,7 @@ public class SNESSystem : ISNESSystem
     private const ulong ApuMasterClockFrequency = ApuOutputFrequency * 768;
     private const ulong NtscMasterClockFrequency = 21_477_270;
     private const ulong PalMasterClockFrequency = 21_281_370;
+    private const int FastCpuWindowSyncStepMclks = 16;
 
     private byte[] _dmaBadr = [];
     private ushort[] _dmaAadr = [];
@@ -843,15 +844,26 @@ public class SNESSystem : ISNESSystem
         if (chunkMclks <= 0)
             return false;
 
-        AdvanceBaseClocks(chunkMclks);
-        if (cpuCanRun)
-            _cpuCyclesLeft -= chunkMclks;
         _perfFastCpuWindowHits++;
         _perfFastCpuWindowMclks += (ulong)chunkMclks;
-        RomImpl.RunCoprocessor(Cycles);
-        CatchUpApu();
+        int remainingMclks = chunkMclks;
+        while (remainingMclks > 0)
+        {
+            int stepMclks = Math.Min(remainingMclks, FastCpuWindowSyncStepMclks);
+            stepMclks &= ~0x1;
+            if (stepMclks <= 0)
+                stepMclks = remainingMclks;
+
+            AdvanceBaseClocks(stepMclks);
+            if (cpuCanRun)
+                _cpuCyclesLeft -= stepMclks;
+            RomImpl.RunCoprocessor(Cycles);
+            CatchUpApu();
+            AdvanceBeamPositionBy(stepMclks, currentLineMclks);
+            remainingMclks -= stepMclks;
+        }
+
         _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
-        AdvanceBeamPositionBy(chunkMclks, currentLineMclks);
         _lastIrqHTime = GetIrqHTime();
 
         return true;
@@ -1453,6 +1465,7 @@ public class SNESSystem : ISNESSystem
         _cpuImpl.ResetPerfCounters();
         _ppuImpl.ResetPerfCounters();
         _apuImpl.ResetPerfCounters();
+        RomImpl.ResetPerfCounters();
     }
 
     public string GetPerfSummary()
@@ -1460,8 +1473,12 @@ public class SNESSystem : ISNESSystem
         double frameMs = _perfFrameTicks * 1000.0 / Stopwatch.Frequency;
         double ppuMs = _perfPpuTicks * 1000.0 / Stopwatch.Frequency;
         double sampleMs = _apuImpl.PerfSetSamplesTicks * 1000.0 / Stopwatch.Frequency;
+        double coprocMs = RomImpl.PerfRunCoprocessorTicks * 1000.0 / Stopwatch.Frequency;
+        double superFxMs = (RomImpl.SuperFx?.PerfTickTicks ?? 0) * 1000.0 / Stopwatch.Frequency;
+        double sa1Ms = ((KSNES.Specialchips.SA1.Sa1?)RomImpl.Sa1)?.PerfTickTicks * 1000.0 / Stopwatch.Frequency ?? 0.0;
         return
             $"SNES frame:{frameMs:0.0}ms  ppu:{ppuMs:0.0}ms  sample:{sampleMs:0.0}ms\n" +
+            $"SNES chip  coproc:{coprocMs:0.0}ms/{RomImpl.PerfRunCoprocessorCalls}  sfx:{superFxMs:0.0}ms/{RomImpl.SuperFx?.PerfTickCalls ?? 0} d:{RomImpl.SuperFx?.PerfTickCycles ?? 0}  sa1:{sa1Ms:0.0}ms/{((KSNES.Specialchips.SA1.Sa1?)RomImpl.Sa1)?.PerfTickCalls ?? 0} d:{((KSNES.Specialchips.SA1.Sa1?)RomImpl.Sa1)?.PerfTickCycles ?? 0}\n" +
             $"SNES core  instr:{_cpuImpl.PerfInstructions}  slot:{_perfCpuSlots}  rd/wr:{_perfCpuReads}/{_perfCpuWrites}  dmaRW:{_perfDmaReads}/{_perfDmaWrites}  fast:{_perfFastCpuWindowHits}/{_perfFastCpuWindowMclks}m  dmaB:{_perfDmaBytes}  hdma:{_perfHdmaRuns}\n" +
             $"SNES ppu  lines:{_ppuImpl.PerfRenderedLines}  hi:{_ppuImpl.PerfHiResLines}  true:{_ppuImpl.PerfTrueHiResLines}  m7:{_ppuImpl.PerfMode7Lines}  pix:{_ppuImpl.PerfOutputPixels}\n" +
             $"SNES dsp  cyc:{_apuImpl.DspImpl.PerfCycles}  samp:{_apuImpl.DspImpl.PerfProducedSamples}  echo:{_apuImpl.DspImpl.PerfEchoWrites}  out:{_apuImpl.PerfSetSamplesOutputs}";

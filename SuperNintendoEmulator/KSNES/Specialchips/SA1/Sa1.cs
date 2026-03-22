@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using KSNES.CPU;
 using KSNES.SNESSystem;
@@ -42,6 +43,9 @@ public sealed class Sa1
     private readonly Sa1Timer _timer;
     private ulong _bwramWaitCycles;
     private ulong _lastSnesCycles;
+    internal ulong PerfTickCalls;
+    internal ulong PerfTickCycles;
+    internal long PerfTickTicks;
     [NonSerialized]
     private readonly Sa1System _system;
     [NonSerialized]
@@ -199,10 +203,16 @@ public sealed class Sa1
 
     public void Tick(ulong snesCycles)
     {
+        long startTicks = Stopwatch.GetTimestamp();
+        PerfTickCalls++;
         if (snesCycles <= _lastSnesCycles)
+        {
+            PerfTickTicks += Stopwatch.GetTimestamp() - startTicks;
             return;
+        }
 
         ulong delta = snesCycles - _lastSnesCycles;
+        PerfTickCycles += delta;
         ulong sa1Cycles = delta / 2;
         _lastSnesCycles += sa1Cycles * 2;
         ulong spentWait = Math.Min(sa1Cycles, _bwramWaitCycles);
@@ -275,6 +285,7 @@ public sealed class Sa1
         }
 
         _timer.Advance(sa1Cycles);
+        PerfTickTicks += Stopwatch.GetTimestamp() - startTicks;
     }
 
     public void ResyncTo(ulong snesCycles)
@@ -303,6 +314,14 @@ public sealed class Sa1
         _lastSa1Wait = _registers.Sa1Wait;
         _lastSa1Nmi = false;
         _pendingSa1BwramWrites.Clear();
+        ResetPerfCounters();
+    }
+
+    internal void ResetPerfCounters()
+    {
+        PerfTickCalls = 0;
+        PerfTickCycles = 0;
+        PerfTickTicks = 0;
     }
 
     public void NotifyDmaStart(uint sourceAddress)
