@@ -87,7 +87,7 @@ public class PPU : IPPU
     private readonly double[] _brightnessMults = [0.1, 0.5, 1.1, 1.6, 2.2, 2.7, 3.3, 3.8, 4.4, 4.9, 5.5, 6, 6.6, 7.1, 7.6, 8.2];
 
     [JsonIgnore]
-    private static readonly byte[,] BrightnessTable = BuildBrightnessTable();
+    private static readonly byte[] BrightnessTable = BuildBrightnessTable();
 
     [JsonIgnore]
     private readonly int[] _spriteTileOffsets = [ 
@@ -259,15 +259,18 @@ public class PPU : IPPU
     private ushort[] _tilePixelBuffer = [];
     [NonSerialized]
     private byte[] _tilePriorityBuffer = [];
+    [NonSerialized]
+    private bool _runtimeBuffersReady;
 
-    private static byte[,] BuildBrightnessTable()
+    private static byte[] BuildBrightnessTable()
     {
-        var table = new byte[16, 32];
+        var table = new byte[16 * 32];
         for (int brightness = 0; brightness < 16; brightness++)
         {
+            int rowBase = brightness << 5;
             for (int color = 0; color < 32; color++)
             {
-                table[brightness, color] =
+                table[rowBase + color] =
                     (byte)Math.Round((double)(brightness * color * 255) / (15 * 31), MidpointRounding.AwayFromZero);
             }
         }
@@ -923,6 +926,9 @@ public class PPU : IPPU
 
     public void EnsureRuntimeBuffers()
     {
+        if (_runtimeBuffersReady)
+            return;
+
         if (_spriteLineBuffer.Length != 256)
             _spriteLineBuffer = new byte[256];
         if (_spritePrioBuffer.Length != 256)
@@ -947,6 +953,8 @@ public class PPU : IPPU
             _tilePixelBuffer = new ushort[4 * 8];
         if (_tilePriorityBuffer.Length != 4)
             _tilePriorityBuffer = new byte[4];
+
+        _runtimeBuffersReady = true;
     }
 
     private bool IsHiResOutput()
@@ -1234,7 +1242,7 @@ public class PPU : IPPU
             if (line == 1)
             {
                 _mosaicStartLine = 0;
-                Array.Copy(_cgram, _cgramFrame, _cgram.Length);
+                Buffer.BlockCopy(_cgram, 0, _cgramFrame, 0, _cgram.Length * sizeof(ushort));
             }
             if (_mode == 7)
             {
@@ -1247,6 +1255,11 @@ public class PPU : IPPU
                 ExpandBufferedLinesToHiRes(screenY);
                 _frameTrueHiResOutput = true;
             }
+            int outputRow = screenY * MaxFrameWidth;
+            int brightnessOffset = _brightness << 5;
+            byte[] brightnessTable = BrightnessTable;
+            int[] pixelOutput = _pixelOutput;
+            const int alphaMask = unchecked((int)0xFF000000);
             var i = 0;
             while (i < 256)
             {
@@ -1330,27 +1343,26 @@ public class PPU : IPPU
                         }
                     }
                 }
-                int mainColor = BrightnessTable[_brightness, b2]
-                    | (BrightnessTable[_brightness, g2] << 8)
-                    | (BrightnessTable[_brightness, r2] << 16);
-                int outputRow = (line - 1) * MaxFrameWidth;
+                int mainColor = brightnessTable[brightnessOffset + b2]
+                    | (brightnessTable[brightnessOffset + g2] << 8)
+                    | (brightnessTable[brightnessOffset + r2] << 16);
                 if (trueHiResOutput)
                 {
-                    int subColor = BrightnessTable[_brightness, b1]
-                        | (BrightnessTable[_brightness, g1] << 8)
-                        | (BrightnessTable[_brightness, r1] << 16);
-                    _pixelOutput[outputRow + i * 2] = subColor | unchecked((int)0xFF000000);
-                    _pixelOutput[outputRow + i * 2 + 1] = mainColor | unchecked((int)0xFF000000);
+                    int subColor = brightnessTable[brightnessOffset + b1]
+                        | (brightnessTable[brightnessOffset + g1] << 8)
+                        | (brightnessTable[brightnessOffset + r1] << 16);
+                    pixelOutput[outputRow + i * 2] = subColor | alphaMask;
+                    pixelOutput[outputRow + i * 2 + 1] = mainColor | alphaMask;
                 }
                 else if (_frameTrueHiResOutput)
                 {
-                    int argb = mainColor | unchecked((int)0xFF000000);
-                    _pixelOutput[outputRow + i * 2] = argb;
-                    _pixelOutput[outputRow + i * 2 + 1] = argb;
+                    int argb = mainColor | alphaMask;
+                    pixelOutput[outputRow + i * 2] = argb;
+                    pixelOutput[outputRow + i * 2 + 1] = argb;
                 }
                 else
                 {
-                    _pixelOutput[outputRow + i] = mainColor | unchecked((int)0xFF000000);
+                    pixelOutput[outputRow + i] = mainColor | alphaMask;
                 }
                 i++;
             }

@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.AudioProcessing;
 
@@ -13,6 +14,16 @@ public sealed class DSP : IDSP
 
     private const int BrrBlockLen = 9;
     private const int BrrBufferLen = 12;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int Clamp16(int value)
+    {
+        if (value > short.MaxValue)
+            return short.MaxValue;
+        if (value < short.MinValue)
+            return short.MinValue;
+        return value;
+    }
 
     private static readonly int[] Gaussian = [
         0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000,
@@ -548,8 +559,8 @@ public sealed class DSP : IDSP
             firR = (short)firR;
             firL += (FirCoefficients[7] * _sampleBufferL[_sampleBufferIdx]) >> 6;
             firR += (FirCoefficients[7] * _sampleBufferR[_sampleBufferIdx]) >> 6;
-            firL = Math.Clamp(firL, short.MinValue, short.MaxValue);
-            firR = Math.Clamp(firR, short.MinValue, short.MaxValue);
+            firL = Clamp16(firL);
+            firR = Clamp16(firR);
             firL &= ~1;
             firR &= ~1;
 
@@ -583,13 +594,13 @@ public sealed class DSP : IDSP
                 if (!EchoEnabled[i]) continue;
                 sumL += voiceSamplesL[i];
                 sumR += voiceSamplesR[i];
-                sumL = Math.Clamp(sumL, short.MinValue, short.MaxValue);
-                sumR = Math.Clamp(sumR, short.MinValue, short.MaxValue);
+                sumL = Clamp16(sumL);
+                sumR = Clamp16(sumR);
             }
             int feedbackL = (firL * FeedbackVolume) >> 7;
             int feedbackR = (firR * FeedbackVolume) >> 7;
-            int echoSampleL = (sumL + feedbackL).Clamp(short.MinValue, short.MaxValue) & ~1;
-            int echoSampleR = (sumR + feedbackR).Clamp(short.MinValue, short.MaxValue) & ~1;
+            int echoSampleL = Clamp16(sumL + feedbackL) & ~1;
+            int echoSampleR = Clamp16(sumR + feedbackR) & ~1;
 
             ushort currentAddr = (ushort)(BufferStartAddress + BufferCurrentOffset);
             WriteEchoSample(audioRam, currentAddr, (short)echoSampleL);
@@ -690,43 +701,47 @@ public sealed class DSP : IDSP
     {
         if (_apu == null) return;
         var audioRam = _apu.RAM;
+        var voices = _voices;
+        var voiceSamplesL = _voiceSamplesL;
+        var voiceSamplesR = _voiceSamplesR;
+        var registers = _registers;
 
-        _registers.GlobalCounter = _registers.GlobalCounter == 0 ? (ushort)0x77FF : (ushort)(_registers.GlobalCounter - 1);
-        _noise.Clock(_registers.GlobalCounter, _registers.NoiseFrequency);
+        registers.GlobalCounter = registers.GlobalCounter == 0 ? (ushort)0x77FF : (ushort)(registers.GlobalCounter - 1);
+        _noise.Clock(registers.GlobalCounter, registers.NoiseFrequency);
 
         for (int i = 0; i < 8; i++)
         {
-            short prev = i != 0 ? _voices[i - 1].CurrentSample : (short)0;
-            _voices[i].Clock(_registers, audioRam, prev, _noise.Output);
+            short prev = i != 0 ? voices[i - 1].CurrentSample : (short)0;
+            voices[i].Clock(registers, audioRam, prev, _noise.Output);
         }
 
         int sumL = 0;
         int sumR = 0;
         for (int i = 0; i < 8; i++)
         {
-            int sL = (_voices[i].CurrentSample * _voices[i].VolumeL) >> 6;
-            int sR = (_voices[i].CurrentSample * _voices[i].VolumeR) >> 6;
-            _voiceSamplesL[i] = sL;
-            _voiceSamplesR[i] = sR;
+            int sL = (voices[i].CurrentSample * voices[i].VolumeL) >> 6;
+            int sR = (voices[i].CurrentSample * voices[i].VolumeR) >> 6;
+            voiceSamplesL[i] = sL;
+            voiceSamplesR[i] = sR;
             sumL += sL;
             sumR += sR;
-            sumL = Math.Clamp(sumL, short.MinValue, short.MaxValue);
-            sumR = Math.Clamp(sumR, short.MinValue, short.MaxValue);
+            sumL = Clamp16(sumL);
+            sumR = Clamp16(sumR);
         }
 
-        var (echoL, echoR) = _echo.DoFilter(_registers.EchoBufferWritesEnabled, audioRam, _voiceSamplesL, _voiceSamplesR);
+        var (echoL, echoR) = _echo.DoFilter(registers.EchoBufferWritesEnabled, audioRam, voiceSamplesL, voiceSamplesR);
 
-        sumL = (sumL * _registers.MasterVolumeL) >> 7;
-        sumR = (sumR * _registers.MasterVolumeR) >> 7;
-        sumL = Math.Clamp(sumL, short.MinValue, short.MaxValue);
-        sumR = Math.Clamp(sumR, short.MinValue, short.MaxValue);
+        sumL = (sumL * registers.MasterVolumeL) >> 7;
+        sumR = (sumR * registers.MasterVolumeR) >> 7;
+        sumL = Clamp16(sumL);
+        sumR = Clamp16(sumR);
 
         int outL = sumL + echoL;
         int outR = sumR + echoR;
-        outL = Math.Clamp(outL, short.MinValue, short.MaxValue);
-        outR = Math.Clamp(outR, short.MinValue, short.MaxValue);
+        outL = Clamp16(outL);
+        outR = Clamp16(outR);
 
-        if (_registers.MuteAmplifier)
+        if (registers.MuteAmplifier)
         {
             outL = 0;
             outR = 0;
@@ -916,9 +931,4 @@ public sealed class DSP : IDSP
     {
         return -(((currentValue - 1) >> 8) + 1);
     }
-}
-
-static class IntClampExt
-{
-    public static int Clamp(this int v, int min, int max) => v < min ? min : (v > max ? max : v);
 }
