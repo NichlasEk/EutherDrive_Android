@@ -6,6 +6,51 @@ using System.Runtime.Serialization;
 namespace ProjectPSX.Devices {
 
     public class GPU {
+        public readonly struct PerfSnapshot {
+            public readonly int PresentedFrames;
+            public readonly int TrianglePrimitives;
+            public readonly int TexturedTriangles;
+            public readonly int SemiTransparentTriangles;
+            public readonly int RectanglePrimitives;
+            public readonly int TexturedRectangles;
+            public readonly int SemiTransparentRectangles;
+            public readonly int LineSegments;
+            public readonly int FillRectCommands;
+            public readonly int VramToVramCopies;
+            public readonly int CpuToVramCopies;
+            public readonly int VramToCpuCopies;
+            public readonly int VramCopyHalfWords;
+
+            public PerfSnapshot(
+                int presentedFrames,
+                int trianglePrimitives,
+                int texturedTriangles,
+                int semiTransparentTriangles,
+                int rectanglePrimitives,
+                int texturedRectangles,
+                int semiTransparentRectangles,
+                int lineSegments,
+                int fillRectCommands,
+                int vramToVramCopies,
+                int cpuToVramCopies,
+                int vramToCpuCopies,
+                int vramCopyHalfWords) {
+                PresentedFrames = presentedFrames;
+                TrianglePrimitives = trianglePrimitives;
+                TexturedTriangles = texturedTriangles;
+                SemiTransparentTriangles = semiTransparentTriangles;
+                RectanglePrimitives = rectanglePrimitives;
+                TexturedRectangles = texturedRectangles;
+                SemiTransparentRectangles = semiTransparentRectangles;
+                LineSegments = lineSegments;
+                FillRectCommands = fillRectCommands;
+                VramToVramCopies = vramToVramCopies;
+                CpuToVramCopies = cpuToVramCopies;
+                VramToCpuCopies = vramToCpuCopies;
+                VramCopyHalfWords = vramCopyHalfWords;
+            }
+        }
+
 
         private uint GPUREAD;     //1F801810h-Read GPUREAD Receive responses to GP0(C0h) and GP1(10h) commands
 
@@ -167,6 +212,19 @@ namespace ProjectPSX.Devices {
         private int videoCycles;
         private int horizontalTiming = 3413;
         private int verticalTiming = 263;
+        private int _perfPresentedFrames;
+        private int _perfTrianglePrimitives;
+        private int _perfTexturedTriangles;
+        private int _perfSemiTransparentTriangles;
+        private int _perfRectanglePrimitives;
+        private int _perfTexturedRectangles;
+        private int _perfSemiTransparentRectangles;
+        private int _perfLineSegments;
+        private int _perfFillRectCommands;
+        private int _perfVramToVramCopies;
+        private int _perfCpuToVramCopies;
+        private int _perfVramToCpuCopies;
+        private int _perfVramCopyHalfWords;
 
         public GPU(IHostWindow window) {
             this.window = window;
@@ -237,10 +295,44 @@ namespace ProjectPSX.Devices {
                     }
 
                     window.Render(vram1555.Bits);
+                    _perfPresentedFrames++;
                     return true;
                 }
             }
             return false;
+        }
+
+        public void ResetPerfCounters() {
+            _perfPresentedFrames = 0;
+            _perfTrianglePrimitives = 0;
+            _perfTexturedTriangles = 0;
+            _perfSemiTransparentTriangles = 0;
+            _perfRectanglePrimitives = 0;
+            _perfTexturedRectangles = 0;
+            _perfSemiTransparentRectangles = 0;
+            _perfLineSegments = 0;
+            _perfFillRectCommands = 0;
+            _perfVramToVramCopies = 0;
+            _perfCpuToVramCopies = 0;
+            _perfVramToCpuCopies = 0;
+            _perfVramCopyHalfWords = 0;
+        }
+
+        public PerfSnapshot CapturePerfSnapshot() {
+            return new PerfSnapshot(
+                _perfPresentedFrames,
+                _perfTrianglePrimitives,
+                _perfTexturedTriangles,
+                _perfSemiTransparentTriangles,
+                _perfRectanglePrimitives,
+                _perfTexturedRectangles,
+                _perfSemiTransparentRectangles,
+                _perfLineSegments,
+                _perfFillRectCommands,
+                _perfVramToVramCopies,
+                _perfCpuToVramCopies,
+                _perfVramToCpuCopies,
+                _perfVramCopyHalfWords);
         }
 
         public string DebugSummary() {
@@ -470,6 +562,7 @@ namespace ProjectPSX.Devices {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void GP0_02_FillRectVRAM(Span<uint> buffer) {
+            _perfFillRectCommands++;
             color0.val = buffer[pointer++];
             uint yx = buffer[pointer++];
             uint hw = buffer[pointer++];
@@ -515,6 +608,14 @@ namespace ProjectPSX.Devices {
             bool isTextured = (command & (1 << 26)) != 0;
             bool isSemiTransparent = (command & (1 << 25)) != 0;
             bool isRawTextured = (command & (1 << 24)) != 0;
+            int triangleCount = isQuad ? 2 : 1;
+            _perfTrianglePrimitives += triangleCount;
+            if (isTextured) {
+                _perfTexturedTriangles += triangleCount;
+            }
+            if (isSemiTransparent) {
+                _perfSemiTransparentTriangles += triangleCount;
+            }
 
             Primitive primitive = new Primitive();
             primitive.isShaded = isShaded;
@@ -2941,6 +3042,7 @@ AdvanceGenericTrianglePixel:
         }
 
         private void rasterizeLine(uint v1, uint v2, uint color1, uint color2, bool isTransparent) {
+            _perfLineSegments++;
             short x = signed11bit(v1 & 0xFFFF);
             short y = signed11bit(v1 >> 16);
 
@@ -3038,6 +3140,13 @@ AdvanceGenericTrianglePixel:
             bool isTextured = (command & (1 << 26)) != 0;
             bool isSemiTransparent = (command & (1 << 25)) != 0;
             bool isRawTextured = (command & (1 << 24)) != 0;
+            _perfRectanglePrimitives++;
+            if (isTextured) {
+                _perfTexturedRectangles++;
+            }
+            if (isSemiTransparent) {
+                _perfSemiTransparentRectangles++;
+            }
 
             Primitive primitive = new Primitive();
             primitive.isTextured = isTextured;
@@ -3574,6 +3683,7 @@ AdvanceGenericTrianglePixel:
         }
 
         private void GP0_MemCopyRectVRAMtoVRAM(Span<uint> buffer) {
+            _perfVramToVramCopies++;
             pointer++; //Command/Color parameter unused
             uint sourceXY = buffer[pointer++];
             uint destinationXY = buffer[pointer++];
@@ -3591,6 +3701,7 @@ AdvanceGenericTrianglePixel:
             // VRAM blits must copy raw 16-bit VRAM words, not the expanded RGB view.
             // Text/CLUT pages are stored as packed indices and get corrupted otherwise.
             int copyLength = w * h;
+            _perfVramCopyHalfWords += copyLength;
             EnsureVramCopyScratchCapacity(copyLength);
             ushort[] copyBuffer = vramCopyScratch;
             ushort[] vram1555Bits = vram1555.Bits;
@@ -3627,6 +3738,7 @@ AdvanceGenericTrianglePixel:
         }
 
         private void GP0_MemCopyRectCPUtoVRAM(Span<uint> buffer) { //todo rewrite VRAM coord struct mess
+            _perfCpuToVramCopies++;
             pointer++; //Command/Color parameter unused
             uint yx = buffer[pointer++];
             uint wh = buffer[pointer++];
@@ -3636,6 +3748,7 @@ AdvanceGenericTrianglePixel:
 
             ushort w = (ushort)((((wh & 0xFFFF) - 1) & 0x3FF) + 1);
             ushort h = (ushort)((((wh >> 16) - 1) & 0x1FF) + 1);
+            _perfVramCopyHalfWords += w * h;
 
             vramTransfer.x = x;
             vramTransfer.y = y;
@@ -3649,6 +3762,7 @@ AdvanceGenericTrianglePixel:
         }
 
         private void GP0_MemCopyRectVRAMtoCPU(Span<uint> buffer) {
+            _perfVramToCpuCopies++;
             pointer++; //Command/Color parameter unused
             uint yx = buffer[pointer++];
             uint wh = buffer[pointer++];
@@ -3658,6 +3772,7 @@ AdvanceGenericTrianglePixel:
 
             ushort w = (ushort)((((wh & 0xFFFF) - 1) & 0x3FF) + 1);
             ushort h = (ushort)((((wh >> 16) - 1) & 0x1FF) + 1);
+            _perfVramCopyHalfWords += w * h;
 
             vramTransfer.x = x;
             vramTransfer.y = y;

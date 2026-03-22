@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Text;
 using ProjectPSX.Devices;
 using ProjectPSX.Devices.CdRom;
@@ -11,7 +12,8 @@ namespace ProjectPSX {
         const int MIPS_UNDERCLOCK = 3; //Testing: This compensates the ausence of HALT instruction on MIPS Architecture, may broke some games.
         const double FPS_PAL = PSX_MHZ / ((3406.0 * 314.0 * 7.0) / 11.0);
         const double FPS_NTSC = PSX_MHZ / ((3413.0 * 263.0 * 7.0) / 11.0);
-        private static readonly int BusTickBatchCycles = ParseBusTickBatchCycles();
+        private static readonly int TightBusTickBatchCycles = ParseBusTickBatchCycles();
+        private static readonly int RelaxedBusTickBatchCycles = ParseBusTickRelaxedBatchCycles();
         private static readonly uint[] DebugPeekAddresses = ParseOptionalHexAddrEnv("EUTHERDRIVE_PSX_TRACE_PEEK_ADDRS");
         private static readonly bool DebugPointerPeeks = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_POINTER_PEEKS") == "1";
 
@@ -30,6 +32,33 @@ namespace ProjectPSX {
         private Exp2 exp2;
         private bool _psxBootBiosExited;
         private double? _frameRateOverrideHz;
+        private long _perfWindowStartTicks = Stopwatch.GetTimestamp();
+        private int _perfWindowFrames;
+        private long _perfCpuInstructions;
+        private long _perfCpuBranches;
+        private long _perfCpuLoad8;
+        private long _perfCpuLoad16;
+        private long _perfCpuLoad32;
+        private long _perfCpuStore8;
+        private long _perfCpuStore16;
+        private long _perfCpuStore32;
+        private long _perfICacheHits;
+        private long _perfICacheMisses;
+        private long _perfBusTickCalls;
+        private long _perfBusTickCycles;
+        private long _perfBusFastReads;
+        private long _perfBusMmioReads;
+        private long _perfBusFastWrites;
+        private long _perfBusMmioWrites;
+        private long _perfIrqChecks;
+        private long _perfInterruptHandles;
+        private long _perfGpuTriangles;
+        private long _perfGpuRectangles;
+        private long _perfGpuLines;
+        private long _perfGpuCopies;
+        private long _perfSpuMixedSamples;
+        private long _perfSpuActiveVoices;
+        private volatile string _perfSummary = "PSX core --";
 
         public ProjectPSX(
             IHostWindow window,
@@ -72,6 +101,10 @@ namespace ProjectPSX {
         }
 
         public void RunFrame() {
+            cpu.ResetPerfCounters();
+            bus.ResetPerfCounters();
+            gpu.ResetPerfCounters();
+            spu.ResetPerfCounters();
             int cpuCyclesThisFrame = 0;
             int pendingBusCycles = 0;
             int cpuCyclesPerFrame = GetCpuCyclesPerFrame();
@@ -87,21 +120,39 @@ namespace ProjectPSX {
                 }
 
                 bool busFlushed = false;
-                if (pendingBusCycles >= BusTickBatchCycles) {
+                int busTickBatchCycles = (!_psxBootBiosExited || bus.RequiresFrequentSync)
+                    ? TightBusTickBatchCycles
+                    : RelaxedBusTickBatchCycles;
+
+                if (pendingBusCycles >= busTickBatchCycles) {
                     bus.tick(pendingBusCycles);
                     pendingBusCycles = 0;
                     busFlushed = true;
                 }
 
-                if (busFlushed || bus.interruptController.interruptPending()) {
+                bool interruptPending = false;
+                if (!busFlushed && bus.RequiresFrequentSync) {
+                    _perfIrqChecks++;
+                    interruptPending = bus.interruptController.interruptPending();
+                }
+
+                if (busFlushed || interruptPending) {
+                    _perfInterruptHandles++;
                     cpu.handleInterrupts();
                 }
             }
 
             if (pendingBusCycles > 0) {
                 bus.tick(pendingBusCycles);
+                _perfInterruptHandles++;
                 cpu.handleInterrupts();
             }
+
+            UpdatePerfSummary(
+                cpu.CapturePerfSnapshot(),
+                bus.CapturePerfSnapshot(),
+                gpu.CapturePerfSnapshot(),
+                spu.CapturePerfSnapshot());
         }
 
         public void JoyPadUp(GamepadInputsEnum button) => controller.handleJoyPadUp(button);
@@ -215,6 +266,11 @@ namespace ProjectPSX {
             return text.ToString();
         }
 
+        public bool TryGetPerfSummary(out string summary) {
+            summary = _perfSummary;
+            return !string.IsNullOrWhiteSpace(summary);
+        }
+
         private static int ParseBusTickBatchCycles() {
             // Spyro YOTD and similar titles busy-wait on GPU/timer-visible state during CD-driven loads.
             // A coarse device flush batch leaves those MMIO reads stale long enough to stall loading.
@@ -230,8 +286,90 @@ namespace ProjectPSX {
                 : fallback;
         }
 
+        private static int ParseBusTickRelaxedBatchCycles() {
+            const int fallback = 24;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_BUS_TICK_RELAXED_BATCH_CYCLES");
+            if (string.IsNullOrWhiteSpace(raw)) {
+                return fallback;
+            }
+
+            return int.TryParse(raw, out int parsed) && parsed > 0
+                ? parsed
+                : fallback;
+        }
+
         private int GetCpuCyclesPerFrame() {
             return (int)Math.Round((PSX_MHZ / GetTargetFps()) / MIPS_UNDERCLOCK);
+        }
+
+        private void UpdatePerfSummary(CPU.PerfSnapshot cpuPerf, BUS.PerfSnapshot busPerf, GPU.PerfSnapshot gpuPerf, SPU.PerfSnapshot spuPerf) {
+            _perfWindowFrames++;
+            _perfCpuInstructions += cpuPerf.Instructions;
+            _perfCpuBranches += cpuPerf.BranchInstructions;
+            _perfCpuLoad8 += cpuPerf.Load8Ops;
+            _perfCpuLoad16 += cpuPerf.Load16Ops;
+            _perfCpuLoad32 += cpuPerf.Load32Ops;
+            _perfCpuStore8 += cpuPerf.Store8Ops;
+            _perfCpuStore16 += cpuPerf.Store16Ops;
+            _perfCpuStore32 += cpuPerf.Store32Ops;
+            _perfICacheHits += cpuPerf.ICacheHits;
+            _perfICacheMisses += cpuPerf.ICacheMisses;
+            _perfBusTickCalls += busPerf.TickCalls;
+            _perfBusTickCycles += busPerf.TickCycles;
+            _perfBusFastReads += busPerf.Load32Ram + busPerf.Load32Ex1 + busPerf.Load32Scratchpad + busPerf.Load32Bios;
+            _perfBusMmioReads += busPerf.Load32Mmio;
+            _perfBusFastWrites +=
+                busPerf.Write32Ram + busPerf.Write16Ram + busPerf.Write8Ram +
+                busPerf.Write32Ex1 + busPerf.Write16Ex1 + busPerf.Write8Ex1 +
+                busPerf.Write32Scratchpad + busPerf.Write16Scratchpad + busPerf.Write8Scratchpad;
+            _perfBusMmioWrites += busPerf.Write32Mmio + busPerf.Write16Mmio + busPerf.Write8Mmio;
+            _perfGpuTriangles += gpuPerf.TrianglePrimitives;
+            _perfGpuRectangles += gpuPerf.RectanglePrimitives;
+            _perfGpuLines += gpuPerf.LineSegments;
+            _perfGpuCopies += gpuPerf.VramToVramCopies + gpuPerf.CpuToVramCopies + gpuPerf.VramToCpuCopies;
+            _perfSpuMixedSamples += spuPerf.MixedSamples;
+            _perfSpuActiveVoices += spuPerf.ActiveVoicesAccumulated;
+
+            long nowTicks = Stopwatch.GetTimestamp();
+            if ((nowTicks - _perfWindowStartTicks) < Stopwatch.Frequency / 4 || _perfWindowFrames <= 0) {
+                return;
+            }
+
+            double frames = _perfWindowFrames;
+            double iCacheTotal = _perfICacheHits + _perfICacheMisses;
+            double iCacheHitRate = iCacheTotal > 0 ? (_perfICacheHits * 100.0) / iCacheTotal : 0;
+            double avgActiveVoices = _perfSpuMixedSamples > 0 ? _perfSpuActiveVoices / (double)_perfSpuMixedSamples : 0;
+
+            _perfSummary =
+                $"PSX core  cpu instr:{_perfCpuInstructions / frames:0} br:{_perfCpuBranches / frames:0} ld:{_perfCpuLoad8 / frames:0}/{_perfCpuLoad16 / frames:0}/{_perfCpuLoad32 / frames:0} st:{_perfCpuStore8 / frames:0}/{_perfCpuStore16 / frames:0}/{_perfCpuStore32 / frames:0} ic:{iCacheHitRate:0}%\n" +
+                $"PSX mix  bus tick:{_perfBusTickCalls / frames:0.0} cyc:{_perfBusTickCycles / frames:0} fastR:{_perfBusFastReads / frames:0} mmioR:{_perfBusMmioReads / frames:0} fastW:{_perfBusFastWrites / frames:0} mmioW:{_perfBusMmioWrites / frames:0} irq:{_perfIrqChecks / frames:0.0}/{_perfInterruptHandles / frames:0.0} gpu tri:{_perfGpuTriangles / frames:0.0} rect:{_perfGpuRectangles / frames:0.0} line:{_perfGpuLines / frames:0.0} copy:{_perfGpuCopies / frames:0.0} spu samp:{_perfSpuMixedSamples / frames:0} actV:{avgActiveVoices:0.0}";
+
+            _perfWindowStartTicks = nowTicks;
+            _perfWindowFrames = 0;
+            _perfCpuInstructions = 0;
+            _perfCpuBranches = 0;
+            _perfCpuLoad8 = 0;
+            _perfCpuLoad16 = 0;
+            _perfCpuLoad32 = 0;
+            _perfCpuStore8 = 0;
+            _perfCpuStore16 = 0;
+            _perfCpuStore32 = 0;
+            _perfICacheHits = 0;
+            _perfICacheMisses = 0;
+            _perfBusTickCalls = 0;
+            _perfBusTickCycles = 0;
+            _perfBusFastReads = 0;
+            _perfBusMmioReads = 0;
+            _perfBusFastWrites = 0;
+            _perfBusMmioWrites = 0;
+            _perfIrqChecks = 0;
+            _perfInterruptHandles = 0;
+            _perfGpuTriangles = 0;
+            _perfGpuRectangles = 0;
+            _perfGpuLines = 0;
+            _perfGpuCopies = 0;
+            _perfSpuMixedSamples = 0;
+            _perfSpuActiveVoices = 0;
         }
 
         private void AppendConfiguredPeeks(StringBuilder text) {

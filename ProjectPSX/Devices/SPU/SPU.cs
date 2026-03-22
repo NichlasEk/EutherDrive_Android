@@ -8,6 +8,20 @@ using ProjectPSX.Devices.Spu;
 
 namespace ProjectPSX.Devices {
     public class SPU {
+        public readonly struct PerfSnapshot {
+            public readonly int MixedSamples;
+            public readonly int ActiveVoicesAccumulated;
+            public readonly int SampleVoiceCalls;
+            public readonly int CdSamplePairsMixed;
+
+            public PerfSnapshot(int mixedSamples, int activeVoicesAccumulated, int sampleVoiceCalls, int cdSamplePairsMixed) {
+                MixedSamples = mixedSamples;
+                ActiveVoicesAccumulated = activeVoicesAccumulated;
+                SampleVoiceCalls = sampleVoiceCalls;
+                CdSamplePairsMixed = cdSamplePairsMixed;
+            }
+        }
+
         private static readonly bool TraceDmaTransfer = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_SPU_DMA_TRACE") == "1";
 
         // Todo:
@@ -828,6 +842,26 @@ namespace ProjectPSX.Devices {
         private int counter = 0;
         private const int CYCLES_PER_SAMPLE = 0x300; //33868800 / 44100hz
         private int reverbCounter = 0;
+        private int _perfMixedSamples;
+        private int _perfActiveVoicesAccumulated;
+        private int _perfSampleVoiceCalls;
+        private int _perfCdSamplePairsMixed;
+
+        public void ResetPerfCounters() {
+            _perfMixedSamples = 0;
+            _perfActiveVoicesAccumulated = 0;
+            _perfSampleVoiceCalls = 0;
+            _perfCdSamplePairsMixed = 0;
+        }
+
+        public PerfSnapshot CapturePerfSnapshot() {
+            return new PerfSnapshot(
+                _perfMixedSamples,
+                _perfActiveVoicesAccumulated,
+                _perfSampleVoiceCalls,
+                _perfCdSamplePairsMixed);
+        }
+
         public bool tick(int cycles) {
             counter += cycles;
             TickDmaTransfer(cycles);
@@ -848,6 +882,7 @@ namespace ProjectPSX.Devices {
                 keyOff = 0;
                 bool reverbEnabled = control.reverbMasterEnabled;
                 bool noiseEnabled = channelNoiseMode != 0;
+                int activeVoicesThisSample = 0;
 
                 if (noiseEnabled) {
                     tickNoiseGenerator();
@@ -870,10 +905,13 @@ namespace ProjectPSX.Devices {
                         continue;
                     }
 
+                    activeVoicesThisSample++;
+
                     short sample;
                     if ((channelNoiseMode & (0x1 << i)) != 0) {
                         sample = (short)noiseLevel;
                     } else {
+                        _perfSampleVoiceCalls++;
                         sample = sampleVoice(i);
                         edgeTrigger |= control.irq9Enabled && v.readRamIrq;
                         v.readRamIrq = false;
@@ -901,6 +939,7 @@ namespace ProjectPSX.Devices {
                 short cdR = 0;
 
                 if (cdBuffer.hasSamples()) {
+                    _perfCdSamplePairsMixed++;
                     cdL = cdBuffer.readShort();
                     cdR = cdBuffer.readShort();
                 }
@@ -946,6 +985,9 @@ namespace ProjectPSX.Devices {
                     window.Play(spuOutput);
                     spuOutputPointer = 0;
                 }
+
+                _perfMixedSamples++;
+                _perfActiveVoicesAccumulated += activeVoicesThisSample;
             }
 
             if (control.irq9Enabled && edgeTrigger) {

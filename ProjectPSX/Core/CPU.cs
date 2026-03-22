@@ -85,6 +85,61 @@ namespace ProjectPSX {
         private MEM memoryLoad;
         private MEM delayedMemoryLoad;
 
+        public readonly struct PerfSnapshot {
+            public readonly int Instructions;
+            public readonly int BranchInstructions;
+            public readonly int Load8Ops;
+            public readonly int Load16Ops;
+            public readonly int Load32Ops;
+            public readonly int Store8Ops;
+            public readonly int Store16Ops;
+            public readonly int Store32Ops;
+            public readonly int ICacheHits;
+            public readonly int ICacheMisses;
+            public readonly int RamFetches;
+            public readonly int BiosFetches;
+
+            public PerfSnapshot(
+                int instructions,
+                int branchInstructions,
+                int load8Ops,
+                int load16Ops,
+                int load32Ops,
+                int store8Ops,
+                int store16Ops,
+                int store32Ops,
+                int iCacheHits,
+                int iCacheMisses,
+                int ramFetches,
+                int biosFetches) {
+                Instructions = instructions;
+                BranchInstructions = branchInstructions;
+                Load8Ops = load8Ops;
+                Load16Ops = load16Ops;
+                Load32Ops = load32Ops;
+                Store8Ops = store8Ops;
+                Store16Ops = store16Ops;
+                Store32Ops = store32Ops;
+                ICacheHits = iCacheHits;
+                ICacheMisses = iCacheMisses;
+                RamFetches = ramFetches;
+                BiosFetches = biosFetches;
+            }
+        }
+
+        private int _perfInstructions;
+        private int _perfBranchInstructions;
+        private int _perfLoad8Ops;
+        private int _perfLoad16Ops;
+        private int _perfLoad32Ops;
+        private int _perfStore8Ops;
+        private int _perfStore16Ops;
+        private int _perfStore32Ops;
+        private int _perfICacheHits;
+        private int _perfICacheMisses;
+        private int _perfRamFetches;
+        private int _perfBiosFetches;
+
         public struct Instr {
             public uint value;                     //raw
             public uint opcode => value >> 26;     //Instr opcode
@@ -159,9 +214,13 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int Run() {
+            _perfInstructions++;
             int ticks = fetchDecode();
             if (instr.value != 0) { //Skip Nops
                 opcodeMainTable[instr.opcode](this); //Execute
+            }
+            if (opcodeIsBranch) {
+                _perfBranchInstructions++;
             }
             MemAccess();
             WriteBack();
@@ -249,19 +308,25 @@ namespace ProjectPSX {
         private uint FetchInstructionWord(uint virtualPc) {
             if (!ExperimentalInstructionCache) {
                 uint physicalAddress = virtualPc & 0x1FFF_FFFF;
-                return physicalAddress < 0x1F00_0000
-                    ? bus.LoadFromRam(physicalAddress)
-                    : bus.LoadFromBios(physicalAddress);
+                if (physicalAddress < 0x1F00_0000) {
+                    _perfRamFetches++;
+                    return bus.LoadFromRam(physicalAddress);
+                }
+
+                _perfBiosFetches++;
+                return bus.LoadFromBios(physicalAddress);
             }
 
             RefreshInstructionCacheControl();
 
             uint physical = virtualPc & 0x1FFF_FFFF;
             if (physical >= 0x1F00_0000) {
+                _perfBiosFetches++;
                 return bus.LoadFromBios(physical);
             }
 
             if (!_instructionCacheEnabled || !IsInstructionCacheable(virtualPc)) {
+                _perfRamFetches++;
                 return bus.LoadFromRam(physical);
             }
 
@@ -281,6 +346,8 @@ namespace ProjectPSX {
             int lineOffset = lineIndex * InstructionCacheWordsPerLine;
 
             if (!_instructionCacheValid[lineIndex] || _instructionCacheTags[lineIndex] != tag) {
+                _perfICacheMisses++;
+                _perfRamFetches += InstructionCacheWordsPerLine;
                 uint lineBase = physicalAddress & ~0xFu;
                 _instructionCacheTags[lineIndex] = tag;
                 _instructionCacheValid[lineIndex] = true;
@@ -288,6 +355,8 @@ namespace ProjectPSX {
                 _instructionCacheData[lineOffset + 1] = bus.LoadFromRam(lineBase + 4);
                 _instructionCacheData[lineOffset + 2] = bus.LoadFromRam(lineBase + 8);
                 _instructionCacheData[lineOffset + 3] = bus.LoadFromRam(lineBase + 12);
+            } else {
+                _perfICacheHits++;
             }
 
             int wordIndex = (int)((physicalAddress >> 2) & 0x3);
@@ -359,6 +428,37 @@ namespace ProjectPSX {
 
         private void FlushInstructionCache() {
             Array.Clear(_instructionCacheValid, 0, _instructionCacheValid.Length);
+        }
+
+        public void ResetPerfCounters() {
+            _perfInstructions = 0;
+            _perfBranchInstructions = 0;
+            _perfLoad8Ops = 0;
+            _perfLoad16Ops = 0;
+            _perfLoad32Ops = 0;
+            _perfStore8Ops = 0;
+            _perfStore16Ops = 0;
+            _perfStore32Ops = 0;
+            _perfICacheHits = 0;
+            _perfICacheMisses = 0;
+            _perfRamFetches = 0;
+            _perfBiosFetches = 0;
+        }
+
+        public PerfSnapshot CapturePerfSnapshot() {
+            return new PerfSnapshot(
+                _perfInstructions,
+                _perfBranchInstructions,
+                _perfLoad8Ops,
+                _perfLoad16Ops,
+                _perfLoad32Ops,
+                _perfStore8Ops,
+                _perfStore16Ops,
+                _perfStore32Ops,
+                _perfICacheHits,
+                _perfICacheMisses,
+                _perfRamFetches,
+                _perfBiosFetches);
         }
 
         private void InvalidateInstructionCacheRange(uint physicalAddress, int sizeBytes) {
@@ -719,6 +819,7 @@ namespace ProjectPSX {
         private static void CTC2(CPU cpu) => cpu.gte.writeControl(cpu.instr.rd, cpu.GPR[cpu.instr.rt]);
 
         private static void LWC2(CPU cpu) {
+            cpu._perfLoad32Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x3) != 0) {
@@ -731,6 +832,7 @@ namespace ProjectPSX {
         }
 
         private static void SWC2(CPU cpu) {
+            cpu._perfStore32Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x3) != 0) {
@@ -742,18 +844,21 @@ namespace ProjectPSX {
         }
 
         private static void LB(CPU cpu) { //todo redo this as it unnecesary load32
+            cpu._perfLoad8Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint value = (uint)(sbyte)cpu.LoadData32(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
         private static void LBU(CPU cpu) {
+            cpu._perfLoad8Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint value = (byte)cpu.LoadData32(addr);
             delayedLoad(cpu, cpu.instr.rt, value);
         }
 
         private static void LH(CPU cpu) {
+            cpu._perfLoad16Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x1) != 0) {
@@ -766,6 +871,7 @@ namespace ProjectPSX {
         }
 
         private static void LHU(CPU cpu) {
+            cpu._perfLoad16Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x1) != 0) {
@@ -778,6 +884,7 @@ namespace ProjectPSX {
         }
 
         private static void LW(CPU cpu) {
+            cpu._perfLoad32Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x3) != 0) {
@@ -790,6 +897,7 @@ namespace ProjectPSX {
         }
 
         private static void LWL(CPU cpu) {
+            cpu._perfLoad32Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
             uint aligned_load = cpu.LoadData32(aligned_addr);
@@ -808,6 +916,7 @@ namespace ProjectPSX {
         }
 
         private static void LWR(CPU cpu) {
+            cpu._perfLoad32Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
             uint aligned_load = cpu.LoadData32(aligned_addr);
@@ -826,11 +935,13 @@ namespace ProjectPSX {
         }
 
         private static void SB(CPU cpu) {
+            cpu._perfStore8Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             cpu.StoreData8(addr, (byte)cpu.GPR[cpu.instr.rt]);
         }
 
         private static void SH(CPU cpu) {
+            cpu._perfStore16Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x1) != 0) {
@@ -842,6 +953,7 @@ namespace ProjectPSX {
         }
 
         private static void SW(CPU cpu) {
+            cpu._perfStore32Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
 
             if (StrictAddressExceptions && (addr & 0x3) != 0) {
@@ -853,6 +965,7 @@ namespace ProjectPSX {
         }
 
         private static void SWR(CPU cpu) {
+            cpu._perfStore32Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
             uint aligned_load = cpu.LoadData32(aligned_addr);
@@ -865,6 +978,7 @@ namespace ProjectPSX {
         }
 
         private static void SWL(CPU cpu) {
+            cpu._perfStore32Ops++;
             uint addr = cpu.GPR[cpu.instr.rs] + cpu.instr.imm_s;
             uint aligned_addr = addr & 0xFFFF_FFFC;
             uint aligned_load = cpu.LoadData32(aligned_addr);

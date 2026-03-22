@@ -544,6 +544,13 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
     public bool TryGetFramePerfSummary(out string summary)
     {
         summary = _framePerfSummary;
+        var core = _core;
+        if (core != null && core.TryGetPerfSummary(out string corePerf) && !string.IsNullOrWhiteSpace(corePerf))
+        {
+            summary = string.IsNullOrWhiteSpace(summary)
+                ? corePerf
+                : $"{summary}\n{corePerf}";
+        }
         return !string.IsNullOrWhiteSpace(summary);
     }
 
