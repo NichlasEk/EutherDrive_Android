@@ -768,15 +768,17 @@ namespace ProjectPSX.Devices {
             int shadeRStepX = 0, shadeGStepX = 0, shadeBStepX = 0;
             int shadeRStepY = 0, shadeGStepY = 0, shadeBStepY = 0;
             if (shaded) {
-                int c0r = (int)(c0 >> 16) & 0xFF;
+                // Gouraud vertex colors still arrive in GP0 BBGGRR byte order here.
+                // Fast paths must unpack them the same way the legacy interpolate path does.
+                int c0r = (int)c0 & 0xFF;
                 int c0g = (int)(c0 >> 8) & 0xFF;
-                int c0b = (int)c0 & 0xFF;
-                int c1r = (int)(c1 >> 16) & 0xFF;
+                int c0b = (int)(c0 >> 16) & 0xFF;
+                int c1r = (int)c1 & 0xFF;
                 int c1g = (int)(c1 >> 8) & 0xFF;
-                int c1b = (int)c1 & 0xFF;
-                int c2r = (int)(c2 >> 16) & 0xFF;
+                int c1b = (int)(c1 >> 16) & 0xFF;
+                int c2r = (int)c2 & 0xFF;
                 int c2g = (int)(c2 >> 8) & 0xFF;
-                int c2b = (int)c2 & 0xFF;
+                int c2b = (int)(c2 >> 16) & 0xFF;
 
                 shadeRRow = c0r * u0Row + c1r * u1Row + c2r * u2Row;
                 shadeGRow = c0g * u0Row + c1g * u1Row + c2g * u2Row;
