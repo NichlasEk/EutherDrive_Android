@@ -52,6 +52,10 @@ namespace ProjectPSX {
         private long _perfBusMmioWrites;
         private long _perfIrqChecks;
         private long _perfInterruptHandles;
+        private long _perfInterruptNoPendingReturns;
+        private long _perfInterruptMaskedReturns;
+        private long _perfInterruptGteDeferrals;
+        private long _perfInterruptExceptionsTaken;
         private long _perfGpuTriangles;
         private long _perfGpuRectangles;
         private long _perfGpuLines;
@@ -85,6 +89,7 @@ namespace ProjectPSX {
             bus = new BUS(gpu, cdrom, spu, joypad, timers, mdec, interruptController, exp2);
             cpu = new CPU(bus);
             bus.SetRamWriteObserver(cpu.ObserveRamWrite);
+            bus.SetMemoryCacheWriteObserver(cpu.ObserveMemoryCacheControlWrite);
 
             if (!bus.loadBios()) {
                 throw new InvalidOperationException("PSX BIOS not found or failed to load.");
@@ -271,6 +276,8 @@ namespace ProjectPSX {
             return !string.IsNullOrWhiteSpace(summary);
         }
 
+        public void ResyncRuntimeStateAfterLoad() => cpu.ResyncAfterLoad();
+
         private static int ParseBusTickBatchCycles() {
             // Spyro YOTD and similar titles busy-wait on GPU/timer-visible state during CD-driven loads.
             // A coarse device flush batch leaves those MMIO reads stale long enough to stall loading.
@@ -320,6 +327,10 @@ namespace ProjectPSX {
             _perfBusMmioReads += busPerf.ReadOpsMmio;
             _perfBusFastWrites += busPerf.WriteOpsFast;
             _perfBusMmioWrites += busPerf.WriteOpsMmio;
+            _perfInterruptNoPendingReturns += cpuPerf.InterruptNoPendingReturns;
+            _perfInterruptMaskedReturns += cpuPerf.InterruptMaskedReturns;
+            _perfInterruptGteDeferrals += cpuPerf.InterruptGteDeferrals;
+            _perfInterruptExceptionsTaken += cpuPerf.InterruptExceptionsTaken;
             _perfGpuTriangles += gpuPerf.TrianglePrimitives;
             _perfGpuRectangles += gpuPerf.RectanglePrimitives;
             _perfGpuLines += gpuPerf.LineSegments;
@@ -339,7 +350,8 @@ namespace ProjectPSX {
 
             _perfSummary =
                 $"PSX core  cpu instr:{_perfCpuInstructions / frames:0} br:{_perfCpuBranches / frames:0} ld:{_perfCpuLoad8 / frames:0}/{_perfCpuLoad16 / frames:0}/{_perfCpuLoad32 / frames:0} st:{_perfCpuStore8 / frames:0}/{_perfCpuStore16 / frames:0}/{_perfCpuStore32 / frames:0} ic:{iCacheHitRate:0}%\n" +
-                $"PSX mix  bus tick:{_perfBusTickCalls / frames:0.0} cyc:{_perfBusTickCycles / frames:0} fastR:{_perfBusFastReads / frames:0} mmioR:{_perfBusMmioReads / frames:0} fastW:{_perfBusFastWrites / frames:0} mmioW:{_perfBusMmioWrites / frames:0} irq:{_perfIrqChecks / frames:0.0}/{_perfInterruptHandles / frames:0.0} gpu tri:{_perfGpuTriangles / frames:0.0} rect:{_perfGpuRectangles / frames:0.0} line:{_perfGpuLines / frames:0.0} copy:{_perfGpuCopies / frames:0.0} spu samp:{_perfSpuMixedSamples / frames:0} actV:{avgActiveVoices:0.0}";
+                $"PSX mix  bus tick:{_perfBusTickCalls / frames:0.0} cyc:{_perfBusTickCycles / frames:0} fastR:{_perfBusFastReads / frames:0} mmioR:{_perfBusMmioReads / frames:0} fastW:{_perfBusFastWrites / frames:0} mmioW:{_perfBusMmioWrites / frames:0} irq:{_perfIrqChecks / frames:0.0}/{_perfInterruptHandles / frames:0.0} gpu tri:{_perfGpuTriangles / frames:0.0} rect:{_perfGpuRectangles / frames:0.0} line:{_perfGpuLines / frames:0.0} copy:{_perfGpuCopies / frames:0.0} spu samp:{_perfSpuMixedSamples / frames:0} actV:{avgActiveVoices:0.0}\n" +
+                $"PSX irq  pend0:{_perfInterruptNoPendingReturns / frames:0.0} mask:{_perfInterruptMaskedReturns / frames:0.0} gte:{_perfInterruptGteDeferrals / frames:0.0} take:{_perfInterruptExceptionsTaken / frames:0.0}";
 
             _perfWindowStartTicks = nowTicks;
             _perfWindowFrames = 0;
@@ -361,6 +373,10 @@ namespace ProjectPSX {
             _perfBusMmioWrites = 0;
             _perfIrqChecks = 0;
             _perfInterruptHandles = 0;
+            _perfInterruptNoPendingReturns = 0;
+            _perfInterruptMaskedReturns = 0;
+            _perfInterruptGteDeferrals = 0;
+            _perfInterruptExceptionsTaken = 0;
             _perfGpuTriangles = 0;
             _perfGpuRectangles = 0;
             _perfGpuLines = 0;

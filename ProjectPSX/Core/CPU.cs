@@ -62,11 +62,9 @@ namespace ProjectPSX {
         private readonly uint[] _instructionCacheTags = new uint[InstructionCacheLineCount];
         private readonly bool[] _instructionCacheValid = new bool[InstructionCacheLineCount];
         private readonly uint[] _instructionCacheData = new uint[InstructionCacheLineCount * InstructionCacheWordsPerLine];
-        private uint _lastObservedMemoryCacheWriteCount;
         private bool _instructionCacheEnabled;
-        private bool _lastInstructionCacheIsolation;
-        private bool _lastInstructionCacheRuntimeAllowed;
         private bool _instructionCacheRuntimeAllowed;
+        private bool _instructionCacheControlDirty = true;
 
         private GTE gte;
         [NonSerialized]
@@ -98,6 +96,10 @@ namespace ProjectPSX {
             public readonly int ICacheMisses;
             public readonly int RamFetches;
             public readonly int BiosFetches;
+            public readonly int InterruptNoPendingReturns;
+            public readonly int InterruptMaskedReturns;
+            public readonly int InterruptGteDeferrals;
+            public readonly int InterruptExceptionsTaken;
 
             public PerfSnapshot(
                 int instructions,
@@ -111,7 +113,11 @@ namespace ProjectPSX {
                 int iCacheHits,
                 int iCacheMisses,
                 int ramFetches,
-                int biosFetches) {
+                int biosFetches,
+                int interruptNoPendingReturns,
+                int interruptMaskedReturns,
+                int interruptGteDeferrals,
+                int interruptExceptionsTaken) {
                 Instructions = instructions;
                 BranchInstructions = branchInstructions;
                 Load8Ops = load8Ops;
@@ -124,6 +130,10 @@ namespace ProjectPSX {
                 ICacheMisses = iCacheMisses;
                 RamFetches = ramFetches;
                 BiosFetches = biosFetches;
+                InterruptNoPendingReturns = interruptNoPendingReturns;
+                InterruptMaskedReturns = interruptMaskedReturns;
+                InterruptGteDeferrals = interruptGteDeferrals;
+                InterruptExceptionsTaken = interruptExceptionsTaken;
             }
         }
 
@@ -139,27 +149,38 @@ namespace ProjectPSX {
         private int _perfICacheMisses;
         private int _perfRamFetches;
         private int _perfBiosFetches;
+        private int _perfInterruptNoPendingReturns;
+        private int _perfInterruptMaskedReturns;
+        private int _perfInterruptGteDeferrals;
+        private int _perfInterruptExceptionsTaken;
 
         public struct Instr {
-            public uint value;                     //raw
-            public uint opcode => value >> 26;     //Instr opcode
+            public uint value;
+            public uint opcode;
+            public uint rs;
+            public uint rt;
+            public uint imm;
+            public uint imm_s;
+            public uint rd;
+            public uint sa;
+            public uint function;
+            public uint addr;
+            public uint id;
 
-            //I-Type
-            public uint rs => (value >> 21) & 0x1F;  //Register Source
-            public uint rt => (value >> 16) & 0x1F;  //Register Target
-            public uint imm => (ushort)value;        //Immediate value
-            public uint imm_s => (uint)(short)value; //Immediate value sign extended
-
-            //R-Type
-            public uint rd => (value >> 11) & 0x1F;
-            public uint sa => (value >> 6) & 0x1F;  //Shift Amount
-            public uint function => value & 0x3F;   //Function
-
-            //J-Type                                       
-            public uint addr => value & 0x3FFFFFF;  //Target Address
-
-            //id / Cop
-            public uint id => opcode & 0x3; //This is used mainly for coprocesor opcode id but its also used on opcodes that trigger exception
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void SetValue(uint raw) {
+                value = raw;
+                opcode = raw >> 26;
+                rs = (raw >> 21) & 0x1F;
+                rt = (raw >> 16) & 0x1F;
+                imm = (ushort)raw;
+                imm_s = (uint)(short)raw;
+                rd = (raw >> 11) & 0x1F;
+                sa = (raw >> 6) & 0x1F;
+                function = raw & 0x3F;
+                addr = raw & 0x03FF_FFFF;
+                id = opcode & 0x3;
+            }
         }
         private Instr instr;
 
@@ -242,6 +263,7 @@ namespace ProjectPSX {
                 return;
             }
             _instructionCacheRuntimeAllowed = true;
+            _instructionCacheControlDirty = true;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -251,6 +273,8 @@ namespace ProjectPSX {
                 COP0_GPR[CAUSE] |= 0x400;
             } else {
                 COP0_GPR[CAUSE] &= ~(uint)0x400;
+                _perfInterruptNoPendingReturns++;
+                return;
             }
 
             bool IEC = (COP0_GPR[SR] & 0x1) == 1;
@@ -258,6 +282,7 @@ namespace ProjectPSX {
             byte IP = (byte)((COP0_GPR[CAUSE] >> 8) & 0xFF);
 
             if (!IEC || (IM & IP) == 0) {
+                _perfInterruptMaskedReturns++;
                 return;
             }
 
@@ -269,9 +294,11 @@ namespace ProjectPSX {
             //Crash Bandicoot intro is a good example for this
             uint instr = load >> 26;
             if (instr == 0x12) { //COP2 MTC2
+                _perfInterruptGteDeferrals++;
                 return;
             }
 
+            _perfInterruptExceptionsTaken++;
             EXCEPTION(this, EX.INTERRUPT);
         }
 
@@ -296,10 +323,10 @@ namespace ProjectPSX {
 
             uint maskedPC = PC_Now & 0x1FFF_FFFF;
             if (maskedPC < 0x1F00_0000) {
-                instr.value = FetchInstructionWord(PC_Now);
+                instr.SetValue(FetchInstructionWord(PC_Now));
                 return 1;
             } else {
-                instr.value = bus.LoadFromBios(maskedPC);
+                instr.SetValue(bus.LoadFromBios(maskedPC));
                 return 20;
             }
         }
@@ -317,7 +344,9 @@ namespace ProjectPSX {
                 return bus.LoadFromBios(physicalAddress);
             }
 
-            RefreshInstructionCacheControl();
+            if (_instructionCacheControlDirty) {
+                RefreshInstructionCacheControl();
+            }
 
             uint physical = virtualPc & 0x1FFF_FFFF;
             if (physical >= 0x1F00_0000) {
@@ -395,17 +424,12 @@ namespace ProjectPSX {
         private void RefreshInstructionCacheControl() {
             if (!ExperimentalInstructionCache) {
                 _instructionCacheEnabled = false;
+                _instructionCacheControlDirty = false;
                 return;
             }
 
             bool cacheIsolation = (COP0_GPR[SR] & 0x0001_0000) != 0;
             uint writeCount = bus.MemoryCacheWriteCount;
-            if (writeCount == _lastObservedMemoryCacheWriteCount
-                && cacheIsolation == _lastInstructionCacheIsolation
-                && _instructionCacheRuntimeAllowed == _lastInstructionCacheRuntimeAllowed) {
-                return;
-            }
-
             uint cacheControl = bus.MemoryCacheControl;
             bool cacheControlWritten = writeCount != 0;
             bool instructionCacheEnabled = _instructionCacheRuntimeAllowed
@@ -421,9 +445,7 @@ namespace ProjectPSX {
             }
 
             _instructionCacheEnabled = instructionCacheEnabled;
-            _lastObservedMemoryCacheWriteCount = writeCount;
-            _lastInstructionCacheIsolation = cacheIsolation;
-            _lastInstructionCacheRuntimeAllowed = _instructionCacheRuntimeAllowed;
+            _instructionCacheControlDirty = false;
         }
 
         private void FlushInstructionCache() {
@@ -443,6 +465,10 @@ namespace ProjectPSX {
             _perfICacheMisses = 0;
             _perfRamFetches = 0;
             _perfBiosFetches = 0;
+            _perfInterruptNoPendingReturns = 0;
+            _perfInterruptMaskedReturns = 0;
+            _perfInterruptGteDeferrals = 0;
+            _perfInterruptExceptionsTaken = 0;
         }
 
         public PerfSnapshot CapturePerfSnapshot() {
@@ -458,7 +484,23 @@ namespace ProjectPSX {
                 _perfICacheHits,
                 _perfICacheMisses,
                 _perfRamFetches,
-                _perfBiosFetches);
+                _perfBiosFetches,
+                _perfInterruptNoPendingReturns,
+                _perfInterruptMaskedReturns,
+                _perfInterruptGteDeferrals,
+                _perfInterruptExceptionsTaken);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ObserveMemoryCacheControlWrite() {
+            if (ExperimentalInstructionCache) {
+                _instructionCacheControlDirty = true;
+            }
+        }
+
+        public void ResyncAfterLoad() {
+            _instructionCacheControlDirty = true;
+            RefreshInstructionCacheControl();
         }
 
         private void InvalidateInstructionCacheRange(uint physicalAddress, int sizeBytes) {
@@ -637,6 +679,7 @@ namespace ProjectPSX {
                 bool currentIEC = (value & 0x1) == 1;
 
                 cpu.COP0_GPR[SR] = value;
+                cpu._instructionCacheControlDirty = true;
 
                 uint IM = (value >> 8) & 0x3;
                 uint IP = (cpu.COP0_GPR[CAUSE] >> 8) & 0x3;
@@ -659,6 +702,7 @@ namespace ProjectPSX {
             uint mode = cpu.COP0_GPR[SR] & 0x3F;
             cpu.COP0_GPR[SR] &= ~(uint)0x3F;
             cpu.COP0_GPR[SR] |= mode >> 2;
+            cpu._instructionCacheControlDirty = true;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -695,6 +739,7 @@ namespace ProjectPSX {
 
             cpu.PC = ExceptionAdress[(cpu.COP0_GPR[SR] & 0x400000) >> 22];
             cpu.PC_Predictor = cpu.PC + 4;
+            cpu._instructionCacheControlDirty = true;
         }
 
         private static void TraceFault(CPU cpu, EX cause, uint coprocessor) {
@@ -1147,24 +1192,12 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private uint LoadData32(uint virtualAddress) {
-            if (!ExperimentalInstructionCache) {
-                if (!dontIsolateCache) {
-                    return 0;
-                }
-
-                if (bus.TryLoad32Fast(virtualAddress, out uint fastValue)) {
-                    return fastValue;
-                }
-
-                return bus.load32(virtualAddress);
-            }
-
             if (!dontIsolateCache) {
                 return 0;
             }
 
-            if (bus.TryLoad32Fast(virtualAddress, out uint cachedFastValue)) {
-                return cachedFastValue;
+            if (bus.TryLoad32Fast(virtualAddress, out uint fastValue)) {
+                return fastValue;
             }
 
             return bus.load32(virtualAddress);
@@ -1172,24 +1205,12 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private byte LoadData8(uint virtualAddress) {
-            if (!ExperimentalInstructionCache) {
-                if (!dontIsolateCache) {
-                    return 0;
-                }
-
-                if (bus.TryLoad8Fast(virtualAddress, out byte fastValue)) {
-                    return fastValue;
-                }
-
-                return (byte)bus.load32(virtualAddress);
-            }
-
             if (!dontIsolateCache) {
                 return 0;
             }
 
-            if (bus.TryLoad8Fast(virtualAddress, out byte cachedFastValue)) {
-                return cachedFastValue;
+            if (bus.TryLoad8Fast(virtualAddress, out byte fastValue)) {
+                return fastValue;
             }
 
             return (byte)bus.load32(virtualAddress);
@@ -1197,24 +1218,12 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private ushort LoadData16(uint virtualAddress) {
-            if (!ExperimentalInstructionCache) {
-                if (!dontIsolateCache) {
-                    return 0;
-                }
-
-                if (bus.TryLoad16Fast(virtualAddress, out ushort fastValue)) {
-                    return fastValue;
-                }
-
-                return (ushort)bus.load32(virtualAddress);
-            }
-
             if (!dontIsolateCache) {
                 return 0;
             }
 
-            if (bus.TryLoad16Fast(virtualAddress, out ushort cachedFastValue)) {
-                return cachedFastValue;
+            if (bus.TryLoad16Fast(virtualAddress, out ushort fastValue)) {
+                return fastValue;
             }
 
             return (ushort)bus.load32(virtualAddress);
@@ -1222,17 +1231,6 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData32(uint virtualAddress, uint value) {
-            if (!ExperimentalInstructionCache) {
-                if (dontIsolateCache) {
-                    if (bus.TryStore32Fast(virtualAddress, value)) {
-                        return;
-                    }
-
-                    bus.write32(virtualAddress, value);
-                }
-                return;
-            }
-
             if (!dontIsolateCache) {
                 return;
             }
@@ -1246,17 +1244,6 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData16(uint virtualAddress, ushort value) {
-            if (!ExperimentalInstructionCache) {
-                if (dontIsolateCache) {
-                    if (bus.TryStore16Fast(virtualAddress, value)) {
-                        return;
-                    }
-
-                    bus.write16(virtualAddress, value);
-                }
-                return;
-            }
-
             if (!dontIsolateCache) {
                 return;
             }
@@ -1270,17 +1257,6 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void StoreData8(uint virtualAddress, byte value) {
-            if (!ExperimentalInstructionCache) {
-                if (dontIsolateCache) {
-                    if (bus.TryStore8Fast(virtualAddress, value)) {
-                        return;
-                    }
-
-                    bus.write8(virtualAddress, value);
-                }
-                return;
-            }
-
             if (!dontIsolateCache) {
                 return;
             }

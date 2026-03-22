@@ -281,7 +281,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             if (_core == null)
                 throw new InvalidOperationException("PSX core is not loaded.");
 
-            const int version = 1;
+            const int version = 2;
             writer.Write(version);
             writer.Write(_frameCounter);
             writer.Write(_core.BootBiosExited);
@@ -317,7 +317,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
                 throw new InvalidOperationException("PSX core is not loaded.");
 
             int version = reader.ReadInt32();
-            if (version != 1)
+            if (version != 2)
                 throw new InvalidDataException($"Unsupported PSX savestate version: {version}.");
 
             _frameCounter = reader.ReadInt64();
@@ -348,6 +348,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             _core.MDEC.ResyncAfterLoad();
             _core.SPU.LoadRawState(reader);
             StateBinarySerializer.ReadInto(reader, _core.SPU);
+            _core.ResyncRuntimeStateAfterLoad();
 
             lock (_audioLock)
             {
