@@ -392,6 +392,16 @@ public partial class MainWindow : Window
     private DispatcherTimer? _cursorHideTimer;
     private bool _cursorHidden;
     private Point _lastMousePosition;
+    private readonly object _mouseCaptureStateLock = new();
+    private volatile bool _mouseCaptureEnabled;
+    private bool _mouseCaptureActive;
+    private IPointer? _mouseCapturePointer;
+    private Point _mouseCaptureLastPosition;
+    private double _mousePadAccumX;
+    private double _mousePadAccumY;
+    private bool _mousePadPrimaryDown;
+    private bool _mousePadSecondaryDown;
+    private double _mouseCaptureSensitivity = DefaultMouseCaptureSensitivity;
     private const double DefaultUiScale = 1.0;
     private const double HighDensityUiScale = 1.35;
     private const double UltraDensityUiScale = 1.5;
@@ -399,6 +409,9 @@ public partial class MainWindow : Window
     private const int HighDensityHeightThreshold = 2160;
     private const int UltraDensityWidthThreshold = 5120;
     private const int UltraDensityHeightThreshold = 2880;
+    private const double DefaultMouseCaptureSensitivity = 1.0;
+    private const double MinMouseCaptureSensitivity = 0.25;
+    private const double MaxMouseCaptureSensitivity = 4.0;
     private double _uiScale = DefaultUiScale;
 
     public MainWindow(string? romPath = null)
@@ -408,9 +421,11 @@ public partial class MainWindow : Window
         ApplyConsoleSilence();
         HookInput();
         HookMouseMovement();
+        HookPsxMouseCapture();
         Opened += (_, _) => UpdateUiScaleForCurrentScreen();
         PositionChanged += (_, _) => UpdateUiScaleForCurrentScreen();
         ScalingChanged += (_, _) => UpdateUiScaleForCurrentScreen();
+        Deactivated += (_, _) => DeactivateMouseCapture(updateStatus: false);
         if (Screens != null)
             Screens.Changed += (_, _) => UpdateUiScaleForCurrentScreen();
 
@@ -471,6 +486,10 @@ public partial class MainWindow : Window
             SixButtonPadCheck.Checked += (_, _) => UpdatePadTypeFromUi();
             SixButtonPadCheck.Unchecked += (_, _) => UpdatePadTypeFromUi();
         }
+        _mouseCaptureEnabled = MouseCaptureCheck?.IsChecked == true;
+        if (MouseCaptureSensitivitySlider != null)
+            MouseCaptureSensitivitySlider.Value = _mouseCaptureSensitivity;
+        UpdateMouseCaptureSensitivityText();
         UpdateRegionOverrideCombo();
         UpdateFrameRateCombo();
         UpdateRomRegionHintText();
@@ -882,7 +901,7 @@ public partial class MainWindow : Window
             if (args.Source is TextBox)
                 return;
             Focus();
-            if (WindowState == WindowState.FullScreen && _cursorHidden)
+            if (WindowState == WindowState.FullScreen && _cursorHidden && !IsMouseCaptureActive())
             {
                 ShowCursor();
                 ResetCursorHideTimer();
@@ -925,8 +944,26 @@ public partial class MainWindow : Window
         };
     }
 
+    private void HookPsxMouseCapture()
+    {
+        if (InputSurface == null)
+            return;
+
+        InputSurface.PointerMoved += OnInputSurfacePointerMoved;
+        InputSurface.PointerPressed += OnInputSurfacePointerPressed;
+        InputSurface.PointerReleased += OnInputSurfacePointerReleased;
+        InputSurface.PointerCaptureLost += OnInputSurfacePointerCaptureLost;
+    }
+
     private void HandleKeyDown(object? sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Escape && IsMouseCaptureActive())
+        {
+            DeactivateMouseCapture();
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Key.F9 && e.KeyModifiers == KeyModifiers.None)
         {
             TriggerDebugSnapshotHotkey();
@@ -1345,12 +1382,174 @@ public partial class MainWindow : Window
 
     private void HandleMouseMovement(Point position)
     {
-        if (WindowState == WindowState.FullScreen && _cursorHidden)
+        if (!IsMouseCaptureActive() && WindowState == WindowState.FullScreen && _cursorHidden)
         {
             ShowCursor();
             ResetCursorHideTimer();
         }
         _lastMousePosition = position;
+    }
+
+    private void OnInputSurfacePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (sender is not InputElement element || !TryActivateMouseCapture(e, element))
+            return;
+
+        Point position = e.GetPosition(this);
+        lock (_mouseCaptureStateLock)
+        {
+            _mousePadAccumX += (position.X - _mouseCaptureLastPosition.X) * _mouseCaptureSensitivity;
+            _mousePadAccumY += (position.Y - _mouseCaptureLastPosition.Y) * _mouseCaptureSensitivity;
+            _mouseCaptureLastPosition = position;
+        }
+
+        e.Handled = true;
+    }
+
+    private void OnInputSurfacePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not InputElement element || !TryActivateMouseCapture(e, element))
+            return;
+
+        UpdateMousePadButtons(e);
+        e.Handled = true;
+    }
+
+    private void OnInputSurfacePointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (!IsMouseCaptureActive())
+            return;
+
+        UpdateMousePadButtons(e);
+        e.Handled = true;
+    }
+
+    private void OnInputSurfacePointerCaptureLost(object? sender, RoutedEventArgs e)
+    {
+        if (IsMouseCaptureActive())
+            DeactivateMouseCapture(updateStatus: false);
+    }
+
+    private bool TryActivateMouseCapture(PointerEventArgs e, InputElement element)
+    {
+        if (!_mouseCaptureEnabled || _core is not PsxAdapter)
+            return false;
+        if (e.Pointer.Type != PointerType.Mouse)
+            return false;
+
+        bool activated = false;
+        Point position = e.GetPosition(this);
+        lock (_mouseCaptureStateLock)
+        {
+            if (!_mouseCaptureActive)
+            {
+                _mouseCaptureActive = true;
+                _mouseCapturePointer = e.Pointer;
+                _mouseCaptureLastPosition = position;
+                _mousePadAccumX = 0;
+                _mousePadAccumY = 0;
+                _mousePadPrimaryDown = false;
+                _mousePadSecondaryDown = false;
+                activated = true;
+            }
+        }
+
+        if (activated)
+        {
+            e.Pointer.Capture(element);
+            Focus();
+            element.Focus();
+            StopCursorHideTimer();
+            HideCursor();
+            StatusText.Text = "PSX mouse capture active. Press Esc to release.";
+        }
+
+        return true;
+    }
+
+    private void UpdateMousePadButtons(PointerEventArgs e)
+    {
+        PointerPoint point = e.GetCurrentPoint(this);
+        lock (_mouseCaptureStateLock)
+        {
+            _mousePadPrimaryDown = point.Properties.IsLeftButtonPressed;
+            _mousePadSecondaryDown = point.Properties.IsRightButtonPressed;
+        }
+    }
+
+    private bool IsMouseCaptureActive()
+    {
+        lock (_mouseCaptureStateLock)
+            return _mouseCaptureActive;
+    }
+
+    private void DeactivateMouseCapture(bool updateStatus = true)
+    {
+        bool wasActive;
+        IPointer? egressPointer;
+        lock (_mouseCaptureStateLock)
+        {
+            wasActive = _mouseCaptureActive;
+            _mouseCaptureActive = false;
+            egressPointer = _mouseCapturePointer;
+            _mouseCapturePointer = null;
+            _mousePadAccumX = 0;
+            _mousePadAccumY = 0;
+            _mousePadPrimaryDown = false;
+            _mousePadSecondaryDown = false;
+        }
+
+        egressPointer?.Capture(null);
+        ShowCursor();
+        if (WindowState == WindowState.FullScreen)
+            StartCursorHideTimer();
+
+        if (updateStatus && wasActive)
+            StatusText.Text = "PSX mouse capture released.";
+    }
+
+    private void ConsumePsxMousePadState(
+        out bool left,
+        out bool right,
+        out bool up,
+        out bool down,
+        out bool primaryDown,
+        out bool secondaryDown,
+        out bool active)
+    {
+        lock (_mouseCaptureStateLock)
+        {
+            active = _mouseCaptureActive;
+            left = false;
+            right = false;
+            up = false;
+            down = false;
+
+            if (_mousePadAccumX <= -1.0)
+            {
+                left = true;
+                _mousePadAccumX = Math.Min(_mousePadAccumX + 1.0, 0.0);
+            }
+            else if (_mousePadAccumX >= 1.0)
+            {
+                right = true;
+                _mousePadAccumX = Math.Max(_mousePadAccumX - 1.0, 0.0);
+            }
+
+            if (_mousePadAccumY <= -1.0)
+            {
+                up = true;
+                _mousePadAccumY = Math.Min(_mousePadAccumY + 1.0, 0.0);
+            }
+            else if (_mousePadAccumY >= 1.0)
+            {
+                down = true;
+                _mousePadAccumY = Math.Max(_mousePadAccumY - 1.0, 0.0);
+            }
+
+            primaryDown = _mousePadPrimaryDown;
+            secondaryDown = _mousePadSecondaryDown;
+        }
     }
 
     private void ToggleFullScreen()
@@ -1995,6 +2194,7 @@ public partial class MainWindow : Window
         {
             Console.WriteLine($"[UI] Start clicked. romPath='{_romPath}' exists={(!string.IsNullOrWhiteSpace(_romPath) && File.Exists(_romPath))}");
             ApplyPsxSbiSelectionForRom(_romPath);
+            DeactivateMouseCapture(updateStatus: false);
             _timer.Stop();
             StopEmuLoop();
             // Deterministic restart: stop audio thread/sink before loading next ROM.
@@ -3956,6 +4156,7 @@ public partial class MainWindow : Window
         public bool AdvancedPixelFilterEnabled { get; set; } = false;
         public bool CrtScanlinesEnabled { get; set; } = false;
         public int CrtScanlineStrengthPercent { get; set; } = DefaultCrtScanlineStrengthPercent;
+        public double MouseCaptureSensitivity { get; set; } = DefaultMouseCaptureSensitivity;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
         public Dictionary<string, bool>? RomSegaCdRamCartOverrides { get; set; }
@@ -3993,6 +4194,7 @@ public partial class MainWindow : Window
         public bool AdvancedPixelFilterEnabled { get; set; } = false;
         public bool CrtScanlinesEnabled { get; set; } = false;
         public int CrtScanlineStrengthPercent { get; set; } = DefaultCrtScanlineStrengthPercent;
+        public double MouseCaptureSensitivity { get; set; } = DefaultMouseCaptureSensitivity;
         public string? DefaultRegionOverride { get; set; }
         public Dictionary<string, string>? RomRegionOverrides { get; set; }
         public Dictionary<string, bool>? RomSegaCdRamCartOverrides { get; set; }
@@ -4128,6 +4330,10 @@ public partial class MainWindow : Window
         _advancedPixelFilterEnabled = settings.AdvancedPixelFilterEnabled;
         _crtScanlinesEnabled = settings.CrtScanlinesEnabled;
         _crtScanlineStrengthPercent = ClampPercent(settings.CrtScanlineStrengthPercent);
+        _mouseCaptureSensitivity = NormalizeMouseCaptureSensitivity(settings.MouseCaptureSensitivity);
+        if (MouseCaptureSensitivitySlider != null)
+            MouseCaptureSensitivitySlider.Value = _mouseCaptureSensitivity;
+        UpdateMouseCaptureSensitivityText();
 
         _defaultRegionOverride = settings.DefaultRegionOverride;
         _romRegionOverrides.Clear();
@@ -4287,6 +4493,7 @@ public partial class MainWindow : Window
             AdvancedPixelFilterEnabled = _advancedPixelFilterEnabled,
             CrtScanlinesEnabled = _crtScanlinesEnabled,
             CrtScanlineStrengthPercent = _crtScanlineStrengthPercent,
+            MouseCaptureSensitivity = _mouseCaptureSensitivity,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
             RomSegaCdRamCartOverrides = new Dictionary<string, bool>(_romSegaCdRamCartOverrides, StringComparer.OrdinalIgnoreCase),
@@ -4379,6 +4586,7 @@ public partial class MainWindow : Window
             AdvancedPixelFilterEnabled = settings.AdvancedPixelFilterEnabled,
             CrtScanlinesEnabled = settings.CrtScanlinesEnabled,
             CrtScanlineStrengthPercent = settings.CrtScanlineStrengthPercent,
+            MouseCaptureSensitivity = settings.MouseCaptureSensitivity,
             DefaultRegionOverride = settings.DefaultRegionOverride.ToString(),
             FrameRateMode = settings.FrameRateMode.ToString()
         };
@@ -4472,7 +4680,8 @@ public partial class MainWindow : Window
             SharpPixelsEnabled = raw.SharpPixelsEnabled,
             AdvancedPixelFilterEnabled = raw.AdvancedPixelFilterEnabled,
             CrtScanlinesEnabled = raw.CrtScanlinesEnabled,
-            CrtScanlineStrengthPercent = raw.CrtScanlineStrengthPercent
+            CrtScanlineStrengthPercent = raw.CrtScanlineStrengthPercent,
+            MouseCaptureSensitivity = raw.MouseCaptureSensitivity
         };
 
         if (Enum.TryParse<ConsoleRegion>(raw.DefaultRegionOverride ?? string.Empty, out var region))
@@ -4700,6 +4909,7 @@ public partial class MainWindow : Window
 
     private void OnStop(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
+        DeactivateMouseCapture(updateStatus: false);
         _timer.Stop();
         StopEmuLoop();
         StatusText.Text = "Stopped";
@@ -4762,11 +4972,19 @@ public partial class MainWindow : Window
             "Ctrl+F9: SMS VRAM/NT dump",
             "Snapshot includes screen + RAM + VRAM/CRAM/VSRAM"));
 
+        root.Children.Add(BuildControlsSection("PSX Mouse Capture",
+            "Machine Room > Mouse capture: arm host mouse control for PSX",
+            "Sensitivity slider: controls how much pad movement each mouse move generates",
+            "Move over the game screen: capture mouse input",
+            "Mouse move: adds PSX D-pad input while captured",
+            "Left/Right mouse: Cross/Circle while captured",
+            "Esc: release mouse back to desktop"));
+
         var dialog = new Window
         {
             Title = "Controls",
             Width = ScaleDialogSize(420, _uiScale),
-            Height = ScaleDialogSize(380, _uiScale),
+            Height = ScaleDialogSize(460, _uiScale),
             Background = new SolidColorBrush(Color.Parse("#0F1216")),
             Content = WrapDialogForUiScale(new ScrollViewer
             {
@@ -5230,10 +5448,42 @@ public partial class MainWindow : Window
         return 1.0;
     }
 
+    private static double NormalizeMouseCaptureSensitivity(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            return DefaultMouseCaptureSensitivity;
+
+        return Math.Clamp(value, MinMouseCaptureSensitivity, MaxMouseCaptureSensitivity);
+    }
+
     private void OnAudioToggle(object? sender, RoutedEventArgs e)
     {
         StartAudioEngineIfEnabled();
         SaveSettings();
+    }
+
+    private void OnMouseCaptureToggle(object? sender, RoutedEventArgs e)
+    {
+        _mouseCaptureEnabled = MouseCaptureCheck?.IsChecked == true;
+        if (!_mouseCaptureEnabled)
+            DeactivateMouseCapture(updateStatus: false);
+    }
+
+    private void OnMouseCaptureSensitivityChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        double sensitivity = NormalizeMouseCaptureSensitivity(e.NewValue);
+        if (Math.Abs(sensitivity - _mouseCaptureSensitivity) < 0.001)
+            return;
+
+        _mouseCaptureSensitivity = sensitivity;
+        UpdateMouseCaptureSensitivityText();
+        SaveSettings();
+    }
+
+    private void UpdateMouseCaptureSensitivityText()
+    {
+        if (MouseCaptureSensitivityValueText != null)
+            MouseCaptureSensitivityValueText.Text = $"{_mouseCaptureSensitivity:0.00}x";
     }
 
     private void OnInterlaceTestToggle(object? sender, RoutedEventArgs e)
@@ -5661,6 +5911,13 @@ public partial class MainWindow : Window
         bool mode;
         bool l2 = false;
         bool r2 = false;
+        bool mouseLeft = false;
+        bool mouseRight = false;
+        bool mouseUp = false;
+        bool mouseDown = false;
+        bool mousePrimaryDown = false;
+        bool mouseSecondaryDown = false;
+        bool mouseCaptureActive = false;
         bool up2 = false;
         bool down2 = false;
         bool left2 = false;
@@ -5693,6 +5950,14 @@ public partial class MainWindow : Window
         {
             l2 = mappingSet.KeyboardMappings.TryGetValue("L2", out Key l2Key) && IsKeyDownMapped(l2Key);
             r2 = mappingSet.KeyboardMappings.TryGetValue("R2", out Key r2Key) && IsKeyDownMapped(r2Key);
+            ConsumePsxMousePadState(
+                out mouseLeft,
+                out mouseRight,
+                out mouseUp,
+                out mouseDown,
+                out mousePrimaryDown,
+                out mouseSecondaryDown,
+                out mouseCaptureActive);
         }
         if (isPce || isNes)
             mode = mappingSet.KeyboardMappings.TryGetValue("Select", out Key selKey) && IsKeyDownMapped(selKey);
@@ -5828,6 +6093,22 @@ public partial class MainWindow : Window
             y = IsAutoFireActive(nowTicks, autoRate);
         if ((autoMask & AutoFireBitZ) != 0 && z)
             z = IsAutoFireActive(nowTicks, autoRate);
+
+        if (isPsx && mouseCaptureActive)
+        {
+            if (mouseLeft)
+                left = true;
+            if (mouseRight)
+                right = true;
+
+            if (mouseUp)
+                up = true;
+            if (mouseDown)
+                down = true;
+
+            a |= mousePrimaryDown;
+            b |= mouseSecondaryDown;
+        }
 
         if (isPsx && core is IExtendedInputHandler extendedInputHandler)
         {
