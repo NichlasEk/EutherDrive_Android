@@ -252,6 +252,8 @@ public class PPU : IPPU
     [NonSerialized]
     private byte[] _mathPreventCache = [];
     [NonSerialized]
+    private bool _lineAnyColorMathEnabled;
+    [NonSerialized]
     private int _lineModeIndex;
     [NonSerialized]
     private int _lineLayerCount;
@@ -1305,6 +1307,12 @@ public class PPU : IPPU
             byte[] brightnessTable = BrightnessTable;
             int[] pixelOutput = _pixelOutput;
             const int alphaMask = unchecked((int)0xFF000000);
+            if (CanUseSimpleMainScreenPath(hiResOutput, trueHiResOutput))
+            {
+                RenderLineSimpleMainOnly(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput, alphaMask);
+                PerfOutputPixels += 256;
+                return;
+            }
             var i = 0;
             while (i < 256)
             {
@@ -1415,6 +1423,38 @@ public class PPU : IPPU
         }
     }
 
+    private bool CanUseSimpleMainScreenPath(bool hiResOutput, bool trueHiResOutput)
+    {
+        return !hiResOutput
+            && !trueHiResOutput
+            && !_frameTrueHiResOutput
+            && !_forcedBlank
+            && !_directColor
+            && !_lineAnyColorMathEnabled
+            && _colorClip == 0;
+    }
+
+    private void RenderLineSimpleMainOnly(
+        int screenY,
+        int outputRow,
+        int brightnessOffset,
+        byte[] brightnessTable,
+        int[] pixelOutput,
+        int alphaMask)
+    {
+        for (int x = 0; x < 256; x++)
+        {
+            GetColor(false, x, screenY, out ushort color, out _, out _);
+            int r = color & 0x1f;
+            int g = (color >> 5) & 0x1f;
+            int b = (color >> 10) & 0x1f;
+            int mainColor = brightnessTable[brightnessOffset + b]
+                | (brightnessTable[brightnessOffset + g] << 8)
+                | (brightnessTable[brightnessOffset + r] << 16);
+            pixelOutput[outputRow + x] = mainColor | alphaMask;
+        }
+    }
+
     internal void ResetPerfCounters()
     {
         PerfRenderedLines = 0;
@@ -1448,6 +1488,9 @@ public class PPU : IPPU
         if (_mode7ExBg && _mode == 7)
             _lineModeIndex = 108;
         _lineLayerCount = _layercountPerMode[_mode];
+        _lineAnyColorMathEnabled =
+            _mathEnabled[0] || _mathEnabled[1] || _mathEnabled[2] ||
+            _mathEnabled[3] || _mathEnabled[4] || _mathEnabled[5];
 
         for (int layer = 0; layer < 6; layer++)
         {

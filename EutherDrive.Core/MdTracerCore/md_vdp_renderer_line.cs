@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -192,6 +193,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         // Helper to read a word from vram[] (handles the MD byte-swap)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private ushort vram_read_render(int addr)
         {
             // Support both 64KB and 128KB VRAM layouts.
@@ -346,24 +348,21 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // Nollställ rad-buffertar för aktuell scanline
-            for (int dx = 0; dx < g_display_xsize; dx++)
-            {
-                g_game_cmap[dx] = 0;
-                g_game_primap[dx] = 0;
-                // Shadow/highlight map semantics:
-                // 0 = shadow, 1 = normal, 2 = highlight.
-                // Default should be normal when shadow mode is enabled.
-                g_game_shadowmap[dx] = shadowEnabled ? 1u : 0u;
-                g_sprite_line_mask[dx] = false;
-                planeAColor[dx] = 0;
-                planeAPrio[dx] = 0;
-                planeBColor[dx] = 0;
-                planeBPrio[dx] = 0;
-                spriteColor[dx] = 0;
-                spritePrio[dx] = 0;
-                spriteShDelta[dx] = 0;
-                spriteForceNormal[dx] = false;
-            }
+            Array.Clear(g_game_cmap, 0, g_display_xsize);
+            Array.Clear(g_game_primap, 0, g_display_xsize);
+            // Shadow/highlight map semantics:
+            // 0 = shadow, 1 = normal, 2 = highlight.
+            // Default should be normal when shadow mode is enabled.
+            g_game_shadowmap.AsSpan(0, g_display_xsize).Fill(shadowEnabled ? 1u : 0u);
+            Array.Clear(g_sprite_line_mask, 0, g_display_xsize);
+            Array.Clear(planeAColor, 0, g_display_xsize);
+            Array.Clear(planeAPrio, 0, g_display_xsize);
+            Array.Clear(planeBColor, 0, g_display_xsize);
+            Array.Clear(planeBPrio, 0, g_display_xsize);
+            Array.Clear(spriteColor, 0, g_display_xsize);
+            Array.Clear(spritePrio, 0, g_display_xsize);
+            Array.Clear(spriteShDelta, 0, g_display_xsize);
+            Array.Clear(spriteForceNormal, 0, g_display_xsize);
 
             // --- Scroll B ---
             if (!DisablePlaneB)

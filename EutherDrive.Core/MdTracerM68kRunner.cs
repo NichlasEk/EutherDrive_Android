@@ -23,6 +23,11 @@ public sealed class MdTracerM68kRunner
     private MethodInfo? _runNoArgsInstance;
     private MethodInfo? _stepNoArgsInstance;
 
+    private Action? _initDelegate;
+    private Action? _resetDelegate;
+    private Action? _runNoArgsDelegate;
+    private Action? _stepNoArgsDelegate;
+
     private object? _instance;
     private readonly object[] _singleIntArgs = new object[1];
 
@@ -62,6 +67,18 @@ public sealed class MdTracerM68kRunner
         else if (_runIntInstance != null && _instance != null)
             _runIntInstanceDelegate = (Action<int>)Delegate.CreateDelegate(typeof(Action<int>), _instance, _runIntInstance);
 
+        if (_init != null) _initDelegate = (Action)Delegate.CreateDelegate(typeof(Action), _init);
+        else if (_initInstance != null && _instance != null) _initDelegate = (Action)Delegate.CreateDelegate(typeof(Action), _instance, _initInstance);
+
+        if (_reset != null) _resetDelegate = (Action)Delegate.CreateDelegate(typeof(Action), _reset);
+        else if (_resetInstance != null && _instance != null) _resetDelegate = (Action)Delegate.CreateDelegate(typeof(Action), _instance, _resetInstance);
+
+        if (_runNoArgs != null) _runNoArgsDelegate = (Action)Delegate.CreateDelegate(typeof(Action), _runNoArgs);
+        else if (_runNoArgsInstance != null && _instance != null) _runNoArgsDelegate = (Action)Delegate.CreateDelegate(typeof(Action), _instance, _runNoArgsInstance);
+
+        if (_stepNoArgs != null) _stepNoArgsDelegate = (Action)Delegate.CreateDelegate(typeof(Action), _stepNoArgs);
+        else if (_stepNoArgsInstance != null && _instance != null) _stepNoArgsDelegate = (Action)Delegate.CreateDelegate(typeof(Action), _instance, _stepNoArgsInstance);
+
         SelectedRunApi = PickSelectedRunApi();
 
         DebugApi = BuildDebugApiString();
@@ -71,13 +88,9 @@ public sealed class MdTracerM68kRunner
     {
         EnsureInit();
 
-        if (_reset != null)
+        if (_resetDelegate != null)
         {
-            _reset.Invoke(null, null);
-        }
-        else if (_resetInstance != null && _instance != null)
-        {
-            _resetInstance.Invoke(_instance, null);
+            _resetDelegate();
         }
     }
 
@@ -86,13 +99,9 @@ public sealed class MdTracerM68kRunner
         if (_inited)
             return;
 
-        if (_init != null)
+        if (_initDelegate != null)
         {
-            _init.Invoke(null, null);
-        }
-        else if (_initInstance != null && _instance != null)
-        {
-            _initInstance.Invoke(_instance, null);
+            _initDelegate();
         }
         _inited = true;
     }
@@ -117,35 +126,21 @@ public sealed class MdTracerM68kRunner
         }
 
         // 2) run() utan args
-        if (_runNoArgs != null)
+        if (_runNoArgsDelegate != null)
         {
             // kör budget gånger, men begränsa så vi inte låser UI
             int n = Math.Clamp(budget, 1, 5000);
             for (int i = 0; i < n; i++)
-                _runNoArgs.Invoke(null, null);
-            return;
-        }
-        if (_runNoArgsInstance != null && _instance != null)
-        {
-            int n = Math.Clamp(budget, 1, 5000);
-            for (int i = 0; i < n; i++)
-                _runNoArgsInstance.Invoke(_instance, null);
+                _runNoArgsDelegate();
             return;
         }
 
         // 3) step()
-        if (_stepNoArgs != null)
+        if (_stepNoArgsDelegate != null)
         {
             int n = Math.Clamp(budget, 1, 20000);
             for (int i = 0; i < n; i++)
-                _stepNoArgs.Invoke(null, null);
-            return;
-        }
-        if (_stepNoArgsInstance != null && _instance != null)
-        {
-            int n = Math.Clamp(budget, 1, 20000);
-            for (int i = 0; i < n; i++)
-                _stepNoArgsInstance.Invoke(_instance, null);
+                _stepNoArgsDelegate();
             return;
         }
 
