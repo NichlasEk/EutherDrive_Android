@@ -283,6 +283,30 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         return _frameBuffer;
     }
 
+    public bool TrySwapPresentationBuffer(ref byte[] buffer, out int width, out int height, out int stride)
+    {
+        lock (_stateLock)
+        {
+            width = _frameWidth;
+            height = _frameHeight;
+            stride = _frameStride;
+
+            int requiredBytes = height * stride;
+            if (width <= 0 || height <= 0 || stride <= 0 || _frameBuffer.Length < requiredBytes)
+            {
+                return false;
+            }
+
+            if (buffer.Length < requiredBytes)
+            {
+                buffer = new byte[requiredBytes];
+            }
+
+            (_frameBuffer, buffer) = (buffer, _frameBuffer);
+            return true;
+        }
+    }
+
     public SnesPpuState GetPpuState()
     {
         if (_system.PPU is PPU ppu)

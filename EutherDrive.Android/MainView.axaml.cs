@@ -31,6 +31,7 @@ public partial class MainView : UserControl
     private const int InputLatchFrames = 6;
     private const int AndroidAudioBufferFrames = 16384;
     private const int AndroidAudioBatchFrames = 256;
+    private const int AndroidAudioPullMaxFrames = 2048;
     private const double TargetFrameRate = 60.0;
     private const string SettingsFileName = "android-settings.toml";
     private const string LegacyJsonSettingsFileName = "android-settings.json";
@@ -38,6 +39,7 @@ public partial class MainView : UserControl
     private readonly MainViewModel _viewModel = new();
     private readonly object _inputSync = new();
     private readonly object _frameSync = new();
+    private readonly object _snesAudioLock = new();
     private readonly HashSet<string> _pressedDirections = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pressedActions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<IPointer, HashSet<string>> _dpadPointerDirections = new();
@@ -60,6 +62,13 @@ public partial class MainView : UserControl
     private Thread? _emulationThread;
     private volatile bool _emulationThreadRunning;
     private AudioEngine? _audioEngine;
+    private bool _audioPullMode;
+    private short[] _snesAudioRing = Array.Empty<short>();
+    private short[] _snesAudioTemp = Array.Empty<short>();
+    private int _snesAudioRead;
+    private int _snesAudioWrite;
+    private int _snesAudioCount;
+    private int _snesAudioChannels = 2;
     private IGameRenderSurface? _renderSurface;
     private byte[] _captureFrameBuffer = Array.Empty<byte>();
     private byte[] _latestFrameBuffer = Array.Empty<byte>();
@@ -1405,6 +1414,8 @@ public partial class MainView : UserControl
         _core = null;
         _audioEngine?.Dispose();
         _audioEngine = null;
+        _audioPullMode = false;
+        ResetSnesAudioRing();
         if (_renderSurface is IDisposable disposableRenderSurface)
             disposableRenderSurface.Dispose();
         else
@@ -1469,6 +1480,8 @@ public partial class MainView : UserControl
     {
         _audioEngine?.Dispose();
         _audioEngine = null;
+        _audioPullMode = false;
+        ResetSnesAudioRing();
 
         if (core == null)
         {
@@ -1483,16 +1496,27 @@ public partial class MainView : UserControl
 
         try
         {
+            int targetBufferedFrames = (int)(sampleRate * 0.20);
             _audioEngine = new AudioEngine(
                 new AndroidAudioSink(),
                 sampleRate,
                 channels,
                 framesPerBatch: AndroidAudioBatchFrames,
                 bufferFrames: AndroidAudioBufferFrames);
-            _audioEngine.SetTargetBufferedFrames((int)(sampleRate * 0.20));
+            _audioEngine.SetTargetBufferedFrames(targetBufferedFrames);
             _audioEngine.Start();
 
-            if (!initialAudio.IsEmpty)
+            if (core is SnesAdapter)
+            {
+                _audioPullMode = true;
+                InitSnesAudioRing(channels);
+                _audioEngine.EnablePullMode(SnesAudioPullProducer, targetBufferedFrames: targetBufferedFrames, maxFramesPerPull: AndroidAudioPullMaxFrames);
+                if (!initialAudio.IsEmpty)
+                {
+                    EnqueueSnesAudio(initialAudio);
+                }
+            }
+            else if (!initialAudio.IsEmpty)
             {
                 _audioEngine.Submit(initialAudio);
             }
@@ -1519,7 +1543,124 @@ public partial class MainView : UserControl
             return;
         }
 
+        if (_audioPullMode && core is SnesAdapter)
+        {
+            EnqueueSnesAudio(audio);
+            return;
+        }
+
         audioEngine.Submit(audio);
+    }
+
+    private void InitSnesAudioRing(int channels)
+    {
+        if (channels <= 0)
+        {
+            channels = 2;
+        }
+
+        _snesAudioChannels = channels;
+        int neededSamples = AndroidAudioBufferFrames * channels;
+        if (_snesAudioRing.Length != neededSamples)
+        {
+            _snesAudioRing = new short[neededSamples];
+        }
+
+        _snesAudioTemp = Array.Empty<short>();
+        _snesAudioRead = 0;
+        _snesAudioWrite = 0;
+        _snesAudioCount = 0;
+    }
+
+    private void ResetSnesAudioRing()
+    {
+        lock (_snesAudioLock)
+        {
+            _snesAudioRead = 0;
+            _snesAudioWrite = 0;
+            _snesAudioCount = 0;
+        }
+    }
+
+    private void EnqueueSnesAudio(ReadOnlySpan<short> audio)
+    {
+        if (audio.IsEmpty)
+        {
+            return;
+        }
+
+        lock (_snesAudioLock)
+        {
+            if (_snesAudioRing.Length == 0)
+            {
+                InitSnesAudioRing(_snesAudioChannels);
+            }
+
+            int available = _snesAudioRing.Length - _snesAudioCount;
+            int toWrite = Math.Min(audio.Length, available);
+            if (toWrite <= 0)
+            {
+                return;
+            }
+
+            int first = Math.Min(toWrite, _snesAudioRing.Length - _snesAudioWrite);
+            audio.Slice(0, first).CopyTo(_snesAudioRing.AsSpan(_snesAudioWrite));
+            _snesAudioWrite = (_snesAudioWrite + first) % _snesAudioRing.Length;
+            int remaining = toWrite - first;
+            if (remaining > 0)
+            {
+                audio.Slice(first, remaining).CopyTo(_snesAudioRing.AsSpan(0));
+                _snesAudioWrite = remaining;
+            }
+
+            _snesAudioCount += toWrite;
+        }
+    }
+
+    private ReadOnlySpan<short> DequeueSnesAudio(int frames)
+    {
+        if (frames <= 0)
+        {
+            return ReadOnlySpan<short>.Empty;
+        }
+
+        int neededSamples = frames * _snesAudioChannels;
+        lock (_snesAudioLock)
+        {
+            if (_snesAudioCount <= 0)
+            {
+                return ReadOnlySpan<short>.Empty;
+            }
+
+            int toRead = Math.Min(neededSamples, _snesAudioCount);
+            if (_snesAudioTemp.Length < toRead)
+            {
+                _snesAudioTemp = new short[toRead];
+            }
+
+            int first = Math.Min(toRead, _snesAudioRing.Length - _snesAudioRead);
+            _snesAudioRing.AsSpan(_snesAudioRead, first).CopyTo(_snesAudioTemp);
+            _snesAudioRead = (_snesAudioRead + first) % _snesAudioRing.Length;
+            int remaining = toRead - first;
+            if (remaining > 0)
+            {
+                _snesAudioRing.AsSpan(0, remaining).CopyTo(_snesAudioTemp.AsSpan(first));
+                _snesAudioRead = remaining;
+            }
+
+            _snesAudioCount -= toRead;
+            return _snesAudioTemp.AsSpan(0, toRead);
+        }
+    }
+
+    private ReadOnlySpan<short> SnesAudioPullProducer(int frames)
+    {
+        if (_core is SnesAdapter)
+        {
+            return DequeueSnesAudio(frames);
+        }
+
+        return ReadOnlySpan<short>.Empty;
     }
 
     private async Task<string> ImportRomAsync(IStorageProvider? storageProvider, IStorageFile file, bool isSystemFile)
@@ -2228,6 +2369,23 @@ public partial class MainView : UserControl
                 _lastFrameStride = swapStride;
                 _lastPresentationWidth = swapPresentationWidth;
                 _lastPresentationHeight = swapPresentationHeight;
+                (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
+                _emulatedFrames++;
+                _latestFrameSerial++;
+            }
+
+            return;
+        }
+
+        if (core is SnesAdapter snes && snes.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int snesWidth, out int snesHeight, out int snesStride))
+        {
+            lock (_frameSync)
+            {
+                _lastFrameWidth = snesWidth;
+                _lastFrameHeight = snesHeight;
+                _lastFrameStride = snesStride;
+                _lastPresentationWidth = 0;
+                _lastPresentationHeight = 0;
                 (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
                 _emulatedFrames++;
                 _latestFrameSerial++;
