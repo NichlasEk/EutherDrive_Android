@@ -33,6 +33,10 @@ public partial class MainView : UserControl
     private const int AndroidAudioBatchFrames = 256;
     private const int AndroidAudioPullMaxFrames = 2048;
     private const double TargetFrameRate = 60.0;
+    private const double JoystickDeadZoneRatio = 0.34;
+    private const double JoystickAxisEngageRatio = 0.46;
+    private const double JoystickDiagonalRatio = 0.72;
+    private const double JoystickPadding = 10.0;
     private const string SettingsFileName = "android-settings.toml";
     private const string LegacyJsonSettingsFileName = "android-settings.json";
 
@@ -383,7 +387,7 @@ public partial class MainView : UserControl
         lock (_inputSync)
         {
             ReleaseDPadPointerLocked(e.Pointer);
-            HideDPadGlowLocked(control);
+            ResetDPadThumbLocked(control);
         }
 
         e.Pointer.Capture(null);
@@ -405,7 +409,7 @@ public partial class MainView : UserControl
                 ReleaseDPadPointerLocked(pointer);
             }
 
-            HideDPadGlowLocked();
+            ResetDPadThumbLocked();
         }
 
         UpdateOverlaySummary();
@@ -696,34 +700,12 @@ public partial class MainView : UserControl
     private void UpdateDPadPointerLocked(Control control, IPointer pointer, Point point)
     {
         ReleaseDPadPointerLocked(pointer);
-        UpdateDPadGlowLocked(control, point);
-
-        double width = control.Bounds.Width;
-        double height = control.Bounds.Height;
-        if (width <= 0 || height <= 0)
-        {
-            return;
-        }
-
-        double centerX = width * 0.5;
-        double centerY = height * 0.5;
-        double deadZone = Math.Min(width, height) * 0.14;
-        double dx = point.X - centerX;
-        double dy = point.Y - centerY;
-
-        var directions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (dx <= -deadZone)
-            directions.Add("Left");
-        else if (dx >= deadZone)
-            directions.Add("Right");
-
-        if (dy <= -deadZone)
-            directions.Add("Up");
-        else if (dy >= deadZone)
-            directions.Add("Down");
+        var directions = ResolveJoystickDirections(control, point, out double thumbOffsetX, out double thumbOffsetY);
+        UpdateDPadThumbLocked(control, thumbOffsetX, thumbOffsetY, active: true);
 
         if (directions.Count == 0)
         {
+            UpdateDPadVisualsLocked();
             return;
         }
 
@@ -857,57 +839,184 @@ public partial class MainView : UserControl
         SetFaceVisualState(LandscapeFaceY, y);
     }
 
-    private void UpdateDPadGlowLocked(Control control, Point point)
+    private HashSet<string> ResolveJoystickDirections(Control control, Point point, out double thumbOffsetX, out double thumbOffsetY)
     {
-        Border? glow = GetDPadGlowForControl(control);
-        if (glow == null)
+        thumbOffsetX = 0;
+        thumbOffsetY = 0;
+
+        double width = control.Bounds.Width;
+        double height = control.Bounds.Height;
+        if (width <= 0 || height <= 0)
         {
-            return;
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
-        double controlWidth = control.Bounds.Width;
-        double controlHeight = control.Bounds.Height;
-        if (controlWidth <= 0 || controlHeight <= 0)
+        double centerX = width * 0.5;
+        double centerY = height * 0.5;
+        double dx = point.X - centerX;
+        double dy = point.Y - centerY;
+        double distance = Math.Sqrt((dx * dx) + (dy * dy));
+        double travelRadius = GetJoystickTravelRadius(control);
+        if (travelRadius <= 0)
         {
-            return;
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
-        double glowWidth = double.IsNaN(glow.Width) || glow.Width <= 0 ? 48 : glow.Width;
-        double glowHeight = double.IsNaN(glow.Height) || glow.Height <= 0 ? 48 : glow.Height;
-        double left = Math.Clamp(point.X - (glowWidth * 0.5), 0, Math.Max(0, controlWidth - glowWidth));
-        double top = Math.Clamp(point.Y - (glowHeight * 0.5), 0, Math.Max(0, controlHeight - glowHeight));
+        if (distance > travelRadius)
+        {
+            double scale = travelRadius / distance;
+            dx *= scale;
+            dy *= scale;
+            distance = travelRadius;
+        }
 
-        Canvas.SetLeft(glow, left);
-        Canvas.SetTop(glow, top);
-        glow.IsVisible = true;
+        thumbOffsetX = dx;
+        thumbOffsetY = dy;
+
+        if ((distance / travelRadius) < JoystickDeadZoneRatio)
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return DeterminePrecisionDirections(dx / travelRadius, dy / travelRadius);
     }
 
-    private void HideDPadGlowLocked(Control? activeControl = null)
+    private static HashSet<string> DeterminePrecisionDirections(double normalizedX, double normalizedY)
+    {
+        double absX = Math.Abs(normalizedX);
+        double absY = Math.Abs(normalizedY);
+        double major = Math.Max(absX, absY);
+        double minor = Math.Min(absX, absY);
+
+        var directions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (major < JoystickAxisEngageRatio)
+        {
+            return directions;
+        }
+
+        bool horizontalDominant = absX >= absY;
+        if (horizontalDominant)
+        {
+            directions.Add(normalizedX >= 0 ? "Right" : "Left");
+        }
+        else
+        {
+            directions.Add(normalizedY >= 0 ? "Down" : "Up");
+        }
+
+        bool diagonalIntent = minor >= JoystickAxisEngageRatio
+            && (minor / major) >= JoystickDiagonalRatio;
+
+        if (!diagonalIntent)
+        {
+            return directions;
+        }
+
+        if (horizontalDominant)
+        {
+            directions.Add(normalizedY >= 0 ? "Down" : "Up");
+        }
+        else
+        {
+            directions.Add(normalizedX >= 0 ? "Right" : "Left");
+        }
+
+        return directions;
+    }
+
+    private double GetJoystickTravelRadius(Control control)
+    {
+        Border? thumb = GetDPadThumbForControl(control);
+        if (thumb == null)
+        {
+            return 0;
+        }
+
+        double width = control.Bounds.Width;
+        double height = control.Bounds.Height;
+        double thumbWidth = thumb.Bounds.Width > 0 ? thumb.Bounds.Width : thumb.Width;
+        double thumbHeight = thumb.Bounds.Height > 0 ? thumb.Bounds.Height : thumb.Height;
+        double thumbRadius = Math.Max(thumbWidth, thumbHeight) * 0.5;
+        double controlRadius = Math.Min(width, height) * 0.5;
+        return Math.Max(0, controlRadius - thumbRadius - JoystickPadding);
+    }
+
+    private void UpdateDPadThumbLocked(Control control, double offsetX, double offsetY, bool active)
+    {
+        Border? thumb = GetDPadThumbForControl(control);
+        if (thumb == null)
+        {
+            return;
+        }
+
+        TranslateTransform transform = EnsureTranslateTransform(thumb);
+        transform.X = offsetX;
+        transform.Y = offsetY;
+
+        if (active)
+        {
+            if (!thumb.Classes.Contains("thumbActive"))
+            {
+                thumb.Classes.Add("thumbActive");
+            }
+        }
+        else
+        {
+            thumb.Classes.Remove("thumbActive");
+        }
+    }
+
+    private void ResetDPadThumbLocked(Control? activeControl = null)
     {
         if (activeControl == null || ReferenceEquals(activeControl, PortraitDPadSurface))
         {
-            PortraitPadGlow.IsVisible = false;
+            ResetDPadThumbTransform(PortraitPadThumb);
         }
 
         if (activeControl == null || ReferenceEquals(activeControl, LandscapeDPadSurface))
         {
-            LandscapePadGlow.IsVisible = false;
+            ResetDPadThumbTransform(LandscapePadThumb);
         }
     }
 
-    private Border? GetDPadGlowForControl(Control control)
+    private static void ResetDPadThumbTransform(Border? thumb)
+    {
+        if (thumb == null)
+        {
+            return;
+        }
+
+        TranslateTransform transform = EnsureTranslateTransform(thumb);
+        transform.X = 0;
+        transform.Y = 0;
+        thumb.Classes.Remove("thumbActive");
+    }
+
+    private Border? GetDPadThumbForControl(Control control)
     {
         if (ReferenceEquals(control, PortraitDPadSurface))
         {
-            return PortraitPadGlow;
+            return PortraitPadThumb;
         }
 
         if (ReferenceEquals(control, LandscapeDPadSurface))
         {
-            return LandscapePadGlow;
+            return LandscapePadThumb;
         }
 
         return null;
+    }
+
+    private static TranslateTransform EnsureTranslateTransform(Control control)
+    {
+        if (control.RenderTransform is TranslateTransform transform)
+        {
+            return transform;
+        }
+
+        transform = new TranslateTransform();
+        control.RenderTransform = transform;
+        return transform;
     }
 
     private void UpdateFaceGlowLocked(Control control, Point point)
@@ -1483,7 +1592,7 @@ public partial class MainView : UserControl
             _directionLatchFrames.Clear();
             _actionLatchFrames.Clear();
             UpdateDPadVisualsLocked();
-            HideDPadGlowLocked();
+            ResetDPadThumbLocked();
             UpdateFaceVisualsLocked();
             HideFaceGlowLocked();
         }

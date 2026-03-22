@@ -97,6 +97,66 @@
       <Setter Property="IsHitTestVisible" Value="False" />
     </Style>
 
+    <Style Selector="Border.joystickBase">
+      <Setter Property="Background" Value="#9E0F1822" />
+      <Setter Property="BorderBrush" Value="#36516A" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="999" />
+      <Setter Property="IsHitTestVisible" Value="False" />
+    </Style>
+
+    <Style Selector="Border.joystickTrack">
+      <Setter Property="Background" Value="#3A07111A" />
+      <Setter Property="BorderBrush" Value="#688FB3" />
+      <Setter Property="BorderThickness" Value="2" />
+      <Setter Property="CornerRadius" Value="999" />
+      <Setter Property="IsHitTestVisible" Value="False" />
+    </Style>
+
+    <Style Selector="Border.joystickCore">
+      <Setter Property="Background" Value="#D40B141B" />
+      <Setter Property="BorderBrush" Value="#4A6886" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="999" />
+      <Setter Property="IsHitTestVisible" Value="False" />
+    </Style>
+
+    <Style Selector="Border.joystickThumb">
+      <Setter Property="Width" Value="72" />
+      <Setter Property="Height" Value="72" />
+      <Setter Property="CornerRadius" Value="36" />
+      <Setter Property="Background" Value="#D9152534" />
+      <Setter Property="BorderBrush" Value="#7DD3FC" />
+      <Setter Property="BorderThickness" Value="2" />
+      <Setter Property="HorizontalAlignment" Value="Center" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="IsHitTestVisible" Value="False" />
+      <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
+    </Style>
+
+    <Style Selector="Border.joystickThumb.thumbActive">
+      <Setter Property="Background" Value="#EE18324A" />
+      <Setter Property="BorderBrush" Value="#C2F0FF" />
+    </Style>
+
+    <Style Selector="Border.directionHint">
+      <Setter Property="Width" Value="46" />
+      <Setter Property="Height" Value="46" />
+      <Setter Property="CornerRadius" Value="23" />
+      <Setter Property="Background" Value="#A5111B25" />
+      <Setter Property="BorderBrush" Value="#45617D" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="IsHitTestVisible" Value="False" />
+    </Style>
+
+    <Style Selector="TextBlock.directionHintLabel">
+      <Setter Property="Foreground" Value="#DDEFFF" />
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="FontSize" Value="18" />
+      <Setter Property="HorizontalAlignment" Value="Center" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
     <Style Selector="Border.faceGlow">
       <Setter Property="Width" Value="54" />
       <Setter Property="Height" Value="54" />
@@ -369,53 +429,54 @@
                   PointerMoved="OnDPadPointerMoved"
                   PointerReleased="OnDPadPointerReleased"
                   PointerCaptureLost="OnDPadPointerCaptureLost">
-              <Canvas IsHitTestVisible="False">
-                <Border x:Name="PortraitPadGlow"
-                        Classes="padGlow" />
-              </Canvas>
-              <Border x:Name="PortraitPadUp"
-                      Classes="pad"
-                      IsHitTestVisible="False"
+              <Border Classes="joystickBase"
+                      Width="168"
+                      Height="168"
                       HorizontalAlignment="Center"
-                      VerticalAlignment="Top">
-                <TextBlock Text="▲" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
+                      VerticalAlignment="Center" />
+              <Border Classes="joystickTrack"
+                      Width="128"
+                      Height="128"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center" />
+              <Border Classes="joystickCore"
+                      Width="26"
+                      Height="26"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center" />
+              <Border x:Name="PortraitPadUp"
+                      Classes="directionHint"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Top"
+                      Margin="0,4,0,0">
+                <TextBlock Classes="directionHintLabel" Text="▲" />
               </Border>
               <Border x:Name="PortraitPadDown"
-                      Classes="pad"
-                      IsHitTestVisible="False"
+                      Classes="directionHint"
                       HorizontalAlignment="Center"
-                      VerticalAlignment="Bottom">
-                <TextBlock Text="▼" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
+                      VerticalAlignment="Bottom"
+                      Margin="0,0,0,4">
+                <TextBlock Classes="directionHintLabel" Text="▼" />
               </Border>
               <Border x:Name="PortraitPadLeft"
-                      Classes="pad"
-                      IsHitTestVisible="False"
+                      Classes="directionHint"
                       HorizontalAlignment="Left"
-                      VerticalAlignment="Center">
-                <TextBlock Text="◀" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
+                      VerticalAlignment="Center"
+                      Margin="4,0,0,0">
+                <TextBlock Classes="directionHintLabel" Text="◀" />
               </Border>
               <Border x:Name="PortraitPadRight"
-                      Classes="pad"
-                      IsHitTestVisible="False"
+                      Classes="directionHint"
                       HorizontalAlignment="Right"
-                      VerticalAlignment="Center">
-                <TextBlock Text="▶" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" />
-              </Border>
-              <Border Width="62"
-                      Height="62"
-                      IsHitTestVisible="False"
-                      CornerRadius="31"
-                      HorizontalAlignment="Center"
                       VerticalAlignment="Center"
-                      Background="#C80D141B"
-                      BorderBrush="#43566A"
-                      BorderThickness="1">
-                <TextBlock Text="D-Pad"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           FontSize="12"
-                           FontWeight="Bold"
-                           Foreground="#91A8BD" />
+                      Margin="0,0,4,0">
+                <TextBlock Classes="directionHintLabel" Text="▶" />
+              </Border>
+              <Border x:Name="PortraitPadThumb"
+                      Classes="joystickThumb">
+                <Border.RenderTransform>
+                  <TranslateTransform />
+                </Border.RenderTransform>
               </Border>
             </Grid>
 
@@ -681,37 +742,69 @@
                 PointerMoved="OnDPadPointerMoved"
                 PointerReleased="OnDPadPointerReleased"
                 PointerCaptureLost="OnDPadPointerCaptureLost">
-            <Canvas IsHitTestVisible="False">
-              <Border x:Name="LandscapePadGlow"
-                      Classes="padGlow" />
-            </Canvas>
-            <Border x:Name="LandscapePadUp"
-                    Classes="landscapePad"
-                    IsHitTestVisible="False"
+            <Border Classes="joystickBase"
+                    Width="138"
+                    Height="138"
                     HorizontalAlignment="Center"
-                    VerticalAlignment="Top">
-              <TextBlock Text="▲" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
+                    VerticalAlignment="Center" />
+            <Border Classes="joystickTrack"
+                    Width="104"
+                    Height="104"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center" />
+            <Border Classes="joystickCore"
+                    Width="22"
+                    Height="22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center" />
+            <Border x:Name="LandscapePadUp"
+                    Classes="directionHint"
+                    Width="40"
+                    Height="40"
+                    CornerRadius="20"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    Margin="0,2,0,0">
+              <TextBlock Classes="directionHintLabel" FontSize="16" Text="▲" />
             </Border>
             <Border x:Name="LandscapePadDown"
-                    Classes="landscapePad"
-                    IsHitTestVisible="False"
+                    Classes="directionHint"
+                    Width="40"
+                    Height="40"
+                    CornerRadius="20"
                     HorizontalAlignment="Center"
-                    VerticalAlignment="Bottom">
-              <TextBlock Text="▼" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
+                    VerticalAlignment="Bottom"
+                    Margin="0,0,0,2">
+              <TextBlock Classes="directionHintLabel" FontSize="16" Text="▼" />
             </Border>
             <Border x:Name="LandscapePadLeft"
-                    Classes="landscapePad"
-                    IsHitTestVisible="False"
+                    Classes="directionHint"
+                    Width="40"
+                    Height="40"
+                    CornerRadius="20"
                     HorizontalAlignment="Left"
-                    VerticalAlignment="Center">
-              <TextBlock Text="◀" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
+                    VerticalAlignment="Center"
+                    Margin="2,0,0,0">
+              <TextBlock Classes="directionHintLabel" FontSize="16" Text="◀" />
             </Border>
             <Border x:Name="LandscapePadRight"
-                    Classes="landscapePad"
-                    IsHitTestVisible="False"
+                    Classes="directionHint"
+                    Width="40"
+                    Height="40"
+                    CornerRadius="20"
                     HorizontalAlignment="Right"
-                    VerticalAlignment="Center">
-              <TextBlock Text="▶" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" />
+                    VerticalAlignment="Center"
+                    Margin="0,0,2,0">
+              <TextBlock Classes="directionHintLabel" FontSize="16" Text="▶" />
+            </Border>
+            <Border x:Name="LandscapePadThumb"
+                    Classes="joystickThumb"
+                    Width="58"
+                    Height="58"
+                    CornerRadius="29">
+              <Border.RenderTransform>
+                <TranslateTransform />
+              </Border.RenderTransform>
             </Border>
           </Grid>
 
