@@ -15,6 +15,16 @@
     <AndroidUseSharedRuntime>false</AndroidUseSharedRuntime>
     <AndroidFastDeploymentType>None</AndroidFastDeploymentType>
     <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <RunAOTCompilation>true</RunAOTCompilation>
+    <AndroidEnableProfiledAot>true</AndroidEnableProfiledAot>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' != 'Release'">
     <RunAOTCompilation>false</RunAOTCompilation>
   </PropertyGroup>
 

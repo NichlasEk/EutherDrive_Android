@@ -21,6 +21,10 @@ public class APU : IAPU
     private readonly ISPC700 _spc;
     [NonSerialized]
     private readonly IDSP _dsp;
+    [NonSerialized]
+    private readonly SPC700 _spcImpl;
+    [NonSerialized]
+    private readonly DSP _dspImpl;
 
     [JsonIgnore] private readonly byte[] _bootRom =
     {
@@ -78,8 +82,10 @@ public class APU : IAPU
 
     public APU(ISPC700 spc, IDSP dsp)
     {
-        _spc = spc;
-        _dsp = dsp;
+        _spcImpl = spc as SPC700 ?? throw new ArgumentException("APU requires a concrete SPC700.", nameof(spc));
+        _dspImpl = dsp as DSP ?? throw new ArgumentException("APU requires a concrete DSP.", nameof(dsp));
+        _spc = _spcImpl;
+        _dsp = _dspImpl;
         Attach();
     }
 
@@ -87,8 +93,8 @@ public class APU : IAPU
     public IDSP Dsp => _dsp;
     public void Attach()
     {
-        _spc?.SetAPU(this);
-        _dsp?.SetAPU(this);
+        _spcImpl.SetAPU(this);
+        _dspImpl.SetAPU(this);
     }
 
     public void Reset()
@@ -104,8 +110,8 @@ public class APU : IAPU
         _dspRomReadable = true;
         _port01ResetThisCycle = false;
         _port23ResetThisCycle = false;
-        _spc.Reset();
-        _dsp.Reset();
+        _spcImpl.Reset();
+        _dspImpl.Reset();
         _cycles = 0;
         _timer1int = 128;
         _timer1div = 0;
@@ -175,7 +181,7 @@ public class APU : IAPU
                 TracePort($"[APU-PORT-CPU-LATCH] port={i} val=0x{SpcReadPorts[i]:X2} cycle={_cycles}");
             }
         }
-        _spc.Cycle();
+        _spcImpl.Cycle();
         _timer1int--;
         if (_timer1int == 0)
         {
@@ -224,12 +230,14 @@ public class APU : IAPU
         _cycles++;
         if ((_cycles & 0x1f) == 0)
         {
-            _dsp.Cycle();
-            if (_dsp.SampleOffset > 0)
+            DSP dsp = _dspImpl;
+            dsp.Cycle();
+            int sampleOffset = dsp.SampleOffset;
+            if (sampleOffset > 0)
             {
-                int sampleIndex = _dsp.SampleOffset - 1;
-                AppendResampleSample(_dsp.SamplesL[sampleIndex], _dsp.SamplesR[sampleIndex]);
-                _dsp.SampleOffset = 0;
+                int sampleIndex = sampleOffset - 1;
+                AppendResampleSample(dsp.SamplesL[sampleIndex], dsp.SamplesR[sampleIndex]);
+                dsp.SampleOffset = 0;
             }
         }
     }
@@ -262,7 +270,7 @@ public class APU : IAPU
             case 0xf2:
                 return _dspAdr;
             case 0xf3:
-                return _dsp.Read(_dspAdr & 0x7f);
+                return _dspImpl.Read(_dspAdr & 0x7f);
             case 0xf4:
             case 0xf5:
             case 0xf6:
@@ -350,7 +358,7 @@ public class APU : IAPU
             case 0xf3:
                 if (_dspAdr < 0x80)
                 {
-                    _dsp.Write(_dspAdr, value);
+                    _dspImpl.Write(_dspAdr, value);
                 }
                 break;
             case 0xf4:

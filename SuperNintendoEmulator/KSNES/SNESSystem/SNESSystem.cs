@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
+using KSNES.AudioProcessing;
+using KSNES.PictureProcessing;
 
 namespace KSNES.SNESSystem;
 
@@ -35,6 +37,18 @@ public class SNESSystem : ISNESSystem
     [JsonIgnore]
     [NonSerialized]
     private KSNES.ROM.ROM? _romImpl;
+
+    [JsonIgnore]
+    [NonSerialized]
+    private readonly KSNES.CPU.CPU _cpuImpl;
+
+    [JsonIgnore]
+    [NonSerialized]
+    private readonly PPU _ppuImpl;
+
+    [JsonIgnore]
+    [NonSerialized]
+    private readonly APU _apuImpl;
 
     [JsonIgnore]
     public IROM ROM
@@ -240,6 +254,10 @@ public class SNESSystem : ISNESSystem
     public SNESSystem(ICPU cpu, IRenderer renderer, IROM rom, IPPU ppu, IAPU apu, IAudioHandler audioHandler)
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     {
+        _cpuImpl = cpu as KSNES.CPU.CPU ?? throw new ArgumentException("SNESSystem requires a concrete KSNES CPU.", nameof(cpu));
+        _ppuImpl = ppu as PPU ?? throw new ArgumentException("SNESSystem requires a concrete KSNES PPU.", nameof(ppu));
+        _apuImpl = apu as APU ?? throw new ArgumentException("SNESSystem requires a concrete KSNES APU.", nameof(apu));
+
         CPU = cpu;
         Renderer = renderer;
         AudioHandler = audioHandler;
@@ -376,9 +394,9 @@ public class SNESSystem : ISNESSystem
         LoadRom(data);
         GameName = ROM.Header.Name;
         Reset1();
-        CPU.Reset();
-        PPU.Reset();
-        APU.Reset();
+        _cpuImpl.Reset();
+        _ppuImpl.Reset();
+        _apuImpl.Reset();
         Reset2();
         Run();
     }
@@ -391,26 +409,26 @@ public class SNESSystem : ISNESSystem
         ROM.LoadSRAM();
         GameName = ROM.Header.Name;
         Reset1();
-        CPU.Reset();
-        PPU.Reset();
-        APU.Reset();
+        _cpuImpl.Reset();
+        _ppuImpl.Reset();
+        _apuImpl.Reset();
         Reset2();
     }
 
     public void ResetForExternal()
     {
         Reset1();
-        CPU.Reset();
-        PPU.Reset();
-        APU.Reset();
+        _cpuImpl.Reset();
+        _ppuImpl.Reset();
+        _apuImpl.Reset();
         Reset2();
     }
 
     public void RunFrameForExternal()
     {
         RunFrame(false);
-        Renderer?.RenderBuffer(PPU.GetPixels());
-        APU.SetSamples(AudioHandler.SampleBufferL, AudioHandler.SampleBufferR);
+        Renderer?.RenderBuffer(_ppuImpl.GetPixels());
+        _apuImpl.SetSamples(AudioHandler.SampleBufferL, AudioHandler.SampleBufferR);
         AudioHandler.NextBuffer();
         ROM.RunCoprocessor(Cycles);
         FrameRendered?.Invoke(this, EventArgs.Empty);
@@ -442,8 +460,8 @@ public class SNESSystem : ISNESSystem
             while (_isExecuting)
             {
                 RunFrame(false);
-                Renderer.RenderBuffer(PPU.GetPixels());
-                APU.SetSamples(AudioHandler.SampleBufferL, AudioHandler.SampleBufferR);
+                Renderer.RenderBuffer(_ppuImpl.GetPixels());
+                _apuImpl.SetSamples(AudioHandler.SampleBufferL, AudioHandler.SampleBufferR);
                 AudioHandler.NextBuffer();
                 ROM.RunCoprocessor(Cycles);
                 FrameRendered?.Invoke(this, EventArgs.Empty);
@@ -645,18 +663,18 @@ public class SNESSystem : ISNESSystem
         AdvanceBaseClocksForStep();
         bool queueNmiForNextCpuSlot = false;
         int currentLineMclks = GetCurrentLineMclks();
-        int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
+        int vBlankStart = IsPal ? 240 : (_ppuImpl.FrameOverscan ? 240 : 225);
         if (XPos == 0)
         {
             // HVBJOY reports HBlank during the first 4 master cycles of each scanline.
             _inHblank = true;
-            PPU.CheckOverscan(YPos);
+            _ppuImpl.CheckOverscan(YPos);
 
             if (YPos == vBlankStart)
             {
                 if (_logVerbose)
                 {
-                    Console.WriteLine($"[VBLANK-START] Y={YPos} IsPal={IsPal} Overscan={PPU.FrameOverscan} Start={vBlankStart}");
+                    Console.WriteLine($"[VBLANK-START] Y={YPos} IsPal={IsPal} Overscan={_ppuImpl.FrameOverscan} Start={vBlankStart}");
                 }
                 _inNmi = true;
                 _vblankNmiFlag = true;
@@ -699,7 +717,7 @@ public class SNESSystem : ISNESSystem
             if (!_inVblank)
             {
                 HandleHdma();
-                PPU.PrepareSpriteLine(YPos);
+                _ppuImpl.PrepareSpriteLine(YPos);
             }
         }
 
@@ -722,13 +740,13 @@ public class SNESSystem : ISNESSystem
         UpdateIrqLine();
         if (queueNmiForNextCpuSlot)
         {
-            CPU.NmiWanted = true;
+            _cpuImpl.NmiWanted = true;
         }
         
-        CPU.IrqWanted = _inIrq || RomImpl.IrqWanted;
+        _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
         if (XPos == 512 && !noPpu)
         {
-            PPU.RenderLine(YPos);
+            _ppuImpl.RenderLine(YPos);
         }
         if (_autoJoyPendingStart && YPos == vBlankStart && XPos == 130)
         {
@@ -793,7 +811,7 @@ public class SNESSystem : ISNESSystem
             _cpuCyclesLeft -= chunkMclks;
         RomImpl.RunCoprocessor(Cycles);
         CatchUpApu();
-        CPU.IrqWanted = _inIrq || RomImpl.IrqWanted;
+        _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
         AdvanceBeamPositionBy(chunkMclks, currentLineMclks);
         _lastIrqHTime = GetIrqHTime();
 
@@ -933,7 +951,7 @@ public class SNESSystem : ISNESSystem
 
     private bool IsInterlacedPpu()
     {
-        return PPU is KSNES.PictureProcessing.PPU ppu && ppu.Interlace;
+        return _ppuImpl.Interlace;
     }
 
     private static bool RangeContainsExclusiveEnd(int startExclusive, int endExclusive, int value)
@@ -1033,7 +1051,7 @@ public class SNESSystem : ISNESSystem
 
     private bool GetCurrentVblankFlag()
     {
-        int vBlankStart = IsPal ? 240 : (PPU.FrameOverscan ? 240 : 225);
+        int vBlankStart = IsPal ? 240 : (_ppuImpl.FrameOverscan ? 240 : 225);
         int maxV = IsPal ? 312 : 262;
         return YPos >= vBlankStart && YPos < maxV;
     }
@@ -1042,10 +1060,10 @@ public class SNESSystem : ISNESSystem
     {
         if (_cpuCyclesLeft == 0)
         {
-            CPU.CyclesLeft = 0;
+            _cpuImpl.CyclesLeft = 0;
             _cpuMemOps = 0;
-            CPU.Cycle();
-            _cpuCyclesLeft += (CPU.CyclesLeft + 1 - _cpuMemOps) * 6;
+            _cpuImpl.Cycle();
+            _cpuCyclesLeft += (_cpuImpl.CyclesLeft + 1 - _cpuMemOps) * 6;
         }
         _cpuCyclesLeft -= 2;
     }
@@ -1056,7 +1074,7 @@ public class SNESSystem : ISNESSystem
         ulong threshold = 24UL * mainMasterClockFrequency;
         while (_apuMasterCyclesProduct >= threshold)
         {
-            APU.Cycle();
+            _apuImpl.Cycle();
             _apuMasterCyclesProduct -= threshold;
         }
     }
@@ -1366,7 +1384,7 @@ public class SNESSystem : ISNESSystem
                 if (Cycles - _irqRaisedAtCycle >= 4)
                 {
                     _inIrq = false;
-                    CPU.IrqWanted = false;
+                    _cpuImpl.IrqWanted = false;
                 }
                 return val2;
             case 0x4212:
@@ -1529,7 +1547,7 @@ public class SNESSystem : ISNESSystem
                 bool newNmiEnabled = (value & 0x80) > 0;
                 if (!_nmiEnabled && newNmiEnabled && _vblankNmiFlag)
                 {
-                    CPU.NmiWanted = true;
+                    _cpuImpl.NmiWanted = true;
                 }
                 _nmiEnabled = newNmiEnabled;
                 if (!_hIrqEnabled && !_vIrqEnabled)
@@ -1548,9 +1566,9 @@ public class SNESSystem : ISNESSystem
             case 0x4201:
                 if (PPULatch && (value & 0x80) == 0)
                 {
-                    PPU.LatchedHpos = XPos >> 2;
-                    PPU.LatchedVpos = YPos;
-                    PPU.CountersLatched = true;
+                    _ppuImpl.LatchedHpos = XPos >> 2;
+                    _ppuImpl.LatchedVpos = YPos;
+                    _ppuImpl.CountersLatched = true;
                 }
                 PPULatch = (value & 0x80) > 0;
                 return;
@@ -1711,19 +1729,17 @@ public class SNESSystem : ISNESSystem
     {
         if (adr > 0x33 && adr < 0x40)
         {
-            return PPU.Read(adr);
+            return _ppuImpl.Read(adr);
         }
         if (adr >= 0x40 && adr < 0x80)
         {
             int port = adr & 0x3;
-            int pc = -1;
-            if (CPU is KSNES.CPU.CPU cpu)
-                pc = cpu.ProgramCounter24;
-            int val = APU.SpcWritePorts[port];
+            int pc = _cpuImpl.ProgramCounter24;
+            int val = _apuImpl.SpcWritePorts[port];
             TraceApuPort($"[APU-PORT-CPU-RD] port={port} val=0x{val:X2} pc=0x{pc:X6}");
             if (_traceStarOceanApuLoop && adr == 0x40 && pc >= 0xC00331 && pc <= 0xC0033B)
             {
-                Console.WriteLine($"[SO-2140] pc=0x{pc:X6} port0=0x{val:X2} wr4A=0x{_ram[0x004A]:X2} spcpc=0x{APU.Spc.ProgramCounter:X4} xy=({XPos},{YPos})");
+                Console.WriteLine($"[SO-2140] pc=0x{pc:X6} port0=0x{val:X2} wr4A=0x{_ram[0x004A]:X2} spcpc=0x{_apuImpl.Spc.ProgramCounter:X4} xy=({XPos},{YPos})");
             }
             return val;
         }
@@ -1760,13 +1776,13 @@ public class SNESSystem : ISNESSystem
                 Console.WriteLine($"[INIDISP] write $2100=0x{value:X2} pc=0x{pc:X6} dma={(dma ? 1 : 0)} regs=[{regs}]");
             }
             TracePpuBusWrite(adr, value, dma);
-            PPU.Write(adr, value, dma);
+            _ppuImpl.Write(adr, value, dma);
             return;
         }
         if (adr >= 0x40 && adr < 0x80)
         {
             int port = adr & 0x3;
-            bool accepted = APU.TryWriteMainCpuPort(port, (byte)value);
+            bool accepted = _apuImpl.TryWriteMainCpuPort(port, (byte)value);
             int pc = -1;
             if (CPU is KSNES.CPU.CPU cpu)
                 pc = cpu.ProgramCounter24;
@@ -1937,13 +1953,13 @@ public class SNESSystem : ISNESSystem
     {
         if (adr < 0x34)
         {
-            PPU.Write(adr, value, dma);
+            _ppuImpl.Write(adr, value, dma);
             return;
         }
 
         if (adr >= 0x40 && adr < 0x80)
         {
-            APU.TryWriteMainCpuPort(adr & 0x3, (byte)value);
+            _apuImpl.TryWriteMainCpuPort(adr & 0x3, (byte)value);
             return;
         }
 
