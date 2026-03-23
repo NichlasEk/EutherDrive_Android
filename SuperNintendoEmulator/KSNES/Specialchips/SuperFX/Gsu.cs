@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.Specialchips.SuperFX;
 
@@ -266,6 +267,7 @@ internal sealed class GraphicsSupportUnit
 
     public bool IsRunning() => Go;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Tick(ulong masterCyclesElapsed, byte[] rom, byte[] ram)
     {
         if (!Go)

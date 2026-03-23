@@ -2,6 +2,7 @@ using System;
 
 using System;
 using System.IO;
+using System.Runtime.CompilerServices;
 using KSNES.Tracing;
 
 namespace KSNES.Specialchips.SA1;
@@ -902,6 +903,7 @@ internal sealed class Sa1Registers
 
     private byte _ccdmaInitialCyclesRemaining;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void TickDma(Sa1Mmc mmc, byte[] rom, byte[] iram, byte[] bwram)
     {
         if (TraceSa1Regs && DmaState != _lastDmaState)

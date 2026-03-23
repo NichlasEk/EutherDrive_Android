@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.Specialchips.SuperFX;
 
@@ -10,6 +11,7 @@ internal sealed class PlotState
     public byte FlushCyclesRemaining;
     public bool JustFlushed;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Tick(byte gsuCycles)
     {
         if (JustFlushed)

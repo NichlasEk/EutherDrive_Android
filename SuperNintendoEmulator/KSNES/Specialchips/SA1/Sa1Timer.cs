@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace KSNES.Specialchips.SA1;
 
 internal enum Sa1TimerMode
@@ -107,6 +109,7 @@ internal sealed class Sa1Timer
         IrqVTime = (ushort)((IrqVTime & 0x0FF) | ((value & 0x01) << 8));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Tick()
     {
         HCpuTicks++;

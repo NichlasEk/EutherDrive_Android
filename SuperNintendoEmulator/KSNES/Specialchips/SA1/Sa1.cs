@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using KSNES.CPU;
 using KSNES.SNESSystem;
 using KSNES.PictureProcessing;
@@ -197,6 +198,7 @@ public sealed class Sa1
         _bwram = bwram.Length == 0 ? new byte[256 * 1024] : bwram;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Tick(ulong snesCycles)
     {
         if (snesCycles <= _lastSnesCycles)

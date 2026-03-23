@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.Specialchips.SuperFX;
 
@@ -184,6 +185,7 @@ internal sealed class SuperFx
         return false;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Tick(ulong masterCyclesElapsed)
     {
         if (masterCyclesElapsed <= _lastSnesCycles)
