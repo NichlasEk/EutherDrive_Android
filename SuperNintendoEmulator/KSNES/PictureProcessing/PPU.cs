@@ -1435,7 +1435,8 @@ public class PPU : IPPU
             && _colorClip == 0;
     }
 
-    private void RenderLineSimpleMainOnly(
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private unsafe void RenderLineSimpleMainOnly(
         int screenY,
         int outputRow,
         int brightnessOffset,
@@ -1443,16 +1444,22 @@ public class PPU : IPPU
         int[] pixelOutput,
         int alphaMask)
     {
-        for (int x = 0; x < 256; x++)
+        fixed (byte* bTab = brightnessTable)
+        fixed (int* pOut = pixelOutput)
         {
-            GetColor(false, x, screenY, out ushort color, out _, out _);
-            int r = color & 0x1f;
-            int g = (color >> 5) & 0x1f;
-            int b = (color >> 10) & 0x1f;
-            int mainColor = brightnessTable[brightnessOffset + b]
-                | (brightnessTable[brightnessOffset + g] << 8)
-                | (brightnessTable[brightnessOffset + r] << 16);
-            pixelOutput[outputRow + x] = mainColor | alphaMask;
+            int* pRow = pOut + outputRow;
+            byte* bTabOffset = bTab + brightnessOffset;
+            for (int x = 0; x < 256; x++)
+            {
+                GetColor(false, x, screenY, out ushort color, out _, out _);
+                int r = color & 0x1f;
+                int g = (color >> 5) & 0x1f;
+                int b = (color >> 10) & 0x1f;
+                int mainColor = bTabOffset[b]
+                    | (bTabOffset[g] << 8)
+                    | (bTabOffset[r] << 16);
+                pRow[x] = mainColor | alphaMask;
+            }
         }
     }
 
@@ -1723,6 +1730,7 @@ public class PPU : IPPU
         return _tilePixelBuffer[(l << 3) | (x & 0x7)];
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void FetchTileInBuffer(int x, int y, int l, bool offset) 
     {
         bool wideTiles = _bigTiles[l] || _mode == 5 || _mode == 6;

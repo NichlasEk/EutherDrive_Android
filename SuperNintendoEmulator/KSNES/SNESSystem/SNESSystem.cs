@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using KSNES.AudioProcessing;
 using KSNES.PictureProcessing;
 
@@ -691,9 +692,9 @@ public class SNESSystem : ISNESSystem
         return mirrored.ToArray();
     }
 
-    private void Cycle(bool noPpu) 
-    {
-        AdvanceBaseClocksForStep();
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void Cycle(bool noPpu)
+    {        AdvanceBaseClocksForStep();
         bool queueNmiForNextCpuSlot = false;
         int currentLineMclks = GetCurrentLineMclks();
         int vBlankStart = IsPal ? 240 : (_ppuImpl.FrameOverscan ? 240 : 225);
@@ -920,11 +921,13 @@ public class SNESSystem : ISNESSystem
         return XPos;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AdvanceBaseClocksForStep()
     {
         AdvanceBaseClocks(2);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AdvanceBaseClocks(int mainMasterCycles)
     {
         if (mainMasterCycles <= 0)
@@ -1129,6 +1132,7 @@ public class SNESSystem : ISNESSystem
         return YPos >= vBlankStart && YPos < maxV;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CpuCycle()
     {
         if (_cpuCyclesLeft == 0)
