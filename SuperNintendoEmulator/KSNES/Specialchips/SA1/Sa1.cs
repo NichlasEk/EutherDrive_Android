@@ -1131,6 +1131,7 @@ public sealed class Sa1
             public void NotifyDmaStart(uint sourceAddress) { }
             public void NotifyDmaEnd() { }
             public object? Sa1 => null;
+            public bool HasCoprocessor => false;
         }
     }
 }

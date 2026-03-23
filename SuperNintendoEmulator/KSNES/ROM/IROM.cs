@@ -14,4 +14,5 @@ public interface IROM : IHasAccessToSystem
     bool IrqWanted { get; }
     bool NmiWanted { get; }
     object? Sa1 { get; }
+    bool HasCoprocessor { get; }
 }

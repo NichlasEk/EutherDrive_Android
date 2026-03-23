@@ -1367,6 +1367,8 @@ public class ROM : IROM
         return false;
     }
 
+    public bool HasCoprocessor => _timedDispatch != TimedCoprocessorDispatch.None;
+
     public void RunCoprocessor(ulong snesCycles)
     {
         switch (_timedDispatch)

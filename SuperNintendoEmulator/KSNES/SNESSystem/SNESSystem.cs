@@ -758,7 +758,6 @@ public class SNESSystem : ISNESSystem
         else if (_gpdmaState != GpDmaState.Idle)
         {
             HandleDma();
-            RomImpl.RunCoprocessor(Cycles);
         }
         else if (XPos < 536 || XPos >= 576)
         {
@@ -794,11 +793,10 @@ public class SNESSystem : ISNESSystem
             }
         }
 
-        // Batch coprocessor and APU execution to reduce call overhead.
-        // Sync points: Every 64 cycles, at scanline transitions (XPos==0), and DMA.
+        // Tick coprocessor every cycle for timing accuracy, but batch APU.
+        RomImpl.RunCoprocessor(Cycles);
         if ((Cycles & 0x3F) == 0 || XPos == 0)
         {
-            RomImpl.RunCoprocessor(Cycles);
             CatchUpApu();
         }
         AdvanceBeamPosition(currentLineMclks);
@@ -806,6 +804,9 @@ public class SNESSystem : ISNESSystem
 
     private bool TryRunFastCpuWindow(bool noPpu)
     {
+        if (RomImpl.HasCoprocessor)
+            return false;
+
         if (_hdmaTimer > 0
             || _dmaTimer > 0
             || _gpdmaState != GpDmaState.Idle
