@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.Specialchips.SuperFX;
 
@@ -39,6 +40,7 @@ internal static class Plot
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte PlotPixel(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] ram)
     {
         byte x = (byte)gsu.R[1];

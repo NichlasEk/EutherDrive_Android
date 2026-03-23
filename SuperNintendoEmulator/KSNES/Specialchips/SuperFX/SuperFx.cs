@@ -39,6 +39,7 @@ internal sealed class SuperFx
         _lastSnesCycles = 0;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Read(uint address, out byte value, bool allowSnesRomReadWhileRunning = false)
     {
         byte bank = (byte)(address >> 16);
@@ -142,6 +143,7 @@ internal sealed class SuperFx
         return false;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Write(uint address, byte value, out bool wroteRam)
     {
         wroteRam = false;

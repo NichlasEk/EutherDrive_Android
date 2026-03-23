@@ -99,6 +99,13 @@ public class CPU : ICPU
     private int _tracePcRangeCount;
     private bool _traceWramPc;
     private bool _traceWramPcLogged;
+    private bool _anyTraceEnabled;
+
+    private void UpdateAnyTraceEnabled()
+    {
+        _anyTraceEnabled = _tracePc || _tracePcRange || _traceWramPc;
+    }
+
     private static readonly bool TraceLdaWatch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_LDA_WATCH"), "1", StringComparison.Ordinal);
     private static readonly bool TraceIndexWatch =
@@ -260,6 +267,7 @@ public class CPU : ICPU
         PerfInstructions = 0;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Cycle() 
     {
         if (CyclesLeft == 0)
@@ -270,41 +278,44 @@ public class CPU : ICPU
             }
             else if (!_waiting)
             {
-                int pcAddr = (_r[K] << 16) | _br[PC];
-                if (_traceWramPc && !_traceWramPcLogged && (pcAddr & 0xFFFF) < 0x2000)
+                if (_anyTraceEnabled)
                 {
-                    if (_snesImpl is { } snes)
+                    int pcAddr = (_r[K] << 16) | _br[PC];
+                    if (_traceWramPc && !_traceWramPcLogged && (pcAddr & 0xFFFF) < 0x2000)
                     {
-                        int b0 = snes.Peek(pcAddr);
-                        int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
-                        int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
-                        int b3 = snes.Peek((pcAddr + 3) & 0xffffff);
-                        Console.WriteLine($"[CPU-WRAM-PC] pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2} {b3:X2}]");
-                        _traceWramPcLogged = true;
+                        if (_snesImpl is { } snes)
+                        {
+                            int b0 = snes.Peek(pcAddr);
+                            int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
+                            int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                            int b3 = snes.Peek((pcAddr + 3) & 0xffffff);
+                            Console.WriteLine($"[CPU-WRAM-PC] pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2} {b3:X2}]");
+                            _traceWramPcLogged = true;
+                        }
                     }
-                }
-                if (_tracePc && _tracePcCount < _tracePcLimit)
-                {
-                    if (_snesImpl is { } snes)
+                    if (_tracePc && _tracePcCount < _tracePcLimit)
                     {
-                        int b0 = snes.Peek(pcAddr);
-                        int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
-                        int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
-                        string regs = GetDebugStateWithStack();
-                        Console.WriteLine($"[CPU-PC] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
-                        _tracePcCount++;
+                        if (_snesImpl is { } snes)
+                        {
+                            int b0 = snes.Peek(pcAddr);
+                            int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
+                            int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                            string regs = GetDebugStateWithStack();
+                            Console.WriteLine($"[CPU-PC] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
+                            _tracePcCount++;
+                        }
                     }
-                }
-                if (_tracePcRange && _tracePcRangeCount < _tracePcRangeLimit && pcAddr >= _tracePcRangeStart && pcAddr <= _tracePcRangeEnd)
-                {
-                    if (_snesImpl is { } snes)
+                    if (_tracePcRange && _tracePcRangeCount < _tracePcRangeLimit && pcAddr >= _tracePcRangeStart && pcAddr <= _tracePcRangeEnd)
                     {
-                        int b0 = snes.Peek(pcAddr);
-                        int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
-                        int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
-                        string regs = GetDebugStateWithStack();
-                        Console.WriteLine($"[CPU-PC-RANGE] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
-                        _tracePcRangeCount++;
+                        if (_snesImpl is { } snes)
+                        {
+                            int b0 = snes.Peek(pcAddr);
+                            int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
+                            int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
+                            string regs = GetDebugStateWithStack();
+                            Console.WriteLine($"[CPU-PC-RANGE] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
+                            _tracePcRangeCount++;
+                        }
                     }
                 }
                 int instr = ReadBus((_r[K] << 16) | _br[PC]++);
@@ -442,10 +453,8 @@ public class CPU : ICPU
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteBus(int address, int value)
     {
-        if (_snesImpl != null)
-            _snesImpl.Write(address, value);
-        else
-            _snes.Write(address, value);
+        if (_snesImpl != null) _snesImpl.Write(address, value);
+        else _snes.Write(address, value);
     }
 
     private (int, int) DataBankPair(int address16)
@@ -524,6 +533,7 @@ public class CPU : ICPU
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private (int, int) GetAdr(int mode) 
     {
         int pcBank = _r[K] << 16;

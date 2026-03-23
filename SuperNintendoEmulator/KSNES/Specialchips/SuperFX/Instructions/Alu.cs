@@ -1,9 +1,11 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.Specialchips.SuperFX;
 
 internal static class Alu
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Add(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort operand = gsu.Alt2
@@ -32,6 +34,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Sub(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort operand = (!gsu.Alt1 && gsu.Alt2)
@@ -65,6 +68,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Fmult(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         int source = (short)Instructions.ReadRegister(gsu, gsu.SReg);
@@ -97,6 +101,7 @@ internal static class Alu
         });
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Mult(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort operand = gsu.Alt2
@@ -128,6 +133,7 @@ internal static class Alu
         });
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Inc(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         byte register = (byte)(opcode & 0x0F);
@@ -141,6 +147,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Dec(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         byte register = (byte)(opcode & 0x0F);
@@ -154,6 +161,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte And(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort operand = gsu.Alt2
@@ -172,6 +180,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Or(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort operand = gsu.Alt2
@@ -190,6 +199,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Not(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -203,6 +213,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Asr(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -221,6 +232,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Lsr(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -235,6 +247,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Rol(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -249,6 +262,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Ror(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -263,6 +277,7 @@ internal static class Alu
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Sex(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);

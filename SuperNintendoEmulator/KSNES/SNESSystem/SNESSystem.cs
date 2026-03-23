@@ -804,6 +804,9 @@ public class SNESSystem : ISNESSystem
 
     private bool TryRunFastCpuWindow(bool noPpu)
     {
+        if (RomImpl.HasCoprocessor)
+            return false;
+
         if (_hdmaTimer > 0
             || _dmaTimer > 0
             || _gpdmaState != GpDmaState.Idle
@@ -973,6 +976,7 @@ public class SNESSystem : ISNESSystem
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int GetIrqVTime()
     {
         const int irqOffsetMclks = 10;
@@ -983,6 +987,7 @@ public class SNESSystem : ISNESSystem
         return YPos == 0 ? maxV - 1 : YPos - 1;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int GetIrqHTime()
     {
         const int irqOffsetMclks = 10;
@@ -992,6 +997,7 @@ public class SNESSystem : ISNESSystem
         return scanlineMclks / 4;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int GetCurrentLineMclks()
     {
         if (!IsPal && !IsInterlacedPpu() && _oddFrame && YPos == 240)
@@ -1038,79 +1044,63 @@ public class SNESSystem : ISNESSystem
         return GetPreviousLineMclks() / 4;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateIrqLine()
     {
+        if (!_hIrqEnabled && !_vIrqEnabled)
+        {
+            if (_irqLine)
+            {
+                _irqLine = false;
+                _lastIrqHTime = GetIrqHTime();
+            }
+            return;
+        }
+
         int ppuHTime = GetIrqHTime();
         int ppuVTime = GetIrqVTime();
 
-        bool CheckH()
-        {
-            int previousLineMaxHTime = GetPreviousLineMaxHTime();
-            if (ppuHTime < _lastIrqHTime)
-            {
-                return _hTimer <= ppuHTime || RangeContainsExclusiveEnd(_lastIrqHTime, previousLineMaxHTime, _hTimer);
-            }
-
-            return RangeContainsInclusiveEnd(_lastIrqHTime, ppuHTime, _hTimer);
-        }
-
-        bool CheckV() => ppuVTime == _vTimer;
-
-        bool CheckHv()
+        bool newIrqLine = false;
+        if (_hIrqEnabled && _vIrqEnabled)
         {
             if (ppuHTime >= _lastIrqHTime)
             {
-                return RangeContainsInclusiveEnd(_lastIrqHTime, ppuHTime, _hTimer) && CheckV();
+                if (ppuHTime >= _hTimer && _lastIrqHTime < _hTimer && ppuVTime == _vTimer)
+                    newIrqLine = true;
             }
-
-            if (_hTimer <= ppuHTime)
-                return CheckV();
-
-            if (RangeContainsExclusiveEnd(_lastIrqHTime, GetPreviousLineMaxHTime(), _hTimer))
+            else
             {
-                int maxV = IsPal ? 312 : 262;
-                int prevVTime = ppuVTime == 0 ? maxV - 1 : ppuVTime - 1;
-                return prevVTime == _vTimer;
+                if (_hTimer <= ppuHTime && ppuVTime == _vTimer)
+                    newIrqLine = true;
+                else if (_hTimer > _lastIrqHTime && _hTimer <= GetPreviousLineMaxHTime())
+                {
+                    int maxV = IsPal ? 312 : 262;
+                    int prevVTime = ppuVTime == 0 ? maxV - 1 : ppuVTime - 1;
+                    if (prevVTime == _vTimer)
+                        newIrqLine = true;
+                }
             }
-
-            return false;
-        }
-
-        bool newIrqLine;
-        if (!_hIrqEnabled && !_vIrqEnabled)
-        {
-            newIrqLine = false;
-        }
-        else if (_hIrqEnabled && _vIrqEnabled)
-        {
-            newIrqLine = CheckHv();
         }
         else if (_hIrqEnabled)
         {
-            newIrqLine = CheckH();
+            if (ppuHTime >= _lastIrqHTime)
+                newIrqLine = ppuHTime >= _hTimer && _lastIrqHTime < _hTimer;
+            else
+                newIrqLine = _hTimer <= ppuHTime || (_hTimer > _lastIrqHTime && _hTimer <= GetPreviousLineMaxHTime());
         }
-        else
+        else // _vIrqEnabled only
         {
-            newIrqLine = CheckV();
+            newIrqLine = ppuVTime == _vTimer;
         }
 
-        _lastIrqHTime = ppuHTime;
         if (!_irqLine && newIrqLine)
         {
             _inIrq = true;
             _irqRaisedAtCycle = Cycles;
-            if (_traceSgngIrqWindow && _traceSgngIrqWindowCount < _traceSgngIrqWindowLimit && CPU is KSNES.CPU.CPU cpu)
-            {
-                int pc = cpu.ProgramCounter24;
-                if (pc >= 0x028270 && pc <= 0x0282C0)
-                {
-                    Console.WriteLine(
-                        $"[SGNG-IRQ-WINDOW] pc=0x{pc:X6} xy=({XPos},{YPos}) ppuHt={ppuHTime} ppuVt={ppuVTime} hTimer={_hTimer} vTimer={_vTimer} hIrq={(_hIrqEnabled ? 1 : 0)} vIrq={(_vIrqEnabled ? 1 : 0)} regs=[{cpu.GetTraceState()}]");
-                    _traceSgngIrqWindowCount++;
-                }
-            }
         }
+
         _irqLine = newIrqLine;
+        _lastIrqHTime = ppuHTime;
     }
 
     private bool GetCurrentHblankFlag()
@@ -2126,21 +2116,21 @@ public class SNESSystem : ISNESSystem
         {
             case BusPageKind.WramBank:
                 _ram[((bank & 0x1) << 16) | adr] = (byte)value;
-                return;
+                break;
             case BusPageKind.LowWram:
                 _ram[adr & 0x1fff] = (byte)value;
-                return;
+                break;
             case BusPageKind.BBus:
                 WriteBBusFast(adr & 0xff, value, dma);
-                return;
+                break;
             case BusPageKind.JoypadPage:
                 if (adr == 0x4016)
                     WriteJoypadStrobeFast(value);
-                return;
+                break;
             case BusPageKind.CpuRegs:
                 if (adr >= 0x4200 && adr < 0x4380)
                     WriteReg(adr, value);
-                return;
+                break;
         }
 
         RomImpl.WriteFast(fullAdr, (byte)value);

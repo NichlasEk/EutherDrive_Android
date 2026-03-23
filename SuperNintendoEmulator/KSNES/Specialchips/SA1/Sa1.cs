@@ -35,6 +35,27 @@ public sealed class Sa1
 
     [NonSerialized]
     private readonly byte[] _rom;
+    private readonly byte[] _bankTypes = new byte[256];
+
+    private const byte BankTypeRom = 0;
+    private const byte BankTypeIram = 1;
+    private const byte BankTypeBwram = 2;
+    private const byte BankTypeIo = 3;
+    private const byte BankTypeBwramBitmap = 4;
+    private const byte BankTypeUnmapped = 5;
+
+    private void InitializeBankTypes()
+    {
+        for (int i = 0; i < 256; i++)
+        {
+            if (i >= 0xC0) _bankTypes[i] = BankTypeRom;
+            else if (i >= 0x40 && i <= 0x5F) _bankTypes[i] = BankTypeBwram;
+            else if (i >= 0x60 && i <= 0x6F) _bankTypes[i] = BankTypeBwramBitmap;
+            else if (i <= 0x3F || (i >= 0x80 && i <= 0xBF)) _bankTypes[i] = BankTypeIo;
+            else _bankTypes[i] = BankTypeUnmapped;
+        }
+    }
+
     private byte[] _iram = new byte[IramLen];
     private byte[] _bwram;
     private readonly CPU.CPU _cpu;
@@ -109,6 +130,7 @@ public sealed class Sa1
     public Sa1(byte[] rom, byte[] bwram, bool isPal)
     {
         _rom = rom;
+        InitializeBankTypes();
         if (bwram.Length == 0)
         {
             byte[] newBwram = new byte[64 * 1024];
@@ -799,105 +821,63 @@ public sealed class Sa1
         bwramWait = false;
         uint bank = (address >> 16) & 0xFF;
         uint offset = address & 0xFFFF;
-        switch (bank, offset)
+        
+        byte bankType = _bankTypes[bank];
+        
+        // Handle common mixed banks (00-3F, 80-BF)
+        if (bankType == BankTypeIo)
         {
-            case (<= 0x3F, >= 0x8000):
-            case (>= 0x80 and <= 0xBF, >= 0x8000):
-            case (>= 0xC0 and <= 0xFF, _):
-                if (bank == 0x00 && offset == 0xFFEA)
+            if (offset >= 0x8000)
+            {
+                // Vectors in bank 00
+                if (bank == 0x00)
                 {
-                    byte value = _registers.Sa1NmiVector.Lsb();
-                    TraceSa1("R", address, value, "SA1-VEC");
-                    return value;
+                    if (offset == 0xFFEA) return _registers.Sa1NmiVector.Lsb();
+                    if (offset == 0xFFEB) return _registers.Sa1NmiVector.Msb();
+                    if (offset == 0xFFEE) return _registers.Sa1IrqVector.Lsb();
+                    if (offset == 0xFFEF) return _registers.Sa1IrqVector.Msb();
+                    if (offset == 0xFFFC) return _registers.Sa1ResetVector.Lsb();
+                    if (offset == 0xFFFD) return _registers.Sa1ResetVector.Msb();
                 }
-                if (bank == 0x00 && offset == 0xFFEB)
-                {
-                    byte value = _registers.Sa1NmiVector.Msb();
-                    TraceSa1("R", address, value, "SA1-VEC");
-                    return value;
-                }
-                if (bank == 0x00 && offset == 0xFFEE)
-                {
-                    byte value = _registers.Sa1IrqVector.Lsb();
-                    TraceSa1("R", address, value, "SA1-VEC");
-                    return value;
-                }
-                if (bank == 0x00 && offset == 0xFFEF)
-                {
-                    byte value = _registers.Sa1IrqVector.Msb();
-                    TraceSa1("R", address, value, "SA1-VEC");
-                    return value;
-                }
-                if (bank == 0x00 && offset == 0xFFFC)
-                {
-                    byte value = _registers.Sa1ResetVector.Lsb();
-                    TraceSa1("R", address, value, "SA1-VEC");
-                    return value;
-                }
-                if (bank == 0x00 && offset == 0xFFFD)
-                {
-                    byte value = _registers.Sa1ResetVector.Msb();
-                    TraceSa1("R", address, value, "SA1-VEC");
-                    return value;
-                }
-                {
-                    byte value = _mmc.TryMapRomAddress(address, out uint romAddr) && romAddr < _rom.Length ? _rom[(int)romAddr] : (byte)0;
-                    TraceSa1("R", address, value, "ROM", romAddr);
-                    return value;
-                }
-            case (<= 0x3F, >= 0x2300 and <= 0x230F):
-            case (>= 0x80 and <= 0xBF, >= 0x2300 and <= 0x230F):
-                {
-                    byte value = _registers.Sa1Read(address, _timer, _mmc, _rom);
-                    TraceSa1("R", address, value, "SA1-IO");
-                    return value;
-                }
-            case (<= 0x3F, >= 0x0000 and <= 0x07FF):
-            case (>= 0x80 and <= 0xBF, >= 0x0000 and <= 0x07FF):
-            case (<= 0x3F, >= 0x3000 and <= 0x37FF):
-            case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
-                {
-                    byte value = _iram[(int)(address & 0x7FF)];
-                    TraceSa1("R", address, value, "I-RAM", address & 0x7FF);
-                    TraceIramWatch("SA1", "R", address, value, _cpu.ProgramCounter24);
-                    return value;
-                }
-            case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
-            case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
+                return _mmc.TryMapRomAddress(address, out uint romAddr) && romAddr < _rom.Length ? _rom[(int)romAddr] : (byte)0;
+            }
+            
+            if (offset <= 0x07FF || (offset >= 0x3000 && offset <= 0x37FF))
+            {
+                return _iram[(int)(address & 0x7FF)];
+            }
+            
+            if (offset >= 0x2300 && offset <= 0x230F)
+            {
+                return _registers.Sa1Read(address, _timer, _mmc, _rom);
+            }
+            
+            if (offset >= 0x6000 && offset <= 0x7FFF)
+            {
                 bwramWait = true;
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
                     uint bwramAddr = ResolveSa1BwramWindowAddress(address);
-                    byte value = _bwram[(int)bwramAddr];
-                    TraceSa1("R", address, value, "BW-RAM-WIN", bwramAddr);
-                    TraceBwramWatch("SA1", "R", address, bwramAddr, value, _cpu.ProgramCounter24);
-                    return value;
+                    return _bwram[(int)bwramAddr];
                 }
-                {
-                    uint bitmapAddr = _mmc.Sa1BwramBaseAddr | (address & 0x1FFF);
-                    byte value = ReadBwramBitmap(bitmapAddr);
-                    TraceSa1("R", address, value, "BW-RAM-BITMAP", bitmapAddr);
-                    return value;
-                }
-            case (>= 0x40 and <= 0x5F, _):
-                bwramWait = true;
-                {
-                    uint bwramAddr = address & (uint)(_bwram.Length - 1);
-                    byte value = _bwram[(int)bwramAddr];
-                    TraceSa1("R", address, value, "BW-RAM", bwramAddr);
-                    TraceBwramWatch("SA1", "R", address, bwramAddr, value, _cpu.ProgramCounter24);
-                    return value;
-                }
-            case (>= 0x60 and <= 0x6F, _):
-                bwramWait = true;
-                {
-                    byte value = ReadBwramBitmap(address);
-                    TraceSa1("R", address, value, "BW-RAM-BITMAP", address);
-                    return value;
-                }
+                return ReadBwramBitmap(_mmc.Sa1BwramBaseAddr | (address & 0x1FFF));
+            }
+        }
+        else if (bankType == BankTypeRom)
+        {
+            return _mmc.TryMapRomAddress(address, out uint romAddr) && romAddr < _rom.Length ? _rom[(int)romAddr] : (byte)0;
+        }
+        else if (bankType == BankTypeBwram)
+        {
+            bwramWait = true;
+            return _bwram[address & (uint)(_bwram.Length - 1)];
+        }
+        else if (bankType == BankTypeBwramBitmap)
+        {
+            bwramWait = true;
+            return ReadBwramBitmap(address);
         }
 
-        TraceSa1("R", address, 0x00, "UNMAPPED");
         return 0;
     }
 
@@ -905,72 +885,58 @@ public sealed class Sa1
     internal void WriteSa1Cpu(uint address, byte value, out bool bwramWait)
     {
         bwramWait = false;
-        bool handled = false;
         uint bank = (address >> 16) & 0xFF;
         uint offset = address & 0xFFFF;
-        switch (bank, offset)
+        
+        byte bankType = _bankTypes[bank];
+        
+        if (bankType == BankTypeIo)
         {
-            case (<= 0x3F, >= 0x2200 and <= 0x22FF):
-            case (>= 0x80 and <= 0xBF, >= 0x2200 and <= 0x22FF):
+            if (offset >= 0x2200 && offset <= 0x22FF)
+            {
                 _registers.Sa1Write(address, value, _timer, _mmc, _rom, _iram);
-                TraceSa1("W", address, value, "SA1-IO");
-                handled = true;
-                break;
-            case (<= 0x3F, >= 0x0000 and <= 0x07FF):
-            case (>= 0x80 and <= 0xBF, >= 0x0000 and <= 0x07FF):
-            case (<= 0x3F, >= 0x3000 and <= 0x37FF):
-            case (>= 0x80 and <= 0xBF, >= 0x3000 and <= 0x37FF):
-                {
-                    uint iramAddr = address & 0x7FF;
-                    int writeProtectIdx = (int)(iramAddr >> 8);
-                    if (_registers.Sa1IramWritesEnabled[writeProtectIdx])
-                        _iram[(int)iramAddr] = value;
-                    TraceSa1("W", address, value, "I-RAM", address & 0x7FF);
-                    TraceIramWatch("SA1", "W", address, value, (_cpu.ProgramBank << 16) | _cpu.ProgramCounter);
-                    if (_traceBadDispatchPointer)
-                        TraceBadDispatchPointerIfNeeded();
-                    handled = true;
-                    break;
-                }
-            case (<= 0x3F, >= 0x6000 and <= 0x7FFF):
-            case (>= 0x80 and <= 0xBF, >= 0x6000 and <= 0x7FFF):
+                return;
+            }
+            
+            if (offset <= 0x07FF || (offset >= 0x3000 && offset <= 0x37FF))
+            {
+                uint iramAddr = address & 0x7FF;
+                int writeProtectIdx = (int)(iramAddr >> 8);
+                if (_registers.Sa1IramWritesEnabled[writeProtectIdx])
+                    _iram[(int)iramAddr] = value;
+                return;
+            }
+            
+            if (offset >= 0x6000 && offset <= 0x7FFF)
+            {
                 bwramWait = true;
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
                     uint bwramAddr = ResolveSa1BwramWindowAddress(address);
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
-                        QueuePendingSa1BwramWrite(bwramAddr, value);
-                    TraceSa1("W", address, value, "BW-RAM-WIN", bwramAddr);
-                    TraceBwramWatch("SA1", "W", address, bwramAddr, value, (_cpu.ProgramBank << 16) | _cpu.ProgramCounter);
+                        _bwram[(int)bwramAddr] = value;
                 }
                 else
                 {
                     WriteBwramBitmap(_mmc.Sa1BwramBaseAddr | (address & 0x1FFF), value);
-                    TraceSa1("W", address, value, "BW-RAM-BITMAP", _mmc.Sa1BwramBaseAddr | (address & 0x1FFF));
                 }
-                handled = true;
-                break;
-            case (>= 0x40 and <= 0x5F, _):
-                bwramWait = true;
-                {
-                    uint bwramAddr = address & (uint)(_bwram.Length - 1);
-                    if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
-                        QueuePendingSa1BwramWrite(bwramAddr, value);
-                    TraceSa1("W", address, value, "BW-RAM", bwramAddr);
-                    TraceBwramWatch("SA1", "W", address, bwramAddr, value, (_cpu.ProgramBank << 16) | _cpu.ProgramCounter);
-                }
-                handled = true;
-                break;
-            case (>= 0x60 and <= 0x6F, _):
-                bwramWait = true;
-                WriteBwramBitmap(address, value);
-                TraceSa1("W", address, value, "BW-RAM-BITMAP", address);
-                handled = true;
-                break;
+                return;
+            }
         }
-
-        if (!handled)
-            TraceSa1("W", address, value, "UNMAPPED");
+        else if (bankType == BankTypeBwram)
+        {
+            bwramWait = true;
+            uint bwramAddr = address & (uint)(_bwram.Length - 1);
+            if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
+                _bwram[(int)bwramAddr] = value;
+            return;
+        }
+        else if (bankType == BankTypeBwramBitmap)
+        {
+            bwramWait = true;
+            WriteBwramBitmap(address, value);
+            return;
+        }
     }
 
     private void QueuePendingSa1BwramWrite(uint bwramAddr, byte value)

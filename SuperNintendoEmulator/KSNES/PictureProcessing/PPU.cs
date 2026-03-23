@@ -1529,104 +1529,83 @@ public class PPU : IPPU
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void GetColor(bool sub, int x, int y, out ushort color, out int layer, out int pixel) 
+    private unsafe void GetColor(bool sub, int x, int y, out ushort color, out int layer, out int pixel) 
     {
         int modeIndex = _lineModeIndex;
         int count = _lineLayerCount;
-        int j;
         pixel = 0;
         layer = 5;
-        // Vertical hi-res BG sampling only applies in modes 5/6. In other modes,
-        // interlace affects field/frame output rather than doubling BG fetch Y.
         if (_interlace && (_mode == 5 || _mode == 6))
         {
             y = y * 2 + (_evenFrame ? 1 : 0);
         }
-        for (j = 0; j < count; j++)
+
+        fixed (byte* mainVis = _mainScreenVisibleCache)
+        fixed (byte* subVis = _subScreenVisibleCache)
+        fixed (ushort* cgramPtr = _cgram)
         {
-            int lx = x;
-            int ly = y;
-            layer = _layersPerMode[modeIndex + j];
-            int visibleIndex = (layer << 8) | x;
-            if ((!sub && _mainScreenVisibleCache[visibleIndex] != 0)
-                || (sub && _subScreenVisibleCache[visibleIndex] != 0))
+            byte* visCache = sub ? subVis : mainVis;
+            int j;
+            for (j = 0; j < count; j++)
             {
-                if (_mosaicEnabled[layer])
+                layer = _layersPerMode[modeIndex + j];
+                if (visCache[(layer << 8) | x] != 0)
                 {
-                    lx -= lx % _mosaicSize;
-                    ly -= (ly - _mosaicStartLine) % _mosaicSize;
-                }
-                lx += _mode == 7 ? 0 : _bgHoff[layer];
-                ly += _mode == 7 ? 0 : _bgVoff[layer];
-                int optX = lx - _bgHoff[layer];
-                if ((_mode == 5 || _mode == 6) && layer < 4)
-                {
-                    lx = lx * 2 + (sub ? 0 : 1);
-                    optX = optX * 2 + (sub ? 0 : 1);
-                }
-                if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
-                {
-                    int andVal = layer == 0 ? 0x2000 : 0x4000;
-                    if (x == 0)
+                    int lx = x;
+                    int ly = y;
+                    if (_mosaicEnabled[layer])
                     {
-                        _lastOrigTileX[layer] = lx >> 3;
+                        lx -= lx % _mosaicSize;
+                        ly -= (ly - _mosaicStartLine) % _mosaicSize;
                     }
-                    int tileStartX = optX - (lx - (lx & 0xfff8));
-                    if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
+                    lx += _mode == 7 ? 0 : _bgHoff[layer];
+                    ly += _mode == 7 ? 0 : _bgVoff[layer];
+
+                    if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
                     {
-                        FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
-                        _optHorBuffer[layer] = _tilemapBuffer[2];
-                        if (_mode == 4)
+                        int andVal = layer == 0 ? 0x2000 : 0x4000;
+                        if (x == 0) _lastOrigTileX[layer] = lx >> 3;
+                        int tileStartX = (lx - _bgHoff[layer]) - (lx - (lx & 0xfff8));
+                        if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
                         {
-                            if ((_optHorBuffer[layer] & 0x8000) > 0)
+                            FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+                            _optHorBuffer[layer] = _tilemapBuffer[2];
+                            if (_mode == 4)
                             {
-                                _optVerBuffer[layer] = _optHorBuffer[layer];
-                                _optHorBuffer[layer] = 0;
+                                if ((_optHorBuffer[layer] & 0x8000) > 0) { _optVerBuffer[layer] = _optHorBuffer[layer]; _optHorBuffer[layer] = 0; }
+                                else _optVerBuffer[layer] = 0;
                             }
                             else
                             {
-                                _optVerBuffer[layer] = 0;
+                                FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+                                _optVerBuffer[layer] = _tilemapBuffer[2];
                             }
+                            _lastOrigTileX[layer] = lx >> 3;
                         }
-                        else
-                        {
-                            FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
-                            _optVerBuffer[layer] = _tilemapBuffer[2];
-                        }
-                        _lastOrigTileX[layer] = lx >> 3;
+                        if ((_optHorBuffer[layer] & andVal) > 0) lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
+                        if ((_optVerBuffer[layer] & andVal) > 0) ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
                     }
-                    if ((_optHorBuffer[layer] & andVal) > 0)
-                    {
-                        int add = (tileStartX + 7) & 0x1f8;
-                        lx = (lx & 0x7) + ((_optHorBuffer[layer] + add) & 0x1ff8);
-                    }
-                    if ((_optVerBuffer[layer] & andVal) > 0)
-                    {
-                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
-                    }
+                    pixel = GetPixelForLayer(lx, ly, layer, _prioPerMode[modeIndex + j]);
+                    if ((pixel & 0xFF) != 0) break;
                 }
-                pixel = GetPixelForLayer(lx, ly, layer, _prioPerMode[modeIndex + j]);
             }
-            if ((pixel & 0xff) > 0)
+
+            if (j == count)
             {
-                break;
+                color = (sub) ? (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR) : cgramPtr[0];
+                layer = 5;
+                return;
+            }
+
+            color = cgramPtr[pixel & 0xFF];
+            if (_directColor && layer < 4 && _bitPerMode[_mode * 4 + layer] == 8)
+            {
+                int r = ((pixel & 0x7) << 2) | ((pixel & 0x100) >> 7);
+                int g = ((pixel & 0x38) >> 1) | ((pixel & 0x200) >> 8);
+                int b = ((pixel & 0xc0) >> 3) | ((pixel & 0x400) >> 8);
+                color = (ushort)((b << 10) | (g << 5) | r);
             }
         }
-        layer = j == count ? 5 : layer;
-        // Use live CGRAM so mid-frame palette changes (for example via HDMA) affect
-        // the lines they are meant to. Frame-latching the palette breaks games like
-        // Kirby's Dream Land 3 that update HUD/scene colors during active display.
-        color = (sub && layer == 5)
-            ? (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR)
-            : _cgram[pixel & 0xff];
-        if (_directColor && layer < 4 && _bitPerMode[_mode * 4 + layer] == 8)
-        {
-            int r = ((pixel & 0x7) << 2) | ((pixel & 0x100) >> 7);
-            int g = ((pixel & 0x38) >> 1) | ((pixel & 0x200) >> 8);
-            int b = ((pixel & 0xc0) >> 3) | ((pixel & 0x400) >> 8);
-            color = (ushort) ((b << 10) | (g << 5) | r);
-        }
-        return;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1687,40 +1666,36 @@ public class PPU : IPPU
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int GetPixelForLayer(int x, int y, int l, int p) 
+    private unsafe int GetPixelForLayer(int x, int y, int l, int p) 
     {
-        if ((l == 0 && DebugDisableBg1)
-            || (l == 1 && DebugDisableBg2)
-            || (l == 2 && DebugDisableBg3)
-            || (l == 3 && DebugDisableBg4)
-            || (l == 4 && DebugDisableObj))
-        {
-            return 0;
-        }
-
         if (l > 3)
         {
-            if (_spritePrioBuffer[x] != p)
+            fixed (byte* sPrio = _spritePrioBuffer)
+            fixed (byte* sLine = _spriteLineBuffer)
             {
-                return 0;
+                if (sPrio[x] != p) return 0;
+                return sLine[x];
             }
-            return _spriteLineBuffer[x];
         }
         if (_mode == 7)
         {
             return GetMode7Pixel(x, y, l, p);
         }
-        if (x >> 3 != _lastTileFetchedX[l] || y != _lastTileFetchedY[l])
+        
+        fixed (int* lastX = _lastTileFetchedX)
+        fixed (int* lastY = _lastTileFetchedY)
+        fixed (byte* tPrio = _tilePriorityBuffer)
+        fixed (ushort* tPix = _tilePixelBuffer)
         {
-            FetchTileInBuffer(x, y, l, false);
-            _lastTileFetchedX[l] = x >> 3;
-            _lastTileFetchedY[l] = y;
+            if (x >> 3 != lastX[l] || y != lastY[l])
+            {
+                FetchTileInBuffer(x, y, l, false);
+                lastX[l] = x >> 3;
+                lastY[l] = y;
+            }
+            if (tPrio[l] != p) return 0;
+            return tPix[(l << 3) | (x & 0x7)];
         }
-        if (_tilePriorityBuffer[l] != p)
-        {
-            return 0;
-        }
-        return _tilePixelBuffer[(l << 3) | (x & 0x7)];
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

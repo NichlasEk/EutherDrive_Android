@@ -1,7 +1,10 @@
+using System.Runtime.CompilerServices;
+
 namespace KSNES.Specialchips.SuperFX;
 
 internal static class Flow
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Link(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu)
     {
         byte n = (byte)(opcode & 0x0F);
@@ -11,39 +14,51 @@ internal static class Flow
         return memoryType.AccessCycles(gsu.ClockSpeed);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Bra(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, true);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Bge(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, !(gsu.SignFlag ^ gsu.OverflowFlag));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Blt(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, gsu.SignFlag ^ gsu.OverflowFlag);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Bne(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, !gsu.ZeroFlag);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Beq(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, gsu.ZeroFlag);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Bpl(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, !gsu.SignFlag);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Bmi(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, gsu.SignFlag);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Bcc(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, !gsu.CarryFlag);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Bcs(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, gsu.CarryFlag);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Bvc(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, !gsu.OverflowFlag);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Bvs(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
         => Branch(memoryType, gsu, rom, ram, gsu.OverflowFlag);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Jmp(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         byte cycles = Instructions.FillCacheFromPc(gsu, rom, ram);
@@ -54,6 +69,7 @@ internal static class Flow
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Ljmp(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         gsu.R[15] = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -67,6 +83,7 @@ internal static class Flow
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Loop(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         gsu.R[12] = unchecked((ushort)(gsu.R[12] - 1));

@@ -257,6 +257,7 @@ internal sealed class GraphicsSupportUnit
         return CodeCache.ReadRam(ramAddr);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteCodeCacheRam(uint address, byte value)
     {
         if (Go)
@@ -418,6 +419,7 @@ internal sealed class GraphicsSupportUnit
         TraceBusState("SCMR", value);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static ushort MapSnesCodeCacheAddress(uint address, ushort cbr)
     {
         uint snesOffset = (address & 0xFFFF) - 0x3100;
