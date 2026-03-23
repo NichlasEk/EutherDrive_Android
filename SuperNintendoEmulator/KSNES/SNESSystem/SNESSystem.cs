@@ -1181,7 +1181,10 @@ public class SNESSystem : ISNESSystem
     {
         do
         {
-            Cycle(noPpu);
+            if (!TryRunFastCpuWindow(noPpu))
+            {
+                Cycle(noPpu);
+            }
         } while (!(XPos == 0 && YPos == 0));
     }
 
