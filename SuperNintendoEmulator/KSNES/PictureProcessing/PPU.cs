@@ -1254,7 +1254,7 @@ public class PPU : IPPU
         EvaluateSprites(line);
     }
 
-    public void RenderLine(int line) 
+    public unsafe void RenderLine(int line) 
     {
         int screenY = line - 1;
         EnsureRuntimeBuffers();
@@ -1314,111 +1314,104 @@ public class PPU : IPPU
                 PerfOutputPixels += 256;
                 return;
             }
-            var i = 0;
-            while (i < 256)
+
+            fixed (byte* bTab = brightnessTable)
+            fixed (int* pOut = pixelOutput)
+            fixed (byte* clipCache = _clipToBlackCache)
             {
-                var r1 = 0;
-                var g1 = 0;
-                var b1 = 0;
-                var r2 = 0;
-                var g2 = 0;
-                var b2 = 0;
-                var mainVisible = false;
-                var subVisible = false;
-                if (!_forcedBlank)
+                byte* bTabOffset = bTab + brightnessOffset;
+                int* pRow = pOut + outputRow;
+
+                for (int i = 0; i < 256; i++)
                 {
-                    GetColor(false, i, screenY, out ushort color, out int item2, out int item3);
-                    bool mathEnabled = GetMathEnabled(i, item2, item3);
-                    mainVisible = item2 < 5;
-                    r2 = color & 0x1f;
-                    g2 = (color & 0x3e0) >> 5;
-                    b2 = (color & 0x7c00) >> 10;
-                    if (_clipToBlackCache[i] != 0)
+                    int r1 = 0, g1 = 0, b1 = 0;
+                    int r2 = 0, g2 = 0, b2 = 0;
+                    bool mainVisible = false, subVisible = false;
+
+                    if (!_forcedBlank)
                     {
-                        r2 = 0;
-                        g2 = 0;
-                        b2 = 0;
-                    }
-                    ushort secondColor = 0;
-                    int secondLayer = 5;
-                    int secondPixel = 0;
-                    if (_mode == 5 || _mode == 6 || _pseudoHires || (mathEnabled && _addSub))
-                    {
-                        GetColor(true, i, screenY, out secondColor, out secondLayer, out secondPixel);
-                        subVisible = secondLayer < 5;
-                        r1 = secondColor & 0x1f;
-                        g1 = (secondColor & 0x3e0) >> 5;
-                        b1 = (secondColor & 0x7c00) >> 10;
-                    }
-                    if (mathEnabled)
-                    {
-                        if (_subtractColors)
+                        GetColor(false, i, screenY, out ushort color, out int item2, out int item3);
+                        bool mathEnabled = GetMathEnabled(i, item2, item3);
+                        mainVisible = item2 < 5;
+                        r2 = color & 0x1f;
+                        g2 = (color >> 5) & 0x1f;
+                        b2 = (color >> 10) & 0x1f;
+
+                        if (clipCache[i] != 0)
                         {
-                            r2 -= _addSub && secondLayer < 5 ? r1 : _fixedColorR;
-                            g2 -= _addSub && secondLayer < 5 ? g1 : _fixedColorG;
-                            b2 -= _addSub && secondLayer < 5 ? b1 : _fixedColorB;
+                            r2 = 0; g2 = 0; b2 = 0;
                         }
-                        else
+
+                        ushort secondColor = 0;
+                        int secondLayer = 5;
+                        int secondPixel = 0;
+                        if (_mode == 5 || _mode == 6 || _pseudoHires || (mathEnabled && _addSub))
                         {
-                            r2 += _addSub && secondLayer < 5 ? r1 : _fixedColorR;
-                            g2 += _addSub && secondLayer < 5 ? g1 : _fixedColorG;
-                            b2 += _addSub && secondLayer < 5 ? b1 : _fixedColorB;
+                            GetColor(true, i, screenY, out secondColor, out secondLayer, out secondPixel);
+                            subVisible = secondLayer < 5;
+                            r1 = secondColor & 0x1f;
+                            g1 = (secondColor >> 5) & 0x1f;
+                            b1 = (secondColor >> 10) & 0x1f;
                         }
-                        if (_halfColors && (secondLayer < 5 || !_addSub))
+
+                        if (mathEnabled)
                         {
-                            r2 >>= 1;
-                            g2 >>= 1;
-                            b2 >>= 1;
+                            if (_subtractColors)
+                            {
+                                r2 -= _addSub && secondLayer < 5 ? r1 : _fixedColorR;
+                                g2 -= _addSub && secondLayer < 5 ? g1 : _fixedColorG;
+                                b2 -= _addSub && secondLayer < 5 ? b1 : _fixedColorB;
+                            }
+                            else
+                            {
+                                r2 += _addSub && secondLayer < 5 ? r1 : _fixedColorR;
+                                g2 += _addSub && secondLayer < 5 ? g1 : _fixedColorG;
+                                b2 += _addSub && secondLayer < 5 ? b1 : _fixedColorB;
+                            }
+
+                            if (_halfColors && (secondLayer < 5 || !_addSub))
+                            {
+                                r2 >>= 1; g2 >>= 1; b2 >>= 1;
+                            }
+
+                            if ((uint)r2 > 31) r2 = r2 < 0 ? 0 : 31;
+                            if ((uint)g2 > 31) g2 = g2 < 0 ? 0 : 31;
+                            if ((uint)b2 > 31) b2 = b2 < 0 ? 0 : 31;
                         }
-                        r2 = r2 > 31 ? 31 : r2;
-                        r2 = r2 < 0 ? 0 : r2;
-                        g2 = g2 > 31 ? 31 : g2;
-                        g2 = g2 < 0 ? 0 : g2;
-                        b2 = b2 > 31 ? 31 : b2;
-                        b2 = b2 < 0 ? 0 : b2;
+
+                        if (!trueHiResOutput && hiResOutput)
+                        {
+                            if (!mainVisible && subVisible)
+                            {
+                                r2 = r1; g2 = g1; b2 = b1;
+                            }
+                            else if (mainVisible && subVisible)
+                            {
+                                r2 = (r2 + r1) >> 1;
+                                g2 = (g2 + g1) >> 1;
+                                b2 = (b2 + b1) >> 1;
+                            }
+                        }
                     }
 
-                    // Hi-res / pseudo-hires output is built from both main and sub screens.
-                    // We render to a 256-wide buffer, so collapse the two half-pixels into one:
-                    // prefer the visible source when only one screen contributes, otherwise blend.
-                    if (!trueHiResOutput && hiResOutput)
+                    int mainColor = bTabOffset[b2] | (bTabOffset[g2] << 8) | (bTabOffset[r2] << 16);
+                    if (trueHiResOutput)
                     {
-                        if (!mainVisible && subVisible)
-                        {
-                            r2 = r1;
-                            g2 = g1;
-                            b2 = b1;
-                        }
-                        else if (mainVisible && subVisible)
-                        {
-                            r2 = (r2 + r1) >> 1;
-                            g2 = (g2 + g1) >> 1;
-                            b2 = (b2 + b1) >> 1;
-                        }
+                        int subColor = bTabOffset[b1] | (bTabOffset[g1] << 8) | (bTabOffset[r1] << 16);
+                        pRow[i * 2] = subColor | alphaMask;
+                        pRow[i * 2 + 1] = mainColor | alphaMask;
+                    }
+                    else if (_frameTrueHiResOutput)
+                    {
+                        int argb = mainColor | alphaMask;
+                        pRow[i * 2] = argb;
+                        pRow[i * 2 + 1] = argb;
+                    }
+                    else
+                    {
+                        pRow[i] = mainColor | alphaMask;
                     }
                 }
-                int mainColor = brightnessTable[brightnessOffset + b2]
-                    | (brightnessTable[brightnessOffset + g2] << 8)
-                    | (brightnessTable[brightnessOffset + r2] << 16);
-                if (trueHiResOutput)
-                {
-                    int subColor = brightnessTable[brightnessOffset + b1]
-                        | (brightnessTable[brightnessOffset + g1] << 8)
-                        | (brightnessTable[brightnessOffset + r1] << 16);
-                    pixelOutput[outputRow + i * 2] = subColor | alphaMask;
-                    pixelOutput[outputRow + i * 2 + 1] = mainColor | alphaMask;
-                }
-                else if (_frameTrueHiResOutput)
-                {
-                    int argb = mainColor | alphaMask;
-                    pixelOutput[outputRow + i * 2] = argb;
-                    pixelOutput[outputRow + i * 2 + 1] = argb;
-                }
-                else
-                {
-                    pixelOutput[outputRow + i] = mainColor | alphaMask;
-                }
-                i++;
             }
             PerfOutputPixels += (ulong)(trueHiResOutput || _frameTrueHiResOutput ? 512 : 256);
         }
