@@ -804,9 +804,6 @@ public class SNESSystem : ISNESSystem
 
     private bool TryRunFastCpuWindow(bool noPpu)
     {
-        if (RomImpl.HasCoprocessor)
-            return false;
-
         if (_hdmaTimer > 0
             || _dmaTimer > 0
             || _gpdmaState != GpDmaState.Idle
@@ -828,10 +825,6 @@ public class SNESSystem : ISNESSystem
         int chunkMclks = endX - XPos;
         if (cpuCanRun)
         {
-            // Only fast-forward while the CPU is between instruction boundaries. Once
-            // `_cpuCyclesLeft` reaches zero we must fall back to the regular 2-mclk path
-            // so CPU register writes, DMA enables, and interrupt sampling still happen at
-            // their exact cycle edges.
             int cpuWaitMclks = _cpuCyclesLeft & ~0x1;
             if (cpuWaitMclks <= 0)
                 return false;
@@ -846,9 +839,10 @@ public class SNESSystem : ISNESSystem
         AdvanceBaseClocks(chunkMclks);
         if (cpuCanRun)
             _cpuCyclesLeft -= chunkMclks;
+        RomImpl.RunCoprocessor(Cycles);
+
         _perfFastCpuWindowHits++;
         _perfFastCpuWindowMclks += (ulong)chunkMclks;
-        RomImpl.RunCoprocessor(Cycles);
         CatchUpApu();
         _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
         AdvanceBeamPositionBy(chunkMclks, currentLineMclks);
@@ -2132,21 +2126,21 @@ public class SNESSystem : ISNESSystem
         {
             case BusPageKind.WramBank:
                 _ram[((bank & 0x1) << 16) | adr] = (byte)value;
-                break;
+                return;
             case BusPageKind.LowWram:
                 _ram[adr & 0x1fff] = (byte)value;
-                break;
+                return;
             case BusPageKind.BBus:
                 WriteBBusFast(adr & 0xff, value, dma);
-                break;
+                return;
             case BusPageKind.JoypadPage:
                 if (adr == 0x4016)
                     WriteJoypadStrobeFast(value);
-                break;
+                return;
             case BusPageKind.CpuRegs:
                 if (adr >= 0x4200 && adr < 0x4380)
                     WriteReg(adr, value);
-                break;
+                return;
         }
 
         RomImpl.WriteFast(fullAdr, (byte)value);
