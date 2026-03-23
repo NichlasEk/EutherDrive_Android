@@ -804,6 +804,9 @@ public class SNESSystem : ISNESSystem
 
     private bool TryRunFastCpuWindow(bool noPpu)
     {
+        if (RomImpl.HasCoprocessor)
+            return false;
+
         if (_hdmaTimer > 0
             || _dmaTimer > 0
             || _gpdmaState != GpDmaState.Idle
@@ -834,12 +837,6 @@ public class SNESSystem : ISNESSystem
                 return false;
 
             chunkMclks = Math.Min(chunkMclks, cpuWaitMclks);
-        }
-
-        // Cap the chunk size for coprocessor games to prevent desync (micro-batching).
-        if (RomImpl.HasCoprocessor)
-        {
-            chunkMclks = Math.Min(chunkMclks, 24);
         }
 
         chunkMclks &= ~0x1;
