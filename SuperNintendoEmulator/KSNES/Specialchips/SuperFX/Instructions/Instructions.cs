@@ -55,17 +55,25 @@ internal static class Instructions
     {
         MemoryType memoryType = NextOpcodeMemoryType(gsu);
         byte opcode = gsu.State.OpcodeBuffer;
-        TraceCacheEvent(gsu, "EXEC", gsu.R[15], $"nextType={memoryType} opcode=0x{opcode:X2}");
-        TraceExecEvent(gsu, memoryType, opcode);
+        
+        if (TraceCache)
+            TraceCacheEvent(gsu, "EXEC", gsu.R[15], $"nextType={memoryType} opcode=0x{opcode:X2}");
+            
+        if (TraceExec)
+            TraceExecEvent(gsu, memoryType, opcode);
+            
         WaitKind waitKind = GetWaitKind(gsu, memoryType, opcode);
         if (waitKind != WaitKind.None)
         {
             // GSU is waiting for ROM/RAM access
-            TraceCacheEvent(
-                gsu,
-                waitKind == WaitKind.Ram ? "STALL-RAM" : "STALL-ROM",
-                gsu.R[15],
-                $"opcode=0x{opcode:X2} rom={gsu.RomAccess} ram={gsu.RamAccess}");
+            if (TraceCache)
+            {
+                TraceCacheEvent(
+                    gsu,
+                    waitKind == WaitKind.Ram ? "STALL-RAM" : "STALL-ROM",
+                    gsu.R[15],
+                    $"opcode=0x{opcode:X2} rom={gsu.RomAccess} ram={gsu.RamAccess}");
+            }
             return 1;
         }
 

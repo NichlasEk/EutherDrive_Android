@@ -224,11 +224,13 @@ public sealed class Sa1
 
         if (!_registers.CpuHalted())
         {
-            for (ulong i = 0; i < cpuCycles; i++)
+            ulong i = 0;
+            while (i < cpuCycles)
             {
                 if (_registers.Sa1Reset)
                 {
                     _inReset = true;
+                    i++;
                     continue;
                 }
 
@@ -237,11 +239,24 @@ public sealed class Sa1
                     _cpu.Reset();
                     _inReset = false;
                     TraceState("RESET-RELEASE");
+                    i++;
                     continue;
                 }
 
                 if (_registers.Sa1Wait)
+                {
+                    i = cpuCycles; // Fast forward out of wait
                     continue;
+                }
+
+                if (_cpu.CyclesLeft > 0)
+                {
+                    ulong skip = Math.Min(cpuCycles - i, (ulong)_cpu.CyclesLeft);
+                    _cpu.CyclesLeft -= (int)skip;
+                    i += skip;
+                    if (i >= cpuCycles)
+                        break;
+                }
 
                 _cpu.IrqWanted = (_registers.Sa1IrqFromSnesEnabled && _registers.Sa1IrqFromSnes)
                                  || (_registers.TimerIrqEnabled && _timer.IrqPending)
@@ -265,6 +280,8 @@ public sealed class Sa1
                     TracePcRangeIfNeeded(pcBefore, pcAfter);
                     TracePcBreakIfNeeded(pcBefore, pcAfter);
                 }
+                
+                i++;
             }
             _bwramWaitCycles += _system.BwramWaitCycles;
             _system.BwramWaitCycles = 0;
