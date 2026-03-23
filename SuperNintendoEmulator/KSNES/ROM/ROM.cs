@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Diagnostics;
 using KSNES.Tracing;
 
 namespace KSNES.ROM;
@@ -91,12 +90,6 @@ public class ROM : IROM
     private KSNES.Specialchips.SPC7110.Spc7110? _spc7110;
     private bool _superFxHasBattery;
     private ulong _superFxOverclock = 1;
-    private const ulong SuperFxSyncQuantumCycles = 128;
-    private ulong _superFxPendingSyncCycles;
-    private ulong _superFxLastFlushedCycles;
-    private bool _cachedSuperFxIrqWanted;
-    internal ulong PerfRunCoprocessorCalls;
-    internal long PerfRunCoprocessorTicks;
     private Dsp1PortMapping _dsp1PortMapping;
     private bool _dsp1IsHiRom;
     private bool _dsp1BroadMap;
@@ -490,7 +483,6 @@ public class ROM : IROM
 
         if (_superFx != null)
         {
-            FlushSuperFxSync(force: true);
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             if (_superFx.Read(address, out byte value))
                 return value;
@@ -642,7 +634,6 @@ public class ROM : IROM
 
         if (_superFx != null)
         {
-            FlushSuperFxSync(force: true);
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             if (_superFx.Write(address, value, out bool wroteRam))
             {
@@ -829,7 +820,6 @@ public class ROM : IROM
 
     private byte ReadFastSuperFx(int bank, int adr)
     {
-        FlushSuperFxSync(force: true);
         uint address = (uint)((bank << 16) | (adr & 0xFFFF));
         if (_superFx!.Read(address, out byte value))
             return value;
@@ -840,7 +830,6 @@ public class ROM : IROM
 
     private void WriteFastSuperFx(int bank, int adr, byte value)
     {
-        FlushSuperFxSync(force: true);
         uint address = (uint)((bank << 16) | (adr & 0xFFFF));
         if (_superFx!.Write(address, value, out bool wroteRam))
         {
@@ -1346,10 +1335,6 @@ public class ROM : IROM
 
     public void ResetCoprocessor()
     {
-        ResetPerfCounters();
-        _superFxPendingSyncCycles = 0;
-        _superFxLastFlushedCycles = 0;
-        _cachedSuperFxIrqWanted = false;
         _cx4?.Reset();
         _dsp1?.Reset();
         _st010?.Reset();
@@ -1373,7 +1358,6 @@ public class ROM : IROM
         if (!IsSuperFxMappedAddress(bank, adr))
             return false;
 
-        FlushSuperFxSync(force: true);
         if (_superFx.Read((uint)fullAddress, out byte dmaValue, allowSnesRomReadWhileRunning: true))
         {
             value = dmaValue;
@@ -1385,39 +1369,31 @@ public class ROM : IROM
 
     public void RunCoprocessor(ulong snesCycles)
     {
-        PerfRunCoprocessorCalls++;
-        if (_timedDispatch == TimedCoprocessorDispatch.SuperFx)
-        {
-            QueueSuperFxSync(snesCycles);
-            return;
-        }
-
-        long startTicks = Stopwatch.GetTimestamp();
         switch (_timedDispatch)
         {
             case TimedCoprocessorDispatch.None:
-                break;
+                return;
             case TimedCoprocessorDispatch.Cx4:
                 _cx4!.RunTo(snesCycles);
-                break;
+                return;
             case TimedCoprocessorDispatch.Dsp1:
                 _dsp1!.RunTo(snesCycles);
-                break;
+                return;
             case TimedCoprocessorDispatch.St010:
                 _st010!.RunTo(snesCycles);
-                break;
+                return;
             case TimedCoprocessorDispatch.St011:
                 _st011!.RunTo(snesCycles);
-                break;
+                return;
             case TimedCoprocessorDispatch.St018:
                 _st018!.RunTo(snesCycles);
-                break;
+                return;
             case TimedCoprocessorDispatch.SuperFx:
                 _superFx!.Tick(snesCycles);
-                break;
+                return;
             case TimedCoprocessorDispatch.Sa1:
                 _sa1!.Tick(snesCycles);
-                break;
+                return;
             default:
                 _cx4?.RunTo(snesCycles);
                 _dsp1?.RunTo(snesCycles);
@@ -1426,9 +1402,8 @@ public class ROM : IROM
                 _st018?.RunTo(snesCycles);
                 _superFx?.Tick(snesCycles);
                 _sa1?.Tick(snesCycles);
-                break;
+                return;
         }
-        PerfRunCoprocessorTicks += Stopwatch.GetTimestamp() - startTicks;
     }
 
     public void ResyncCoprocessors(ulong snesCycles)
@@ -1456,9 +1431,6 @@ public class ROM : IROM
                 return;
             case TimedCoprocessorDispatch.SuperFx:
                 _superFx!.ResyncTo(snesCycles);
-                _superFxPendingSyncCycles = snesCycles;
-                _superFxLastFlushedCycles = snesCycles;
-                _cachedSuperFxIrqWanted = _superFx.Irq;
                 return;
             case TimedCoprocessorDispatch.Sa1:
                 _sa1!.ResyncTo(snesCycles);
@@ -1470,57 +1442,8 @@ public class ROM : IROM
                 _st018?.ResyncTo(snesCycles);
                 _superFx?.ResyncTo(snesCycles);
                 _sa1?.ResyncTo(snesCycles);
-                _superFxPendingSyncCycles = snesCycles;
-                _superFxLastFlushedCycles = snesCycles;
-                _cachedSuperFxIrqWanted = _superFx?.Irq ?? false;
                 return;
         }
-    }
-
-    internal void ResetPerfCounters()
-    {
-        PerfRunCoprocessorCalls = 0;
-        PerfRunCoprocessorTicks = 0;
-        _superFx?.ResetPerfCounters();
-        _sa1?.ResetPerfCounters();
-    }
-
-    private void QueueSuperFxSync(ulong snesCycles)
-    {
-        if (_superFx == null)
-            return;
-
-        if (!_superFx.IsRunning && !_cachedSuperFxIrqWanted)
-        {
-            _superFxPendingSyncCycles = snesCycles;
-            _superFxLastFlushedCycles = snesCycles;
-            return;
-        }
-
-        if (snesCycles > _superFxPendingSyncCycles)
-            _superFxPendingSyncCycles = snesCycles;
-
-        if (_superFxPendingSyncCycles - _superFxLastFlushedCycles >= SuperFxSyncQuantumCycles)
-            FlushSuperFxSync(force: false);
-    }
-
-    private void FlushSuperFxSync(bool force)
-    {
-        if (_superFx == null)
-            return;
-
-        ulong targetCycles = _superFxPendingSyncCycles;
-        if (targetCycles <= _superFxLastFlushedCycles)
-            return;
-
-        if (!force && targetCycles - _superFxLastFlushedCycles < SuperFxSyncQuantumCycles)
-            return;
-
-        long startTicks = Stopwatch.GetTimestamp();
-        _superFx.Tick(targetCycles);
-        PerfRunCoprocessorTicks += Stopwatch.GetTimestamp() - startTicks;
-        _superFxLastFlushedCycles = targetCycles;
-        _cachedSuperFxIrqWanted = _superFx.Irq;
     }
 
     private void ConfigureTimedCoprocessorDispatch()
@@ -1860,14 +1783,7 @@ public class ROM : IROM
         _dsp1.DumpRecentIo(reason, count);
     }
 
-    public bool IrqWanted
-    {
-        get
-        {
-            FlushSuperFxSync(force: false);
-            return _cachedSuperFxIrqWanted || (_sa1?.SnesIrq() ?? false);
-        }
-    }
+    public bool IrqWanted => (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);
     public bool NmiWanted => _sa1?.SnesNmi() ?? false;
 
     public byte ReadRomByteLoRom(uint address)

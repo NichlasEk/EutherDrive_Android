@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 
 namespace KSNES.Specialchips.SuperFX;
 
@@ -29,9 +28,6 @@ internal sealed class SuperFx
     private readonly GraphicsSupportUnit _gsu;
     private readonly ulong _overclockFactor;
     private ulong _lastSnesCycles;
-    internal ulong PerfTickCalls;
-    internal ulong PerfTickCycles;
-    internal long PerfTickTicks;
 
     public SuperFx(byte[] rom, byte[] ram, ulong overclockFactor)
     {
@@ -190,40 +186,26 @@ internal sealed class SuperFx
 
     public void Tick(ulong masterCyclesElapsed)
     {
-        long startTicks = Stopwatch.GetTimestamp();
-        PerfTickCalls++;
         if (masterCyclesElapsed <= _lastSnesCycles)
         {
-            PerfTickTicks += Stopwatch.GetTimestamp() - startTicks;
             return;
         }
         ulong delta = masterCyclesElapsed - _lastSnesCycles;
-        PerfTickCycles += delta;
         _lastSnesCycles = masterCyclesElapsed;
         _gsu.Tick(_overclockFactor * delta, _rom, _ram);
-        PerfTickTicks += Stopwatch.GetTimestamp() - startTicks;
     }
 
     public bool Irq => _gsu.IrqAsserted();
-    public bool IsRunning => _gsu.IsRunning();
 
     public void Reset()
     {
         _gsu.Reset();
         _lastSnesCycles = 0;
-        ResetPerfCounters();
     }
 
     public void ResyncTo(ulong snesCycles)
     {
         _lastSnesCycles = snesCycles;
-    }
-
-    internal void ResetPerfCounters()
-    {
-        PerfTickCalls = 0;
-        PerfTickCycles = 0;
-        PerfTickTicks = 0;
     }
 
     public byte[] Ram => _ram;
