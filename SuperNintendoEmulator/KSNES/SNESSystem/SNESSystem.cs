@@ -501,6 +501,7 @@ public class SNESSystem : ISNESSystem
         ResumeEmulation();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int Read(int adr, bool dma = false)
     {
         int fullAdr = adr & 0xffffff;
@@ -526,6 +527,7 @@ public class SNESSystem : ISNESSystem
         return val;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Write(int adr, int value, bool dma = false)
     {
         int fullAdr = adr & 0xffffff;
@@ -803,13 +805,13 @@ public class SNESSystem : ISNESSystem
             }
         }
 
-        // Batch coprocessor execution to reduce call overhead.
-        // Sync points: Every 32 cycles, at scanline transitions (XPos==0), and DMA.
+        // Batch coprocessor and APU execution to reduce call overhead.
+        // Sync points: Every 64 cycles, at scanline transitions (XPos==0), and DMA.
         if ((Cycles & 0x3F) == 0 || XPos == 0)
         {
             RomImpl.RunCoprocessor(Cycles);
+            CatchUpApu();
         }
-        CatchUpApu();
         AdvanceBeamPosition(currentLineMclks);
     }
 
@@ -1153,9 +1155,9 @@ public class SNESSystem : ISNESSystem
         _cpuCyclesLeft -= 2;
     }
 
-    private void CatchUpApu() 
-    {
-        ulong mainMasterClockFrequency = IsPal ? PalMasterClockFrequency : NtscMasterClockFrequency;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CatchUpApu()
+    {        ulong mainMasterClockFrequency = IsPal ? PalMasterClockFrequency : NtscMasterClockFrequency;
         ulong threshold = 24UL * mainMasterClockFrequency;
         while (_apuMasterCyclesProduct >= threshold)
         {
@@ -1164,6 +1166,7 @@ public class SNESSystem : ISNESSystem
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AdvanceApuForCpuAccess(int mainMasterCycles)
     {
         if (mainMasterCycles <= 0)
@@ -1174,6 +1177,7 @@ public class SNESSystem : ISNESSystem
         CatchUpApu();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool IsCpuApuPortAccess(int adr)
     {
         adr &= 0xffffff;
@@ -2099,6 +2103,7 @@ public class SNESSystem : ISNESSystem
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int RreadFast(int fullAdr, BusPageKind pageKind)
     {
         int bank = fullAdr >> 16;
@@ -2125,6 +2130,7 @@ public class SNESSystem : ISNESSystem
         return RomImpl.ReadFast(fullAdr);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WwriteFast(int fullAdr, int value, bool dma, BusPageKind pageKind)
     {
         int bank = fullAdr >> 16;
