@@ -268,7 +268,8 @@ public sealed class Sa1
                 _lastSa1Nmi = currentNmi;
 
                 _tracePc = _cpu.ProgramCounter24;
-                _traceOp = TryGetSa1OpByte(_tracePc);
+                if (Sa1Trace.IsEnabled || _hasPcTraceHooks)
+                    _traceOp = TryGetSa1OpByte(_tracePc);
                 int pcBefore = _tracePc;
                 _cpu.Cycle();
                 if (_cpu.CyclesLeft == 0)

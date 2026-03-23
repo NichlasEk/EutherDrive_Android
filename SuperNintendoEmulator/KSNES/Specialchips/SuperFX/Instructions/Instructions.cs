@@ -81,7 +81,7 @@ internal static class Instructions
 
         if (gsu.State.JustJumped)
         {
-            TraceCacheEvent(gsu, "JUST-JUMPED", gsu.R[15], "refill=to-pc");
+            if (TraceCache) TraceCacheEvent(gsu, "JUST-JUMPED", gsu.R[15], "refill=to-pc");
             gsu.State.JustJumped = false;
             cycles = (byte)(cycles + FillCacheToPc(gsu, gsu.R[15], rom, ram));
         }
@@ -182,23 +182,27 @@ internal static class Instructions
         if (isCacheable && cached.HasValue)
         {
             gsu.State.OpcodeBuffer = cached.Value;
-            TraceCacheEvent(gsu, "FETCH-HIT", fetchAddr, $"opcode=0x{cached.Value:X2}");
+            if (TraceCache) TraceCacheEvent(gsu, "FETCH-HIT", fetchAddr, $"opcode=0x{cached.Value:X2}");
             gsu.R[15] = unchecked((ushort)(gsu.R[15] + 1));
             return;
         }
 
         (byte opcode, MemoryType sourceType) = ReadMemory(gsu.Pbr, fetchAddr, rom, ram);
         gsu.State.OpcodeBuffer = opcode;
-        TraceCacheEvent(
-            gsu,
-            isCacheable ? "FETCH-MISS" : "FETCH-UNCACHED",
-            fetchAddr,
-            $"opcode=0x{opcode:X2} src={sourceType}");
+        
+        if (TraceCache)
+        {
+            TraceCacheEvent(
+                gsu,
+                isCacheable ? "FETCH-MISS" : "FETCH-UNCACHED",
+                fetchAddr,
+                $"opcode=0x{opcode:X2} src={sourceType}");
+        }
 
         if (isCacheable)
         {
             gsu.CodeCache.Set(fetchAddr, opcode);
-            TraceCacheEvent(gsu, "FETCH-SET", fetchAddr, $"opcode=0x{opcode:X2}");
+            if (TraceCache) TraceCacheEvent(gsu, "FETCH-SET", fetchAddr, $"opcode=0x{opcode:X2}");
         }
 
         gsu.R[15] = unchecked((ushort)(gsu.R[15] + 1));
@@ -228,7 +232,7 @@ internal static class Instructions
     {
         if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.Get(pc).HasValue)
         {
-            TraceCacheEvent(gsu, "FILL-TO-SKIP", pc, "reason=not-needed");
+            if (TraceCache) TraceCacheEvent(gsu, "FILL-TO-SKIP", pc, "reason=not-needed");
             return 0;
         }
 
@@ -238,7 +242,7 @@ internal static class Instructions
             ushort cacheAddr = (ushort)((pc & 0xFFF0) | i);
             (byte opcode, _) = ReadMemory(gsu.Pbr, cacheAddr, rom, ram);
             gsu.CodeCache.Set(cacheAddr, opcode);
-            TraceCacheEvent(gsu, "FILL-TO", cacheAddr, $"opcode=0x{opcode:X2}");
+            if (TraceCache) TraceCacheEvent(gsu, "FILL-TO", cacheAddr, $"opcode=0x{opcode:X2}");
         }
 
         return (byte)(gsu.ClockSpeed.MemoryAccessCycles() * count);
@@ -248,13 +252,13 @@ internal static class Instructions
     {
         if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.Get(pc).HasValue)
         {
-            TraceCacheEvent(gsu, "CACHE-PC-SKIP", pc, "reason=not-needed");
+            if (TraceCache) TraceCacheEvent(gsu, "CACHE-PC-SKIP", pc, "reason=not-needed");
             return 0;
         }
 
         (byte opcode, _) = ReadMemory(gsu.Pbr, pc, rom, ram);
         gsu.CodeCache.Set(pc, opcode);
-        TraceCacheEvent(gsu, "CACHE-PC", pc, $"opcode=0x{opcode:X2}");
+        if (TraceCache) TraceCacheEvent(gsu, "CACHE-PC", pc, $"opcode=0x{opcode:X2}");
 
         return gsu.ClockSpeed.MemoryAccessCycles();
     }
@@ -263,13 +267,13 @@ internal static class Instructions
     {
         if ((gsu.R[15] & 0xF) == 0)
         {
-            TraceCacheEvent(gsu, "FILL-FROM-SKIP", gsu.R[15], "reason=line-start");
+            if (TraceCache) TraceCacheEvent(gsu, "FILL-FROM-SKIP", gsu.R[15], "reason=line-start");
             return 0;
         }
 
         if (!gsu.CodeCache.PcIsCacheable(gsu.R[15]) || gsu.CodeCache.Get(gsu.R[15]).HasValue)
         {
-            TraceCacheEvent(gsu, "FILL-FROM-SKIP", gsu.R[15], "reason=not-needed");
+            if (TraceCache) TraceCacheEvent(gsu, "FILL-FROM-SKIP", gsu.R[15], "reason=not-needed");
             return 0;
         }
 
@@ -279,7 +283,7 @@ internal static class Instructions
             ushort cacheAddr = (ushort)((gsu.R[15] & 0xFFF0) | i);
             (byte opcode, _) = ReadMemory(gsu.Pbr, cacheAddr, rom, ram);
             gsu.CodeCache.Set(cacheAddr, opcode);
-            TraceCacheEvent(gsu, "FILL-FROM", cacheAddr, $"opcode=0x{opcode:X2}");
+            if (TraceCache) TraceCacheEvent(gsu, "FILL-FROM", cacheAddr, $"opcode=0x{opcode:X2}");
         }
 
         return (byte)(gsu.ClockSpeed.MemoryAccessCycles() * (0x10 - start));
@@ -425,7 +429,7 @@ internal static class Instructions
         {
             ushort prevCbr = gsu.CodeCache.Cbr;
             gsu.CodeCache.UpdateCbr(cbr);
-            TraceCacheEvent(gsu, "CBR-UPDATE", cbr, $"from=0x{prevCbr:X4}");
+            if (TraceCache) TraceCacheEvent(gsu, "CBR-UPDATE", cbr, $"from=0x{prevCbr:X4}");
             cycles = (byte)(cycles + FillCacheToPc(gsu, unchecked((ushort)(gsu.R[15] - 1)), rom, ram));
             cycles = (byte)(cycles + CacheAtPc(gsu, unchecked((ushort)(gsu.R[15] - 1)), rom, ram));
             updated = true;
