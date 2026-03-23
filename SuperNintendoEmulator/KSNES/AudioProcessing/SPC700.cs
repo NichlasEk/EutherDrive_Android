@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.AudioProcessing;
 
@@ -144,6 +145,7 @@ public class SPC700 : ISPC700
     private static readonly int TraceSpcPcLimit = 200000;
     private int _traceSpcPcCount;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Cycle() 
     {
         if (_cyclesLeft == 0)

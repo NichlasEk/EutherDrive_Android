@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.AudioProcessing;
 
@@ -176,6 +177,7 @@ public class APU : IAPU
         Array.Fill(_lastTracedSpcPortRead, (byte)0xFF);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Cycle()
     {
         _port01ResetThisCycle = false;

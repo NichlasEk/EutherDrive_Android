@@ -704,6 +704,7 @@ public sealed class DSP : IDSP
         ResetPerfCounters();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Cycle()
     {
         if (_apu == null) return;

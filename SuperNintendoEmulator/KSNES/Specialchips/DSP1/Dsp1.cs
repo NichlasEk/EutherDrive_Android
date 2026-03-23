@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using KSNES.SNESSystem;
 
 namespace KSNES.Specialchips.DSP1;
@@ -19,6 +20,7 @@ public sealed class Dsp1
         _lastSnesCycles = 0;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void RunTo(ulong snesCycles)
     {
         if (snesCycles <= _lastSnesCycles)
