@@ -298,19 +298,8 @@ public class SNESSystem : ISNESSystem
             _tracePpuBusLimit = limit;
         }
 
-        _useFastReadPath = !_traceWramWrites
-            && !_traceApuPorts
-            && !_traceStarOceanApuLoop
-            && !_traceStarOcean4212Loop
-            && !_traceJoypad
-            && !_traceDma
-            && !_trace4212;
-        _useFastWritePath = !_traceWramWrites
-            && !_tracePpuBusWrites
-            && !_traceInidisp
-            && !_traceApuPorts
-            && !_traceDma
-            && !_logVerbose;
+        _useFastReadPath = true;
+        _useFastWritePath = true;
         EnsureBusTables();
     }
 
