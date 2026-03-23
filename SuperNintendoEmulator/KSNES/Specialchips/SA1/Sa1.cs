@@ -792,6 +792,7 @@ public sealed class Sa1
         TrySnesWrite(address, value, out _, snesPc);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal byte ReadSa1Cpu(uint address, out bool bwramWait)
     {
         bwramWait = false;
@@ -899,6 +900,7 @@ public sealed class Sa1
         return 0;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void WriteSa1Cpu(uint address, byte value, out bool bwramWait)
     {
         bwramWait = false;
@@ -1039,6 +1041,7 @@ public sealed class Sa1
 
         public ulong BwramWaitCycles;
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int Read(int addr, bool dma = false)
         {
             uint address = (uint)addr & 0xFFFFFF;
@@ -1048,6 +1051,7 @@ public sealed class Sa1
             return value;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(int addr, int value, bool dma = false)
         {
             uint address = (uint)addr & 0xFFFFFF;
