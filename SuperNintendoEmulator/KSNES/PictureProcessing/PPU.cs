@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace KSNES.PictureProcessing;
@@ -1527,6 +1528,7 @@ public class PPU : IPPU
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void GetColor(bool sub, int x, int y, out ushort color, out int layer, out int pixel) 
     {
         int modeIndex = _lineModeIndex;
@@ -1627,6 +1629,7 @@ public class PPU : IPPU
         return;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool GetMathEnabled(int x, int l, int pal) 
     {
         if (_mathPreventCache[x] != 0)
@@ -1640,16 +1643,19 @@ public class PPU : IPPU
         return false;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ShouldClipToBlack(bool colorWindow)
     {
         return _colorClip == 3 || (_colorClip == 2 && colorWindow) || (_colorClip == 1 && !colorWindow);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ShouldPreventMath(bool colorWindow)
     {
         return _preventMath == 3 || (_preventMath == 2 && colorWindow) || (_preventMath == 1 && !colorWindow);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ComputeWindowState(int x, int l) 
     {
         if (!_window1Enabled[l] && !_window2Enabled[l])
@@ -1680,6 +1686,7 @@ public class PPU : IPPU
         };
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int GetPixelForLayer(int x, int y, int l, int p) 
     {
         if ((l == 0 && DebugDisableBg1)
@@ -1798,6 +1805,7 @@ public class PPU : IPPU
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EvaluateSprites(int line) 
     {
         Span<int> scannedSprites = stackalloc int[32];
@@ -1926,6 +1934,7 @@ public class PPU : IPPU
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int GetMode7Pixel(int x, int y, int l, int p) 
     {
         int pixelData = _tilemapBuffer[0];
