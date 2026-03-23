@@ -256,6 +256,7 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
             ReadChipState(reader, rom.Dsp1, "DSP1");
             ReadChipState(reader, rom.SuperFx, "SuperFX");
             ReadChipState(reader, rom.Sa1, "SA1");
+            rom.Cx4?.ResyncAfterLoad();
 
             _system.ROM.SetSystem(_system);
             _system.CPU.SetSystem(_system);

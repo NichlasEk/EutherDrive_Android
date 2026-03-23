@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using KSNES.SNESSystem;
 
 namespace KSNES.Specialchips.CX4;
@@ -14,6 +15,13 @@ public sealed class Cx4
     private static readonly int TraceCx4Limit = GetTraceLimit();
     private static readonly bool Cx4Instant =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_CX4_INSTANT"), "1", StringComparison.Ordinal);
+    private static readonly uint[] SfrConstants =
+    [
+        0x000000, 0xffffff, 0x00ff00, 0xff0000,
+        0x00ffff, 0xffff00, 0x800000, 0x7fffff,
+        0x008000, 0x007fff, 0xff7fff, 0xffff7f,
+        0x010000, 0xfeffff, 0x000100, 0x00feff
+    ];
     private static int _traceCount;
     private enum Cc : byte
     {
@@ -47,8 +55,12 @@ public sealed class Cx4
     private byte _prgCachePage;
     private byte _prgCacheLock;
     private readonly uint[] _prgCache = new uint[2];
-    private readonly ushort[,] _prg = new ushort[2, 0x100];
+    private readonly ushort[] _prgPage0 = new ushort[0x100];
+    private readonly ushort[] _prgPage1 = new ushort[0x100];
+    [NonSerialized]
+    private ushort[] _activePrg;
     private int _prgCacheTimer;
+    private bool _programCacheDirty;
 
     private byte _pc;
     private ushort _pb;
@@ -98,6 +110,7 @@ public sealed class Cx4
     public Cx4(ISNESSystem snes)
     {
         _snes = snes;
+        _activePrg = _prgPage0;
         Init();
     }
 
@@ -108,8 +121,8 @@ public sealed class Cx4
         Array.Clear(_ram, 0, _ram.Length);
         Array.Clear(_vectors, 0, _vectors.Length);
         Array.Clear(_reg, 0, _reg.Length);
-        Array.Clear(_prgCache, 0, _prgCache.Length);
-        Array.Clear(_prg, 0, _prg.Length);
+        Array.Clear(_prgPage0, 0, _prgPage0.Length);
+        Array.Clear(_prgPage1, 0, _prgPage1.Length);
         Array.Clear(_stack, 0, _stack.Length);
 
         _cycles = 0;
@@ -121,7 +134,9 @@ public sealed class Cx4
         _prgStartupPc = 0;
         _prgCachePage = 0;
         _prgCacheLock = 0;
+        _activePrg = _prgPage0;
         _prgCacheTimer = 0;
+        InvalidateProgramCache();
         _pc = 0;
         _pb = 0;
         _pbLatch = 0;
@@ -191,6 +206,13 @@ public sealed class Cx4
         _cyclesPerMaster = 20000000.0 / (isPal ? (1364 * 312 * 50.0) : (1364 * 262 * 60.0));
     }
 
+    public void ResyncAfterLoad()
+    {
+        _activePrg = _prgCachePage == 0 ? _prgPage0 : _prgPage1;
+        if (_running != 0 && FindCache(ResolveCacheAddress()) == -1)
+            _programCacheDirty = true;
+    }
+
     private void Init()
     {
         SetPal((_snes as KSNES.SNESSystem.SNESSystem)?.IsPal ?? false);
@@ -221,6 +243,7 @@ public sealed class Cx4
         return (int)((value << (32 - fromBits)) >> (32 - fromBits));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void SetByte(ref uint var, uint data, int offset)
     {
         int idx = offset & 3;
@@ -230,15 +253,17 @@ public sealed class Cx4
         var = (var & ~(0xffu << shift)) | ((data & 0xffu) << shift);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void SetByte(ref ushort var, uint data, int offset)
     {
         int idx = offset & 3;
         if (idx >= 2)
             return;
         int shift = idx * 8;
-        var = (ushort)((var & ~(0xff << shift)) | ((data & 0xff) << shift));
+        var = (ushort)(((uint)var & ~(0xffu << shift)) | ((data & 0xffu) << shift));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static uint GetByte(uint var, int offset)
     {
         int idx = offset & 3;
@@ -248,21 +273,26 @@ public sealed class Cx4
         return (var >> shift) & 0xffu;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void SetFlag(Cc flag, bool value)
     {
         _cc = (byte)((_cc & ~(byte)flag) | (value ? (byte)flag : 0));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool GetFlag(Cc flag) => (_cc & (byte)flag) != 0;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void SetNZ(int value)
     {
         SetFlag(Cc.N, (value & 0x800000) != 0);
         SetFlag(Cc.Z, value == 0);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void SetA(int value) => _a = (uint)(value & 0xffffff);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint GetA(int subOp)
     {
         int shift = subOp switch
@@ -276,27 +306,31 @@ public sealed class Cx4
         return (_a << shift) & 0xffffff;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint ResolveCacheAddress() => _prgBaseAddress + (uint)(_pb * (CachePage << 1));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FindCache(uint address)
     {
-        for (int i = 0; i < 2; i++)
-            if (_prgCache[i] == address)
-                return i;
-        return -1;
+        if (_prgCache[0] == address)
+            return 0;
+        return _prgCache[1] == address ? 1 : -1;
     }
 
     private void PopulateCache(uint address)
     {
+        ushort[] page = _prgCachePage == 0 ? _prgPage0 : _prgPage1;
+        _activePrg = page;
         _prgCacheTimer = 224;
-        if (_prgCache[_prgCachePage] == address) return;
+        if (_prgCache[_prgCachePage] == address)
+            return;
         _prgCache[_prgCachePage] = address;
         for (int i = 0; i < CachePage; i++)
         {
             uint a = address++;
             int lo = ReadRomLoRom(a);
             int hi = ReadRomLoRom(address++);
-            _prg[_prgCachePage, i] = (ushort)(lo | (hi << 8));
+            page[i] = (ushort)(lo | (hi << 8));
         }
         _prgCacheTimer += ((_waitstate & 0x07) * CachePage) * 2;
     }
@@ -318,12 +352,14 @@ public sealed class Cx4
         PopulateCache(ResolveCacheAddress());
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int BusCyclesLeft()
     {
         long left = (long)_syncTo - (long)_cycles;
         return left < 0 ? 0 : (int)left;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CycleAdvance(int cyc)
     {
         if (_busTimer > 0)
@@ -347,11 +383,13 @@ public sealed class Cx4
         _cycles += (uint)cyc;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int GetMemAccessTime(uint address)
     {
         return IsInternalRam(address) ? 0 : (_waitstate & 0x07);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsInternalRam(uint address)
     {
         return (address & 0x40e000) == 0x6000;
@@ -432,9 +470,9 @@ public sealed class Cx4
             case 0x7f46: _dmaDest = (_dmaDest & 0xff00ff) | ((uint)data << 8); break;
             case 0x7f47: _dmaDest = (_dmaDest & 0x00ffff) | ((uint)data << 16); DoDma(); break;
             case 0x7f48: _prgCachePage = (byte)(data & 0x01); PopulateCache(ResolveCacheAddress()); break;
-            case 0x7f49: _prgBaseAddress = (_prgBaseAddress & 0xffff00) | data; break;
-            case 0x7f4a: _prgBaseAddress = (_prgBaseAddress & 0xff00ff) | ((uint)data << 8); break;
-            case 0x7f4b: _prgBaseAddress = (_prgBaseAddress & 0x00ffff) | ((uint)data << 16); break;
+            case 0x7f49: _prgBaseAddress = (_prgBaseAddress & 0xffff00) | data; InvalidateProgramCache(); break;
+            case 0x7f4a: _prgBaseAddress = (_prgBaseAddress & 0xff00ff) | ((uint)data << 8); InvalidateProgramCache(); break;
+            case 0x7f4b: _prgBaseAddress = (_prgBaseAddress & 0x00ffff) | ((uint)data << 16); InvalidateProgramCache(); break;
             case 0x7f4c: _prgCacheLock = (byte)(data & 0x03); break;
             case 0x7f4d: _prgStartupBank = (ushort)((_prgStartupBank & 0xff00) | data); break;
             case 0x7f4e: _prgStartupBank = (ushort)((_prgStartupBank & 0x00ff) | ((data & 0x7f) << 8)); break;
@@ -482,6 +520,7 @@ public sealed class Cx4
 
     private void Run()
     {
+        EnsureProgramCache();
         while (_cycles < _syncTo)
         {
             int tcyc = 2;
@@ -524,6 +563,7 @@ public sealed class Cx4
         const int maxSteps = 2_000_000;
         int steps = 0;
         int ops = 0;
+        EnsureProgramCache();
         if (_suspendTimer < 0)
             _suspendTimer = 0;
         while (steps++ < maxSteps)
@@ -564,8 +604,6 @@ public sealed class Cx4
 
     private void RunInsn()
     {
-        if (FindCache(ResolveCacheAddress()) == -1)
-            DoCache();
         ushort opcode = Fetch();
         int subOp = (opcode & 0x0300) >> 8;
         int immed = opcode & 0x00ff;
@@ -607,7 +645,6 @@ public sealed class Cx4
                         Fetch();
                     break;
                 }
-                break;
             case 0x4000:
                 _busAddressPointer = (_busAddressPointer + 1) & 0xffffff;
                 break;
@@ -763,9 +800,10 @@ public sealed class Cx4
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ushort Fetch()
     {
-        ushort opcode = _prg[_prgCachePage, _pc];
+        ushort opcode = _activePrg[_pc];
         _pc++;
         if (_pc == 0)
         {
@@ -784,10 +822,27 @@ public sealed class Cx4
         if (newPage != -1)
         {
             _prgCachePage = (byte)newPage;
+            _activePrg = newPage == 0 ? _prgPage0 : _prgPage1;
             return;
         }
         _prgCachePage = (byte)((_prgCachePage + 1) & 1);
         PopulateCache(ResolveCacheAddress());
+    }
+
+    private void EnsureProgramCache()
+    {
+        if (!_programCacheDirty)
+            return;
+
+        _programCacheDirty = false;
+        DoCache();
+    }
+
+    private void InvalidateProgramCache()
+    {
+        _prgCache[0] = uint.MaxValue;
+        _prgCache[1] = uint.MaxValue;
+        _programCacheDirty = true;
     }
 
     private void JmpJsr(bool isJsr, bool take, int page, int address)
@@ -823,12 +878,14 @@ public sealed class Cx4
         _pb = _stack[_sp].PB;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint GetImmed(ushort opcode, int subOp, int immed)
     {
         const int DirectImm = 0x0400;
         return (opcode & DirectImm) != 0 ? (uint)immed : GetSfr((byte)immed);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint Add(uint a1, uint a2)
     {
         uint sum = a1 + a2;
@@ -839,6 +896,7 @@ public sealed class Cx4
         return sum & 0xffffff;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint Sub(uint m, uint s)
     {
         int diff = (int)m - (int)s;
@@ -848,9 +906,16 @@ public sealed class Cx4
         return (uint)diff & 0xffffff;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint GetSfr(byte address)
     {
-        switch (address & 0x7f)
+        int sfr = address & 0x7f;
+        if ((uint)(sfr - 0x60) <= 0x0f)
+            return _reg[sfr & 0x0f] & 0xffffff;
+        if ((uint)(sfr - 0x50) <= 0x0f)
+            return SfrConstants[sfr - 0x50];
+
+        switch (sfr)
         {
             case 0x00: return _a & 0xffffff;
             case 0x01: return (uint)((_multiplier >> 24) & 0xffffff);
@@ -868,34 +933,21 @@ public sealed class Cx4
                 _busAddress = _busAddressPointer;
                 _busMode = BusMode.Read;
                 return 0;
-            case 0x50: return 0x000000;
-            case 0x51: return 0xffffff;
-            case 0x52: return 0x00ff00;
-            case 0x53: return 0xff0000;
-            case 0x54: return 0x00ffff;
-            case 0x55: return 0xffff00;
-            case 0x56: return 0x800000;
-            case 0x57: return 0x7fffff;
-            case 0x58: return 0x008000;
-            case 0x59: return 0x007fff;
-            case 0x5a: return 0xff7fff;
-            case 0x5b: return 0xffff7f;
-            case 0x5c: return 0x010000;
-            case 0x5d: return 0xfeffff;
-            case 0x5e: return 0x000100;
-            case 0x5f: return 0x00feff;
-            case 0x60: case 0x61: case 0x62: case 0x63:
-            case 0x64: case 0x65: case 0x66: case 0x67:
-            case 0x68: case 0x69: case 0x6a: case 0x6b:
-            case 0x6c: case 0x6d: case 0x6e: case 0x6f:
-                return _reg[address & 0x0f] & 0xffffff;
         }
         return 0;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void SetSfr(int address, uint data)
     {
-        switch (address & 0x7f)
+        int sfr = address & 0x7f;
+        if ((uint)(sfr - 0x60) <= 0x0f)
+        {
+            _reg[sfr & 0x0f] = data & 0xffffff;
+            return;
+        }
+
+        switch (sfr)
         {
             case 0x00: _a = data & 0xffffff; break;
             case 0x01: _multiplier = (_multiplier & 0x000000ffffff) | ((ulong)data << 24); break;
@@ -913,11 +965,6 @@ public sealed class Cx4
                 _busAddress = _busAddressPointer;
                 _busMode = BusMode.Write;
                 break;
-            case 0x60: case 0x61: case 0x62: case 0x63:
-            case 0x64: case 0x65: case 0x66: case 0x67:
-            case 0x68: case 0x69: case 0x6a: case 0x6b:
-            case 0x6c: case 0x6d: case 0x6e: case 0x6f:
-                _reg[address & 0x0f] = data & 0xffffff; break;
         }
     }
 
