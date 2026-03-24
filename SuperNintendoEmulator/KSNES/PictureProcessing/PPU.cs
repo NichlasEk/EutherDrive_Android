@@ -90,7 +90,7 @@ public class PPU : IPPU
     private readonly double[] _brightnessMults = [0.1, 0.5, 1.1, 1.6, 2.2, 2.7, 3.3, 3.8, 4.4, 4.9, 5.5, 6, 6.6, 7.1, 7.6, 8.2];
 
     [JsonIgnore]
-    private static readonly byte[] BrightnessTable = BuildBrightnessTable();
+    private static readonly int[] BrightnessArgbTable = BuildBrightnessArgbTable();
 
     [JsonIgnore]
     private readonly int[] _spriteTileOffsets = [ 
@@ -283,16 +283,21 @@ public class PPU : IPPU
     [NonSerialized]
     internal ulong PerfOutputPixels;
 
-    private static byte[] BuildBrightnessTable()
+    private static int[] BuildBrightnessArgbTable()
     {
-        var table = new byte[16 * 32];
+        var table = new int[16 * 0x8000];
         for (int brightness = 0; brightness < 16; brightness++)
         {
-            int rowBase = brightness << 5;
-            for (int color = 0; color < 32; color++)
+            int rowBase = brightness << 15;
+            for (int color = 0; color < 0x8000; color++)
             {
-                table[rowBase + color] =
-                    (byte)Math.Round((double)(brightness * color * 255) / (15 * 31), MidpointRounding.AwayFromZero);
+                int r = color & 0x1f;
+                int g = (color >> 5) & 0x1f;
+                int b = (color >> 10) & 0x1f;
+                int rr = (int)Math.Round((double)(brightness * r * 255) / (15 * 31), MidpointRounding.AwayFromZero);
+                int gg = (int)Math.Round((double)(brightness * g * 255) / (15 * 31), MidpointRounding.AwayFromZero);
+                int bb = (int)Math.Round((double)(brightness * b * 255) / (15 * 31), MidpointRounding.AwayFromZero);
+                table[rowBase + color] = unchecked((int)0xFF000000) | bb | (gg << 8) | (rr << 16);
             }
         }
 
@@ -320,6 +325,124 @@ public class PPU : IPPU
     private void MarkLineCachesDirty()
     {
         _lineCachesDirty = true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte GetBgModeRaw()
+    {
+        int value = _mode & 0x7;
+        if (_layer3Prio)
+            value |= 0x08;
+        if (_bigTiles[0])
+            value |= 0x10;
+        if (_bigTiles[1])
+            value |= 0x20;
+        if (_bigTiles[2])
+            value |= 0x40;
+        if (_bigTiles[3])
+            value |= 0x80;
+        return (byte)value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte GetWindowSelectRaw(int baseLayer)
+    {
+        int value = 0;
+        if (_window1Inversed[baseLayer])
+            value |= 0x01;
+        if (_window1Enabled[baseLayer])
+            value |= 0x02;
+        if (_window2Inversed[baseLayer])
+            value |= 0x04;
+        if (_window2Enabled[baseLayer])
+            value |= 0x08;
+        if (_window1Inversed[baseLayer + 1])
+            value |= 0x10;
+        if (_window1Enabled[baseLayer + 1])
+            value |= 0x20;
+        if (_window2Inversed[baseLayer + 1])
+            value |= 0x40;
+        if (_window2Enabled[baseLayer + 1])
+            value |= 0x80;
+        return (byte)value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte GetWindowMaskLogicRaw(int baseLayer)
+    {
+        return (byte)(
+            _windowMaskLogic[baseLayer]
+            | (_windowMaskLogic[baseLayer + 1] << 2)
+            | (_windowMaskLogic[baseLayer + 2] << 4)
+            | (_windowMaskLogic[baseLayer + 3] << 6));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte GetScreenWindowRaw(bool[] windowMask)
+    {
+        int value = 0;
+        if (windowMask[0])
+            value |= 0x01;
+        if (windowMask[1])
+            value |= 0x02;
+        if (windowMask[2])
+            value |= 0x04;
+        if (windowMask[3])
+            value |= 0x08;
+        if (windowMask[4])
+            value |= 0x10;
+        return (byte)value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte GetColorWindowRaw()
+    {
+        int value = (_colorClip << 6) | (_preventMath << 4);
+        if (_addSub)
+            value |= 0x02;
+        if (_directColor)
+            value |= 0x01;
+        return (byte)value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte GetColorMathRaw()
+    {
+        int value = 0;
+        if (_subtractColors)
+            value |= 0x80;
+        if (_halfColors)
+            value |= 0x40;
+        if (_mathEnabled[0])
+            value |= 0x01;
+        if (_mathEnabled[1])
+            value |= 0x02;
+        if (_mathEnabled[2])
+            value |= 0x04;
+        if (_mathEnabled[3])
+            value |= 0x08;
+        if (_mathEnabled[4])
+            value |= 0x10;
+        if (_mathEnabled[5])
+            value |= 0x20;
+        return (byte)value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte GetSetIniRaw()
+    {
+        int value = 0;
+        if (_mode7ExBg)
+            value |= 0x40;
+        if (_pseudoHires)
+            value |= 0x08;
+        if (_overscan)
+            value |= 0x04;
+        if (_objInterlace)
+            value |= 0x02;
+        if (_interlace)
+            value |= 0x01;
+        return (byte)value;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -684,6 +807,8 @@ public class PPU : IPPU
                 }
                 return;
             case 0x05:
+                if (GetBgModeRaw() == (byte)value)
+                    return;
                 _mode = value & 0x7;
                 _layer3Prio = (value & 0x08) > 0;
                 _bigTiles[0] = (value & 0x10) > 0;
@@ -856,6 +981,8 @@ public class PPU : IPPU
                 }
                 return;
             case 0x23:
+                if (GetWindowSelectRaw(0) == (byte)value)
+                    return;
                 _window1Inversed[0] = (value & 0x01) > 0;
                 _window1Enabled[0] = (value & 0x02) > 0;
                 _window2Inversed[0] = (value & 0x04) > 0;
@@ -867,6 +994,8 @@ public class PPU : IPPU
                 MarkLineCachesDirty();
                 return;
             case 0x24:
+                if (GetWindowSelectRaw(2) == (byte)value)
+                    return;
                 _window1Inversed[2] = (value & 0x01) > 0;
                 _window1Enabled[2] = (value & 0x02) > 0;
                 _window2Inversed[2] = (value & 0x04) > 0;
@@ -878,6 +1007,8 @@ public class PPU : IPPU
                 MarkLineCachesDirty();
                 return;
             case 0x25:
+                if (GetWindowSelectRaw(4) == (byte)value)
+                    return;
                 _window1Inversed[4] = (value & 0x01) > 0;
                 _window1Enabled[4] = (value & 0x02) > 0;
                 _window2Inversed[4] = (value & 0x04) > 0;
@@ -889,22 +1020,32 @@ public class PPU : IPPU
                 MarkLineCachesDirty();
                 return;
             case 0x26:
+                if (_window1Left == value)
+                    return;
                 _window1Left = value;
                 MarkLineCachesDirty();
                 return;
             case 0x27:
+                if (_window1Right == value)
+                    return;
                 _window1Right = value;
                 MarkLineCachesDirty();
                 return;
             case 0x28:
+                if (_window2Left == value)
+                    return;
                 _window2Left = value;
                 MarkLineCachesDirty();
                 return;
             case 0x29:
+                if (_window2Right == value)
+                    return;
                 _window2Right = value;
                 MarkLineCachesDirty();
                 return;
             case 0x2a:
+                if (GetWindowMaskLogicRaw(0) == (byte)value)
+                    return;
                 _windowMaskLogic[0] = value & 0x3;
                 _windowMaskLogic[1] = (value & 0xc) >> 2;
                 _windowMaskLogic[2] = (value & 0x30) >> 4;
@@ -912,11 +1053,15 @@ public class PPU : IPPU
                 MarkLineCachesDirty();
                 return;
             case 0x2b:
+                if ((_windowMaskLogic[4] | (_windowMaskLogic[5] << 2)) == (value & 0x0f))
+                    return;
                 _windowMaskLogic[4] = value & 0x3;
                 _windowMaskLogic[5] = (value & 0xc) >> 2;
                 MarkLineCachesDirty();
                 return;
             case 0x2c:
+                if (_tmRaw == (byte)value)
+                    return;
                 _tmRaw = (byte)value;
                 _mainScreenEnabled[0] = (value & 0x1) > 0;
                 _mainScreenEnabled[1] = (value & 0x2) > 0;
@@ -927,6 +1072,8 @@ public class PPU : IPPU
                 TracePpuWrite($"[PPU] TM=0x{value:X2}");
                 return;
             case 0x2d:
+                if (_tsRaw == (byte)value)
+                    return;
                 _tsRaw = (byte)value;
                 _subScreenEnabled[0] = (value & 0x1) > 0;
                 _subScreenEnabled[1] = (value & 0x2) > 0;
@@ -937,6 +1084,8 @@ public class PPU : IPPU
                 TracePpuWrite($"[PPU] TS=0x{value:X2}");
                 return;
             case 0x2e:
+                if (GetScreenWindowRaw(_mainScreenWindow) == (byte)value)
+                    return;
                 _mainScreenWindow[0] = (value & 0x1) > 0;
                 _mainScreenWindow[1] = (value & 0x2) > 0;
                 _mainScreenWindow[2] = (value & 0x4) > 0;
@@ -945,6 +1094,8 @@ public class PPU : IPPU
                 MarkLineCachesDirty();
                 return;
             case 0x2f:
+                if (GetScreenWindowRaw(_subScreenWindow) == (byte)value)
+                    return;
                 _subScreenWindow[0] = (value & 0x1) > 0;
                 _subScreenWindow[1] = (value & 0x2) > 0;
                 _subScreenWindow[2] = (value & 0x4) > 0;
@@ -953,6 +1104,8 @@ public class PPU : IPPU
                 MarkLineCachesDirty();
                 return;
             case 0x30:
+                if (GetColorWindowRaw() == (byte)value)
+                    return;
                 _colorClip = (value & 0xc0) >> 6;
                 _preventMath = (value & 0x30) >> 4;
                 _addSub = (value & 0x2) > 0;
@@ -961,6 +1114,8 @@ public class PPU : IPPU
                 TracePpuWrite($"[PPU] CGWSEL=0x{value:X2} clip={_colorClip} prevent={_preventMath} addSub={_addSub} directColor={_directColor}");
                 return;
             case 0x31:
+                if (GetColorMathRaw() == (byte)value)
+                    return;
                 _subtractColors = (value & 0x80) > 0;
                 _halfColors = (value & 0x40) > 0;
                 _mathEnabled[0] = (value & 0x1) > 0;
@@ -988,6 +1143,8 @@ public class PPU : IPPU
                 TracePpuWrite($"[PPU] COLDATA=0x{value:X2} fixedR={_fixedColorR} fixedG={_fixedColorG} fixedB={_fixedColorB}");
                 return;
             case 0x33:
+                if (GetSetIniRaw() == (byte)value)
+                    return;
                 _mode7ExBg = (value & 0x40) > 0;
                 _pseudoHires = (value & 0x08) > 0;
                 _overscan = (value & 0x04) > 0;
@@ -1344,14 +1501,13 @@ public class PPU : IPPU
                     PerfTrueHiResLines++;
             }
             int outputRow = screenY * MaxFrameWidth;
-            int brightnessOffset = _brightness << 5;
-            byte[] brightnessTable = BrightnessTable;
+            int brightnessOffset = _brightness << 15;
+            int[] brightnessTable = BrightnessArgbTable;
             int[] pixelOutput = _pixelOutput;
-            const int alphaMask = unchecked((int)0xFF000000);
             bool useSimpleMainPath = CanUseSimpleMainScreenPath(hiResOutput, trueHiResOutput);
             if (useSimpleMainPath)
             {
-                RenderLineSimpleMainOnly(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput, alphaMask);
+                RenderLineSimpleMainOnly(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput);
                 if (PerfStatsEnabled)
                     PerfOutputPixels += 256;
                 return;
@@ -1369,11 +1525,11 @@ public class PPU : IPPU
                 _frameTrueHiResOutput = true;
             }
 
-            fixed (byte* bTab = brightnessTable)
+            fixed (int* argbTab = brightnessTable)
             fixed (int* pOut = pixelOutput)
             fixed (byte* clipCache = _clipToBlackCache)
             {
-                byte* bTabOffset = bTab + brightnessOffset;
+                int* argbTabOffset = argbTab + brightnessOffset;
                 int* pRow = pOut + outputRow;
 
                 for (int i = 0; i < 256; i++)
@@ -1448,22 +1604,21 @@ public class PPU : IPPU
                         }
                     }
 
-                    int mainColor = bTabOffset[b2] | (bTabOffset[g2] << 8) | (bTabOffset[r2] << 16);
+                    int mainColor = argbTabOffset[(b2 << 10) | (g2 << 5) | r2];
                     if (trueHiResOutput)
                     {
-                        int subColor = bTabOffset[b1] | (bTabOffset[g1] << 8) | (bTabOffset[r1] << 16);
-                        pRow[i * 2] = subColor | alphaMask;
-                        pRow[i * 2 + 1] = mainColor | alphaMask;
+                        int subColor = argbTabOffset[(b1 << 10) | (g1 << 5) | r1];
+                        pRow[i * 2] = subColor;
+                        pRow[i * 2 + 1] = mainColor;
                     }
                     else if (_frameTrueHiResOutput)
                     {
-                        int argb = mainColor | alphaMask;
-                        pRow[i * 2] = argb;
-                        pRow[i * 2 + 1] = argb;
+                        pRow[i * 2] = mainColor;
+                        pRow[i * 2 + 1] = mainColor;
                     }
                     else
                     {
-                        pRow[i] = mainColor | alphaMask;
+                        pRow[i] = mainColor;
                     }
                 }
             }
@@ -1505,16 +1660,15 @@ public class PPU : IPPU
         int screenY,
         int outputRow,
         int brightnessOffset,
-        byte[] brightnessTable,
-        int[] pixelOutput,
-        int alphaMask)
+        int[] brightnessTable,
+        int[] pixelOutput)
     {
-        fixed (byte* bTab = brightnessTable)
+        fixed (int* argbTab = brightnessTable)
         fixed (int* pOut = pixelOutput)
         fixed (ushort* cgramPtr = _cgram)
         {
             int* pRow = pOut + outputRow;
-            byte* bTabOffset = bTab + brightnessOffset;
+            int* argbTabOffset = argbTab + brightnessOffset;
             Span<int> activeLayers = stackalloc int[12];
             Span<int> activePriorities = stackalloc int[12];
             int activeCount = 0;
@@ -1541,7 +1695,6 @@ public class PPU : IPPU
                     brightnessOffset,
                     brightnessTable,
                     pixelOutput,
-                    alphaMask,
                     activeLayers,
                     activePriorities,
                     activeCount,
@@ -1614,13 +1767,7 @@ public class PPU : IPPU
                     break;
                 }
 
-                int r = color & 0x1f;
-                int g = (color >> 5) & 0x1f;
-                int b = (color >> 10) & 0x1f;
-                int mainColor = bTabOffset[b]
-                    | (bTabOffset[g] << 8)
-                    | (bTabOffset[r] << 16);
-                pRow[x] = mainColor | alphaMask;
+                pRow[x] = argbTabOffset[color & 0x7fff];
             }
         }
     }
@@ -1629,22 +1776,21 @@ public class PPU : IPPU
     private unsafe void RenderLineSimpleMainOnlyChunked(
         int outputRow,
         int brightnessOffset,
-        byte[] brightnessTable,
+        int[] brightnessTable,
         int[] pixelOutput,
-        int alphaMask,
         ReadOnlySpan<int> activeLayers,
         ReadOnlySpan<int> activePriorities,
         int activeCount,
         int baseY)
     {
-        fixed (byte* bTab = brightnessTable)
+        fixed (int* argbTab = brightnessTable)
         fixed (int* pOut = pixelOutput)
         fixed (ushort* cgramPtr = _cgram)
         fixed (byte* spritePrio = _spritePrioBuffer)
         fixed (byte* spriteLine = _spriteLineBuffer)
         {
             int* pRow = pOut + outputRow;
-            byte* bTabOffset = bTab + brightnessOffset;
+            int* argbTabOffset = argbTab + brightnessOffset;
             Span<ushort> chunkPixels = stackalloc ushort[12 * 8];
             Span<byte> chunkOpaque = stackalloc byte[12 * 8];
 
@@ -1689,13 +1835,7 @@ public class PPU : IPPU
                         break;
                     }
 
-                    int r = color & 0x1f;
-                    int g = (color >> 5) & 0x1f;
-                    int b = (color >> 10) & 0x1f;
-                    int mainColor = bTabOffset[b]
-                        | (bTabOffset[g] << 8)
-                        | (bTabOffset[r] << 16);
-                    pRow[screenX] = mainColor | alphaMask;
+                    pRow[screenX] = argbTabOffset[color & 0x7fff];
                 }
             }
         }
