@@ -90,6 +90,8 @@ public class ROM : IROM
     private KSNES.Specialchips.SPC7110.Spc7110? _spc7110;
     private bool _superFxHasBattery;
     private ulong _superFxOverclock = 1;
+    private const ulong Sa1DispatchGranularity = 32;
+    private ulong _lastSa1DispatchCycles;
     private Dsp1PortMapping _dsp1PortMapping;
     private bool _dsp1IsHiRom;
     private bool _dsp1BroadMap;
@@ -452,6 +454,7 @@ public class ROM : IROM
         }
         if (_sa1 != null)
         {
+            SyncSa1ForSharedAccess();
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             bool needResolve = Sa1Trace.IsEnabled || _traceSa1BwramWatch;
             if (snesPc < 0 && (needResolve || _sa1.RequiresSnesAccessPc))
@@ -599,6 +602,7 @@ public class ROM : IROM
     {
         if (_sa1 != null)
         {
+            SyncSa1ForSharedAccess();
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             bool needResolve = Sa1Trace.IsEnabled || _traceSa1BwramWatch;
             bool needSnesPc = needResolve || _sa1.RequiresSnesAccessPc;
@@ -802,12 +806,14 @@ public class ROM : IROM
 
     private byte ReadFastSa1(int bank, int adr)
     {
+        SyncSa1ForSharedAccess();
         byte? sa1Value = _sa1!.SnesRead((uint)((bank << 16) | (adr & 0xFFFF)));
         return sa1Value ?? ReadBasePage(bank, adr, traceExactDspRead: false);
     }
 
     private void WriteFastSa1(int bank, int adr, byte value)
     {
+        SyncSa1ForSharedAccess();
         if (_sa1!.TrySnesWrite((uint)((bank << 16) | (adr & 0xFFFF)), value, out bool touchesBwram))
         {
             if (_hasSram && touchesBwram)
@@ -1342,6 +1348,7 @@ public class ROM : IROM
         _st018?.Reset();
         _superFx?.Reset();
         _sa1?.Reset();
+        _lastSa1DispatchCycles = 0;
         _sdd1?.Reset();
         _srtc?.ResetState();
     }
@@ -1394,7 +1401,7 @@ public class ROM : IROM
                 _superFx!.Tick(snesCycles);
                 return;
             case TimedCoprocessorDispatch.Sa1:
-                _sa1!.Tick(snesCycles);
+                SyncSa1ForDispatch(snesCycles);
                 return;
             default:
                 _cx4?.RunTo(snesCycles);
@@ -1403,7 +1410,7 @@ public class ROM : IROM
                 _st011?.RunTo(snesCycles);
                 _st018?.RunTo(snesCycles);
                 _superFx?.Tick(snesCycles);
-                _sa1?.Tick(snesCycles);
+                SyncSa1ForDispatch(snesCycles);
                 return;
         }
     }
@@ -1436,6 +1443,7 @@ public class ROM : IROM
                 return;
             case TimedCoprocessorDispatch.Sa1:
                 _sa1!.ResyncTo(snesCycles);
+                _lastSa1DispatchCycles = snesCycles;
                 return;
             default:
                 _dsp1?.ResyncTo(snesCycles);
@@ -1444,6 +1452,7 @@ public class ROM : IROM
                 _st018?.ResyncTo(snesCycles);
                 _superFx?.ResyncTo(snesCycles);
                 _sa1?.ResyncTo(snesCycles);
+                _lastSa1DispatchCycles = snesCycles;
                 return;
         }
     }
@@ -1785,8 +1794,58 @@ public class ROM : IROM
         _dsp1.DumpRecentIo(reason, count);
     }
 
-    public bool IrqWanted => (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);
-    public bool NmiWanted => _sa1?.SnesNmi() ?? false;
+    public bool IrqWanted
+    {
+        get
+        {
+            SyncSa1ForDispatch(GetCurrentSnesCycles());
+            return (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);
+        }
+    }
+
+    public bool NmiWanted
+    {
+        get
+        {
+            SyncSa1ForDispatch(GetCurrentSnesCycles());
+            return _sa1?.SnesNmi() ?? false;
+        }
+    }
+
+    private ulong GetCurrentSnesCycles()
+    {
+        return _system is KSNES.SNESSystem.SNESSystem snes ? snes.Cycles : _lastSa1DispatchCycles;
+    }
+
+    private void SyncSa1ForSharedAccess()
+    {
+        if (_sa1 == null)
+            return;
+
+        ulong snesCycles = GetCurrentSnesCycles();
+        if (snesCycles < _lastSa1DispatchCycles)
+            _lastSa1DispatchCycles = snesCycles;
+        _sa1.Tick(snesCycles);
+        _lastSa1DispatchCycles = snesCycles;
+    }
+
+    private void SyncSa1ForDispatch(ulong snesCycles)
+    {
+        if (_sa1 == null)
+            return;
+
+        if (snesCycles < _lastSa1DispatchCycles)
+        {
+            _lastSa1DispatchCycles = snesCycles;
+            return;
+        }
+
+        if (snesCycles - _lastSa1DispatchCycles < Sa1DispatchGranularity)
+            return;
+
+        _sa1.Tick(snesCycles);
+        _lastSa1DispatchCycles = snesCycles;
+    }
 
     public byte ReadRomByteLoRom(uint address)
     {
