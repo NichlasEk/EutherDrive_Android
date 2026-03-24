@@ -273,6 +273,20 @@ public class PPU : IPPU
     [NonSerialized]
     private int _spriteTouchedEnd = -1;
     [NonSerialized]
+    private int[] _spriteXCache = [];
+    [NonSerialized]
+    private byte[] _spriteYCache = [];
+    [NonSerialized]
+    private byte[] _spriteTileCache = [];
+    [NonSerialized]
+    private byte[] _spriteAttrCache = [];
+    [NonSerialized]
+    private byte[] _spriteWidthCache = [];
+    [NonSerialized]
+    private byte[] _spriteHeightCache = [];
+    [NonSerialized]
+    private bool _spriteMetaDirty = true;
+    [NonSerialized]
     internal ulong PerfRenderedLines;
     [NonSerialized]
     internal ulong PerfMode7Lines;
@@ -479,6 +493,53 @@ public class PPU : IPPU
         Array.Clear(_spritePrioBuffer, _spriteTouchedStart, count);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void MarkSpriteMetaDirty()
+    {
+        _spriteMetaDirty = true;
+    }
+
+    private void EnsureSpriteMetaCache()
+    {
+        if (!_spriteMetaDirty)
+            return;
+
+        if (_spriteXCache.Length != 128)
+            _spriteXCache = new int[128];
+        if (_spriteYCache.Length != 128)
+            _spriteYCache = new byte[128];
+        if (_spriteTileCache.Length != 128)
+            _spriteTileCache = new byte[128];
+        if (_spriteAttrCache.Length != 128)
+            _spriteAttrCache = new byte[128];
+        if (_spriteWidthCache.Length != 128)
+            _spriteWidthCache = new byte[128];
+        if (_spriteHeightCache.Length != 128)
+            _spriteHeightCache = new byte[128];
+
+        int interlaceMul = _objInterlace ? 4 : 8;
+        for (int spriteIndex = 0; spriteIndex < 128; spriteIndex++)
+        {
+            int index = spriteIndex << 1;
+            int x = _oam[index] & 0xff;
+            int highBits = (_highOam[index >> 4] >> (index & 0xf)) & 0x3;
+            x |= (highBits & 0x1) << 8;
+            if (x > 255)
+                x = -(512 - x);
+
+            bool big = (highBits & 0x2) != 0;
+            int spriteSizeIndex = _objSize + (big ? 8 : 0);
+            _spriteXCache[spriteIndex] = x;
+            _spriteYCache[spriteIndex] = (byte)(_oam[index] >> 8);
+            _spriteTileCache[spriteIndex] = (byte)(_oam[index + 1] & 0xff);
+            _spriteAttrCache[spriteIndex] = (byte)(_oam[index + 1] >> 8);
+            _spriteWidthCache[spriteIndex] = (byte)_spriteWidths[spriteSizeIndex];
+            _spriteHeightCache[spriteIndex] = (byte)(_spriteHeights[spriteSizeIndex] * interlaceMul);
+        }
+
+        _spriteMetaDirty = false;
+    }
+
     private void SetCurrentOamAddress(int address)
     {
         address &= 0x1ff;
@@ -604,6 +665,7 @@ public class PPU : IPPU
         _lineCachesDirty = true;
         _spriteTouchedStart = 256;
         _spriteTouchedEnd = -1;
+        _spriteMetaDirty = true;
         ResetLineCaches();
     }
 
@@ -753,6 +815,7 @@ public class PPU : IPPU
                 _sprAdr1 = (value & 0x7) << 13;
                 _sprAdr2 = (value & 0x18) << 9;
                 _objSize = (value & 0xe0) >> 5;
+                MarkSpriteMetaDirty();
                 return;
             case 0x02:
                 _oamRegAdr = value;
@@ -805,6 +868,7 @@ public class PPU : IPPU
                     SetCurrentOamAddress(oamAddress + 1);
                     _oamSecond = false;
                 }
+                MarkSpriteMetaDirty();
                 return;
             case 0x05:
                 if (GetBgModeRaw() == (byte)value)
@@ -1150,6 +1214,7 @@ public class PPU : IPPU
                 _overscan = (value & 0x04) > 0;
                 _objInterlace = (value & 0x02) > 0;
                 _interlace = (value & 0x01) > 0;
+                MarkSpriteMetaDirty();
                 MarkLineCachesDirty();
                 return;
         }
@@ -1190,6 +1255,8 @@ public class PPU : IPPU
             _tilePixelBuffer = new ushort[4 * 8];
         if (_tilePriorityBuffer.Length != 4)
             _tilePriorityBuffer = new byte[4];
+        if (_spriteXCache.Length != 128)
+            _spriteMetaDirty = true;
 
         _runtimeBuffersReady = true;
     }
@@ -1441,6 +1508,7 @@ public class PPU : IPPU
     public void PrepareSpriteLine(int line)
     {
         EnsureRuntimeBuffers();
+        EnsureSpriteMetaCache();
         ClearPreviousSpriteRange();
         _spriteTouchedStart = 256;
         _spriteTouchedEnd = -1;
@@ -2318,16 +2386,10 @@ public class PPU : IPPU
         for (int i = 0; i < 128; i++)
         {
             int spriteIndex = (startSprite + i) & 0x7f;
-            int index = spriteIndex << 1;
-            int x = _oam[index] & 0xff;
-            int y = (_oam[index] & 0xff00) >> 8;
-            int ex = (_oam[index + 1] & 0xff00) >> 8;
-            x |= (_highOam[index >> 4] >> (index & 0xf) & 0x1) << 8;
-            bool big = (_highOam[index >> 4] >> (index & 0xf) & 0x2) > 0;
-            x = x > 255 ? -(512 - x) : x;
-            int spriteSizeIndex = _objSize + (big ? 8 : 0);
-            int spriteWidth = _spriteWidths[spriteSizeIndex];
-            int spriteHeight = _spriteHeights[spriteSizeIndex] * (_objInterlace ? 4 : 8);
+            int x = _spriteXCache[spriteIndex];
+            int y = _spriteYCache[spriteIndex];
+            int spriteWidth = _spriteWidthCache[spriteIndex];
+            int spriteHeight = _spriteHeightCache[spriteIndex];
             int sprRow = line - y;
             if (sprRow < 0 || sprRow >= spriteHeight)
             {
@@ -2345,23 +2407,19 @@ public class PPU : IPPU
                 break;
             }
 
-            scannedSprites[spriteCount++] = index;
+            scannedSprites[spriteCount++] = spriteIndex;
         }
 
         int sliverCount = 0;
         for (int spriteBufferIndex = spriteCount - 1; spriteBufferIndex >= 0; spriteBufferIndex--)
         {
-            int index = scannedSprites[spriteBufferIndex];
-            int x = _oam[index] & 0xff;
-            int y = (_oam[index] & 0xff00) >> 8;
-            int tile = _oam[index + 1] & 0xff;
-            int ex = (_oam[index + 1] & 0xff00) >> 8;
-            x |= (_highOam[index >> 4] >> (index & 0xf) & 0x1) << 8;
-            bool big = (_highOam[index >> 4] >> (index & 0xf) & 0x2) > 0;
-            x = x > 255 ? -(512 - x) : x;
-            int spriteSizeIndex = _objSize + (big ? 8 : 0);
-            int spriteWidth = _spriteWidths[spriteSizeIndex];
-            int spriteHeight = _spriteHeights[spriteSizeIndex] * (_objInterlace ? 4 : 8);
+            int spriteIndex = scannedSprites[spriteBufferIndex];
+            int x = _spriteXCache[spriteIndex];
+            int y = _spriteYCache[spriteIndex];
+            int tile = _spriteTileCache[spriteIndex];
+            int ex = _spriteAttrCache[spriteIndex];
+            int spriteWidth = _spriteWidthCache[spriteIndex];
+            int spriteHeight = _spriteHeightCache[spriteIndex];
             int sprRow = line - y;
             if (sprRow < 0 || sprRow >= spriteHeight)
             {
@@ -2372,7 +2430,8 @@ public class PPU : IPPU
             // OBJSEL selects a base plus an optional second 256-tile block with a programmable gap.
             // Attribute bit 0 selects that second block, which starts after the first 0x1000-byte OBJ area.
             int adr = _sprAdr1 + ((ex & 0x1) > 0 ? 0x1000 + _sprAdr2 : 0);
-            sprRow = (ex & 0x80) > 0 ? _spriteHeights[spriteSizeIndex] * 8 - 1 - sprRow : sprRow;
+            int spriteFullHeight = _objInterlace ? spriteHeight << 1 : spriteHeight;
+            sprRow = (ex & 0x80) > 0 ? spriteFullHeight - 1 - sprRow : sprRow;
             int tileRow = sprRow >> 3;
             sprRow &= 0x7;
             for (int k = 0; k < spriteWidth; k++)
