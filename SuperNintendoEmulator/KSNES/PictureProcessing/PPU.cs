@@ -1699,7 +1699,7 @@ public class PPU : IPPU
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void FetchTileInBuffer(int x, int y, int l, bool offset) 
+    private unsafe void FetchTileInBuffer(int x, int y, int l, bool offset) 
     {
         bool wideTiles = _bigTiles[l] || _mode == 5 || _mode == 6;
         int tileWidthPixels = wideTiles ? 16 : 8;
@@ -1727,57 +1727,65 @@ public class PPU : IPPU
 
         int tileColumn = wrappedX / tileWidthPixels;
         int tileRow = wrappedY / tileHeightPixels;
-        _tilemapBuffer[l] = _vram[(tilemapBase + (tileRow << 5) + tileColumn) & 0x7fff];
-        if (offset)
+        
+        fixed (ushort* vramPtr = _vram)
+        fixed (ushort* tPix = _tilePixelBuffer)
         {
-            return;
-        }
-        bool yFlip = (_tilemapBuffer[l] & 0x8000) > 0;
-        bool xFlip = (_tilemapBuffer[l] & 0x4000) > 0;
-        int yRow = yFlip ? 7 - (wrappedY & 0x7) : wrappedY & 0x7;
-        int tileNum = _tilemapBuffer[l] & 0x3ff;
-        bool shiftRight = tileWidthPixels == 16 && (xFlip ? wrappedX % 16 < 8 : wrappedX % 16 >= 8);
-        bool shiftDown = tileHeightPixels == 16 && (yFlip ? wrappedY % 16 < 8 : wrappedY % 16 >= 8);
-        if (shiftRight)
-        {
-            tileNum += 1;
-        }
-        if (shiftDown)
-        {
-            tileNum += 0x10;
-        }
-        int bits = _bitPerMode[_mode * 4 + l];
-        int tileBase = (_tileAdr[l] + tileNum * 4 * bits + yRow) & 0x7fff;
-        int plane1 = _vram[tileBase];
-        int plane2 = bits > 2 ? _vram[(tileBase + 8) & 0x7fff] : 0;
-        int plane3 = bits > 4 ? _vram[(tileBase + 16) & 0x7fff] : 0;
-        int plane4 = bits > 4 ? _vram[(tileBase + 24) & 0x7fff] : 0;
-        int paletteNum = (_tilemapBuffer[l] & 0x1c00) >> 10;
-        paletteNum += _mode == 0 ? l * 8 : 0;
-        int mul = bits > 4 ? 256 : bits > 2 ? 16 : 4;
-        int pixelBase = paletteNum * mul;
-        int pixelOffset = l << 3;
-        _tilePriorityBuffer[l] = (byte)((_tilemapBuffer[l] >> 13) & 0x1);
-        for (int i = 0; i < 8; i++)
-        {
-            int shift = xFlip ? i : 7 - i;
-            int tileData = (plane1 >> shift) & 0x1;
-            tileData |= ((plane1 >> (8 + shift)) & 0x1) << 1;
-            if (bits > 2)
+            ushort tilemapWord = vramPtr[(tilemapBase + (tileRow << 5) + tileColumn) & 0x7fff];
+            _tilemapBuffer[l] = tilemapWord;
+            if (offset)
             {
-                tileData |= ((plane2 >> shift) & 0x1) << 2;
-                tileData |= ((plane2 >> (8 + shift)) & 0x1) << 3;
+                return;
             }
-
-            if (bits > 4)
+            
+            bool yFlip = (tilemapWord & 0x8000) != 0;
+            bool xFlip = (tilemapWord & 0x4000) != 0;
+            int yRow = yFlip ? 7 - (wrappedY & 0x7) : wrappedY & 0x7;
+            int tileNum = tilemapWord & 0x3ff;
+            
+            bool shiftRight = wideTiles && (xFlip ? (wrappedX & 15) < 8 : (wrappedX & 15) >= 8);
+            bool shiftDown = tileHeightPixels == 16 && (yFlip ? (wrappedY & 15) < 8 : (wrappedY & 15) >= 8);
+            
+            if (shiftRight) tileNum += 1;
+            if (shiftDown) tileNum += 0x10;
+            
+            int bits = _bitPerMode[_mode * 4 + l];
+            int tileBase = (_tileAdr[l] + tileNum * 4 * bits + yRow) & 0x7fff;
+            
+            int plane1 = vramPtr[tileBase];
+            int plane2 = bits > 2 ? vramPtr[(tileBase + 8) & 0x7fff] : 0;
+            int plane3 = bits > 4 ? vramPtr[(tileBase + 16) & 0x7fff] : 0;
+            int plane4 = bits > 4 ? vramPtr[(tileBase + 24) & 0x7fff] : 0;
+            
+            int paletteNum = (tilemapWord & 0x1c00) >> 10;
+            paletteNum += _mode == 0 ? l * 8 : 0;
+            int mul = bits > 4 ? 256 : bits > 2 ? 16 : 4;
+            int pixelBase = paletteNum * mul;
+            int pixelOffset = l << 3;
+            _tilePriorityBuffer[l] = (byte)((tilemapWord >> 13) & 0x1);
+            
+            ushort* dest = tPix + pixelOffset;
+            for (int i = 0; i < 8; i++)
             {
-                tileData |= ((plane3 >> shift) & 0x1) << 4;
-                tileData |= ((plane3 >> (8 + shift)) & 0x1) << 5;
-                tileData |= ((plane4 >> shift) & 0x1) << 6;
-                tileData |= ((plane4 >> (8 + shift)) & 0x1) << 7;
-            }
+                int shift = xFlip ? i : 7 - i;
+                int tileData = (plane1 >> shift) & 0x1;
+                tileData |= ((plane1 >> (8 + shift)) & 0x1) << 1;
+                if (bits > 2)
+                {
+                    tileData |= ((plane2 >> shift) & 0x1) << 2;
+                    tileData |= ((plane2 >> (8 + shift)) & 0x1) << 3;
+                }
 
-            _tilePixelBuffer[pixelOffset + i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
+                if (bits > 4)
+                {
+                    tileData |= ((plane3 >> shift) & 0x1) << 4;
+                    tileData |= ((plane3 >> (8 + shift)) & 0x1) << 5;
+                    tileData |= ((plane4 >> shift) & 0x1) << 6;
+                    tileData |= ((plane4 >> (8 + shift)) & 0x1) << 7;
+                }
+
+                dest[i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
+            }
         }
     }
 
