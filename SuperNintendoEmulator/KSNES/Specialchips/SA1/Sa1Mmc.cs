@@ -1,3 +1,4 @@
+using System;
 using System.Runtime.CompilerServices;
 
 namespace KSNES.Specialchips.SA1;
@@ -41,6 +42,8 @@ internal sealed class Sa1Mmc
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_BWRAM_WATCH"), "1", StringComparison.Ordinal);
     private readonly uint[] _romBankBase = new uint[256];
     private readonly byte[] _romBankKind = new byte[256];
+    [NonSerialized]
+    internal Action? MappingChanged;
 
     public uint BankCBaseAddr = DefaultBankCAddr;
     public bool BankCLoRomMapped;
@@ -71,6 +74,25 @@ internal sealed class Sa1Mmc
     public uint? MapRomAddress(uint address)
     {
         return TryMapRomAddress(address, out uint romAddress) ? romAddress : (uint?)null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public byte ReadRomByteOrZero(uint address, byte[] rom)
+    {
+        return TryReadRomByte(address, rom, out byte value) ? value : (byte)0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryReadRomByte(uint address, byte[] rom, out byte value)
+    {
+        if (!TryMapRomAddress(address, out uint romAddress))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = romAddress < rom.Length ? rom[(int)romAddress] : (byte)0;
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -105,6 +127,7 @@ internal sealed class Sa1Mmc
         LoRomBankCAddr = BankCLoRomMapped ? BankCBaseAddr : DefaultBankCAddr;
         UpdateLoRomBanks(0x00, LoRomBankCAddr);
         UpdateLinearBanks(0xC0, BankCBaseAddr);
+        MappingChanged?.Invoke();
     }
 
     public void WriteDxb(byte value)
@@ -114,6 +137,7 @@ internal sealed class Sa1Mmc
         LoRomBankDAddr = BankDLoRomMapped ? BankDBaseAddr : DefaultBankDAddr;
         UpdateLoRomBanks(0x20, LoRomBankDAddr);
         UpdateLinearBanks(0xD0, BankDBaseAddr);
+        MappingChanged?.Invoke();
     }
 
     public void WriteExb(byte value)
@@ -123,6 +147,7 @@ internal sealed class Sa1Mmc
         LoRomBankEAddr = BankELoRomMapped ? BankEBaseAddr : DefaultBankEAddr;
         UpdateLoRomBanks(0x80, LoRomBankEAddr);
         UpdateLinearBanks(0xE0, BankEBaseAddr);
+        MappingChanged?.Invoke();
     }
 
     public void WriteFxb(byte value)
@@ -132,6 +157,7 @@ internal sealed class Sa1Mmc
         LoRomBankFAddr = BankFLoRomMapped ? BankFBaseAddr : DefaultBankFAddr;
         UpdateLoRomBanks(0xA0, LoRomBankFAddr);
         UpdateLinearBanks(0xF0, BankFBaseAddr);
+        MappingChanged?.Invoke();
     }
 
     public void WriteBmaps(byte value)
@@ -147,6 +173,7 @@ internal sealed class Sa1Mmc
     {
         Sa1BwramBaseAddr = (uint)(value & 0x7F) << 13;
         Sa1BwramSource = BwramMapSourceExtensions.FromBit(value.Bit(7));
+        MappingChanged?.Invoke();
         if (TraceBwramWatch)
         {
             Console.WriteLine($"[BMAP] val=0x{value:X2} sa1_bwram_base=0x{Sa1BwramBaseAddr:X5} src={Sa1BwramSource}");

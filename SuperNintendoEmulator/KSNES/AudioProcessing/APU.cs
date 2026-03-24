@@ -6,6 +6,8 @@ namespace KSNES.AudioProcessing;
 
 public class APU : IAPU
 {
+    private static readonly bool PerfStatsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     [NonSerialized]
     private readonly bool _tracePorts =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_APU_PORTS"), "1", StringComparison.Ordinal);
@@ -399,11 +401,12 @@ public class APU : IAPU
 
     public void SetSamples(float[] left, float[] right)
     {
-        long startTicks = Stopwatch.GetTimestamp();
+        long startTicks = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
         int outCount = Math.Min(left.Length, right.Length);
         if (outCount <= 0)
         {
-            PerfSetSamplesTicks += Stopwatch.GetTimestamp() - startTicks;
+            if (PerfStatsEnabled)
+                PerfSetSamplesTicks += Stopwatch.GetTimestamp() - startTicks;
             return;
         }
 
@@ -460,12 +463,17 @@ public class APU : IAPU
         _resampleRead = read;
         _resampleCount = count;
         _resamplePos = pos;
-        PerfSetSamplesOutputs += (ulong)outCount;
-        PerfSetSamplesTicks += Stopwatch.GetTimestamp() - startTicks;
+        if (PerfStatsEnabled)
+        {
+            PerfSetSamplesOutputs += (ulong)outCount;
+            PerfSetSamplesTicks += Stopwatch.GetTimestamp() - startTicks;
+        }
     }
 
     internal void ResetPerfCounters()
     {
+        if (!PerfStatsEnabled)
+            return;
         PerfSetSamplesOutputs = 0;
         PerfSetSamplesTicks = 0;
         _dspImpl.ResetPerfCounters();

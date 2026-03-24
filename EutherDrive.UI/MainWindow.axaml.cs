@@ -5708,6 +5708,89 @@ public partial class MainWindow : Window
         return null;
     }
 
+    private async void OnCapturePerfSnapshot(object? sender, RoutedEventArgs e)
+    {
+        string snapshot = BuildPerfSnapshot();
+
+        if (PerfSnapshotText != null)
+        {
+            PerfSnapshotText.Text = snapshot;
+            PerfSnapshotText.Focus();
+            PerfSnapshotText.SelectAll();
+        }
+
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is not null)
+            {
+                await clipboard.SetTextAsync(snapshot);
+                StatusText.Text = "Perf snapshot copied to clipboard.";
+            }
+            else
+            {
+                StatusText.Text = "Perf snapshot captured.";
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Perf snapshot captured; clipboard failed: {ex.Message}";
+        }
+    }
+
+    private string BuildPerfSnapshot()
+    {
+        var sb = new StringBuilder();
+        DateTime now = DateTime.Now;
+        sb.AppendLine($"Perf snapshot {now:yyyy-MM-dd HH:mm:ss}");
+
+        if (_core == null)
+        {
+            sb.AppendLine("Core: (none)");
+            return sb.ToString().TrimEnd();
+        }
+
+        sb.AppendLine($"Core: {_core.GetType().Name}");
+        if (!string.IsNullOrWhiteSpace(_romPath))
+            sb.AppendLine($"ROM: {_romPath}");
+
+        long? frame = TryGetCoreFrameCounter(_core);
+        sb.AppendLine($"Frame: {(frame.HasValue ? frame.Value.ToString() : "-")}");
+        sb.AppendLine($"UI FPS: {FpsText?.Text ?? "FPS: -"}");
+        sb.AppendLine($"Emu FPS: {EmuFpsText?.Text ?? "Emu FPS: -"}");
+        sb.AppendLine($"Resolution: {ResolutionText?.Text ?? "Resolution: -"}");
+
+        string perfText = GetCurrentCorePerfText(_core);
+        if (!string.IsNullOrWhiteSpace(perfText))
+        {
+            sb.AppendLine();
+            sb.AppendLine(perfText.TrimEnd());
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    private string GetCurrentCorePerfText(IEmulatorCore core)
+    {
+        if (core is SnesAdapter snes)
+        {
+            if (snes.TryGetFramePerfSummary(out string summary))
+            {
+                string? ppuSnapshot = snes.GetPpuDebugSnapshot();
+                if (!string.IsNullOrWhiteSpace(ppuSnapshot))
+                    return $"{summary}\n{ppuSnapshot}";
+                return summary;
+            }
+
+            return "SNES perf unavailable. Start app/core with EUTHERDRIVE_SNES_PERF=1 for detailed counters.";
+        }
+
+        if (core is PsxAdapter psx && psx.TryGetFramePerfSummary(out string psxSummary))
+            return psxSummary;
+
+        return "Perf snapshot not implemented for this core.";
+    }
+
     private void UpdateAudioDebugText()
     {
         if (!_audioDebugEnabled || AudioDebugText == null)

@@ -5,6 +5,8 @@ namespace KSNES.AudioProcessing;
 
 public sealed class DSP : IDSP
 {
+    private static readonly bool PerfStatsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     public float[] SamplesL { get; private set; } = Array.Empty<float>();
     public float[] SamplesR { get; private set; } = Array.Empty<float>();
     public int SampleOffset { get; set; }
@@ -708,7 +710,8 @@ public sealed class DSP : IDSP
     public void Cycle()
     {
         if (_apu == null) return;
-        PerfCycles++;
+        if (PerfStatsEnabled)
+            PerfCycles++;
         var audioRam = _apu.RAM;
         var voices = _voices;
         var voiceSamplesL = _voiceSamplesL;
@@ -741,7 +744,8 @@ public sealed class DSP : IDSP
         bool echoWritesEnabled = registers.EchoBufferWritesEnabled;
         var (echoL, echoR) = _echo.DoFilter(echoWritesEnabled, audioRam, voiceSamplesL, voiceSamplesR);
         if (echoWritesEnabled)
-            PerfEchoWrites++;
+            if (PerfStatsEnabled)
+                PerfEchoWrites++;
 
         sumL = (sumL * registers.MasterVolumeL) >> 7;
         sumR = (sumR * registers.MasterVolumeR) >> 7;
@@ -764,12 +768,15 @@ public sealed class DSP : IDSP
             SamplesL[SampleOffset] = outL / 32768f;
             SamplesR[SampleOffset] = outR / 32768f;
             SampleOffset++;
-            PerfProducedSamples++;
+            if (PerfStatsEnabled)
+                PerfProducedSamples++;
         }
     }
 
     internal void ResetPerfCounters()
     {
+        if (!PerfStatsEnabled)
+            return;
         PerfCycles = 0;
         PerfProducedSamples = 0;
         PerfEchoWrites = 0;

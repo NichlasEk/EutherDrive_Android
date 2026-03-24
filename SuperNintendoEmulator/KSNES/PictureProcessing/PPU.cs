@@ -7,6 +7,8 @@ namespace KSNES.PictureProcessing;
 
 public class PPU : IPPU
 {
+    private static readonly bool PerfStatsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     public const int MaxFrameWidth = 512;
     public const int MaxFrameHeight = 240;
 
@@ -267,6 +269,10 @@ public class PPU : IPPU
     [NonSerialized]
     private bool _runtimeBuffersReady;
     [NonSerialized]
+    private int _spriteTouchedStart = 256;
+    [NonSerialized]
+    private int _spriteTouchedEnd = -1;
+    [NonSerialized]
     internal ulong PerfRenderedLines;
     [NonSerialized]
     internal ulong PerfMode7Lines;
@@ -314,6 +320,40 @@ public class PPU : IPPU
     private void MarkLineCachesDirty()
     {
         _lineCachesDirty = true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void FillCacheRange(byte[] cache, int start, byte value)
+    {
+        Array.Fill(cache, value, start, 256);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool AnyColorMathEnabled()
+    {
+        return _mathEnabled[0]
+            || _mathEnabled[1]
+            || _mathEnabled[2]
+            || _mathEnabled[3]
+            || _mathEnabled[4]
+            || _mathEnabled[5];
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HasActiveMainWindow(int layer)
+    {
+        return _mainScreenWindow[layer] && (_window1Enabled[layer] || _window2Enabled[layer]);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ClearPreviousSpriteRange()
+    {
+        if (_spriteTouchedEnd < _spriteTouchedStart)
+            return;
+
+        int count = _spriteTouchedEnd - _spriteTouchedStart + 1;
+        Array.Clear(_spriteLineBuffer, _spriteTouchedStart, count);
+        Array.Clear(_spritePrioBuffer, _spriteTouchedStart, count);
     }
 
     private void SetCurrentOamAddress(int address)
@@ -439,6 +479,8 @@ public class PPU : IPPU
         _lastTileFetchedY = new int[4];
         _lastOrigTileX = new int[2];
         _lineCachesDirty = true;
+        _spriteTouchedStart = 256;
+        _spriteTouchedEnd = -1;
         ResetLineCaches();
     }
 
@@ -927,6 +969,7 @@ public class PPU : IPPU
                 _mathEnabled[3] = (value & 0x8) > 0;
                 _mathEnabled[4] = (value & 0x10) > 0;
                 _mathEnabled[5] = (value & 0x20) > 0;
+                MarkLineCachesDirty();
                 TracePpuWrite($"[PPU] CGADSUB=0x{value:X2} sub={_subtractColors} half={_halfColors} math=[{MathMask()}]");
                 return;
             case 0x32:
@@ -1241,16 +1284,20 @@ public class PPU : IPPU
     public void PrepareSpriteLine(int line)
     {
         EnsureRuntimeBuffers();
-        Array.Clear(_spriteLineBuffer, 0, _spriteLineBuffer.Length);
-        Array.Clear(_spritePrioBuffer, 0, _spritePrioBuffer.Length);
+        ClearPreviousSpriteRange();
+        _spriteTouchedStart = 256;
+        _spriteTouchedEnd = -1;
+        _rangeOver = false;
+        _timeOver = false;
 
-        if (line < 0 || line >= (FrameOverscan ? 240 : 225) || _forcedBlank)
+        if (line < 0
+            || line >= (FrameOverscan ? 240 : 225)
+            || _forcedBlank
+            || (!_mainScreenEnabled[4] && !_subScreenEnabled[4]))
         {
             return;
         }
 
-        _rangeOver = false;
-        _timeOver = false;
         EvaluateSprites(line);
     }
 
@@ -1264,7 +1311,6 @@ public class PPU : IPPU
         {
             FrameOverscan = false;
             _frameTrueHiResOutput = false;
-            _lineCachesDirty = true;
         }
         else if (line == (FrameOverscan ? 240 : 225))
         {
@@ -1277,7 +1323,8 @@ public class PPU : IPPU
         }
         else if (line > 0 && line < (FrameOverscan ? 240 : 225))
         {
-            PerfRenderedLines++;
+            if (PerfStatsEnabled)
+                PerfRenderedLines++;
             if (line == 1)
             {
                 _mosaicStartLine = 0;
@@ -1285,13 +1332,31 @@ public class PPU : IPPU
             }
             if (_mode == 7)
             {
-                PerfMode7Lines++;
+                if (PerfStatsEnabled)
+                    PerfMode7Lines++;
                 GenerateMode7Coords(screenY);
             }
-            if (hiResOutput)
-                PerfHiResLines++;
-            if (trueHiResOutput)
-                PerfTrueHiResLines++;
+            if (PerfStatsEnabled)
+            {
+                if (hiResOutput)
+                    PerfHiResLines++;
+                if (trueHiResOutput)
+                    PerfTrueHiResLines++;
+            }
+            int outputRow = screenY * MaxFrameWidth;
+            int brightnessOffset = _brightness << 5;
+            byte[] brightnessTable = BrightnessTable;
+            int[] pixelOutput = _pixelOutput;
+            const int alphaMask = unchecked((int)0xFF000000);
+            bool useSimpleMainPath = CanUseSimpleMainScreenPath(hiResOutput, trueHiResOutput);
+            if (useSimpleMainPath)
+            {
+                RenderLineSimpleMainOnly(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput, alphaMask);
+                if (PerfStatsEnabled)
+                    PerfOutputPixels += 256;
+                return;
+            }
+
             ResetLineCaches();
             if (_lineCachesDirty)
             {
@@ -1302,17 +1367,6 @@ public class PPU : IPPU
             {
                 ExpandBufferedLinesToHiRes(screenY);
                 _frameTrueHiResOutput = true;
-            }
-            int outputRow = screenY * MaxFrameWidth;
-            int brightnessOffset = _brightness << 5;
-            byte[] brightnessTable = BrightnessTable;
-            int[] pixelOutput = _pixelOutput;
-            const int alphaMask = unchecked((int)0xFF000000);
-            if (CanUseSimpleMainScreenPath(hiResOutput, trueHiResOutput))
-            {
-                RenderLineSimpleMainOnly(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput, alphaMask);
-                PerfOutputPixels += 256;
-                return;
             }
 
             fixed (byte* bTab = brightnessTable)
@@ -1413,7 +1467,8 @@ public class PPU : IPPU
                     }
                 }
             }
-            PerfOutputPixels += (ulong)(trueHiResOutput || _frameTrueHiResOutput ? 512 : 256);
+            if (PerfStatsEnabled)
+                PerfOutputPixels += (ulong)(trueHiResOutput || _frameTrueHiResOutput ? 512 : 256);
         }
     }
 
@@ -1423,9 +1478,15 @@ public class PPU : IPPU
             && !trueHiResOutput
             && !_frameTrueHiResOutput
             && !_forcedBlank
+            && _mode != 7
             && !_directColor
-            && !_lineAnyColorMathEnabled
-            && _colorClip == 0;
+            && !AnyColorMathEnabled()
+            && _colorClip == 0
+            && !HasActiveMainWindow(0)
+            && !HasActiveMainWindow(1)
+            && !HasActiveMainWindow(2)
+            && !HasActiveMainWindow(3)
+            && !HasActiveMainWindow(4);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1439,12 +1500,94 @@ public class PPU : IPPU
     {
         fixed (byte* bTab = brightnessTable)
         fixed (int* pOut = pixelOutput)
+        fixed (ushort* cgramPtr = _cgram)
         {
             int* pRow = pOut + outputRow;
             byte* bTabOffset = bTab + brightnessOffset;
+            Span<int> activeLayers = stackalloc int[12];
+            Span<int> activePriorities = stackalloc int[12];
+            int activeCount = 0;
+            int modeIndex = _layer3Prio && _mode == 1 ? 96 : 12 * _mode;
+            int layerCount = _layercountPerMode[_mode];
+            for (int j = 0; j < layerCount; j++)
+            {
+                int layer = _layersPerMode[modeIndex + j];
+                if (layer >= 5 || !_mainScreenEnabled[layer])
+                    continue;
+
+                activeLayers[activeCount] = layer;
+                activePriorities[activeCount] = _prioPerMode[modeIndex + j];
+                activeCount++;
+            }
+
+            int baseY = _interlace && (_mode == 5 || _mode == 6)
+                ? screenY * 2 + (_evenFrame ? 1 : 0)
+                : screenY;
             for (int x = 0; x < 256; x++)
             {
-                GetColor(false, x, screenY, out ushort color, out _, out _);
+                ushort color = cgramPtr[0];
+                for (int j = 0; j < activeCount; j++)
+                {
+                    int layer = activeLayers[j];
+                    int lx = x;
+                    int ly = baseY;
+
+                    if (layer < 4)
+                    {
+                        if (_mosaicEnabled[layer])
+                        {
+                            lx -= lx % _mosaicSize;
+                            ly -= (ly - _mosaicStartLine) % _mosaicSize;
+                        }
+
+                        lx += _bgHoff[layer];
+                        ly += _bgVoff[layer];
+
+                        if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
+                        {
+                            int andVal = layer == 0 ? 0x2000 : 0x4000;
+                            if (x == 0)
+                                _lastOrigTileX[layer] = lx >> 3;
+                            int tileStartX = (lx - _bgHoff[layer]) - (lx - (lx & 0xfff8));
+                            if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
+                            {
+                                FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+                                _optHorBuffer[layer] = _tilemapBuffer[2];
+                                if (_mode == 4)
+                                {
+                                    if ((_optHorBuffer[layer] & 0x8000) != 0)
+                                    {
+                                        _optVerBuffer[layer] = _optHorBuffer[layer];
+                                        _optHorBuffer[layer] = 0;
+                                    }
+                                    else
+                                    {
+                                        _optVerBuffer[layer] = 0;
+                                    }
+                                }
+                                else
+                                {
+                                    FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+                                    _optVerBuffer[layer] = _tilemapBuffer[2];
+                                }
+                                _lastOrigTileX[layer] = lx >> 3;
+                            }
+
+                            if ((_optHorBuffer[layer] & andVal) != 0)
+                                lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
+                            if ((_optVerBuffer[layer] & andVal) != 0)
+                                ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
+                        }
+                    }
+
+                    int pixel = GetPixelForLayer(lx, ly, layer, activePriorities[j]);
+                    if ((pixel & 0xFF) == 0)
+                        continue;
+
+                    color = cgramPtr[pixel & 0xFF];
+                    break;
+                }
+
                 int r = color & 0x1f;
                 int g = (color >> 5) & 0x1f;
                 int b = (color >> 10) & 0x1f;
@@ -1458,6 +1601,8 @@ public class PPU : IPPU
 
     internal void ResetPerfCounters()
     {
+        if (!PerfStatsEnabled)
+            return;
         PerfRenderedLines = 0;
         PerfMode7Lines = 0;
         PerfHiResLines = 0;
@@ -1489,18 +1634,12 @@ public class PPU : IPPU
         if (_mode7ExBg && _mode == 7)
             _lineModeIndex = 108;
         _lineLayerCount = _layercountPerMode[_mode];
-        _lineAnyColorMathEnabled =
-            _mathEnabled[0] || _mathEnabled[1] || _mathEnabled[2] ||
-            _mathEnabled[3] || _mathEnabled[4] || _mathEnabled[5];
+        _lineAnyColorMathEnabled = AnyColorMathEnabled();
 
         for (int layer = 0; layer < 6; layer++)
         {
             int baseIndex = layer << 8;
-            for (int x = 0; x < 256; x++)
-            {
-                _windowStateCache[baseIndex + x] = ComputeWindowState(x, layer) ? (byte)1 : (byte)0;
-            }
-
+            bool hasWindow = _window1Enabled[layer] || _window2Enabled[layer];
             if (layer >= 5)
                 continue;
 
@@ -1509,9 +1648,24 @@ public class PPU : IPPU
             bool mainUsesWindow = _mainScreenWindow[layer];
             bool subUsesWindow = _subScreenWindow[layer];
             int visibleBaseIndex = layer << 8;
+            if (!hasWindow || (!mainUsesWindow && !subUsesWindow))
+            {
+                FillCacheRange(_mainScreenVisibleCache, visibleBaseIndex, mainEnabled ? (byte)1 : (byte)0);
+                FillCacheRange(_subScreenVisibleCache, visibleBaseIndex, subEnabled ? (byte)1 : (byte)0);
+                continue;
+            }
+
+            if (!mainEnabled && !subEnabled)
+            {
+                FillCacheRange(_mainScreenVisibleCache, visibleBaseIndex, 0);
+                FillCacheRange(_subScreenVisibleCache, visibleBaseIndex, 0);
+                continue;
+            }
+
             for (int x = 0; x < 256; x++)
             {
-                bool windowState = _windowStateCache[baseIndex + x] != 0;
+                bool windowState = ComputeWindowState(x, layer);
+                _windowStateCache[baseIndex + x] = windowState ? (byte)1 : (byte)0;
                 _mainScreenVisibleCache[visibleBaseIndex + x] =
                     mainEnabled && (!mainUsesWindow || !windowState) ? (byte)1 : (byte)0;
                 _subScreenVisibleCache[visibleBaseIndex + x] =
@@ -1519,10 +1673,19 @@ public class PPU : IPPU
             }
         }
 
+        bool usesColorWindow = (_colorClip != 0 || _preventMath != 0) && (_window1Enabled[5] || _window2Enabled[5]);
+        if (!usesColorWindow)
+        {
+            FillCacheRange(_clipToBlackCache, 0, ShouldClipToBlack(false) ? (byte)1 : (byte)0);
+            FillCacheRange(_mathPreventCache, 0, ShouldPreventMath(false) ? (byte)1 : (byte)0);
+            return;
+        }
+
         int colorWindowBase = 5 << 8;
         for (int x = 0; x < 256; x++)
         {
-            bool colorWindow = _windowStateCache[colorWindowBase + x] != 0;
+            bool colorWindow = ComputeWindowState(x, 5);
+            _windowStateCache[colorWindowBase + x] = colorWindow ? (byte)1 : (byte)0;
             _clipToBlackCache[x] = ShouldClipToBlack(colorWindow) ? (byte)1 : (byte)0;
             _mathPreventCache[x] = ShouldPreventMath(colorWindow) ? (byte)1 : (byte)0;
         }
@@ -1860,7 +2023,8 @@ public class PPU : IPPU
             sprRow &= 0x7;
             for (int k = 0; k < spriteWidth; k++)
             {
-                if (x + k * 8 <= -7 || x + k * 8 >= 256)
+                int sliverX = x + k * 8;
+                if (sliverX <= -7 || sliverX >= 256)
                 {
                     continue;
                 }
@@ -1870,6 +2034,13 @@ public class PPU : IPPU
                     _timeOver = true;
                     return;
                 }
+
+                int sliverStart = Math.Max(0, sliverX);
+                int sliverEnd = Math.Min(255, sliverX + 7);
+                if (sliverStart < _spriteTouchedStart)
+                    _spriteTouchedStart = sliverStart;
+                if (sliverEnd > _spriteTouchedEnd)
+                    _spriteTouchedEnd = sliverEnd;
 
                 int tileColumn = (ex & 0x40) > 0 ? spriteWidth - 1 - k : k;
                 int tileNum = tile;

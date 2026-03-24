@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 
@@ -7,6 +8,8 @@ namespace KSNES.CPU;
 
 public class CPU : ICPU
 {
+    private static readonly bool PerfStatsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     private const int DBR = 0;
     private const int K = 1;
     private const int A = 0;
@@ -100,6 +103,11 @@ public class CPU : ICPU
     private bool _traceWramPc;
     private bool _traceWramPcLogged;
     private bool _anyTraceEnabled;
+    private readonly bool _traceSa1Fetch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_FETCH"), "1", StringComparison.Ordinal);
+    private readonly string _traceSa1FetchPath =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_FETCH_PATH") ?? string.Empty;
+    private readonly object _traceSa1FetchLock = new();
 
     private void UpdateAnyTraceEnabled()
     {
@@ -184,6 +192,8 @@ public class CPU : ICPU
     [NonSerialized]
     private KSNES.SNESSystem.SNESSystem? _snesImpl;
     [NonSerialized]
+    private KSNES.Specialchips.SA1.Sa1.Sa1System? _sa1Impl;
+    [NonSerialized]
     internal ulong PerfInstructions;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
@@ -241,6 +251,7 @@ public class CPU : ICPU
     {
         _snes = system;
         _snesImpl = system as KSNES.SNESSystem.SNESSystem;
+        _sa1Impl = system as KSNES.Specialchips.SA1.Sa1.Sa1System;
     }
 
     public void Reset()
@@ -319,6 +330,7 @@ public class CPU : ICPU
                     }
                 }
                 int instr = ReadBus((_r[K] << 16) | _br[PC]++);
+                int opPc = (_r[K] << 16) | ((_br[PC] - 1) & 0xffff);
                 CyclesLeft = _cycles[instr];
                 int mode = _modes[instr];
                 bool letRdnmiPollReadRunFirst = NmiWanted && IsImmediateRdnmiPoll(instr);
@@ -341,10 +353,14 @@ public class CPU : ICPU
                     }
                     CyclesLeft = _cycles[instr];
                     mode = _modes[instr];
+                    opPc = (_r[K] << 16) | (_br[PC] & 0xffff);
                 }
                 var (item1, item2) = GetAdr(mode);
-                PerfInstructions++;
+                TraceSa1FetchIfNeeded(opPc, instr, mode, item1, item2, "before");
+                if (PerfStatsEnabled)
+                    PerfInstructions++;
                 _functions[instr](item1, item2);
+                TraceSa1FetchIfNeeded(opPc, instr, mode, item1, item2, "after");
             }
             else
             {
@@ -360,6 +376,8 @@ public class CPU : ICPU
 
     internal void ResetPerfCounters()
     {
+        if (!PerfStatsEnabled)
+            return;
         PerfInstructions = 0;
     }
 
@@ -373,6 +391,25 @@ public class CPU : ICPU
         int lo = snes.Peek(operandAddr);
         int hi = snes.Peek((operandAddr + 1) & 0xffffff);
         return lo == 0x10 && hi == 0x42;
+    }
+
+    private void TraceSa1FetchIfNeeded(int opPc, int instr, int mode, int adr, int adrh, string phase)
+    {
+        if (!_traceSa1Fetch || _sa1Impl is null)
+            return;
+
+        string line =
+            $"[SA1-FETCH] phase={phase} opPc=0x{opPc:X6} instr=0x{instr:X2} mode={mode} adr=0x{adr:X6} adrh=0x{adrh:X6} pc=0x{ProgramCounter24:X6} regs=[{GetTraceState()}]";
+        if (string.IsNullOrWhiteSpace(_traceSa1FetchPath))
+        {
+            Console.WriteLine(line);
+            return;
+        }
+
+        lock (_traceSa1FetchLock)
+        {
+            File.AppendAllText(_traceSa1FetchPath, line + Environment.NewLine);
+        }
     }
 
     private byte GetP()
@@ -447,14 +484,27 @@ public class CPU : ICPU
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int ReadBus(int address)
     {
-        return _snesImpl != null ? _snesImpl.Read(address) : _snes.Read(address);
+        if (_snesImpl != null)
+            return _snesImpl.Read(address);
+        if (_sa1Impl != null)
+            return _sa1Impl.Read(address);
+        return _snes.Read(address);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteBus(int address, int value)
     {
-        if (_snesImpl != null) _snesImpl.Write(address, value);
-        else _snes.Write(address, value);
+        if (_snesImpl != null)
+        {
+            _snesImpl.Write(address, value);
+            return;
+        }
+        if (_sa1Impl != null)
+        {
+            _sa1Impl.Write(address, value);
+            return;
+        }
+        _snes.Write(address, value);
     }
 
     private (int, int) DataBankPair(int address16)

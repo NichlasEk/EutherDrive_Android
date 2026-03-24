@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using KSNES.CPU;
@@ -14,6 +16,8 @@ namespace KSNES.Specialchips.SA1;
 
 public sealed class Sa1
 {
+    private static readonly bool PerfStatsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     private readonly struct PendingBwramWrite(uint address, byte value)
     {
         public uint Address { get; } = address;
@@ -93,6 +97,42 @@ public sealed class Sa1
     private bool _lastSa1Wait;
     private bool _lastSa1Nmi;
     [NonSerialized]
+    internal long PerfTickTicks;
+    [NonSerialized]
+    internal long PerfCpuTicks;
+    [NonSerialized]
+    internal long PerfDmaTicks;
+    [NonSerialized]
+    internal ulong PerfSa1Cycles;
+    [NonSerialized]
+    internal ulong PerfCpuCycles;
+    [NonSerialized]
+    internal ulong PerfBwramWaitCycles;
+    [NonSerialized]
+    internal ulong PerfDmaCycles;
+    [NonSerialized]
+    internal ulong PerfRomReads;
+    [NonSerialized]
+    internal ulong PerfIramReads;
+    [NonSerialized]
+    internal ulong PerfIoReads;
+    [NonSerialized]
+    internal ulong PerfBwramReads;
+    [NonSerialized]
+    internal ulong PerfBwramBitmapReads;
+    [NonSerialized]
+    internal ulong PerfUnmappedReads;
+    [NonSerialized]
+    internal ulong PerfIramWrites;
+    [NonSerialized]
+    internal ulong PerfIoWrites;
+    [NonSerialized]
+    internal ulong PerfBwramWrites;
+    [NonSerialized]
+    internal ulong PerfBwramBitmapWrites;
+    [NonSerialized]
+    internal ulong PerfUnmappedWrites;
+    [NonSerialized]
     private bool _badDispatchPointerLogged;
     [NonSerialized]
     private readonly bool _tracePcBreakEnabled;
@@ -126,6 +166,15 @@ public sealed class Sa1
     private int _traceBwramBlockedWritesRemaining = ParseTraceLimit("EUTHERDRIVE_TRACE_SA1_BWRAM_BLOCKS_LIMIT", 256);
     [NonSerialized]
     private readonly List<PendingBwramWrite> _pendingSa1BwramWrites = [];
+    [NonSerialized]
+    private int _debugCpuResetCount;
+    [NonSerialized]
+    private int _debugLastResetPc;
+    [NonSerialized]
+    private readonly string _tracePcHookPath =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_PC_HOOK_PATH") ?? string.Empty;
+    [NonSerialized]
+    private readonly object _tracePcHookLock = new();
 
     public Sa1(byte[] rom, byte[] bwram, bool isPal)
     {
@@ -177,6 +226,7 @@ public sealed class Sa1
         string cpuState = _cpu.GetDebugStateWithStack();
         return
             $"pc=0x{_cpu.ProgramCounter24:X6} {cpuState} " +
+            $"cpuResetCount={_debugCpuResetCount} lastResetPc=0x{_debugLastResetPc:X6} " +
             $"wait={(_registers.Sa1Wait ? 1 : 0)} reset={(_registers.Sa1Reset ? 1 : 0)} nmi={( _registers.Sa1Nmi ? 1 : 0)} " +
             $"irqFromSnes={(_registers.Sa1IrqFromSnes ? 1 : 0)} timerIrq={(_timer.IrqPending ? 1 : 0)} dmaIrq={(_registers.Sa1DmaIrq ? 1 : 0)} " +
             $"dmaState={_registers.DmaState} dmaEnabled={(_registers.DmaEnabled ? 1 : 0)} src={_registers.DmaSource} dst={_registers.DmaDestination} " +
@@ -226,12 +276,19 @@ public sealed class Sa1
         if (snesCycles <= _lastSnesCycles)
             return;
 
+        long tickStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
         ulong delta = snesCycles - _lastSnesCycles;
         ulong sa1Cycles = delta / 2;
         _lastSnesCycles += sa1Cycles * 2;
         ulong spentWait = Math.Min(sa1Cycles, _bwramWaitCycles);
         ulong cpuCycles = sa1Cycles - spentWait;
         _bwramWaitCycles -= spentWait;
+        if (PerfStatsEnabled)
+        {
+            PerfSa1Cycles += sa1Cycles;
+            PerfCpuCycles += cpuCycles;
+            PerfBwramWaitCycles += spentWait;
+        }
 
         if (_registers.Sa1Reset != _lastSa1Reset)
         {
@@ -244,8 +301,27 @@ public sealed class Sa1
             TraceState(_registers.Sa1Wait ? "WAIT-ASSERT" : "WAIT-DEASSERT");
         }
 
+        // Reset release must not depend on CPU execution eligibility. Kirby 3 programs
+        // SA-1 state while the core is effectively halted, and deferring the reset vector
+        // load until "not halted" leaves the CPU parked at PC=0x000000.
+        if (_registers.Sa1Reset)
+        {
+            _inReset = true;
+            _lastSa1Nmi = false;
+        }
+        else if (_inReset)
+        {
+            _cpu.Reset();
+            _inReset = false;
+            _lastSa1Nmi = false;
+            _debugCpuResetCount++;
+            _debugLastResetPc = _cpu.ProgramCounter24;
+            TraceState("RESET-RELEASE");
+        }
+
         if (!_registers.CpuHalted())
         {
+            long cpuStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
             ulong i = 0;
             while (i < cpuCycles)
             {
@@ -306,17 +382,28 @@ public sealed class Sa1
                 
                 i++;
             }
+            if (PerfStatsEnabled)
+                PerfCpuTicks += Stopwatch.GetTimestamp() - cpuStart;
             _bwramWaitCycles += _system.BwramWaitCycles;
+            if (PerfStatsEnabled)
+                PerfBwramWaitCycles += _system.BwramWaitCycles;
             _system.BwramWaitCycles = 0;
         }
 
         if (_registers.DmaState != DmaState.Idle)
         {
-            for (ulong i = 0; i < sa1Cycles; i++)
-                _registers.TickDma(_mmc, _rom, _iram, _bwram);
+            long dmaStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
+            _registers.TickDmaBatch(sa1Cycles, _mmc, _rom, _iram, _bwram);
+            if (PerfStatsEnabled)
+            {
+                PerfDmaTicks += Stopwatch.GetTimestamp() - dmaStart;
+                PerfDmaCycles += sa1Cycles;
+            }
         }
 
         _timer.Advance(sa1Cycles);
+        if (PerfStatsEnabled)
+            PerfTickTicks += Stopwatch.GetTimestamp() - tickStart;
     }
 
     public void ResyncTo(ulong snesCycles)
@@ -344,6 +431,8 @@ public sealed class Sa1
         _lastSa1Reset = _registers.Sa1Reset;
         _lastSa1Wait = _registers.Sa1Wait;
         _lastSa1Nmi = false;
+        _debugCpuResetCount = 0;
+        _debugLastResetPc = 0;
         _pendingSa1BwramWrites.Clear();
     }
 
@@ -414,7 +503,7 @@ public sealed class Sa1
         _tracePcBreakRemaining--;
         string beforeBytes = GetOpWindow(pcBefore);
         string afterBytes = GetOpWindow(pcAfter);
-        Console.WriteLine($"[SA1-PC-BREAK] pc=0x{pcBefore:X6}->0x{pcAfter:X6} before=[{beforeBytes}] after=[{afterBytes}] state={GetDebugState()}");
+        WritePcHookLine($"[SA1-PC-BREAK] pc=0x{pcBefore:X6}->0x{pcAfter:X6} before=[{beforeBytes}] after=[{afterBytes}] state={GetDebugState()}");
     }
 
     private void TracePcRangeIfNeeded(int pcBefore, int pcAfter)
@@ -428,7 +517,7 @@ public sealed class Sa1
         _tracePcRangeRemaining--;
         string beforeBytes = GetOpWindow(pcBefore);
         string afterBytes = GetOpWindow(pcAfter);
-        Console.WriteLine($"[SA1-PC-RANGE] pc=0x{pcBefore:X6}->0x{pcAfter:X6} before=[{beforeBytes}] after=[{afterBytes}] state={GetDebugState()}");
+        WritePcHookLine($"[SA1-PC-RANGE] pc=0x{pcBefore:X6}->0x{pcAfter:X6} before=[{beforeBytes}] after=[{afterBytes}] state={GetDebugState()}");
     }
 
     private void TracePcTargetIfNeeded(int pcBefore, int pcAfter)
@@ -445,13 +534,25 @@ public sealed class Sa1
             return;
 
         _tracePcTargetRemaining--;
-        Console.WriteLine($"[SA1-PC-TARGET] hit pc=0x{pcAfter:X6} state={GetDebugState()}");
-        Console.WriteLine($"[SA1-PC-TARGET] iram0100=[{GetByteWindow(0x000100, 16)}]");
-        Console.WriteLine($"[SA1-PC-TARGET] iram36DE=[{GetByteWindow(0x0036DE, 8)}]");
-        Console.WriteLine($"[SA1-PC-TARGET] bwram5FF8=[{GetByteWindow(0x005FF8, 16)}]");
-        Console.WriteLine($"[SA1-PC-TARGET] bwram6000=[{GetByteWindow(0x006000, 16)}]");
+        WritePcHookLine($"[SA1-PC-TARGET] hit pc=0x{pcAfter:X6} state={GetDebugState()}");
+        WritePcHookLine($"[SA1-PC-TARGET] iram0100=[{GetByteWindow(0x000100, 16)}]");
+        WritePcHookLine($"[SA1-PC-TARGET] iram36DE=[{GetByteWindow(0x0036DE, 8)}]");
+        WritePcHookLine($"[SA1-PC-TARGET] bwram5FF8=[{GetByteWindow(0x005FF8, 16)}]");
+        WritePcHookLine($"[SA1-PC-TARGET] bwram6000=[{GetByteWindow(0x006000, 16)}]");
         foreach (string history in _tracePcTargetHistory)
-            Console.WriteLine($"[SA1-PC-TARGET] {history}");
+            WritePcHookLine($"[SA1-PC-TARGET] {history}");
+    }
+
+    private void WritePcHookLine(string line)
+    {
+        Console.WriteLine(line);
+        if (string.IsNullOrWhiteSpace(_tracePcHookPath))
+            return;
+
+        lock (_tracePcHookLock)
+        {
+            File.AppendAllText(_tracePcHookPath, line + Environment.NewLine);
+        }
     }
 
     private string GetOpWindow(int pc)
@@ -716,7 +817,7 @@ public sealed class Sa1
                     if (isVectorBank && offset == 0xFFEF && irqSource == InterruptVectorSource.IoPorts)
                         return _registers.SnesIrqVector.Msb();
 
-                    return _mmc.TryMapRomAddress(address, out uint romAddr) && romAddr < _rom.Length ? _rom[(int)romAddr] : (byte?)null;
+                    return _mmc.TryReadRomByte(address, _rom, out byte value) ? value : (byte?)null;
                 }
             case (<= 0x3F, >= 0x2300 and <= 0x230F):
             case (>= 0x80 and <= 0xBF, >= 0x2300 and <= 0x230F):
@@ -821,64 +922,62 @@ public sealed class Sa1
         bwramWait = false;
         uint bank = (address >> 16) & 0xFF;
         uint offset = address & 0xFFFF;
-        
+
         byte bankType = _bankTypes[bank];
-        
-        // Handle common mixed banks (00-3F, 80-BF)
+
         if (bankType == BankTypeIo)
         {
             if (offset >= 0x8000)
             {
-                // Vectors in bank 00
                 if (bank == 0x00)
                 {
-                    if (offset == 0xFFEA) return _registers.Sa1NmiVector.Lsb();
-                    if (offset == 0xFFEB) return _registers.Sa1NmiVector.Msb();
-                    if (offset == 0xFFEE) return _registers.Sa1IrqVector.Lsb();
-                    if (offset == 0xFFEF) return _registers.Sa1IrqVector.Msb();
-                    if (offset == 0xFFFC) return _registers.Sa1ResetVector.Lsb();
-                    if (offset == 0xFFFD) return _registers.Sa1ResetVector.Msb();
+                    if (offset == 0xFFEA) return CountIoRead(_registers.Sa1NmiVector.Lsb());
+                    if (offset == 0xFFEB) return CountIoRead(_registers.Sa1NmiVector.Msb());
+                    if (offset == 0xFFEE) return CountIoRead(_registers.Sa1IrqVector.Lsb());
+                    if (offset == 0xFFEF) return CountIoRead(_registers.Sa1IrqVector.Msb());
+                    if (offset == 0xFFFC) return CountIoRead(_registers.Sa1ResetVector.Lsb());
+                    if (offset == 0xFFFD) return CountIoRead(_registers.Sa1ResetVector.Msb());
                 }
-                return _mmc.TryMapRomAddress(address, out uint romAddr) && romAddr < _rom.Length ? _rom[(int)romAddr] : (byte)0;
+                return CountRomRead(ReadRomByteOrZero(address));
             }
-            
+
             if (offset <= 0x07FF || (offset >= 0x3000 && offset <= 0x37FF))
             {
-                return _iram[(int)(address & 0x7FF)];
+                return CountIramRead(_iram[(int)(address & 0x7FF)]);
             }
-            
+
             if (offset >= 0x2300 && offset <= 0x230F)
             {
-                return _registers.Sa1Read(address, _timer, _mmc, _rom);
+                return CountIoRead(_registers.Sa1Read(address, _timer, _mmc, _rom));
             }
-            
+
             if (offset >= 0x6000 && offset <= 0x7FFF)
             {
                 bwramWait = true;
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
                     uint bwramAddr = ResolveSa1BwramWindowAddress(address);
-                    return _bwram[(int)bwramAddr];
+                    return CountBwramRead(_bwram[(int)bwramAddr]);
                 }
-                return ReadBwramBitmap(_mmc.Sa1BwramBaseAddr | (address & 0x1FFF));
+                return CountBwramBitmapRead(ReadBwramBitmap(_mmc.Sa1BwramBaseAddr | (address & 0x1FFF)));
             }
         }
         else if (bankType == BankTypeRom)
         {
-            return _mmc.TryMapRomAddress(address, out uint romAddr) && romAddr < _rom.Length ? _rom[(int)romAddr] : (byte)0;
+            return CountRomRead(ReadRomByteOrZero(address));
         }
         else if (bankType == BankTypeBwram)
         {
             bwramWait = true;
-            return _bwram[address & (uint)(_bwram.Length - 1)];
+            return CountBwramRead(_bwram[address & (uint)(_bwram.Length - 1)]);
         }
         else if (bankType == BankTypeBwramBitmap)
         {
             bwramWait = true;
-            return ReadBwramBitmap(address);
+            return CountBwramBitmapRead(ReadBwramBitmap(address));
         }
 
-        return 0;
+        return CountUnmappedRead();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -887,37 +986,41 @@ public sealed class Sa1
         bwramWait = false;
         uint bank = (address >> 16) & 0xFF;
         uint offset = address & 0xFFFF;
-        
+
         byte bankType = _bankTypes[bank];
-        
+
         if (bankType == BankTypeIo)
         {
             if (offset >= 0x2200 && offset <= 0x22FF)
             {
+                CountIoWrite();
                 _registers.Sa1Write(address, value, _timer, _mmc, _rom, _iram);
                 return;
             }
-            
+
             if (offset <= 0x07FF || (offset >= 0x3000 && offset <= 0x37FF))
             {
+                CountIramWrite();
                 uint iramAddr = address & 0x7FF;
                 int writeProtectIdx = (int)(iramAddr >> 8);
                 if (_registers.Sa1IramWritesEnabled[writeProtectIdx])
                     _iram[(int)iramAddr] = value;
                 return;
             }
-            
+
             if (offset >= 0x6000 && offset <= 0x7FFF)
             {
                 bwramWait = true;
                 if (_mmc.Sa1BwramSource == BwramMapSource.Normal)
                 {
+                    CountBwramWrite();
                     uint bwramAddr = ResolveSa1BwramWindowAddress(address);
                     if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
                         _bwram[(int)bwramAddr] = value;
                 }
                 else
                 {
+                    CountBwramBitmapWrite();
                     WriteBwramBitmap(_mmc.Sa1BwramBaseAddr | (address & 0x1FFF), value);
                 }
                 return;
@@ -926,6 +1029,7 @@ public sealed class Sa1
         else if (bankType == BankTypeBwram)
         {
             bwramWait = true;
+            CountBwramWrite();
             uint bwramAddr = address & (uint)(_bwram.Length - 1);
             if (_registers.CanWriteBwram(bwramAddr, isSnes: false))
                 _bwram[(int)bwramAddr] = value;
@@ -934,9 +1038,134 @@ public sealed class Sa1
         else if (bankType == BankTypeBwramBitmap)
         {
             bwramWait = true;
+            CountBwramBitmapWrite();
             WriteBwramBitmap(address, value);
             return;
         }
+
+        CountUnmappedWrite();
+    }
+
+    internal void ResetPerfCounters()
+    {
+        if (!PerfStatsEnabled)
+            return;
+
+        PerfTickTicks = 0;
+        PerfCpuTicks = 0;
+        PerfDmaTicks = 0;
+        PerfSa1Cycles = 0;
+        PerfCpuCycles = 0;
+        PerfBwramWaitCycles = 0;
+        PerfDmaCycles = 0;
+        PerfRomReads = 0;
+        PerfIramReads = 0;
+        PerfIoReads = 0;
+        PerfBwramReads = 0;
+        PerfBwramBitmapReads = 0;
+        PerfUnmappedReads = 0;
+        PerfIramWrites = 0;
+        PerfIoWrites = 0;
+        PerfBwramWrites = 0;
+        PerfBwramBitmapWrites = 0;
+        PerfUnmappedWrites = 0;
+        _cpu.ResetPerfCounters();
+    }
+
+    internal string GetPerfSummary()
+    {
+        if (!PerfStatsEnabled)
+            return string.Empty;
+
+        double tickMs = PerfTickTicks * 1000.0 / Stopwatch.Frequency;
+        double cpuMs = PerfCpuTicks * 1000.0 / Stopwatch.Frequency;
+        double dmaMs = PerfDmaTicks * 1000.0 / Stopwatch.Frequency;
+        return
+            $"SA1 tick:{tickMs:0.0}ms  cpu:{cpuMs:0.0}ms  dma:{dmaMs:0.0}ms  cyc:{PerfSa1Cycles}  run:{PerfCpuCycles}  wait:{PerfBwramWaitCycles}  dmaCyc:{PerfDmaCycles}\n" +
+            $"SA1 bus  instr:{_cpu.PerfInstructions}  rom:{PerfRomReads}  iram:{PerfIramReads}/{PerfIramWrites}  io:{PerfIoReads}/{PerfIoWrites}  bw:{PerfBwramReads}/{PerfBwramWrites}  bmap:{PerfBwramBitmapReads}/{PerfBwramBitmapWrites}  unm:{PerfUnmappedReads}/{PerfUnmappedWrites}";
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte CountRomRead(byte value)
+    {
+        if (PerfStatsEnabled)
+            PerfRomReads++;
+        return value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte CountIramRead(byte value)
+    {
+        if (PerfStatsEnabled)
+            PerfIramReads++;
+        return value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte CountIoRead(byte value)
+    {
+        if (PerfStatsEnabled)
+            PerfIoReads++;
+        return value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte CountBwramRead(byte value)
+    {
+        if (PerfStatsEnabled)
+            PerfBwramReads++;
+        return value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte CountBwramBitmapRead(byte value)
+    {
+        if (PerfStatsEnabled)
+            PerfBwramBitmapReads++;
+        return value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte CountUnmappedRead()
+    {
+        if (PerfStatsEnabled)
+            PerfUnmappedReads++;
+        return 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountIramWrite()
+    {
+        if (PerfStatsEnabled)
+            PerfIramWrites++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountIoWrite()
+    {
+        if (PerfStatsEnabled)
+            PerfIoWrites++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountBwramWrite()
+    {
+        if (PerfStatsEnabled)
+            PerfBwramWrites++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountBwramBitmapWrite()
+    {
+        if (PerfStatsEnabled)
+            PerfBwramBitmapWrites++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountUnmappedWrite()
+    {
+        if (PerfStatsEnabled)
+            PerfUnmappedWrites++;
     }
 
     private void QueuePendingSa1BwramWrite(uint bwramAddr, byte value)
@@ -987,12 +1216,18 @@ public sealed class Sa1
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte ReadRomByteOrZero(uint address)
+    {
+        return _mmc.ReadRomByteOrZero(address, _rom);
+    }
+
     private uint ResolveSa1BwramWindowAddress(uint address)
     {
         return (_mmc.Sa1BwramBaseAddr | (address & 0x1FFF)) & (uint)(_bwram.Length - 1);
     }
 
-    private sealed class Sa1System : ISNESSystem
+    internal sealed class Sa1System : ISNESSystem
     {
         private readonly Sa1 _sa1;
         private readonly ICPU _cpu;

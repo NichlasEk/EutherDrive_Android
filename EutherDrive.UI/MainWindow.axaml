@@ -351,6 +351,26 @@
             <TextBlock Name="EmuFpsText" Text="Emu FPS: -"/>
             <TextBlock Name="FrameText" Text="Frame: -"/>
             <TextBlock Name="ResolutionText" Text="Resolution: -"/>
+            <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,4,0,0">
+              <Button Classes="compact" Content="Perf snapshot" Click="OnCapturePerfSnapshot"/>
+              <TextBlock Classes="muted" FontSize="11" VerticalAlignment="Center" Text="Captures and copies current perf text"/>
+            </StackPanel>
+            <Border Padding="6,4" CornerRadius="10" Background="#171B25" BorderBrush="#2E3A5A" BorderThickness="1">
+              <TextBox Name="PerfSnapshotText"
+                       Classes="log-view"
+                       IsReadOnly="True"
+                       Background="Transparent"
+                       BorderThickness="0"
+                       MinHeight="88"
+                       FontSize="12"
+                       Foreground="#DCE7FF"
+                       FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
+                       TextWrapping="NoWrap"
+                       ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                       ScrollViewer.VerticalScrollBarVisibility="Auto"
+                       AcceptsReturn="True"
+                       Text="Perf snapshot idle."/>
+            </Border>
             <CheckBox Content="Speed lock (real-time)" IsChecked="True" Name="SpeedLockCheck" Checked="OnSpeedLockToggle" Unchecked="OnSpeedLockToggle"/>
             <CheckBox Content="Render skip when fast" IsChecked="False" Name="RenderSkipCheck" Checked="OnRenderSkipToggle" Unchecked="OnRenderSkipToggle"/>
             <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">

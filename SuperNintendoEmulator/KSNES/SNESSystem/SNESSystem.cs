@@ -11,6 +11,8 @@ namespace KSNES.SNESSystem;
 
 public class SNESSystem : ISNESSystem
 {
+    private static readonly bool PerfStatsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     private enum GpDmaState
     {
         Idle,
@@ -439,15 +441,17 @@ public class SNESSystem : ISNESSystem
 
     public void RunFrameForExternal()
     {
-        ResetPerfCounters();
-        long frameStart = Stopwatch.GetTimestamp();
+        if (PerfStatsEnabled)
+            ResetPerfCounters();
+        long frameStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
         RunFrame(false);
         Renderer?.RenderBuffer(_ppuImpl.GetPixels());
         _apuImpl.SetSamples(AudioHandler.SampleBufferL, AudioHandler.SampleBufferR);
         AudioHandler.NextBuffer();
         ROM.RunCoprocessor(Cycles);
         FrameRendered?.Invoke(this, EventArgs.Empty);
-        _perfFrameTicks = Stopwatch.GetTimestamp() - frameStart;
+        if (PerfStatsEnabled)
+            _perfFrameTicks = Stopwatch.GetTimestamp() - frameStart;
     }
 
     public void StopEmulation()
@@ -498,14 +502,16 @@ public class SNESSystem : ISNESSystem
         int accessTime = 0;
         if (!dma)
         {
-            _perfCpuReads++;
+            if (PerfStatsEnabled)
+                _perfCpuReads++;
             _cpuMemOps++;
             accessTime = pageData & BusPageAccessMask;
             _cpuCyclesLeft += accessTime;
         }
         else
         {
-            _perfDmaReads++;
+            if (PerfStatsEnabled)
+                _perfDmaReads++;
         }
         int val = _useFastReadPath ? RreadFast(fullAdr, GetBusPageKind(pageData)) : Rread(fullAdr);
         if (!dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr))
@@ -524,14 +530,16 @@ public class SNESSystem : ISNESSystem
         int accessTime = 0;
         if (!dma)
         {
-            _perfCpuWrites++;
+            if (PerfStatsEnabled)
+                _perfCpuWrites++;
             _cpuMemOps++;
             accessTime = pageData & BusPageAccessMask;
             _cpuCyclesLeft += accessTime;
         }
         else
         {
-            _perfDmaWrites++;
+            if (PerfStatsEnabled)
+                _perfDmaWrites++;
         }
         OpenBus = value;
         bool isApuPortAccess = !dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr);
@@ -772,9 +780,10 @@ public class SNESSystem : ISNESSystem
         _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
         if (XPos == 512 && !noPpu)
         {
-            long ppuStart = Stopwatch.GetTimestamp();
+            long ppuStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
             _ppuImpl.RenderLine(YPos);
-            _perfPpuTicks += Stopwatch.GetTimestamp() - ppuStart;
+            if (PerfStatsEnabled)
+                _perfPpuTicks += Stopwatch.GetTimestamp() - ppuStart;
         }
         if (_autoJoyPendingStart && YPos == vBlankStart && XPos == 130)
         {
@@ -844,8 +853,11 @@ public class SNESSystem : ISNESSystem
             _cpuCyclesLeft -= chunkMclks;
         RomImpl.RunCoprocessor(Cycles);
 
-        _perfFastCpuWindowHits++;
-        _perfFastCpuWindowMclks += (ulong)chunkMclks;
+        if (PerfStatsEnabled)
+        {
+            _perfFastCpuWindowHits++;
+            _perfFastCpuWindowMclks += (ulong)chunkMclks;
+        }
         CatchUpApu();
         _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
         AdvanceBeamPositionBy(chunkMclks, currentLineMclks);
@@ -1120,7 +1132,8 @@ public class SNESSystem : ISNESSystem
     {
         if (_cpuCyclesLeft == 0)
         {
-            _perfCpuSlots++;
+            if (PerfStatsEnabled)
+                _perfCpuSlots++;
             _cpuImpl.CyclesLeft = 0;
             _cpuMemOps = 0;
             _cpuImpl.Cycle();
@@ -1284,7 +1297,8 @@ public class SNESSystem : ISNESSystem
             QueueDmaWriteBusB((_dmaBadr[channel] + _dmaOffs[tableOff]) & 0xff,
                 DmaReadBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel]));
         }
-        _perfDmaBytes++;
+        if (PerfStatsEnabled)
+            _perfDmaBytes++;
 
         _dmaTimer = 4;
         if (_gpdmaBytesCopied == 0)
@@ -1349,7 +1363,8 @@ public class SNESSystem : ISNESSystem
 
     private void HandleHdma()
     {
-        _perfHdmaRuns++;
+        if (PerfStatsEnabled)
+            _perfHdmaRuns++;
         _hdmaTimer = 18;
         for (var i = 0; i < 8; i++)
         {
@@ -1374,7 +1389,8 @@ public class SNESSystem : ISNESSystem
                 {
                     for (var j = 0; j < _dmaOffLengths[_dmaMode[i]]; j++)
                     {
-                        _perfDmaBytes++;
+                        if (PerfStatsEnabled)
+                            _perfDmaBytes++;
                         int tableOff = _dmaMode[i] * 4 + j;
                         _hdmaTimer += 8;
                         if (_hdmaInd[i])
@@ -1431,6 +1447,9 @@ public class SNESSystem : ISNESSystem
 
     private void ResetPerfCounters()
     {
+        if (!PerfStatsEnabled)
+            return;
+
         _perfFrameTicks = 0;
         _perfPpuTicks = 0;
         _perfCpuReads = 0;
@@ -1445,18 +1464,31 @@ public class SNESSystem : ISNESSystem
         _cpuImpl.ResetPerfCounters();
         _ppuImpl.ResetPerfCounters();
         _apuImpl.ResetPerfCounters();
+        if (ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1)
+            sa1.ResetPerfCounters();
     }
 
     public string GetPerfSummary()
     {
+        if (!PerfStatsEnabled)
+            return string.Empty;
+
         double frameMs = _perfFrameTicks * 1000.0 / Stopwatch.Frequency;
         double ppuMs = _perfPpuTicks * 1000.0 / Stopwatch.Frequency;
         double sampleMs = _apuImpl.PerfSetSamplesTicks * 1000.0 / Stopwatch.Frequency;
-        return
+        string summary =
             $"SNES frame:{frameMs:0.0}ms  ppu:{ppuMs:0.0}ms  sample:{sampleMs:0.0}ms\n" +
             $"SNES core  instr:{_cpuImpl.PerfInstructions}  slot:{_perfCpuSlots}  rd/wr:{_perfCpuReads}/{_perfCpuWrites}  dmaRW:{_perfDmaReads}/{_perfDmaWrites}  fast:{_perfFastCpuWindowHits}/{_perfFastCpuWindowMclks}m  dmaB:{_perfDmaBytes}  hdma:{_perfHdmaRuns}\n" +
             $"SNES ppu  lines:{_ppuImpl.PerfRenderedLines}  hi:{_ppuImpl.PerfHiResLines}  true:{_ppuImpl.PerfTrueHiResLines}  m7:{_ppuImpl.PerfMode7Lines}  pix:{_ppuImpl.PerfOutputPixels}\n" +
             $"SNES dsp  cyc:{_apuImpl.DspImpl.PerfCycles}  samp:{_apuImpl.DspImpl.PerfProducedSamples}  echo:{_apuImpl.DspImpl.PerfEchoWrites}  out:{_apuImpl.PerfSetSamplesOutputs}";
+        if (ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1)
+        {
+            string sa1Summary = sa1.GetPerfSummary();
+            if (!string.IsNullOrWhiteSpace(sa1Summary))
+                summary = $"{summary}\n{sa1Summary}";
+        }
+
+        return summary;
     }
 
     private int ReadReg(int adr) 

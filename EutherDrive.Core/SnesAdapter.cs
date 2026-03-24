@@ -12,6 +12,8 @@ namespace EutherDrive.Core;
 
 public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInputHandler
 {
+    private static readonly bool SnesPerfEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     private const double NtscFps = 21477272.0 / (1364.0 * 262.0);
     private const double PalFps = 21281370.0 / (1364.0 * 312.0);
     private const int DefaultWidth = 256;
@@ -125,9 +127,9 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
         {
             int samplesPerFrame = GetSamplesPerFrame();
             _audioHandler.EnsureCapacity(samplesPerFrame);
-            long coreStart = Stopwatch.GetTimestamp();
+            long coreStart = SnesPerfEnabled ? Stopwatch.GetTimestamp() : 0;
             _system.RunFrameForExternal();
-            long coreTicks = Stopwatch.GetTimestamp() - coreStart;
+            long coreTicks = SnesPerfEnabled ? Stopwatch.GetTimestamp() - coreStart : 0;
             int[] pixels = _system.PPU.GetPixels();
             int presentWidth = DefaultWidth;
             int presentHeight = DefaultHeight;
@@ -142,10 +144,11 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
                         EnsureFrameBuffer(presentWidth, presentHeight);
                         Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
                         EnsureAudioBuffer(samplesPerFrame);
-                        long pcmStart = Stopwatch.GetTimestamp();
+                        long pcmStart = SnesPerfEnabled ? Stopwatch.GetTimestamp() : 0;
                         ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
-                        long pcmTicks = Stopwatch.GetTimestamp() - pcmStart;
-                        UpdateFramePerfStats(coreTicks, 0, pcmTicks, 0);
+                        long pcmTicks = SnesPerfEnabled ? Stopwatch.GetTimestamp() - pcmStart : 0;
+                        if (SnesPerfEnabled)
+                            UpdateFramePerfStats(coreTicks, 0, pcmTicks, 0);
                         TraceAudioIfEnabled();
                         return;
                     }
@@ -158,14 +161,15 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
                 }
             }
             EnsureFrameBuffer(presentWidth, presentHeight);
-            long blitStart = Stopwatch.GetTimestamp();
+            long blitStart = SnesPerfEnabled ? Stopwatch.GetTimestamp() : 0;
             ConvertArgbToBgra(pixels, _frameBuffer, presentWidth, presentHeight, PPU.MaxFrameWidth);
-            long blitTicks = Stopwatch.GetTimestamp() - blitStart;
+            long blitTicks = SnesPerfEnabled ? Stopwatch.GetTimestamp() - blitStart : 0;
             EnsureAudioBuffer(samplesPerFrame);
-            long pcmStart2 = Stopwatch.GetTimestamp();
+            long pcmStart2 = SnesPerfEnabled ? Stopwatch.GetTimestamp() : 0;
             ConvertFloatToPcm(_audioHandler.SampleBufferL, _audioHandler.SampleBufferR, _audioBuffer);
-            long pcmTicks2 = Stopwatch.GetTimestamp() - pcmStart2;
-            UpdateFramePerfStats(coreTicks, blitTicks, pcmTicks2, presentHeight * _frameStride);
+            long pcmTicks2 = SnesPerfEnabled ? Stopwatch.GetTimestamp() - pcmStart2 : 0;
+            if (SnesPerfEnabled)
+                UpdateFramePerfStats(coreTicks, blitTicks, pcmTicks2, presentHeight * _frameStride);
             TraceAudioIfEnabled();
             _frameCounter++;
         }
@@ -369,11 +373,19 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
 
     public string? GetPpuDebugSnapshot()
     {
+        if (!SnesPerfEnabled)
+            return null;
         return _system.PPU is PPU ppu ? ppu.GetDebugSnapshot() : null;
     }
 
     public bool TryGetFramePerfSummary(out string summary)
     {
+        if (!SnesPerfEnabled)
+        {
+            summary = string.Empty;
+            return false;
+        }
+
         summary = _framePerfSummary;
         if (_system is SNESSystem snesSystem)
         {

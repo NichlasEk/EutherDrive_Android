@@ -778,6 +778,7 @@ internal sealed class Sa1Registers
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool CanWriteBwram(uint bwramAddr, bool isSnes)
     {
         bool writeEnabled = SnesBwramWritesEnabled || Sa1BwramWritesEnabled;
@@ -932,6 +933,24 @@ internal sealed class Sa1Registers
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void TickDmaBatch(ulong cycles, Sa1Mmc mmc, byte[] rom, byte[] iram, byte[] bwram)
+    {
+        if (cycles == 0 || DmaState == DmaState.Idle)
+            return;
+
+        if (DmaState == DmaState.NormalCopying
+            && DmaSource == DmaSourceDevice.Rom
+            && DmaDestination == DmaDestinationDevice.Iram)
+        {
+            ProgressNormalDmaRomToIramBatch(cycles, mmc, rom, iram);
+            return;
+        }
+
+        for (ulong i = 0; i < cycles && DmaState != DmaState.Idle; i++)
+            TickDma(mmc, rom, iram, bwram);
+    }
+
     public void NotifySnesDmaStart(uint sourceAddress)
     {
         bool isBwRamBank = sourceAddress >= 0x400000 && sourceAddress < 0x600000;
@@ -997,6 +1016,48 @@ internal sealed class Sa1Registers
                 (DmaSourceDevice.Rom, DmaDestinationDevice.Iram) => DmaState.NormalCopying,
                 _ => DmaState.NormalWaitCycle
             };
+        }
+    }
+
+    private void ProgressNormalDmaRomToIramBatch(ulong cycles, Sa1Mmc mmc, byte[] rom, byte[] iram)
+    {
+        if (DmaTerminalCounter == 0)
+        {
+            DmaState = DmaState.Idle;
+            return;
+        }
+
+        uint transferCount = Math.Min((uint)cycles, DmaTerminalCounter);
+        uint sourceAddress = DmaSourceAddress;
+        uint destinationAddress = DmaDestinationAddress;
+
+        for (uint i = 0; i < transferCount; i++)
+        {
+            if (!mmc.TryMapRomAddress(sourceAddress, out uint romAddr))
+            {
+                DmaSourceAddress = sourceAddress;
+                DmaDestinationAddress = destinationAddress;
+                DmaState = DmaState.Idle;
+                return;
+            }
+
+            iram[(int)(destinationAddress & 0x7FF)] = romAddr < rom.Length ? rom[(int)romAddr] : (byte)0;
+            sourceAddress = (sourceAddress + 1) & 0xFFFFFF;
+            destinationAddress = (destinationAddress + 1) & 0xFFFFFF;
+        }
+
+        DmaSourceAddress = sourceAddress;
+        DmaDestinationAddress = destinationAddress;
+        DmaTerminalCounter -= (ushort)transferCount;
+
+        if (DmaTerminalCounter == 0)
+        {
+            DmaState = DmaState.Idle;
+            Sa1DmaIrq = true;
+        }
+        else
+        {
+            DmaState = DmaState.NormalCopying;
         }
     }
 

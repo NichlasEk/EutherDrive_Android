@@ -429,6 +429,7 @@ class Program
                 bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
                 bool traceSpcWindow = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SPC_WINDOW") == "1";
                 bool traceSnesCheckpoints = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CHECKPOINTS") == "1";
+                bool sa1SnapshotOnExit = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_SA1_SNAPSHOT_ON_EXIT") == "1";
                 int traceSnesCheckpointEvery = Math.Max(1, ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_EVERY") ?? 1);
                 int traceSnesCheckpointStart = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_START_FRAME") ?? 0;
                 int traceSnesCheckpointEnd = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_END_FRAME") ?? int.MaxValue;
@@ -564,6 +565,12 @@ class Program
                 DumpSnesFrame(snes, Path.Combine(dumpDir, "headless_output.ppm"), traceSnesFrames);
                 if (dumpSnesPpuRaw)
                     DumpSnesPpuRaw(snes, Path.Combine(dumpDir, "snes_ppu_after"));
+                if (sa1SnapshotOnExit && snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 finalSa1)
+                {
+                    string snapshotPath = Path.Combine(dumpDir, "sa1_snapshot_final.txt");
+                    File.WriteAllText(snapshotPath, finalSa1.GetKirbyDebugSnapshot());
+                    Console.WriteLine($"[HEADLESS] SA1 final snapshot: {snapshotPath}");
+                }
                 if (snesPeekAddrs.Length > 0)
                     Console.WriteLine(DumpSnesPeek(snes, "after", snesPeekAddrs));
                 snesAudioSink?.Dispose();
