@@ -261,6 +261,16 @@ public class PPU : IPPU
     [NonSerialized]
     private int _lineLayerCount;
     [NonSerialized]
+    private int[] _lineOrderedLayers = [];
+    [NonSerialized]
+    private byte[] _lineOrderedPriorities = [];
+    [NonSerialized]
+    private byte[] _lineOrderedScreenMasks = [];
+    [NonSerialized]
+    private int _lineOrderedCount;
+    [NonSerialized]
+    private bool _lineHasLayerWindows;
+    [NonSerialized]
     private bool _lineCachesDirty = true;
     [NonSerialized]
     private ushort[] _tilePixelBuffer = [];
@@ -480,6 +490,12 @@ public class PPU : IPPU
     private bool HasActiveMainWindow(int layer)
     {
         return _mainScreenWindow[layer] && (_window1Enabled[layer] || _window2Enabled[layer]);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HasActiveSubWindow(int layer)
+    {
+        return _subScreenWindow[layer] && (_window1Enabled[layer] || _window2Enabled[layer]);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1255,6 +1271,12 @@ public class PPU : IPPU
             _tilePixelBuffer = new ushort[4 * 8];
         if (_tilePriorityBuffer.Length != 4)
             _tilePriorityBuffer = new byte[4];
+        if (_lineOrderedLayers.Length != 12)
+            _lineOrderedLayers = new int[12];
+        if (_lineOrderedPriorities.Length != 12)
+            _lineOrderedPriorities = new byte[12];
+        if (_lineOrderedScreenMasks.Length != 12)
+            _lineOrderedScreenMasks = new byte[12];
         if (_spriteXCache.Length != 128)
             _spriteMetaDirty = true;
 
@@ -1599,6 +1621,7 @@ public class PPU : IPPU
             {
                 int* argbTabOffset = argbTab + brightnessOffset;
                 int* pRow = pOut + outputRow;
+                bool needPotentialSubColor = trueHiResOutput || _pseudoHires || (_addSub && _lineAnyColorMathEnabled);
 
                 for (int i = 0; i < 256; i++)
                 {
@@ -1608,7 +1631,44 @@ public class PPU : IPPU
 
                     if (!_forcedBlank)
                     {
-                        GetColor(false, i, screenY, out ushort color, out int item2, out int item3);
+                        ushort color;
+                        ushort secondColor = 0;
+                        int item2;
+                        int item3;
+                        int secondLayer = 5;
+                        int secondPixel = 0;
+                        if (needPotentialSubColor)
+                        {
+                            if (_lineHasLayerWindows)
+                            {
+                                GetColorPair(
+                                    i,
+                                    screenY,
+                                    out color,
+                                    out item2,
+                                    out item3,
+                                    out secondColor,
+                                    out secondLayer,
+                                    out secondPixel);
+                            }
+                            else
+                            {
+                                GetColorPairWindowless(
+                                    i,
+                                    screenY,
+                                    out color,
+                                    out item2,
+                                    out item3,
+                                    out secondColor,
+                                    out secondLayer,
+                                    out secondPixel);
+                            }
+                        }
+                        else
+                        {
+                            GetColor(false, i, screenY, out color, out item2, out item3);
+                        }
+
                         bool mathEnabled = GetMathEnabled(i, item2, item3);
                         mainVisible = item2 < 5;
                         r2 = color & 0x1f;
@@ -1620,12 +1680,12 @@ public class PPU : IPPU
                             r2 = 0; g2 = 0; b2 = 0;
                         }
 
-                        ushort secondColor = 0;
-                        int secondLayer = 5;
-                        int secondPixel = 0;
-                        if (_mode == 5 || _mode == 6 || _pseudoHires || (mathEnabled && _addSub))
+                        if ((trueHiResOutput || _pseudoHires) || (mathEnabled && _addSub))
                         {
-                            GetColor(true, i, screenY, out secondColor, out secondLayer, out secondPixel);
+                            if (!needPotentialSubColor)
+                            {
+                                GetColor(true, i, screenY, out secondColor, out secondLayer, out secondPixel);
+                            }
                             subVisible = secondLayer < 5;
                             r1 = secondColor & 0x1f;
                             g1 = (secondColor >> 5) & 0x1f;
@@ -2057,6 +2117,31 @@ public class PPU : IPPU
             _lineModeIndex = 108;
         _lineLayerCount = _layercountPerMode[_mode];
         _lineAnyColorMathEnabled = AnyColorMathEnabled();
+        _lineOrderedCount = 0;
+        _lineHasLayerWindows = false;
+
+        for (int j = 0; j < _lineLayerCount; j++)
+        {
+            int layer = _layersPerMode[_lineModeIndex + j];
+            if ((uint)layer >= 5u)
+                continue;
+
+            byte screenMask = 0;
+            if (_mainScreenEnabled[layer])
+                screenMask |= 0x1;
+            if (_subScreenEnabled[layer])
+                screenMask |= 0x2;
+            if (screenMask == 0)
+                continue;
+
+            _lineOrderedLayers[_lineOrderedCount] = layer;
+            _lineOrderedPriorities[_lineOrderedCount] = (byte)_prioPerMode[_lineModeIndex + j];
+            _lineOrderedScreenMasks[_lineOrderedCount] = screenMask;
+            _lineOrderedCount++;
+
+            if (HasActiveMainWindow(layer) || HasActiveSubWindow(layer))
+                _lineHasLayerWindows = true;
+        }
 
         for (int layer = 0; layer < 6; layer++)
         {
@@ -2116,8 +2201,7 @@ public class PPU : IPPU
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private unsafe void GetColor(bool sub, int x, int y, out ushort color, out int layer, out int pixel) 
     {
-        int modeIndex = _lineModeIndex;
-        int count = _lineLayerCount;
+        int count = _lineOrderedCount;
         pixel = 0;
         layer = 5;
         if (_interlace && (_mode == 5 || _mode == 6))
@@ -2133,7 +2217,7 @@ public class PPU : IPPU
             int j;
             for (j = 0; j < count; j++)
             {
-                layer = _layersPerMode[modeIndex + j];
+                layer = _lineOrderedLayers[j];
                 if (visCache[(layer << 8) | x] != 0)
                 {
                     int lx = x;
@@ -2170,7 +2254,7 @@ public class PPU : IPPU
                         if ((_optHorBuffer[layer] & andVal) > 0) lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
                         if ((_optVerBuffer[layer] & andVal) > 0) ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
                     }
-                    pixel = GetPixelForLayer(lx, ly, layer, _prioPerMode[modeIndex + j]);
+                    pixel = GetPixelForLayer(lx, ly, layer, _lineOrderedPriorities[j]);
                     if ((pixel & 0xFF) != 0) break;
                 }
             }
@@ -2189,6 +2273,253 @@ public class PPU : IPPU
                 int g = ((pixel & 0x38) >> 1) | ((pixel & 0x200) >> 8);
                 int b = ((pixel & 0xc0) >> 3) | ((pixel & 0x400) >> 8);
                 color = (ushort)((b << 10) | (g << 5) | r);
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private unsafe void GetColorPair(
+        int x,
+        int y,
+        out ushort mainColor,
+        out int mainLayer,
+        out int mainPixel,
+        out ushort subColor,
+        out int subLayer,
+        out int subPixel)
+    {
+        int count = _lineOrderedCount;
+        mainColor = 0;
+        subColor = 0;
+        mainPixel = 0;
+        subPixel = 0;
+        mainLayer = 5;
+        subLayer = 5;
+        if (_interlace && (_mode == 5 || _mode == 6))
+        {
+            y = y * 2 + (_evenFrame ? 1 : 0);
+        }
+
+        fixed (byte* mainVis = _mainScreenVisibleCache)
+        fixed (byte* subVis = _subScreenVisibleCache)
+        fixed (ushort* cgramPtr = _cgram)
+        {
+            bool foundMain = false;
+            bool foundSub = false;
+
+            for (int j = 0; j < count; j++)
+            {
+                int layer = _lineOrderedLayers[j];
+                int cacheIndex = (layer << 8) | x;
+                bool mainVisible = mainVis[cacheIndex] != 0;
+                bool subVisible = subVis[cacheIndex] != 0;
+                if (!mainVisible && !subVisible)
+                    continue;
+
+                int lx = x;
+                int ly = y;
+                if (_mosaicEnabled[layer])
+                {
+                    lx -= lx % _mosaicSize;
+                    ly -= (ly - _mosaicStartLine) % _mosaicSize;
+                }
+
+                lx += _mode == 7 ? 0 : _bgHoff[layer];
+                ly += _mode == 7 ? 0 : _bgVoff[layer];
+
+                if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
+                {
+                    int andVal = layer == 0 ? 0x2000 : 0x4000;
+                    if (x == 0)
+                        _lastOrigTileX[layer] = lx >> 3;
+                    int tileStartX = (lx - _bgHoff[layer]) - (lx - (lx & 0xfff8));
+                    if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
+                    {
+                        FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+                        _optHorBuffer[layer] = _tilemapBuffer[2];
+                        if (_mode == 4)
+                        {
+                            if ((_optHorBuffer[layer] & 0x8000) > 0) { _optVerBuffer[layer] = _optHorBuffer[layer]; _optHorBuffer[layer] = 0; }
+                            else _optVerBuffer[layer] = 0;
+                        }
+                        else
+                        {
+                            FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+                            _optVerBuffer[layer] = _tilemapBuffer[2];
+                        }
+                        _lastOrigTileX[layer] = lx >> 3;
+                    }
+                    if ((_optHorBuffer[layer] & andVal) > 0)
+                        lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
+                    if ((_optVerBuffer[layer] & andVal) > 0)
+                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
+                }
+
+                int pixel = GetPixelForLayer(lx, ly, layer, _lineOrderedPriorities[j]);
+                if ((pixel & 0xFF) == 0)
+                    continue;
+
+                ushort color = cgramPtr[pixel & 0xFF];
+                if (_directColor && layer < 4 && _bitPerMode[_mode * 4 + layer] == 8)
+                {
+                    int r = ((pixel & 0x7) << 2) | ((pixel & 0x100) >> 7);
+                    int g = ((pixel & 0x38) >> 1) | ((pixel & 0x200) >> 8);
+                    int b = ((pixel & 0xc0) >> 3) | ((pixel & 0x400) >> 8);
+                    color = (ushort)((b << 10) | (g << 5) | r);
+                }
+
+                if (mainVisible && !foundMain)
+                {
+                    mainLayer = layer;
+                    mainPixel = pixel;
+                    mainColor = color;
+                    foundMain = true;
+                }
+
+                if (subVisible && !foundSub)
+                {
+                    subLayer = layer;
+                    subPixel = pixel;
+                    subColor = color;
+                    foundSub = true;
+                }
+
+                if (foundMain && foundSub)
+                    break;
+            }
+
+            if (!foundMain)
+            {
+                mainColor = cgramPtr[0];
+                mainLayer = 5;
+                mainPixel = 0;
+            }
+
+            if (!foundSub)
+            {
+                subColor = (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR);
+                subLayer = 5;
+                subPixel = 0;
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private unsafe void GetColorPairWindowless(
+        int x,
+        int y,
+        out ushort mainColor,
+        out int mainLayer,
+        out int mainPixel,
+        out ushort subColor,
+        out int subLayer,
+        out int subPixel)
+    {
+        int count = _lineOrderedCount;
+        mainColor = 0;
+        subColor = 0;
+        mainPixel = 0;
+        subPixel = 0;
+        mainLayer = 5;
+        subLayer = 5;
+        if (_interlace && (_mode == 5 || _mode == 6))
+        {
+            y = y * 2 + (_evenFrame ? 1 : 0);
+        }
+
+        fixed (ushort* cgramPtr = _cgram)
+        {
+            bool foundMain = false;
+            bool foundSub = false;
+
+            for (int j = 0; j < count; j++)
+            {
+                byte screenMask = _lineOrderedScreenMasks[j];
+                int layer = _lineOrderedLayers[j];
+                int lx = x;
+                int ly = y;
+                if (_mosaicEnabled[layer])
+                {
+                    lx -= lx % _mosaicSize;
+                    ly -= (ly - _mosaicStartLine) % _mosaicSize;
+                }
+
+                lx += _mode == 7 ? 0 : _bgHoff[layer];
+                ly += _mode == 7 ? 0 : _bgVoff[layer];
+
+                if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
+                {
+                    int andVal = layer == 0 ? 0x2000 : 0x4000;
+                    if (x == 0)
+                        _lastOrigTileX[layer] = lx >> 3;
+                    int tileStartX = (lx - _bgHoff[layer]) - (lx - (lx & 0xfff8));
+                    if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
+                    {
+                        FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+                        _optHorBuffer[layer] = _tilemapBuffer[2];
+                        if (_mode == 4)
+                        {
+                            if ((_optHorBuffer[layer] & 0x8000) > 0) { _optVerBuffer[layer] = _optHorBuffer[layer]; _optHorBuffer[layer] = 0; }
+                            else _optVerBuffer[layer] = 0;
+                        }
+                        else
+                        {
+                            FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+                            _optVerBuffer[layer] = _tilemapBuffer[2];
+                        }
+                        _lastOrigTileX[layer] = lx >> 3;
+                    }
+                    if ((_optHorBuffer[layer] & andVal) > 0)
+                        lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
+                    if ((_optVerBuffer[layer] & andVal) > 0)
+                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
+                }
+
+                int pixel = GetPixelForLayer(lx, ly, layer, _lineOrderedPriorities[j]);
+                if ((pixel & 0xFF) == 0)
+                    continue;
+
+                ushort color = cgramPtr[pixel & 0xFF];
+                if (_directColor && layer < 4 && _bitPerMode[_mode * 4 + layer] == 8)
+                {
+                    int r = ((pixel & 0x7) << 2) | ((pixel & 0x100) >> 7);
+                    int g = ((pixel & 0x38) >> 1) | ((pixel & 0x200) >> 8);
+                    int b = ((pixel & 0xc0) >> 3) | ((pixel & 0x400) >> 8);
+                    color = (ushort)((b << 10) | (g << 5) | r);
+                }
+
+                if ((screenMask & 0x1) != 0 && !foundMain)
+                {
+                    mainLayer = layer;
+                    mainPixel = pixel;
+                    mainColor = color;
+                    foundMain = true;
+                }
+
+                if ((screenMask & 0x2) != 0 && !foundSub)
+                {
+                    subLayer = layer;
+                    subPixel = pixel;
+                    subColor = color;
+                    foundSub = true;
+                }
+
+                if (foundMain && foundSub)
+                    break;
+            }
+
+            if (!foundMain)
+            {
+                mainColor = cgramPtr[0];
+                mainLayer = 5;
+                mainPixel = 0;
+            }
+
+            if (!foundSub)
+            {
+                subColor = (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR);
+                subLayer = 5;
+                subPixel = 0;
             }
         }
     }
