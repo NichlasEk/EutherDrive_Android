@@ -1489,6 +1489,17 @@ public class PPU : IPPU
             && !HasActiveMainWindow(4);
     }
 
+    private bool CanUseChunkedSimpleMainScreenPath()
+    {
+        if (_mode == 2 || _mode == 4 || _mode == 6)
+            return false;
+
+        return !_mosaicEnabled[0]
+            && !_mosaicEnabled[1]
+            && !_mosaicEnabled[2]
+            && !_mosaicEnabled[3];
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private unsafe void RenderLineSimpleMainOnly(
         int screenY,
@@ -1523,6 +1534,21 @@ public class PPU : IPPU
             int baseY = _interlace && (_mode == 5 || _mode == 6)
                 ? screenY * 2 + (_evenFrame ? 1 : 0)
                 : screenY;
+            if (CanUseChunkedSimpleMainScreenPath())
+            {
+                RenderLineSimpleMainOnlyChunked(
+                    outputRow,
+                    brightnessOffset,
+                    brightnessTable,
+                    pixelOutput,
+                    alphaMask,
+                    activeLayers,
+                    activePriorities,
+                    activeCount,
+                    baseY);
+                return;
+            }
+
             for (int x = 0; x < 256; x++)
             {
                 ushort color = cgramPtr[0];
@@ -1596,6 +1622,194 @@ public class PPU : IPPU
                     | (bTabOffset[r] << 16);
                 pRow[x] = mainColor | alphaMask;
             }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private unsafe void RenderLineSimpleMainOnlyChunked(
+        int outputRow,
+        int brightnessOffset,
+        byte[] brightnessTable,
+        int[] pixelOutput,
+        int alphaMask,
+        ReadOnlySpan<int> activeLayers,
+        ReadOnlySpan<int> activePriorities,
+        int activeCount,
+        int baseY)
+    {
+        fixed (byte* bTab = brightnessTable)
+        fixed (int* pOut = pixelOutput)
+        fixed (ushort* cgramPtr = _cgram)
+        fixed (byte* spritePrio = _spritePrioBuffer)
+        fixed (byte* spriteLine = _spriteLineBuffer)
+        {
+            int* pRow = pOut + outputRow;
+            byte* bTabOffset = bTab + brightnessOffset;
+            Span<ushort> chunkPixels = stackalloc ushort[12 * 8];
+            Span<byte> chunkOpaque = stackalloc byte[12 * 8];
+
+            for (int startX = 0; startX < 256; startX += 8)
+            {
+                for (int j = 0; j < activeCount; j++)
+                {
+                    Span<ushort> entryPixels = chunkPixels.Slice(j << 3, 8);
+                    Span<byte> entryOpaque = chunkOpaque.Slice(j << 3, 8);
+                    entryPixels.Clear();
+                    entryOpaque.Clear();
+
+                    int layer = activeLayers[j];
+                    if (layer < 4)
+                        FillChunkPixelsForLayer(startX, baseY, layer, activePriorities[j], entryPixels, entryOpaque);
+                }
+
+                for (int pixelX = 0; pixelX < 8; pixelX++)
+                {
+                    int screenX = startX + pixelX;
+                    ushort color = cgramPtr[0];
+                    for (int j = 0; j < activeCount; j++)
+                    {
+                        int layer = activeLayers[j];
+                        if (layer == 4)
+                        {
+                            if (spritePrio[screenX] != activePriorities[j])
+                                continue;
+
+                            byte spritePixel = spriteLine[screenX];
+                            if (spritePixel == 0)
+                                continue;
+
+                            color = cgramPtr[spritePixel];
+                            break;
+                        }
+
+                        if (chunkOpaque[(j << 3) | pixelX] == 0)
+                            continue;
+
+                        color = cgramPtr[chunkPixels[(j << 3) | pixelX]];
+                        break;
+                    }
+
+                    int r = color & 0x1f;
+                    int g = (color >> 5) & 0x1f;
+                    int b = (color >> 10) & 0x1f;
+                    int mainColor = bTabOffset[b]
+                        | (bTabOffset[g] << 8)
+                        | (bTabOffset[r] << 16);
+                    pRow[screenX] = mainColor | alphaMask;
+                }
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void FillChunkPixelsForLayer(int startX, int y, int layer, int priority, Span<ushort> destPixels, Span<byte> destOpaque)
+    {
+        Span<ushort> tileRow = stackalloc ushort[8];
+        int tilePriority = -1;
+        int loadedTileX = int.MinValue;
+        int loadedY = int.MinValue;
+        int sampleX = startX + _bgHoff[layer];
+        int sampleY = y + _bgVoff[layer];
+
+        for (int i = 0; i < 8; i++)
+        {
+            int tileX = sampleX >> 3;
+            if (tileX != loadedTileX || sampleY != loadedY)
+            {
+                DecodeTileRow(sampleX, sampleY, layer, tileRow, out tilePriority);
+                loadedTileX = tileX;
+                loadedY = sampleY;
+            }
+
+            ushort pixel = tileRow[sampleX & 0x7];
+            if (tilePriority == priority && pixel != 0)
+            {
+                destPixels[i] = pixel;
+                destOpaque[i] = 1;
+            }
+
+            sampleX++;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void DecodeTileRow(int x, int y, int layer, Span<ushort> dest, out int tilePriority)
+    {
+        bool wideTiles = _bigTiles[layer] || _mode == 5 || _mode == 6;
+        int tileWidthPixels = wideTiles ? 16 : 8;
+        int tileHeightPixels = _bigTiles[layer] ? 16 : 8;
+        int screenWidthPixels = (_tilemapWider[layer] ? 64 : 32) * tileWidthPixels;
+        int screenHeightPixels = (_tilemapHigher[layer] ? 64 : 32) * tileHeightPixels;
+
+        int wrappedX = x & (screenWidthPixels - 1);
+        int wrappedY = y & (screenHeightPixels - 1);
+        int tilemapBase = _tilemapAdr[layer];
+
+        int singleScreenWidthPixels = 32 * tileWidthPixels;
+        int singleScreenHeightPixels = 32 * tileHeightPixels;
+        if (wrappedX >= singleScreenWidthPixels)
+        {
+            tilemapBase += 1024;
+            wrappedX &= singleScreenWidthPixels - 1;
+        }
+
+        if (wrappedY >= singleScreenHeightPixels)
+        {
+            tilemapBase += _tilemapWider[layer] ? 2048 : 1024;
+            wrappedY &= singleScreenHeightPixels - 1;
+        }
+
+        int tileColumn = wrappedX / tileWidthPixels;
+        int tileRow = wrappedY / tileHeightPixels;
+        ushort tilemapWord = _vram[(tilemapBase + (tileRow << 5) + tileColumn) & 0x7fff];
+
+        bool yFlip = (tilemapWord & 0x8000) != 0;
+        bool xFlip = (tilemapWord & 0x4000) != 0;
+        int yRow = yFlip ? 7 - (wrappedY & 0x7) : wrappedY & 0x7;
+        int tileNum = tilemapWord & 0x3ff;
+
+        bool shiftRight = wideTiles && (xFlip ? (wrappedX & 15) < 8 : (wrappedX & 15) >= 8);
+        bool shiftDown = tileHeightPixels == 16 && (yFlip ? (wrappedY & 15) < 8 : (wrappedY & 15) >= 8);
+
+        if (shiftRight)
+            tileNum += 1;
+        if (shiftDown)
+            tileNum += 0x10;
+
+        int bits = _bitPerMode[_mode * 4 + layer];
+        int tileBase = (_tileAdr[layer] + tileNum * 4 * bits + yRow) & 0x7fff;
+
+        int plane1 = _vram[tileBase];
+        int plane2 = bits > 2 ? _vram[(tileBase + 8) & 0x7fff] : 0;
+        int plane3 = bits > 4 ? _vram[(tileBase + 16) & 0x7fff] : 0;
+        int plane4 = bits > 4 ? _vram[(tileBase + 24) & 0x7fff] : 0;
+
+        int paletteNum = (tilemapWord & 0x1c00) >> 10;
+        paletteNum += _mode == 0 ? layer * 8 : 0;
+        int mul = bits > 4 ? 256 : bits > 2 ? 16 : 4;
+        int pixelBase = paletteNum * mul;
+        tilePriority = (tilemapWord >> 13) & 0x1;
+
+        for (int i = 0; i < 8; i++)
+        {
+            int shift = xFlip ? i : 7 - i;
+            int tileData = (plane1 >> shift) & 0x1;
+            tileData |= ((plane1 >> (8 + shift)) & 0x1) << 1;
+            if (bits > 2)
+            {
+                tileData |= ((plane2 >> shift) & 0x1) << 2;
+                tileData |= ((plane2 >> (8 + shift)) & 0x1) << 3;
+            }
+
+            if (bits > 4)
+            {
+                tileData |= ((plane3 >> shift) & 0x1) << 4;
+                tileData |= ((plane3 >> (8 + shift)) & 0x1) << 5;
+                tileData |= ((plane4 >> shift) & 0x1) << 6;
+                tileData |= ((plane4 >> (8 + shift)) & 0x1) << 7;
+            }
+
+            dest[i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
         }
     }
 
