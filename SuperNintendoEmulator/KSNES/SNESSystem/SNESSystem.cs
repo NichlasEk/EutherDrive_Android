@@ -219,6 +219,10 @@ public class SNESSystem : ISNESSystem
     [NonSerialized]
     private ulong _perfFastCpuWindowMclks;
     [NonSerialized]
+    private ulong _perfSafeCpuWaitHits;
+    [NonSerialized]
+    private ulong _perfSafeCpuWaitMclks;
+    [NonSerialized]
     private ulong _perfDmaBytes;
     [NonSerialized]
     private ulong _perfHdmaRuns;
@@ -978,6 +982,66 @@ public class SNESSystem : ISNESSystem
         return true;
     }
 
+    private bool TryRunSafeCpuWaitWindow(bool noPpu)
+    {
+        if (_inIrq || _cpuImpl.NmiWanted || RomImpl.IrqWanted || RomImpl.NmiWanted)
+            return false;
+
+        if (_hdmaTimer > 0
+            || _dmaTimer > 0
+            || _gpdmaState != GpDmaState.Idle
+            || _autoJoyBusy
+            || _autoJoyPendingStart)
+        {
+            return false;
+        }
+
+        int currentLineMclks = GetCurrentLineMclks();
+        int endX = GetFastCpuWindowEnd(currentLineMclks, noPpu);
+        int irqBoundaryX = GetFastCpuWindowIrqBoundary(currentLineMclks);
+        if (irqBoundaryX < endX)
+            endX = irqBoundaryX;
+        if (endX <= XPos)
+            return false;
+
+        int chunkMclks = endX - XPos;
+        int coprocessorChunkLimit = RomImpl.GetFastCpuWindowChunkLimit(Cycles);
+        if (coprocessorChunkLimit <= 0)
+            return false;
+        chunkMclks = Math.Min(chunkMclks, coprocessorChunkLimit);
+
+        bool cpuCanRun = XPos < 536 || XPos >= 576;
+        if (cpuCanRun)
+        {
+            int cpuWaitMclks = _cpuCyclesLeft & ~0x1;
+            if (cpuWaitMclks <= 0)
+                return false;
+
+            chunkMclks = Math.Min(chunkMclks, cpuWaitMclks);
+        }
+
+        chunkMclks &= ~0x1;
+        if (chunkMclks <= 0)
+            return false;
+
+        AdvanceBaseClocks(chunkMclks);
+        if (cpuCanRun)
+            _cpuCyclesLeft -= chunkMclks;
+        RomImpl.RunCoprocessor(Cycles);
+        CatchUpApu();
+        _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
+        AdvanceBeamPositionBy(chunkMclks, currentLineMclks);
+        _lastIrqHTime = GetIrqHTime();
+
+        if (PerfStatsEnabled)
+        {
+            _perfSafeCpuWaitHits++;
+            _perfSafeCpuWaitMclks += (ulong)chunkMclks;
+        }
+
+        return true;
+    }
+
     private int RunFastCpuWindowChunk(int chunkMclks, bool cpuCanRun)
     {
         if (chunkMclks <= 0)
@@ -1326,7 +1390,7 @@ public class SNESSystem : ISNESSystem
     {
         do
         {
-            if (!TryRunFastCpuWindow(noPpu))
+            if (!TryRunSafeCpuWaitWindow(noPpu) && !TryRunFastCpuWindow(noPpu))
             {
                 Cycle(noPpu);
             }
@@ -1606,6 +1670,8 @@ public class SNESSystem : ISNESSystem
         _perfCpuSlots = 0;
         _perfFastCpuWindowHits = 0;
         _perfFastCpuWindowMclks = 0;
+        _perfSafeCpuWaitHits = 0;
+        _perfSafeCpuWaitMclks = 0;
         _perfDmaBytes = 0;
         _perfHdmaRuns = 0;
         _cpuImpl.ResetPerfCounters();
@@ -1633,7 +1699,7 @@ public class SNESSystem : ISNESSystem
         double cpuExecuteMs = _cpuImpl.PerfExecuteTicks * 1000.0 / Stopwatch.Frequency;
         string summary =
             $"SNES frame:{frameMs:0.0}ms  ppu:{ppuMs:0.0}ms  sample:{sampleMs:0.0}ms\n" +
-            $"SNES core  instr:{_cpuImpl.PerfInstructions}  pc:{_cpuImpl.PerfProgramBytes}/{_cpuImpl.PerfProgramPageReloads}  slot:{_perfCpuSlots}  rd/wr:{_perfCpuReads}/{_perfCpuWrites}  dmaRW:{_perfDmaReads}/{_perfDmaWrites}  fast:{_perfFastCpuWindowHits}/{_perfFastCpuWindowMclks}m  dmaB:{_perfDmaBytes}  hdma:{_perfHdmaRuns}\n" +
+            $"SNES core  instr:{_cpuImpl.PerfInstructions}  pc:{_cpuImpl.PerfProgramBytes}/{_cpuImpl.PerfProgramPageReloads}  slot:{_perfCpuSlots}  rd/wr:{_perfCpuReads}/{_perfCpuWrites}  dmaRW:{_perfDmaReads}/{_perfDmaWrites}  wait:{_perfSafeCpuWaitHits}/{_perfSafeCpuWaitMclks}m  fast:{_perfFastCpuWindowHits}/{_perfFastCpuWindowMclks}m  dmaB:{_perfDmaBytes}  hdma:{_perfHdmaRuns}\n" +
             $"SNES ppu  lines:{_ppuImpl.PerfRenderedLines}  hi:{_ppuImpl.PerfHiResLines}  true:{_ppuImpl.PerfTrueHiResLines}  m7:{_ppuImpl.PerfMode7Lines}  pix:{_ppuImpl.PerfOutputPixels}  tile:{_ppuImpl.PerfTileCacheHits}/{_ppuImpl.PerfTileCacheMisses}/{_ppuImpl.PerfTileCacheInvalidations}\n" +
             $"SNES ppu2 spr:{_ppuImpl.PerfSpritePrepLines}/{spritePrepMs:0.0}  simple:{_ppuImpl.PerfSimpleMainLines}/{simpleMainMs:0.0}  chunk:{_ppuImpl.PerfSimpleChunkedLines}/{simpleChunkedMs:0.0}  comp:{_ppuImpl.PerfComplexLines}/{complexMs:0.0}  cchunk:{_ppuImpl.PerfComplexChunkedLines}/{complexChunkedMs:0.0}\n" +
             $"SNES dsp  cyc:{_apuImpl.DspImpl.PerfCycles}  samp:{_apuImpl.DspImpl.PerfProducedSamples}  echo:{_apuImpl.DspImpl.PerfEchoWrites}  out:{_apuImpl.PerfSetSamplesOutputs}";
