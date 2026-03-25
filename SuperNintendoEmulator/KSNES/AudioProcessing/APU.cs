@@ -52,7 +52,9 @@ public class APU : IAPU
     private byte _auxIo5;
     private byte _dspAdr;
     private bool _dspRomReadable = true;
+    [NonSerialized]
     private bool _port01ResetThisCycle;
+    [NonSerialized]
     private bool _port23ResetThisCycle;
 
     private int _cycles;

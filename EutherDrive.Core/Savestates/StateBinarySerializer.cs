@@ -38,10 +38,17 @@ internal static class StateBinarySerializer
     public static void ReadInto(BinaryReader reader, object obj)
     {
         Type type = obj.GetType();
+        bool trace = ShouldTraceType(type);
+        if (trace)
+            Console.WriteLine($"[TRACE-StateBinarySerializer] Begin type={type.FullName} pos={reader.BaseStream.Position}");
         foreach (var field in GetFields(type))
         {
+            if (trace)
+                Console.WriteLine($"[TRACE-StateBinarySerializer] Field type={type.FullName} name={field.Name} pos={reader.BaseStream.Position}");
             ReadValueInto(reader, obj, field);
         }
+        if (trace)
+            Console.WriteLine($"[TRACE-StateBinarySerializer] End type={type.FullName} pos={reader.BaseStream.Position}");
     }
 
     private static FieldInfo[] GetFields(Type type)
@@ -278,16 +285,21 @@ internal static class StateBinarySerializer
     {
         try
         {
+            long headerPos = reader.BaseStream.Position;
             int rank = reader.ReadInt32();
             bool isReadonly = field.IsInitOnly;
+            if (ShouldTraceType(target.GetType()))
+            {
+                Console.WriteLine(
+                    $"[TRACE-StateBinarySerializer] Array type={target.GetType().FullName} name={field.Name} headerPos={headerPos} rankOrLength={rank}");
+            }
             
             // Backward compatibility:
             // Older savestates wrote 1D arrays as [length] instead of [rank][length].
-            // If we see an unreasonable rank for a 1D array, treat the first int as legacy length.
-            int? legacyLength = null;
-            if (rank > 10 && field.FieldType.IsArray && field.FieldType.GetArrayRank() == 1)
+            // Small arrays like port latches can otherwise be misread as "rank = 6".
+            int? legacyLength = DetectLegacy1DArrayLength(reader, field, elementType, rank, (Array?)field.GetValue(target));
+            if (legacyLength.HasValue)
             {
-                legacyLength = rank;
                 rank = 1;
                 Console.WriteLine($"[DEBUG-StateBinarySerializer] Legacy 1D array header detected for field={field.Name}, length={legacyLength.Value}");
             }
@@ -435,6 +447,90 @@ internal static class StateBinarySerializer
         }
     }
 
+    private static int? DetectLegacy1DArrayLength(BinaryReader reader, FieldInfo field, Type elementType, int rankOrLength, Array? existing)
+    {
+        if (!field.FieldType.IsArray || field.FieldType.GetArrayRank() != 1)
+            return null;
+        if (rankOrLength < 0 || rankOrLength == 1)
+            return null;
+
+        if (existing != null && existing.Rank == 1 && existing.Length == rankOrLength)
+            return rankOrLength;
+
+        if (rankOrLength > 10)
+            return rankOrLength;
+
+        return CanModernArrayHeaderBeValid(reader, elementType, rankOrLength) ? null : rankOrLength;
+    }
+
+    private static bool CanModernArrayHeaderBeValid(BinaryReader reader, Type elementType, int rank)
+    {
+        long start = reader.BaseStream.Position;
+        try
+        {
+            long totalLong = 1;
+            for (int i = 0; i < rank; i++)
+            {
+                if (reader.BaseStream.Length - reader.BaseStream.Position < sizeof(int))
+                    return false;
+
+                int length = reader.ReadInt32();
+                if (length < 0)
+                    return false;
+
+                totalLong *= length;
+                if (totalLong > MaxArrayElements)
+                    return false;
+            }
+
+            if (elementType == typeof(byte))
+                return reader.BaseStream.Length - reader.BaseStream.Position >= totalLong;
+
+            if (TryGetMinimumSerializedSize(elementType, out int minElementSize))
+                return reader.BaseStream.Length - reader.BaseStream.Position >= totalLong * minElementSize;
+
+            return true;
+        }
+        finally
+        {
+            reader.BaseStream.Position = start;
+        }
+    }
+
+    private static bool TryGetMinimumSerializedSize(Type type, out int size)
+    {
+        Type effectiveType = Nullable.GetUnderlyingType(type) ?? type;
+        if (effectiveType.IsEnum)
+            effectiveType = Enum.GetUnderlyingType(effectiveType);
+
+        if (effectiveType == typeof(bool) || effectiveType == typeof(byte) || effectiveType == typeof(sbyte))
+        {
+            size = 1;
+            return true;
+        }
+
+        if (effectiveType == typeof(short) || effectiveType == typeof(ushort) || effectiveType == typeof(char))
+        {
+            size = 2;
+            return true;
+        }
+
+        if (effectiveType == typeof(int) || effectiveType == typeof(uint) || effectiveType == typeof(float))
+        {
+            size = 4;
+            return true;
+        }
+
+        if (effectiveType == typeof(long) || effectiveType == typeof(ulong) || effectiveType == typeof(double))
+        {
+            size = 8;
+            return true;
+        }
+
+        size = 0;
+        return false;
+    }
+
     private static object? ReadValue(BinaryReader reader, Type type)
     {
         Type? nullableUnderlying = Nullable.GetUnderlyingType(type);
@@ -561,5 +657,19 @@ internal static class StateBinarySerializer
             indices[i] = remaining / stride;
             remaining -= indices[i] * stride;
         }
+    }
+
+    private static bool ShouldTraceType(Type type)
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_STATE_FIELDS"), "1", StringComparison.Ordinal))
+            return false;
+
+        string? filter = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_STATE_TYPE");
+        if (string.IsNullOrWhiteSpace(filter))
+            return true;
+
+        string fullName = type.FullName ?? type.Name;
+        return fullName.Contains(filter, StringComparison.Ordinal)
+            || type.Name.Contains(filter, StringComparison.Ordinal);
     }
 }

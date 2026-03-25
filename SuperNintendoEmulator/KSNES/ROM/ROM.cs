@@ -91,6 +91,7 @@ public class ROM : IROM
     private bool _superFxHasBattery;
     private ulong _superFxOverclock = 1;
     private const ulong Sa1DispatchGranularity = 32;
+    [NonSerialized]
     private ulong _lastSa1DispatchCycles;
     private Dsp1PortMapping _dsp1PortMapping;
     private bool _dsp1IsHiRom;
@@ -107,12 +108,14 @@ public class ROM : IROM
     private static readonly bool TraceDsp1ExactReads =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DSP1_EXACT_READS"), "1", StringComparison.Ordinal);
     private static readonly int TraceDsp1ExactReadLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_DSP1_EXACT_READ_LIMIT", 64);
+    [NonSerialized]
     private int _traceDsp1ExactReadCount;
     private static readonly bool TraceReadPcWindow =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_READ_PC_WINDOW"), "1", StringComparison.Ordinal);
     private static readonly int TraceReadPcStart = ParseTraceHex("EUTHERDRIVE_TRACE_SNES_READ_PC_START", 0);
     private static readonly int TraceReadPcEnd = ParseTraceHex("EUTHERDRIVE_TRACE_SNES_READ_PC_END", 0);
     private static readonly int TraceReadPcLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_READ_PC_LIMIT", 200);
+    [NonSerialized]
     private int _traceReadPcCount;
     private static readonly bool TraceSnesVectors =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_VECTORS"), "1", StringComparison.Ordinal);
@@ -120,6 +123,7 @@ public class ROM : IROM
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_BLOCKED_READS"), "1", StringComparison.Ordinal);
     private static readonly int TraceSuperFxBlockedReadLimit =
         ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_SUPERFX_BLOCKED_READ_LIMIT", 256);
+    [NonSerialized]
     private int _traceSuperFxBlockedReadCount;
     private static readonly Dictionary<string, string> s_specialRomOverrides =
         new(StringComparer.OrdinalIgnoreCase);
@@ -1376,6 +1380,19 @@ public class ROM : IROM
 
     public bool HasCoprocessor => _timedDispatch != TimedCoprocessorDispatch.None;
 
+    public bool AllowsFastCpuWindow =>
+        _timedDispatch == TimedCoprocessorDispatch.None || _timedDispatch == TimedCoprocessorDispatch.Sa1;
+
+    public int GetFastCpuWindowChunkLimit(ulong snesCycles)
+    {
+        return _timedDispatch switch
+        {
+            TimedCoprocessorDispatch.None => int.MaxValue,
+            TimedCoprocessorDispatch.Sa1 => GetSa1FastCpuWindowChunkLimit(snesCycles),
+            _ => 0,
+        };
+    }
+
     public void RunCoprocessor(ulong snesCycles)
     {
         switch (_timedDispatch)
@@ -1845,6 +1862,22 @@ public class ROM : IROM
 
         _sa1.Tick(snesCycles);
         _lastSa1DispatchCycles = snesCycles;
+    }
+
+    private int GetSa1FastCpuWindowChunkLimit(ulong snesCycles)
+    {
+        if (_sa1 == null)
+            return 0;
+
+        if (snesCycles < _lastSa1DispatchCycles)
+            _lastSa1DispatchCycles = snesCycles;
+
+        ulong delta = snesCycles - _lastSa1DispatchCycles;
+        if (delta >= Sa1DispatchGranularity)
+            return 0;
+
+        ulong remaining = Sa1DispatchGranularity - delta;
+        return remaining > int.MaxValue ? int.MaxValue : (int)remaining;
     }
 
     public byte ReadRomByteLoRom(uint address)

@@ -666,7 +666,9 @@ public sealed class DSP : IDSP
     }
 
     private readonly Voice[] _voices = new Voice[8];
+    [NonSerialized]
     private readonly int[] _voiceSamplesL = new int[8];
+    [NonSerialized]
     private readonly int[] _voiceSamplesR = new int[8];
     private readonly DspRegisters _registers = new();
     private readonly NoiseGenerator _noise = new();

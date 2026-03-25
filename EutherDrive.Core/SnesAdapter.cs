@@ -233,6 +233,9 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
 
         lock (_stateLock)
         {
+            bool allowPartialVisualState =
+                string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_ALLOW_PARTIAL_VISUAL_STATE"), "1", StringComparison.Ordinal);
+            bool partialVisualStateLoaded = false;
             int version = reader.ReadInt32();
             if (version != 2)
                 throw new InvalidDataException($"Unsupported SNES savestate version: {version}.");
@@ -253,14 +256,22 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
             var rom = (ROM)_system.ROM;
             StateBinarySerializer.ReadInto(reader, rom);
             var apu = (APU)_system.APU;
-            StateBinarySerializer.ReadInto(reader, apu);
-            StateBinarySerializer.ReadInto(reader, apu.Spc);
-            StateBinarySerializer.ReadInto(reader, apu.Dsp);
-            ReadChipState(reader, rom.Cx4, "CX4");
-            ReadChipState(reader, rom.Dsp1, "DSP1");
-            ReadChipState(reader, rom.SuperFx, "SuperFX");
-            ReadChipState(reader, rom.Sa1, "SA1");
-            rom.Cx4?.ResyncAfterLoad();
+            try
+            {
+                StateBinarySerializer.ReadInto(reader, apu);
+                StateBinarySerializer.ReadInto(reader, apu.Spc);
+                StateBinarySerializer.ReadInto(reader, apu.Dsp);
+                ReadChipState(reader, rom.Cx4, "CX4");
+                ReadChipState(reader, rom.Dsp1, "DSP1");
+                ReadChipState(reader, rom.SuperFx, "SuperFX");
+                ReadChipState(reader, rom.Sa1, "SA1");
+                rom.Cx4?.ResyncAfterLoad();
+            }
+            catch (Exception ex) when (allowPartialVisualState)
+            {
+                partialVisualStateLoaded = true;
+                Console.WriteLine($"[SNES-PARTIAL-STATE] Continuing after late savestate load failure: {ex.Message}");
+            }
 
             _system.ROM.SetSystem(_system);
             _system.CPU.SetSystem(_system);
@@ -272,7 +283,29 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
             if (_system is SNESSystem snesSystem)
                 snesSystem.ResyncAfterLoad();
             rom.ResyncCoprocessors(_system.Cycles);
+            if (partialVisualStateLoaded)
+                RefreshFrameFromCurrentPpuState();
         }
+    }
+
+    private void RefreshFrameFromCurrentPpuState()
+    {
+        if (_system.PPU is not PPU ppu)
+            return;
+
+        for (int line = 0; line <= PPU.MaxFrameHeight; line++)
+        {
+            ppu.CheckOverscan(line);
+            int visibleEnd = ppu.FrameOverscan ? 240 : 225;
+            if (line > 0 && line < visibleEnd)
+                ppu.PrepareSpriteLine(line);
+            ppu.RenderLine(line);
+        }
+
+        int presentWidth = ppu.PresentWidth;
+        int presentHeight = ppu.PresentHeight;
+        EnsureFrameBuffer(presentWidth, presentHeight);
+        ConvertArgbToBgra(ppu.GetPixels(), _frameBuffer, presentWidth, presentHeight, PPU.MaxFrameWidth);
     }
 
     private static void WriteChipState(BinaryWriter writer, object? chip)

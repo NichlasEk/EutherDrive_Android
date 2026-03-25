@@ -15,6 +15,10 @@ public class PPU : IPPU
     private static readonly bool TracePpu =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU"), "1", StringComparison.Ordinal);
     private static readonly int TracePpuLimit = GetTracePpuLimit();
+    private static readonly bool TracePpuProbe =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_PROBE"), "1", StringComparison.Ordinal);
+    private static readonly int TracePpuProbeX = GetTraceProbeCoord("EUTHERDRIVE_TRACE_SNES_PPU_PROBE_X", 16);
+    private static readonly int TracePpuProbeY = GetTraceProbeCoord("EUTHERDRIVE_TRACE_SNES_PPU_PROBE_Y", 8);
     private static readonly bool DebugDisableBg1 =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_BG1"), "1", StringComparison.Ordinal);
     private static readonly bool DebugDisableBg2 =
@@ -105,15 +109,24 @@ public class PPU : IPPU
     ];
 
     [JsonIgnore]
+    [NonSerialized]
     private readonly int[] _spriteWidths = [
         1, 1, 1, 2, 2, 4, 2, 2,
         2, 4, 8, 4, 8, 8, 4, 4
     ];
 
     [JsonIgnore]
+    [NonSerialized]
     private readonly int[] _spriteHeights = [
         1, 1, 1, 2, 2, 4, 4, 4,
         2, 4, 8, 4, 8, 8, 8, 4
+    ];
+
+    // Savestate compatibility: older states serialized a single sprite size lookup.
+    [JsonIgnore]
+    private readonly int[] _spriteSizes = [
+        0, 0, 0, 0, 1, 1, 1, 1,
+        1, 2, 2, 2, 2, 3, 3, 3
     ];
 
     private int _cgramAdr;
@@ -296,6 +309,10 @@ public class PPU : IPPU
     private byte[] _spriteHeightCache = [];
     [NonSerialized]
     private bool _spriteMetaDirty = true;
+    [NonSerialized]
+    private bool _tracePpuProbeDone;
+    [NonSerialized]
+    private bool _traceLegacyPathDone;
     [NonSerialized]
     internal ulong PerfRenderedLines;
     [NonSerialized]
@@ -1293,6 +1310,12 @@ public class PPU : IPPU
         return _mode == 5 || _mode == 6;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool UseLegacyLayerOrderingForLine()
+    {
+        return _mode == 1 && _layer3Prio;
+    }
+
     private void ExpandBufferedLinesToHiRes(int toLineInclusive)
     {
         for (int y = 0; y < toLineInclusive; y++)
@@ -1501,6 +1524,13 @@ public class PPU : IPPU
         return 2000;
     }
 
+    private static int GetTraceProbeCoord(string name, int defaultValue)
+    {
+        if (int.TryParse(Environment.GetEnvironmentVariable(name), out int value) && value >= 0)
+            return value;
+        return defaultValue;
+    }
+
     private static void TracePpuWrite(string message)
     {
         if (!TracePpu)
@@ -1509,6 +1539,84 @@ public class PPU : IPPU
         if (count > TracePpuLimit)
             return;
         Console.WriteLine(message);
+    }
+
+    private void TraceProbeAtPoint(int screenY)
+    {
+        if (!TracePpuProbe || _tracePpuProbeDone || screenY != TracePpuProbeY)
+            return;
+
+        _tracePpuProbeDone = true;
+        int x = Math.Clamp(TracePpuProbeX, 0, 255);
+        GetColor(false, x, screenY, out ushort mainColor, out int mainLayer, out int mainPixel);
+        GetColor(true, x, screenY, out ushort subColor, out int subLayer, out int subPixel);
+
+        string[] layerParts = new string[5];
+        for (int layer = 0; layer < 5; layer++)
+        {
+            if (layer == 4)
+            {
+                int objPixel = x >= 0 && x < _spriteLineBuffer.Length ? _spriteLineBuffer[x] : 0;
+                int objPrio = x >= 0 && x < _spritePrioBuffer.Length ? _spritePrioBuffer[x] : 0;
+                layerParts[layer] = $"obj pix=0x{objPixel:X2} prio={objPrio}";
+                continue;
+            }
+
+            int lx = x;
+            int ly = screenY;
+            if (_mosaicEnabled[layer])
+            {
+                lx -= lx % _mosaicSize;
+                ly -= (ly - _mosaicStartLine) % _mosaicSize;
+            }
+
+            lx += _mode == 7 ? 0 : _bgHoff[layer];
+            ly += _mode == 7 ? 0 : _bgVoff[layer];
+            if ((_mode == 5 || _mode == 6) && layer < 4)
+                lx = lx * 2 + 1;
+
+            _lastTileFetchedX[layer] = -1;
+            _lastTileFetchedY[layer] = -1;
+            FetchTileInBuffer(lx, ly, layer, false);
+            int pixelIndex = (layer << 3) | (lx & 0x7);
+            int tilePixel = _tilePixelBuffer[pixelIndex];
+            int tilePrio = _tilePriorityBuffer[layer];
+            _lastTileFetchedX[layer] = -1;
+            _lastTileFetchedY[layer] = -1;
+            FetchTileInBuffer(x, screenY, layer, false);
+            int rawPixelIndex = (layer << 3) | (x & 0x7);
+            int rawTilePixel = _tilePixelBuffer[rawPixelIndex];
+            layerParts[layer] =
+                $"bg{layer + 1} visM={(_mainScreenEnabled[layer] ? 1 : 0)} visS={(_subScreenEnabled[layer] ? 1 : 0)} pix=0x{tilePixel:X2} rawPix=0x{rawTilePixel:X2} prio={tilePrio} map=0x{_tilemapBuffer[layer]:X4} lx={lx} ly={ly}";
+        }
+
+        TracePpuWrite(
+            $"[PPU-PROBE] x={x} y={screenY} main=(layer={mainLayer},pixel=0x{mainPixel:X2},color=0x{mainColor:X4}) " +
+            $"sub=(layer={subLayer},pixel=0x{subPixel:X2},color=0x{subColor:X4}) {string.Join(" | ", layerParts)}");
+    }
+
+    private void TraceSpriteProbeAtLine(int line, ReadOnlySpan<int> scannedSprites, int spriteCount, int totalInRange)
+    {
+        if (!TracePpuProbe || line != TracePpuProbeY)
+            return;
+
+        int probeX = Math.Clamp(TracePpuProbeX, 0, 255);
+        string[] parts = new string[Math.Min(spriteCount, 8)];
+        for (int i = 0; i < parts.Length; i++)
+        {
+            int spriteIndex = scannedSprites[i];
+            int x = _spriteXCache[spriteIndex];
+            int y = _spriteYCache[spriteIndex];
+            int width = _spriteWidthCache[spriteIndex] * 8;
+            int height = _spriteHeightCache[spriteIndex];
+            int tile = _spriteTileCache[spriteIndex];
+            int attr = _spriteAttrCache[spriteIndex];
+            bool coversX = probeX >= x && probeX < x + width;
+            parts[i] = $"#{spriteIndex}(x={x},y={y},w={width},h={height},tile=0x{tile:X2},attr=0x{attr:X2},covers={(coversX ? 1 : 0)})";
+        }
+
+        TracePpuWrite(
+            $"[PPU-SPR-PROBE] y={line} x={probeX} totalInRange={totalInRange} selected={spriteCount} rangeOver={(_rangeOver ? 1 : 0)} timeOver={(_timeOver ? 1 : 0)} startSprite={(_objPriority ? ((_oamAdr >> 1) & 0x7f) : 0)} selectedSprites=[{string.Join(", ", parts)}]");
     }
 
     private string MathMask()
@@ -1531,7 +1639,8 @@ public class PPU : IPPU
     {
         EnsureRuntimeBuffers();
         EnsureSpriteMetaCache();
-        ClearPreviousSpriteRange();
+        Array.Clear(_spriteLineBuffer, 0, _spriteLineBuffer.Length);
+        Array.Clear(_spritePrioBuffer, 0, _spritePrioBuffer.Length);
         _spriteTouchedStart = 256;
         _spriteTouchedEnd = -1;
         _rangeOver = false;
@@ -1558,6 +1667,8 @@ public class PPU : IPPU
         {
             FrameOverscan = false;
             _frameTrueHiResOutput = false;
+            _lineCachesDirty = true;
+            _tracePpuProbeDone = false;
         }
         else if (line == (FrameOverscan ? 240 : 225))
         {
@@ -1609,6 +1720,8 @@ public class PPU : IPPU
                 BuildLineCaches();
                 _lineCachesDirty = false;
             }
+
+            TraceProbeAtPoint(screenY);
             if (trueHiResOutput && !_frameTrueHiResOutput)
             {
                 ExpandBufferedLinesToHiRes(screenY);
@@ -1622,6 +1735,7 @@ public class PPU : IPPU
                 int* argbTabOffset = argbTab + brightnessOffset;
                 int* pRow = pOut + outputRow;
                 bool needPotentialSubColor = trueHiResOutput || _pseudoHires || (_addSub && _lineAnyColorMathEnabled);
+                bool useLegacyLayerOrdering = UseLegacyLayerOrderingForLine();
 
                 for (int i = 0; i < 256; i++)
                 {
@@ -1637,19 +1751,17 @@ public class PPU : IPPU
                         int item3;
                         int secondLayer = 5;
                         int secondPixel = 0;
+                        bool prefetchedSubColor = false;
                         if (needPotentialSubColor)
                         {
-                            if (_lineHasLayerWindows)
+                            if (_lineHasLayerWindows || useLegacyLayerOrdering || _tsRaw != 0)
                             {
-                                GetColorPair(
-                                    i,
-                                    screenY,
-                                    out color,
-                                    out item2,
-                                    out item3,
-                                    out secondColor,
-                                    out secondLayer,
-                                    out secondPixel);
+                                // Window-masked layers can resolve differently on main/sub screens.
+                                // Keep the proven separate path for those lines and only batch the
+                                // common windowless case. Kirby 3 also relies on sub-screen HUD
+                                // composition in mode 1, so any active sub-screen falls back to
+                                // the proven separate path for now.
+                                GetColor(false, i, screenY, out color, out item2, out item3);
                             }
                             else
                             {
@@ -1662,6 +1774,7 @@ public class PPU : IPPU
                                     out secondColor,
                                     out secondLayer,
                                     out secondPixel);
+                                prefetchedSubColor = true;
                             }
                         }
                         else
@@ -1682,7 +1795,7 @@ public class PPU : IPPU
 
                         if ((trueHiResOutput || _pseudoHires) || (mathEnabled && _addSub))
                         {
-                            if (!needPotentialSubColor)
+                            if (!prefetchedSubColor)
                             {
                                 GetColor(true, i, screenY, out secondColor, out secondLayer, out secondPixel);
                             }
@@ -1752,6 +1865,139 @@ public class PPU : IPPU
             }
             if (PerfStatsEnabled)
                 PerfOutputPixels += (ulong)(trueHiResOutput || _frameTrueHiResOutput ? 512 : 256);
+        }
+    }
+
+    private unsafe void RenderLineLegacy(
+        int screenY,
+        bool hiResOutput,
+        bool trueHiResOutput,
+        int outputRow,
+        int brightnessOffset,
+        int[] brightnessTable,
+        int[] pixelOutput)
+    {
+        if (TracePpu && !_traceLegacyPathDone)
+        {
+            _traceLegacyPathDone = true;
+            TracePpuWrite($"[PPU] LEGACY_PATH active mode={_mode} l3prio={_layer3Prio} tm=0x{_tmRaw:X2} ts=0x{_tsRaw:X2}");
+        }
+
+        ResetLineCaches();
+        if (_lineCachesDirty)
+        {
+            BuildLineCachesLegacy();
+            _lineCachesDirty = false;
+        }
+
+        TraceProbeAtPoint(screenY);
+        if (trueHiResOutput && !_frameTrueHiResOutput)
+        {
+            ExpandBufferedLinesToHiRes(screenY);
+            _frameTrueHiResOutput = true;
+        }
+
+        fixed (int* argbTab = brightnessTable)
+        fixed (int* pOut = pixelOutput)
+        fixed (byte* clipCache = _clipToBlackCache)
+        {
+            int* argbTabOffset = argbTab + brightnessOffset;
+            int* pRow = pOut + outputRow;
+            for (int i = 0; i < 256; i++)
+            {
+                int r1 = 0, g1 = 0, b1 = 0;
+                int r2 = 0, g2 = 0, b2 = 0;
+                bool mainVisible = false, subVisible = false;
+
+                if (!_forcedBlank)
+                {
+                    GetColorLegacy(false, i, screenY, out ushort color, out int mainLayer, out int mainPixel);
+                    bool mathEnabled = GetMathEnabled(i, mainLayer, mainPixel);
+                    mainVisible = mainLayer < 5;
+                    r2 = color & 0x1f;
+                    g2 = (color >> 5) & 0x1f;
+                    b2 = (color >> 10) & 0x1f;
+
+                    if (clipCache[i] != 0)
+                    {
+                        r2 = 0;
+                        g2 = 0;
+                        b2 = 0;
+                    }
+
+                    ushort secondColor = 0;
+                    int secondLayer = 5;
+                    int secondPixel = 0;
+                    if (trueHiResOutput || _pseudoHires || (mathEnabled && _addSub))
+                    {
+                        GetColorLegacy(true, i, screenY, out secondColor, out secondLayer, out secondPixel);
+                        subVisible = secondLayer < 5;
+                        r1 = secondColor & 0x1f;
+                        g1 = (secondColor >> 5) & 0x1f;
+                        b1 = (secondColor >> 10) & 0x1f;
+                    }
+
+                    if (mathEnabled)
+                    {
+                        if (_subtractColors)
+                        {
+                            r2 -= _addSub && secondLayer < 5 ? r1 : _fixedColorR;
+                            g2 -= _addSub && secondLayer < 5 ? g1 : _fixedColorG;
+                            b2 -= _addSub && secondLayer < 5 ? b1 : _fixedColorB;
+                        }
+                        else
+                        {
+                            r2 += _addSub && secondLayer < 5 ? r1 : _fixedColorR;
+                            g2 += _addSub && secondLayer < 5 ? g1 : _fixedColorG;
+                            b2 += _addSub && secondLayer < 5 ? b1 : _fixedColorB;
+                        }
+
+                        if (_halfColors && (secondLayer < 5 || !_addSub))
+                        {
+                            r2 >>= 1;
+                            g2 >>= 1;
+                            b2 >>= 1;
+                        }
+
+                        if ((uint)r2 > 31) r2 = r2 < 0 ? 0 : 31;
+                        if ((uint)g2 > 31) g2 = g2 < 0 ? 0 : 31;
+                        if ((uint)b2 > 31) b2 = b2 < 0 ? 0 : 31;
+                    }
+
+                    if (!trueHiResOutput && hiResOutput)
+                    {
+                        if (!mainVisible && subVisible)
+                        {
+                            r2 = r1;
+                            g2 = g1;
+                            b2 = b1;
+                        }
+                        else if (mainVisible && subVisible)
+                        {
+                            r2 = (r2 + r1) >> 1;
+                            g2 = (g2 + g1) >> 1;
+                            b2 = (b2 + b1) >> 1;
+                        }
+                    }
+                }
+
+                int mainColor = argbTabOffset[(b2 << 10) | (g2 << 5) | r2];
+                if (trueHiResOutput)
+                {
+                    int subColor = argbTabOffset[(b1 << 10) | (g1 << 5) | r1];
+                    pRow[i * 2] = subColor;
+                    pRow[i * 2 + 1] = mainColor;
+                }
+                else if (_frameTrueHiResOutput)
+                {
+                    pRow[i * 2] = mainColor;
+                    pRow[i * 2 + 1] = mainColor;
+                }
+                else
+                {
+                    pRow[i] = mainColor;
+                }
+            }
         }
     }
 
@@ -2198,10 +2444,53 @@ public class PPU : IPPU
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private unsafe void GetColor(bool sub, int x, int y, out ushort color, out int layer, out int pixel) 
+    private void BuildLineCachesLegacy()
     {
-        int count = _lineOrderedCount;
+        _lineModeIndex = _layer3Prio && _mode == 1 ? 96 : 12 * _mode;
+        if (_mode7ExBg && _mode == 7)
+            _lineModeIndex = 108;
+        _lineLayerCount = _layercountPerMode[_mode];
+
+        for (int layer = 0; layer < 6; layer++)
+        {
+            int baseIndex = layer << 8;
+            for (int x = 0; x < 256; x++)
+            {
+                _windowStateCache[baseIndex + x] = ComputeWindowState(x, layer) ? (byte)1 : (byte)0;
+            }
+
+            if (layer >= 5)
+                continue;
+
+            bool mainEnabled = _mainScreenEnabled[layer];
+            bool subEnabled = _subScreenEnabled[layer];
+            bool mainUsesWindow = _mainScreenWindow[layer];
+            bool subUsesWindow = _subScreenWindow[layer];
+            int visibleBaseIndex = layer << 8;
+            for (int x = 0; x < 256; x++)
+            {
+                bool windowState = _windowStateCache[baseIndex + x] != 0;
+                _mainScreenVisibleCache[visibleBaseIndex + x] =
+                    mainEnabled && (!mainUsesWindow || !windowState) ? (byte)1 : (byte)0;
+                _subScreenVisibleCache[visibleBaseIndex + x] =
+                    subEnabled && (!subUsesWindow || !windowState) ? (byte)1 : (byte)0;
+            }
+        }
+
+        int colorWindowBase = 5 << 8;
+        for (int x = 0; x < 256; x++)
+        {
+            bool colorWindow = _windowStateCache[colorWindowBase + x] != 0;
+            _clipToBlackCache[x] = ShouldClipToBlack(colorWindow) ? (byte)1 : (byte)0;
+            _mathPreventCache[x] = ShouldPreventMath(colorWindow) ? (byte)1 : (byte)0;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private unsafe void GetColorLegacy(bool sub, int x, int y, out ushort color, out int layer, out int pixel)
+    {
+        int modeIndex = _lineModeIndex;
+        int count = _lineLayerCount;
         pixel = 0;
         layer = 5;
         if (_interlace && (_mode == 5 || _mode == 6))
@@ -2217,7 +2506,236 @@ public class PPU : IPPU
             int j;
             for (j = 0; j < count; j++)
             {
-                layer = _lineOrderedLayers[j];
+                int lx = x;
+                int ly = y;
+                layer = _layersPerMode[modeIndex + j];
+                if ((uint)layer >= 5u)
+                    continue;
+
+                if (visCache[(layer << 8) | x] == 0)
+                    continue;
+
+                if (_mosaicEnabled[layer])
+                {
+                    lx -= lx % _mosaicSize;
+                    ly -= (ly - _mosaicStartLine) % _mosaicSize;
+                }
+
+                lx += _mode == 7 ? 0 : _bgHoff[layer];
+                ly += _mode == 7 ? 0 : _bgVoff[layer];
+
+                int optX = lx - _bgHoff[layer];
+                if ((_mode == 5 || _mode == 6) && layer < 4)
+                {
+                    lx = lx * 2 + (sub ? 0 : 1);
+                    optX = optX * 2 + (sub ? 0 : 1);
+                }
+
+                if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
+                {
+                    int andVal = layer == 0 ? 0x2000 : 0x4000;
+                    if (x == 0)
+                        _lastOrigTileX[layer] = lx >> 3;
+
+                    int tileStartX = optX - (lx - (lx & 0xfff8));
+                    if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
+                    {
+                        FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+                        _optHorBuffer[layer] = _tilemapBuffer[2];
+                        if (_mode == 4)
+                        {
+                            if ((_optHorBuffer[layer] & 0x8000) != 0)
+                            {
+                                _optVerBuffer[layer] = _optHorBuffer[layer];
+                                _optHorBuffer[layer] = 0;
+                            }
+                            else
+                            {
+                                _optVerBuffer[layer] = 0;
+                            }
+                        }
+                        else
+                        {
+                            FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+                            _optVerBuffer[layer] = _tilemapBuffer[2];
+                        }
+
+                        _lastOrigTileX[layer] = lx >> 3;
+                    }
+
+                    if ((_optHorBuffer[layer] & andVal) != 0)
+                    {
+                        int add = (tileStartX + 7) & 0x1f8;
+                        lx = (lx & 0x7) + ((_optHorBuffer[layer] + add) & 0x1ff8);
+                    }
+                    if ((_optVerBuffer[layer] & andVal) != 0)
+                    {
+                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
+                    }
+                }
+
+                pixel = GetPixelForLayer(lx, ly, layer, _prioPerMode[modeIndex + j]);
+                if ((pixel & 0xff) != 0)
+                    break;
+            }
+
+            if (j == count)
+                layer = 5;
+
+            color = (sub && layer == 5)
+                ? (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR)
+                : cgramPtr[pixel & 0xff];
+
+            if (_directColor && layer < 4 && _bitPerMode[_mode * 4 + layer] == 8)
+            {
+                int r = ((pixel & 0x7) << 2) | ((pixel & 0x100) >> 7);
+                int g = ((pixel & 0x38) >> 1) | ((pixel & 0x200) >> 8);
+                int b = ((pixel & 0xc0) >> 3) | ((pixel & 0x400) >> 8);
+                color = (ushort)((b << 10) | (g << 5) | r);
+            }
+        }
+    }
+
+    private void EvaluateSpritesLegacy(int line)
+    {
+        Span<int> scannedSprites = stackalloc int[32];
+        int spriteCount = 0;
+        int startSprite = _objPriority ? ((_oamAdr >> 1) & 0x7f) : 0;
+
+        for (int i = 0; i < 128; i++)
+        {
+            int spriteIndex = (startSprite + i) & 0x7f;
+            int index = spriteIndex << 1;
+            int x = _oam[index] & 0xff;
+            int y = (_oam[index] & 0xff00) >> 8;
+            int ex = (_oam[index + 1] & 0xff00) >> 8;
+            x |= (_highOam[index >> 4] >> (index & 0xf) & 0x1) << 8;
+            bool big = (_highOam[index >> 4] >> (index & 0xf) & 0x2) > 0;
+            x = x > 255 ? -(512 - x) : x;
+            int spriteSizeIndex = _objSize + (big ? 8 : 0);
+            int spriteWidth = _spriteWidths[spriteSizeIndex];
+            int spriteHeight = _spriteHeights[spriteSizeIndex] * (_objInterlace ? 4 : 8);
+            int sprRow = line - y;
+            if (sprRow < 0 || sprRow >= spriteHeight)
+            {
+                sprRow = line + (256 - y);
+            }
+
+            if (sprRow < 0 || sprRow >= spriteHeight || x <= -(spriteWidth * 8))
+            {
+                continue;
+            }
+
+            if (spriteCount == 32)
+            {
+                _rangeOver = true;
+                break;
+            }
+
+            scannedSprites[spriteCount++] = index;
+        }
+
+        int sliverCount = 0;
+        for (int spriteBufferIndex = spriteCount - 1; spriteBufferIndex >= 0; spriteBufferIndex--)
+        {
+            int index = scannedSprites[spriteBufferIndex];
+            int x = _oam[index] & 0xff;
+            int y = (_oam[index] & 0xff00) >> 8;
+            int tile = _oam[index + 1] & 0xff;
+            int ex = (_oam[index + 1] & 0xff00) >> 8;
+            x |= (_highOam[index >> 4] >> (index & 0xf) & 0x1) << 8;
+            bool big = (_highOam[index >> 4] >> (index & 0xf) & 0x2) > 0;
+            x = x > 255 ? -(512 - x) : x;
+            int spriteSizeIndex = _objSize + (big ? 8 : 0);
+            int spriteWidth = _spriteWidths[spriteSizeIndex];
+            int spriteHeight = _spriteHeights[spriteSizeIndex] * (_objInterlace ? 4 : 8);
+            int sprRow = line - y;
+            if (sprRow < 0 || sprRow >= spriteHeight)
+            {
+                sprRow = line + (256 - y);
+            }
+
+            sprRow = _objInterlace ? sprRow * 2 + (_evenFrame ? 1 : 0) : sprRow;
+            int adr = _sprAdr1 + ((ex & 0x1) > 0 ? 0x1000 + _sprAdr2 : 0);
+            sprRow = (ex & 0x80) > 0 ? _spriteHeights[spriteSizeIndex] * 8 - 1 - sprRow : sprRow;
+            int tileRow = sprRow >> 3;
+            sprRow &= 0x7;
+            for (int k = 0; k < spriteWidth; k++)
+            {
+                if (x + k * 8 <= -7 || x + k * 8 >= 256)
+                {
+                    continue;
+                }
+
+                if (sliverCount == 34)
+                {
+                    _timeOver = true;
+                    return;
+                }
+
+                int tileColumn = (ex & 0x40) > 0 ? spriteWidth - 1 - k : k;
+                int tileNum = tile;
+                tileNum = (tileNum & ~0x0f) | ((tileNum + tileColumn) & 0x0f);
+                tileNum = (tileNum & ~0xf0) | ((tileNum + (tileRow << 4)) & 0xf0);
+                tileNum &= 0xff;
+                int tileAddr = (adr + tileNum * 16 + sprRow) & 0x7fff;
+                int tileP1 = _vram[tileAddr];
+                int tileP2 = _vram[(tileAddr + 8) & 0x7fff];
+                for (int j = 0; j < 8; j++)
+                {
+                    int shift = (ex & 0x40) > 0 ? j : 7 - j;
+                    int tileData = (tileP1 >> shift) & 0x1;
+                    tileData |= ((tileP1 >> (8 + shift)) & 0x1) << 1;
+                    tileData |= ((tileP2 >> shift) & 0x1) << 2;
+                    tileData |= ((tileP2 >> (8 + shift)) & 0x1) << 3;
+                    int color = tileData + 16 * ((ex & 0xe) >> 1);
+                    int xInd = x + k * 8 + j;
+                    if (tileData > 0 && xInd < 256 && xInd >= 0)
+                    {
+                        _spriteLineBuffer[xInd] = (byte)(0x80 + color);
+                        _spritePrioBuffer[xInd] = (byte)((ex & 0x30) >> 4);
+                    }
+                }
+
+                sliverCount++;
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private unsafe void GetColor(bool sub, int x, int y, out ushort color, out int layer, out int pixel) 
+    {
+        bool useLegacyLayerOrdering = UseLegacyLayerOrderingForLine();
+        int count = useLegacyLayerOrdering ? _lineLayerCount : _lineOrderedCount;
+        pixel = 0;
+        layer = 5;
+        if (_interlace && (_mode == 5 || _mode == 6))
+        {
+            y = y * 2 + (_evenFrame ? 1 : 0);
+        }
+
+        fixed (byte* mainVis = _mainScreenVisibleCache)
+        fixed (byte* subVis = _subScreenVisibleCache)
+        fixed (ushort* cgramPtr = _cgram)
+        {
+            byte* visCache = sub ? subVis : mainVis;
+            int j;
+            for (j = 0; j < count; j++)
+            {
+                int priority;
+                if (useLegacyLayerOrdering)
+                {
+                    layer = _layersPerMode[_lineModeIndex + j];
+                    if ((uint)layer >= 5u)
+                        continue;
+                    priority = _prioPerMode[_lineModeIndex + j];
+                }
+                else
+                {
+                    layer = _lineOrderedLayers[j];
+                    priority = _lineOrderedPriorities[j];
+                }
+
                 if (visCache[(layer << 8) | x] != 0)
                 {
                     int lx = x;
@@ -2254,7 +2772,7 @@ public class PPU : IPPU
                         if ((_optHorBuffer[layer] & andVal) > 0) lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
                         if ((_optVerBuffer[layer] & andVal) > 0) ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
                     }
-                    pixel = GetPixelForLayer(lx, ly, layer, _lineOrderedPriorities[j]);
+                    pixel = GetPixelForLayer(lx, ly, layer, priority);
                     if ((pixel & 0xFF) != 0) break;
                 }
             }
@@ -2584,6 +3102,15 @@ public class PPU : IPPU
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private unsafe int GetPixelForLayer(int x, int y, int l, int p) 
     {
+        if ((l == 0 && DebugDisableBg1)
+            || (l == 1 && DebugDisableBg2)
+            || (l == 2 && DebugDisableBg3)
+            || (l == 3 && DebugDisableBg4)
+            || (l == 4 && DebugDisableObj))
+        {
+            return 0;
+        }
+
         if (l > 3)
         {
             fixed (byte* sPrio = _spritePrioBuffer)
@@ -2612,6 +3139,42 @@ public class PPU : IPPU
             if (tPrio[l] != p) return 0;
             return tPix[(l << 3) | (x & 0x7)];
         }
+    }
+
+    private int GetPixelForLayerLegacy(int x, int y, int l, int p)
+    {
+        if ((l == 0 && DebugDisableBg1)
+            || (l == 1 && DebugDisableBg2)
+            || (l == 2 && DebugDisableBg3)
+            || (l == 3 && DebugDisableBg4)
+            || (l == 4 && DebugDisableObj))
+        {
+            return 0;
+        }
+
+        if (l > 3)
+        {
+            if (_spritePrioBuffer[x] != p)
+            {
+                return 0;
+            }
+            return _spriteLineBuffer[x];
+        }
+        if (_mode == 7)
+        {
+            return GetMode7Pixel(x, y, l, p);
+        }
+        if (x >> 3 != _lastTileFetchedX[l] || y != _lastTileFetchedY[l])
+        {
+            FetchTileInBufferLegacy(x, y, l, false);
+            _lastTileFetchedX[l] = x >> 3;
+            _lastTileFetchedY[l] = y;
+        }
+        if (_tilePriorityBuffer[l] != p)
+        {
+            return 0;
+        }
+        return _tilePixelBuffer[(l << 3) | (x & 0x7)];
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2705,11 +3268,96 @@ public class PPU : IPPU
         }
     }
 
+    private void FetchTileInBufferLegacy(int x, int y, int l, bool offset)
+    {
+        bool wideTiles = _bigTiles[l] || _mode == 5 || _mode == 6;
+        int tileWidthPixels = wideTiles ? 16 : 8;
+        int tileHeightPixels = _bigTiles[l] ? 16 : 8;
+        int screenWidthPixels = (_tilemapWider[l] ? 64 : 32) * tileWidthPixels;
+        int screenHeightPixels = (_tilemapHigher[l] ? 64 : 32) * tileHeightPixels;
+
+        int wrappedX = x & (screenWidthPixels - 1);
+        int wrappedY = y & (screenHeightPixels - 1);
+        int tilemapBase = _tilemapAdr[l];
+
+        int singleScreenWidthPixels = 32 * tileWidthPixels;
+        int singleScreenHeightPixels = 32 * tileHeightPixels;
+        if (wrappedX >= singleScreenWidthPixels)
+        {
+            tilemapBase += 1024;
+            wrappedX &= singleScreenWidthPixels - 1;
+        }
+
+        if (wrappedY >= singleScreenHeightPixels)
+        {
+            tilemapBase += _tilemapWider[l] ? 2048 : 1024;
+            wrappedY &= singleScreenHeightPixels - 1;
+        }
+
+        int tileColumn = wrappedX / tileWidthPixels;
+        int tileRow = wrappedY / tileHeightPixels;
+        _tilemapBuffer[l] = _vram[(tilemapBase + (tileRow << 5) + tileColumn) & 0x7fff];
+        if (offset)
+        {
+            return;
+        }
+
+        bool yFlip = (_tilemapBuffer[l] & 0x8000) > 0;
+        bool xFlip = (_tilemapBuffer[l] & 0x4000) > 0;
+        int yRow = yFlip ? 7 - (wrappedY & 0x7) : wrappedY & 0x7;
+        int tileNum = _tilemapBuffer[l] & 0x3ff;
+        bool shiftRight = tileWidthPixels == 16 && (xFlip ? wrappedX % 16 < 8 : wrappedX % 16 >= 8);
+        bool shiftDown = tileHeightPixels == 16 && (yFlip ? wrappedY % 16 < 8 : wrappedY % 16 >= 8);
+        if (shiftRight)
+        {
+            tileNum += 1;
+        }
+        if (shiftDown)
+        {
+            tileNum += 0x10;
+        }
+
+        int bits = _bitPerMode[_mode * 4 + l];
+        int tileBase = (_tileAdr[l] + tileNum * 4 * bits + yRow) & 0x7fff;
+        int plane1 = _vram[tileBase];
+        int plane2 = bits > 2 ? _vram[(tileBase + 8) & 0x7fff] : 0;
+        int plane3 = bits > 4 ? _vram[(tileBase + 16) & 0x7fff] : 0;
+        int plane4 = bits > 4 ? _vram[(tileBase + 24) & 0x7fff] : 0;
+        int paletteNum = (_tilemapBuffer[l] & 0x1c00) >> 10;
+        paletteNum += _mode == 0 ? l * 8 : 0;
+        int mul = bits > 4 ? 256 : bits > 2 ? 16 : 4;
+        int pixelBase = paletteNum * mul;
+        int pixelOffset = l << 3;
+        _tilePriorityBuffer[l] = (byte)((_tilemapBuffer[l] >> 13) & 0x1);
+        for (int i = 0; i < 8; i++)
+        {
+            int shift = xFlip ? i : 7 - i;
+            int tileData = (plane1 >> shift) & 0x1;
+            tileData |= ((plane1 >> (8 + shift)) & 0x1) << 1;
+            if (bits > 2)
+            {
+                tileData |= ((plane2 >> shift) & 0x1) << 2;
+                tileData |= ((plane2 >> (8 + shift)) & 0x1) << 3;
+            }
+
+            if (bits > 4)
+            {
+                tileData |= ((plane3 >> shift) & 0x1) << 4;
+                tileData |= ((plane3 >> (8 + shift)) & 0x1) << 5;
+                tileData |= ((plane4 >> shift) & 0x1) << 6;
+                tileData |= ((plane4 >> (8 + shift)) & 0x1) << 7;
+            }
+
+            _tilePixelBuffer[pixelOffset + i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EvaluateSprites(int line) 
     {
         Span<int> scannedSprites = stackalloc int[32];
         int spriteCount = 0;
+        int totalInRange = 0;
         int startSprite = _objPriority ? ((_oamAdr >> 1) & 0x7f) : 0;
 
         // Scan OAM in hardware order first. The first 32 in-range sprites win;
@@ -2732,6 +3380,7 @@ public class PPU : IPPU
                 continue;
             }
 
+            totalInRange++;
             if (spriteCount == 32)
             {
                 _rangeOver = true;
@@ -2740,6 +3389,8 @@ public class PPU : IPPU
 
             scannedSprites[spriteCount++] = spriteIndex;
         }
+
+        TraceSpriteProbeAtLine(line, scannedSprites, spriteCount, totalInRange);
 
         int sliverCount = 0;
         for (int spriteBufferIndex = spriteCount - 1; spriteBufferIndex >= 0; spriteBufferIndex--)

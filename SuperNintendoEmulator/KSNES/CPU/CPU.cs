@@ -102,11 +102,15 @@ public class CPU : ICPU
     private int _tracePcRangeCount;
     private bool _traceWramPc;
     private bool _traceWramPcLogged;
+    [NonSerialized]
     private bool _anyTraceEnabled;
+    [NonSerialized]
     private readonly bool _traceSa1Fetch =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_FETCH"), "1", StringComparison.Ordinal);
+    [NonSerialized]
     private readonly string _traceSa1FetchPath =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SA1_FETCH_PATH") ?? string.Empty;
+    [NonSerialized]
     private readonly object _traceSa1FetchLock = new();
 
     private void UpdateAnyTraceEnabled()
