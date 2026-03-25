@@ -13,6 +13,11 @@ public class SNESSystem : ISNESSystem
 {
     private static readonly bool PerfStatsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
+    // Keep the fast CPU window disabled by default. Kirby's Dream Land 3 loses its HUD
+    // when the CPU beam can skip ahead through this path, so opt into the old behavior
+    // unless EUTHERDRIVE_SNES_DISABLE_FAST_PPU_PATHS is explicitly set to 0 for testing.
+    private static readonly bool DisableFastPpuPaths =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_FAST_PPU_PATHS"), "0", StringComparison.Ordinal);
     private enum GpDmaState
     {
         Idle,
@@ -116,9 +121,13 @@ public class SNESSystem : ISNESSystem
 
     private int _cpuCyclesLeft;
     private int _cpuMemOps;
+    [NonSerialized]
     private ulong _apuMasterCyclesProduct;
     [NonSerialized]
     private int _apuBorrowedMainCycles;
+    // Savestate compatibility: older states serialized fractional APU catch-up instead.
+    private const double _apuCyclesPerMaster = 32040 * 32.0 / (1364.0 * 262 * 60);
+    private double _apuCatchCycles;
 
     private int _ramAdr;
 
@@ -129,19 +138,24 @@ public class SNESSystem : ISNESSystem
     private int _vTimer;
     // Savestate compatibility: older states serialized this field.
     private bool _inNmi;
+    [NonSerialized]
     private bool _vblankNmiFlag;
     private bool _inIrq;
+    [NonSerialized]
     private bool _irqLine;
+    [NonSerialized]
     private int _lastIrqHTime;
     [NonSerialized]
     private ulong _irqRaisedAtCycle;
     private bool _inHblank;
     private bool _inVblank;
+    [NonSerialized]
     private bool _oddFrame;
 
     private bool _autoJoyRead;
     private bool _autoJoyBusy;
     private int _autoJoyTimer;
+    [NonSerialized]
     private bool _autoJoyPendingStart;
     public bool PPULatch { get; private set; }
 
@@ -162,15 +176,25 @@ public class SNESSystem : ISNESSystem
 
     private int _dmaTimer;
     private int _hdmaTimer;
+    // Savestate compatibility: older states serialized generic DMA progress here.
+    private bool _dmaBusy;
     private bool[] _dmaActive = [];
     private bool[] _hdmaActive = [];
+    [NonSerialized]
     private GpDmaState _gpdmaState;
+    [NonSerialized]
     private byte _gpdmaChannel;
+    [NonSerialized]
     private ushort _gpdmaBytesCopied;
+    [NonSerialized]
     private ulong _gpdmaStartCycles;
+    [NonSerialized]
     private bool _pendingDmaWriteValid;
+    [NonSerialized]
     private bool _pendingDmaWriteBusB;
+    [NonSerialized]
     private int _pendingDmaWriteAddress;
+    [NonSerialized]
     private int _pendingDmaWriteValue;
     [NonSerialized]
     private long _perfFrameTicks;
@@ -207,10 +231,14 @@ public class SNESSystem : ISNESSystem
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_DMA"), "1", StringComparison.Ordinal);
     private readonly bool _traceInidisp =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_INIDISP"), "1", StringComparison.Ordinal);
+    [NonSerialized]
     private readonly bool _traceApuPorts =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_APU_PORTS"), "1", StringComparison.Ordinal);
+    [NonSerialized]
     private readonly int _traceApuPortsLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_APU_PORTS_LIMIT", 256);
+    [NonSerialized]
     private int _traceApuPortsCount;
+    [NonSerialized]
     private readonly bool _traceStarOceanApuLoop =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_STAROCEAN_APU_LOOP"), "1", StringComparison.Ordinal);
     [NonSerialized]
@@ -249,6 +277,7 @@ public class SNESSystem : ISNESSystem
 
     private bool[] _hdmaDoTransfer = [];
     private bool[] _hdmaTerminated = [];
+    private int _dmaOffIndex;
     public int OpenBus { get; private set; }
     public string FileName { get; set; }
 
@@ -637,9 +666,24 @@ public class SNESSystem : ISNESSystem
 
     public void ResyncAfterLoad()
     {
-        // Savestates already serialize the live beam position and interrupt/DMA state.
-        // Clobbering those latched values on load breaks late-frame states that rely on
-        // pending IRQ/NMI/autojoy activity to reproduce the next frame correctly.
+        // Recreate runtime-only state after loading an older savestate layout.
+        _apuMasterCyclesProduct = 0;
+        _apuBorrowedMainCycles = 0;
+        _vblankNmiFlag = _inNmi;
+        _irqLine = _inIrq;
+        _lastIrqHTime = GetIrqHTime();
+        _irqRaisedAtCycle = Cycles;
+        _oddFrame = false;
+        _autoJoyPendingStart = false;
+        _gpdmaState = _dmaBusy ? GpDmaState.Pending : GpDmaState.Idle;
+        _gpdmaChannel = 0;
+        _gpdmaBytesCopied = 0;
+        _gpdmaStartCycles = Cycles;
+        _pendingDmaWriteValid = false;
+        _pendingDmaWriteBusB = false;
+        _pendingDmaWriteAddress = 0;
+        _pendingDmaWriteValue = 0;
+        _traceApuPortsCount = 0;
         EnsureBusTables();
     }
 
@@ -813,7 +857,10 @@ public class SNESSystem : ISNESSystem
 
     private bool TryRunFastCpuWindow(bool noPpu)
     {
-        if (RomImpl.HasCoprocessor)
+        if (DisableFastPpuPaths)
+            return false;
+
+        if (!RomImpl.AllowsFastCpuWindow)
             return false;
 
         if (_hdmaTimer > 0
@@ -835,6 +882,10 @@ public class SNESSystem : ISNESSystem
 
         bool cpuCanRun = XPos < 536 || XPos >= 576;
         int chunkMclks = endX - XPos;
+        int coprocessorChunkLimit = RomImpl.GetFastCpuWindowChunkLimit(Cycles);
+        if (coprocessorChunkLimit <= 0)
+            return false;
+        chunkMclks = Math.Min(chunkMclks, coprocessorChunkLimit);
         if (cpuCanRun)
         {
             int cpuWaitMclks = _cpuCyclesLeft & ~0x1;
