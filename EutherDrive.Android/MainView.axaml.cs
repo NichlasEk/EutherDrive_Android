@@ -2813,6 +2813,24 @@ public partial class MainView : UserControl
             return;
         }
 
+        if (core is MdTracerAdapter md && md.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int mdWidth, out int mdHeight, out int mdStride))
+        {
+            lock (_frameSync)
+            {
+                _lastFrameWidth = mdWidth;
+                _lastFrameHeight = mdHeight;
+                _lastFrameStride = mdStride;
+                _lastPresentationWidth = 0;
+                _lastPresentationHeight = 0;
+                (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
+                _emulatedFrames++;
+                _latestFrameSerial++;
+            }
+
+            QueuePresentLatestFrame();
+            return;
+        }
+
         var src = core.GetFrameBuffer(out int width, out int height, out int srcStride);
         if (src.IsEmpty || width <= 0 || height <= 0 || srcStride <= 0)
         {

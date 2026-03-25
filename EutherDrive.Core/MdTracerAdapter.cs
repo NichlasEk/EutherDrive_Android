@@ -3471,6 +3471,25 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         return _frameBufferFront;
     }
 
+    public bool TrySwapPresentationBuffer(ref byte[] buffer, out int width, out int height, out int stride)
+    {
+        EnsureFramebufferInitialized("TrySwapPresentationBuffer");
+
+        width = _fbW;
+        height = _fbH;
+        stride = _fbStride;
+
+        int requiredBytes = height * stride;
+        if (width <= 0 || height <= 0 || stride <= 0 || _frameBufferFront.Length < requiredBytes)
+            return false;
+
+        if (buffer.Length < requiredBytes)
+            buffer = new byte[requiredBytes];
+
+        buffer = Interlocked.Exchange(ref _frameBufferFront, buffer);
+        return true;
+    }
+
     private void LogFrameBufferIdentity(string reason)
     {
         if (!FrameBufferTraceEnabled)
