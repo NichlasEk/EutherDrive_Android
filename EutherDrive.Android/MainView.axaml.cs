@@ -1348,6 +1348,22 @@ public partial class MainView : UserControl
                 blitOptions,
                 measurePerf: false);
         }
+        else if (_renderSurface is AndroidNativeGlRenderSurface nativeGlOwnedSurface)
+        {
+            lock (_frameSync)
+            {
+                if (ReferenceEquals(_presentFrameBuffer, frameBuffer))
+                    _presentFrameBuffer = Array.Empty<byte>();
+            }
+
+            _ = nativeGlOwnedSurface.PresentOwnedBuffer(
+                frameBuffer,
+                width,
+                height,
+                srcStride,
+                blitOptions,
+                measurePerf: false);
+        }
         else
         {
             _ = _renderSurface.Present(

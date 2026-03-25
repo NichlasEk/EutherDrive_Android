@@ -38,6 +38,17 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         return new FrameBlitMetrics(0, blitTicks);
     }
 
+    public FrameBlitMetrics PresentOwnedBuffer(byte[] source, int width, int height, int srcStride, in FrameBlitOptions options, bool measurePerf)
+    {
+        if (source.Length == 0 || width <= 0 || height <= 0 || srcStride <= 0)
+            return FrameBlitMetrics.None;
+
+        long start = measurePerf ? Stopwatch.GetTimestamp() : 0;
+        _host.UpdateOwnedFrame(source, width, height, srcStride, options);
+        long blitTicks = measurePerf ? Stopwatch.GetTimestamp() - start : 0;
+        return new FrameBlitMetrics(0, blitTicks);
+    }
+
     public bool ShouldFallbackToBitmap(out string reason) => _host.ShouldFallbackToBitmap(out reason);
 
     public bool TryGetDebugSummary(out string summary) => _host.TryGetDebugSummary(out summary);
@@ -181,6 +192,32 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _forceOpaque = options.ForceOpaque;
                 _presentCount++;
                 _lastUploadTicks = Stopwatch.GetTimestamp() - copyStart;
+            }
+
+            _nativeView?.NotifyFrameUpdated(resized);
+        }
+
+        public void UpdateOwnedFrame(byte[] source, int width, int height, int srcStride, in FrameBlitOptions options)
+        {
+            bool resized = EnsureFrameSize(width, height);
+            int requiredBytes = checked(width * height * 4);
+            if (srcStride != width * 4 || source.Length < requiredBytes)
+            {
+                UpdateFrame(source.AsSpan(0, Math.Min(source.Length, requiredBytes)), width, height, srcStride, options);
+                return;
+            }
+
+            lock (_frameSync)
+            {
+                _frameBytes = source;
+                _frameWidth = width;
+                _frameHeight = height;
+                _frameStride = srcStride;
+                _frameDirty = true;
+                _renderRequested = true;
+                _sharpPixelsEnabled = options.SharpPixels;
+                _forceOpaque = options.ForceOpaque;
+                _presentCount++;
             }
 
             _nativeView?.NotifyFrameUpdated(resized);
@@ -1045,6 +1082,10 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 {
                     while (!_released)
                     {
+                        _renderSignal.WaitOne();
+                        if (_released)
+                            break;
+
                         SurfaceTexture? surfaceTexture;
                         int surfaceWidth;
                         int surfaceHeight;
@@ -1063,8 +1104,6 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
                         if (_eglDisplay != null && _eglSurface != null && !EGL14.EglSwapBuffers(_eglDisplay, _eglSurface))
                             throw new InvalidOperationException($"Native Android GL swap failed: err=0x{EGL14.EglGetError():X}");
-
-                        _renderSignal.WaitOne(16);
                     }
                 }
                 catch (Exception ex)
