@@ -47,6 +47,8 @@ public partial class MainView : UserControl
     private readonly object _snesAudioLock = new();
     private readonly HashSet<string> _pressedDirections = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pressedActions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _nativePressedDirections = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _nativePressedActions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<IPointer, HashSet<string>> _dpadPointerDirections = new();
     private readonly Dictionary<IPointer, double> _dpadPointerIntensity = new();
     private readonly Dictionary<IPointer, string> _directionPointers = new();
@@ -98,6 +100,8 @@ public partial class MainView : UserControl
     private int _lastFrameWidth;
     private int _lastFrameHeight;
     private int _lastFrameStride;
+    private string _lastRenderSurfaceDebugSummary = string.Empty;
+    private string _lastRenderSurfaceFallbackReason = string.Empty;
     private double _lastPresentationWidth;
     private double _lastPresentationHeight;
     private double _appliedPresentationWidth = double.NaN;
@@ -135,6 +139,7 @@ public partial class MainView : UserControl
             return;
 
         AttachRenderSurfaceToActiveHost();
+        UpdateLandscapeNativeOverlayVisibility();
         if (_lastFrameWidth > 0 && _lastFrameHeight > 0)
             ApplyPresentationSizeForCore(_core, _lastFrameWidth, _lastFrameHeight);
         InvalidateScreenImages();
@@ -256,7 +261,7 @@ public partial class MainView : UserControl
         SettingsAboutZuulView.SetActive(false);
     }
 
-    private void OnCloseDebug(object? sender, PointerPressedEventArgs e)
+    private void OnCloseDebug(object? sender, RoutedEventArgs e)
     {
         _viewModel.DebugVisible = false;
     }
@@ -812,10 +817,10 @@ public partial class MainView : UserControl
 
     private void UpdateDPadVisualsLocked()
     {
-        bool up = _pressedDirections.Contains("Up");
-        bool down = _pressedDirections.Contains("Down");
-        bool left = _pressedDirections.Contains("Left");
-        bool right = _pressedDirections.Contains("Right");
+        bool up = _pressedDirections.Contains("Up") || _nativePressedDirections.Contains("Up");
+        bool down = _pressedDirections.Contains("Down") || _nativePressedDirections.Contains("Down");
+        bool left = _pressedDirections.Contains("Left") || _nativePressedDirections.Contains("Left");
+        bool right = _pressedDirections.Contains("Right") || _nativePressedDirections.Contains("Right");
 
         SetPadVisualState(PortraitPadUp, up);
         SetPadVisualState(PortraitPadDown, down);
@@ -829,10 +834,10 @@ public partial class MainView : UserControl
 
     private void UpdateFaceVisualsLocked()
     {
-        bool a = _pressedActions.Contains("A");
-        bool b = _pressedActions.Contains("B");
-        bool x = _pressedActions.Contains("X");
-        bool y = _pressedActions.Contains("Y");
+        bool a = _pressedActions.Contains("A") || _nativePressedActions.Contains("A");
+        bool b = _pressedActions.Contains("B") || _nativePressedActions.Contains("B");
+        bool x = _pressedActions.Contains("X") || _nativePressedActions.Contains("X");
+        bool y = _pressedActions.Contains("Y") || _nativePressedActions.Contains("Y");
 
         SetFaceVisualState(PortraitFaceA, a);
         SetFaceVisualState(PortraitFaceB, b);
@@ -1339,6 +1344,9 @@ public partial class MainView : UserControl
 
         if (TryGetRenderSurfaceFallbackReason(out string fallbackReason))
         {
+            if (TryGetRenderSurfaceDebugSummary(out string renderSurfaceDebugSummary))
+                _lastRenderSurfaceDebugSummary = renderSurfaceDebugSummary;
+            _lastRenderSurfaceFallbackReason = fallbackReason;
             Console.WriteLine($"[Android] OpenGL fallback -> bitmap: {fallbackReason}");
             if (_renderSurface is IDisposable disposableRenderSurface)
                 disposableRenderSurface.Dispose();
@@ -1347,7 +1355,7 @@ public partial class MainView : UserControl
 
             _renderSurface = new WriteableBitmapRenderSurface();
             UpdateActiveRenderModeLabel();
-            _viewModel.FooterStatus = $"OpenGL fallback: {fallbackReason}";
+            _viewModel.FooterStatus = "OpenGL fallback active. Open Debug for details.";
             EnsureRenderSurface(width, height);
             if (_renderSurface != null)
             {
@@ -1698,6 +1706,8 @@ public partial class MainView : UserControl
             _joystickDirectionPulseFrames.Clear();
             _pressedDirections.Clear();
             _pressedActions.Clear();
+            _nativePressedDirections.Clear();
+            _nativePressedActions.Clear();
             _directionLatchFrames.Clear();
             _actionLatchFrames.Clear();
             UpdateDPadVisualsLocked();
@@ -2530,8 +2540,8 @@ public partial class MainView : UserControl
                     input.PadType);
             }
 
-            AdvanceLatchFrames(_directionLatchFrames, _pressedDirections);
-            AdvanceLatchFrames(_actionLatchFrames, _pressedActions);
+            AdvanceLatchFrames(_directionLatchFrames, GetCombinedPressedDirectionsLocked());
+            AdvanceLatchFrames(_actionLatchFrames, GetCombinedPressedActionsLocked());
         }
     }
 
@@ -2597,7 +2607,7 @@ public partial class MainView : UserControl
 
     private bool IsDirectionActiveLocked(string tag, bool throttleJoystickDirections = false)
     {
-        if (_pressedDirections.Contains(tag))
+        if (_pressedDirections.Contains(tag) || _nativePressedDirections.Contains(tag))
         {
             if (!throttleJoystickDirections)
             {
@@ -2619,7 +2629,28 @@ public partial class MainView : UserControl
     private bool IsActionActiveLocked(string tag)
     {
         return _pressedActions.Contains(tag)
+            || _nativePressedActions.Contains(tag)
             || (_actionLatchFrames.TryGetValue(tag, out int frames) && frames > 0);
+    }
+
+    private HashSet<string> GetCombinedPressedDirectionsLocked()
+    {
+        if (_nativePressedDirections.Count == 0)
+            return _pressedDirections;
+
+        var combined = new HashSet<string>(_pressedDirections, StringComparer.OrdinalIgnoreCase);
+        combined.UnionWith(_nativePressedDirections);
+        return combined;
+    }
+
+    private HashSet<string> GetCombinedPressedActionsLocked()
+    {
+        if (_nativePressedActions.Count == 0)
+            return _pressedActions;
+
+        var combined = new HashSet<string>(_pressedActions, StringComparer.OrdinalIgnoreCase);
+        combined.UnionWith(_nativePressedActions);
+        return combined;
     }
 
     private string FormatActiveDirectionsLocked()
@@ -2821,7 +2852,13 @@ public partial class MainView : UserControl
         }
     }
 
-    private static IGameRenderSurface CreateRenderSurface() => new AndroidNativeGlRenderSurface();
+    private IGameRenderSurface CreateRenderSurface()
+    {
+        var surface = new AndroidNativeGlRenderSurface();
+        surface.SetOverlayInputCallbacks(SetNativeActionState, SetNativeDirections);
+        surface.SetLandscapeOverlayEnabled(_viewModel.IsLandscapeMode);
+        return surface;
+    }
 
     private void UpdateActiveRenderModeLabel()
     {
@@ -2832,6 +2869,19 @@ public partial class MainView : UserControl
             OpenGlRenderSurface => "Active: OpenGL",
             _ => "Active: OpenGL Native"
         };
+        UpdateLandscapeNativeOverlayVisibility();
+    }
+
+    private void UpdateLandscapeNativeOverlayVisibility()
+    {
+        if (_renderSurface is AndroidNativeGlRenderSurface nativeSurface)
+            nativeSurface.SetLandscapeOverlayEnabled(_viewModel.IsLandscapeMode);
+
+        bool useNativeOverlay = _viewModel.IsLandscapeMode && _renderSurface is AndroidNativeGlRenderSurface;
+        LandscapeTopLeftControls.IsVisible = !useNativeOverlay;
+        LandscapeTopRightControls.IsVisible = !useNativeOverlay;
+        LandscapeDPadSurface.IsVisible = !useNativeOverlay;
+        LandscapeFaceSurface.IsVisible = !useNativeOverlay;
     }
 
     private bool TryGetRenderSurfaceFallbackReason(out string reason)
@@ -2857,6 +2907,14 @@ public partial class MainView : UserControl
             case OpenGlRenderSurface glSurface when glSurface.TryGetDebugSummary(out summary):
                 return true;
             default:
+                if (!string.IsNullOrEmpty(_lastRenderSurfaceDebugSummary))
+                {
+                    summary = _lastRenderSurfaceDebugSummary;
+                    if (!string.IsNullOrEmpty(_lastRenderSurfaceFallbackReason))
+                        summary = $"{summary}\nGL Fallback:{_lastRenderSurfaceFallbackReason}";
+                    return true;
+                }
+
                 summary = string.Empty;
                 return false;
         }
@@ -2864,7 +2922,12 @@ public partial class MainView : UserControl
 
     private void EnsureRenderSurface(int width, int height)
     {
-        _renderSurface ??= CreateRenderSurface();
+        if (_renderSurface == null)
+        {
+            _renderSurface = CreateRenderSurface();
+            _lastRenderSurfaceDebugSummary = string.Empty;
+            _lastRenderSurfaceFallbackReason = string.Empty;
+        }
         UpdateActiveRenderModeLabel();
         if (_renderSurface.EnsureSize(width, height) || !IsRenderSurfaceAttachedToExpectedHost())
             AttachRenderSurfaceToActiveHost();
@@ -2891,6 +2954,15 @@ public partial class MainView : UserControl
 
         bool isLandscape = _viewModel.IsLandscapeMode;
         Control targetHost = isLandscape ? LandscapeScreenHost : PortraitScreenHost;
+        if (isLandscape && _renderSurface is AndroidNativeGlRenderSurface && targetHost.Parent is Control nativeParent)
+        {
+            ApplyPresentationSize(targetHost, nativeParent.Bounds.Width, nativeParent.Bounds.Height);
+            _appliedPresentationWidth = nativeParent.Bounds.Width;
+            _appliedPresentationHeight = nativeParent.Bounds.Height;
+            _appliedPresentationLandscape = true;
+            return;
+        }
+
         (double appliedWidth, double appliedHeight) = ComputePixelPerfectPresentationSize(targetHost, targetWidth, targetHeight);
         if (_appliedPresentationLandscape == isLandscape
             && !double.IsNaN(_appliedPresentationWidth)
@@ -3031,6 +3103,50 @@ public partial class MainView : UserControl
             return;
 
         _renderSurface?.View.InvalidateVisual();
+    }
+
+    private void SetNativeActionState(string tag, bool pressed)
+    {
+        lock (_inputSync)
+        {
+            if (pressed)
+            {
+                _nativePressedActions.Add(tag);
+                _viewModel.SetLastPressed(tag);
+            }
+            else
+            {
+                _nativePressedActions.Remove(tag);
+            }
+
+            _actionLatchFrames[tag] = InputLatchFrames;
+            UpdateFaceVisualsLocked();
+        }
+
+        UpdateOverlaySummary();
+    }
+
+    private void SetNativeDirections(IReadOnlyCollection<string> directions)
+    {
+        lock (_inputSync)
+        {
+            foreach (string released in _nativePressedDirections.Except(directions).ToArray())
+                _directionLatchFrames[released] = InputLatchFrames;
+
+            _nativePressedDirections.Clear();
+            foreach (string direction in directions)
+            {
+                _nativePressedDirections.Add(direction);
+                _directionLatchFrames[direction] = InputLatchFrames;
+            }
+
+            if (directions.Count > 0)
+                _viewModel.SetLastPressed(string.Join(" ", directions.OrderBy(static value => value)));
+
+            UpdateDPadVisualsLocked();
+        }
+
+        UpdateOverlaySummary();
     }
 
     private static IEmulatorCore CreateCoreForRom(string path)

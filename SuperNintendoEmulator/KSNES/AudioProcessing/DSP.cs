@@ -6,7 +6,8 @@ namespace KSNES.AudioProcessing;
 public sealed class DSP : IDSP
 {
     private static readonly bool PerfStatsEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
+        || OperatingSystem.IsAndroid();
     public float[] SamplesL { get; private set; } = Array.Empty<float>();
     public float[] SamplesR { get; private set; } = Array.Empty<float>();
     public int SampleOffset { get; set; }

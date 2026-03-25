@@ -8,9 +8,17 @@ namespace KSNES.PictureProcessing;
 public class PPU : IPPU
 {
     private static readonly bool PerfStatsEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
+        || OperatingSystem.IsAndroid();
     public const int MaxFrameWidth = 512;
     public const int MaxFrameHeight = 240;
+    private const int TilePixelCount = 64;
+    private const int Tile2WordsPerTile = 8;
+    private const int Tile4WordsPerTile = 16;
+    private const int Tile8WordsPerTile = 32;
+    private const int Tile2CacheCount = 0x8000 / Tile2WordsPerTile;
+    private const int Tile4CacheCount = 0x8000 / Tile4WordsPerTile;
+    private const int Tile8CacheCount = 0x8000 / Tile8WordsPerTile;
 
     private static readonly bool TracePpu =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU"), "1", StringComparison.Ordinal);
@@ -290,6 +298,18 @@ public class PPU : IPPU
     [NonSerialized]
     private byte[] _tilePriorityBuffer = [];
     [NonSerialized]
+    private byte[] _tileCache2 = [];
+    [NonSerialized]
+    private byte[] _tileCache4 = [];
+    [NonSerialized]
+    private byte[] _tileCache8 = [];
+    [NonSerialized]
+    private byte[] _tileCache2Valid = [];
+    [NonSerialized]
+    private byte[] _tileCache4Valid = [];
+    [NonSerialized]
+    private byte[] _tileCache8Valid = [];
+    [NonSerialized]
     private bool _runtimeBuffersReady;
     [NonSerialized]
     private int _spriteTouchedStart = 256;
@@ -323,6 +343,12 @@ public class PPU : IPPU
     internal ulong PerfTrueHiResLines;
     [NonSerialized]
     internal ulong PerfOutputPixels;
+    [NonSerialized]
+    internal ulong PerfTileCacheHits;
+    [NonSerialized]
+    internal ulong PerfTileCacheMisses;
+    [NonSerialized]
+    internal ulong PerfTileCacheInvalidations;
 
     private static int[] BuildBrightnessArgbTable()
     {
@@ -699,6 +725,7 @@ public class PPU : IPPU
         _spriteTouchedStart = 256;
         _spriteTouchedEnd = -1;
         _spriteMetaDirty = true;
+        InvalidateAllTileCaches();
         ResetLineCaches();
     }
 
@@ -706,6 +733,8 @@ public class PPU : IPPU
     {
         _snes = snes;
         EnsureRuntimeBuffers();
+        InvalidateAllTileCaches();
+        ResetLineCaches();
     }
 
     public int Read(int adr)
@@ -996,6 +1025,7 @@ public class PPU : IPPU
                 if (_forcedBlank || GetCurrentVblank())
                 {
                     _vram[adr2] = (ushort) ((_vram[adr2] & 0xff00) | value);
+                    InvalidateTileCachesForVramWord(adr2);
                     TracePpuWrite($"[PPU] VMDATAL adr=0x{adr2:X4} val=0x{value:X2} word=0x{_vram[adr2]:X4}");
                 }
                 else
@@ -1013,6 +1043,7 @@ public class PPU : IPPU
                 if (_forcedBlank || GetCurrentVblank())
                 {
                     _vram[adr3] = (ushort) ((_vram[adr3] & 0xff) | (value << 8));
+                    InvalidateTileCachesForVramWord(adr3);
                     TracePpuWrite($"[PPU] VMDATAH adr=0x{adr3:X4} val=0x{value:X2} word=0x{_vram[adr3]:X4}");
                 }
                 else
@@ -1288,6 +1319,28 @@ public class PPU : IPPU
             _tilePixelBuffer = new ushort[4 * 8];
         if (_tilePriorityBuffer.Length != 4)
             _tilePriorityBuffer = new byte[4];
+        if (_tileCache2.Length != Tile2CacheCount * TilePixelCount)
+            _tileCache2 = new byte[Tile2CacheCount * TilePixelCount];
+        if (_tileCache4.Length != Tile4CacheCount * TilePixelCount)
+            _tileCache4 = new byte[Tile4CacheCount * TilePixelCount];
+        if (_tileCache8.Length != Tile8CacheCount * TilePixelCount)
+            _tileCache8 = new byte[Tile8CacheCount * TilePixelCount];
+        if (_tileCache2Valid.Length != Tile2CacheCount)
+            _tileCache2Valid = new byte[Tile2CacheCount];
+        if (_tileCache4Valid.Length != Tile4CacheCount)
+            _tileCache4Valid = new byte[Tile4CacheCount];
+        if (_tileCache8Valid.Length != Tile8CacheCount)
+            _tileCache8Valid = new byte[Tile8CacheCount];
+        if (_optHorBuffer.Length != 2)
+            _optHorBuffer = new int[2];
+        if (_optVerBuffer.Length != 2)
+            _optVerBuffer = new int[2];
+        if (_lastTileFetchedX.Length != 4)
+            _lastTileFetchedX = new int[4];
+        if (_lastTileFetchedY.Length != 4)
+            _lastTileFetchedY = new int[4];
+        if (_lastOrigTileX.Length != 2)
+            _lastOrigTileX = new int[2];
         if (_lineOrderedLayers.Length != 12)
             _lineOrderedLayers = new int[12];
         if (_lineOrderedPriorities.Length != 12)
@@ -2336,6 +2389,49 @@ public class PPU : IPPU
         PerfHiResLines = 0;
         PerfTrueHiResLines = 0;
         PerfOutputPixels = 0;
+        PerfTileCacheHits = 0;
+        PerfTileCacheMisses = 0;
+        PerfTileCacheInvalidations = 0;
+    }
+
+    private void InvalidateAllTileCaches()
+    {
+        if (_tileCache2Valid.Length > 0)
+            Array.Clear(_tileCache2Valid, 0, _tileCache2Valid.Length);
+        if (_tileCache4Valid.Length > 0)
+            Array.Clear(_tileCache4Valid, 0, _tileCache4Valid.Length);
+        if (_tileCache8Valid.Length > 0)
+            Array.Clear(_tileCache8Valid, 0, _tileCache8Valid.Length);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void InvalidateTileCachesForVramWord(int wordAddress)
+    {
+        wordAddress &= 0x7fff;
+        if (_tileCache2Valid.Length != Tile2CacheCount
+            || _tileCache4Valid.Length != Tile4CacheCount
+            || _tileCache8Valid.Length != Tile8CacheCount)
+        {
+            return;
+        }
+
+        int invalidated = 0;
+        invalidated += InvalidateTileCacheEntry(_tileCache2Valid, wordAddress >> 3);
+        invalidated += InvalidateTileCacheEntry(_tileCache4Valid, wordAddress >> 4);
+        invalidated += InvalidateTileCacheEntry(_tileCache8Valid, wordAddress >> 5);
+
+        if (PerfStatsEnabled && invalidated > 0)
+            PerfTileCacheInvalidations += (ulong)invalidated;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int InvalidateTileCacheEntry(byte[] validEntries, int index)
+    {
+        if (validEntries[index] == 0)
+            return 0;
+
+        validEntries[index] = 0;
+        return 1;
     }
 
     private void ResetLineCaches()
@@ -3178,6 +3274,101 @@ public class PPU : IPPU
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void PopulateTilePixelsFromCache(int tileStart, int bits, int yRow, bool xFlip, int pixelBase, int pixelOffset)
+    {
+        tileStart &= 0x7fff;
+        yRow &= 0x7;
+
+        byte[] cache;
+        byte[] validEntries;
+        int tileIndex;
+        switch (bits)
+        {
+            case 2:
+                cache = _tileCache2;
+                validEntries = _tileCache2Valid;
+                tileIndex = tileStart >> 3;
+                break;
+            case 4:
+                cache = _tileCache4;
+                validEntries = _tileCache4Valid;
+                tileIndex = tileStart >> 4;
+                break;
+            case 8:
+                cache = _tileCache8;
+                validEntries = _tileCache8Valid;
+                tileIndex = tileStart >> 5;
+                break;
+            default:
+                throw new InvalidOperationException($"Unsupported SNES tile depth: {bits}");
+        }
+
+        int cacheOffset = tileIndex << 6;
+        if (validEntries[tileIndex] == 0)
+        {
+            DecodeTileIntoCache(cache, cacheOffset, tileStart, bits);
+            validEntries[tileIndex] = 1;
+            if (PerfStatsEnabled)
+                PerfTileCacheMisses++;
+        }
+        else if (PerfStatsEnabled)
+        {
+            PerfTileCacheHits++;
+        }
+
+        int rowOffset = cacheOffset + (yRow << 3);
+        if (xFlip)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                int tileData = cache[rowOffset + (7 - i)];
+                _tilePixelBuffer[pixelOffset + i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
+            }
+            return;
+        }
+
+        for (int i = 0; i < 8; i++)
+        {
+            int tileData = cache[rowOffset + i];
+            _tilePixelBuffer[pixelOffset + i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
+        }
+    }
+
+    private void DecodeTileIntoCache(byte[] cache, int cacheOffset, int tileStart, int bits)
+    {
+        for (int row = 0; row < 8; row++)
+        {
+            int plane1 = _vram[(tileStart + row) & 0x7fff];
+            int plane2 = bits > 2 ? _vram[(tileStart + 8 + row) & 0x7fff] : 0;
+            int plane3 = bits > 4 ? _vram[(tileStart + 16 + row) & 0x7fff] : 0;
+            int plane4 = bits > 4 ? _vram[(tileStart + 24 + row) & 0x7fff] : 0;
+            int rowOffset = cacheOffset + (row << 3);
+
+            for (int x = 0; x < 8; x++)
+            {
+                int shift = 7 - x;
+                int tileData = (plane1 >> shift) & 0x1;
+                tileData |= ((plane1 >> (8 + shift)) & 0x1) << 1;
+                if (bits > 2)
+                {
+                    tileData |= ((plane2 >> shift) & 0x1) << 2;
+                    tileData |= ((plane2 >> (8 + shift)) & 0x1) << 3;
+                }
+
+                if (bits > 4)
+                {
+                    tileData |= ((plane3 >> shift) & 0x1) << 4;
+                    tileData |= ((plane3 >> (8 + shift)) & 0x1) << 5;
+                    tileData |= ((plane4 >> shift) & 0x1) << 6;
+                    tileData |= ((plane4 >> (8 + shift)) & 0x1) << 7;
+                }
+
+                cache[rowOffset + x] = (byte)tileData;
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private unsafe void FetchTileInBuffer(int x, int y, int l, bool offset) 
     {
         bool wideTiles = _bigTiles[l] || _mode == 5 || _mode == 6;
@@ -3207,65 +3398,35 @@ public class PPU : IPPU
         int tileColumn = wrappedX / tileWidthPixels;
         int tileRow = wrappedY / tileHeightPixels;
         
-        fixed (ushort* vramPtr = _vram)
-        fixed (ushort* tPix = _tilePixelBuffer)
+        ushort tilemapWord = _vram[(tilemapBase + (tileRow << 5) + tileColumn) & 0x7fff];
+        _tilemapBuffer[l] = tilemapWord;
+        if (offset)
         {
-            ushort tilemapWord = vramPtr[(tilemapBase + (tileRow << 5) + tileColumn) & 0x7fff];
-            _tilemapBuffer[l] = tilemapWord;
-            if (offset)
-            {
-                return;
-            }
-            
-            bool yFlip = (tilemapWord & 0x8000) != 0;
-            bool xFlip = (tilemapWord & 0x4000) != 0;
-            int yRow = yFlip ? 7 - (wrappedY & 0x7) : wrappedY & 0x7;
-            int tileNum = tilemapWord & 0x3ff;
-            
-            bool shiftRight = wideTiles && (xFlip ? (wrappedX & 15) < 8 : (wrappedX & 15) >= 8);
-            bool shiftDown = tileHeightPixels == 16 && (yFlip ? (wrappedY & 15) < 8 : (wrappedY & 15) >= 8);
-            
-            if (shiftRight) tileNum += 1;
-            if (shiftDown) tileNum += 0x10;
-            
-            int bits = _bitPerMode[_mode * 4 + l];
-            int tileBase = (_tileAdr[l] + tileNum * 4 * bits + yRow) & 0x7fff;
-            
-            int plane1 = vramPtr[tileBase];
-            int plane2 = bits > 2 ? vramPtr[(tileBase + 8) & 0x7fff] : 0;
-            int plane3 = bits > 4 ? vramPtr[(tileBase + 16) & 0x7fff] : 0;
-            int plane4 = bits > 4 ? vramPtr[(tileBase + 24) & 0x7fff] : 0;
-            
-            int paletteNum = (tilemapWord & 0x1c00) >> 10;
-            paletteNum += _mode == 0 ? l * 8 : 0;
-            int mul = bits > 4 ? 256 : bits > 2 ? 16 : 4;
-            int pixelBase = paletteNum * mul;
-            int pixelOffset = l << 3;
-            _tilePriorityBuffer[l] = (byte)((tilemapWord >> 13) & 0x1);
-            
-            ushort* dest = tPix + pixelOffset;
-            for (int i = 0; i < 8; i++)
-            {
-                int shift = xFlip ? i : 7 - i;
-                int tileData = (plane1 >> shift) & 0x1;
-                tileData |= ((plane1 >> (8 + shift)) & 0x1) << 1;
-                if (bits > 2)
-                {
-                    tileData |= ((plane2 >> shift) & 0x1) << 2;
-                    tileData |= ((plane2 >> (8 + shift)) & 0x1) << 3;
-                }
-
-                if (bits > 4)
-                {
-                    tileData |= ((plane3 >> shift) & 0x1) << 4;
-                    tileData |= ((plane3 >> (8 + shift)) & 0x1) << 5;
-                    tileData |= ((plane4 >> shift) & 0x1) << 6;
-                    tileData |= ((plane4 >> (8 + shift)) & 0x1) << 7;
-                }
-
-                dest[i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
-            }
+            return;
         }
+
+        bool yFlip = (tilemapWord & 0x8000) != 0;
+        bool xFlip = (tilemapWord & 0x4000) != 0;
+        int yRow = yFlip ? 7 - (wrappedY & 0x7) : wrappedY & 0x7;
+        int tileNum = tilemapWord & 0x3ff;
+
+        bool shiftRight = wideTiles && (xFlip ? (wrappedX & 15) < 8 : (wrappedX & 15) >= 8);
+        bool shiftDown = tileHeightPixels == 16 && (yFlip ? (wrappedY & 15) < 8 : (wrappedY & 15) >= 8);
+
+        if (shiftRight)
+            tileNum += 1;
+        if (shiftDown)
+            tileNum += 0x10;
+
+        int bits = _bitPerMode[_mode * 4 + l];
+        int tileStart = (_tileAdr[l] + tileNum * 4 * bits) & 0x7fff;
+        int paletteNum = (tilemapWord & 0x1c00) >> 10;
+        paletteNum += _mode == 0 ? l * 8 : 0;
+        int mul = bits > 4 ? 256 : bits > 2 ? 16 : 4;
+        int pixelBase = paletteNum * mul;
+        int pixelOffset = l << 3;
+        _tilePriorityBuffer[l] = (byte)((tilemapWord >> 13) & 0x1);
+        PopulateTilePixelsFromCache(tileStart, bits, yRow, xFlip, pixelBase, pixelOffset);
     }
 
     private void FetchTileInBufferLegacy(int x, int y, int l, bool offset)
@@ -3318,38 +3479,14 @@ public class PPU : IPPU
         }
 
         int bits = _bitPerMode[_mode * 4 + l];
-        int tileBase = (_tileAdr[l] + tileNum * 4 * bits + yRow) & 0x7fff;
-        int plane1 = _vram[tileBase];
-        int plane2 = bits > 2 ? _vram[(tileBase + 8) & 0x7fff] : 0;
-        int plane3 = bits > 4 ? _vram[(tileBase + 16) & 0x7fff] : 0;
-        int plane4 = bits > 4 ? _vram[(tileBase + 24) & 0x7fff] : 0;
+        int tileStart = (_tileAdr[l] + tileNum * 4 * bits) & 0x7fff;
         int paletteNum = (_tilemapBuffer[l] & 0x1c00) >> 10;
         paletteNum += _mode == 0 ? l * 8 : 0;
         int mul = bits > 4 ? 256 : bits > 2 ? 16 : 4;
         int pixelBase = paletteNum * mul;
         int pixelOffset = l << 3;
         _tilePriorityBuffer[l] = (byte)((_tilemapBuffer[l] >> 13) & 0x1);
-        for (int i = 0; i < 8; i++)
-        {
-            int shift = xFlip ? i : 7 - i;
-            int tileData = (plane1 >> shift) & 0x1;
-            tileData |= ((plane1 >> (8 + shift)) & 0x1) << 1;
-            if (bits > 2)
-            {
-                tileData |= ((plane2 >> shift) & 0x1) << 2;
-                tileData |= ((plane2 >> (8 + shift)) & 0x1) << 3;
-            }
-
-            if (bits > 4)
-            {
-                tileData |= ((plane3 >> shift) & 0x1) << 4;
-                tileData |= ((plane3 >> (8 + shift)) & 0x1) << 5;
-                tileData |= ((plane4 >> shift) & 0x1) << 6;
-                tileData |= ((plane4 >> (8 + shift)) & 0x1) << 7;
-            }
-
-            _tilePixelBuffer[pixelOffset + i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
-        }
+        PopulateTilePixelsFromCache(tileStart, bits, yRow, xFlip, pixelBase, pixelOffset);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

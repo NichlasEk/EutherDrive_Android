@@ -12,7 +12,8 @@ namespace KSNES.SNESSystem;
 public class SNESSystem : ISNESSystem
 {
     private static readonly bool PerfStatsEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
+        || OperatingSystem.IsAndroid();
     // Keep fast CPU windows opt-in for now. Raster IRQ-driven paths such as Kirby 3's HUD
     // self-disable the fast window anyway, and leaving the feature on by default just adds
     // more branch/work overhead in titles that spend most of the frame with H/V IRQ timing armed.
@@ -1573,7 +1574,7 @@ public class SNESSystem : ISNESSystem
         string summary =
             $"SNES frame:{frameMs:0.0}ms  ppu:{ppuMs:0.0}ms  sample:{sampleMs:0.0}ms\n" +
             $"SNES core  instr:{_cpuImpl.PerfInstructions}  slot:{_perfCpuSlots}  rd/wr:{_perfCpuReads}/{_perfCpuWrites}  dmaRW:{_perfDmaReads}/{_perfDmaWrites}  fast:{_perfFastCpuWindowHits}/{_perfFastCpuWindowMclks}m  dmaB:{_perfDmaBytes}  hdma:{_perfHdmaRuns}\n" +
-            $"SNES ppu  lines:{_ppuImpl.PerfRenderedLines}  hi:{_ppuImpl.PerfHiResLines}  true:{_ppuImpl.PerfTrueHiResLines}  m7:{_ppuImpl.PerfMode7Lines}  pix:{_ppuImpl.PerfOutputPixels}\n" +
+            $"SNES ppu  lines:{_ppuImpl.PerfRenderedLines}  hi:{_ppuImpl.PerfHiResLines}  true:{_ppuImpl.PerfTrueHiResLines}  m7:{_ppuImpl.PerfMode7Lines}  pix:{_ppuImpl.PerfOutputPixels}  tile:{_ppuImpl.PerfTileCacheHits}/{_ppuImpl.PerfTileCacheMisses}/{_ppuImpl.PerfTileCacheInvalidations}\n" +
             $"SNES dsp  cyc:{_apuImpl.DspImpl.PerfCycles}  samp:{_apuImpl.DspImpl.PerfProducedSamples}  echo:{_apuImpl.DspImpl.PerfEchoWrites}  out:{_apuImpl.PerfSetSamplesOutputs}";
         if (ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1)
         {

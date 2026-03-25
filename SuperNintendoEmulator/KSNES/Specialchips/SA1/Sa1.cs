@@ -17,7 +17,8 @@ namespace KSNES.Specialchips.SA1;
 public sealed class Sa1
 {
     private static readonly bool PerfStatsEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
+        || OperatingSystem.IsAndroid();
     private readonly struct PendingBwramWrite(uint address, byte value)
     {
         public uint Address { get; } = address;

@@ -1,14 +1,19 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
-using Android.App;
+using System.Linq;
+using System.Threading;
 using Android.Content;
+using Android.Graphics;
+using Android.Graphics.Drawables;
 using Android.Opengl;
+using Android.Util;
 using Android.Views;
+using Android.Widget;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Platform;
 using Java.Nio;
-using Javax.Microedition.Khronos.Opengles;
 
 namespace EutherDrive.Rendering;
 
@@ -37,6 +42,12 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
     public bool TryGetDebugSummary(out string summary) => _host.TryGetDebugSummary(out summary);
 
+    public void SetOverlayInputCallbacks(Action<string, bool> actionStateChanged, Action<IReadOnlyCollection<string>> directionsChanged)
+        => _host.SetOverlayInputCallbacks(actionStateChanged, directionsChanged);
+
+    public void SetLandscapeOverlayEnabled(bool enabled)
+        => _host.SetLandscapeOverlayEnabled(enabled);
+
     public void Reset() => _host.ResetFrame();
 
     public void Dispose() => _host.DisposeSurface();
@@ -63,7 +74,15 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private bool _initAttempted;
         private bool _initSucceeded;
         private string _fallbackReason = string.Empty;
-        private AndroidGlSurfaceView? _nativeView;
+        private string _glVendor = string.Empty;
+        private string _glRenderer = string.Empty;
+        private string _glVersion = string.Empty;
+        private string _glShadingLanguageVersion = string.Empty;
+        private string _glInitDetails = string.Empty;
+        private Action<string, bool>? _actionStateChanged;
+        private Action<IReadOnlyCollection<string>>? _directionsChanged;
+        private bool _landscapeOverlayEnabled;
+        private AndroidGlRootView? _nativeView;
 
         public AndroidNativeGlHost()
         {
@@ -89,6 +108,18 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             }
         }
 
+        public void SetOverlayInputCallbacks(Action<string, bool> actionStateChanged, Action<IReadOnlyCollection<string>> directionsChanged)
+        {
+            _actionStateChanged = actionStateChanged;
+            _directionsChanged = directionsChanged;
+        }
+
+        public void SetLandscapeOverlayEnabled(bool enabled)
+        {
+            _landscapeOverlayEnabled = enabled;
+            _nativeView?.RequestLayout();
+        }
+
         public bool EnsureFrameSize(int width, int height)
         {
             if (width <= 0 || height <= 0)
@@ -111,7 +142,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
         public void UpdateFrame(ReadOnlySpan<byte> source, int width, int height, int srcStride, in FrameBlitOptions options)
         {
-            EnsureFrameSize(width, height);
+            bool resized = EnsureFrameSize(width, height);
 
             int dstStride = width * 4;
             int requiredBytes = checked(dstStride * height);
@@ -152,7 +183,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _lastUploadTicks = Stopwatch.GetTimestamp() - copyStart;
             }
 
-            _nativeView?.RequestRenderSafe();
+            _nativeView?.NotifyFrameUpdated(resized);
         }
 
         public void ResetFrame()
@@ -168,7 +199,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _renderRequested = true;
             }
 
-            _nativeView?.RequestRenderSafe();
+            _nativeView?.NotifyFrameUpdated(resized: true);
         }
 
         public void DisposeSurface()
@@ -212,6 +243,14 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 double lastRenderMs = _lastRenderTicks > 0 ? _lastRenderTicks * 1000.0 / Stopwatch.Frequency : 0;
                 double lastUploadMs = _lastUploadTicks > 0 ? _lastUploadTicks * 1000.0 / Stopwatch.Frequency : 0;
                 summary = $"GL Present:{_presentCount} Render:{_renderCount} Upload:{_uploadCount} Pending:{(_renderRequested ? 1 : 0)} R:{avgRenderMs:0.0}/{lastRenderMs:0.0}ms U:{avgUploadMs:0.0}/{lastUploadMs:0.0}ms";
+                if (!string.IsNullOrEmpty(_glVersion) || !string.IsNullOrEmpty(_glShadingLanguageVersion))
+                    summary = $"{summary}\nGLES:{_glVersion} GLSL:{_glShadingLanguageVersion}";
+                if (!string.IsNullOrEmpty(_glVendor) || !string.IsNullOrEmpty(_glRenderer))
+                    summary = $"{summary}\nGPU:{_glVendor} / {_glRenderer}";
+                if (!string.IsNullOrEmpty(_fallbackReason))
+                    summary = $"{summary}\nGL Fail:{_fallbackReason}";
+                if (!string.IsNullOrEmpty(_glInitDetails))
+                    summary = $"{summary}\n{_glInitDetails}";
                 return true;
             }
         }
@@ -220,9 +259,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         {
             try
             {
-                Context context = EutherDrive.Android.MainActivity.Current ?? Application.Context
+                Context context = EutherDrive.Android.MainActivity.Current ?? global::Android.App.Application.Context
                     ?? throw new InvalidOperationException("Android context is unavailable.");
-                var view = new AndroidGlSurfaceView(context, this);
+                var view = new AndroidGlRootView(context, this);
                 _nativeView = view;
                 return new Avalonia.Android.AndroidViewControlHandle(view);
             }
@@ -235,7 +274,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     _fallbackReason = ex.Message;
                 }
 
-                Context context = EutherDrive.Android.MainActivity.Current ?? Application.Context
+                Context context = EutherDrive.Android.MainActivity.Current ?? global::Android.App.Application.Context
                     ?? throw new InvalidOperationException("Android context is unavailable.");
                 return new Avalonia.Android.AndroidViewControlHandle(new View(context));
             }
@@ -245,7 +284,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         {
             if (control is Avalonia.Android.AndroidViewControlHandle androidHandle)
             {
-                if (androidHandle.View is AndroidGlSurfaceView view)
+                if (androidHandle.View is AndroidGlRootView view)
                 {
                     if (ReferenceEquals(_nativeView, view))
                         _nativeView = null;
@@ -278,10 +317,11 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _initAttempted = true;
                 _initSucceeded = true;
                 _fallbackReason = string.Empty;
+                _glInitDetails = string.Empty;
             }
         }
 
-        private void NoteInitFailure(string reason)
+        private void NoteInitFailure(string reason, string? details = null)
         {
             lock (_frameSync)
             {
@@ -289,6 +329,19 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _initSucceeded = false;
                 if (string.IsNullOrEmpty(_fallbackReason))
                     _fallbackReason = reason;
+                if (!string.IsNullOrEmpty(details))
+                    _glInitDetails = details;
+            }
+        }
+
+        private void NoteGlInfo(string vendor, string renderer, string version, string shadingLanguageVersion)
+        {
+            lock (_frameSync)
+            {
+                _glVendor = vendor;
+                _glRenderer = renderer;
+                _glVersion = version;
+                _glShadingLanguageVersion = shadingLanguageVersion;
             }
         }
 
@@ -312,10 +365,448 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             }
         }
 
-        private sealed class AndroidGlSurfaceView : GLSurfaceView, GLSurfaceView.IRenderer
+        private void GetLatestFrameSize(out int frameWidth, out int frameHeight)
         {
-            private const int GlArrayBuffer = 0x8892;
-            private const int GlBgra = 0x80E1;
+            lock (_frameSync)
+            {
+                frameWidth = _frameWidth;
+                frameHeight = _frameHeight;
+            }
+        }
+
+        private void NotifyActionStateChanged(string tag, bool pressed)
+            => _actionStateChanged?.Invoke(tag, pressed);
+
+        private void NotifyDirectionsChanged(IReadOnlyCollection<string> directions)
+            => _directionsChanged?.Invoke(directions);
+
+        private bool IsLandscapeOverlayEnabled() => _landscapeOverlayEnabled;
+
+        private sealed class AndroidGlRootView : FrameLayout
+        {
+            private const float LandscapeIntegerSnapThreshold = 0.08f;
+            private readonly AndroidNativeGlHost _host;
+            private readonly AndroidGlTextureView _gameView;
+            private readonly NativeDPadView _dPadView;
+            private readonly NativeActionButtonView _buttonL2;
+            private readonly NativeActionButtonView _buttonSelect;
+            private readonly NativeActionButtonView _buttonL1;
+            private readonly NativeActionButtonView _buttonStart;
+            private readonly NativeActionButtonView _buttonMenu;
+            private readonly NativeActionButtonView _buttonR2;
+            private readonly NativeActionButtonView _buttonR1;
+            private readonly NativeActionButtonView _buttonX;
+            private readonly NativeActionButtonView _buttonY;
+            private readonly NativeActionButtonView _buttonB;
+            private readonly NativeActionButtonView _buttonA;
+
+            public AndroidGlRootView(Context context, AndroidNativeGlHost host) : base(context)
+            {
+                _host = host;
+                SetClipChildren(false);
+                SetClipToPadding(false);
+
+                _gameView = new AndroidGlTextureView(context, host);
+                AddView(_gameView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent));
+
+                _buttonL2 = CreateActionButton(context, "L2", "L2", 12f);
+                _buttonSelect = CreateActionButton(context, "Select", "Select", 11f);
+                _buttonL1 = CreateActionButton(context, "L1", "L1", 12f);
+                _buttonStart = CreateActionButton(context, "Start", "Start", 11f);
+                _buttonMenu = CreateActionButton(context, "Menu", "Menu", 11f);
+                _buttonR2 = CreateActionButton(context, "R2", "R2", 12f);
+                _buttonR1 = CreateActionButton(context, "R1", "R1", 12f);
+                _buttonY = CreateActionButton(context, "Y", "Y", 20f);
+                _buttonB = CreateActionButton(context, "B", "B", 20f);
+                _buttonX = CreateActionButton(context, "X", "X", 20f);
+                _buttonA = CreateActionButton(context, "A", "A", 20f);
+
+                _dPadView = new NativeDPadView(context, directions => _host.NotifyDirectionsChanged(directions));
+
+                AddView(_dPadView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent));
+                AddView(_buttonL2);
+                AddView(_buttonSelect);
+                AddView(_buttonL1);
+                AddView(_buttonStart);
+                AddView(_buttonMenu);
+                AddView(_buttonR2);
+                AddView(_buttonR1);
+                AddView(_buttonY);
+                AddView(_buttonB);
+                AddView(_buttonX);
+                AddView(_buttonA);
+            }
+
+            public void NotifyFrameUpdated(bool resized)
+            {
+                if (resized)
+                    RequestLayout();
+                _gameView.RequestRenderSafe();
+            }
+
+            public void ReleaseSurface()
+            {
+                ReleaseOverlayInputs();
+                _gameView.ReleaseSurface();
+            }
+
+            protected override void OnLayout(bool changed, int left, int top, int right, int bottom)
+            {
+                int width = right - left;
+                int height = bottom - top;
+                if (width <= 0 || height <= 0)
+                {
+                    base.OnLayout(changed, left, top, right, bottom);
+                    return;
+                }
+
+                _host.GetLatestFrameSize(out int frameWidth, out int frameHeight);
+                Rect gameRect = ComputeGameRect(width, height, frameWidth, frameHeight);
+                _gameView.Layout(gameRect.Left, gameRect.Top, gameRect.Right, gameRect.Bottom);
+
+                bool showLandscapeOverlay = _host.IsLandscapeOverlayEnabled();
+                SetLandscapeOverlayVisibility(showLandscapeOverlay);
+                if (!showLandscapeOverlay)
+                {
+                    ReleaseOverlayInputs();
+                    return;
+                }
+
+                int marginTop = Dp(14);
+                int marginSideLeft = Dp(22);
+                int marginSideRight = Dp(22);
+                int bottomMargin = Dp(18);
+                int buttonGap = Dp(8);
+
+                int topSmallWidth = Dp(46);
+                int topWideWidth = Dp(62);
+                int topButtonHeight = Dp(40);
+                int topRowOffset = Dp(16);
+
+                LayoutView(_buttonL2, marginSideLeft, marginTop + topRowOffset, topSmallWidth, topButtonHeight);
+                LayoutView(_buttonSelect, marginSideLeft + topSmallWidth + buttonGap, marginTop + topRowOffset, topWideWidth, topButtonHeight);
+                LayoutView(_buttonL1, marginSideLeft, marginTop + topRowOffset + topButtonHeight + buttonGap, topSmallWidth, topButtonHeight);
+                LayoutView(_buttonStart, marginSideLeft + topSmallWidth + buttonGap, marginTop + topRowOffset + topButtonHeight + buttonGap, topWideWidth, topButtonHeight);
+
+                LayoutView(_buttonMenu, width - marginSideRight - topWideWidth - topSmallWidth - buttonGap, marginTop + topRowOffset, topWideWidth, topButtonHeight);
+                LayoutView(_buttonR2, width - marginSideRight - topSmallWidth, marginTop + topRowOffset, topSmallWidth, topButtonHeight);
+                LayoutView(_buttonR1, width - marginSideRight - topSmallWidth, marginTop + topRowOffset + topButtonHeight + buttonGap, topSmallWidth, topButtonHeight);
+
+                int dpadSize = Dp(150);
+                LayoutView(_dPadView, Dp(26), height - bottomMargin - dpadSize, dpadSize, dpadSize);
+
+                int faceButtonSize = Dp(68);
+                int faceAreaSize = Dp(192);
+                int faceOriginX = width - Dp(22) - faceAreaSize;
+                int faceOriginY = height - bottomMargin - faceAreaSize;
+                LayoutView(_buttonX, faceOriginX + ((faceAreaSize - faceButtonSize) / 2), faceOriginY, faceButtonSize, faceButtonSize);
+                LayoutView(_buttonY, faceOriginX, faceOriginY + ((faceAreaSize - faceButtonSize) / 2), faceButtonSize, faceButtonSize);
+                LayoutView(_buttonA, faceOriginX + faceAreaSize - faceButtonSize, faceOriginY + ((faceAreaSize - faceButtonSize) / 2), faceButtonSize, faceButtonSize);
+                LayoutView(_buttonB, faceOriginX + ((faceAreaSize - faceButtonSize) / 2), faceOriginY + faceAreaSize - faceButtonSize, faceButtonSize, faceButtonSize);
+            }
+
+            private void SetLandscapeOverlayVisibility(bool visible)
+            {
+                var state = visible ? ViewStates.Visible : ViewStates.Gone;
+                _dPadView.Visibility = state;
+                _buttonL2.Visibility = state;
+                _buttonSelect.Visibility = state;
+                _buttonL1.Visibility = state;
+                _buttonStart.Visibility = state;
+                _buttonMenu.Visibility = state;
+                _buttonR2.Visibility = state;
+                _buttonR1.Visibility = state;
+                _buttonY.Visibility = state;
+                _buttonB.Visibility = state;
+                _buttonX.Visibility = state;
+                _buttonA.Visibility = state;
+            }
+
+            private void ReleaseOverlayInputs()
+            {
+                _dPadView.ResetInput();
+                _buttonL2.ResetInput();
+                _buttonSelect.ResetInput();
+                _buttonL1.ResetInput();
+                _buttonStart.ResetInput();
+                _buttonMenu.ResetInput();
+                _buttonR2.ResetInput();
+                _buttonR1.ResetInput();
+                _buttonY.ResetInput();
+                _buttonB.ResetInput();
+                _buttonX.ResetInput();
+                _buttonA.ResetInput();
+            }
+
+            private NativeActionButtonView CreateActionButton(Context context, string tag, string label, float textSizeSp)
+                => new(context, tag, label, textSizeSp, _host.NotifyActionStateChanged);
+
+            private static void LayoutView(View view, int x, int y, int width, int height)
+            {
+                int widthSpec = View.MeasureSpec.MakeMeasureSpec(width, MeasureSpecMode.Exactly);
+                int heightSpec = View.MeasureSpec.MakeMeasureSpec(height, MeasureSpecMode.Exactly);
+                view.Measure(widthSpec, heightSpec);
+                view.Layout(x, y, x + width, y + height);
+            }
+
+            private Rect ComputeGameRect(int width, int height, int frameWidth, int frameHeight)
+            {
+                if (frameWidth <= 0 || frameHeight <= 0)
+                    return new Rect(0, 0, width, height);
+
+                float fitScale = Math.Min((float)width / frameWidth, (float)height / frameHeight);
+                int integerScale = (int)MathF.Floor(fitScale);
+                float scale = fitScale;
+                if (width > height && integerScale >= 1 && fitScale - integerScale <= LandscapeIntegerSnapThreshold)
+                    scale = integerScale;
+                else if (integerScale >= 1 && width <= height)
+                    scale = integerScale;
+
+                int scaledWidth = Math.Max(1, (int)MathF.Round(frameWidth * scale));
+                int scaledHeight = Math.Max(1, (int)MathF.Round(frameHeight * scale));
+                int x = (width - scaledWidth) / 2;
+                int y = (height - scaledHeight) / 2;
+                return new Rect(x, y, x + scaledWidth, y + scaledHeight);
+            }
+
+            private int Dp(int value)
+            {
+                float density = Resources?.DisplayMetrics?.Density ?? 1f;
+                return (int)MathF.Round(value * density);
+            }
+        }
+
+        private sealed class NativeActionButtonView : TextView
+        {
+            private readonly string _tag;
+            private readonly Action<string, bool> _onPressedChanged;
+            private bool _pressed;
+
+            public NativeActionButtonView(Context context, string tag, string label, float textSizeSp, Action<string, bool> onPressedChanged) : base(context)
+            {
+                _tag = tag;
+                _onPressedChanged = onPressedChanged;
+                Text = label;
+                Gravity = GravityFlags.Center;
+                TextAlignment = global::Android.Views.TextAlignment.Center;
+                SetTextColor(Color.Rgb(0xEE, 0xF6, 0xFF));
+                SetTextSize(ComplexUnitType.Sp, textSizeSp);
+                Typeface = Typeface.Create(Typeface.Default, TypefaceStyle.Bold);
+                SetSingleLine();
+                SetIncludeFontPadding(false);
+                Clickable = true;
+                Focusable = false;
+                FocusableInTouchMode = false;
+                SetPadding(0, 0, 0, 0);
+                UpdateBackground();
+            }
+
+            public override bool OnTouchEvent(MotionEvent? e)
+            {
+                if (e == null)
+                    return false;
+
+                switch (e.ActionMasked)
+                {
+                    case MotionEventActions.Down:
+                        SetPressedState(true);
+                        return true;
+                    case MotionEventActions.Move:
+                        SetPressedState(IsPointInside(e.GetX(), e.GetY()));
+                        return true;
+                    case MotionEventActions.Up:
+                        SetPressedState(false);
+                        return true;
+                    case MotionEventActions.Cancel:
+                        SetPressedState(false);
+                        return true;
+                }
+
+                return base.OnTouchEvent(e);
+            }
+
+            public void ResetInput() => SetPressedState(false);
+
+            private bool IsPointInside(float x, float y)
+                => x >= 0 && y >= 0 && x <= Width && y <= Height;
+
+            private void SetPressedState(bool pressed)
+            {
+                if (_pressed == pressed)
+                    return;
+
+                _pressed = pressed;
+                UpdateBackground();
+                _onPressedChanged(_tag, pressed);
+            }
+
+            private void UpdateBackground()
+            {
+                var drawable = new GradientDrawable();
+                drawable.SetShape(ShapeType.Rectangle);
+                drawable.SetCornerRadius(MathF.Min(Width, Height) > 0 ? MathF.Min(Width, Height) / 4f : 22f);
+                drawable.SetColor(_pressed ? Color.Argb(0xB0, 0x34, 0xCF, 0xC1) : Color.Argb(0x70, 0x17, 0x2A, 0x3B));
+                drawable.SetStroke(_pressed ? 4 : 3, Color.Argb(0xCC, 0x7D, 0xD3, 0xFC));
+                Background = drawable;
+                Alpha = _pressed ? 1.0f : 0.92f;
+            }
+        }
+
+        private sealed class NativeDPadView : View
+        {
+            private const float DeadZoneRatio = 0.20f;
+            private const float AxisEngageRatio = 0.28f;
+            private const float DiagonalRatio = 0.56f;
+            private readonly Action<IReadOnlyCollection<string>> _onDirectionsChanged;
+            private readonly Paint _basePaint = new(PaintFlags.AntiAlias);
+            private readonly Paint _trackPaint = new(PaintFlags.AntiAlias);
+            private readonly Paint _thumbPaint = new(PaintFlags.AntiAlias);
+            private readonly Paint _hintPaint = new(PaintFlags.AntiAlias);
+            private HashSet<string> _activeDirections = new(StringComparer.OrdinalIgnoreCase);
+            private float _thumbOffsetX;
+            private float _thumbOffsetY;
+
+            public NativeDPadView(Context context, Action<IReadOnlyCollection<string>> onDirectionsChanged) : base(context)
+            {
+                _onDirectionsChanged = onDirectionsChanged;
+                Clickable = true;
+                Focusable = false;
+                _basePaint.Color = Color.Argb(0x55, 0x41, 0x79, 0xB8);
+                _basePaint.SetStyle(Paint.Style.Stroke);
+                _basePaint.StrokeWidth = 4f;
+                _trackPaint.Color = Color.Argb(0x33, 0x73, 0xC0, 0xFF);
+                _trackPaint.SetStyle(Paint.Style.Stroke);
+                _trackPaint.StrokeWidth = 3f;
+                _thumbPaint.Color = Color.Argb(0x88, 0x73, 0xC0, 0xFF);
+                _thumbPaint.SetStyle(Paint.Style.FillAndStroke);
+                _hintPaint.Color = Color.Argb(0x88, 0xD9, 0xEC, 0xFF);
+                _hintPaint.SetStyle(Paint.Style.FillAndStroke);
+            }
+
+            public override bool OnTouchEvent(MotionEvent? e)
+            {
+                if (e == null)
+                    return false;
+
+                switch (e.ActionMasked)
+                {
+                    case MotionEventActions.Down:
+                    case MotionEventActions.Move:
+                        UpdateFromPoint(e.GetX(), e.GetY());
+                        return true;
+                    case MotionEventActions.Up:
+                    case MotionEventActions.Cancel:
+                        ResetInput();
+                        return true;
+                }
+
+                return base.OnTouchEvent(e);
+            }
+
+            protected override void OnDraw(global::Android.Graphics.Canvas canvas)
+            {
+                base.OnDraw(canvas);
+                float width = Width;
+                float height = Height;
+                if (width <= 0 || height <= 0)
+                    return;
+
+                float centerX = width * 0.5f;
+                float centerY = height * 0.5f;
+                float baseRadius = Math.Min(width, height) * 0.46f;
+                float trackRadius = Math.Min(width, height) * 0.34f;
+                float thumbRadius = Math.Min(width, height) * 0.19f;
+                float hintRadius = Math.Min(width, height) * 0.13f;
+
+                canvas.DrawCircle(centerX, centerY, baseRadius, _basePaint);
+                canvas.DrawCircle(centerX, centerY, trackRadius, _trackPaint);
+                canvas.DrawCircle(centerX, centerY, hintRadius, _hintPaint);
+                canvas.DrawCircle(centerX, centerY - trackRadius, hintRadius, _trackPaint);
+                canvas.DrawCircle(centerX, centerY + trackRadius, hintRadius, _trackPaint);
+                canvas.DrawCircle(centerX - trackRadius, centerY, hintRadius, _trackPaint);
+                canvas.DrawCircle(centerX + trackRadius, centerY, hintRadius, _trackPaint);
+                canvas.DrawCircle(centerX + _thumbOffsetX, centerY + _thumbOffsetY, thumbRadius, _thumbPaint);
+            }
+
+            public void ResetInput()
+            {
+                _thumbOffsetX = 0;
+                _thumbOffsetY = 0;
+                if (_activeDirections.Count != 0)
+                {
+                    _activeDirections.Clear();
+                    _onDirectionsChanged(Array.Empty<string>());
+                }
+
+                Invalidate();
+            }
+
+            private void UpdateFromPoint(float x, float y)
+            {
+                float width = Width;
+                float height = Height;
+                if (width <= 0 || height <= 0)
+                    return;
+
+                float centerX = width * 0.5f;
+                float centerY = height * 0.5f;
+                float dx = x - centerX;
+                float dy = y - centerY;
+                float travelRadius = Math.Min(width, height) * 0.32f;
+                float distance = MathF.Sqrt((dx * dx) + (dy * dy));
+                if (distance > travelRadius && distance > 0)
+                {
+                    float scale = travelRadius / distance;
+                    dx *= scale;
+                    dy *= scale;
+                    distance = travelRadius;
+                }
+
+                _thumbOffsetX = dx;
+                _thumbOffsetY = dy;
+                float normalizedDistance = distance / travelRadius;
+                HashSet<string> directions = normalizedDistance < DeadZoneRatio
+                    ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    : DetermineDirections(dx / travelRadius, dy / travelRadius);
+
+                if (!_activeDirections.SetEquals(directions))
+                {
+                    _activeDirections = directions;
+                    _onDirectionsChanged(_activeDirections.ToArray());
+                }
+
+                Invalidate();
+            }
+
+            private static HashSet<string> DetermineDirections(float normalizedX, float normalizedY)
+            {
+                float absX = MathF.Abs(normalizedX);
+                float absY = MathF.Abs(normalizedY);
+                float major = MathF.Max(absX, absY);
+                float minor = MathF.Min(absX, absY);
+
+                var directions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (major < AxisEngageRatio)
+                    return directions;
+
+                bool horizontalDominant = absX >= absY;
+                directions.Add(horizontalDominant
+                    ? (normalizedX >= 0 ? "Right" : "Left")
+                    : (normalizedY >= 0 ? "Down" : "Up"));
+
+                bool diagonalIntent = minor >= AxisEngageRatio && (minor / major) >= DiagonalRatio;
+                if (!diagonalIntent)
+                    return directions;
+
+                directions.Add(horizontalDominant
+                    ? (normalizedY >= 0 ? "Down" : "Up")
+                    : (normalizedX >= 0 ? "Right" : "Left"));
+                return directions;
+            }
+        }
+
+        private sealed class AndroidGlTextureView : TextureView, TextureView.ISurfaceTextureListener
+        {
             private const int GlColorBufferBit = 0x00004000;
             private const int GlFloat = 0x1406;
             private const int GlFragmentShader = 0x8B30;
@@ -331,7 +822,62 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private const int GlClampToEdge = 0x812F;
             private const int GlTriangles = 0x0004;
             private const int GlUnsignedByte = 0x1401;
+            private const int GlVendor = 0x1F00;
+            private const int GlRenderer = 0x1F01;
+            private const int GlVersion = 0x1F02;
             private const int GlVertexShader = 0x8B31;
+            private const int GlShadingLanguageVersion = 0x8B8C;
+            private const string VertexShaderSourceEs100 = """
+                #version 100
+                attribute vec2 aPos;
+                attribute vec2 aUv;
+                varying vec2 vUv;
+                void main()
+                {
+                    vUv = aUv;
+                    gl_Position = vec4(aPos, 0.0, 1.0);
+                }
+                """;
+            private const string FragmentShaderSourceEs100 = """
+                #version 100
+                precision mediump float;
+                varying vec2 vUv;
+                uniform sampler2D uTex;
+                uniform float uForceOpaque;
+
+                void main()
+                {
+                    vec4 color = texture2D(uTex, vUv);
+                    float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
+                    gl_FragColor = vec4(color.b, color.g, color.r, alpha);
+                }
+                """;
+            private const string VertexShaderSourceEs300 = """
+                #version 300 es
+                in vec2 aPos;
+                in vec2 aUv;
+                out vec2 vUv;
+                void main()
+                {
+                    vUv = aUv;
+                    gl_Position = vec4(aPos, 0.0, 1.0);
+                }
+                """;
+            private const string FragmentShaderSourceEs300 = """
+                #version 300 es
+                precision mediump float;
+                in vec2 vUv;
+                uniform sampler2D uTex;
+                uniform float uForceOpaque;
+                out vec4 fragColor;
+
+                void main()
+                {
+                    vec4 color = texture(uTex, vUv);
+                    float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
+                    fragColor = vec4(color.b, color.g, color.r, alpha);
+                }
+                """;
 
             private static readonly float[] s_quadVertices =
             {
@@ -345,29 +891,41 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
             private readonly AndroidNativeGlHost _host;
             private readonly FloatBuffer _vertexBuffer;
+            private readonly AutoResetEvent _renderSignal = new(initialState: false);
+            private readonly object _surfaceSync = new();
             private int _programId;
             private int _textureId;
             private int _positionLocation = -1;
             private int _uvLocation = -1;
             private int _samplerLocation = -1;
-            private int _swapRedBlueLocation = -1;
             private int _forceOpaqueLocation = -1;
             private int _textureWidth;
             private int _textureHeight;
             private bool _textureUsesNearest = true;
+            private Thread? _renderThread;
+            private SurfaceTexture? _surfaceTexture;
+            private Surface? _windowSurface;
+            private EGLDisplay? _eglDisplay;
+            private EGLContext? _eglContext;
+            private EGLSurface? _eglSurface;
+            private EGLConfig? _eglConfig;
+            private int _surfaceWidth;
+            private int _surfaceHeight;
+            private bool _surfaceReady;
             private volatile bool _released;
+            private volatile bool _renderThreadRunning;
 
-            public AndroidGlSurfaceView(Context context, AndroidNativeGlHost host) : base(context)
+            private readonly record struct ShaderSources(string Label, string VertexSource, string FragmentSource);
+
+            public AndroidGlTextureView(Context context, AndroidNativeGlHost host) : base(context)
             {
                 _host = host;
-                SetEGLContextClientVersion(2);
-                SetEGLConfigChooser(8, 8, 8, 8, 0, 0);
-                PreserveEGLContextOnPause = true;
-                SetRenderer(this);
-                // Continuous rendering keeps Android's native GL thread paced by the display
-                // instead of relying on dirty-invalidation timing through the UI stack.
-                RenderMode = Rendermode.Continuously;
-                Holder?.SetFormat(global::Android.Graphics.Format.Rgba8888);
+                // TextureView stays in the normal Android view hierarchy, so Avalonia's
+                // translucent touch controls can render above the game surface.
+                SurfaceTextureListener = this;
+                SetOpaque(false);
+                Focusable = false;
+                FocusableInTouchMode = false;
 
                 ByteBuffer vertexByteBuffer = ByteBuffer.AllocateDirect(s_quadVertices.Length * sizeof(float));
                 vertexByteBuffer.Order(ByteOrder.NativeOrder()!);
@@ -379,21 +937,17 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             public void ReleaseSurface()
             {
                 _released = true;
-                try
+                lock (_surfaceSync)
                 {
-                    QueueEvent(DestroyGlResources);
-                }
-                catch
-                {
+                    _surfaceReady = false;
+                    _surfaceTexture = null;
+                    _surfaceWidth = 0;
+                    _surfaceHeight = 0;
                 }
 
-                try
-                {
-                    OnPause();
-                }
-                catch
-                {
-                }
+                _renderSignal.Set();
+                JoinRenderThread();
+                CleanupGl();
             }
 
             public void RequestRenderSafe()
@@ -401,20 +955,207 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 if (_released)
                     return;
 
+                _renderSignal.Set();
+            }
+
+            public void OnSurfaceTextureAvailable(SurfaceTexture surface, int width, int height)
+            {
+                lock (_surfaceSync)
+                {
+                    _surfaceTexture = surface;
+                    _surfaceWidth = width;
+                    _surfaceHeight = height;
+                    _surfaceReady = true;
+                }
+
+                StartRenderThreadIfNeeded();
+                _renderSignal.Set();
+            }
+
+            public bool OnSurfaceTextureDestroyed(SurfaceTexture surface)
+            {
+                lock (_surfaceSync)
+                {
+                    _surfaceReady = false;
+                    if (ReferenceEquals(_surfaceTexture, surface))
+                        _surfaceTexture = null;
+                    _surfaceWidth = 0;
+                    _surfaceHeight = 0;
+                }
+
+                _renderSignal.Set();
+                JoinRenderThread();
+                CleanupGl();
+                return true;
+            }
+
+            public void OnSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height)
+            {
+                lock (_surfaceSync)
+                {
+                    if (ReferenceEquals(_surfaceTexture, surface))
+                    {
+                        _surfaceWidth = width;
+                        _surfaceHeight = height;
+                    }
+                }
+
+                _renderSignal.Set();
+            }
+
+            public void OnSurfaceTextureUpdated(SurfaceTexture surface)
+            {
+            }
+
+            private void StartRenderThreadIfNeeded()
+            {
+                if (_renderThreadRunning)
+                    return;
+
+                _released = false;
+                _renderThreadRunning = true;
+                _renderThread = new Thread(RenderLoop)
+                {
+                    IsBackground = true,
+                    Name = "EutherDriveAndroidTextureGL"
+                };
+                _renderThread.Start();
+            }
+
+            private void JoinRenderThread()
+            {
                 try
                 {
-                    RequestRender();
+                    if (_renderThread is { IsAlive: true } thread && !ReferenceEquals(Thread.CurrentThread, thread))
+                        thread.Join(500);
                 }
                 catch
                 {
                 }
+                finally
+                {
+                    _renderThread = null;
+                    _renderThreadRunning = false;
+                }
             }
 
-            public void OnDrawFrame(IGL10? gl)
+            private void RenderLoop()
+            {
+                try
+                {
+                    while (!_released)
+                    {
+                        SurfaceTexture? surfaceTexture;
+                        int surfaceWidth;
+                        int surfaceHeight;
+                        lock (_surfaceSync)
+                        {
+                            if (!_surfaceReady || _surfaceTexture == null || _surfaceWidth <= 0 || _surfaceHeight <= 0)
+                                break;
+
+                            surfaceTexture = _surfaceTexture;
+                            surfaceWidth = _surfaceWidth;
+                            surfaceHeight = _surfaceHeight;
+                        }
+
+                        EnsureGlReady(surfaceTexture, surfaceWidth, surfaceHeight);
+                        DrawFrame(surfaceWidth, surfaceHeight);
+
+                        if (_eglDisplay != null && _eglSurface != null && !EGL14.EglSwapBuffers(_eglDisplay, _eglSurface))
+                            throw new InvalidOperationException($"Native Android GL swap failed: err=0x{EGL14.EglGetError():X}");
+
+                        _renderSignal.WaitOne(16);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _host.NoteInitFailure(ex.Message, BuildInitDetails(ex));
+                }
+                finally
+                {
+                    CleanupGl();
+                    _renderThreadRunning = false;
+                }
+            }
+
+            private void EnsureGlReady(SurfaceTexture surfaceTexture, int surfaceWidth, int surfaceHeight)
+            {
+                if (_eglDisplay != null && _eglContext != null && _eglSurface != null)
+                {
+                    GLES20.GlViewport(0, 0, surfaceWidth, surfaceHeight);
+                    return;
+                }
+
+                EGLDisplay display = EGL14.EglGetDisplay(EGL14.EglDefaultDisplay);
+                if (IsNoDisplay(display))
+                    throw new InvalidOperationException($"Native Android GL display init failed: err=0x{EGL14.EglGetError():X}");
+
+                int[] versions = new int[2];
+                if (!EGL14.EglInitialize(display, versions, 0, versions, 1))
+                    throw new InvalidOperationException($"Native Android GL EGL init failed: err=0x{EGL14.EglGetError():X}");
+
+                int[] configAttributes =
+                {
+                    EGL14.EglRedSize, 8,
+                    EGL14.EglGreenSize, 8,
+                    EGL14.EglBlueSize, 8,
+                    EGL14.EglAlphaSize, 8,
+                    EGL14.EglRenderableType, EGL14.EglOpenglEs2Bit,
+                    EGL14.EglNone
+                };
+                EGLConfig[] configs = new EGLConfig[1];
+                int[] numConfigs = new int[1];
+                if (!EGL14.EglChooseConfig(display, configAttributes, 0, configs, 0, 1, numConfigs, 0) || numConfigs[0] == 0)
+                    throw new InvalidOperationException($"Native Android GL config selection failed: err=0x{EGL14.EglGetError():X}");
+
+                int[] contextAttributes =
+                {
+                    EGL14.EglContextClientVersion, 2,
+                    EGL14.EglNone
+                };
+                EGLContext context = EGL14.EglCreateContext(display, configs[0], EGL14.EglNoContext, contextAttributes, 0);
+                if (IsNoContext(context))
+                    throw new InvalidOperationException($"Native Android GL context creation failed: err=0x{EGL14.EglGetError():X}");
+
+                Surface windowSurface = new(surfaceTexture);
+                int[] surfaceAttributes = { EGL14.EglNone };
+                EGLSurface eglSurface = EGL14.EglCreateWindowSurface(display, configs[0], windowSurface, surfaceAttributes, 0);
+                if (IsNoSurface(eglSurface))
+                {
+                    windowSurface.Release();
+                    windowSurface.Dispose();
+                    throw new InvalidOperationException($"Native Android GL window surface creation failed: err=0x{EGL14.EglGetError():X}");
+                }
+
+                if (!EGL14.EglMakeCurrent(display, eglSurface, eglSurface, context))
+                {
+                    windowSurface.Release();
+                    windowSurface.Dispose();
+                    throw new InvalidOperationException($"Native Android GL make current failed: err=0x{EGL14.EglGetError():X}");
+                }
+
+                _eglDisplay = display;
+                _eglConfig = configs[0];
+                _eglContext = context;
+                _eglSurface = eglSurface;
+                _windowSurface = windowSurface;
+
+                _host.NoteGlInfo(
+                    SafeGetGlString(GlVendor),
+                    SafeGetGlString(GlRenderer),
+                    SafeGetGlString(GlVersion),
+                    SafeGetGlString(GlShadingLanguageVersion));
+                CreateProgramAndTexture();
+                _host.NoteInitSuccess();
+                GLES20.GlViewport(0, 0, surfaceWidth, surfaceHeight);
+            }
+
+            private void DrawFrame(int surfaceWidth, int surfaceHeight)
             {
                 long renderStart = Stopwatch.GetTimestamp();
                 long uploadTicks = 0;
 
+                GLES20.GlViewport(0, 0, surfaceWidth, surfaceHeight);
                 GLES20.GlClearColor(0f, 0f, 0f, 1f);
                 GLES20.GlClear(GlColorBufferBit);
 
@@ -443,7 +1184,6 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
                 GLES20.GlUseProgram(_programId);
                 GLES20.GlUniform1i(_samplerLocation, 0);
-                GLES20.GlUniform1f(_swapRedBlueLocation, 1.0f);
                 GLES20.GlUniform1f(_forceOpaqueLocation, forceOpaque ? 1.0f : 0.0f);
 
                 _vertexBuffer.Position(0);
@@ -457,62 +1197,48 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, uploadTicks, uploaded);
             }
 
-            public void OnSurfaceChanged(IGL10? gl, int width, int height)
+            private void CreateProgramAndTexture()
             {
-                GLES20.GlViewport(0, 0, width, height);
-            }
+                DestroyGlResources();
 
-            public void OnSurfaceCreated(IGL10? gl, Javax.Microedition.Khronos.Egl.EGLConfig? config)
-            {
+                ShaderSources preferredShaders = SelectShaderSources(
+                    SafeGetGlString(GlVersion),
+                    SafeGetGlString(GlShadingLanguageVersion));
+                ShaderSources fallbackShaders = string.Equals(preferredShaders.Label, "ES300", StringComparison.Ordinal)
+                    ? new ShaderSources("ES100", VertexShaderSourceEs100, FragmentShaderSourceEs100)
+                    : new ShaderSources("ES300", VertexShaderSourceEs300, FragmentShaderSourceEs300);
+
+                string? firstFailure = null;
                 try
                 {
-                    CreateProgramAndTexture();
-                    _host.NoteInitSuccess();
+                    CreateProgramAndTexture(preferredShaders);
+                    return;
                 }
                 catch (Exception ex)
                 {
-                    DestroyGlResources();
-                    _host.NoteInitFailure(ex.Message);
+                    firstFailure = BuildShaderAttemptDetails(preferredShaders, ex);
+                }
+
+                try
+                {
+                    CreateProgramAndTexture(fallbackShaders);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    string secondFailure = BuildShaderAttemptDetails(fallbackShaders, ex);
+                    throw new InvalidOperationException($"{firstFailure}\nFallback Attempt:\n{secondFailure}");
                 }
             }
 
-            private void CreateProgramAndTexture()
+            private void CreateProgramAndTexture(ShaderSources shaderSources)
             {
-                const string vertexShaderSource = """
-                    attribute vec2 aPos;
-                    attribute vec2 aUv;
-                    varying vec2 vUv;
-                    void main()
-                    {
-                        vUv = aUv;
-                        gl_Position = vec4(aPos, 0.0, 1.0);
-                    }
-                    """;
-
-                const string fragmentShaderSource = """
-                    precision mediump float;
-                    varying vec2 vUv;
-                    uniform sampler2D uTex;
-                    uniform float uSwapRedBlue;
-                    uniform float uForceOpaque;
-
-                    void main()
-                    {
-                        vec4 color = texture2D(uTex, vUv);
-                        if (uSwapRedBlue > 0.5)
-                            color = color.bgra;
-                        if (uForceOpaque > 0.5)
-                            color.a = 1.0;
-                        gl_FragColor = color;
-                    }
-                    """;
-
-                DestroyGlResources();
-
-                int vertexShader = CompileShader(GlVertexShader, vertexShaderSource);
-                int fragmentShader = CompileShader(GlFragmentShader, fragmentShaderSource);
+                int vertexShader = CompileShader(GlVertexShader, shaderSources.VertexSource);
+                int fragmentShader = CompileShader(GlFragmentShader, shaderSources.FragmentSource);
 
                 _programId = GLES20.GlCreateProgram();
+                if (_programId == 0)
+                    throw new InvalidOperationException($"Native Android GL program creation failed: err=0x{GLES20.GlGetError():X}");
                 GLES20.GlAttachShader(_programId, vertexShader);
                 GLES20.GlAttachShader(_programId, fragmentShader);
                 GLES20.GlBindAttribLocation(_programId, 0, "aPos");
@@ -520,11 +1246,11 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 GLES20.GlLinkProgram(_programId);
 
                 int[] status = new int[1];
-                GLES20.GlGetProgramiv(_programId, GLES20.GlLinkStatus, IntBuffer.Wrap(status));
+                GLES20.GlGetProgramiv(_programId, GLES20.GlLinkStatus, status, 0);
                 if (status[0] == 0)
                 {
                     string info = GLES20.GlGetProgramInfoLog(_programId) ?? "unknown";
-                    throw new InvalidOperationException($"Native Android GL link failed: {info}");
+                    throw new InvalidOperationException($"Native Android GL link failed: {info} err=0x{GLES20.GlGetError():X}");
                 }
 
                 GLES20.GlDeleteShader(vertexShader);
@@ -533,12 +1259,13 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _positionLocation = GLES20.GlGetAttribLocation(_programId, "aPos");
                 _uvLocation = GLES20.GlGetAttribLocation(_programId, "aUv");
                 _samplerLocation = GLES20.GlGetUniformLocation(_programId, "uTex");
-                _swapRedBlueLocation = GLES20.GlGetUniformLocation(_programId, "uSwapRedBlue");
                 _forceOpaqueLocation = GLES20.GlGetUniformLocation(_programId, "uForceOpaque");
 
                 int[] textures = new int[1];
-                GLES20.GlGenTextures(1, IntBuffer.Wrap(textures));
+                GLES20.GlGenTextures(1, textures, 0);
                 _textureId = textures[0];
+                if (_textureId == 0)
+                    throw new InvalidOperationException($"Native Android GL texture creation failed: err=0x{GLES20.GlGetError():X}");
                 GLES20.GlBindTexture(GlTexture2D, _textureId);
                 GLES20.GlTexParameteri(GlTexture2D, GlTextureMinFilter, GlNearest);
                 GLES20.GlTexParameteri(GlTexture2D, GlTextureMagFilter, GlNearest);
@@ -552,17 +1279,76 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private static int CompileShader(int shaderType, string source)
             {
                 int shader = GLES20.GlCreateShader(shaderType);
+                if (shader == 0)
+                    throw new InvalidOperationException($"Native Android GL shader creation failed: type=0x{shaderType:X} err=0x{GLES20.GlGetError():X}");
                 GLES20.GlShaderSource(shader, source);
                 GLES20.GlCompileShader(shader);
 
                 int[] status = new int[1];
-                GLES20.GlGetShaderiv(shader, GLES20.GlCompileStatus, IntBuffer.Wrap(status));
+                GLES20.GlGetShaderiv(shader, GLES20.GlCompileStatus, status, 0);
                 if (status[0] != 0)
                     return shader;
 
                 string info = GLES20.GlGetShaderInfoLog(shader) ?? "unknown";
                 GLES20.GlDeleteShader(shader);
-                throw new InvalidOperationException($"Native Android GL shader compile failed: {info}");
+                string shaderName = shaderType == GlVertexShader ? "vertex" : shaderType == GlFragmentShader ? "fragment" : $"0x{shaderType:X}";
+                throw new InvalidOperationException($"Native Android GL {shaderName} shader compile failed: {info} err=0x{GLES20.GlGetError():X}");
+            }
+
+            private static string SafeGetGlString(int name)
+            {
+                try
+                {
+                    return GLES20.GlGetString(name) ?? "unknown";
+                }
+                catch (Exception ex)
+                {
+                    return $"error:{ex.GetType().Name}";
+                }
+            }
+
+            private static ShaderSources SelectShaderSources(string glVersion, string shadingLanguageVersion)
+            {
+                int shadingMajor = ParseLeadingVersionComponent(shadingLanguageVersion);
+                int glMajor = ParseLeadingVersionComponent(glVersion);
+                if (shadingMajor >= 3 || glMajor >= 3)
+                    return new ShaderSources("ES300", VertexShaderSourceEs300, FragmentShaderSourceEs300);
+
+                return new ShaderSources("ES100", VertexShaderSourceEs100, FragmentShaderSourceEs100);
+            }
+
+            private static int ParseLeadingVersionComponent(string value)
+            {
+                for (int i = 0; i < value.Length; i++)
+                {
+                    if (!char.IsDigit(value[i]))
+                        continue;
+
+                    int start = i;
+                    while (i < value.Length && char.IsDigit(value[i]))
+                        i++;
+
+                    if (int.TryParse(value[start..i], out int parsed))
+                        return parsed;
+
+                    break;
+                }
+
+                return 0;
+            }
+
+            private static string BuildShaderAttemptDetails(ShaderSources shaderSources, Exception ex)
+            {
+                return
+                    $"Mode:{shaderSources.Label}\n" +
+                    $"Error:{ex.Message}\n" +
+                    $"Vertex Shader:\n{shaderSources.VertexSource}\n" +
+                    $"Fragment Shader:\n{shaderSources.FragmentSource}";
+            }
+
+            private static string BuildInitDetails(Exception ex)
+            {
+                return $"GL Init Detail:{ex.Message}";
             }
 
             private void EnsureTextureStorage(int frameWidth, int frameHeight)
@@ -598,17 +1384,65 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 if (_textureId != 0)
                 {
                     int[] textures = { _textureId };
-                    GLES20.GlDeleteTextures(1, IntBuffer.Wrap(textures));
+                    GLES20.GlDeleteTextures(1, textures, 0);
                     _textureId = 0;
                 }
 
                 _positionLocation = -1;
                 _uvLocation = -1;
                 _samplerLocation = -1;
-                _swapRedBlueLocation = -1;
                 _forceOpaqueLocation = -1;
                 _textureWidth = 0;
                 _textureHeight = 0;
+            }
+
+            private void CleanupGl()
+            {
+                DestroyGlResources();
+
+                if (_eglDisplay != null)
+                {
+                    EGL14.EglMakeCurrent(_eglDisplay, EGL14.EglNoSurface, EGL14.EglNoSurface, EGL14.EglNoContext);
+                    if (_eglSurface != null)
+                        EGL14.EglDestroySurface(_eglDisplay, _eglSurface);
+                    if (_eglContext != null)
+                        EGL14.EglDestroyContext(_eglDisplay, _eglContext);
+                    EGL14.EglTerminate(_eglDisplay);
+                    EGL14.EglReleaseThread();
+                }
+
+                if (_windowSurface != null)
+                {
+                    _windowSurface.Release();
+                    _windowSurface.Dispose();
+                    _windowSurface = null;
+                }
+
+                _eglSurface = null;
+                _eglContext = null;
+                _eglConfig = null;
+                _eglDisplay = null;
+            }
+
+            private static bool IsNoDisplay(EGLDisplay? display)
+            {
+                return display == null
+                    || ReferenceEquals(display, EGL14.EglNoDisplay)
+                    || display.Equals(EGL14.EglNoDisplay);
+            }
+
+            private static bool IsNoContext(EGLContext? context)
+            {
+                return context == null
+                    || ReferenceEquals(context, EGL14.EglNoContext)
+                    || context.Equals(EGL14.EglNoContext);
+            }
+
+            private static bool IsNoSurface(EGLSurface? surface)
+            {
+                return surface == null
+                    || ReferenceEquals(surface, EGL14.EglNoSurface)
+                    || surface.Equals(EGL14.EglNoSurface);
             }
         }
     }

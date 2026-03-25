@@ -609,7 +609,8 @@
             </StackPanel>
           </Border>
 
-          <Grid HorizontalAlignment="Left"
+          <Grid x:Name="LandscapeTopLeftControls"
+                HorizontalAlignment="Left"
                 VerticalAlignment="Top"
                 Margin="22,14,0,0"
                 RowDefinitions="Auto,Auto,Auto"
@@ -679,7 +680,8 @@
             </Border>
           </Grid>
 
-          <Grid HorizontalAlignment="Right"
+          <Grid x:Name="LandscapeTopRightControls"
+                HorizontalAlignment="Right"
                 VerticalAlignment="Top"
                 Margin="0,14,22,0"
                 RowDefinitions="Auto,Auto,Auto"
@@ -1082,14 +1084,12 @@
     </Border>
 
     <Border IsVisible="{Binding DebugVisible}"
-            Background="#DE050B10"
-            PointerPressed="OnCloseDebug">
+            Background="#DE050B10">
       <Grid Margin="18">
         <Border Classes="debugShell"
                 HorizontalAlignment="Stretch"
                 VerticalAlignment="Stretch"
-                Padding="20"
-                IsHitTestVisible="False">
+                Padding="20">
           <Grid RowDefinitions="Auto,Auto,*" RowSpacing="14">
             <Grid ColumnDefinitions="Auto,*,Auto"
                   ColumnSpacing="12">
@@ -1118,17 +1118,11 @@
                            Text="EutherDrive Debug View" />
               </StackPanel>
 
-              <Border Grid.Column="2"
-                      Background="#8A121C25"
-                      BorderBrush="#32485A"
-                      BorderThickness="1"
-                      CornerRadius="999"
-                      Padding="12,8">
-                <TextBlock Text="Tap Anywhere To Close"
-                           Foreground="#91A8BD"
-                           FontSize="11"
-                           FontWeight="SemiBold" />
-              </Border>
+              <Button Grid.Column="2"
+                      Classes="chrome"
+                      Padding="12,8"
+                      Content="Close"
+                      Click="OnCloseDebug" />
             </Grid>
 
             <Border Grid.Row="1"
