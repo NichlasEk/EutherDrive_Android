@@ -984,6 +984,12 @@ public class SNESSystem : ISNESSystem
 
     private bool TryRunSafeCpuWaitWindow(bool noPpu)
     {
+        // SA-1 can raise SNES-visible IRQ work while the main CPU is only "waiting".
+        // Batching that wait still wakes the CPU too late for Kirby 3's mid-frame HUD DMA,
+        // so keep the safe wait path for plain SNES titles only.
+        if (ROM.Sa1 != null)
+            return false;
+
         if (_inIrq || _cpuImpl.NmiWanted || RomImpl.IrqWanted || RomImpl.NmiWanted)
             return false;
 
