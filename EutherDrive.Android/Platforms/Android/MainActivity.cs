@@ -23,10 +23,20 @@ namespace EutherDrive.Android;
         ConfigChanges.Density)]
 public class MainActivity : AvaloniaMainActivity<App>
 {
+    public static MainActivity? Current { get; private set; }
+
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
+        Current = this;
         ApplyFullscreenForOrientation(Resources?.Configuration?.Orientation ?? Orientation.Undefined);
+    }
+
+    protected override void OnDestroy()
+    {
+        if (ReferenceEquals(Current, this))
+            Current = null;
+        base.OnDestroy();
     }
 
     public override void OnConfigurationChanged(Configuration newConfig)

@@ -59,7 +59,6 @@ public partial class MainView : UserControl
     private readonly Dictionary<string, int> _directionLatchFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _actionLatchFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _virtualSystemPaths = new(StringComparer.OrdinalIgnoreCase);
-    private readonly DispatcherTimer _frameTimer;
     private readonly string _appDataDir;
     private readonly string _settingsPath;
     private readonly string _legacyJsonSettingsPath;
@@ -106,6 +105,7 @@ public partial class MainView : UserControl
     private bool? _appliedPresentationLandscape;
     private int _bootRequestSerial;
     private bool _bootInProgress;
+    private int _presentLatestFrameQueued;
 
     public MainView()
     {
@@ -115,7 +115,6 @@ public partial class MainView : UserControl
         _legacyJsonSettingsPath = Path.Combine(_appDataDir, LegacyJsonSettingsFileName);
         _savestateService = new SavestateService(Path.Combine(_appDataDir, "savestates"));
         DataContext = _viewModel;
-        _frameTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => PresentLatestFrame());
         LoadSettings();
         ApplySettings();
         _viewModel.SettingsHint = "Small BIOS/chip files are imported into app storage. Large disc images are intentionally not cached here.";
@@ -1176,7 +1175,6 @@ public partial class MainView : UserControl
             _viewModel.SelectedConsoleLabel = consoleLabel;
             InitializeAudio(core: _core);
             StartEmulationLoop(_core);
-            _frameTimer.Start();
             _viewModel.IsRunning = true;
             _viewModel.FooterStatus = "ROM started in Android host.";
         }
@@ -1312,15 +1310,34 @@ public partial class MainView : UserControl
 
         long presentStart = _perfStopwatch.ElapsedTicks;
         var blitOptions = new FrameBlitOptions(SharpPixels: _viewModel.SharpPixelsEnabled);
-        _ = _renderSurface.Present(
-            frameBuffer,
-            width,
-            height,
-            srcStride,
-            blitOptions,
-            measurePerf: false);
+        if (_renderSurface is OpenGlRenderSurface glOwnedSurface)
+        {
+            lock (_frameSync)
+            {
+                if (ReferenceEquals(_presentFrameBuffer, frameBuffer))
+                    _presentFrameBuffer = Array.Empty<byte>();
+            }
 
-        if (_renderSurface is OpenGlRenderSurface glSurface && glSurface.ShouldFallbackToBitmap(out string fallbackReason))
+            _ = glOwnedSurface.PresentOwnedBuffer(
+                frameBuffer,
+                width,
+                height,
+                srcStride,
+                blitOptions,
+                measurePerf: false);
+        }
+        else
+        {
+            _ = _renderSurface.Present(
+                frameBuffer,
+                width,
+                height,
+                srcStride,
+                blitOptions,
+                measurePerf: false);
+        }
+
+        if (TryGetRenderSurfaceFallbackReason(out string fallbackReason))
         {
             Console.WriteLine($"[Android] OpenGL fallback -> bitmap: {fallbackReason}");
             if (_renderSurface is IDisposable disposableRenderSurface)
@@ -1358,6 +1375,57 @@ public partial class MainView : UserControl
         {
             _viewModel.ScreenOverlayVisible = false;
             _viewModel.FooterStatus = $"Rendering {_selectedRomDisplayName ?? "ROM"}";
+        }
+    }
+
+    private void QueuePresentLatestFrame()
+    {
+        if (Interlocked.CompareExchange(ref _presentLatestFrameQueued, 1, 0) != 0)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(ProcessQueuedPresentLatestFrame, DispatcherPriority.Background);
+    }
+
+    private void ProcessQueuedPresentLatestFrame()
+    {
+        try
+        {
+            while (true)
+            {
+                PresentLatestFrame();
+
+                long latestSerial;
+                long presentedSerial;
+                lock (_frameSync)
+                {
+                    latestSerial = _latestFrameSerial;
+                    presentedSerial = _presentedFrameSerial;
+                }
+
+                if (latestSerial == presentedSerial)
+                {
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _presentLatestFrameQueued, 0);
+
+            long latestSerial;
+            long presentedSerial;
+            lock (_frameSync)
+            {
+                latestSerial = _latestFrameSerial;
+                presentedSerial = _presentedFrameSerial;
+            }
+
+            if (latestSerial != presentedSerial)
+            {
+                QueuePresentLatestFrame();
+            }
         }
     }
 
@@ -1480,6 +1548,11 @@ public partial class MainView : UserControl
         string coreLabel = _core?.GetType().Name ?? "None";
         string perfSummary =
             $"Perf  FPS:{fps:0}  Max:{maxFps:0}  Work:{avgWorkMs:0.0}ms  Emu:{_perfAccumulatedEmuMs / _perfWindowFrames:0.0}ms  Audio:{_perfAccumulatedAudioMs / _perfWindowFrames:0.0}ms  Cap:{_perfAccumulatedBlitMs / _perfWindowFrames:0.0}ms  Present:{avgPresentMs:0.0}ms  Drop:{droppedFrames}  Frame:{_emulatedFrames}  Res:{_lastFrameWidth}x{_lastFrameHeight}  Core:{coreLabel}";
+        if (TryGetRenderSurfaceDebugSummary(out string glSummary))
+        {
+            perfSummary = $"{perfSummary}\n{glSummary}";
+        }
+
         _latestPerfHeadline = $"FPS {fps:0}  MAX {maxFps:0}";
         if (_core is PsxAdapter psx && psx.TryGetBootProgressSummary(out string psxBoot))
         {
@@ -1565,7 +1638,7 @@ public partial class MainView : UserControl
 
     private void StopSession(bool clearSelection, string? footerStatus)
     {
-        _frameTimer.Stop();
+        Interlocked.Exchange(ref _presentLatestFrameQueued, 0);
         StopEmulationLoop();
         IEmulatorCore? core = _core;
         _core = null;
@@ -2654,6 +2727,7 @@ public partial class MainView : UserControl
                 _latestFrameSerial++;
             }
 
+            QueuePresentLatestFrame();
             return;
         }
 
@@ -2671,6 +2745,7 @@ public partial class MainView : UserControl
                 _latestFrameSerial++;
             }
 
+            QueuePresentLatestFrame();
             return;
         }
 
@@ -2707,6 +2782,8 @@ public partial class MainView : UserControl
             _emulatedFrames++;
             _latestFrameSerial++;
         }
+
+        QueuePresentLatestFrame();
     }
 
     private static void EnsureFrameBufferCapacity(ref byte[] buffer, int requiredBytes)
@@ -2744,16 +2821,45 @@ public partial class MainView : UserControl
         }
     }
 
-    private static IGameRenderSurface CreateRenderSurface() => new OpenGlRenderSurface();
+    private static IGameRenderSurface CreateRenderSurface() => new AndroidNativeGlRenderSurface();
 
     private void UpdateActiveRenderModeLabel()
     {
         _viewModel.ActiveRenderModeLabel = _renderSurface switch
         {
             WriteableBitmapRenderSurface => "Active: Bitmap fallback",
+            AndroidNativeGlRenderSurface => "Active: OpenGL Native",
             OpenGlRenderSurface => "Active: OpenGL",
-            _ => "Active: OpenGL"
+            _ => "Active: OpenGL Native"
         };
+    }
+
+    private bool TryGetRenderSurfaceFallbackReason(out string reason)
+    {
+        switch (_renderSurface)
+        {
+            case AndroidNativeGlRenderSurface nativeGlSurface when nativeGlSurface.ShouldFallbackToBitmap(out reason):
+                return true;
+            case OpenGlRenderSurface glSurface when glSurface.ShouldFallbackToBitmap(out reason):
+                return true;
+            default:
+                reason = string.Empty;
+                return false;
+        }
+    }
+
+    private bool TryGetRenderSurfaceDebugSummary(out string summary)
+    {
+        switch (_renderSurface)
+        {
+            case AndroidNativeGlRenderSurface nativeGlSurface when nativeGlSurface.TryGetDebugSummary(out summary):
+                return true;
+            case OpenGlRenderSurface glSurface when glSurface.TryGetDebugSummary(out summary):
+                return true;
+            default:
+                summary = string.Empty;
+                return false;
+        }
     }
 
     private void EnsureRenderSurface(int width, int height)
@@ -2921,8 +3027,10 @@ public partial class MainView : UserControl
 
     private void InvalidateScreenImages()
     {
-        if (_renderSurface is not OpenGlRenderSurface)
-            _renderSurface?.View.InvalidateVisual();
+        if (_renderSurface is AndroidNativeGlRenderSurface)
+            return;
+
+        _renderSurface?.View.InvalidateVisual();
     }
 
     private static IEmulatorCore CreateCoreForRom(string path)

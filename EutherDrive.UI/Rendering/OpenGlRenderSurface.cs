@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using Avalonia.Controls;
 using Avalonia.OpenGL;
 using Avalonia.OpenGL.Controls;
+using Avalonia.Threading;
 
 namespace EutherDrive.Rendering;
 
@@ -40,6 +41,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
     }
 
     public bool ShouldFallbackToBitmap(out string reason) => _control.ShouldFallbackToBitmap(out reason);
+
+    public bool TryGetDebugSummary(out string summary) => _control.TryGetDebugSummary(out summary);
 
     public void Reset() => _control.ResetFrame();
 
@@ -109,8 +112,13 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private int _swapRedBlueLocation = -1;
         private int _presentCount;
         private int _renderCount;
+        private int _uploadCount;
+        private long _renderTicksTotal;
+        private long _uploadTicksTotal;
+        private long _lastRenderTicks;
+        private long _lastUploadTicks;
         private readonly bool _traceEnabled = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_GL"), "1", StringComparison.Ordinal);
-        private readonly bool _enablePixelUnpackBuffers = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GL_ENABLE_PBO"), "1", StringComparison.Ordinal);
+        private readonly bool _enablePixelUnpackBuffers = GetPixelUnpackBufferDefault();
         private readonly bool _useSafeRgbaUpload = GetSafeRgbaUploadDefault();
         private bool _initAttempted;
         private bool _initSucceeded;
@@ -196,6 +204,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 _frameHeight = height;
                 _frameStride = width * 4;
                 int requiredBytes = checked(width * height * 4);
+                if (_frameBytes.Length != requiredBytes)
+                    _frameBytes = new byte[requiredBytes];
                 if (_uploadBytes.Length != requiredBytes)
                     _uploadBytes = new byte[requiredBytes];
                 return recreated;
@@ -207,33 +217,34 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             EnsureFrameSize(width, height);
             int dstStride = width * 4;
             int requiredBytes = dstStride * height;
-            byte[] frameBytes;
+            byte[] stagingBytes;
             lock (_frameSync)
             {
-                if (_frameBytes.Length != requiredBytes)
-                    _frameBytes = new byte[requiredBytes];
-                frameBytes = _frameBytes;
+                if (_uploadBytes.Length != requiredBytes)
+                    _uploadBytes = new byte[requiredBytes];
+                stagingBytes = _uploadBytes;
             }
 
-            if (dstStride <= 0 || frameBytes.Length < requiredBytes)
+            if (dstStride <= 0 || stagingBytes.Length < requiredBytes)
                 return;
 
             if (srcStride == dstStride)
             {
-                source[..Math.Min(source.Length, requiredBytes)].CopyTo(frameBytes);
+                source[..Math.Min(source.Length, requiredBytes)].CopyTo(stagingBytes);
             }
             else
             {
                 for (int y = 0; y < height; y++)
                 {
                     ReadOnlySpan<byte> srcRow = source.Slice(y * srcStride, dstStride);
-                    Span<byte> dstRow = frameBytes.AsSpan(y * dstStride, dstStride);
+                    Span<byte> dstRow = stagingBytes.AsSpan(y * dstStride, dstStride);
                     srcRow.CopyTo(dstRow);
                 }
             }
 
             lock (_frameSync)
             {
+                (_frameBytes, _uploadBytes) = (_uploadBytes, _frameBytes);
                 _frameWidth = width;
                 _frameHeight = height;
                 _frameStride = dstStride;
@@ -285,6 +296,19 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
 
             reason = string.Empty;
             return false;
+        }
+
+        public bool TryGetDebugSummary(out string summary)
+        {
+            lock (_frameSync)
+            {
+                double avgRenderMs = _renderCount > 0 ? (_renderTicksTotal * 1000.0 / Stopwatch.Frequency) / _renderCount : 0;
+                double avgUploadMs = _uploadCount > 0 ? (_uploadTicksTotal * 1000.0 / Stopwatch.Frequency) / _uploadCount : 0;
+                double lastRenderMs = _lastRenderTicks > 0 ? _lastRenderTicks * 1000.0 / Stopwatch.Frequency : 0;
+                double lastUploadMs = _lastUploadTicks > 0 ? _lastUploadTicks * 1000.0 / Stopwatch.Frequency : 0;
+                summary = $"GL Present:{_presentCount} Render:{_renderCount} Upload:{_uploadCount} Pending:{(_renderRequested ? 1 : 0)} R:{avgRenderMs:0.0}/{lastRenderMs:0.0}ms U:{avgUploadMs:0.0}/{lastUploadMs:0.0}ms";
+                return true;
+            }
         }
 
         public void ResetFrame()
@@ -463,7 +487,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _textureWidth = 0;
             _textureHeight = 0;
             _texSubImage2D = TexSubImage2DInvoker.Create(gl.GetProcAddress("glTexSubImage2D"));
-            _usePixelUnpackBuffers = _enablePixelUnpackBuffers && !_useSafeRgbaUpload && _texSubImage2D != null && SupportsPixelUnpackBuffers(gl.Version);
+            _usePixelUnpackBuffers = _enablePixelUnpackBuffers && _texSubImage2D != null && SupportsPixelUnpackBuffers(gl.Version);
             if (_usePixelUnpackBuffers)
             {
                 _pixelUnpackBufferIds[0] = gl.GenBuffer();
@@ -557,6 +581,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
 
         protected override unsafe void OnOpenGlRender(GlInterface gl, int fb)
         {
+            long renderStart = Stopwatch.GetTimestamp();
+            long uploadTicks = 0;
             _renderCount++;
             int viewportWidth = Math.Max(1, (int)Math.Round(Bounds.Width));
             int viewportHeight = Math.Max(1, (int)Math.Round(Bounds.Height));
@@ -581,7 +607,6 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             byte[] frameBytes;
             int frameWidth;
             int frameHeight;
-            byte[] uploadBytes;
             bool frameDirty;
             bool sharpPixelsEnabled;
             bool forceOpaque;
@@ -593,7 +618,6 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 frameBytes = _frameBytes;
                 frameWidth = _frameWidth;
                 frameHeight = _frameHeight;
-                uploadBytes = _uploadBytes;
                 frameDirty = _frameDirty;
                 sharpPixelsEnabled = _sharpPixelsEnabled;
                 forceOpaque = _forceOpaque;
@@ -615,9 +639,18 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             if (frameDirty && frameBytes.Length > 0)
             {
                 EnsureTextureStorage(gl, frameWidth, frameHeight);
+                long uploadStart = Stopwatch.GetTimestamp();
                 fixed (byte* pFrame = frameBytes)
                 {
                     UploadTexturePixels(gl, frameWidth, frameHeight, (IntPtr)pFrame, _useSafeRgbaUpload ? GlRgba : GlBgra);
+                }
+                uploadTicks = Stopwatch.GetTimestamp() - uploadStart;
+
+                lock (_frameSync)
+                {
+                    _uploadCount++;
+                    _uploadTicksTotal += uploadTicks;
+                    _lastUploadTicks = uploadTicks;
                 }
             }
 
@@ -652,6 +685,15 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
 
             gl.DrawArrays(GlTriangles, 0, (IntPtr)6);
 
+            long renderTicks = Stopwatch.GetTimestamp() - renderStart;
+            lock (_frameSync)
+            {
+                _renderTicksTotal += renderTicks;
+                _lastRenderTicks = renderTicks;
+                if (!frameDirty)
+                    _lastUploadTicks = 0;
+            }
+
             if (_traceEnabled && (_renderCount <= 5 || (_renderCount % 60) == 0))
                 Console.WriteLine($"[OpenGL] Render frame#{_renderCount} fb={fb} tex={_textureId} size={frameWidth}x{frameHeight} viewport={viewportWidth}x{viewportHeight} dirty={frameDirty}");
         }
@@ -669,7 +711,16 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             }
 
             if (shouldRequest)
-                RequestNextFrameRendering();
+            {
+                if (Dispatcher.UIThread.CheckAccess())
+                {
+                    RequestNextFrameRendering();
+                }
+                else
+                {
+                    Dispatcher.UIThread.Post(RequestNextFrameRendering, DispatcherPriority.Render);
+                }
+            }
         }
 
         private void ApplyOptionsLocked(in FrameBlitOptions options)
@@ -712,6 +763,18 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             // GLES drivers on Android are much less consistent about BGRA texture uploads
             // than desktop GL. Default to the explicit BGRA->RGBA conversion there so we
             // prefer a visible frame over the slightly faster desktop upload path.
+            return OperatingSystem.IsAndroid();
+        }
+
+        private static bool GetPixelUnpackBufferDefault()
+        {
+            string? env = Environment.GetEnvironmentVariable("EUTHERDRIVE_GL_ENABLE_PBO");
+            if (string.Equals(env, "1", StringComparison.Ordinal))
+                return true;
+            if (string.Equals(env, "0", StringComparison.Ordinal))
+                return false;
+
+            // Android benefits the most from asynchronous texture upload when GLES supports it.
             return OperatingSystem.IsAndroid();
         }
 
