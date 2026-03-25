@@ -37,6 +37,7 @@ public partial class MainView : UserControl
     private const double JoystickAxisEngageRatio = 0.28;
     private const double JoystickDiagonalRatio = 0.56;
     private const double JoystickPadding = 10.0;
+    private const double LandscapeIntegerSnapThreshold = 0.08;
     private const string SettingsFileName = "android-settings.toml";
     private const string LegacyJsonSettingsFileName = "android-settings.json";
 
@@ -1302,7 +1303,7 @@ public partial class MainView : UserControl
             _presentedFrameSerial = serial;
         }
 
-        EnsureBitmap(width, height);
+        EnsureRenderSurface(width, height);
         ApplyPresentationSizeForCore(_core, width, height);
         if (_renderSurface == null)
         {
@@ -1310,13 +1311,38 @@ public partial class MainView : UserControl
         }
 
         long presentStart = _perfStopwatch.ElapsedTicks;
+        var blitOptions = new FrameBlitOptions(SharpPixels: _viewModel.SharpPixelsEnabled);
         _ = _renderSurface.Present(
             frameBuffer,
             width,
             height,
             srcStride,
-            new FrameBlitOptions(SharpPixels: _viewModel.SharpPixelsEnabled),
+            blitOptions,
             measurePerf: false);
+
+        if (_renderSurface is OpenGlRenderSurface glSurface && glSurface.ShouldFallbackToBitmap(out string fallbackReason))
+        {
+            Console.WriteLine($"[Android] OpenGL fallback -> bitmap: {fallbackReason}");
+            if (_renderSurface is IDisposable disposableRenderSurface)
+                disposableRenderSurface.Dispose();
+            else
+                _renderSurface.Reset();
+
+            _renderSurface = new WriteableBitmapRenderSurface();
+            UpdateActiveRenderModeLabel();
+            _viewModel.FooterStatus = $"OpenGL fallback: {fallbackReason}";
+            EnsureRenderSurface(width, height);
+            if (_renderSurface != null)
+            {
+                _ = _renderSurface.Present(
+                    frameBuffer,
+                    width,
+                    height,
+                    srcStride,
+                    blitOptions,
+                    measurePerf: false);
+            }
+        }
 
         Interlocked.Add(ref _perfAccumulatedPresentTicks, _perfStopwatch.ElapsedTicks - presentStart);
         Interlocked.Increment(ref _perfPresentedWindowFrames);
@@ -1552,6 +1578,7 @@ public partial class MainView : UserControl
         else
             _renderSurface?.Reset();
         _renderSurface = null;
+        UpdateActiveRenderModeLabel();
         _presentedFrames = 0;
         ResetPerfCounters();
         lock (_frameSync)
@@ -2717,9 +2744,22 @@ public partial class MainView : UserControl
         }
     }
 
-    private void EnsureBitmap(int width, int height)
+    private static IGameRenderSurface CreateRenderSurface() => new OpenGlRenderSurface();
+
+    private void UpdateActiveRenderModeLabel()
     {
-        _renderSurface ??= new WriteableBitmapRenderSurface();
+        _viewModel.ActiveRenderModeLabel = _renderSurface switch
+        {
+            WriteableBitmapRenderSurface => "Active: Bitmap fallback",
+            OpenGlRenderSurface => "Active: OpenGL",
+            _ => "Active: OpenGL"
+        };
+    }
+
+    private void EnsureRenderSurface(int width, int height)
+    {
+        _renderSurface ??= CreateRenderSurface();
+        UpdateActiveRenderModeLabel();
         if (_renderSurface.EnsureSize(width, height) || !IsRenderSurfaceAttachedToExpectedHost())
             AttachRenderSurfaceToActiveHost();
         ApplySharpPixelsSetting();
@@ -2744,27 +2784,83 @@ public partial class MainView : UserControl
         }
 
         bool isLandscape = _viewModel.IsLandscapeMode;
+        Control targetHost = isLandscape ? LandscapeScreenHost : PortraitScreenHost;
+        (double appliedWidth, double appliedHeight) = ComputePixelPerfectPresentationSize(targetHost, targetWidth, targetHeight);
         if (_appliedPresentationLandscape == isLandscape
             && !double.IsNaN(_appliedPresentationWidth)
             && !double.IsNaN(_appliedPresentationHeight)
-            && Math.Abs(_appliedPresentationWidth - targetWidth) <= 0.5
-            && Math.Abs(_appliedPresentationHeight - targetHeight) <= 0.5)
+            && Math.Abs(_appliedPresentationWidth - appliedWidth) <= 0.5
+            && Math.Abs(_appliedPresentationHeight - appliedHeight) <= 0.5)
         {
             return;
         }
 
-        if (isLandscape)
+        ApplyPresentationSize(targetHost, appliedWidth, appliedHeight);
+
+        _appliedPresentationWidth = appliedWidth;
+        _appliedPresentationHeight = appliedHeight;
+        _appliedPresentationLandscape = isLandscape;
+    }
+
+    private (double width, double height) ComputePixelPerfectPresentationSize(Control host, double sourceWidth, double sourceHeight)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0)
+            return (sourceWidth, sourceHeight);
+
+        if (host.Parent is not Control parent)
+            return (sourceWidth, sourceHeight);
+
+        double availableWidth = parent.Bounds.Width;
+        double availableHeight = parent.Bounds.Height;
+        if (availableWidth <= 0 || availableHeight <= 0)
+            return (sourceWidth, sourceHeight);
+
+        double renderScale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
+        if (renderScale <= 0)
+            renderScale = 1.0;
+
+        double availablePixelWidth = availableWidth * renderScale;
+        double availablePixelHeight = availableHeight * renderScale;
+        double fitScale = Math.Min(
+            availablePixelWidth / sourceWidth,
+            availablePixelHeight / sourceHeight);
+        int integerScale = (int)Math.Floor(fitScale);
+
+        if (_viewModel.IsLandscapeMode)
         {
-            ApplyPresentationSize(LandscapeScreenHost, targetWidth, targetHeight);
-        }
-        else
-        {
-            ApplyPresentationSize(PortraitScreenHost, targetWidth, targetHeight);
+            // Landscape should use as much of the playfield as possible because the touch
+            // controls are translucent overlays. On larger screens, snap back to an integer
+            // multiple when we are already very close so pixels stay perfectly even there.
+            if (integerScale >= 1 && fitScale - integerScale <= LandscapeIntegerSnapThreshold)
+            {
+                return (
+                    (sourceWidth * integerScale) / renderScale,
+                    (sourceHeight * integerScale) / renderScale);
+            }
+
+            if (fitScale > 0)
+            {
+                return (
+                    (sourceWidth * fitScale) / renderScale,
+                    (sourceHeight * fitScale) / renderScale);
+            }
+
+            return (sourceWidth, sourceHeight);
         }
 
-        _appliedPresentationWidth = targetWidth;
-        _appliedPresentationHeight = targetHeight;
-        _appliedPresentationLandscape = isLandscape;
+        if (integerScale >= 1)
+        {
+            return (
+                (sourceWidth * integerScale) / renderScale,
+                (sourceHeight * integerScale) / renderScale);
+        }
+
+        if (fitScale <= 0)
+            return (sourceWidth, sourceHeight);
+
+        return (
+            (sourceWidth * fitScale) / renderScale,
+            (sourceHeight * fitScale) / renderScale);
     }
 
     private static void ApplyPresentationSize(Control control, double width, double height)
@@ -2825,7 +2921,8 @@ public partial class MainView : UserControl
 
     private void InvalidateScreenImages()
     {
-        _renderSurface?.View.InvalidateVisual();
+        if (_renderSurface is not OpenGlRenderSurface)
+            _renderSurface?.View.InvalidateVisual();
     }
 
     private static IEmulatorCore CreateCoreForRom(string path)
@@ -2960,6 +3057,7 @@ public partial class MainView : UserControl
         private string _footerStatus = "Ready for ROM selection.";
         private string _perfSummary = "Perf idle";
         private string _perfHeadline = "FPS --  MAX --";
+        private string _activeRenderModeLabel = "Active: OpenGL";
         private string _overlaySummary = "D:-  A:-";
         private bool _isFocusMode;
         private bool _isLandscapeMode;
@@ -3064,6 +3162,12 @@ public partial class MainView : UserControl
             set => SetField(ref _perfHeadline, value);
         }
 
+        public string ActiveRenderModeLabel
+        {
+            get => _activeRenderModeLabel;
+            set => SetField(ref _activeRenderModeLabel, value);
+        }
+
         public string OverlaySummary
         {
             get => _overlaySummary;
@@ -3099,7 +3203,7 @@ public partial class MainView : UserControl
                     return;
                 }
 
-                RootMargin = value ? new Thickness(6, 2, 6, 6) : new Thickness(14);
+                RootMargin = value ? new Thickness(0) : new Thickness(14);
                 RootRowSpacing = value ? 0 : 12;
                 OnPropertyChanged(nameof(IsPortraitMode));
             }

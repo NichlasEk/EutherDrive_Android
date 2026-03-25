@@ -52,6 +52,9 @@
     <Compile Include="..\EutherDrive.UI\Rendering\IGameRenderSurface.cs">
       <Link>Rendering\IGameRenderSurface.cs</Link>
     </Compile>
+    <Compile Include="..\EutherDrive.UI\Rendering\OpenGlRenderSurface.cs">
+      <Link>Rendering\OpenGlRenderSurface.cs</Link>
+    </Compile>
     <Compile Include="..\EutherDrive.UI\Rendering\WriteableBitmapRenderSurface.cs">
       <Link>Rendering\WriteableBitmapRenderSurface.cs</Link>
     </Compile>

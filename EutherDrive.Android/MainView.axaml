@@ -326,7 +326,7 @@
                       CornerRadius="16"
                       Background="#0D131A" />
 
-              <Grid Margin="{Binding ScreenContentMargin}" RowDefinitions="Auto,*,Auto,Auto">
+              <Grid Margin="{Binding ScreenContentMargin}" RowDefinitions="Auto,Auto,*,Auto">
                 <Grid IsVisible="{Binding ScreenHudVisible}">
                   <Border HorizontalAlignment="Left"
                           Background="#A0121923"
@@ -359,13 +359,23 @@
                   </Border>
                 </Grid>
 
-                <Grid Grid.Row="1"
+                <Border Grid.Row="1"
+                        HorizontalAlignment="Center"
+                        Background="#8C101820"
+                        CornerRadius="999"
+                        Padding="10,4"
+                        Margin="0,8,0,6">
+                  <TextBlock Text="{Binding ActiveRenderModeLabel}"
+                             FontSize="11"
+                             FontWeight="Bold"
+                             Foreground="#93C5FD" />
+                </Border>
+
+                <Grid Grid.Row="2"
                       PointerPressed="OnToggleScreenFocus">
-                  <Viewbox Stretch="Uniform"
-                           HorizontalAlignment="Stretch"
-                           VerticalAlignment="Stretch">
-                    <Grid x:Name="PortraitScreenHost"/>
-                  </Viewbox>
+                  <Grid x:Name="PortraitScreenHost"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"/>
 
                   <Border HorizontalAlignment="Center"
                           VerticalAlignment="Center"
@@ -389,7 +399,7 @@
                   </Border>
                 </Grid>
 
-                <Border Grid.Row="2"
+                <Border Grid.Row="3"
                         IsVisible="{Binding ScreenHudVisible}"
                         HorizontalAlignment="Stretch"
                         Background="#7A101820"
@@ -573,12 +583,10 @@
       <Grid Grid.Row="1"
             IsVisible="{Binding IsLandscapeMode}">
         <Grid Margin="-6,0,-6,0">
-          <Viewbox Stretch="Uniform"
-                   HorizontalAlignment="Stretch"
-                   VerticalAlignment="Stretch"
-                   PointerPressed="OnToggleScreenFocus">
-            <Grid x:Name="LandscapeScreenHost"/>
-          </Viewbox>
+          <Grid x:Name="LandscapeScreenHost"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                PointerPressed="OnToggleScreenFocus"/>
 
           <Border IsVisible="{Binding ScreenOverlayVisible}"
                   HorizontalAlignment="Center"

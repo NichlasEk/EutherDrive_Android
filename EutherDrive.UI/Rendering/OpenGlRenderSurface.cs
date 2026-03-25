@@ -106,11 +106,12 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private int _advancedFilterLocation = -1;
         private int _scanlinesLocation = -1;
         private int _scanlineDarkenLocation = -1;
+        private int _swapRedBlueLocation = -1;
         private int _presentCount;
         private int _renderCount;
         private readonly bool _traceEnabled = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_GL"), "1", StringComparison.Ordinal);
         private readonly bool _enablePixelUnpackBuffers = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GL_ENABLE_PBO"), "1", StringComparison.Ordinal);
-        private readonly bool _useSafeRgbaUpload = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GL_SAFE_UPLOAD"), "1", StringComparison.Ordinal);
+        private readonly bool _useSafeRgbaUpload = GetSafeRgbaUploadDefault();
         private bool _initAttempted;
         private bool _initSucceeded;
         private bool _renderRequested;
@@ -125,6 +126,12 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private Uniform1iInvoker? _uniform1i;
         private Uniform1fInvoker? _uniform1f;
         private Uniform2fInvoker? _uniform2f;
+
+        public OpenGlFrameControl()
+        {
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch;
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Stretch;
+        }
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private unsafe delegate void TexSubImage2DCdecl(
@@ -324,6 +331,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 uniform float uApplyAdvancedFilter;
                 uniform float uApplyScanlines;
                 uniform float uScanlineDarken;
+                uniform float uSwapRedBlue;
 
                 float luma(vec3 color)
                 {
@@ -338,7 +346,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 vec4 sampleTexel(vec2 texelPos)
                 {
                     vec2 uv = (clampTexel(texelPos) + vec2(0.5, 0.5)) / uTextureSize;
-                    return texture2D(uTex, uv);
+                    vec4 color = texture2D(uTex, uv);
+                    return uSwapRedBlue > 0.5 ? color.bgra : color;
                 }
 
                 vec3 sharpen(vec2 texelPos)
@@ -375,12 +384,11 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 void main()
                 {
                     vec2 texelPos = floor(vUv * uTextureSize);
-                    vec4 color = texture2D(uTex, vUv);
+                    vec4 color = sampleTexel(texelPos);
 
                     if (uApplyAdvancedFilter > 0.5)
                     {
-                        vec2 centerUv = (clampTexel(texelPos) + vec2(0.5, 0.5)) / uTextureSize;
-                        color = vec4(sharpen(texelPos), texture2D(uTex, centerUv).a);
+                        color = vec4(sharpen(texelPos), sampleTexel(texelPos).a);
                     }
 
                     if (uApplyScanlines > 0.5 && mod(texelPos.y, 2.0) > 0.5)
@@ -426,6 +434,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _advancedFilterLocation = GetUniformLocation("uApplyAdvancedFilter");
             _scanlinesLocation = GetUniformLocation("uApplyScanlines");
             _scanlineDarkenLocation = GetUniformLocation("uScanlineDarken");
+            _swapRedBlueLocation = GetUniformLocation("uSwapRedBlue");
 
             _vertexBufferId = gl.GenBuffer();
             gl.BindBuffer(GlArrayBuffer, _vertexBufferId);
@@ -510,6 +519,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _advancedFilterLocation = -1;
             _scanlinesLocation = -1;
             _scanlineDarkenLocation = -1;
+            _swapRedBlueLocation = -1;
             _initSucceeded = false;
         }
 
@@ -533,6 +543,7 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _advancedFilterLocation = -1;
             _scanlinesLocation = -1;
             _scanlineDarkenLocation = -1;
+            _swapRedBlueLocation = -1;
             _initSucceeded = false;
             _texSubImage2D = null;
             _getUniformLocation = null;
@@ -549,6 +560,15 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _renderCount++;
             int viewportWidth = Math.Max(1, (int)Math.Round(Bounds.Width));
             int viewportHeight = Math.Max(1, (int)Math.Round(Bounds.Height));
+            if (VisualRoot is TopLevel topLevel)
+            {
+                double scale = topLevel.RenderScaling;
+                if (scale > 0)
+                {
+                    viewportWidth = Math.Max(1, (int)Math.Round(Bounds.Width * scale));
+                    viewportHeight = Math.Max(1, (int)Math.Round(Bounds.Height * scale));
+                }
+            }
             lock (_frameSync)
                 _renderRequested = false;
             gl.BindFramebuffer(GlFramebuffer, fb);
@@ -595,20 +615,9 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             if (frameDirty && frameBytes.Length > 0)
             {
                 EnsureTextureStorage(gl, frameWidth, frameHeight);
-                if (_useSafeRgbaUpload)
+                fixed (byte* pFrame = frameBytes)
                 {
-                    ConvertBgraToRgba(frameBytes, uploadBytes);
-                    fixed (byte* pUpload = uploadBytes)
-                    {
-                        UploadTexturePixels(gl, frameWidth, frameHeight, (IntPtr)pUpload, GlRgba);
-                    }
-                }
-                else
-                {
-                    fixed (byte* pFrame = frameBytes)
-                    {
-                        UploadTexturePixels(gl, frameWidth, frameHeight, (IntPtr)pFrame, GlBgra);
-                    }
+                    UploadTexturePixels(gl, frameWidth, frameHeight, (IntPtr)pFrame, _useSafeRgbaUpload ? GlRgba : GlBgra);
                 }
             }
 
@@ -625,6 +634,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 _uniform1f.Invoke(_scanlinesLocation, applyScanlines ? 1.0f : 0.0f);
             if (_scanlineDarkenLocation >= 0 && _uniform1f != null)
                 _uniform1f.Invoke(_scanlineDarkenLocation, scanlineDarken);
+            if (_swapRedBlueLocation >= 0 && _uniform1f != null)
+                _uniform1f.Invoke(_swapRedBlueLocation, _useSafeRgbaUpload ? 1.0f : 0.0f);
             gl.BindBuffer(GlArrayBuffer, _vertexBufferId);
 
             if (_positionLocation >= 0)
@@ -690,16 +701,18 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             return _getUniformLocation.Invoke(_programId, name);
         }
 
-        private static void ConvertBgraToRgba(ReadOnlySpan<byte> source, Span<byte> destination)
+        private static bool GetSafeRgbaUploadDefault()
         {
-            int length = Math.Min(source.Length, destination.Length);
-            for (int i = 0; i + 3 < length; i += 4)
-            {
-                destination[i + 0] = source[i + 2];
-                destination[i + 1] = source[i + 1];
-                destination[i + 2] = source[i + 0];
-                destination[i + 3] = source[i + 3];
-            }
+            string? env = Environment.GetEnvironmentVariable("EUTHERDRIVE_GL_SAFE_UPLOAD");
+            if (string.Equals(env, "1", StringComparison.Ordinal))
+                return true;
+            if (string.Equals(env, "0", StringComparison.Ordinal))
+                return false;
+
+            // GLES drivers on Android are much less consistent about BGRA texture uploads
+            // than desktop GL. Default to the explicit BGRA->RGBA conversion there so we
+            // prefer a visible frame over the slightly faster desktop upload path.
+            return OperatingSystem.IsAndroid();
         }
 
         private void EnsureTextureStorage(GlInterface gl, int frameWidth, int frameHeight)

@@ -13,9 +13,9 @@ public class SNESSystem : ISNESSystem
 {
     private static readonly bool PerfStatsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
-    // Keep the fast CPU window disabled by default. Kirby's Dream Land 3 loses its HUD
-    // when the CPU beam can skip ahead through this path, so opt into the old behavior
-    // unless EUTHERDRIVE_SNES_DISABLE_FAST_PPU_PATHS is explicitly set to 0 for testing.
+    // Keep fast CPU windows opt-in for now. Raster IRQ-driven paths such as Kirby 3's HUD
+    // self-disable the fast window anyway, and leaving the feature on by default just adds
+    // more branch/work overhead in titles that spend most of the frame with H/V IRQ timing armed.
     private static readonly bool DisableFastPpuPaths =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_FAST_PPU_PATHS"), "0", StringComparison.Ordinal);
     private enum GpDmaState
@@ -863,6 +863,19 @@ public class SNESSystem : ISNESSystem
         if (!RomImpl.AllowsFastCpuWindow)
             return false;
 
+        // Kirby 3 arms a raster IRQ that jumps through the standard IRQ dispatcher at
+        // $00836C and kicks off a mid-frame CGRAM DMA from $C12F75. The fast CPU window
+        // still skips enough timing state here to miss that IRQ path entirely, so keep
+        // the fast window disabled while H/V IRQ timing is active.
+        if (_hIrqEnabled || _vIrqEnabled)
+            return false;
+
+        // SA-1 can raise SNES IRQs while the main CPU is sitting in a wait window.
+        // If we fast-forward straight to the end of the chunk, the CPU wakes too late
+        // and misses time-critical mid-frame DMA work such as Kirby 3's HUD palette upload.
+        if (_inIrq || _cpuImpl.NmiWanted || RomImpl.IrqWanted || RomImpl.NmiWanted)
+            return false;
+
         if (_hdmaTimer > 0
             || _dmaTimer > 0
             || _gpdmaState != GpDmaState.Idle
@@ -899,22 +912,52 @@ public class SNESSystem : ISNESSystem
         if (chunkMclks <= 0)
             return false;
 
-        AdvanceBaseClocks(chunkMclks);
-        if (cpuCanRun)
-            _cpuCyclesLeft -= chunkMclks;
-        RomImpl.RunCoprocessor(Cycles);
+        int executedMclks = RunFastCpuWindowChunk(chunkMclks, cpuCanRun);
+        if (executedMclks <= 0)
+            return false;
 
         if (PerfStatsEnabled)
         {
             _perfFastCpuWindowHits++;
-            _perfFastCpuWindowMclks += (ulong)chunkMclks;
+            _perfFastCpuWindowMclks += (ulong)executedMclks;
         }
-        CatchUpApu();
         _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
-        AdvanceBeamPositionBy(chunkMclks, currentLineMclks);
+        AdvanceBeamPositionBy(executedMclks, currentLineMclks);
         _lastIrqHTime = GetIrqHTime();
 
         return true;
+    }
+
+    private int RunFastCpuWindowChunk(int chunkMclks, bool cpuCanRun)
+    {
+        if (chunkMclks <= 0)
+            return 0;
+
+        if (!RomImpl.HasCoprocessor)
+        {
+            AdvanceBaseClocks(chunkMclks);
+            if (cpuCanRun)
+                _cpuCyclesLeft -= chunkMclks;
+            RomImpl.RunCoprocessor(Cycles);
+            CatchUpApu();
+            return chunkMclks;
+        }
+
+        int executedMclks = 0;
+        while (executedMclks < chunkMclks)
+        {
+            AdvanceBaseClocks(2);
+            executedMclks += 2;
+            if (cpuCanRun)
+                _cpuCyclesLeft -= 2;
+            RomImpl.RunCoprocessor(Cycles);
+
+            if (_inIrq || _cpuImpl.NmiWanted || RomImpl.IrqWanted || RomImpl.NmiWanted)
+                break;
+        }
+
+        CatchUpApu();
+        return executedMclks;
     }
 
     private int GetFastCpuWindowIrqBoundary(int currentLineMclks)
