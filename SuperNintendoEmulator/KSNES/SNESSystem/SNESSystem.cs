@@ -14,6 +14,8 @@ public class SNESSystem : ISNESSystem
     private static readonly bool PerfStatsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
         || OperatingSystem.IsAndroid();
+    private static readonly bool DetailedPerfStatsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF_DETAIL"), "1", StringComparison.Ordinal);
     // Keep fast CPU windows opt-in for now. Raster IRQ-driven paths such as Kirby 3's HUD
     // self-disable the fast window anyway, and leaving the feature on by default just adds
     // more branch/work overhead in titles that spend most of the frame with H/V IRQ timing armed.
@@ -82,6 +84,7 @@ public class SNESSystem : ISNESSystem
 
     private const int BusPageAccessMask = 0xff;
     private const int BusPageKindShift = 8;
+    private const ulong ApuPeriodicCatchUpMask = 0xFF;
 
     [JsonIgnore]
     private readonly int[] _dmaOffs = [
@@ -577,6 +580,27 @@ public class SNESSystem : ISNESSystem
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void WriteCpuByteFast(int fullAdr, int value, ushort pageData)
+    {
+        fullAdr &= 0xffffff;
+        if (PerfStatsEnabled)
+            _perfCpuWrites++;
+        _cpuMemOps++;
+        int accessTime = pageData & BusPageAccessMask;
+        _cpuCyclesLeft += accessTime;
+        OpenBus = value;
+        bool isApuPortAccess = accessTime > 0 && IsCpuApuPortAccess(fullAdr);
+        if (_useFastWritePath)
+            WwriteFast(fullAdr, value, false, GetBusPageKind(pageData));
+        else
+            Wwrite(fullAdr, value, false);
+        if (isApuPortAccess)
+        {
+            AdvanceApuForCpuAccess(accessTime);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Write(int adr, int value, bool dma = false)
     {
         int fullAdr = adr & 0xffffff;
@@ -692,6 +716,7 @@ public class SNESSystem : ISNESSystem
     public void ResyncAfterLoad()
     {
         // Recreate runtime-only state after loading an older savestate layout.
+        RomImpl.ResyncAfterLoad();
         _apuMasterCyclesProduct = 0;
         _apuBorrowedMainCycles = 0;
         _vblankNmiFlag = _inNmi;
@@ -873,7 +898,7 @@ public class SNESSystem : ISNESSystem
 
         // Tick coprocessor every cycle for timing accuracy, but batch APU.
         RomImpl.RunCoprocessor(Cycles);
-        if ((Cycles & 0x3F) == 0 || XPos == 0)
+        if ((Cycles & ApuPeriodicCatchUpMask) == 0 || XPos == 0)
         {
             CatchUpApu();
         }
@@ -1249,15 +1274,18 @@ public class SNESSystem : ISNESSystem
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CpuCycle()
     {
-        if (_cpuCyclesLeft == 0)
+        if (_cpuCyclesLeft > 0)
         {
-            if (PerfStatsEnabled)
-                _perfCpuSlots++;
-            _cpuImpl.CyclesLeft = 0;
-            _cpuMemOps = 0;
-            _cpuImpl.Cycle();
-            _cpuCyclesLeft += (_cpuImpl.CyclesLeft + 1 - _cpuMemOps) * 6;
+            _cpuCyclesLeft -= 2;
+            return;
         }
+
+        if (PerfStatsEnabled)
+            _perfCpuSlots++;
+        _cpuImpl.CyclesLeft = 0;
+        _cpuMemOps = 0;
+        _cpuImpl.Cycle();
+        _cpuCyclesLeft += (_cpuImpl.CyclesLeft + 1 - _cpuMemOps) * 6;
         _cpuCyclesLeft -= 2;
     }
 
@@ -1606,10 +1634,14 @@ public class SNESSystem : ISNESSystem
         string summary =
             $"SNES frame:{frameMs:0.0}ms  ppu:{ppuMs:0.0}ms  sample:{sampleMs:0.0}ms\n" +
             $"SNES core  instr:{_cpuImpl.PerfInstructions}  pc:{_cpuImpl.PerfProgramBytes}/{_cpuImpl.PerfProgramPageReloads}  slot:{_perfCpuSlots}  rd/wr:{_perfCpuReads}/{_perfCpuWrites}  dmaRW:{_perfDmaReads}/{_perfDmaWrites}  fast:{_perfFastCpuWindowHits}/{_perfFastCpuWindowMclks}m  dmaB:{_perfDmaBytes}  hdma:{_perfHdmaRuns}\n" +
-            $"SNES cpu2 fetch:{cpuOpcodeMs:0.0}  adr:{cpuAddressMs:0.0}  exec:{cpuExecuteMs:0.0}\n" +
             $"SNES ppu  lines:{_ppuImpl.PerfRenderedLines}  hi:{_ppuImpl.PerfHiResLines}  true:{_ppuImpl.PerfTrueHiResLines}  m7:{_ppuImpl.PerfMode7Lines}  pix:{_ppuImpl.PerfOutputPixels}  tile:{_ppuImpl.PerfTileCacheHits}/{_ppuImpl.PerfTileCacheMisses}/{_ppuImpl.PerfTileCacheInvalidations}\n" +
             $"SNES ppu2 spr:{_ppuImpl.PerfSpritePrepLines}/{spritePrepMs:0.0}  simple:{_ppuImpl.PerfSimpleMainLines}/{simpleMainMs:0.0}  chunk:{_ppuImpl.PerfSimpleChunkedLines}/{simpleChunkedMs:0.0}  comp:{_ppuImpl.PerfComplexLines}/{complexMs:0.0}  cchunk:{_ppuImpl.PerfComplexChunkedLines}/{complexChunkedMs:0.0}\n" +
             $"SNES dsp  cyc:{_apuImpl.DspImpl.PerfCycles}  samp:{_apuImpl.DspImpl.PerfProducedSamples}  echo:{_apuImpl.DspImpl.PerfEchoWrites}  out:{_apuImpl.PerfSetSamplesOutputs}";
+        if (DetailedPerfStatsEnabled)
+        {
+            summary =
+                $"{summary}\nSNES cpu2 fetch:{cpuOpcodeMs:0.0}  adr:{cpuAddressMs:0.0}  exec:{cpuExecuteMs:0.0}";
+        }
         if (ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1)
         {
             string sa1Summary = sa1.GetPerfSummary();
@@ -2265,6 +2297,8 @@ public class SNESSystem : ISNESSystem
                 break;
         }
 
+        if (RomImpl.HasDirectBasePageFastPath)
+            return RomImpl.ReadBasePageFast(fullAdr);
         return RomImpl.ReadFast(fullAdr);
     }
 
@@ -2294,6 +2328,11 @@ public class SNESSystem : ISNESSystem
                 break;
         }
 
+        if (RomImpl.HasDirectBasePageFastPath)
+        {
+            RomImpl.WriteBasePageFast(fullAdr, (byte)value);
+            return;
+        }
         RomImpl.WriteFast(fullAdr, (byte)value);
     }
 

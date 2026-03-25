@@ -12,6 +12,8 @@ public class CPU : ICPU
     private static readonly bool PerfStatsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
         || OperatingSystem.IsAndroid();
+    private static readonly bool DetailedPerfStatsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF_DETAIL"), "1", StringComparison.Ordinal);
     private const int DBR = 0;
     private const int K = 1;
     private const int A = 0;
@@ -200,6 +202,12 @@ public class CPU : ICPU
     [NonSerialized]
     private KSNES.Specialchips.SA1.Sa1.Sa1System? _sa1Impl;
     [NonSerialized]
+    private int _cachedDataPageIndex = -1;
+    [NonSerialized]
+    private ushort _cachedDataPageData;
+    [NonSerialized]
+    private bool _hasCachedDataPage;
+    [NonSerialized]
     internal ulong PerfInstructions;
     [NonSerialized]
     internal ulong PerfProgramBytes;
@@ -268,12 +276,18 @@ public class CPU : ICPU
         _snes = system;
         _snesImpl = system as KSNES.SNESSystem.SNESSystem;
         _sa1Impl = system as KSNES.Specialchips.SA1.Sa1.Sa1System;
+        _cachedDataPageIndex = -1;
+        _cachedDataPageData = 0;
+        _hasCachedDataPage = false;
     }
 
     public void Reset()
     {
         _r = new byte[2];
         _br = new ushort[6];
+        _cachedDataPageIndex = -1;
+        _cachedDataPageData = 0;
+        _hasCachedDataPage = false;
         _br[PC] = (ushort) (ReadBus(0xfffc) | (ReadBus(0xfffd) << 8));
         _br[SP] = 0x1FF;
         _n = false;
@@ -355,9 +369,9 @@ public class CPU : ICPU
                 int cachedPcPageIndex = -1;
                 ushort cachedPcPageData = 0;
                 bool hasCachedPcPage = false;
-                long opcodeStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
+                long opcodeStart = DetailedPerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
                 int instr = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
-                if (PerfStatsEnabled)
+                if (DetailedPerfStatsEnabled)
                     PerfOpcodeFetchTicks += (ulong)(Stopwatch.GetTimestamp() - opcodeStart);
                 _br[PC] = pc;
                 int opPc = (_r[K] << 16) | ((_br[PC] - 1) & 0xffff);
@@ -385,16 +399,16 @@ public class CPU : ICPU
                     mode = _modes[instr];
                     opPc = (_r[K] << 16) | (_br[PC] & 0xffff);
                 }
-                long addressStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
+                long addressStart = DetailedPerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
                 var (item1, item2) = GetAdr(mode, pcBank, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
-                if (PerfStatsEnabled)
+                if (DetailedPerfStatsEnabled)
                     PerfAddressTicks += (ulong)(Stopwatch.GetTimestamp() - addressStart);
                 TraceSa1FetchIfNeeded(opPc, instr, mode, item1, item2, "before");
                 if (PerfStatsEnabled)
                     PerfInstructions++;
-                long executeStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
+                long executeStart = DetailedPerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
                 _functions[instr](item1, item2);
-                if (PerfStatsEnabled)
+                if (DetailedPerfStatsEnabled)
                     PerfExecuteTicks += (ulong)(Stopwatch.GetTimestamp() - executeStart);
                 TraceSa1FetchIfNeeded(opPc, instr, mode, item1, item2, "after");
             }
@@ -525,8 +539,19 @@ public class CPU : ICPU
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int ReadBus(int address)
     {
-        if (_snesImpl != null)
-            return _snesImpl.Read(address);
+        if (_snesImpl is { } snes)
+        {
+            int fullAdr = address & 0xffffff;
+            int pageIndex = fullAdr >> 8;
+            if (!_hasCachedDataPage || _cachedDataPageIndex != pageIndex)
+            {
+                _cachedDataPageIndex = pageIndex;
+                _cachedDataPageData = snes.GetCpuPageData(fullAdr);
+                _hasCachedDataPage = true;
+            }
+
+            return snes.ReadCpuByteFast(fullAdr, _cachedDataPageData);
+        }
         if (_sa1Impl != null)
             return _sa1Impl.Read(address);
         return _snes.Read(address);
@@ -535,9 +560,18 @@ public class CPU : ICPU
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteBus(int address, int value)
     {
-        if (_snesImpl != null)
+        if (_snesImpl is { } snes)
         {
-            _snesImpl.Write(address, value);
+            int fullAdr = address & 0xffffff;
+            int pageIndex = fullAdr >> 8;
+            if (!_hasCachedDataPage || _cachedDataPageIndex != pageIndex)
+            {
+                _cachedDataPageIndex = pageIndex;
+                _cachedDataPageData = snes.GetCpuPageData(fullAdr);
+                _hasCachedDataPage = true;
+            }
+
+            snes.WriteCpuByteFast(fullAdr, value, _cachedDataPageData);
             return;
         }
         if (_sa1Impl != null)

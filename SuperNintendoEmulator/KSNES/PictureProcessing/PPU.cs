@@ -20,6 +20,7 @@ public class PPU : IPPU
     private const int Tile2CacheCount = 0x8000 / Tile2WordsPerTile;
     private const int Tile4CacheCount = 0x8000 / Tile4WordsPerTile;
     private const int Tile8CacheCount = 0x8000 / Tile8WordsPerTile;
+    private const int FastChunkPixelCount = 32;
 
     private static readonly bool TracePpu =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU"), "1", StringComparison.Ordinal);
@@ -292,6 +293,8 @@ public class PPU : IPPU
     private int _lineOrderedCount;
     [NonSerialized]
     private bool _lineHasLayerWindows;
+    [NonSerialized]
+    private bool _lineHasSubScreenLayers;
     [NonSerialized]
     private bool _lineCachesDirty = true;
     [NonSerialized]
@@ -2291,15 +2294,16 @@ public class PPU : IPPU
         {
             int* pRow = pOut + outputRow;
             int* argbTabOffset = argbTab + brightnessOffset;
-            Span<ushort> chunkPixels = stackalloc ushort[12 * 8];
-            Span<byte> chunkOpaque = stackalloc byte[12 * 8];
+            Span<ushort> chunkPixels = stackalloc ushort[12 * FastChunkPixelCount];
+            Span<byte> chunkOpaque = stackalloc byte[12 * FastChunkPixelCount];
 
-            for (int startX = 0; startX < 256; startX += 8)
+            for (int startX = 0; startX < 256; startX += FastChunkPixelCount)
             {
                 for (int j = 0; j < activeCount; j++)
                 {
-                    Span<ushort> entryPixels = chunkPixels.Slice(j << 3, 8);
-                    Span<byte> entryOpaque = chunkOpaque.Slice(j << 3, 8);
+                    int entryOffset = j * FastChunkPixelCount;
+                    Span<ushort> entryPixels = chunkPixels.Slice(entryOffset, FastChunkPixelCount);
+                    Span<byte> entryOpaque = chunkOpaque.Slice(entryOffset, FastChunkPixelCount);
                     entryPixels.Clear();
                     entryOpaque.Clear();
 
@@ -2308,7 +2312,7 @@ public class PPU : IPPU
                         FillChunkPixelsForLayer(startX, baseY, layer, activePriorities[j], entryPixels, entryOpaque);
                 }
 
-                for (int pixelX = 0; pixelX < 8; pixelX++)
+                for (int pixelX = 0; pixelX < FastChunkPixelCount; pixelX++)
                 {
                     int screenX = startX + pixelX;
                     ushort color = cgramPtr[0];
@@ -2328,10 +2332,11 @@ public class PPU : IPPU
                             break;
                         }
 
-                        if (chunkOpaque[(j << 3) | pixelX] == 0)
+                        int chunkIndex = j * FastChunkPixelCount + pixelX;
+                        if (chunkOpaque[chunkIndex] == 0)
                             continue;
 
-                        color = cgramPtr[chunkPixels[(j << 3) | pixelX]];
+                        color = cgramPtr[chunkPixels[chunkIndex]];
                         break;
                     }
 
@@ -2358,87 +2363,148 @@ public class PPU : IPPU
         {
             int* pRow = pOut + outputRow;
             int* argbTabOffset = argbTab + brightnessOffset;
-            Span<ushort> chunkPixels = stackalloc ushort[12 * 8];
-            Span<byte> chunkOpaque = stackalloc byte[12 * 8];
+            Span<ushort> bgLayerPixels = stackalloc ushort[4 * FastChunkPixelCount];
+            Span<byte> bgLayerOpaque = stackalloc byte[4 * FastChunkPixelCount];
+            Span<byte> bgLayerPriority = stackalloc byte[4 * FastChunkPixelCount];
+            Span<byte> bgLayerDecoded = stackalloc byte[4];
+            Span<ushort> mainColors = stackalloc ushort[FastChunkPixelCount];
+            Span<ushort> subColors = stackalloc ushort[FastChunkPixelCount];
+            Span<int> mainLayers = stackalloc int[FastChunkPixelCount];
+            Span<int> subLayers = stackalloc int[FastChunkPixelCount];
+            Span<int> mainPixels = stackalloc int[FastChunkPixelCount];
+            Span<int> subPixels = stackalloc int[FastChunkPixelCount];
+            ushort fixedColor = (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR);
+            bool resolveSubFromLayers = _addSub && _lineAnyColorMathEnabled && _lineHasSubScreenLayers;
+            bool usesColorWindow = _window1Enabled[5] || _window2Enabled[5];
+            bool useDirectMathCheck = !usesColorWindow && _preventMath == 0 && _colorClip == 0;
 
-            for (int startX = 0; startX < 256; startX += 8)
+            for (int startX = 0; startX < 256; startX += FastChunkPixelCount)
             {
+                bgLayerDecoded.Clear();
+                mainColors.Fill(cgramPtr[0]);
+                subColors.Fill(fixedColor);
+                mainLayers.Fill(5);
+                subLayers.Fill(5);
+                mainPixels.Clear();
+                subPixels.Clear();
+
+                int pendingMain = FastChunkPixelCount;
+                int pendingSub = resolveSubFromLayers ? FastChunkPixelCount : 0;
                 for (int j = 0; j < _lineOrderedCount; j++)
                 {
-                    Span<ushort> entryPixels = chunkPixels.Slice(j << 3, 8);
-                    Span<byte> entryOpaque = chunkOpaque.Slice(j << 3, 8);
-                    entryPixels.Clear();
-                    entryOpaque.Clear();
+                    if (pendingMain == 0 && pendingSub == 0)
+                        break;
 
                     int layer = _lineOrderedLayers[j];
-                    if (layer < 4)
-                        FillChunkPixelsForLayer(startX, screenY, layer, _lineOrderedPriorities[j], entryPixels, entryOpaque);
+                    byte priority = _lineOrderedPriorities[j];
+                    byte screenMask = _lineOrderedScreenMasks[j];
+                    if ((screenMask & 0x1) == 0 && ((screenMask & 0x2) == 0 || !resolveSubFromLayers))
+                        continue;
+
+                    if (layer == 4)
+                    {
+                        for (int pixelX = 0; pixelX < FastChunkPixelCount; pixelX++)
+                        {
+                            int screenX = startX + pixelX;
+                            if ((screenMask & 0x1) != 0 && mainLayers[pixelX] == 5)
+                            {
+                                if (spritePrio[screenX] == priority)
+                                {
+                                    int pixel = spriteLine[screenX];
+                                    if (pixel != 0)
+                                    {
+                                        mainLayers[pixelX] = layer;
+                                        mainPixels[pixelX] = pixel;
+                                        mainColors[pixelX] = cgramPtr[pixel & 0xff];
+                                        pendingMain--;
+                                    }
+                                }
+                            }
+
+                            if (resolveSubFromLayers && (screenMask & 0x2) != 0 && subLayers[pixelX] == 5)
+                            {
+                                if (spritePrio[screenX] == priority)
+                                {
+                                    int pixel = spriteLine[screenX];
+                                    if (pixel != 0)
+                                    {
+                                        subLayers[pixelX] = layer;
+                                        subPixels[pixelX] = pixel;
+                                        subColors[pixelX] = cgramPtr[pixel & 0xff];
+                                        pendingSub--;
+                                    }
+                                }
+                            }
+                        }
+
+                        continue;
+                    }
+
+                    if (bgLayerDecoded[layer] == 0)
+                    {
+                        FillChunkPixelsForLayerAllPriorities(
+                            startX,
+                            screenY,
+                            layer,
+                            bgLayerPixels.Slice(layer * FastChunkPixelCount, FastChunkPixelCount),
+                            bgLayerOpaque.Slice(layer * FastChunkPixelCount, FastChunkPixelCount),
+                            bgLayerPriority.Slice(layer * FastChunkPixelCount, FastChunkPixelCount));
+                        bgLayerDecoded[layer] = 1;
+                    }
+
+                    Span<ushort> layerPixels = bgLayerPixels.Slice(layer * FastChunkPixelCount, FastChunkPixelCount);
+                    Span<byte> layerOpaque = bgLayerOpaque.Slice(layer * FastChunkPixelCount, FastChunkPixelCount);
+                    Span<byte> layerPriority = bgLayerPriority.Slice(layer * FastChunkPixelCount, FastChunkPixelCount);
+                    for (int pixelX = 0; pixelX < FastChunkPixelCount; pixelX++)
+                    {
+                        if (layerOpaque[pixelX] == 0 || layerPriority[pixelX] != priority)
+                            continue;
+
+                        int pixel = layerPixels[pixelX];
+                        ushort color = cgramPtr[pixel & 0xff];
+                        if ((screenMask & 0x1) != 0 && mainLayers[pixelX] == 5)
+                        {
+                            mainLayers[pixelX] = layer;
+                            mainPixels[pixelX] = pixel;
+                            mainColors[pixelX] = color;
+                            pendingMain--;
+                        }
+
+                        if (resolveSubFromLayers && (screenMask & 0x2) != 0 && subLayers[pixelX] == 5)
+                        {
+                            subLayers[pixelX] = layer;
+                            subPixels[pixelX] = pixel;
+                            subColors[pixelX] = color;
+                            pendingSub--;
+                        }
+                    }
                 }
 
-                for (int pixelX = 0; pixelX < 8; pixelX++)
+                for (int pixelX = 0; pixelX < FastChunkPixelCount; pixelX++)
                 {
                     int screenX = startX + pixelX;
-                    ushort mainColor = cgramPtr[0];
-                    ushort subColor = (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR);
-                    int mainLayer = 5;
-                    int subLayer = 5;
-                    int mainPixel = 0;
-                    int subPixel = 0;
-
-                    for (int j = 0; j < _lineOrderedCount; j++)
-                    {
-                        int layer = _lineOrderedLayers[j];
-                        int pixel;
-                        if (layer == 4)
-                        {
-                            if (spritePrio[screenX] != _lineOrderedPriorities[j])
-                                continue;
-
-                            pixel = spriteLine[screenX];
-                            if (pixel == 0)
-                                continue;
-                        }
-                        else
-                        {
-                            int chunkIndex = (j << 3) | pixelX;
-                            if (chunkOpaque[chunkIndex] == 0)
-                                continue;
-
-                            pixel = chunkPixels[chunkIndex];
-                        }
-
-                        ushort color = cgramPtr[pixel & 0xff];
-                        byte screenMask = _lineOrderedScreenMasks[j];
-                        if ((screenMask & 0x1) != 0 && mainLayer == 5)
-                        {
-                            mainLayer = layer;
-                            mainPixel = pixel;
-                            mainColor = color;
-                        }
-
-                        if ((screenMask & 0x2) != 0 && subLayer == 5)
-                        {
-                            subLayer = layer;
-                            subPixel = pixel;
-                            subColor = color;
-                        }
-
-                        if (mainLayer < 5 && subLayer < 5)
-                            break;
-                    }
+                    ushort mainColor = mainColors[pixelX];
+                    ushort subColor = subColors[pixelX];
+                    int mainLayer = mainLayers[pixelX];
+                    int subLayer = subLayers[pixelX];
+                    int mainPixel = mainPixels[pixelX];
+                    int subPixel = subPixels[pixelX];
 
                     int r2 = mainColor & 0x1f;
                     int g2 = (mainColor >> 5) & 0x1f;
                     int b2 = (mainColor >> 10) & 0x1f;
 
-                    if (clipCache[screenX] != 0)
+                    if (!useDirectMathCheck && clipCache[screenX] != 0)
                     {
                         r2 = 0;
                         g2 = 0;
                         b2 = 0;
                     }
 
-                    if (GetMathEnabled(screenX, mainLayer, mainPixel))
+                    bool mathEnabled = useDirectMathCheck
+                        ? (_mathEnabled[mainLayer] && (mainLayer != 4 || mainPixel >= 0xc0))
+                        : GetMathEnabled(screenX, mainLayer, mainPixel);
+                    if (mathEnabled)
                     {
                         int r1 = subColor & 0x1f;
                         int g1 = (subColor >> 5) & 0x1f;
@@ -2483,8 +2549,9 @@ public class PPU : IPPU
         int loadedY = int.MinValue;
         int sampleX = startX + _bgHoff[layer];
         int sampleY = y + _bgVoff[layer];
+        int count = destPixels.Length;
 
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < count; i++)
         {
             int tileX = sampleX >> 3;
             if (tileX != loadedTileX || sampleY != loadedY)
@@ -2499,6 +2566,49 @@ public class PPU : IPPU
             {
                 destPixels[i] = pixel;
                 destOpaque[i] = 1;
+            }
+
+            sampleX++;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void FillChunkPixelsForLayerAllPriorities(
+        int startX,
+        int y,
+        int layer,
+        Span<ushort> destPixels,
+        Span<byte> destOpaque,
+        Span<byte> destPriority)
+    {
+        destPixels.Clear();
+        destOpaque.Clear();
+        destPriority.Clear();
+
+        Span<ushort> tileRow = stackalloc ushort[8];
+        int tilePriority = -1;
+        int loadedTileX = int.MinValue;
+        int loadedY = int.MinValue;
+        int sampleX = startX + _bgHoff[layer];
+        int sampleY = y + _bgVoff[layer];
+        int count = destPixels.Length;
+
+        for (int i = 0; i < count; i++)
+        {
+            int tileX = sampleX >> 3;
+            if (tileX != loadedTileX || sampleY != loadedY)
+            {
+                DecodeTileRow(sampleX, sampleY, layer, tileRow, out tilePriority);
+                loadedTileX = tileX;
+                loadedY = sampleY;
+            }
+
+            ushort pixel = tileRow[sampleX & 0x7];
+            if (pixel != 0)
+            {
+                destPixels[i] = pixel;
+                destOpaque[i] = 1;
+                destPriority[i] = (byte)tilePriority;
             }
 
             sampleX++;
@@ -2650,6 +2760,7 @@ public class PPU : IPPU
         _lineAnyColorMathEnabled = AnyColorMathEnabled();
         _lineOrderedCount = 0;
         _lineHasLayerWindows = false;
+        _lineHasSubScreenLayers = false;
 
         for (int j = 0; j < _lineLayerCount; j++)
         {
@@ -2664,6 +2775,9 @@ public class PPU : IPPU
                 screenMask |= 0x2;
             if (screenMask == 0)
                 continue;
+
+            if ((screenMask & 0x2) != 0)
+                _lineHasSubScreenLayers = true;
 
             _lineOrderedLayers[_lineOrderedCount] = layer;
             _lineOrderedPriorities[_lineOrderedCount] = (byte)_prioPerMode[_lineModeIndex + j];
