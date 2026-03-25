@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -349,6 +350,26 @@ public class PPU : IPPU
     internal ulong PerfTileCacheMisses;
     [NonSerialized]
     internal ulong PerfTileCacheInvalidations;
+    [NonSerialized]
+    internal ulong PerfSimpleMainLines;
+    [NonSerialized]
+    internal ulong PerfSimpleChunkedLines;
+    [NonSerialized]
+    internal ulong PerfComplexLines;
+    [NonSerialized]
+    internal ulong PerfSpritePrepLines;
+    [NonSerialized]
+    internal ulong PerfComplexChunkedLines;
+    [NonSerialized]
+    internal long PerfSimpleMainTicks;
+    [NonSerialized]
+    internal long PerfSimpleChunkedTicks;
+    [NonSerialized]
+    internal long PerfComplexTicks;
+    [NonSerialized]
+    internal long PerfSpritePrepTicks;
+    [NonSerialized]
+    internal long PerfComplexChunkedTicks;
 
     private static int[] BuildBrightnessArgbTable()
     {
@@ -1707,7 +1728,13 @@ public class PPU : IPPU
             return;
         }
 
+        long perfStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
         EvaluateSprites(line);
+        if (PerfStatsEnabled)
+        {
+            PerfSpritePrepLines++;
+            PerfSpritePrepTicks += Stopwatch.GetTimestamp() - perfStart;
+        }
     }
 
     public unsafe void RenderLine(int line) 
@@ -1761,7 +1788,19 @@ public class PPU : IPPU
             bool useSimpleMainPath = CanUseSimpleMainScreenPath(hiResOutput, trueHiResOutput);
             if (useSimpleMainPath)
             {
-                RenderLineSimpleMainOnly(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput);
+                long perfStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
+                bool usedChunked = RenderLineSimpleMainOnly(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput);
+                if (PerfStatsEnabled)
+                {
+                    long elapsed = Stopwatch.GetTimestamp() - perfStart;
+                    PerfSimpleMainLines++;
+                    PerfSimpleMainTicks += elapsed;
+                    if (usedChunked)
+                    {
+                        PerfSimpleChunkedLines++;
+                        PerfSimpleChunkedTicks += elapsed;
+                    }
+                }
                 if (PerfStatsEnabled)
                     PerfOutputPixels += 256;
                 return;
@@ -1781,6 +1820,24 @@ public class PPU : IPPU
                 _frameTrueHiResOutput = true;
             }
 
+            bool useLegacyLayerOrdering = UseLegacyLayerOrderingForLine();
+            if (CanUseChunkedComplexWindowlessPath(hiResOutput, trueHiResOutput, useLegacyLayerOrdering))
+            {
+                long perfStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
+                RenderLineComplexWindowlessChunked(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput);
+                if (PerfStatsEnabled)
+                {
+                    long elapsed = Stopwatch.GetTimestamp() - perfStart;
+                    PerfComplexLines++;
+                    PerfComplexTicks += elapsed;
+                    PerfComplexChunkedLines++;
+                    PerfComplexChunkedTicks += elapsed;
+                    PerfOutputPixels += 256;
+                }
+                return;
+            }
+
+            long complexStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
             fixed (int* argbTab = brightnessTable)
             fixed (int* pOut = pixelOutput)
             fixed (byte* clipCache = _clipToBlackCache)
@@ -1788,7 +1845,6 @@ public class PPU : IPPU
                 int* argbTabOffset = argbTab + brightnessOffset;
                 int* pRow = pOut + outputRow;
                 bool needPotentialSubColor = trueHiResOutput || _pseudoHires || (_addSub && _lineAnyColorMathEnabled);
-                bool useLegacyLayerOrdering = UseLegacyLayerOrderingForLine();
 
                 for (int i = 0; i < 256; i++)
                 {
@@ -1807,13 +1863,13 @@ public class PPU : IPPU
                         bool prefetchedSubColor = false;
                         if (needPotentialSubColor)
                         {
-                            if (_lineHasLayerWindows || useLegacyLayerOrdering || _tsRaw != 0)
+                            if (_lineHasLayerWindows || useLegacyLayerOrdering)
                             {
                                 // Window-masked layers can resolve differently on main/sub screens.
                                 // Keep the proven separate path for those lines and only batch the
-                                // common windowless case. Kirby 3 also relies on sub-screen HUD
-                                // composition in mode 1, so any active sub-screen falls back to
-                                // the proven separate path for now.
+                                // common windowless case. The Kirby 3 HUD bug was traced back to
+                                // fast CPU window timing, not this PPU pair path, so windowless
+                                // sub-screen composition can safely stay on the batched route.
                                 GetColor(false, i, screenY, out color, out item2, out item3);
                             }
                             else
@@ -1917,7 +1973,11 @@ public class PPU : IPPU
                 }
             }
             if (PerfStatsEnabled)
+            {
+                PerfComplexLines++;
+                PerfComplexTicks += Stopwatch.GetTimestamp() - complexStart;
                 PerfOutputPixels += (ulong)(trueHiResOutput || _frameTrueHiResOutput ? 512 : 256);
+            }
         }
     }
 
@@ -2082,8 +2142,20 @@ public class PPU : IPPU
             && !_mosaicEnabled[3];
     }
 
+    private bool CanUseChunkedComplexWindowlessPath(bool hiResOutput, bool trueHiResOutput, bool useLegacyLayerOrdering)
+    {
+        return !hiResOutput
+            && !trueHiResOutput
+            && !_frameTrueHiResOutput
+            && !_forcedBlank
+            && _mode != 7
+            && !_directColor
+            && !_lineHasLayerWindows
+            && CanUseChunkedSimpleMainScreenPath();
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private unsafe void RenderLineSimpleMainOnly(
+    private unsafe bool RenderLineSimpleMainOnly(
         int screenY,
         int outputRow,
         int brightnessOffset,
@@ -2126,7 +2198,7 @@ public class PPU : IPPU
                     activePriorities,
                     activeCount,
                     baseY);
-                return;
+                return true;
             }
 
             for (int x = 0; x < 256; x++)
@@ -2197,6 +2269,7 @@ public class PPU : IPPU
                 pRow[x] = argbTabOffset[color & 0x7fff];
             }
         }
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2263,6 +2336,139 @@ public class PPU : IPPU
                     }
 
                     pRow[screenX] = argbTabOffset[color & 0x7fff];
+                }
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private unsafe void RenderLineComplexWindowlessChunked(
+        int screenY,
+        int outputRow,
+        int brightnessOffset,
+        int[] brightnessTable,
+        int[] pixelOutput)
+    {
+        fixed (int* argbTab = brightnessTable)
+        fixed (int* pOut = pixelOutput)
+        fixed (ushort* cgramPtr = _cgram)
+        fixed (byte* spritePrio = _spritePrioBuffer)
+        fixed (byte* spriteLine = _spriteLineBuffer)
+        fixed (byte* clipCache = _clipToBlackCache)
+        {
+            int* pRow = pOut + outputRow;
+            int* argbTabOffset = argbTab + brightnessOffset;
+            Span<ushort> chunkPixels = stackalloc ushort[12 * 8];
+            Span<byte> chunkOpaque = stackalloc byte[12 * 8];
+
+            for (int startX = 0; startX < 256; startX += 8)
+            {
+                for (int j = 0; j < _lineOrderedCount; j++)
+                {
+                    Span<ushort> entryPixels = chunkPixels.Slice(j << 3, 8);
+                    Span<byte> entryOpaque = chunkOpaque.Slice(j << 3, 8);
+                    entryPixels.Clear();
+                    entryOpaque.Clear();
+
+                    int layer = _lineOrderedLayers[j];
+                    if (layer < 4)
+                        FillChunkPixelsForLayer(startX, screenY, layer, _lineOrderedPriorities[j], entryPixels, entryOpaque);
+                }
+
+                for (int pixelX = 0; pixelX < 8; pixelX++)
+                {
+                    int screenX = startX + pixelX;
+                    ushort mainColor = cgramPtr[0];
+                    ushort subColor = (ushort)((_fixedColorB << 10) | (_fixedColorG << 5) | _fixedColorR);
+                    int mainLayer = 5;
+                    int subLayer = 5;
+                    int mainPixel = 0;
+                    int subPixel = 0;
+
+                    for (int j = 0; j < _lineOrderedCount; j++)
+                    {
+                        int layer = _lineOrderedLayers[j];
+                        int pixel;
+                        if (layer == 4)
+                        {
+                            if (spritePrio[screenX] != _lineOrderedPriorities[j])
+                                continue;
+
+                            pixel = spriteLine[screenX];
+                            if (pixel == 0)
+                                continue;
+                        }
+                        else
+                        {
+                            int chunkIndex = (j << 3) | pixelX;
+                            if (chunkOpaque[chunkIndex] == 0)
+                                continue;
+
+                            pixel = chunkPixels[chunkIndex];
+                        }
+
+                        ushort color = cgramPtr[pixel & 0xff];
+                        byte screenMask = _lineOrderedScreenMasks[j];
+                        if ((screenMask & 0x1) != 0 && mainLayer == 5)
+                        {
+                            mainLayer = layer;
+                            mainPixel = pixel;
+                            mainColor = color;
+                        }
+
+                        if ((screenMask & 0x2) != 0 && subLayer == 5)
+                        {
+                            subLayer = layer;
+                            subPixel = pixel;
+                            subColor = color;
+                        }
+
+                        if (mainLayer < 5 && subLayer < 5)
+                            break;
+                    }
+
+                    int r2 = mainColor & 0x1f;
+                    int g2 = (mainColor >> 5) & 0x1f;
+                    int b2 = (mainColor >> 10) & 0x1f;
+
+                    if (clipCache[screenX] != 0)
+                    {
+                        r2 = 0;
+                        g2 = 0;
+                        b2 = 0;
+                    }
+
+                    if (GetMathEnabled(screenX, mainLayer, mainPixel))
+                    {
+                        int r1 = subColor & 0x1f;
+                        int g1 = (subColor >> 5) & 0x1f;
+                        int b1 = (subColor >> 10) & 0x1f;
+                        if (_subtractColors)
+                        {
+                            r2 -= _addSub && subLayer < 5 ? r1 : _fixedColorR;
+                            g2 -= _addSub && subLayer < 5 ? g1 : _fixedColorG;
+                            b2 -= _addSub && subLayer < 5 ? b1 : _fixedColorB;
+                        }
+                        else
+                        {
+                            r2 += _addSub && subLayer < 5 ? r1 : _fixedColorR;
+                            g2 += _addSub && subLayer < 5 ? g1 : _fixedColorG;
+                            b2 += _addSub && subLayer < 5 ? b1 : _fixedColorB;
+                        }
+
+                        if (_halfColors && (subLayer < 5 || !_addSub))
+                        {
+                            r2 >>= 1;
+                            g2 >>= 1;
+                            b2 >>= 1;
+                        }
+
+                        if ((uint)r2 > 31) r2 = r2 < 0 ? 0 : 31;
+                        if ((uint)g2 > 31) g2 = g2 < 0 ? 0 : 31;
+                        if ((uint)b2 > 31) b2 = b2 < 0 ? 0 : 31;
+                    }
+
+                    pRow[screenX] = argbTabOffset[(b2 << 10) | (g2 << 5) | r2];
                 }
             }
         }
@@ -2344,40 +2550,13 @@ public class PPU : IPPU
             tileNum += 0x10;
 
         int bits = _bitPerMode[_mode * 4 + layer];
-        int tileBase = (_tileAdr[layer] + tileNum * 4 * bits + yRow) & 0x7fff;
-
-        int plane1 = _vram[tileBase];
-        int plane2 = bits > 2 ? _vram[(tileBase + 8) & 0x7fff] : 0;
-        int plane3 = bits > 4 ? _vram[(tileBase + 16) & 0x7fff] : 0;
-        int plane4 = bits > 4 ? _vram[(tileBase + 24) & 0x7fff] : 0;
-
+        int tileStart = (_tileAdr[layer] + tileNum * 4 * bits) & 0x7fff;
         int paletteNum = (tilemapWord & 0x1c00) >> 10;
         paletteNum += _mode == 0 ? layer * 8 : 0;
         int mul = bits > 4 ? 256 : bits > 2 ? 16 : 4;
         int pixelBase = paletteNum * mul;
         tilePriority = (tilemapWord >> 13) & 0x1;
-
-        for (int i = 0; i < 8; i++)
-        {
-            int shift = xFlip ? i : 7 - i;
-            int tileData = (plane1 >> shift) & 0x1;
-            tileData |= ((plane1 >> (8 + shift)) & 0x1) << 1;
-            if (bits > 2)
-            {
-                tileData |= ((plane2 >> shift) & 0x1) << 2;
-                tileData |= ((plane2 >> (8 + shift)) & 0x1) << 3;
-            }
-
-            if (bits > 4)
-            {
-                tileData |= ((plane3 >> shift) & 0x1) << 4;
-                tileData |= ((plane3 >> (8 + shift)) & 0x1) << 5;
-                tileData |= ((plane4 >> shift) & 0x1) << 6;
-                tileData |= ((plane4 >> (8 + shift)) & 0x1) << 7;
-            }
-
-            dest[i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
-        }
+        PopulateTilePixelsFromCache(tileStart, bits, yRow, xFlip, pixelBase, dest);
     }
 
     internal void ResetPerfCounters()
@@ -2392,6 +2571,16 @@ public class PPU : IPPU
         PerfTileCacheHits = 0;
         PerfTileCacheMisses = 0;
         PerfTileCacheInvalidations = 0;
+        PerfSimpleMainLines = 0;
+        PerfSimpleChunkedLines = 0;
+        PerfComplexLines = 0;
+        PerfSpritePrepLines = 0;
+        PerfComplexChunkedLines = 0;
+        PerfSimpleMainTicks = 0;
+        PerfSimpleChunkedTicks = 0;
+        PerfComplexTicks = 0;
+        PerfSpritePrepTicks = 0;
+        PerfComplexChunkedTicks = 0;
     }
 
     private void InvalidateAllTileCaches()
@@ -3276,6 +3465,12 @@ public class PPU : IPPU
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void PopulateTilePixelsFromCache(int tileStart, int bits, int yRow, bool xFlip, int pixelBase, int pixelOffset)
     {
+        PopulateTilePixelsFromCache(tileStart, bits, yRow, xFlip, pixelBase, _tilePixelBuffer.AsSpan(pixelOffset, 8));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void PopulateTilePixelsFromCache(int tileStart, int bits, int yRow, bool xFlip, int pixelBase, Span<ushort> dest)
+    {
         tileStart &= 0x7fff;
         yRow &= 0x7;
 
@@ -3322,7 +3517,7 @@ public class PPU : IPPU
             for (int i = 0; i < 8; i++)
             {
                 int tileData = cache[rowOffset + (7 - i)];
-                _tilePixelBuffer[pixelOffset + i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
+                dest[i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
             }
             return;
         }
@@ -3330,7 +3525,7 @@ public class PPU : IPPU
         for (int i = 0; i < 8; i++)
         {
             int tileData = cache[rowOffset + i];
-            _tilePixelBuffer[pixelOffset + i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
+            dest[i] = tileData > 0 ? (ushort)(pixelBase + tileData) : (ushort)0;
         }
     }
 

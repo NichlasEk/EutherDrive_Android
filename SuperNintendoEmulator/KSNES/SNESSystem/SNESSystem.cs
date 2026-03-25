@@ -553,6 +553,30 @@ public class SNESSystem : ISNESSystem
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal ushort GetCpuPageData(int fullAdr)
+    {
+        return _busPageData[(fullAdr & 0xffffff) >> 8];
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal int ReadCpuByteFast(int fullAdr, ushort pageData)
+    {
+        fullAdr &= 0xffffff;
+        if (PerfStatsEnabled)
+            _perfCpuReads++;
+        _cpuMemOps++;
+        int accessTime = pageData & BusPageAccessMask;
+        _cpuCyclesLeft += accessTime;
+        int val = _useFastReadPath ? RreadFast(fullAdr, GetBusPageKind(pageData)) : Rread(fullAdr);
+        if (accessTime > 0 && IsCpuApuPortAccess(fullAdr))
+        {
+            AdvanceApuForCpuAccess(accessTime);
+        }
+        OpenBus = val;
+        return val;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Write(int adr, int value, bool dma = false)
     {
         int fullAdr = adr & 0xffffff;
@@ -1571,10 +1595,20 @@ public class SNESSystem : ISNESSystem
         double frameMs = _perfFrameTicks * 1000.0 / Stopwatch.Frequency;
         double ppuMs = _perfPpuTicks * 1000.0 / Stopwatch.Frequency;
         double sampleMs = _apuImpl.PerfSetSamplesTicks * 1000.0 / Stopwatch.Frequency;
+        double spritePrepMs = _ppuImpl.PerfSpritePrepTicks * 1000.0 / Stopwatch.Frequency;
+        double simpleMainMs = _ppuImpl.PerfSimpleMainTicks * 1000.0 / Stopwatch.Frequency;
+        double simpleChunkedMs = _ppuImpl.PerfSimpleChunkedTicks * 1000.0 / Stopwatch.Frequency;
+        double complexMs = _ppuImpl.PerfComplexTicks * 1000.0 / Stopwatch.Frequency;
+        double complexChunkedMs = _ppuImpl.PerfComplexChunkedTicks * 1000.0 / Stopwatch.Frequency;
+        double cpuOpcodeMs = _cpuImpl.PerfOpcodeFetchTicks * 1000.0 / Stopwatch.Frequency;
+        double cpuAddressMs = _cpuImpl.PerfAddressTicks * 1000.0 / Stopwatch.Frequency;
+        double cpuExecuteMs = _cpuImpl.PerfExecuteTicks * 1000.0 / Stopwatch.Frequency;
         string summary =
             $"SNES frame:{frameMs:0.0}ms  ppu:{ppuMs:0.0}ms  sample:{sampleMs:0.0}ms\n" +
-            $"SNES core  instr:{_cpuImpl.PerfInstructions}  slot:{_perfCpuSlots}  rd/wr:{_perfCpuReads}/{_perfCpuWrites}  dmaRW:{_perfDmaReads}/{_perfDmaWrites}  fast:{_perfFastCpuWindowHits}/{_perfFastCpuWindowMclks}m  dmaB:{_perfDmaBytes}  hdma:{_perfHdmaRuns}\n" +
+            $"SNES core  instr:{_cpuImpl.PerfInstructions}  pc:{_cpuImpl.PerfProgramBytes}/{_cpuImpl.PerfProgramPageReloads}  slot:{_perfCpuSlots}  rd/wr:{_perfCpuReads}/{_perfCpuWrites}  dmaRW:{_perfDmaReads}/{_perfDmaWrites}  fast:{_perfFastCpuWindowHits}/{_perfFastCpuWindowMclks}m  dmaB:{_perfDmaBytes}  hdma:{_perfHdmaRuns}\n" +
+            $"SNES cpu2 fetch:{cpuOpcodeMs:0.0}  adr:{cpuAddressMs:0.0}  exec:{cpuExecuteMs:0.0}\n" +
             $"SNES ppu  lines:{_ppuImpl.PerfRenderedLines}  hi:{_ppuImpl.PerfHiResLines}  true:{_ppuImpl.PerfTrueHiResLines}  m7:{_ppuImpl.PerfMode7Lines}  pix:{_ppuImpl.PerfOutputPixels}  tile:{_ppuImpl.PerfTileCacheHits}/{_ppuImpl.PerfTileCacheMisses}/{_ppuImpl.PerfTileCacheInvalidations}\n" +
+            $"SNES ppu2 spr:{_ppuImpl.PerfSpritePrepLines}/{spritePrepMs:0.0}  simple:{_ppuImpl.PerfSimpleMainLines}/{simpleMainMs:0.0}  chunk:{_ppuImpl.PerfSimpleChunkedLines}/{simpleChunkedMs:0.0}  comp:{_ppuImpl.PerfComplexLines}/{complexMs:0.0}  cchunk:{_ppuImpl.PerfComplexChunkedLines}/{complexChunkedMs:0.0}\n" +
             $"SNES dsp  cyc:{_apuImpl.DspImpl.PerfCycles}  samp:{_apuImpl.DspImpl.PerfProducedSamples}  echo:{_apuImpl.DspImpl.PerfEchoWrites}  out:{_apuImpl.PerfSetSamplesOutputs}";
         if (ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1)
         {

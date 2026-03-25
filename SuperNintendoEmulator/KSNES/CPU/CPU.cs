@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -200,6 +201,16 @@ public class CPU : ICPU
     private KSNES.Specialchips.SA1.Sa1.Sa1System? _sa1Impl;
     [NonSerialized]
     internal ulong PerfInstructions;
+    [NonSerialized]
+    internal ulong PerfProgramBytes;
+    [NonSerialized]
+    internal ulong PerfProgramPageReloads;
+    [NonSerialized]
+    internal ulong PerfOpcodeFetchTicks;
+    [NonSerialized]
+    internal ulong PerfAddressTicks;
+    [NonSerialized]
+    internal ulong PerfExecuteTicks;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
     public CPU()
@@ -281,6 +292,11 @@ public class CPU : ICPU
         _waiting = false;
         CyclesLeft = 7;
         PerfInstructions = 0;
+        PerfProgramBytes = 0;
+        PerfProgramPageReloads = 0;
+        PerfOpcodeFetchTicks = 0;
+        PerfAddressTicks = 0;
+        PerfExecuteTicks = 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -334,7 +350,16 @@ public class CPU : ICPU
                         }
                     }
                 }
-                int instr = ReadBus((_r[K] << 16) | _br[PC]++);
+                int pcBank = _r[K] << 16;
+                ushort pc = _br[PC];
+                int cachedPcPageIndex = -1;
+                ushort cachedPcPageData = 0;
+                bool hasCachedPcPage = false;
+                long opcodeStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
+                int instr = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                if (PerfStatsEnabled)
+                    PerfOpcodeFetchTicks += (ulong)(Stopwatch.GetTimestamp() - opcodeStart);
+                _br[PC] = pc;
                 int opPc = (_r[K] << 16) | ((_br[PC] - 1) & 0xffff);
                 CyclesLeft = _cycles[instr];
                 int mode = _modes[instr];
@@ -360,11 +385,17 @@ public class CPU : ICPU
                     mode = _modes[instr];
                     opPc = (_r[K] << 16) | (_br[PC] & 0xffff);
                 }
-                var (item1, item2) = GetAdr(mode);
+                long addressStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
+                var (item1, item2) = GetAdr(mode, pcBank, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                if (PerfStatsEnabled)
+                    PerfAddressTicks += (ulong)(Stopwatch.GetTimestamp() - addressStart);
                 TraceSa1FetchIfNeeded(opPc, instr, mode, item1, item2, "before");
                 if (PerfStatsEnabled)
                     PerfInstructions++;
+                long executeStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
                 _functions[instr](item1, item2);
+                if (PerfStatsEnabled)
+                    PerfExecuteTicks += (ulong)(Stopwatch.GetTimestamp() - executeStart);
                 TraceSa1FetchIfNeeded(opPc, instr, mode, item1, item2, "after");
             }
             else
@@ -384,6 +415,11 @@ public class CPU : ICPU
         if (!PerfStatsEnabled)
             return;
         PerfInstructions = 0;
+        PerfProgramBytes = 0;
+        PerfProgramPageReloads = 0;
+        PerfOpcodeFetchTicks = 0;
+        PerfAddressTicks = 0;
+        PerfExecuteTicks = 0;
     }
 
     private bool IsImmediateRdnmiPoll(int opcode)
@@ -512,6 +548,34 @@ public class CPU : ICPU
         _snes.Write(address, value);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int ReadProgramByte(int pcBank, ref ushort pc, ref int cachedPageIndex, ref ushort cachedPageData, ref bool hasCachedPage)
+    {
+        int address = pcBank | pc;
+        pc++;
+        if (PerfStatsEnabled)
+            PerfProgramBytes++;
+
+        if (_snesImpl is { } snes)
+        {
+            int pageIndex = address >> 8;
+            if (!hasCachedPage || cachedPageIndex != pageIndex)
+            {
+                cachedPageIndex = pageIndex;
+                cachedPageData = snes.GetCpuPageData(address);
+                hasCachedPage = true;
+                if (PerfStatsEnabled)
+                    PerfProgramPageReloads++;
+            }
+
+            return snes.ReadCpuByteFast(address, cachedPageData);
+        }
+
+        if (PerfStatsEnabled)
+            PerfProgramPageReloads++;
+        return ReadBus(address);
+    }
+
     private (int, int) DataBankPair(int address16)
     {
         int lo = BankAddress(_r[DBR], address16);
@@ -589,9 +653,8 @@ public class CPU : ICPU
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private (int, int) GetAdr(int mode) 
+    private (int, int) GetAdr(int mode, int pcBank, ref int cachedPcPageIndex, ref ushort cachedPcPageData, ref bool hasCachedPcPage) 
     {
-        int pcBank = _r[K] << 16;
         int dataBank = _r[DBR] << 16;
         int dpr = _br[DPR];
         int x = _br[X];
@@ -636,8 +699,7 @@ public class CPU : ICPU
                 break;
             case DP:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 if (dprHasLowByteOffset)
                     CyclesLeft++;
                 int baseAdr = (dpr + operand) & 0xffff;
@@ -647,8 +709,7 @@ public class CPU : ICPU
             }
             case DPX:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 if (dprHasLowByteOffset)
                     CyclesLeft++;
                 int baseAdr = (dpr + operand + x) & 0xffff;
@@ -658,8 +719,7 @@ public class CPU : ICPU
             }
             case DPY:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 if (dprHasLowByteOffset)
                     CyclesLeft++;
                 int baseAdr = (dpr + operand + y) & 0xffff;
@@ -669,8 +729,7 @@ public class CPU : ICPU
             }
             case IDP:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 if (dprHasLowByteOffset)
                     CyclesLeft++;
                 int baseAdr = (dpr + operand) & 0xffff;
@@ -683,8 +742,7 @@ public class CPU : ICPU
             }
             case IDX:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 if (dprHasLowByteOffset)
                     CyclesLeft++;
                 int baseAdr = (dpr + operand + x) & 0xffff;
@@ -697,8 +755,7 @@ public class CPU : ICPU
             }
             case IDY:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 if (dprHasLowByteOffset)
                     CyclesLeft++;
                 int baseAdr = (dpr + operand) & 0xffff;
@@ -711,8 +768,7 @@ public class CPU : ICPU
             }
             case IDYr:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 if (dprHasLowByteOffset)
                     CyclesLeft++;
                 int baseAdr = (dpr + operand) & 0xffff;
@@ -728,8 +784,7 @@ public class CPU : ICPU
             }
             case IDL:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 if (dprHasLowByteOffset)
                     CyclesLeft++;
                 int baseAdr = (dpr + operand) & 0xffff;
@@ -742,8 +797,7 @@ public class CPU : ICPU
             }
             case ILY:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 if (dprHasLowByteOffset)
                     CyclesLeft++;
                 int baseAdr = (dpr + operand) & 0xffff;
@@ -757,8 +811,7 @@ public class CPU : ICPU
             }
             case SR:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int baseAdr = (sp + operand) & 0xffff;
                 adr = baseAdr;
                 adrh = (baseAdr + 1) & 0xffff;
@@ -766,8 +819,7 @@ public class CPU : ICPU
             }
             case ISY:
             {
-                int operand = ReadBus(pcBank | pc);
-                pc++;
+                int operand = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int baseAdr = (sp + operand) & 0xffff;
                 int pointer = ReadBus(baseAdr);
                 pointer |= ReadBus((baseAdr + 1) & 0xffff) << 8;
@@ -778,10 +830,8 @@ public class CPU : ICPU
             }
             case ABS:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int baseAdr = lo | (hi << 8);
                 adr = dataBank | baseAdr;
                 adrh = dataBank | ((baseAdr + 1) & 0xffff);
@@ -789,10 +839,8 @@ public class CPU : ICPU
             }
             case ABX:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int final = ((lo | (hi << 8)) + x) & 0xffff;
                 adr = dataBank | final;
                 adrh = dataBank | ((final + 1) & 0xffff);
@@ -800,10 +848,8 @@ public class CPU : ICPU
             }
             case ABXr:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int baseAdr = lo | (hi << 8);
                 int sum = baseAdr + x;
                 if (baseAdr >> 8 != sum >> 8 || !_x)
@@ -815,10 +861,8 @@ public class CPU : ICPU
             }
             case ABY:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int final = ((lo | (hi << 8)) + y) & 0xffff;
                 adr = dataBank | final;
                 adrh = dataBank | ((final + 1) & 0xffff);
@@ -826,10 +870,8 @@ public class CPU : ICPU
             }
             case ABYr:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int baseAdr = lo | (hi << 8);
                 int sum = baseAdr + y;
                 if (baseAdr >> 8 != sum >> 8 || !_x)
@@ -841,12 +883,9 @@ public class CPU : ICPU
             }
             case ABL:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int mid = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int mid = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int baseAdr = lo | (mid << 8) | (hi << 16);
                 adr = baseAdr & 0xffffff;
                 adrh = (baseAdr + 1) & 0xffffff;
@@ -854,12 +893,9 @@ public class CPU : ICPU
             }
             case ALX:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int mid = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int mid = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int final = (lo | (mid << 8) | (hi << 16)) + x;
                 adr = final & 0xffffff;
                 adrh = (adr + 1) & 0xffffff;
@@ -867,10 +903,8 @@ public class CPU : ICPU
             }
             case IND:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int indirectAdr = lo | (hi << 8);
                 int pointer = ReadBus(indirectAdr);
                 pointer |= ReadBus((indirectAdr + 1) & 0xffff) << 8;
@@ -879,10 +913,8 @@ public class CPU : ICPU
             }
             case IAX:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int indirectAdr = (lo | (hi << 8)) + x;
                 int pointer = ReadBus(pcBank | (indirectAdr & 0xffff));
                 pointer |= ReadBus(pcBank | ((indirectAdr + 1) & 0xffff)) << 8;
@@ -891,10 +923,8 @@ public class CPU : ICPU
             }
             case IAL:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 int indirectAdr = lo | (hi << 8);
                 adr = ReadBus(indirectAdr);
                 adr |= ReadBus((indirectAdr + 1) & 0xffff) << 8;
@@ -903,25 +933,20 @@ public class CPU : ICPU
             }
             case REL:
             {
-                int rel = ReadBus(pcBank | pc);
-                pc++;
+                int rel = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 adr = GetSigned(rel, true);
                 break;
             }
             case RLL:
             {
-                int lo = ReadBus(pcBank | pc);
-                pc++;
-                int hi = ReadBus(pcBank | pc);
-                pc++;
+                int lo = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                int hi = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 adr = GetSigned(lo | (hi << 8), false);
                 break;
             }
             case BM:
-                adr = ReadBus(pcBank | pc);
-                pc++;
-                adrh = ReadBus(pcBank | pc);
-                pc++;
+                adr = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
+                adrh = ReadProgramByte(pcBank, ref pc, ref cachedPcPageIndex, ref cachedPcPageData, ref hasCachedPcPage);
                 break;
         }
 
