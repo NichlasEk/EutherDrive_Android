@@ -135,7 +135,10 @@ public partial class MainView : UserControl
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (!string.Equals(e.PropertyName, nameof(MainViewModel.IsLandscapeMode), StringComparison.Ordinal))
+        bool landscapeChanged = string.Equals(e.PropertyName, nameof(MainViewModel.IsLandscapeMode), StringComparison.Ordinal);
+        bool debugChanged = string.Equals(e.PropertyName, nameof(MainViewModel.DebugVisible), StringComparison.Ordinal)
+            || string.Equals(e.PropertyName, nameof(MainViewModel.DebugPageIndex), StringComparison.Ordinal);
+        if (!landscapeChanged && !debugChanged)
             return;
 
         AttachRenderSurfaceToActiveHost();
@@ -257,13 +260,27 @@ public partial class MainView : UserControl
     private void OnOpenDebug(object? sender, RoutedEventArgs e)
     {
         _viewModel.SettingsVisible = false;
+        _viewModel.DebugPageIndex = 1;
         _viewModel.DebugVisible = true;
         SettingsAboutZuulView.SetActive(false);
+    }
+
+    private void OnShowDebugGame(object? sender, RoutedEventArgs e)
+    {
+        _viewModel.DebugPageIndex = 0;
+        _viewModel.DebugVisible = true;
+    }
+
+    private void OnShowDebugTrace(object? sender, RoutedEventArgs e)
+    {
+        _viewModel.DebugPageIndex = 1;
+        _viewModel.DebugVisible = true;
     }
 
     private void OnCloseDebug(object? sender, RoutedEventArgs e)
     {
         _viewModel.DebugVisible = false;
+        _viewModel.DebugPageIndex = 0;
     }
 
     private void OnToggleScreenFocus(object? sender, PointerPressedEventArgs e)
@@ -590,7 +607,7 @@ public partial class MainView : UserControl
         IPointer pointer,
         string tag)
     {
-        if (pointerMap.TryGetValue(pointer, out string existingTag))
+        if (pointerMap.TryGetValue(pointer, out string? existingTag) && existingTag is not null)
         {
             if (string.Equals(existingTag, tag, StringComparison.OrdinalIgnoreCase))
             {
@@ -3287,6 +3304,10 @@ public partial class MainView : UserControl
         private bool _isLandscapeMode;
         private bool _settingsVisible;
         private bool _debugVisible;
+        private int _debugPageIndex;
+        private bool _mainShellVisible = true;
+        private bool _debugGamePageVisible;
+        private bool _debugTracePageVisible;
         private bool _normalTopButtonsVisible = true;
         private bool _quickSaveButtonsVisible;
         private bool _screenHudVisible = true;
@@ -3456,7 +3477,48 @@ public partial class MainView : UserControl
         public bool DebugVisible
         {
             get => _debugVisible;
-            set => SetField(ref _debugVisible, value);
+            set
+            {
+                if (!SetField(ref _debugVisible, value))
+                {
+                    return;
+                }
+
+                UpdateDebugLayoutState();
+            }
+        }
+
+        public int DebugPageIndex
+        {
+            get => _debugPageIndex;
+            set
+            {
+                int normalized = value <= 0 ? 0 : 1;
+                if (!SetField(ref _debugPageIndex, normalized))
+                {
+                    return;
+                }
+
+                UpdateDebugLayoutState();
+            }
+        }
+
+        public bool MainShellVisible
+        {
+            get => _mainShellVisible;
+            set => SetField(ref _mainShellVisible, value);
+        }
+
+        public bool DebugGamePageVisible
+        {
+            get => _debugGamePageVisible;
+            set => SetField(ref _debugGamePageVisible, value);
+        }
+
+        public bool DebugTracePageVisible
+        {
+            get => _debugTracePageVisible;
+            set => SetField(ref _debugTracePageVisible, value);
         }
 
         public bool NormalTopButtonsVisible
@@ -3520,6 +3582,13 @@ public partial class MainView : UserControl
         {
             get => _screenOverlayVisible;
             set => SetField(ref _screenOverlayVisible, value);
+        }
+
+        private void UpdateDebugLayoutState()
+        {
+            MainShellVisible = !_debugVisible || _debugPageIndex == 0;
+            DebugGamePageVisible = _debugVisible && _debugPageIndex == 0;
+            DebugTracePageVisible = _debugVisible && _debugPageIndex == 1;
         }
 
         public string? PceBiosPath { get => _pceBiosPath; set => SetField(ref _pceBiosPath, value); }

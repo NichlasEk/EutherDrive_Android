@@ -543,8 +543,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
             private static void LayoutView(View view, int x, int y, int width, int height)
             {
-                int widthSpec = View.MeasureSpec.MakeMeasureSpec(width, MeasureSpecMode.Exactly);
-                int heightSpec = View.MeasureSpec.MakeMeasureSpec(height, MeasureSpecMode.Exactly);
+                int widthSpec = global::Android.Views.View.MeasureSpec.MakeMeasureSpec(width, MeasureSpecMode.Exactly);
+                int heightSpec = global::Android.Views.View.MeasureSpec.MakeMeasureSpec(height, MeasureSpecMode.Exactly);
                 view.Measure(widthSpec, heightSpec);
                 view.Layout(x, y, x + width, y + height);
             }

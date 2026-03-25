@@ -232,7 +232,10 @@
             Background="#2A1A29"
             Opacity="0.18" />
 
-    <Grid RowDefinitions="Auto,*,Auto" Margin="{Binding RootMargin}" RowSpacing="{Binding RootRowSpacing}">
+    <Grid RowDefinitions="Auto,*,Auto"
+          Margin="{Binding RootMargin}"
+          RowSpacing="{Binding RootRowSpacing}"
+          IsVisible="{Binding MainShellVisible}">
       <Border Grid.Row="0" Classes="surface" Padding="14" IsVisible="{Binding IsPortraitMode}">
         <Grid ColumnDefinitions="*" RowDefinitions="Auto">
           <Grid IsVisible="{Binding NormalTopButtonsVisible}"
@@ -886,6 +889,37 @@
       </Border>
     </Grid>
 
+    <Border IsVisible="{Binding DebugGamePageVisible}"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Top"
+            Margin="18"
+            Background="#DE050B10"
+            BorderBrush="#32516A"
+            BorderThickness="1"
+            CornerRadius="18"
+            Padding="10">
+      <Grid ColumnDefinitions="Auto,Auto,Auto"
+            ColumnSpacing="8">
+        <Border Background="#163243"
+                CornerRadius="999"
+                Padding="12,6">
+          <TextBlock Text="Game"
+                     Foreground="#5EEAD4"
+                     FontWeight="Bold" />
+        </Border>
+        <Button Grid.Column="1"
+                Classes="chrome"
+                Padding="12,8"
+                Content="Trace"
+                Click="OnShowDebugTrace" />
+        <Button Grid.Column="2"
+                Classes="chrome"
+                Padding="12,8"
+                Content="Close"
+                Click="OnCloseDebug" />
+      </Grid>
+    </Border>
+
     <Border IsVisible="{Binding SettingsVisible}"
             Background="#CC091119">
       <Grid Margin="18">
@@ -1083,7 +1117,7 @@
       </Grid>
     </Border>
 
-    <Border IsVisible="{Binding DebugVisible}"
+    <Border IsVisible="{Binding DebugTracePageVisible}"
             Background="#DE050B10">
       <Grid Margin="18">
         <Border Classes="debugShell"
@@ -1091,7 +1125,7 @@
                 VerticalAlignment="Stretch"
                 Padding="20">
           <Grid RowDefinitions="Auto,Auto,*" RowSpacing="14">
-            <Grid ColumnDefinitions="Auto,*,Auto"
+            <Grid ColumnDefinitions="Auto,*,Auto,Auto"
                   ColumnSpacing="12">
               <StackPanel Orientation="Horizontal"
                           Spacing="8"
@@ -1119,6 +1153,12 @@
               </StackPanel>
 
               <Button Grid.Column="2"
+                      Classes="chrome"
+                      Padding="12,8"
+                      Content="Game"
+                      Click="OnShowDebugGame" />
+
+              <Button Grid.Column="3"
                       Classes="chrome"
                       Padding="12,8"
                       Content="Close"

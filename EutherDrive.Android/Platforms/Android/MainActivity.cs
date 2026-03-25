@@ -88,17 +88,17 @@ public class MainActivity : AvaloniaMainActivity<App>
         }
 
 #pragma warning disable CA1422
-        var flags = (StatusBarVisibility)(
+        var flags =
             SystemUiFlags.LayoutStable |
             SystemUiFlags.LayoutHideNavigation |
             SystemUiFlags.LayoutFullscreen |
             SystemUiFlags.HideNavigation |
             SystemUiFlags.Fullscreen |
-            SystemUiFlags.ImmersiveSticky);
+            SystemUiFlags.ImmersiveSticky;
 
-        Window.DecorView!.SystemUiVisibility = immersiveLandscape
+        Window.DecorView!.SystemUiFlags = immersiveLandscape
             ? flags
-            : StatusBarVisibility.Visible;
+            : SystemUiFlags.Visible;
 #pragma warning restore CA1422
     }
 }
