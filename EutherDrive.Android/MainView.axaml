@@ -745,8 +745,8 @@
           </Grid>
 
           <Grid x:Name="LandscapeDPadSurface"
-                Width="150"
-                Height="150"
+                Width="192"
+                Height="192"
                 HorizontalAlignment="Left"
                 VerticalAlignment="Bottom"
                 Margin="26,0,0,18"
@@ -756,65 +756,65 @@
                 PointerReleased="OnDPadPointerReleased"
                 PointerCaptureLost="OnDPadPointerCaptureLost">
             <Border Classes="joystickBase"
-                    Width="138"
-                    Height="138"
+                    Width="168"
+                    Height="168"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center" />
             <Border Classes="joystickTrack"
-                    Width="104"
-                    Height="104"
+                    Width="128"
+                    Height="128"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center" />
             <Border Classes="joystickCore"
-                    Width="22"
-                    Height="22"
+                    Width="26"
+                    Height="26"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center" />
             <Border x:Name="LandscapePadUp"
                     Classes="directionHint"
-                    Width="40"
-                    Height="40"
-                    CornerRadius="20"
+                    Width="46"
+                    Height="46"
+                    CornerRadius="23"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Top"
-                    Margin="0,2,0,0">
-              <TextBlock Classes="directionHintLabel" FontSize="16" Text="▲" />
+                    Margin="0,4,0,0">
+              <TextBlock Classes="directionHintLabel" Text="▲" />
             </Border>
             <Border x:Name="LandscapePadDown"
                     Classes="directionHint"
-                    Width="40"
-                    Height="40"
-                    CornerRadius="20"
+                    Width="46"
+                    Height="46"
+                    CornerRadius="23"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Bottom"
-                    Margin="0,0,0,2">
-              <TextBlock Classes="directionHintLabel" FontSize="16" Text="▼" />
+                    Margin="0,0,0,4">
+              <TextBlock Classes="directionHintLabel" Text="▼" />
             </Border>
             <Border x:Name="LandscapePadLeft"
                     Classes="directionHint"
-                    Width="40"
-                    Height="40"
-                    CornerRadius="20"
+                    Width="46"
+                    Height="46"
+                    CornerRadius="23"
                     HorizontalAlignment="Left"
                     VerticalAlignment="Center"
-                    Margin="2,0,0,0">
-              <TextBlock Classes="directionHintLabel" FontSize="16" Text="◀" />
+                    Margin="4,0,0,0">
+              <TextBlock Classes="directionHintLabel" Text="◀" />
             </Border>
             <Border x:Name="LandscapePadRight"
                     Classes="directionHint"
-                    Width="40"
-                    Height="40"
-                    CornerRadius="20"
+                    Width="46"
+                    Height="46"
+                    CornerRadius="23"
                     HorizontalAlignment="Right"
                     VerticalAlignment="Center"
-                    Margin="0,0,2,0">
-              <TextBlock Classes="directionHintLabel" FontSize="16" Text="▶" />
+                    Margin="0,0,4,0">
+              <TextBlock Classes="directionHintLabel" Text="▶" />
             </Border>
             <Border x:Name="LandscapePadThumb"
                     Classes="joystickThumb"
-                    Width="58"
-                    Height="58"
-                    CornerRadius="29">
+                    Width="72"
+                    Height="72"
+                    CornerRadius="36">
               <Border.RenderTransform>
                 <TranslateTransform />
               </Border.RenderTransform>
@@ -822,8 +822,8 @@
           </Grid>
 
           <Grid x:Name="LandscapeFaceSurface"
-                Width="192"
-                Height="192"
+                Width="212"
+                Height="212"
                 HorizontalAlignment="Right"
                 VerticalAlignment="Bottom"
                 Margin="0,0,22,18"
@@ -838,32 +838,32 @@
             </Canvas>
             <Button x:Name="LandscapeFaceY"
                     Classes="landscapeOverlay"
-                    Width="68"
-                    Height="68"
+                    Width="74"
+                    Height="74"
                     IsHitTestVisible="False"
                     HorizontalAlignment="Left"
                     VerticalAlignment="Center"
                     Content="Y" />
             <Button x:Name="LandscapeFaceB"
                     Classes="landscapeOverlay"
-                    Width="68"
-                    Height="68"
+                    Width="74"
+                    Height="74"
                     IsHitTestVisible="False"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Bottom"
                     Content="B" />
             <Button x:Name="LandscapeFaceX"
                     Classes="landscapeOverlay"
-                    Width="68"
-                    Height="68"
+                    Width="74"
+                    Height="74"
                     IsHitTestVisible="False"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Top"
                     Content="X" />
             <Button x:Name="LandscapeFaceA"
                     Classes="landscapeOverlay"
-                    Width="68"
-                    Height="68"
+                    Width="74"
+                    Height="74"
                     IsHitTestVisible="False"
                     HorizontalAlignment="Right"
                     VerticalAlignment="Center"

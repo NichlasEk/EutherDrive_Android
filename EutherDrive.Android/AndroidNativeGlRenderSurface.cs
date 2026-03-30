@@ -480,6 +480,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private sealed class AndroidGlRootView : FrameLayout
         {
             private const float LandscapeIntegerSnapThreshold = 0.08f;
+            private const int OverlayDpadSizeDp = 192;
+            private const int OverlayFaceButtonSizeDp = 74;
+            private const int OverlayFaceAreaSizeDp = 212;
             private readonly AndroidNativeGlHost _host;
             private readonly AndroidGlTextureView _gameView;
             private readonly NativeDPadView _dPadView;
@@ -588,11 +591,11 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 LayoutView(_buttonR2, width - marginSideRight - topSmallWidth, marginTop + topRowOffset, topSmallWidth, topButtonHeight);
                 LayoutView(_buttonR1, width - marginSideRight - topSmallWidth, marginTop + topRowOffset + topButtonHeight + buttonGap, topSmallWidth, topButtonHeight);
 
-                int dpadSize = Dp(150);
+                int dpadSize = Dp(OverlayDpadSizeDp);
                 LayoutView(_dPadView, Dp(26), height - bottomMargin - dpadSize, dpadSize, dpadSize);
 
-                int faceButtonSize = Dp(68);
-                int faceAreaSize = Dp(192);
+                int faceButtonSize = Dp(OverlayFaceButtonSizeDp);
+                int faceAreaSize = Dp(OverlayFaceAreaSizeDp);
                 int faceOriginX = width - Dp(22) - faceAreaSize;
                 int faceOriginY = height - bottomMargin - faceAreaSize;
                 LayoutView(_buttonX, faceOriginX + ((faceAreaSize - faceButtonSize) / 2), faceOriginY, faceButtonSize, faceButtonSize);
