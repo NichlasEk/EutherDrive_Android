@@ -411,5 +411,16 @@ namespace ProjectPSX {
 
             return joy_stat;
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanRelaxStatusPolling() {
+            return !transferActive
+                && !transferBytePending
+                && TXreadyFlag1
+                && TXreadyFlag2
+                && !ackInputLevel
+                && !interruptRequest
+                && rxFifo.Count == 0;
+        }
     }
 }

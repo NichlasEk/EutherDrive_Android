@@ -34,6 +34,15 @@ public class BUS {
             public readonly int Write32Mmio;
             public readonly int Write16Mmio;
             public readonly int Write8Mmio;
+            public readonly uint TopMmioReadAddr0;
+            public readonly int TopMmioReadCount0;
+            public readonly uint TopMmioReadAddr1;
+            public readonly int TopMmioReadCount1;
+            public readonly uint TopMmioReadAddr2;
+            public readonly int TopMmioReadCount2;
+            public readonly int RelaxedGpuStatReads;
+            public readonly int RelaxedJoyStatusReads;
+            public readonly int MmioShadowHits;
 
             public PerfSnapshot(
                 int tickCalls,
@@ -58,7 +67,16 @@ public class BUS {
                 int write8Scratchpad,
                 int write32Mmio,
                 int write16Mmio,
-                int write8Mmio) {
+                int write8Mmio,
+                uint topMmioReadAddr0,
+                int topMmioReadCount0,
+                uint topMmioReadAddr1,
+                int topMmioReadCount1,
+                uint topMmioReadAddr2,
+                int topMmioReadCount2,
+                int relaxedGpuStatReads,
+                int relaxedJoyStatusReads,
+                int mmioShadowHits) {
                 TickCalls = tickCalls;
                 TickCycles = tickCycles;
                 ReadOpsFast = readOpsFast;
@@ -82,11 +100,22 @@ public class BUS {
                 Write32Mmio = write32Mmio;
                 Write16Mmio = write16Mmio;
                 Write8Mmio = write8Mmio;
+                TopMmioReadAddr0 = topMmioReadAddr0;
+                TopMmioReadCount0 = topMmioReadCount0;
+                TopMmioReadAddr1 = topMmioReadAddr1;
+                TopMmioReadCount1 = topMmioReadCount1;
+                TopMmioReadAddr2 = topMmioReadAddr2;
+                TopMmioReadCount2 = topMmioReadCount2;
+                RelaxedGpuStatReads = relaxedGpuStatReads;
+                RelaxedJoyStatusReads = relaxedJoyStatusReads;
+                MmioShadowHits = mmioShadowHits;
             }
         }
 
         private const uint Sio1StatusDefault = 0x0000_0805;
         private static readonly bool VerboseBusAccess = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1";
+        private static readonly bool RelaxGpuStatusPolling = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_RELAX_GPUSTAT_POLLING") != "0";
+        private static readonly bool RelaxJoyStatusPolling = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_RELAX_JOYSTAT_POLLING") != "0";
         private static readonly uint? TraceRamReadStart = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_START");
         private static readonly uint? TraceRamReadEnd = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_END");
         private static readonly int TraceRamReadLimit = ParseOptionalPositiveInt("EUTHERDRIVE_PSX_TRACE_RAM_READ_LIMIT", 4096);
@@ -98,6 +127,7 @@ public class BUS {
         private static int s_traceRamWriteCount;
         private const int SpuTickBatchCycles = 96;
         private const int CpuTightSyncBudgetCycles = 96;
+        private const int MmioReadHotSlotCount = 6;
 
         //Memory
         [NonSerialized] private unsafe byte* ramPtr = (byte*)Marshal.AllocHGlobal(2048 * 1024);
@@ -147,7 +177,17 @@ public class BUS {
         private int _perfWrite32Mmio;
         private int _perfWrite16Mmio;
         private int _perfWrite8Mmio;
+        private int _perfRelaxedGpuStatusReads;
+        private int _perfRelaxedJoyStatusReads;
+        private int _perfMmioShadowHits;
         private int _cpuTightSyncBudgetCycles;
+        private readonly uint[] _perfMmioReadHotAddr = new uint[MmioReadHotSlotCount];
+        private readonly int[] _perfMmioReadHotCount = new int[MmioReadHotSlotCount];
+        private int _mmioShadowEpoch;
+        private int _gpuStatShadowEpoch = -1;
+        private uint _gpuStatShadowValue;
+        private int _joyStatShadowEpoch = -1;
+        private uint _joyStatShadowValue;
 
         //temporary hardcoded bios/ex1
         private static string bios = "./SCPH1001.BIN"; //SCPH1001 //openbios
@@ -220,8 +260,7 @@ public class BUS {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe uint load32(uint address) {
             if (address == 0xFFFE0130) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(address);
                 NoteCpuMmioAccess();
                 return memoryCache;
             }
@@ -244,74 +283,68 @@ public class BUS {
                 _perfLoad32Scratchpad++;
                 return load<uint>(addr & 0x3FF, scrathpadPtr);
             } else if (addr < 0x1F80_1040) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return load<uint>(addr & 0xF, memoryControl1);
             } else if (addr < 0x1F80_1050) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
+                if (addr == 0x1F80_1044 && TryLoadRelaxedJoyStatus(out uint joyStatus)) {
+                    return joyStatus;
+                }
+
                 NoteCpuMmioAccess();
                 return joypad.load(addr);
             } else if (addr < 0x1F80_1060) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 if (addr == 0x1F80_1054) return Sio1StatusDefault;
                 return load<uint>(addr & 0xF, sio);
             } else if (addr < 0x1F80_1070) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return load<uint>(addr & 0xF, memoryControl2);
             } else if (addr < 0x1F80_1080) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return interruptController.load(addr);
             } else if (addr < 0x1F80_1100) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return dma.load(addr);
             } else if (addr < 0x1F80_1140) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return timers.load(addr);
             } else if (addr <= 0x1F80_1803) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return cdrom.load(addr);
             } else if (addr == 0x1F80_1810) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return gpu.loadGPUREAD();
             } else if (addr == 0x1F80_1814) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
+                if (TryLoadRelaxedGpuStat(out uint gpuStatus)) {
+                    return gpuStatus;
+                }
+
                 NoteCpuMmioAccess();
                 return gpu.loadGPUSTAT();
             } else if (addr == 0x1F80_1820) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return mdec.readMDEC0_Data();
             } else if (addr == 0x1F80_1824) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return mdec.readMDEC1_Status();
             } else if (addr < 0x1F80_2000) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return spu.load(addr);
             } else if (addr < 0x1F80_4000) {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 return exp2.load(addr);
             } else if (addr < 0x1FC8_0000) {
@@ -319,8 +352,7 @@ public class BUS {
                 _perfLoad32Bios++;
                 return load<uint>(addr & 0x7_FFFF, biosPtr);
             } else {
-                _perfReadOpsMmio++;
-                _perfLoad32Mmio++;
+                NoteLoad32Mmio(addr);
                 NoteCpuMmioAccess();
                 if (VerboseBusAccess)
                     Console.WriteLine($"[BUS] Load32 Unsupported: {addr:x8} pc={CPU.TraceCurrentPC:x8}");
@@ -366,6 +398,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 joypad.write(addr, value);
             } else if (addr < 0x1F80_1060) {
                 _perfWriteOpsMmio++;
@@ -401,6 +434,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 gpu.write(addr, value);
             } else if (addr < 0x1F80_1830) {
                 _perfWriteOpsMmio++;
@@ -464,6 +498,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 joypad.write(addr, value);
             } else if (addr < 0x1F80_1060) {
                 _perfWriteOpsMmio++;
@@ -499,6 +534,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 gpu.write(addr, value);
             } else if (addr < 0x1F80_1830) {
                 _perfWriteOpsMmio++;
@@ -562,6 +598,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 joypad.write(addr, value);
             } else if (addr < 0x1F80_1060) {
                 _perfWriteOpsMmio++;
@@ -597,6 +634,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 gpu.write(addr, value);
             } else if (addr < 0x1F80_1830) {
                 _perfWriteOpsMmio++;
@@ -825,6 +863,7 @@ public class BUS {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void tick(int cycles) {
+            InvalidateMmioReadShadows();
             if (_cpuTightSyncBudgetCycles > 0) {
                 _cpuTightSyncBudgetCycles -= cycles;
                 if (_cpuTightSyncBudgetCycles < 0) {
@@ -874,9 +913,22 @@ public class BUS {
             _perfWrite32Mmio = 0;
             _perfWrite16Mmio = 0;
             _perfWrite8Mmio = 0;
+            _perfRelaxedGpuStatusReads = 0;
+            _perfRelaxedJoyStatusReads = 0;
+            _perfMmioShadowHits = 0;
+            Array.Clear(_perfMmioReadHotAddr, 0, _perfMmioReadHotAddr.Length);
+            Array.Clear(_perfMmioReadHotCount, 0, _perfMmioReadHotCount.Length);
         }
 
         public PerfSnapshot CapturePerfSnapshot() {
+            CaptureTopMmioReadEntries(
+                out uint topMmioReadAddr0,
+                out int topMmioReadCount0,
+                out uint topMmioReadAddr1,
+                out int topMmioReadCount1,
+                out uint topMmioReadAddr2,
+                out int topMmioReadCount2);
+
             return new PerfSnapshot(
                 _perfTickCalls,
                 _perfTickCycles,
@@ -900,7 +952,16 @@ public class BUS {
                 _perfWrite8Scratchpad,
                 _perfWrite32Mmio,
                 _perfWrite16Mmio,
-                _perfWrite8Mmio);
+                _perfWrite8Mmio,
+                topMmioReadAddr0,
+                topMmioReadCount0,
+                topMmioReadAddr1,
+                topMmioReadCount1,
+                topMmioReadAddr2,
+                topMmioReadCount2,
+                _perfRelaxedGpuStatusReads,
+                _perfRelaxedJoyStatusReads,
+                _perfMmioShadowHits);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -918,6 +979,128 @@ public class BUS {
             if (_cpuTightSyncBudgetCycles < CpuTightSyncBudgetCycles) {
                 _cpuTightSyncBudgetCycles = CpuTightSyncBudgetCycles;
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void NoteLoad32Mmio(uint addr) {
+            _perfReadOpsMmio++;
+            _perfLoad32Mmio++;
+            NotePerfMmioReadAddress(addr);
+        }
+
+        private void NotePerfMmioReadAddress(uint addr) {
+            for (int i = 0; i < MmioReadHotSlotCount; i++) {
+                if (_perfMmioReadHotCount[i] == 0) {
+                    _perfMmioReadHotAddr[i] = addr;
+                    _perfMmioReadHotCount[i] = 1;
+                    return;
+                }
+
+                if (_perfMmioReadHotAddr[i] == addr) {
+                    _perfMmioReadHotCount[i]++;
+                    return;
+                }
+            }
+
+            int weakestIndex = 0;
+            for (int i = 1; i < MmioReadHotSlotCount; i++) {
+                if (_perfMmioReadHotCount[i] < _perfMmioReadHotCount[weakestIndex]) {
+                    weakestIndex = i;
+                }
+            }
+
+            if (_perfMmioReadHotCount[weakestIndex] > 1) {
+                _perfMmioReadHotCount[weakestIndex]--;
+                return;
+            }
+
+            _perfMmioReadHotAddr[weakestIndex] = addr;
+            _perfMmioReadHotCount[weakestIndex] = 1;
+        }
+
+        private void CaptureTopMmioReadEntries(
+            out uint addr0,
+            out int count0,
+            out uint addr1,
+            out int count1,
+            out uint addr2,
+            out int count2) {
+            addr0 = 0;
+            count0 = 0;
+            addr1 = 0;
+            count1 = 0;
+            addr2 = 0;
+            count2 = 0;
+
+            for (int i = 0; i < MmioReadHotSlotCount; i++) {
+                uint addr = _perfMmioReadHotAddr[i];
+                int count = _perfMmioReadHotCount[i];
+                if (count <= 0) {
+                    continue;
+                }
+
+                if (count > count0) {
+                    addr2 = addr1;
+                    count2 = count1;
+                    addr1 = addr0;
+                    count1 = count0;
+                    addr0 = addr;
+                    count0 = count;
+                } else if (count > count1) {
+                    addr2 = addr1;
+                    count2 = count1;
+                    addr1 = addr;
+                    count1 = count;
+                } else if (count > count2) {
+                    addr2 = addr;
+                    count2 = count;
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void InvalidateMmioReadShadows() {
+            _mmioShadowEpoch++;
+            _gpuStatShadowEpoch = -1;
+            _joyStatShadowEpoch = -1;
+        }
+
+        private bool TryLoadRelaxedGpuStat(out uint value) {
+            if (!RelaxGpuStatusPolling || !gpu.CanRelaxStatusPolling()) {
+                value = 0;
+                return false;
+            }
+
+            _perfRelaxedGpuStatusReads++;
+            if (_gpuStatShadowEpoch == _mmioShadowEpoch) {
+                _perfMmioShadowHits++;
+                value = _gpuStatShadowValue;
+                return true;
+            }
+
+            _gpuStatShadowValue = gpu.loadGPUSTAT();
+            _gpuStatShadowEpoch = _mmioShadowEpoch;
+            value = _gpuStatShadowValue;
+            return true;
+        }
+
+        private bool TryLoadRelaxedJoyStatus(out uint value) {
+            if (!RelaxJoyStatusPolling || !joypad.CanRelaxStatusPolling()) {
+                value = 0;
+                return false;
+            }
+
+            _perfRelaxedJoyStatusReads++;
+            if (_joyStatShadowEpoch == _mmioShadowEpoch) {
+                _perfMmioShadowHits++;
+                value = _joyStatShadowValue;
+                return true;
+            }
+
+            _joyStatShadowValue = joypad.load(0x1F80_1044);
+            _joyStatShadowEpoch = _mmioShadowEpoch;
+            value = _joyStatShadowValue;
+            return true;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -12,8 +12,16 @@ namespace ProjectPSX {
         const int MIPS_UNDERCLOCK = 3; //Testing: This compensates the ausence of HALT instruction on MIPS Architecture, may broke some games.
         const double FPS_PAL = PSX_MHZ / ((3406.0 * 314.0 * 7.0) / 11.0);
         const double FPS_NTSC = PSX_MHZ / ((3413.0 * 263.0 * 7.0) / 11.0);
+        private enum SyncGovernorMode {
+            Off,
+            Auto,
+            Aggressive
+        }
+
         private static readonly int TightBusTickBatchCycles = ParseBusTickBatchCycles();
         private static readonly int RelaxedBusTickBatchCycles = ParseBusTickRelaxedBatchCycles();
+        private static readonly SyncGovernorMode GameplaySyncGovernorMode = ParseSyncGovernorMode();
+        private static readonly int SyncGovernorMaxBatchCycles = ParseSyncGovernorMaxBatchCycles();
         private static readonly uint[] DebugPeekAddresses = ParseOptionalHexAddrEnv("EUTHERDRIVE_PSX_TRACE_PEEK_ADDRS");
         private static readonly bool DebugPointerPeeks = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_TRACE_POINTER_PEEKS") == "1";
 
@@ -63,6 +71,12 @@ namespace ProjectPSX {
         private long _perfSpuMixedSamples;
         private long _perfSpuActiveVoices;
         private volatile string _perfSummary = "PSX core --";
+        private int _syncGovernorLevel;
+        private int _syncGovernorStableFrames;
+        private int _syncGovernorCooldownFrames;
+        private int _syncGovernorRelaxedBatchCycles = RelaxedBusTickBatchCycles;
+        private int _syncGovernorLastAppliedBatchCycles = RelaxedBusTickBatchCycles;
+        private volatile string _syncGovernorSummary = BuildSyncGovernorDisabledSummary();
 
         public ProjectPSX(
             IHostWindow window,
@@ -110,6 +124,8 @@ namespace ProjectPSX {
             bus.ResetPerfCounters();
             gpu.ResetPerfCounters();
             spu.ResetPerfCounters();
+            int relaxedBusTickBatchCycles = GetRelaxedBusTickBatchCycles();
+            _syncGovernorLastAppliedBatchCycles = relaxedBusTickBatchCycles;
             int cpuCyclesThisFrame = 0;
             int pendingBusCycles = 0;
             int cpuCyclesPerFrame = GetCpuCyclesPerFrame();
@@ -127,7 +143,7 @@ namespace ProjectPSX {
                 bool busFlushed = false;
                 int busTickBatchCycles = (!_psxBootBiosExited || bus.RequiresFrequentSync)
                     ? TightBusTickBatchCycles
-                    : RelaxedBusTickBatchCycles;
+                    : relaxedBusTickBatchCycles;
 
                 if (pendingBusCycles >= busTickBatchCycles) {
                     bus.tick(pendingBusCycles);
@@ -153,11 +169,16 @@ namespace ProjectPSX {
                 cpu.handleInterrupts();
             }
 
+            CPU.PerfSnapshot cpuPerf = cpu.CapturePerfSnapshot();
+            BUS.PerfSnapshot busPerf = bus.CapturePerfSnapshot();
+            GPU.PerfSnapshot gpuPerf = gpu.CapturePerfSnapshot();
+            SPU.PerfSnapshot spuPerf = spu.CapturePerfSnapshot();
+            UpdateSyncGovernor(cpuPerf, busPerf, gpuPerf);
             UpdatePerfSummary(
-                cpu.CapturePerfSnapshot(),
-                bus.CapturePerfSnapshot(),
-                gpu.CapturePerfSnapshot(),
-                spu.CapturePerfSnapshot());
+                cpuPerf,
+                busPerf,
+                gpuPerf,
+                spuPerf);
         }
 
         public void JoyPadUp(GamepadInputsEnum button) => controller.handleJoyPadUp(button);
@@ -305,8 +326,217 @@ namespace ProjectPSX {
                 : fallback;
         }
 
+        private static SyncGovernorMode ParseSyncGovernorMode() {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_SYNC_GOVERNOR");
+            if (string.IsNullOrWhiteSpace(raw)) {
+                return SyncGovernorMode.Auto;
+            }
+
+            if (string.Equals(raw, "0", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(raw, "off", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase)) {
+                return SyncGovernorMode.Off;
+            }
+
+            if (string.Equals(raw, "2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(raw, "aggressive", StringComparison.OrdinalIgnoreCase)) {
+                return SyncGovernorMode.Aggressive;
+            }
+
+            return SyncGovernorMode.Auto;
+        }
+
+        private static int ParseSyncGovernorMaxBatchCycles() {
+            int fallback = RelaxedBusTickBatchCycles * 8;
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_SYNC_GOVERNOR_MAX_BATCH_CYCLES");
+            if (string.IsNullOrWhiteSpace(raw)) {
+                return fallback;
+            }
+
+            return int.TryParse(raw, out int parsed) && parsed >= RelaxedBusTickBatchCycles
+                ? parsed
+                : fallback;
+        }
+
         private int GetCpuCyclesPerFrame() {
             return (int)Math.Round((PSX_MHZ / GetTargetFps()) / MIPS_UNDERCLOCK);
+        }
+
+        private int GetRelaxedBusTickBatchCycles() {
+            if (GameplaySyncGovernorMode == SyncGovernorMode.Off) {
+                return RelaxedBusTickBatchCycles;
+            }
+
+            return Math.Max(RelaxedBusTickBatchCycles, _syncGovernorRelaxedBatchCycles);
+        }
+
+        private void UpdateSyncGovernor(CPU.PerfSnapshot cpuPerf, BUS.PerfSnapshot busPerf, GPU.PerfSnapshot gpuPerf) {
+            if (GameplaySyncGovernorMode == SyncGovernorMode.Off) {
+                _syncGovernorLevel = 0;
+                _syncGovernorStableFrames = 0;
+                _syncGovernorCooldownFrames = 0;
+                _syncGovernorRelaxedBatchCycles = RelaxedBusTickBatchCycles;
+                _syncGovernorSummary = BuildSyncGovernorDisabledSummary();
+                return;
+            }
+
+            int readMmioOps = busPerf.ReadOpsMmio;
+            int writeMmioOps = busPerf.WriteOpsMmio;
+            int load32MmioOps = busPerf.Load32Mmio;
+            int gpuScore = (gpuPerf.TrianglePrimitives * 3)
+                + (gpuPerf.TexturedTriangles * 2)
+                + gpuPerf.SemiTransparentTriangles
+                + gpuPerf.RectanglePrimitives
+                + gpuPerf.TexturedRectangles
+                + gpuPerf.SemiTransparentRectangles
+                + (gpuPerf.LineSegments / 2)
+                + (gpuPerf.FillRectCommands * 2);
+            bool has3dWorkload = gpuPerf.TrianglePrimitives >= 96
+                || gpuPerf.TexturedTriangles >= 64
+                || gpuScore >= 640;
+            bool geometryDominant =
+                ((gpuPerf.TrianglePrimitives * 2) + gpuPerf.TexturedTriangles)
+                >= (gpuPerf.RectanglePrimitives
+                    + (gpuPerf.TexturedRectangles * 2)
+                    + (gpuPerf.FillRectCommands * 4)
+                    + 48);
+            bool pollLight = readMmioOps <= 12 && load32MmioOps <= 4;
+            bool pollHeavy = readMmioOps >= 24 || load32MmioOps >= 8;
+            bool copyHeavy = gpuPerf.CpuToVramCopies > 0 || gpuPerf.VramToCpuCopies > 0;
+            bool irqHeavy = cpuPerf.InterruptExceptionsTaken > 4 || cpuPerf.InterruptMaskedReturns > 24;
+            bool uiHeavy = gpuPerf.FillRectCommands >= 8 || gpuPerf.RectanglePrimitives >= 192;
+            bool writeDominant = writeMmioOps >= 48 && readMmioOps <= 8;
+            bool writeActive = writeMmioOps >= 32 || gpuScore >= 768;
+            // Tekken-like 3D scenes tend to be GPU-write heavy with low MMIO polling.
+            // Loaders and timing-sensitive loops show up as read-heavy polling, copies or IRQ spikes instead.
+            bool gameplayCandidate = _psxBootBiosExited
+                && has3dWorkload
+                && geometryDominant
+                && pollLight
+                && !copyHeavy
+                && !irqHeavy
+                && !uiHeavy
+                && writeActive;
+
+            int maxLevel = GameplaySyncGovernorMode == SyncGovernorMode.Aggressive ? 3 : 2;
+            if (!_psxBootBiosExited || pollHeavy || copyHeavy || irqHeavy) {
+                _syncGovernorLevel = 0;
+                _syncGovernorStableFrames = 0;
+                _syncGovernorCooldownFrames = 8;
+            } else if (gameplayCandidate) {
+                if (_syncGovernorCooldownFrames > 0) {
+                    _syncGovernorCooldownFrames--;
+                } else {
+                    _syncGovernorStableFrames += writeDominant ? 2 : 1;
+                    int promoteThreshold = GameplaySyncGovernorMode == SyncGovernorMode.Aggressive ? 5 : 8;
+                    if (_syncGovernorStableFrames >= promoteThreshold && _syncGovernorLevel < maxLevel) {
+                        _syncGovernorLevel++;
+                        _syncGovernorStableFrames = 0;
+                    }
+                }
+            } else {
+                _syncGovernorStableFrames = 0;
+                if (_syncGovernorCooldownFrames > 0) {
+                    _syncGovernorCooldownFrames--;
+                } else if (_syncGovernorLevel > 0 && (readMmioOps > 12 || !geometryDominant || uiHeavy)) {
+                    _syncGovernorLevel--;
+                }
+            }
+
+            int relaxedBatchCycles = RelaxedBusTickBatchCycles << _syncGovernorLevel;
+            if (GameplaySyncGovernorMode == SyncGovernorMode.Aggressive) {
+                relaxedBatchCycles = Math.Min(relaxedBatchCycles << 1, SyncGovernorMaxBatchCycles);
+            }
+
+            _syncGovernorRelaxedBatchCycles = Math.Clamp(
+                relaxedBatchCycles,
+                RelaxedBusTickBatchCycles,
+                SyncGovernorMaxBatchCycles);
+            _syncGovernorSummary =
+                $"PSX sync mode:{GameplaySyncGovernorMode.ToString().ToLowerInvariant()} batch:{_syncGovernorLastAppliedBatchCycles}->{_syncGovernorRelaxedBatchCycles} " +
+                $"lvl:{_syncGovernorLevel} stable:{_syncGovernorStableFrames} cool:{_syncGovernorCooldownFrames} " +
+                $"poll:r{readMmioOps}/l32:{load32MmioOps} w:{writeMmioOps} gpu:{gpuPerf.TrianglePrimitives}/{gpuPerf.TexturedTriangles}/{gpuPerf.RectanglePrimitives} " +
+                $"score:{gpuScore} cand:{(gameplayCandidate ? 1 : 0)}";
+        }
+
+        private static string BuildSyncGovernorDisabledSummary() {
+            return $"PSX sync mode:off batch:{RelaxedBusTickBatchCycles}";
+        }
+
+        private static string BuildMmioReadSummary(BUS.PerfSnapshot busPerf) {
+            if (busPerf.TopMmioReadCount0 <= 0
+                && busPerf.TopMmioReadCount1 <= 0
+                && busPerf.TopMmioReadCount2 <= 0
+                && busPerf.RelaxedGpuStatReads <= 0
+                && busPerf.RelaxedJoyStatusReads <= 0
+                && busPerf.MmioShadowHits <= 0) {
+                return string.Empty;
+            }
+
+            var text = new StringBuilder("PSX poll ");
+            AppendMmioReadHotspot(text, busPerf.TopMmioReadAddr0, busPerf.TopMmioReadCount0);
+            AppendMmioReadHotspot(text, busPerf.TopMmioReadAddr1, busPerf.TopMmioReadCount1);
+            AppendMmioReadHotspot(text, busPerf.TopMmioReadAddr2, busPerf.TopMmioReadCount2);
+            if (busPerf.RelaxedGpuStatReads > 0
+                || busPerf.RelaxedJoyStatusReads > 0
+                || busPerf.MmioShadowHits > 0) {
+                if (text.Length > "PSX poll ".Length) {
+                    text.Append(' ');
+                }
+
+                if (busPerf.RelaxedGpuStatReads > 0) {
+                    text.Append($"gstRelax:{busPerf.RelaxedGpuStatReads}");
+                }
+
+                if (busPerf.RelaxedJoyStatusReads > 0) {
+                    if (text[^1] != ' ') {
+                        text.Append(' ');
+                    }
+
+                    text.Append($"jstRelax:{busPerf.RelaxedJoyStatusReads}");
+                }
+
+                if (busPerf.MmioShadowHits > 0) {
+                    if (text[^1] != ' ') {
+                        text.Append(' ');
+                    }
+
+                    text.Append($"sh:{busPerf.MmioShadowHits}");
+                }
+            }
+
+            return text.ToString();
+        }
+
+        private static void AppendMmioReadHotspot(StringBuilder text, uint addr, int count) {
+            if (count <= 0) {
+                return;
+            }
+
+            if (text.Length > "PSX poll ".Length) {
+                text.Append(' ');
+            }
+
+            text.Append($"{FormatMmioReadAddress(addr)}x{count}");
+        }
+
+        private static string FormatMmioReadAddress(uint addr) {
+            return addr switch {
+                0x1F80_1814 => "gpu.stat",
+                0x1F80_1810 => "gpu.read",
+                0x1F80_1100 => "t0.val",
+                0x1F80_1104 => "t0.mode",
+                0x1F80_1108 => "t0.tgt",
+                0x1F80_1110 => "t1.val",
+                0x1F80_1114 => "t1.mode",
+                0x1F80_1118 => "t1.tgt",
+                0x1F80_1120 => "t2.val",
+                0x1F80_1124 => "t2.mode",
+                0x1F80_1128 => "t2.tgt",
+                0x1F80_1070 => "istat",
+                0x1F80_1074 => "imask",
+                _ => $"0x{addr:x8}",
+            };
         }
 
         private void UpdatePerfSummary(CPU.PerfSnapshot cpuPerf, BUS.PerfSnapshot busPerf, GPU.PerfSnapshot gpuPerf, SPU.PerfSnapshot spuPerf) {
@@ -347,11 +577,14 @@ namespace ProjectPSX {
             double iCacheTotal = _perfICacheHits + _perfICacheMisses;
             double iCacheHitRate = iCacheTotal > 0 ? (_perfICacheHits * 100.0) / iCacheTotal : 0;
             double avgActiveVoices = _perfSpuMixedSamples > 0 ? _perfSpuActiveVoices / (double)_perfSpuMixedSamples : 0;
+            string mmioReadSummary = BuildMmioReadSummary(busPerf);
 
             _perfSummary =
                 $"PSX core  cpu instr:{_perfCpuInstructions / frames:0} br:{_perfCpuBranches / frames:0} ld:{_perfCpuLoad8 / frames:0}/{_perfCpuLoad16 / frames:0}/{_perfCpuLoad32 / frames:0} st:{_perfCpuStore8 / frames:0}/{_perfCpuStore16 / frames:0}/{_perfCpuStore32 / frames:0} ic:{iCacheHitRate:0}%\n" +
                 $"PSX mix  bus tick:{_perfBusTickCalls / frames:0.0} cyc:{_perfBusTickCycles / frames:0} fastR:{_perfBusFastReads / frames:0} mmioR:{_perfBusMmioReads / frames:0} fastW:{_perfBusFastWrites / frames:0} mmioW:{_perfBusMmioWrites / frames:0} irq:{_perfIrqChecks / frames:0.0}/{_perfInterruptHandles / frames:0.0} gpu tri:{_perfGpuTriangles / frames:0.0} rect:{_perfGpuRectangles / frames:0.0} line:{_perfGpuLines / frames:0.0} copy:{_perfGpuCopies / frames:0.0} spu samp:{_perfSpuMixedSamples / frames:0} actV:{avgActiveVoices:0.0}\n" +
-                $"PSX irq  pend0:{_perfInterruptNoPendingReturns / frames:0.0} mask:{_perfInterruptMaskedReturns / frames:0.0} gte:{_perfInterruptGteDeferrals / frames:0.0} take:{_perfInterruptExceptionsTaken / frames:0.0}";
+                $"PSX irq  pend0:{_perfInterruptNoPendingReturns / frames:0.0} mask:{_perfInterruptMaskedReturns / frames:0.0} gte:{_perfInterruptGteDeferrals / frames:0.0} take:{_perfInterruptExceptionsTaken / frames:0.0}\n" +
+                _syncGovernorSummary +
+                (string.IsNullOrEmpty(mmioReadSummary) ? string.Empty : "\n" + mmioReadSummary);
 
             _perfWindowStartTicks = nowTicks;
             _perfWindowFrames = 0;

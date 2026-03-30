@@ -386,6 +386,16 @@ namespace ProjectPSX.Devices {
             return GPUSTAT;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanRelaxStatusPolling() {
+            return mode == Mode.COMMAND
+                && dmaDirection == 0
+                && !isInterruptRequested
+                && !isReadyToSendVRAMToCPU
+                && isReadyToReceiveCommand
+                && isReadyToReceiveDMABlock;
+        }
+
         public uint loadGPUREAD() {
             //TODO check if correct and refact
             uint value;
