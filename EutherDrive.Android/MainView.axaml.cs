@@ -32,7 +32,7 @@ public partial class MainView : UserControl
     private const int AndroidAudioBufferFrames = 16384;
     private const int AndroidAudioBatchFrames = 256;
     private const int AndroidAudioPullMaxFrames = 2048;
-    private const double TargetFrameRate = 60.0;
+    private const double DefaultTargetFrameRate = 60.0;
     private const double JoystickDeadZoneRatio = 0.20;
     private const double JoystickAxisEngageRatio = 0.28;
     private const double JoystickDiagonalRatio = 0.56;
@@ -285,10 +285,18 @@ public partial class MainView : UserControl
 
     private void OnToggleScreenFocus(object? sender, PointerPressedEventArgs e)
     {
+        ToggleScreenFocusMode();
+    }
+
+    private void OnNativeScreenTapped()
+    {
+        Dispatcher.UIThread.Post(ToggleScreenFocusMode, DispatcherPriority.Input);
+    }
+
+    private void ToggleScreenFocusMode()
+    {
         if (_viewModel.SettingsVisible || _viewModel.DebugVisible)
-        {
             return;
-        }
 
         _viewModel.IsFocusMode = !_viewModel.IsFocusMode;
     }
@@ -1247,11 +1255,11 @@ public partial class MainView : UserControl
 
     private void EmulationLoop(IEmulatorCore core)
     {
-        long frameTicks = (long)(Stopwatch.Frequency / TargetFrameRate);
         long nextFrameTicks = Stopwatch.GetTimestamp();
 
         while (_emulationThreadRunning && ReferenceEquals(core, _core))
         {
+            long frameTicks = GetTargetFrameTicks(core);
             ApplyOverlayInput(core);
 
             try
@@ -1285,6 +1293,27 @@ public partial class MainView : UserControl
 
             SleepUntil(nextFrameTicks);
         }
+    }
+
+    private static long GetTargetFrameTicks(IEmulatorCore core)
+    {
+        double targetFps = GetLiveTargetFps(core);
+        if (targetFps <= 0)
+            targetFps = DefaultTargetFrameRate;
+
+        return Math.Max(1L, (long)Math.Round(Stopwatch.Frequency / targetFps));
+    }
+
+    private static double GetLiveTargetFps(IEmulatorCore core)
+    {
+        return core switch
+        {
+            MdTracerAdapter md => md.GetTargetFps(),
+            SnesAdapter snes => snes.GetTargetFps(ConsoleRegion.Auto),
+            PceCdAdapter pce => pce.GetTargetFps(),
+            PsxAdapter psx => psx.GetTargetFps(),
+            _ => DefaultTargetFrameRate
+        };
     }
 
     private unsafe void PresentLatestFrame()
@@ -1331,7 +1360,13 @@ public partial class MainView : UserControl
         }
 
         long presentStart = _perfStopwatch.ElapsedTicks;
-        var blitOptions = new FrameBlitOptions(SharpPixels: _viewModel.SharpPixelsEnabled);
+        bool forceOpaque = _core is PsxAdapter
+            || _core is SnesAdapter
+            || _core is MdTracerAdapter
+            || _core is PceCdAdapter;
+        var blitOptions = new FrameBlitOptions(
+            SharpPixels: _viewModel.SharpPixelsEnabled,
+            ForceOpaque: forceOpaque);
         if (_renderSurface is OpenGlRenderSurface glOwnedSurface)
         {
             lock (_frameSync)
@@ -2907,6 +2942,7 @@ public partial class MainView : UserControl
     {
         var surface = new AndroidNativeGlRenderSurface();
         surface.SetOverlayInputCallbacks(SetNativeActionState, SetNativeDirections);
+        surface.SetScreenTapCallback(OnNativeScreenTapped);
         surface.SetLandscapeOverlayEnabled(_viewModel.IsLandscapeMode);
         return surface;
     }
@@ -3005,6 +3041,11 @@ public partial class MainView : UserControl
 
         bool isLandscape = _viewModel.IsLandscapeMode;
         Control targetHost = isLandscape ? LandscapeScreenHost : PortraitScreenHost;
+        if (_renderSurface is AndroidNativeGlRenderSurface nativeSurface)
+        {
+            nativeSurface.SetPresentationSize(targetWidth, targetHeight);
+        }
+
         if (isLandscape && _renderSurface is AndroidNativeGlRenderSurface && targetHost.Parent is Control nativeParent)
         {
             ApplyPresentationSize(targetHost, nativeParent.Bounds.Width, nativeParent.Bounds.Height);

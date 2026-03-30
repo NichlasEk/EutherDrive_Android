@@ -295,7 +295,7 @@ namespace ProjectPSX.Devices {
                         isInterlaceField = !isOddLine;
                     }
 
-                    window.Render(vram1555.Bits);
+                    window.Render(vram1555.Bits, isInterlaceField, isVerticalInterlace, isDisplayDisabled);
                     _perfPresentedFrames++;
                     return true;
                 }
@@ -339,8 +339,11 @@ namespace ProjectPSX.Devices {
         public string DebugSummary() {
             int horizontalRes = resolutions[horizontalResolution2 << 2 | horizontalResolution1];
             int verticalRes = isVerticalResolution480 ? 480 : 240;
+            bool hBlank = videoCycles < displayX1 || videoCycles > displayX2;
+            bool vBlank = scanLine < displayY1 || scanLine > displayY2;
             return
                 $"gpu[hres={horizontalRes} vres={verticalRes} 24={(is24BitDepth ? 1 : 0)} pal={(IsPalMode ? 1 : 0)} interlace={(isVerticalInterlace ? 1 : 0)} " +
+                $"field={(isInterlaceField ? 1 : 0)} dispOff={(isDisplayDisabled ? 1 : 0)} odd={(isOddLine ? 1 : 0)} blank={(hBlank ? 1 : 0)}/{(vBlank ? 1 : 0)} " +
                 $"disp=({displayX1}-{displayX2},{displayY1}-{displayY2}) vram=({displayVRAMXStart},{displayVRAMYStart}) " +
                 $"scan=({scanLine},{videoCycles}) mode={mode}]";
         }

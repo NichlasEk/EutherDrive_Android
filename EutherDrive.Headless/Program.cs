@@ -739,6 +739,16 @@ class Program
                                 File.AppendAllText(tracePsxStartFile, line + Environment.NewLine);
                             }
                         }
+                        if (psx.TryGetFramePerfSummary(out string perfSummary) && !string.IsNullOrWhiteSpace(perfSummary))
+                        {
+                            string line = $"[HEADLESS][PSX-PERF] frame={frame} {perfSummary.Replace(Environment.NewLine, " | ")}";
+                            Console.WriteLine(line);
+                            if (!string.IsNullOrWhiteSpace(tracePsxStartFile))
+                            {
+                                Directory.CreateDirectory(Path.GetDirectoryName(tracePsxStartFile) ?? ".");
+                                File.AppendAllText(tracePsxStartFile, line + Environment.NewLine);
+                            }
+                        }
                         if (!string.IsNullOrWhiteSpace(tracePsxCodeFile) && psx.TryGetDebugCodeWindow(out string codeWindow, address: tracePsxCodeAddress))
                         {
                             Directory.CreateDirectory(Path.GetDirectoryName(tracePsxCodeFile) ?? ".");

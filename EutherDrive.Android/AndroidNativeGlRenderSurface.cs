@@ -56,8 +56,14 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
     public void SetOverlayInputCallbacks(Action<string, bool> actionStateChanged, Action<IReadOnlyCollection<string>> directionsChanged)
         => _host.SetOverlayInputCallbacks(actionStateChanged, directionsChanged);
 
+    public void SetScreenTapCallback(Action screenTapped)
+        => _host.SetScreenTapCallback(screenTapped);
+
     public void SetLandscapeOverlayEnabled(bool enabled)
         => _host.SetLandscapeOverlayEnabled(enabled);
+
+    public void SetPresentationSize(double width, double height)
+        => _host.SetPresentationSize(width, height);
 
     public void Reset() => _host.ResetFrame();
 
@@ -92,8 +98,11 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private string _glInitDetails = string.Empty;
         private Action<string, bool>? _actionStateChanged;
         private Action<IReadOnlyCollection<string>>? _directionsChanged;
+        private Action? _screenTapped;
         private bool _landscapeOverlayEnabled;
         private AndroidGlRootView? _nativeView;
+        private double _presentationWidth;
+        private double _presentationHeight;
 
         public AndroidNativeGlHost()
         {
@@ -125,10 +134,29 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             _directionsChanged = directionsChanged;
         }
 
+        public void SetScreenTapCallback(Action screenTapped)
+        {
+            _screenTapped = screenTapped;
+        }
+
         public void SetLandscapeOverlayEnabled(bool enabled)
         {
             _landscapeOverlayEnabled = enabled;
             _nativeView?.RequestLayout();
+        }
+
+        public void SetPresentationSize(double width, double height)
+        {
+            bool changed;
+            lock (_frameSync)
+            {
+                changed = Math.Abs(_presentationWidth - width) > 0.5 || Math.Abs(_presentationHeight - height) > 0.5;
+                _presentationWidth = width;
+                _presentationHeight = height;
+            }
+
+            if (changed)
+                _nativeView?.RequestLayout();
         }
 
         public bool EnsureFrameSize(int width, int height)
@@ -411,11 +439,23 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             }
         }
 
+        private void GetLatestPresentationSize(out double presentationWidth, out double presentationHeight)
+        {
+            lock (_frameSync)
+            {
+                presentationWidth = _presentationWidth;
+                presentationHeight = _presentationHeight;
+            }
+        }
+
         private void NotifyActionStateChanged(string tag, bool pressed)
             => _actionStateChanged?.Invoke(tag, pressed);
 
         private void NotifyDirectionsChanged(IReadOnlyCollection<string> directions)
             => _directionsChanged?.Invoke(directions);
+
+        private void NotifyScreenTapped()
+            => _screenTapped?.Invoke();
 
         private bool IsLandscapeOverlayEnabled() => _landscapeOverlayEnabled;
 
@@ -498,7 +538,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 }
 
                 _host.GetLatestFrameSize(out int frameWidth, out int frameHeight);
-                Rect gameRect = ComputeGameRect(width, height, frameWidth, frameHeight);
+                _host.GetLatestPresentationSize(out double presentationWidth, out double presentationHeight);
+                Rect gameRect = ComputeGameRect(width, height, frameWidth, frameHeight, presentationWidth, presentationHeight);
                 _gameView.Layout(gameRect.Left, gameRect.Top, gameRect.Right, gameRect.Bottom);
 
                 bool showLandscapeOverlay = _host.IsLandscapeOverlayEnabled();
@@ -586,12 +627,14 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 view.Layout(x, y, x + width, y + height);
             }
 
-            private Rect ComputeGameRect(int width, int height, int frameWidth, int frameHeight)
+            private Rect ComputeGameRect(int width, int height, int frameWidth, int frameHeight, double presentationWidth, double presentationHeight)
             {
-                if (frameWidth <= 0 || frameHeight <= 0)
+                double sourceWidth = presentationWidth > 0 ? presentationWidth : frameWidth;
+                double sourceHeight = presentationHeight > 0 ? presentationHeight : frameHeight;
+                if (sourceWidth <= 0 || sourceHeight <= 0)
                     return new Rect(0, 0, width, height);
 
-                float fitScale = Math.Min((float)width / frameWidth, (float)height / frameHeight);
+                float fitScale = Math.Min((float)width / (float)sourceWidth, (float)height / (float)sourceHeight);
                 int integerScale = (int)MathF.Floor(fitScale);
                 float scale = fitScale;
                 if (width > height && integerScale >= 1 && fitScale - integerScale <= LandscapeIntegerSnapThreshold)
@@ -599,8 +642,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 else if (integerScale >= 1 && width <= height)
                     scale = integerScale;
 
-                int scaledWidth = Math.Max(1, (int)MathF.Round(frameWidth * scale));
-                int scaledHeight = Math.Max(1, (int)MathF.Round(frameHeight * scale));
+                int scaledWidth = Math.Max(1, (int)MathF.Round((float)sourceWidth * scale));
+                int scaledHeight = Math.Max(1, (int)MathF.Round((float)sourceHeight * scale));
                 int x = (width - scaledWidth) / 2;
                 int y = (height - scaledHeight) / 2;
                 return new Rect(x, y, x + scaledWidth, y + scaledHeight);
@@ -930,6 +973,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private readonly FloatBuffer _vertexBuffer;
             private readonly AutoResetEvent _renderSignal = new(initialState: false);
             private readonly object _surfaceSync = new();
+            private float _touchDownX;
+            private float _touchDownY;
+            private bool _trackingTap;
             private int _programId;
             private int _textureId;
             private int _positionLocation = -1;
@@ -951,6 +997,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private bool _surfaceReady;
             private volatile bool _released;
             private volatile bool _renderThreadRunning;
+            private byte[]? _wrappedUploadArray;
+            private ByteBuffer? _wrappedUploadBuffer;
 
             private readonly record struct ShaderSources(string Label, string VertexSource, string FragmentSource);
 
@@ -960,7 +1008,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 // TextureView stays in the normal Android view hierarchy, so Avalonia's
                 // translucent touch controls can render above the game surface.
                 SurfaceTextureListener = this;
-                SetOpaque(false);
+                SetOpaque(true);
+                Clickable = true;
                 Focusable = false;
                 FocusableInTouchMode = false;
 
@@ -969,6 +1018,39 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _vertexBuffer = vertexByteBuffer.AsFloatBuffer();
                 _vertexBuffer.Put(s_quadVertices);
                 _vertexBuffer.Position(0);
+            }
+
+            public override bool OnTouchEvent(MotionEvent? e)
+            {
+                if (e == null)
+                    return false;
+
+                if (_host.IsLandscapeOverlayEnabled())
+                    return false;
+
+                switch (e.ActionMasked)
+                {
+                    case MotionEventActions.Down:
+                        _touchDownX = e.GetX();
+                        _touchDownY = e.GetY();
+                        _trackingTap = true;
+                        return true;
+                    case MotionEventActions.Move:
+                        if (_trackingTap && (Math.Abs(e.GetX() - _touchDownX) > 18f || Math.Abs(e.GetY() - _touchDownY) > 18f))
+                            _trackingTap = false;
+                        return true;
+                    case MotionEventActions.Up:
+                        bool shouldToggle = _trackingTap;
+                        _trackingTap = false;
+                        if (shouldToggle)
+                            _host.NotifyScreenTapped();
+                        return true;
+                    case MotionEventActions.Cancel:
+                        _trackingTap = false;
+                        return true;
+                }
+
+                return base.OnTouchEvent(e);
             }
 
             public void ReleaseSurface()
@@ -1138,7 +1220,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     EGL14.EglRedSize, 8,
                     EGL14.EglGreenSize, 8,
                     EGL14.EglBlueSize, 8,
-                    EGL14.EglAlphaSize, 8,
+                    EGL14.EglAlphaSize, 0,
                     EGL14.EglRenderableType, EGL14.EglOpenglEs2Bit,
                     EGL14.EglNone
                 };
@@ -1158,7 +1240,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
                 Surface windowSurface = new(surfaceTexture);
                 int[] surfaceAttributes = { EGL14.EglNone };
-                EGLSurface eglSurface = EGL14.EglCreateWindowSurface(display, configs[0], windowSurface, surfaceAttributes, 0);
+                EGLSurface? eglSurface = EGL14.EglCreateWindowSurface(display, configs[0], windowSurface, surfaceAttributes, 0);
                 if (IsNoSurface(eglSurface))
                 {
                     windowSurface.Release();
@@ -1195,12 +1277,11 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 long uploadTicks = 0;
 
                 GLES20.GlViewport(0, 0, surfaceWidth, surfaceHeight);
-                GLES20.GlClearColor(0f, 0f, 0f, 1f);
-                GLES20.GlClear(GlColorBufferBit);
-
                 _host.BeginRender(out byte[] frameBytes, out int frameWidth, out int frameHeight, out bool frameDirty, out bool sharpPixelsEnabled, out bool forceOpaque);
                 if (_programId == 0 || _textureId == 0 || frameWidth <= 0 || frameHeight <= 0)
                 {
+                    GLES20.GlClearColor(0f, 0f, 0f, 1f);
+                    GLES20.GlClear(GlColorBufferBit);
                     _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
                     return;
                 }
@@ -1214,7 +1295,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 {
                     EnsureTextureStorage(frameWidth, frameHeight);
                     long uploadStart = Stopwatch.GetTimestamp();
-                    using ByteBuffer pixels = ByteBuffer.Wrap(frameBytes);
+                    ByteBuffer pixels = GetOrCreateUploadBuffer(frameBytes);
                     pixels.Position(0);
                     GLES20.GlTexSubImage2D(GlTexture2D, 0, 0, 0, frameWidth, frameHeight, GlRgba, GlUnsignedByte, pixels);
                     uploadTicks = Stopwatch.GetTimestamp() - uploadStart;
@@ -1234,6 +1315,18 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 GLES20.GlDrawArrays(GlTriangles, 0, 6);
 
                 _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, uploadTicks, uploaded);
+            }
+
+            private ByteBuffer GetOrCreateUploadBuffer(byte[] frameBytes)
+            {
+                if (!ReferenceEquals(_wrappedUploadArray, frameBytes) || _wrappedUploadBuffer == null)
+                {
+                    _wrappedUploadBuffer?.Dispose();
+                    _wrappedUploadArray = frameBytes;
+                    _wrappedUploadBuffer = ByteBuffer.Wrap(frameBytes);
+                }
+
+                return _wrappedUploadBuffer;
             }
 
             private void CreateProgramAndTexture()
@@ -1433,6 +1526,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _forceOpaqueLocation = -1;
                 _textureWidth = 0;
                 _textureHeight = 0;
+                _wrappedUploadBuffer?.Dispose();
+                _wrappedUploadBuffer = null;
+                _wrappedUploadArray = null;
             }
 
             private void CleanupGl()

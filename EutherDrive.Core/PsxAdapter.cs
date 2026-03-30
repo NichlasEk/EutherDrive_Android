@@ -43,10 +43,12 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         private ushort _displayY1;
         private ushort _displayY2;
         private int _stableProgressiveSourceHeight;
+        private double _stablePresentationWidth;
+        private double _stablePresentationHeight;
 
         public PsxHostWindow(PsxAdapter owner) => _owner = owner;
 
-        public void Render(ushort[] vram1555)
+        public void Render(ushort[] vram1555, bool isInterlaceField, bool isVerticalInterlace, bool isDisplayDisabled)
         {
             if (!TryGetSourceViewport(out int sourceX, out int sourceY, out int sourceWidth, out int sourceHeight))
             {
@@ -56,7 +58,16 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
                 sourceHeight = _displayHeight;
             }
 
-            _owner.UpdateFrame(vram1555, sourceWidth, sourceHeight, (ushort)sourceX, (ushort)sourceY, _is24Bit);
+            _owner.UpdateFrame(
+                vram1555,
+                sourceWidth,
+                sourceHeight,
+                (ushort)sourceX,
+                (ushort)sourceY,
+                _is24Bit,
+                isInterlaceField,
+                isVerticalInterlace,
+                isDisplayDisabled);
         }
 
         public void SetDisplayMode(int horizontalRes, int verticalRes, bool is24BitDepth)
@@ -191,6 +202,37 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             return aspect > 0.1 ? aspect : DefaultAspectRatio;
         }
 
+        public void GetPresentationSize(int sourceHeight, out double width, out double height)
+        {
+            height = sourceHeight > 0 ? sourceHeight : (_displayHeight > 0 ? _displayHeight : 240);
+            double aspect = GetPresentationAspectRatio();
+            width = Math.Round(height * aspect);
+
+            if (width <= 0 || height <= 0)
+            {
+                width = _displayWidth > 0 ? _displayWidth : 320;
+                height = _displayHeight > 0 ? _displayHeight : 240;
+            }
+
+            StabilizePresentationSize(ref width, ref height);
+        }
+
+        private void StabilizePresentationSize(ref double width, ref double height)
+        {
+            if (_stablePresentationWidth > 0
+                && _stablePresentationHeight > 0
+                && Math.Abs(_stablePresentationWidth - width) <= 8.0
+                && Math.Abs(_stablePresentationHeight - height) <= 8.0)
+            {
+                width = _stablePresentationWidth;
+                height = _stablePresentationHeight;
+                return;
+            }
+
+            _stablePresentationWidth = width;
+            _stablePresentationHeight = height;
+        }
+
         private int GetCyclesPerPixel() => _displayWidth switch
         {
             256 => 10,
@@ -210,12 +252,18 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
     private byte[] _workFrameBuffer = new byte[320 * 240 * 4];
     private byte[] _presentFrameBuffer = new byte[320 * 240 * 4];
     private byte[] _spareFrameBuffer = new byte[320 * 240 * 4];
+    private byte[] _interlaceWeaveBuffer = Array.Empty<byte>();
     private int _workFrameWidth = 320;
     private int _workFrameHeight = 240;
     private int _workFrameStride = 320 * 4;
     private int _presentFrameWidth = 320;
     private int _presentFrameHeight = 240;
     private int _presentFrameStride = 320 * 4;
+    private int _interlaceWeaveWidth;
+    private int _interlaceWeaveHeight;
+    private int _interlaceWeaveStride;
+    private bool _interlaceWeaveHasEvenField;
+    private bool _interlaceWeaveHasOddField;
     private readonly object _audioLock = new();
     private short[] _audioQueue = Array.Empty<short>();
     private int _audioQueuedCount;
@@ -230,6 +278,11 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
     private long _framePerfAccumulatedTicks;
     private long _framePerfAccumulatedBytes;
     private int _framePerfSamples;
+    private int _framePerfMostlyBlackFrames;
+    private int _framePerfPresentationChanges;
+    private int _framePerfSmallPresentationChanges;
+    private double _lastReportedPresentationWidth;
+    private double _lastReportedPresentationHeight;
     public RomIdentity? RomIdentity => _romIdentity;
 
     public void LoadRom(string path)
@@ -243,6 +296,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         _bootEnvironmentSummary = BuildBootEnvironmentSummary();
         _host = new PsxHostWindow(this);
         ResetFramePerfCounters();
+        ResetInterlaceWeaveState();
         bool superFastBoot = SuperFastBootEnabled && !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
         bool bootFastLoadEnabled = FastLoadEnabled || superFastBoot;
         _core = new ProjectPSX.ProjectPSX(
@@ -360,6 +414,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
                 Array.Clear(_presentFrameBuffer, 0, _presentFrameBuffer.Length);
                 Array.Clear(_spareFrameBuffer, 0, _spareFrameBuffer.Length);
             }
+            ResetInterlaceWeaveState();
         }
     }
 
@@ -410,14 +465,21 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             if (buffer.Length < requiredBytes)
                 buffer = new byte[requiredBytes];
 
-            double aspect = _host?.GetPresentationAspectRatio() ?? (4.0 / 3.0);
-            presentationHeight = height;
-            presentationWidth = Math.Round(height * aspect);
-            if (presentationWidth <= 0 || presentationHeight <= 0)
+            if (_host != null)
+                _host.GetPresentationSize(height, out presentationWidth, out presentationHeight);
+            else
             {
-                presentationWidth = width;
+                double aspect = 4.0 / 3.0;
                 presentationHeight = height;
+                presentationWidth = Math.Round(height * aspect);
+                if (presentationWidth <= 0 || presentationHeight <= 0)
+                {
+                    presentationWidth = width;
+                    presentationHeight = height;
+                }
             }
+
+            TrackPresentationTelemetry(presentationWidth, presentationHeight);
 
             (_presentFrameBuffer, buffer) = (buffer, _presentFrameBuffer);
             return true;
@@ -435,9 +497,14 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         if (presentHeight <= 0)
             return false;
 
-        double aspect = _host?.GetPresentationAspectRatio() ?? (4.0 / 3.0);
-        width = Math.Round(presentHeight * aspect);
-        height = presentHeight;
+        if (_host != null)
+            _host.GetPresentationSize(presentHeight, out width, out height);
+        else
+        {
+            double aspect = 4.0 / 3.0;
+            width = Math.Round(presentHeight * aspect);
+            height = presentHeight;
+        }
         return width > 0 && height > 0;
     }
 
@@ -657,7 +724,16 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             _core.JoyPadUp(button);
     }
 
-    private void UpdateFrame(ushort[] vram1555, int width, int height, ushort vramX, ushort vramY, bool is24Bit)
+    private void UpdateFrame(
+        ushort[] vram1555,
+        int width,
+        int height,
+        ushort vramX,
+        ushort vramY,
+        bool is24Bit,
+        bool isInterlaceField,
+        bool isVerticalInterlace,
+        bool isDisplayDisabled)
     {
         if (width <= 0 || height <= 0)
             return;
@@ -676,10 +752,25 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         int baseY = vramY;
         int vramWidth = 1024;
         int vramHeight = 512;
+        bool useInterlaceWeave = isVerticalInterlace && !isDisplayDisabled && height >= 400;
         if (is24Bit)
         {
+            if (useInterlaceWeave)
+            {
+                UpdateFrame24Weave(vram1555, dstPixels, width, height, baseX, baseY, vramWidth, vramHeight, isInterlaceField);
+                UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required, IsMostlyBlackFrame(dstPixels, width, height));
+                return;
+            }
+
             UpdateFrame24(vram1555, dstPixels, width, height, baseX, baseY, vramWidth, vramHeight);
-            UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required);
+            UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required, IsMostlyBlackFrame(dstPixels, width, height));
+            return;
+        }
+
+        if (useInterlaceWeave)
+        {
+            UpdateFrame1555Weave(vram1555, dstPixels, width, height, baseX, baseY, vramWidth, vramHeight, isInterlaceField);
+            UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required, IsMostlyBlackFrame(dstPixels, width, height));
             return;
         }
 
@@ -695,7 +786,7 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
                 srcIndex += vramWidth;
             }
 
-            UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required);
+            UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required, IsMostlyBlackFrame(dstPixels, width, height));
             return;
         }
 
@@ -731,7 +822,33 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
                 dstRow.Slice(copyWidth).Fill(OpaqueBlackPixel);
         }
 
-        UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required);
+        UpdateFramePerfStats(Stopwatch.GetTimestamp() - drawStart, required, IsMostlyBlackFrame(dstPixels, width, height));
+    }
+
+    private void UpdateFrame1555Weave(
+        ushort[] vram1555,
+        Span<uint> dstPixels,
+        int width,
+        int height,
+        int baseX,
+        int baseY,
+        int vramWidth,
+        int vramHeight,
+        bool isInterlaceField)
+    {
+        Span<uint> weavePixels = PrepareInterlaceWeaveBuffer(width, height, _workFrameStride);
+        int fieldParity = isInterlaceField ? 1 : 0;
+
+        RenderInterlaceField1555(vram1555, weavePixels, width, height, baseX, baseY, vramWidth, vramHeight, fieldParity);
+        if (fieldParity == 0)
+            _interlaceWeaveHasEvenField = true;
+        else
+            _interlaceWeaveHasOddField = true;
+
+        if (!(_interlaceWeaveHasEvenField && _interlaceWeaveHasOddField))
+            SeedMissingInterlaceRows(weavePixels, width, height, fieldParity);
+
+        weavePixels.CopyTo(dstPixels);
     }
 
     private static void BlitOpaque1555(ReadOnlySpan<ushort> source, Span<uint> destination)
@@ -819,6 +936,32 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         }
     }
 
+    private void UpdateFrame24Weave(
+        ushort[] vram1555,
+        Span<uint> dstPixels,
+        int width,
+        int height,
+        int baseX,
+        int baseY,
+        int vramWidth,
+        int vramHeight,
+        bool isInterlaceField)
+    {
+        Span<uint> weavePixels = PrepareInterlaceWeaveBuffer(width, height, _workFrameStride);
+        int fieldParity = isInterlaceField ? 1 : 0;
+
+        RenderInterlaceField24(vram1555, weavePixels, width, height, baseX, baseY, vramWidth, vramHeight, fieldParity);
+        if (fieldParity == 0)
+            _interlaceWeaveHasEvenField = true;
+        else
+            _interlaceWeaveHasOddField = true;
+
+        if (!(_interlaceWeaveHasEvenField && _interlaceWeaveHasOddField))
+            SeedMissingInterlaceRows(weavePixels, width, height, fieldParity);
+
+        weavePixels.CopyTo(dstPixels);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static byte ReadVramByte(ushort[] vram1555, int rowBase, int byteIndex)
     {
@@ -859,6 +1002,25 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
             _spareFrameBuffer = new byte[required];
     }
 
+    private Span<uint> PrepareInterlaceWeaveBuffer(int width, int height, int stride)
+    {
+        int required = stride * height;
+        if (_interlaceWeaveBuffer.Length < required)
+            _interlaceWeaveBuffer = new byte[required];
+
+        if (_interlaceWeaveWidth != width || _interlaceWeaveHeight != height || _interlaceWeaveStride != stride)
+        {
+            Array.Clear(_interlaceWeaveBuffer, 0, required);
+            _interlaceWeaveWidth = width;
+            _interlaceWeaveHeight = height;
+            _interlaceWeaveStride = stride;
+            _interlaceWeaveHasEvenField = false;
+            _interlaceWeaveHasOddField = false;
+        }
+
+        return MemoryMarshal.Cast<byte, uint>(_interlaceWeaveBuffer.AsSpan(0, required));
+    }
+
     private void RotateFrameBuffers()
     {
         (_presentFrameBuffer, _spareFrameBuffer, _workFrameBuffer) = (_workFrameBuffer, _presentFrameBuffer, _spareFrameBuffer);
@@ -870,14 +1032,129 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         _framePerfAccumulatedTicks = 0;
         _framePerfAccumulatedBytes = 0;
         _framePerfSamples = 0;
+        _framePerfMostlyBlackFrames = 0;
+        _framePerfPresentationChanges = 0;
+        _framePerfSmallPresentationChanges = 0;
+        _lastReportedPresentationWidth = 0;
+        _lastReportedPresentationHeight = 0;
         _framePerfSummary = "PSX draw --";
     }
 
-    private void UpdateFramePerfStats(long ticks, int byteCount)
+    private void ResetInterlaceWeaveState()
+    {
+        _interlaceWeaveWidth = 0;
+        _interlaceWeaveHeight = 0;
+        _interlaceWeaveStride = 0;
+        _interlaceWeaveHasEvenField = false;
+        _interlaceWeaveHasOddField = false;
+        if (_interlaceWeaveBuffer.Length > 0)
+            Array.Clear(_interlaceWeaveBuffer, 0, _interlaceWeaveBuffer.Length);
+    }
+
+    private static void SeedMissingInterlaceRows(Span<uint> weavePixels, int width, int height, int fieldParity)
+    {
+        for (int dstY = fieldParity; dstY < height; dstY += 2)
+        {
+            int fillY = dstY ^ 1;
+            if ((uint)fillY >= (uint)height)
+                continue;
+
+            weavePixels.Slice(dstY * width, width).CopyTo(weavePixels.Slice(fillY * width, width));
+        }
+    }
+
+    private static void RenderInterlaceField1555(
+        ushort[] vram1555,
+        Span<uint> weavePixels,
+        int width,
+        int height,
+        int baseX,
+        int baseY,
+        int vramWidth,
+        int vramHeight,
+        int fieldParity)
+    {
+        for (int fieldY = 0; ; fieldY++)
+        {
+            int dstY = fieldParity + (fieldY << 1);
+            if (dstY >= height)
+                break;
+
+            Span<uint> dstRow = weavePixels.Slice(dstY * width, width);
+            int srcY = baseY + (fieldY << 1) + fieldParity;
+            if ((uint)srcY >= (uint)vramHeight || baseX >= vramWidth)
+            {
+                dstRow.Fill(OpaqueBlackPixel);
+                continue;
+            }
+
+            int srcRow = srcY * vramWidth;
+            int copyWidth = Math.Min(width, vramWidth - baseX);
+            if (copyWidth <= 0)
+            {
+                dstRow.Fill(OpaqueBlackPixel);
+                continue;
+            }
+
+            BlitOpaque1555(vram1555.AsSpan(srcRow + baseX, copyWidth), dstRow.Slice(0, copyWidth));
+            if (copyWidth < width)
+                dstRow.Slice(copyWidth).Fill(OpaqueBlackPixel);
+        }
+    }
+
+    private static void RenderInterlaceField24(
+        ushort[] vram1555,
+        Span<uint> weavePixels,
+        int width,
+        int height,
+        int baseX,
+        int baseY,
+        int vramWidth,
+        int vramHeight,
+        int fieldParity)
+    {
+        int rowByteBase = baseX * 2;
+        int maxBytes = vramWidth * 2;
+
+        for (int fieldY = 0; ; fieldY++)
+        {
+            int dstY = fieldParity + (fieldY << 1);
+            if (dstY >= height)
+                break;
+
+            Span<uint> dstRow = weavePixels.Slice(dstY * width, width);
+            int srcY = baseY + (fieldY << 1) + fieldParity;
+            if ((uint)srcY >= (uint)vramHeight || rowByteBase >= maxBytes)
+            {
+                dstRow.Fill(OpaqueBlackPixel);
+                continue;
+            }
+
+            int rowBase = srcY * vramWidth;
+            for (int x = 0; x < width; x++)
+            {
+                int pixelByteIndex = rowByteBase + (x * 3);
+                if (pixelByteIndex + 2 >= maxBytes)
+                {
+                    dstRow.Slice(x).Fill(OpaqueBlackPixel);
+                    break;
+                }
+
+                byte r = ReadVramByte(vram1555, rowBase, pixelByteIndex);
+                byte g = ReadVramByte(vram1555, rowBase, pixelByteIndex + 1);
+                byte b = ReadVramByte(vram1555, rowBase, pixelByteIndex + 2);
+                dstRow[x] = OpaqueBlackPixel | ((uint)r << 16) | ((uint)g << 8) | b;
+            }
+        }
+    }
+
+    private void UpdateFramePerfStats(long ticks, int byteCount, bool mostlyBlack)
     {
         _framePerfAccumulatedTicks += ticks;
         _framePerfAccumulatedBytes += byteCount;
         _framePerfSamples++;
+        if (mostlyBlack)
+            _framePerfMostlyBlackFrames++;
 
         long nowTicks = Stopwatch.GetTimestamp();
         double windowMs = (nowTicks - _framePerfWindowStartTicks) * 1000.0 / Stopwatch.Frequency;
@@ -890,12 +1167,56 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
         double mbPerSec = windowMs > 0
             ? (_framePerfAccumulatedBytes / (1024.0 * 1024.0)) / (windowMs / 1000.0)
             : 0;
-        _framePerfSummary = $"PSX draw:{avgDrawMs:0.0}ms  scanout:{mbPerSec:0.0}MB/s";
+        _framePerfSummary =
+            $"PSX draw:{avgDrawMs:0.0}ms  scanout:{mbPerSec:0.0}MB/s  black:{_framePerfMostlyBlackFrames}/{_framePerfSamples}  pres:{_framePerfPresentationChanges} sm:{_framePerfSmallPresentationChanges}";
 
         _framePerfWindowStartTicks = nowTicks;
         _framePerfAccumulatedTicks = 0;
         _framePerfAccumulatedBytes = 0;
         _framePerfSamples = 0;
+        _framePerfMostlyBlackFrames = 0;
+        _framePerfPresentationChanges = 0;
+        _framePerfSmallPresentationChanges = 0;
+    }
+
+    private void TrackPresentationTelemetry(double width, double height)
+    {
+        if (width <= 0 || height <= 0)
+            return;
+
+        if (_lastReportedPresentationWidth > 0 && _lastReportedPresentationHeight > 0)
+        {
+            double deltaWidth = Math.Abs(_lastReportedPresentationWidth - width);
+            double deltaHeight = Math.Abs(_lastReportedPresentationHeight - height);
+            if (deltaWidth > 0.5 || deltaHeight > 0.5)
+            {
+                _framePerfPresentationChanges++;
+                if (deltaWidth <= 8.0 && deltaHeight <= 8.0)
+                    _framePerfSmallPresentationChanges++;
+            }
+        }
+
+        _lastReportedPresentationWidth = width;
+        _lastReportedPresentationHeight = height;
+    }
+
+    private static bool IsMostlyBlackFrame(ReadOnlySpan<uint> pixels, int width, int height)
+    {
+        int pixelCount = width * height;
+        if (pixelCount <= 0 || pixels.Length < pixelCount)
+            return false;
+
+        int step = Math.Max(1, pixelCount / 2048);
+        int samples = 0;
+        int nonBlackSamples = 0;
+        for (int i = 0; i < pixelCount; i += step)
+        {
+            samples++;
+            if (pixels[i] != OpaqueBlackPixel)
+                nonBlackSamples++;
+        }
+
+        return nonBlackSamples <= Math.Max(2, samples / 512);
     }
 
     private static double? GetFrameRateOverrideHz(FrameRateMode mode)
