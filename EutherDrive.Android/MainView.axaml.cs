@@ -100,6 +100,8 @@ public partial class MainView : UserControl
     private int _lastFrameWidth;
     private int _lastFrameHeight;
     private int _lastFrameStride;
+    private bool _lastPsxInterlaceBlend;
+    private int _lastPsxInterlaceFieldParity = -1;
     private string _lastRenderSurfaceDebugSummary = string.Empty;
     private string _lastRenderSurfaceFallbackReason = string.Empty;
     private double _lastPresentationWidth;
@@ -1336,6 +1338,8 @@ public partial class MainView : UserControl
         int height;
         int srcStride;
         byte[] frameBuffer;
+        bool psxInterlaceBlend;
+        int psxInterlaceFieldParity;
 
         lock (_frameSync)
         {
@@ -1349,6 +1353,8 @@ public partial class MainView : UserControl
             width = _lastFrameWidth;
             height = _lastFrameHeight;
             srcStride = _lastFrameStride > 0 ? _lastFrameStride : width * 4;
+            psxInterlaceBlend = _lastPsxInterlaceBlend;
+            psxInterlaceFieldParity = _lastPsxInterlaceFieldParity;
             (_presentFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _presentFrameBuffer);
             frameBuffer = _presentFrameBuffer;
             _presentedFrameSerial = serial;
@@ -1387,6 +1393,7 @@ public partial class MainView : UserControl
         }
         else if (_renderSurface is AndroidNativeGlRenderSurface nativeGlOwnedSurface)
         {
+            nativeGlOwnedSurface.SetInterlaceBlend(psxInterlaceBlend, psxInterlaceFieldParity);
             lock (_frameSync)
             {
                 if (ReferenceEquals(_presentFrameBuffer, frameBuffer))
@@ -1589,6 +1596,8 @@ public partial class MainView : UserControl
         _lastFrameWidth = 0;
         _lastFrameHeight = 0;
         _lastFrameStride = 0;
+        _lastPsxInterlaceBlend = false;
+        _lastPsxInterlaceFieldParity = -1;
         _lastPresentationWidth = 0;
         _lastPresentationHeight = 0;
         _appliedPresentationWidth = double.NaN;
@@ -2825,6 +2834,8 @@ public partial class MainView : UserControl
                 _lastFrameWidth = swapWidth;
                 _lastFrameHeight = swapHeight;
                 _lastFrameStride = swapStride;
+                _lastPsxInterlaceBlend = psxFrameInfo.IsInterlaceWeave && psxFrameInfo.HasCompleteInterlacePair;
+                _lastPsxInterlaceFieldParity = _lastPsxInterlaceBlend ? (psxFrameInfo.InterlaceFieldParity & 1) : -1;
                 _lastPresentationWidth = swapPresentationWidth;
                 _lastPresentationHeight = swapPresentationHeight;
                 (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
@@ -2845,6 +2856,8 @@ public partial class MainView : UserControl
                 _lastFrameWidth = snesWidth;
                 _lastFrameHeight = snesHeight;
                 _lastFrameStride = snesStride;
+                _lastPsxInterlaceBlend = false;
+                _lastPsxInterlaceFieldParity = -1;
                 _lastPresentationWidth = 0;
                 _lastPresentationHeight = 0;
                 (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
@@ -2863,6 +2876,8 @@ public partial class MainView : UserControl
                 _lastFrameWidth = mdWidth;
                 _lastFrameHeight = mdHeight;
                 _lastFrameStride = mdStride;
+                _lastPsxInterlaceBlend = false;
+                _lastPsxInterlaceFieldParity = -1;
                 _lastPresentationWidth = 0;
                 _lastPresentationHeight = 0;
                 (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
@@ -2901,6 +2916,8 @@ public partial class MainView : UserControl
             _lastFrameWidth = width;
             _lastFrameHeight = height;
             _lastFrameStride = dstStride;
+            _lastPsxInterlaceBlend = false;
+            _lastPsxInterlaceFieldParity = -1;
             _lastPresentationWidth = 0;
             _lastPresentationHeight = 0;
             (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);

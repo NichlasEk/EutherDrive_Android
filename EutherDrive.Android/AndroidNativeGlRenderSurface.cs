@@ -65,6 +65,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
     public void SetPresentationSize(double width, double height)
         => _host.SetPresentationSize(width, height);
 
+    public void SetInterlaceBlend(bool enabled, int fieldParity)
+        => _host.SetInterlaceBlend(enabled, fieldParity);
+
     public void Reset() => _host.ResetFrame();
 
     public void Dispose() => _host.DisposeSurface();
@@ -81,6 +84,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private bool _renderRequested;
         private bool _sharpPixelsEnabled = true;
         private bool _forceOpaque;
+        private bool _interlaceBlendEnabled;
+        private int _interlaceBlendFieldParity = -1;
         private int _presentCount;
         private int _renderCount;
         private int _uploadCount;
@@ -157,6 +162,15 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
             if (changed)
                 _nativeView?.RequestLayout();
+        }
+
+        public void SetInterlaceBlend(bool enabled, int fieldParity)
+        {
+            lock (_frameSync)
+            {
+                _interlaceBlendEnabled = enabled && (fieldParity == 0 || fieldParity == 1);
+                _interlaceBlendFieldParity = _interlaceBlendEnabled ? (fieldParity & 1) : -1;
+            }
         }
 
         public bool EnsureFrameSize(int width, int height)
@@ -262,6 +276,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _frameStride = 0;
                 _frameDirty = false;
                 _renderRequested = true;
+                _interlaceBlendEnabled = false;
+                _interlaceBlendFieldParity = -1;
             }
 
             _nativeView?.NotifyFrameUpdated(resized: true);
@@ -307,7 +323,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 double avgUploadMs = _uploadCount > 0 ? (_uploadTicksTotal * 1000.0 / Stopwatch.Frequency) / _uploadCount : 0;
                 double lastRenderMs = _lastRenderTicks > 0 ? _lastRenderTicks * 1000.0 / Stopwatch.Frequency : 0;
                 double lastUploadMs = _lastUploadTicks > 0 ? _lastUploadTicks * 1000.0 / Stopwatch.Frequency : 0;
-                summary = $"GL Present:{_presentCount} Render:{_renderCount} Upload:{_uploadCount} Pending:{(_renderRequested ? 1 : 0)} R:{avgRenderMs:0.0}/{lastRenderMs:0.0}ms U:{avgUploadMs:0.0}/{lastUploadMs:0.0}ms";
+                summary = $"GL Present:{_presentCount} Render:{_renderCount} Upload:{_uploadCount} Pending:{(_renderRequested ? 1 : 0)} IL:{(_interlaceBlendEnabled ? 1 : 0)}/{_interlaceBlendFieldParity} R:{avgRenderMs:0.0}/{lastRenderMs:0.0}ms U:{avgUploadMs:0.0}/{lastUploadMs:0.0}ms";
                 if (!string.IsNullOrEmpty(_glVersion) || !string.IsNullOrEmpty(_glShadingLanguageVersion))
                     summary = $"{summary}\nGLES:{_glVersion} GLSL:{_glShadingLanguageVersion}";
                 if (!string.IsNullOrEmpty(_glVendor) || !string.IsNullOrEmpty(_glRenderer))
@@ -360,7 +376,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             }
         }
 
-        private void BeginRender(out byte[] frameBytes, out int frameWidth, out int frameHeight, out bool frameDirty, out bool sharpPixelsEnabled, out bool forceOpaque)
+        private void BeginRender(out byte[] frameBytes, out int frameWidth, out int frameHeight, out bool frameDirty, out bool sharpPixelsEnabled, out bool forceOpaque, out bool interlaceBlendEnabled, out int interlaceBlendFieldParity)
         {
             lock (_frameSync)
             {
@@ -371,6 +387,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 frameDirty = _frameDirty;
                 sharpPixelsEnabled = _sharpPixelsEnabled;
                 forceOpaque = _forceOpaque;
+                interlaceBlendEnabled = _interlaceBlendEnabled;
+                interlaceBlendFieldParity = _interlaceBlendFieldParity;
                 _frameDirty = false;
             }
         }
@@ -924,10 +942,31 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 varying vec2 vUv;
                 uniform sampler2D uTex;
                 uniform float uForceOpaque;
+                uniform vec2 uTextureSize;
+                uniform float uInterlaceBlend;
+                uniform float uInterlaceFieldParity;
+
+                vec4 softenInterlace(vec4 color)
+                {
+                    if (uInterlaceBlend <= 0.5 || uTextureSize.y < 2.0)
+                        return color;
+
+                    float row = floor(vUv.y * uTextureSize.y);
+                    float rowParity = mod(row, 2.0);
+                    if (abs(rowParity - uInterlaceFieldParity) <= 0.5)
+                        return color;
+
+                    vec2 texel = vec2(1.0 / uTextureSize.x, 1.0 / uTextureSize.y);
+                    vec2 uvUp = vec2(vUv.x, max(0.0, vUv.y - texel.y));
+                    vec2 uvDown = vec2(vUv.x, min(1.0, vUv.y + texel.y));
+                    vec4 blended = (texture2D(uTex, uvUp) + texture2D(uTex, uvDown)) * 0.5;
+                    return mix(color, blended, 0.65);
+                }
 
                 void main()
                 {
                     vec4 color = texture2D(uTex, vUv);
+                    color = softenInterlace(color);
                     float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
                     gl_FragColor = vec4(color.b, color.g, color.r, alpha);
                 }
@@ -949,11 +988,32 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 in vec2 vUv;
                 uniform sampler2D uTex;
                 uniform float uForceOpaque;
+                uniform vec2 uTextureSize;
+                uniform float uInterlaceBlend;
+                uniform float uInterlaceFieldParity;
                 out vec4 fragColor;
+
+                vec4 softenInterlace(vec4 color)
+                {
+                    if (uInterlaceBlend <= 0.5 || uTextureSize.y < 2.0)
+                        return color;
+
+                    float row = floor(vUv.y * uTextureSize.y);
+                    float rowParity = mod(row, 2.0);
+                    if (abs(rowParity - uInterlaceFieldParity) <= 0.5)
+                        return color;
+
+                    vec2 texel = vec2(1.0 / uTextureSize.x, 1.0 / uTextureSize.y);
+                    vec2 uvUp = vec2(vUv.x, max(0.0, vUv.y - texel.y));
+                    vec2 uvDown = vec2(vUv.x, min(1.0, vUv.y + texel.y));
+                    vec4 blended = (texture(uTex, uvUp) + texture(uTex, uvDown)) * 0.5;
+                    return mix(color, blended, 0.65);
+                }
 
                 void main()
                 {
                     vec4 color = texture(uTex, vUv);
+                    color = softenInterlace(color);
                     float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
                     fragColor = vec4(color.b, color.g, color.r, alpha);
                 }
@@ -982,6 +1042,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private int _uvLocation = -1;
             private int _samplerLocation = -1;
             private int _forceOpaqueLocation = -1;
+            private int _textureSizeLocation = -1;
+            private int _interlaceBlendLocation = -1;
+            private int _interlaceFieldParityLocation = -1;
             private int _textureWidth;
             private int _textureHeight;
             private bool _textureUsesNearest = true;
@@ -1277,7 +1340,15 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 long uploadTicks = 0;
 
                 GLES20.GlViewport(0, 0, surfaceWidth, surfaceHeight);
-                _host.BeginRender(out byte[] frameBytes, out int frameWidth, out int frameHeight, out bool frameDirty, out bool sharpPixelsEnabled, out bool forceOpaque);
+                _host.BeginRender(
+                    out byte[] frameBytes,
+                    out int frameWidth,
+                    out int frameHeight,
+                    out bool frameDirty,
+                    out bool sharpPixelsEnabled,
+                    out bool forceOpaque,
+                    out bool interlaceBlendEnabled,
+                    out int interlaceBlendFieldParity);
                 if (_programId == 0 || _textureId == 0 || frameWidth <= 0 || frameHeight <= 0)
                 {
                     GLES20.GlClearColor(0f, 0f, 0f, 1f);
@@ -1305,6 +1376,12 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 GLES20.GlUseProgram(_programId);
                 GLES20.GlUniform1i(_samplerLocation, 0);
                 GLES20.GlUniform1f(_forceOpaqueLocation, forceOpaque ? 1.0f : 0.0f);
+                if (_textureSizeLocation >= 0)
+                    GLES20.GlUniform2f(_textureSizeLocation, frameWidth, frameHeight);
+                if (_interlaceBlendLocation >= 0)
+                    GLES20.GlUniform1f(_interlaceBlendLocation, interlaceBlendEnabled ? 1.0f : 0.0f);
+                if (_interlaceFieldParityLocation >= 0)
+                    GLES20.GlUniform1f(_interlaceFieldParityLocation, interlaceBlendFieldParity == 1 ? 1.0f : 0.0f);
 
                 _vertexBuffer.Position(0);
                 GLES20.GlEnableVertexAttribArray(_positionLocation);
@@ -1392,6 +1469,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _uvLocation = GLES20.GlGetAttribLocation(_programId, "aUv");
                 _samplerLocation = GLES20.GlGetUniformLocation(_programId, "uTex");
                 _forceOpaqueLocation = GLES20.GlGetUniformLocation(_programId, "uForceOpaque");
+                _textureSizeLocation = GLES20.GlGetUniformLocation(_programId, "uTextureSize");
+                _interlaceBlendLocation = GLES20.GlGetUniformLocation(_programId, "uInterlaceBlend");
+                _interlaceFieldParityLocation = GLES20.GlGetUniformLocation(_programId, "uInterlaceFieldParity");
 
                 int[] textures = new int[1];
                 GLES20.GlGenTextures(1, textures, 0);
@@ -1524,6 +1604,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _uvLocation = -1;
                 _samplerLocation = -1;
                 _forceOpaqueLocation = -1;
+                _textureSizeLocation = -1;
+                _interlaceBlendLocation = -1;
+                _interlaceFieldParityLocation = -1;
                 _textureWidth = 0;
                 _textureHeight = 0;
                 _wrappedUploadBuffer?.Dispose();
