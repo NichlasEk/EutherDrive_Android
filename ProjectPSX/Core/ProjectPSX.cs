@@ -384,6 +384,11 @@ namespace ProjectPSX {
             int readMmioOps = busPerf.ReadOpsMmio;
             int writeMmioOps = busPerf.WriteOpsMmio;
             int load32MmioOps = busPerf.Load32Mmio;
+            int relaxedPollReads = busPerf.RelaxedGpuStatReads
+                + busPerf.RelaxedJoyStatusReads
+                + busPerf.RelaxedTimer2Reads;
+            int effectiveReadMmioOps = Math.Max(0, readMmioOps - relaxedPollReads);
+            int effectiveLoad32MmioOps = Math.Max(0, load32MmioOps - relaxedPollReads);
             int gpuScore = (gpuPerf.TrianglePrimitives * 3)
                 + (gpuPerf.TexturedTriangles * 2)
                 + gpuPerf.SemiTransparentTriangles
@@ -401,12 +406,12 @@ namespace ProjectPSX {
                     + (gpuPerf.TexturedRectangles * 2)
                     + (gpuPerf.FillRectCommands * 4)
                     + 48);
-            bool pollLight = readMmioOps <= 12 && load32MmioOps <= 4;
-            bool pollHeavy = readMmioOps >= 24 || load32MmioOps >= 8;
+            bool pollLight = effectiveReadMmioOps <= 12 && effectiveLoad32MmioOps <= 4;
+            bool pollHeavy = effectiveReadMmioOps >= 24 || effectiveLoad32MmioOps >= 8;
             bool copyHeavy = gpuPerf.CpuToVramCopies > 0 || gpuPerf.VramToCpuCopies > 0;
             bool irqHeavy = cpuPerf.InterruptExceptionsTaken > 4 || cpuPerf.InterruptMaskedReturns > 24;
             bool uiHeavy = gpuPerf.FillRectCommands >= 8 || gpuPerf.RectanglePrimitives >= 192;
-            bool writeDominant = writeMmioOps >= 48 && readMmioOps <= 8;
+            bool writeDominant = writeMmioOps >= 48 && effectiveReadMmioOps <= 8;
             bool writeActive = writeMmioOps >= 32 || gpuScore >= 768;
             // Tekken-like 3D scenes tend to be GPU-write heavy with low MMIO polling.
             // Loaders and timing-sensitive loops show up as read-heavy polling, copies or IRQ spikes instead.
@@ -439,7 +444,7 @@ namespace ProjectPSX {
                 _syncGovernorStableFrames = 0;
                 if (_syncGovernorCooldownFrames > 0) {
                     _syncGovernorCooldownFrames--;
-                } else if (_syncGovernorLevel > 0 && (readMmioOps > 12 || !geometryDominant || uiHeavy)) {
+                } else if (_syncGovernorLevel > 0 && (effectiveReadMmioOps > 12 || !geometryDominant || uiHeavy)) {
                     _syncGovernorLevel--;
                 }
             }
@@ -456,7 +461,7 @@ namespace ProjectPSX {
             _syncGovernorSummary =
                 $"PSX sync mode:{GameplaySyncGovernorMode.ToString().ToLowerInvariant()} batch:{_syncGovernorLastAppliedBatchCycles}->{_syncGovernorRelaxedBatchCycles} " +
                 $"lvl:{_syncGovernorLevel} stable:{_syncGovernorStableFrames} cool:{_syncGovernorCooldownFrames} " +
-                $"poll:r{readMmioOps}/l32:{load32MmioOps} w:{writeMmioOps} gpu:{gpuPerf.TrianglePrimitives}/{gpuPerf.TexturedTriangles}/{gpuPerf.RectanglePrimitives} " +
+                $"poll:r{effectiveReadMmioOps}/{readMmioOps} l32:{effectiveLoad32MmioOps}/{load32MmioOps} w:{writeMmioOps} gpu:{gpuPerf.TrianglePrimitives}/{gpuPerf.TexturedTriangles}/{gpuPerf.RectanglePrimitives} " +
                 $"score:{gpuScore} cand:{(gameplayCandidate ? 1 : 0)}";
         }
 

@@ -292,3 +292,21 @@ Samma toggle gäller fortfarande om man vill slå av hela JOY_STAT-lättnaden:
 ```text
 EUTHERDRIVE_PSX_RELAX_JOYSTAT_POLLING=0
 ```
+
+## Uppföljning 5: låt governorn räkna effektiv polling, inte rå relaxed polling
+
+När `JOY_STAT` och timer 2 väl hade fått fungerande relaxed paths låg governorn ändå kvar på `batch:96->96`.
+
+Orsaken var att heuristiken fortfarande tittade på rå `ReadOpsMmio` och rå `Load32Mmio`, alltså inklusive polling som redan var avlastad via:
+
+- `gstRelax`
+- `jstRelax`
+- `t2Relax`
+
+Det senaste passet gör därför governorns pollbedömning "effektiv":
+
+- relaxed poll-läsningar räknas bort innan `pollLight`/`pollHeavy` utvärderas
+- samma effektiva värden används när governorn avgör om workloaden är write-dominant nog för att få växa
+- sync-raden visar nu `poll:rEFF/RAW l32:EFF/RAW` så att det går att se om den fortfarande blockeras av verklig polling eller bara av redan billiga shadowade reads
+
+Det här är tänkt att ge precis den sista lilla vinsten när hotspotsen fortfarande syns i `PSX poll ...`, men inte längre borde hindra större batchar.
