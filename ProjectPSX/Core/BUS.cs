@@ -42,6 +42,7 @@ public class BUS {
             public readonly int TopMmioReadCount2;
             public readonly int RelaxedGpuStatReads;
             public readonly int RelaxedJoyStatusReads;
+            public readonly int RelaxedTimer2Reads;
             public readonly int MmioShadowHits;
 
             public PerfSnapshot(
@@ -76,6 +77,7 @@ public class BUS {
                 int topMmioReadCount2,
                 int relaxedGpuStatReads,
                 int relaxedJoyStatusReads,
+                int relaxedTimer2Reads,
                 int mmioShadowHits) {
                 TickCalls = tickCalls;
                 TickCycles = tickCycles;
@@ -108,6 +110,7 @@ public class BUS {
                 TopMmioReadCount2 = topMmioReadCount2;
                 RelaxedGpuStatReads = relaxedGpuStatReads;
                 RelaxedJoyStatusReads = relaxedJoyStatusReads;
+                RelaxedTimer2Reads = relaxedTimer2Reads;
                 MmioShadowHits = mmioShadowHits;
             }
         }
@@ -116,6 +119,7 @@ public class BUS {
         private static readonly bool VerboseBusAccess = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_VERBOSE") == "1";
         private static readonly bool RelaxGpuStatusPolling = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_RELAX_GPUSTAT_POLLING") != "0";
         private static readonly bool RelaxJoyStatusPolling = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_RELAX_JOYSTAT_POLLING") != "0";
+        private static readonly bool RelaxTimer2Polling = Environment.GetEnvironmentVariable("EUTHERDRIVE_PSX_RELAX_TIMER2_POLLING") != "0";
         private static readonly uint? TraceRamReadStart = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_START");
         private static readonly uint? TraceRamReadEnd = ParseOptionalHexEnv("EUTHERDRIVE_PSX_TRACE_RAM_READ_END");
         private static readonly int TraceRamReadLimit = ParseOptionalPositiveInt("EUTHERDRIVE_PSX_TRACE_RAM_READ_LIMIT", 4096);
@@ -179,6 +183,7 @@ public class BUS {
         private int _perfWrite8Mmio;
         private int _perfRelaxedGpuStatusReads;
         private int _perfRelaxedJoyStatusReads;
+        private int _perfRelaxedTimer2Reads;
         private int _perfMmioShadowHits;
         private int _cpuTightSyncBudgetCycles;
         private readonly uint[] _perfMmioReadHotAddr = new uint[MmioReadHotSlotCount];
@@ -188,6 +193,10 @@ public class BUS {
         private uint _gpuStatShadowValue;
         private int _joyStatShadowEpoch = -1;
         private uint _joyStatShadowValue;
+        private int _timer2ValueShadowEpoch = -1;
+        private uint _timer2ValueShadowValue;
+        private int _timer2ModeShadowEpoch = -1;
+        private uint _timer2ModeShadowValue;
 
         //temporary hardcoded bios/ex1
         private static string bios = "./SCPH1001.BIN"; //SCPH1001 //openbios
@@ -292,6 +301,10 @@ public class BUS {
                     return joyStatus;
                 }
 
+                if (addr == 0x1F80_1040) {
+                    InvalidateJoyStatusShadow();
+                }
+
                 NoteCpuMmioAccess();
                 return joypad.load(addr);
             } else if (addr < 0x1F80_1060) {
@@ -313,6 +326,14 @@ public class BUS {
                 return dma.load(addr);
             } else if (addr < 0x1F80_1140) {
                 NoteLoad32Mmio(addr);
+                if (addr == 0x1F80_1120 && TryLoadRelaxedTimer2Value(out uint timer2Value)) {
+                    return timer2Value;
+                }
+
+                if (addr == 0x1F80_1124 && TryLoadRelaxedTimer2Mode(out uint timer2Mode)) {
+                    return timer2Mode;
+                }
+
                 NoteCpuMmioAccess();
                 return timers.load(addr);
             } else if (addr <= 0x1F80_1803) {
@@ -424,6 +445,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 timers.write(addr, value);
             } else if (addr < 0x1F80_1810) {
                 _perfWriteOpsMmio++;
@@ -524,6 +546,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 timers.write(addr, value);
             } else if (addr < 0x1F80_1810) {
                 _perfWriteOpsMmio++;
@@ -624,6 +647,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 timers.write(addr, value);
             } else if (addr < 0x1F80_1810) {
                 _perfWriteOpsMmio++;
@@ -915,6 +939,7 @@ public class BUS {
             _perfWrite8Mmio = 0;
             _perfRelaxedGpuStatusReads = 0;
             _perfRelaxedJoyStatusReads = 0;
+            _perfRelaxedTimer2Reads = 0;
             _perfMmioShadowHits = 0;
             Array.Clear(_perfMmioReadHotAddr, 0, _perfMmioReadHotAddr.Length);
             Array.Clear(_perfMmioReadHotCount, 0, _perfMmioReadHotCount.Length);
@@ -961,6 +986,7 @@ public class BUS {
                 topMmioReadCount2,
                 _perfRelaxedGpuStatusReads,
                 _perfRelaxedJoyStatusReads,
+                _perfRelaxedTimer2Reads,
                 _perfMmioShadowHits);
         }
 
@@ -1063,6 +1089,13 @@ public class BUS {
             _mmioShadowEpoch++;
             _gpuStatShadowEpoch = -1;
             _joyStatShadowEpoch = -1;
+            _timer2ValueShadowEpoch = -1;
+            _timer2ModeShadowEpoch = -1;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void InvalidateJoyStatusShadow() {
+            _joyStatShadowEpoch = -1;
         }
 
         private bool TryLoadRelaxedGpuStat(out uint value) {
@@ -1100,6 +1133,44 @@ public class BUS {
             _joyStatShadowValue = joypad.load(0x1F80_1044);
             _joyStatShadowEpoch = _mmioShadowEpoch;
             value = _joyStatShadowValue;
+            return true;
+        }
+
+        private bool TryLoadRelaxedTimer2Value(out uint value) {
+            if (!RelaxTimer2Polling || !timers.CanRelaxPolling(0x1F80_1120)) {
+                value = 0;
+                return false;
+            }
+
+            _perfRelaxedTimer2Reads++;
+            if (_timer2ValueShadowEpoch == _mmioShadowEpoch) {
+                _perfMmioShadowHits++;
+                value = _timer2ValueShadowValue;
+                return true;
+            }
+
+            _timer2ValueShadowValue = timers.load(0x1F80_1120);
+            _timer2ValueShadowEpoch = _mmioShadowEpoch;
+            value = _timer2ValueShadowValue;
+            return true;
+        }
+
+        private bool TryLoadRelaxedTimer2Mode(out uint value) {
+            if (!RelaxTimer2Polling || !timers.CanRelaxPolling(0x1F80_1124)) {
+                value = 0;
+                return false;
+            }
+
+            _perfRelaxedTimer2Reads++;
+            if (_timer2ModeShadowEpoch == _mmioShadowEpoch) {
+                _perfMmioShadowHits++;
+                value = _timer2ModeShadowValue;
+                return true;
+            }
+
+            _timer2ModeShadowValue = timers.load(0x1F80_1124);
+            _timer2ModeShadowEpoch = _mmioShadowEpoch;
+            value = _timer2ModeShadowValue;
             return true;
         }
 
@@ -1308,7 +1379,11 @@ public class BUS {
         }
 
         public DMA DMAController => dma;
-        public bool RequiresFrequentSync => _cpuTightSyncBudgetCycles > 0 || cdrom.RequiresFrequentSync || dma.HasPendingWork || joypad.HasPendingWork;
+        public bool RequiresFrequentSync(int deferredCycles)
+            => _cpuTightSyncBudgetCycles > 0
+                || cdrom.RequiresFrequentSync
+                || dma.HasPendingWork
+                || joypad.RequiresFrequentSync(deferredCycles);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe uint LoadFromBios(uint addr) {

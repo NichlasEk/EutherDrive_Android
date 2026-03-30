@@ -33,6 +33,16 @@ namespace ProjectPSX.Devices {
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CanRelaxPolling(uint addr) {
+            int timerNumber = (int)(addr & 0xF0) >> 4;
+            if (timerNumber > 2) {
+                return false;
+            }
+
+            return timer[timerNumber].CanRelaxPolling(addr & 0xF);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool tick(int timerNumber, int cycles) {
             return timer[timerNumber].tick(cycles);
         }
@@ -105,6 +115,25 @@ namespace ProjectPSX.Devices {
                     case 0x8: return counterTargetValue;
                     default: Console.WriteLine("[TIMER] " + timerNumber + "Unhandled load" + addr); Console.ReadLine(); return 0;
                 }
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool CanRelaxPolling(uint register) {
+                if (timerNumber != 2) {
+                    return false;
+                }
+
+                bool stopped = syncEnable == 1 && (syncMode == 0 || syncMode == 3);
+                bool slowClock = clockSource >= 2;
+                if (!stopped && !slowClock) {
+                    return false;
+                }
+
+                return register switch {
+                    0x0 => true,
+                    0x4 => reachedTarget == 0 && reachedFFFF == 0,
+                    _ => false,
+                };
             }
 
             public void syncGPU((int dotDiv, bool hblank, bool vblank) sync) {

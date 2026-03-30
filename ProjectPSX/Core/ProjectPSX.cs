@@ -141,7 +141,8 @@ namespace ProjectPSX {
                 }
 
                 bool busFlushed = false;
-                int busTickBatchCycles = (!_psxBootBiosExited || bus.RequiresFrequentSync)
+                bool requiresFrequentSync = bus.RequiresFrequentSync(relaxedBusTickBatchCycles);
+                int busTickBatchCycles = (!_psxBootBiosExited || requiresFrequentSync)
                     ? TightBusTickBatchCycles
                     : relaxedBusTickBatchCycles;
 
@@ -152,7 +153,7 @@ namespace ProjectPSX {
                 }
 
                 bool interruptPending = false;
-                if (!busFlushed && bus.RequiresFrequentSync) {
+                if (!busFlushed && requiresFrequentSync) {
                     _perfIrqChecks++;
                     interruptPending = bus.interruptController.interruptPending();
                 }
@@ -469,6 +470,7 @@ namespace ProjectPSX {
                 && busPerf.TopMmioReadCount2 <= 0
                 && busPerf.RelaxedGpuStatReads <= 0
                 && busPerf.RelaxedJoyStatusReads <= 0
+                && busPerf.RelaxedTimer2Reads <= 0
                 && busPerf.MmioShadowHits <= 0) {
                 return string.Empty;
             }
@@ -479,6 +481,7 @@ namespace ProjectPSX {
             AppendMmioReadHotspot(text, busPerf.TopMmioReadAddr2, busPerf.TopMmioReadCount2);
             if (busPerf.RelaxedGpuStatReads > 0
                 || busPerf.RelaxedJoyStatusReads > 0
+                || busPerf.RelaxedTimer2Reads > 0
                 || busPerf.MmioShadowHits > 0) {
                 if (text.Length > "PSX poll ".Length) {
                     text.Append(' ');
@@ -494,6 +497,14 @@ namespace ProjectPSX {
                     }
 
                     text.Append($"jstRelax:{busPerf.RelaxedJoyStatusReads}");
+                }
+
+                if (busPerf.RelaxedTimer2Reads > 0) {
+                    if (text[^1] != ' ') {
+                        text.Append(' ');
+                    }
+
+                    text.Append($"t2Relax:{busPerf.RelaxedTimer2Reads}");
                 }
 
                 if (busPerf.MmioShadowHits > 0) {

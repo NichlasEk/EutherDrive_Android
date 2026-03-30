@@ -227,3 +227,68 @@ Om just den här lättnaden behöver stängas av:
 ```text
 EUTHERDRIVE_PSX_RELAX_JOYSTAT_POLLING=0
 ```
+
+## Uppföljning 3: timer 2 som nästa kvarvarande polling-last
+
+Efter `JOY_STAT`-lättnaden flyttade nästa tydliga hotspot till timer 2:
+
+- `t2.val` på `0x1F801120`
+- `t2.mode` på `0x1F801124`
+
+Det är ett bättre nästa mål än att fortsätta skruva på governorn, eftersom spelet fortfarande bränner CPU på att läsa samma timerregister om och om igen inom samma device-epoch.
+
+Den nya lättnaden gör därför följande:
+
+- `BUS` kan shadowa `t2.val` och `t2.mode` mellan device-ticks
+- lättnaden tillåts bara för timer 2
+- `t2.val` får relaxed path när timer 2 antingen står still eller går på en långsammare clock-källa
+- `t2.mode` får relaxed path bara när samma villkor gäller och inga `reachedTarget`/`reachedFFFF`-flaggar väntar på att clearas av en riktig läsning
+- varje timer-write invalidar shadow-cachen direkt
+
+Det här håller optimeringen riktad mot pollingfall där nästa legitima förändring ändå inte kan ske inom samma shadow-epoch.
+
+Perf-summaryn kan nu visa till exempel:
+
+```text
+PSX poll t2.valx188 t2.modex77 0x1f801044x62 t2Relax:244 sh:243
+```
+
+Tolkning:
+
+- `t2.valx188` och `t2.modex77`: timer 2 dominerar fortfarande rå polling-last
+- `t2Relax:244`: så många timer 2-läsningar tog relaxed pathen
+- `sh:243`: nästan alla av dem blev shadow-hits inom samma device-epoch
+
+Om just den här lättnaden behöver stängas av:
+
+```text
+EUTHERDRIVE_PSX_RELAX_TIMER2_POLLING=0
+```
+
+## Uppföljning 4: event-driven JOY_STAT och mindre onödig tight sync
+
+Efter timer 2-passet låg `JOY_STAT` fortfarande kvar som den tyngsta enskilda poll-adressen.
+
+Problemet var inte bara själva registerläsningen, utan också att joypad-länken tvingade kvar `RequiresFrequentSync` så fort någon transfer eller ack var pending. Det gav för många 24-cykel-flushar även när nästa riktiga joypad-edge låg längre fram.
+
+Det senaste passet ändrar därför två saker:
+
+- `JOY_STAT` shadowas nu inom samma device-epoch även när länken inte är helt idle
+- `JOY_RX_DATA` invalidar bara `JOY_STAT`-shadowen när FIFO faktiskt kan förändra status
+- joypaden rapporterar nu om nästa verkliga status-edge ligger inom det uppskjutna sync-fönstret i stället för att allt pending arbete automatiskt tvingar tight sync
+
+I praktiken betyder det:
+
+- upprepade `JOY_STAT`-pollar mellan två joypad-edges blir mycket billigare
+- busen kan stanna kvar i den vanliga relaxed batchen längre när nästa joypad-statusbit ändå inte kan ändras ännu
+
+Det jag vill se i nästa körning är främst:
+
+- klart högre `jstRelax:`
+- gärna lägre emu-tid även om `PSX poll` fortfarande visar `0x1f801044` som rå hotspot
+
+Samma toggle gäller fortfarande om man vill slå av hela JOY_STAT-lättnaden:
+
+```text
+EUTHERDRIVE_PSX_RELAX_JOYSTAT_POLLING=0
+```

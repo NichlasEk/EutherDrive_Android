@@ -75,6 +75,16 @@ namespace ProjectPSX {
         public bool HasPendingWork => transferActive || ackCounter > 0 || interruptRequest;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool RequiresFrequentSync(int deferredCycles) {
+            if (deferredCycles <= 0) {
+                return false;
+            }
+
+            int nextStatusEdgeCycles = GetNextStatusEdgeCycles();
+            return nextStatusEdgeCycles > 0 && nextStatusEdgeCycles <= deferredCycles;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool tick(int cycles) {
             if (transferActive) {
                 if (!TXreadyFlag1) {
@@ -102,6 +112,27 @@ namespace ProjectPSX {
             if (interruptRequest) return true;
 
             return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int GetNextStatusEdgeCycles() {
+            int nextCycles = int.MaxValue;
+
+            if (transferActive) {
+                if (!TXreadyFlag1 && transferStartCyclesRemaining > 0) {
+                    nextCycles = Math.Min(nextCycles, transferStartCyclesRemaining);
+                }
+
+                if (transferCyclesRemaining > 0) {
+                    nextCycles = Math.Min(nextCycles, transferCyclesRemaining);
+                }
+            }
+
+            if (ackCounter > 0) {
+                nextCycles = Math.Min(nextCycles, ackCounter);
+            }
+
+            return nextCycles == int.MaxValue ? -1 : nextCycles;
         }
 
         private void reloadTimer() {
@@ -414,13 +445,9 @@ namespace ProjectPSX {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool CanRelaxStatusPolling() {
-            return !transferActive
-                && !transferBytePending
-                && TXreadyFlag1
-                && TXreadyFlag2
-                && !ackInputLevel
-                && !interruptRequest
-                && rxFifo.Count == 0;
+            // JOY_STAT itself is side-effect free. Its bits only change on joypad writes,
+            // joypad ticks, or RX data reads that pop the FIFO.
+            return true;
         }
     }
 }
