@@ -110,6 +110,8 @@ public partial class MainView : UserControl
     private int _bootRequestSerial;
     private bool _bootInProgress;
     private int _presentLatestFrameQueued;
+    private bool _androidPsxInterlaceThrottleActive;
+    private int _androidPsxInterlacePresentParity = -1;
 
     public MainView()
     {
@@ -1596,6 +1598,7 @@ public partial class MainView : UserControl
         _latestPerfHeadline = "FPS --  MAX --";
         _viewModel.PerfSummary = "Perf idle";
         _viewModel.PerfHeadline = "FPS --  MAX --";
+        ResetAndroidPsxInterlaceThrottle();
     }
 
     private void UpdatePerfStats(long emuTicks, long audioTicks, long blitTicks)
@@ -2812,8 +2815,11 @@ public partial class MainView : UserControl
 
     private unsafe void CaptureLatestFrame(IEmulatorCore core)
     {
-        if (core is PsxAdapter psx && psx.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int swapWidth, out int swapHeight, out int swapStride, out double swapPresentationWidth, out double swapPresentationHeight))
+        if (core is PsxAdapter psx && psx.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int swapWidth, out int swapHeight, out int swapStride, out double swapPresentationWidth, out double swapPresentationHeight, out PsxAdapter.PresentationFrameInfo psxFrameInfo))
         {
+            if (ShouldDeferAndroidPsxInterlacePresentation(psxFrameInfo))
+                return;
+
             lock (_frameSync)
             {
                 _lastFrameWidth = swapWidth;
@@ -2829,6 +2835,8 @@ public partial class MainView : UserControl
             QueuePresentLatestFrame();
             return;
         }
+
+        ResetAndroidPsxInterlaceThrottle();
 
         if (core is SnesAdapter snes && snes.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int snesWidth, out int snesHeight, out int snesStride))
         {
@@ -2901,6 +2909,41 @@ public partial class MainView : UserControl
         }
 
         QueuePresentLatestFrame();
+    }
+
+    private bool ShouldDeferAndroidPsxInterlacePresentation(PsxAdapter.PresentationFrameInfo frameInfo)
+    {
+        if (_renderSurface is not AndroidNativeGlRenderSurface)
+        {
+            ResetAndroidPsxInterlaceThrottle();
+            return false;
+        }
+
+        if (!frameInfo.IsInterlaceWeave)
+        {
+            ResetAndroidPsxInterlaceThrottle();
+            return false;
+        }
+
+        // On Android native GL, prefer a stable 30 Hz woven presentation over pushing every raw 480i field.
+        if (!frameInfo.HasCompleteInterlacePair)
+            return true;
+
+        int fieldParity = frameInfo.InterlaceFieldParity & 1;
+        if (!_androidPsxInterlaceThrottleActive || _androidPsxInterlacePresentParity < 0)
+        {
+            _androidPsxInterlaceThrottleActive = true;
+            _androidPsxInterlacePresentParity = fieldParity;
+            return false;
+        }
+
+        return fieldParity != _androidPsxInterlacePresentParity;
+    }
+
+    private void ResetAndroidPsxInterlaceThrottle()
+    {
+        _androidPsxInterlaceThrottleActive = false;
+        _androidPsxInterlacePresentParity = -1;
     }
 
     private static void EnsureFrameBufferCapacity(ref byte[] buffer, int requiredBytes)
