@@ -386,7 +386,8 @@ namespace ProjectPSX {
             int load32MmioOps = busPerf.Load32Mmio;
             int relaxedPollReads = busPerf.RelaxedGpuStatReads
                 + busPerf.RelaxedJoyStatusReads
-                + busPerf.RelaxedTimer2Reads;
+                + busPerf.RelaxedTimer2Reads
+                + busPerf.RelaxedInterruptStatusReads;
             int effectiveReadMmioOps = Math.Max(0, readMmioOps - relaxedPollReads);
             int effectiveLoad32MmioOps = Math.Max(0, load32MmioOps - relaxedPollReads);
             int gpuScore = (gpuPerf.TrianglePrimitives * 3)
@@ -476,6 +477,7 @@ namespace ProjectPSX {
                 && busPerf.RelaxedGpuStatReads <= 0
                 && busPerf.RelaxedJoyStatusReads <= 0
                 && busPerf.RelaxedTimer2Reads <= 0
+                && busPerf.RelaxedInterruptStatusReads <= 0
                 && busPerf.MmioShadowHits <= 0) {
                 return string.Empty;
             }
@@ -487,6 +489,7 @@ namespace ProjectPSX {
             if (busPerf.RelaxedGpuStatReads > 0
                 || busPerf.RelaxedJoyStatusReads > 0
                 || busPerf.RelaxedTimer2Reads > 0
+                || busPerf.RelaxedInterruptStatusReads > 0
                 || busPerf.MmioShadowHits > 0) {
                 if (text.Length > "PSX poll ".Length) {
                     text.Append(' ');
@@ -510,6 +513,14 @@ namespace ProjectPSX {
                     }
 
                     text.Append($"t2Relax:{busPerf.RelaxedTimer2Reads}");
+                }
+
+                if (busPerf.RelaxedInterruptStatusReads > 0) {
+                    if (text[^1] != ' ') {
+                        text.Append(' ');
+                    }
+
+                    text.Append($"istRelax:{busPerf.RelaxedInterruptStatusReads}");
                 }
 
                 if (busPerf.MmioShadowHits > 0) {

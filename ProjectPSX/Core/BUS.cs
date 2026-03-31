@@ -43,6 +43,7 @@ public class BUS {
             public readonly int RelaxedGpuStatReads;
             public readonly int RelaxedJoyStatusReads;
             public readonly int RelaxedTimer2Reads;
+            public readonly int RelaxedInterruptStatusReads;
             public readonly int MmioShadowHits;
 
             public PerfSnapshot(
@@ -78,6 +79,7 @@ public class BUS {
                 int relaxedGpuStatReads,
                 int relaxedJoyStatusReads,
                 int relaxedTimer2Reads,
+                int relaxedInterruptStatusReads,
                 int mmioShadowHits) {
                 TickCalls = tickCalls;
                 TickCycles = tickCycles;
@@ -111,6 +113,7 @@ public class BUS {
                 RelaxedGpuStatReads = relaxedGpuStatReads;
                 RelaxedJoyStatusReads = relaxedJoyStatusReads;
                 RelaxedTimer2Reads = relaxedTimer2Reads;
+                RelaxedInterruptStatusReads = relaxedInterruptStatusReads;
                 MmioShadowHits = mmioShadowHits;
             }
         }
@@ -184,6 +187,7 @@ public class BUS {
         private int _perfRelaxedGpuStatusReads;
         private int _perfRelaxedJoyStatusReads;
         private int _perfRelaxedTimer2Reads;
+        private int _perfRelaxedInterruptStatusReads;
         private int _perfMmioShadowHits;
         private int _cpuTightSyncBudgetCycles;
         private readonly uint[] _perfMmioReadHotAddr = new uint[MmioReadHotSlotCount];
@@ -191,6 +195,8 @@ public class BUS {
         private int _mmioShadowEpoch;
         private int _gpuStatShadowEpoch = -1;
         private uint _gpuStatShadowValue;
+        private int _interruptStatusShadowEpoch = -1;
+        private uint _interruptStatusShadowValue;
         private int _joyStatShadowEpoch = -1;
         private uint _joyStatShadowValue;
         private int _timer2ValueShadowEpoch = -1;
@@ -318,6 +324,10 @@ public class BUS {
                 return load<uint>(addr & 0xF, memoryControl2);
             } else if (addr < 0x1F80_1080) {
                 NoteLoad32Mmio(addr);
+                if (addr == 0x1F80_1070 && TryLoadRelaxedInterruptStatus(out uint interruptStatus)) {
+                    return interruptStatus;
+                }
+
                 NoteCpuMmioAccess();
                 return interruptController.load(addr);
             } else if (addr < 0x1F80_1100) {
@@ -435,6 +445,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite32Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 interruptController.write(addr, value);
             } else if (addr < 0x1F80_1100) {
                 _perfWriteOpsMmio++;
@@ -536,6 +547,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite16Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 interruptController.write(addr, value);
             } else if (addr < 0x1F80_1100) {
                 _perfWriteOpsMmio++;
@@ -637,6 +649,7 @@ public class BUS {
                 _perfWriteOpsMmio++;
                 _perfWrite8Mmio++;
                 NoteCpuMmioAccess();
+                InvalidateMmioReadShadows();
                 interruptController.write(addr, value);
             } else if (addr < 0x1F80_1100) {
                 _perfWriteOpsMmio++;
@@ -940,6 +953,7 @@ public class BUS {
             _perfRelaxedGpuStatusReads = 0;
             _perfRelaxedJoyStatusReads = 0;
             _perfRelaxedTimer2Reads = 0;
+            _perfRelaxedInterruptStatusReads = 0;
             _perfMmioShadowHits = 0;
             Array.Clear(_perfMmioReadHotAddr, 0, _perfMmioReadHotAddr.Length);
             Array.Clear(_perfMmioReadHotCount, 0, _perfMmioReadHotCount.Length);
@@ -987,6 +1001,7 @@ public class BUS {
                 _perfRelaxedGpuStatusReads,
                 _perfRelaxedJoyStatusReads,
                 _perfRelaxedTimer2Reads,
+                _perfRelaxedInterruptStatusReads,
                 _perfMmioShadowHits);
         }
 
@@ -1088,9 +1103,24 @@ public class BUS {
         private void InvalidateMmioReadShadows() {
             _mmioShadowEpoch++;
             _gpuStatShadowEpoch = -1;
+            _interruptStatusShadowEpoch = -1;
             _joyStatShadowEpoch = -1;
             _timer2ValueShadowEpoch = -1;
             _timer2ModeShadowEpoch = -1;
+        }
+
+        private bool TryLoadRelaxedInterruptStatus(out uint value) {
+            _perfRelaxedInterruptStatusReads++;
+            if (_interruptStatusShadowEpoch == _mmioShadowEpoch) {
+                _perfMmioShadowHits++;
+                value = _interruptStatusShadowValue;
+                return true;
+            }
+
+            _interruptStatusShadowValue = interruptController.load(0x1F80_1070);
+            _interruptStatusShadowEpoch = _mmioShadowEpoch;
+            value = _interruptStatusShadowValue;
+            return true;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

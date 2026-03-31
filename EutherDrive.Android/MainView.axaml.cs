@@ -101,8 +101,10 @@ public partial class MainView : UserControl
     private int _lastFrameWidth;
     private int _lastFrameHeight;
     private int _lastFrameStride;
+    private bool _lastFrameIsPsx;
     private bool _lastPsxInterlaceBlend;
     private int _lastPsxInterlaceFieldParity = -1;
+    private PsxAdapter.PresentationFrameInfo _lastPsxFrameInfo;
     private string _lastRenderSurfaceDebugSummary = string.Empty;
     private string _lastRenderSurfaceFallbackReason = string.Empty;
     private double _lastPresentationWidth;
@@ -1337,6 +1339,8 @@ public partial class MainView : UserControl
         int height;
         int srcStride;
         byte[] frameBuffer;
+        bool frameIsPsx;
+        PsxAdapter.PresentationFrameInfo psxFrameInfo;
         bool psxInterlaceBlend;
         int psxInterlaceFieldParity;
 
@@ -1352,6 +1356,8 @@ public partial class MainView : UserControl
             width = _lastFrameWidth;
             height = _lastFrameHeight;
             srcStride = _lastFrameStride > 0 ? _lastFrameStride : width * 4;
+            frameIsPsx = _lastFrameIsPsx;
+            psxFrameInfo = _lastPsxFrameInfo;
             psxInterlaceBlend = _lastPsxInterlaceBlend;
             psxInterlaceFieldParity = _lastPsxInterlaceFieldParity;
             (_presentFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _presentFrameBuffer);
@@ -1374,6 +1380,19 @@ public partial class MainView : UserControl
         var blitOptions = new FrameBlitOptions(
             SharpPixels: _viewModel.SharpPixelsEnabled,
             ForceOpaque: forceOpaque);
+
+        if (frameIsPsx)
+        {
+            _psxInterlaceReconstructor.TryApplyInPlace(
+                frameBuffer.AsSpan(0, Math.Min(frameBuffer.Length, srcStride * height)),
+                width,
+                height,
+                srcStride,
+                psxFrameInfo);
+            psxInterlaceBlend = false;
+            psxInterlaceFieldParity = -1;
+        }
+
         if (_renderSurface is OpenGlRenderSurface glOwnedSurface)
         {
             glOwnedSurface.SetInterlaceBlend(psxInterlaceBlend, psxInterlaceFieldParity);
@@ -1596,8 +1615,10 @@ public partial class MainView : UserControl
         _lastFrameWidth = 0;
         _lastFrameHeight = 0;
         _lastFrameStride = 0;
+        _lastFrameIsPsx = false;
         _lastPsxInterlaceBlend = false;
         _lastPsxInterlaceFieldParity = -1;
+        _lastPsxFrameInfo = default;
         _lastPresentationWidth = 0;
         _lastPresentationHeight = 0;
         _appliedPresentationWidth = double.NaN;
@@ -2883,20 +2904,15 @@ public partial class MainView : UserControl
     {
         if (core is PsxAdapter psx && psx.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int swapWidth, out int swapHeight, out int swapStride, out double swapPresentationWidth, out double swapPresentationHeight, out PsxAdapter.PresentationFrameInfo psxFrameInfo))
         {
-            _psxInterlaceReconstructor.TryApplyInPlace(
-                _captureFrameBuffer.AsSpan(0, Math.Min(_captureFrameBuffer.Length, swapStride * swapHeight)),
-                swapWidth,
-                swapHeight,
-                swapStride,
-                psxFrameInfo);
-
             lock (_frameSync)
             {
                 _lastFrameWidth = swapWidth;
                 _lastFrameHeight = swapHeight;
                 _lastFrameStride = swapStride;
+                _lastFrameIsPsx = true;
                 _lastPsxInterlaceBlend = false;
                 _lastPsxInterlaceFieldParity = -1;
+                _lastPsxFrameInfo = psxFrameInfo;
                 _lastPresentationWidth = swapPresentationWidth;
                 _lastPresentationHeight = swapPresentationHeight;
                 (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
@@ -2912,13 +2928,16 @@ public partial class MainView : UserControl
 
         if (core is SnesAdapter snes && snes.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int snesWidth, out int snesHeight, out int snesStride))
         {
+            _psxInterlaceReconstructor.Reset();
             lock (_frameSync)
             {
                 _lastFrameWidth = snesWidth;
                 _lastFrameHeight = snesHeight;
                 _lastFrameStride = snesStride;
+                _lastFrameIsPsx = false;
                 _lastPsxInterlaceBlend = false;
                 _lastPsxInterlaceFieldParity = -1;
+                _lastPsxFrameInfo = default;
                 _lastPresentationWidth = 0;
                 _lastPresentationHeight = 0;
                 (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
@@ -2932,13 +2951,16 @@ public partial class MainView : UserControl
 
         if (core is MdTracerAdapter md && md.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int mdWidth, out int mdHeight, out int mdStride))
         {
+            _psxInterlaceReconstructor.Reset();
             lock (_frameSync)
             {
                 _lastFrameWidth = mdWidth;
                 _lastFrameHeight = mdHeight;
                 _lastFrameStride = mdStride;
+                _lastFrameIsPsx = false;
                 _lastPsxInterlaceBlend = false;
                 _lastPsxInterlaceFieldParity = -1;
+                _lastPsxFrameInfo = default;
                 _lastPresentationWidth = 0;
                 _lastPresentationHeight = 0;
                 (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
@@ -2977,8 +2999,10 @@ public partial class MainView : UserControl
             _lastFrameWidth = width;
             _lastFrameHeight = height;
             _lastFrameStride = dstStride;
+            _lastFrameIsPsx = false;
             _lastPsxInterlaceBlend = false;
             _lastPsxInterlaceFieldParity = -1;
+            _lastPsxFrameInfo = default;
             _lastPresentationWidth = 0;
             _lastPresentationHeight = 0;
             (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
@@ -3042,13 +3066,17 @@ public partial class MainView : UserControl
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_ANDROID_NATIVE_GL");
         if (string.IsNullOrWhiteSpace(raw))
-            return false;
+            return true;
 
         raw = raw.Trim();
-        return raw == "1"
-            || raw.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || raw.Equals("yes", StringComparison.OrdinalIgnoreCase)
-            || raw.Equals("on", StringComparison.OrdinalIgnoreCase);
+        if (raw == "0"
+            || raw.Equals("false", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("no", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("off", StringComparison.OrdinalIgnoreCase)) {
+            return false;
+        }
+
+        return true;
     }
 
     private void UpdateActiveRenderModeLabel()
