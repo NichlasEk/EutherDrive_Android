@@ -116,8 +116,10 @@ public partial class MainWindow : Window
     private string? _renderBackendFallbackReason;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
     private readonly Stopwatch _earlyMagentaTimer = new();
+    private readonly PsxInterlaceReconstructor _psxInterlaceReconstructor = new();
     private bool _earlyMagentaReported;
     private int _frames;
+    private double _uiPresentTimerTargetFps = -1;
     private long _lastStatusUpdateMs;
     private string _lastStatusKeys = string.Empty;
     private long _lastStatusFrame = long.MinValue;
@@ -128,6 +130,7 @@ public partial class MainWindow : Window
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_UI_BLIT") == "1";
     private readonly Action _presentOnUiAction;
     private IEmulatorCore? _pendingPresentCore;
+    private int _pendingPresentQueued;
     private byte[] _glSwapPresentBuffer = Array.Empty<byte>();
 
     private string? _romPath;
@@ -1124,7 +1127,7 @@ public partial class MainWindow : Window
             if (RenderBackendStateText != null)
             {
                 bool requestedOpenGl = _renderBackendMode == RenderBackendMode.OpenGl;
-                bool activeOpenGl = _renderSurface is OpenGlRenderSurface;
+                bool activeOpenGl = _renderSurface is IAcceleratedRenderSurface;
                 string stateText = requestedOpenGl
                     ? (activeOpenGl
                         ? "Active: OpenGL"
@@ -5596,6 +5599,8 @@ public partial class MainWindow : Window
             return;
         try
         {
+            bool postedPsxOpenGlPresent = ShouldUsePostedPsxOpenGlPresenter(_core);
+            UpdateUiPresentTimerCadence();
             MaybeUpdateStatusText();
             long tickStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
 
@@ -5604,7 +5609,7 @@ public partial class MainWindow : Window
 
             // rendera frame
             var core = _core;
-            if (_renderSkipEnabled)
+            if (!postedPsxOpenGlPresent && _renderSkipEnabled)
             {
                 double emuFps = Volatile.Read(ref _emuActualFps);
                 double targetFps = GetLiveTargetFps();
@@ -5619,14 +5624,13 @@ public partial class MainWindow : Window
                     _renderSkipCounter = 0;
                 }
             }
-            if (Dispatcher.UIThread.CheckAccess())
+            if (!postedPsxOpenGlPresent && Dispatcher.UIThread.CheckAccess())
             {
                 RenderFrame(core);
             }
-            else
+            else if (!postedPsxOpenGlPresent)
             {
-                _pendingPresentCore = core;
-                Dispatcher.UIThread.Post(_presentOnUiAction);
+                QueuePresentFrameOnUi(core);
             }
 
             if (TracePerf)
@@ -6519,8 +6523,16 @@ public partial class MainWindow : Window
     private IGameRenderSurface CreateRenderSurface()
     {
         return _renderBackendMode == RenderBackendMode.OpenGl
-            ? new OpenGlRenderSurface()
+            ? CreateAcceleratedRenderSurface()
             : new WriteableBitmapRenderSurface();
+    }
+
+    private IGameRenderSurface CreateAcceleratedRenderSurface()
+    {
+        if (ShouldUseNativeDesktopPsxPresenter(_core))
+            return new SdlNativeRenderSurface();
+
+        return new OpenGlRenderSurface();
     }
 
     private long _lastCoreFrameId = -1;
@@ -6534,9 +6546,12 @@ public partial class MainWindow : Window
     private void ResetPresentationState(bool clearBitmap)
     {
         _pendingPresentCore = null;
+        _pendingPresentQueued = 0;
         _glSwapPresentBuffer = Array.Empty<byte>();
+        _psxInterlaceReconstructor.Reset();
         _lastCoreFrameId = -1;
         _presentTickCounter = 0;
+        _uiPresentTimerTargetFps = -1;
         _lastPresentedWidth = 0;
         _lastPresentedHeight = 0;
         _presentedFrames = 0;
@@ -6593,9 +6608,9 @@ public partial class MainWindow : Window
         bool forceOpaque = ForceOpaqueCheck?.IsChecked == true;
         var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
 
-        if (_renderSurface is OpenGlRenderSurface glSurface
+        if (_renderSurface is IAcceleratedRenderSurface glSurface
             && core is PsxAdapter psx
-            && TryRenderPsxOpenGlFrame(psx, glSurface, blitOptions, renderStart))
+            && TryRenderPsxAcceleratedFrame(psx, glSurface, blitOptions, renderStart))
         {
             return;
         }
@@ -6634,7 +6649,7 @@ public partial class MainWindow : Window
             PerfHotspots.Add(PerfHotspot.UiBlit, metrics.BlitTicks);
         }
 
-        if (_renderSurface is OpenGlRenderSurface activeGlSurface && activeGlSurface.ShouldFallbackToBitmap(out string fallbackReason))
+        if (_renderSurface is IAcceleratedRenderSurface activeGlSurface && activeGlSurface.ShouldFallbackToBitmap(out string fallbackReason))
         {
             Console.WriteLine($"[MainWindow] OpenGL fallback -> bitmap: {fallbackReason}");
             var bitmapSurface = new WriteableBitmapRenderSurface();
@@ -6656,7 +6671,7 @@ public partial class MainWindow : Window
         }
 
         // VIKTIGT: tvinga repaint
-        if (_renderSurface is not OpenGlRenderSurface)
+        if (_renderSurface is not IAcceleratedRenderSurface)
             _renderSurface.View.InvalidateVisual();
 
         // Log presentation info
@@ -6675,9 +6690,9 @@ public partial class MainWindow : Window
             _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
     }
 
-    private bool TryRenderPsxOpenGlFrame(PsxAdapter psx, OpenGlRenderSurface glSurface, in FrameBlitOptions options, long renderStart)
+    private bool TryRenderPsxAcceleratedFrame(PsxAdapter psx, IAcceleratedRenderSurface glSurface, in FrameBlitOptions options, long renderStart)
     {
-        if (!psx.TrySwapPresentationBuffer(ref _glSwapPresentBuffer, out int width, out int height, out int srcStride, out double presentationWidth, out double presentationHeight))
+        if (!psx.TrySwapPresentationBuffer(ref _glSwapPresentBuffer, out int width, out int height, out int srcStride, out double presentationWidth, out double presentationHeight, out PsxAdapter.PresentationFrameInfo frameInfo))
             return false;
 
         EnsureBitmapFromCore(width, height);
@@ -6694,8 +6709,16 @@ public partial class MainWindow : Window
             Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} size={width}x{height} stride={srcStride} bytes={srcStride * height} glswap=1");
         }
 
-        FrameBlitMetrics metrics = glSurface.PresentOwnedBuffer(
-            _glSwapPresentBuffer,
+        _psxInterlaceReconstructor.TryApplyInPlace(
+            _glSwapPresentBuffer.AsSpan(0, Math.Min(_glSwapPresentBuffer.Length, srcStride * height)),
+            width,
+            height,
+            srcStride,
+            frameInfo);
+        glSurface.SetInterlaceBlend(false, -1);
+
+        FrameBlitMetrics metrics = glSurface.Present(
+            _glSwapPresentBuffer.AsSpan(0, Math.Min(_glSwapPresentBuffer.Length, srcStride * height)),
             width,
             height,
             srcStride,
@@ -6798,10 +6821,50 @@ public partial class MainWindow : Window
 
     private void PresentPendingFrame()
     {
-        var core = _pendingPresentCore;
-        _pendingPresentCore = null;
-        if (core != null && ReferenceEquals(core, _core))
-            RenderFrame(core);
+        while (true)
+        {
+            Interlocked.Exchange(ref _pendingPresentQueued, 0);
+            var core = _pendingPresentCore;
+            _pendingPresentCore = null;
+            if (core != null && ReferenceEquals(core, _core))
+                RenderFrame(core);
+
+            if (Volatile.Read(ref _pendingPresentQueued) == 0)
+                break;
+        }
+    }
+
+    private bool ShouldUsePostedPsxOpenGlPresenter(IEmulatorCore? core)
+        => _renderBackendMode == RenderBackendMode.OpenGl
+            && _renderSurface is IAcceleratedRenderSurface
+            && core is PsxAdapter;
+
+    private static bool ShouldUseNativeDesktopPsxPresenter(IEmulatorCore? core)
+    {
+        if (core is not PsxAdapter)
+            return false;
+
+        if (!OperatingSystem.IsLinux())
+            return false;
+
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_DESKTOP_NATIVE_PSX_VIDEO");
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        raw = raw.Trim();
+        return raw == "1"
+            || raw.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("yes", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void QueuePresentFrameOnUi(IEmulatorCore core)
+    {
+        _pendingPresentCore = core;
+        if (Interlocked.Exchange(ref _pendingPresentQueued, 1) != 0)
+            return;
+
+        Dispatcher.UIThread.Post(_presentOnUiAction, DispatcherPriority.Render);
     }
 
     private void UpdatePadTypeFromUi()
@@ -7086,6 +7149,9 @@ public partial class MainWindow : Window
                     if (TraceUiProfile)
                         _uiProfileAudioTicks += Stopwatch.GetTimestamp() - audioStart;
                 }
+
+                if (ShouldUsePostedPsxOpenGlPresenter(core))
+                    QueuePresentFrameOnUi(core);
 
                 if (!emuLoopFirstFrameLogged)
                 {
@@ -7734,6 +7800,25 @@ public partial class MainWindow : Window
         if (_core is PsxAdapter psx)
             return psx.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;
+    }
+
+    private void UpdateUiPresentTimerCadence()
+    {
+        double targetFps = 60.0;
+        if (!ShouldUsePostedPsxOpenGlPresenter(_core) && _renderBackendMode == RenderBackendMode.OpenGl && _core is PsxAdapter)
+            targetFps = GetLiveTargetFps();
+
+        if (!double.IsFinite(targetFps) || targetFps < 1.0)
+            targetFps = 60.0;
+
+        if (Math.Abs(_uiPresentTimerTargetFps - targetFps) < 0.01)
+            return;
+
+        _uiPresentTimerTargetFps = targetFps;
+        double intervalMs = 1000.0 / targetFps;
+        if (intervalMs < 5.0)
+            intervalMs = 5.0;
+        _timer.Interval = TimeSpan.FromMilliseconds(intervalMs);
     }
 
     private void StopHeartbeat()

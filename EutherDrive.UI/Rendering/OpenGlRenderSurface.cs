@@ -8,7 +8,7 @@ using Avalonia.Threading;
 
 namespace EutherDrive.Rendering;
 
-public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
+public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
 {
     private readonly OpenGlFrameControl _control = new();
 
@@ -43,6 +43,9 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
     public bool ShouldFallbackToBitmap(out string reason) => _control.ShouldFallbackToBitmap(out reason);
 
     public bool TryGetDebugSummary(out string summary) => _control.TryGetDebugSummary(out summary);
+
+    public void SetInterlaceBlend(bool enabled, int fieldParity)
+        => _control.SetInterlaceBlend(enabled, fieldParity);
 
     public void Reset() => _control.ResetFrame();
 
@@ -110,6 +113,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private int _scanlinesLocation = -1;
         private int _scanlineDarkenLocation = -1;
         private int _swapRedBlueLocation = -1;
+        private int _interlaceBlendLocation = -1;
+        private int _interlaceFieldParityLocation = -1;
         private int _presentCount;
         private int _renderCount;
         private int _uploadCount;
@@ -127,6 +132,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
         private bool _forceOpaque;
         private bool _applyScanlines;
         private bool _applyAdvancedPixelFilter;
+        private bool _interlaceBlendEnabled;
+        private int _interlaceBlendFieldParity = -1;
         private float _scanlineDarken = 1.0f;
         private bool _textureUsesNearest = true;
         private TexSubImage2DInvoker? _texSubImage2D;
@@ -306,8 +313,17 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 double avgUploadMs = _uploadCount > 0 ? (_uploadTicksTotal * 1000.0 / Stopwatch.Frequency) / _uploadCount : 0;
                 double lastRenderMs = _lastRenderTicks > 0 ? _lastRenderTicks * 1000.0 / Stopwatch.Frequency : 0;
                 double lastUploadMs = _lastUploadTicks > 0 ? _lastUploadTicks * 1000.0 / Stopwatch.Frequency : 0;
-                summary = $"GL Present:{_presentCount} Render:{_renderCount} Upload:{_uploadCount} Pending:{(_renderRequested ? 1 : 0)} R:{avgRenderMs:0.0}/{lastRenderMs:0.0}ms U:{avgUploadMs:0.0}/{lastUploadMs:0.0}ms";
+                summary = $"GL Present:{_presentCount} Render:{_renderCount} Upload:{_uploadCount} Pending:{(_renderRequested ? 1 : 0)} IL:{(_interlaceBlendEnabled ? 1 : 0)}/{_interlaceBlendFieldParity} R:{avgRenderMs:0.0}/{lastRenderMs:0.0}ms U:{avgUploadMs:0.0}/{lastUploadMs:0.0}ms";
                 return true;
+            }
+        }
+
+        public void SetInterlaceBlend(bool enabled, int fieldParity)
+        {
+            lock (_frameSync)
+            {
+                _interlaceBlendEnabled = enabled && (fieldParity == 0 || fieldParity == 1);
+                _interlaceBlendFieldParity = _interlaceBlendEnabled ? (fieldParity & 1) : -1;
             }
         }
 
@@ -321,6 +337,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 _frameBytes = Array.Empty<byte>();
                 _uploadBytes = Array.Empty<byte>();
                 _frameDirty = false;
+                _interlaceBlendEnabled = false;
+                _interlaceBlendFieldParity = -1;
             }
             QueueRenderRequest();
         }
@@ -356,6 +374,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 uniform float uApplyScanlines;
                 uniform float uScanlineDarken;
                 uniform float uSwapRedBlue;
+                uniform float uInterlaceBlend;
+                uniform float uInterlaceFieldParity;
 
                 float luma(vec3 color)
                 {
@@ -405,6 +425,34 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                     return clamp(sharpened, low, high);
                 }
 
+                vec4 sampleCurrentField(vec2 texelPos)
+                {
+                    float fieldParity = uInterlaceFieldParity;
+                    float maxFieldIndex = floor((uTextureSize.y - 1.0 - fieldParity) * 0.5);
+                    if (maxFieldIndex <= 0.0)
+                        return sampleTexel(vec2(texelPos.x, fieldParity));
+
+                    float fieldPos = clamp((texelPos.y - fieldParity) * 0.5, 0.0, maxFieldIndex);
+                    float fieldIndex0 = floor(fieldPos);
+                    float fieldIndex1 = min(fieldIndex0 + 1.0, maxFieldIndex);
+                    float y0 = fieldParity + (fieldIndex0 * 2.0);
+                    float y1 = fieldParity + (fieldIndex1 * 2.0);
+                    float t = fieldPos - fieldIndex0;
+                    return mix(
+                        sampleTexel(vec2(texelPos.x, y0)),
+                        sampleTexel(vec2(texelPos.x, y1)),
+                        t);
+                }
+
+                vec4 softenInterlace(vec2 texelPos, vec4 color)
+                {
+                    if (uInterlaceBlend <= 0.5 || uTextureSize.y < 2.0)
+                        return color;
+
+                    vec4 bob = sampleCurrentField(texelPos);
+                    return vec4(bob.rgb, color.a);
+                }
+
                 void main()
                 {
                     vec2 texelPos = floor(vUv * uTextureSize);
@@ -414,6 +462,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                     {
                         color = vec4(sharpen(texelPos), sampleTexel(texelPos).a);
                     }
+
+                    color = softenInterlace(texelPos, color);
 
                     if (uApplyScanlines > 0.5 && mod(texelPos.y, 2.0) > 0.5)
                         color.rgb *= uScanlineDarken;
@@ -459,6 +509,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _scanlinesLocation = GetUniformLocation("uApplyScanlines");
             _scanlineDarkenLocation = GetUniformLocation("uScanlineDarken");
             _swapRedBlueLocation = GetUniformLocation("uSwapRedBlue");
+            _interlaceBlendLocation = GetUniformLocation("uInterlaceBlend");
+            _interlaceFieldParityLocation = GetUniformLocation("uInterlaceFieldParity");
 
             _vertexBufferId = gl.GenBuffer();
             gl.BindBuffer(GlArrayBuffer, _vertexBufferId);
@@ -544,6 +596,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _scanlinesLocation = -1;
             _scanlineDarkenLocation = -1;
             _swapRedBlueLocation = -1;
+            _interlaceBlendLocation = -1;
+            _interlaceFieldParityLocation = -1;
             _initSucceeded = false;
         }
 
@@ -568,6 +622,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             _scanlinesLocation = -1;
             _scanlineDarkenLocation = -1;
             _swapRedBlueLocation = -1;
+            _interlaceBlendLocation = -1;
+            _interlaceFieldParityLocation = -1;
             _initSucceeded = false;
             _texSubImage2D = null;
             _getUniformLocation = null;
@@ -612,6 +668,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
             bool forceOpaque;
             bool applyScanlines;
             bool applyAdvancedPixelFilter;
+            bool interlaceBlendEnabled;
+            int interlaceBlendFieldParity;
             float scanlineDarken;
             lock (_frameSync)
             {
@@ -623,6 +681,8 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 forceOpaque = _forceOpaque;
                 applyScanlines = _applyScanlines;
                 applyAdvancedPixelFilter = _applyAdvancedPixelFilter;
+                interlaceBlendEnabled = _interlaceBlendEnabled;
+                interlaceBlendFieldParity = _interlaceBlendFieldParity;
                 scanlineDarken = _scanlineDarken;
                 _frameDirty = false;
             }
@@ -669,6 +729,10 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
                 _uniform1f.Invoke(_scanlineDarkenLocation, scanlineDarken);
             if (_swapRedBlueLocation >= 0 && _uniform1f != null)
                 _uniform1f.Invoke(_swapRedBlueLocation, _useSafeRgbaUpload ? 1.0f : 0.0f);
+            if (_interlaceBlendLocation >= 0 && _uniform1f != null)
+                _uniform1f.Invoke(_interlaceBlendLocation, interlaceBlendEnabled ? 1.0f : 0.0f);
+            if (_interlaceFieldParityLocation >= 0 && _uniform1f != null)
+                _uniform1f.Invoke(_interlaceFieldParityLocation, interlaceBlendFieldParity == 1 ? 1.0f : 0.0f);
             gl.BindBuffer(GlArrayBuffer, _vertexBufferId);
 
             if (_positionLocation >= 0)
@@ -712,14 +776,22 @@ public sealed class OpenGlRenderSurface : IGameRenderSurface, IDisposable
 
             if (shouldRequest)
             {
+                void requestOnUi()
+                {
+                    if (TopLevel.GetTopLevel(this) is TopLevel topLevel)
+                    {
+                        topLevel.RequestAnimationFrame(_ => RequestNextFrameRendering());
+                    }
+                    else
+                    {
+                        RequestNextFrameRendering();
+                    }
+                }
+
                 if (Dispatcher.UIThread.CheckAccess())
-                {
-                    RequestNextFrameRendering();
-                }
+                    requestOnUi();
                 else
-                {
-                    Dispatcher.UIThread.Post(RequestNextFrameRendering, DispatcherPriority.Render);
-                }
+                    Dispatcher.UIThread.Post(requestOnUi, DispatcherPriority.Render);
             }
         }
 
