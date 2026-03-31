@@ -13,7 +13,6 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
     <AndroidUseSharedRuntime>false</AndroidUseSharedRuntime>
-    <AndroidFastDeploymentType>None</AndroidFastDeploymentType>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
@@ -51,6 +50,9 @@
     </Compile>
     <Compile Include="..\EutherDrive.UI\Rendering\IGameRenderSurface.cs">
       <Link>Rendering\IGameRenderSurface.cs</Link>
+    </Compile>
+    <Compile Include="..\EutherDrive.UI\Rendering\IAcceleratedRenderSurface.cs">
+      <Link>Rendering\IAcceleratedRenderSurface.cs</Link>
     </Compile>
     <Compile Include="..\EutherDrive.UI\Rendering\OpenGlRenderSurface.cs">
       <Link>Rendering\OpenGlRenderSurface.cs</Link>

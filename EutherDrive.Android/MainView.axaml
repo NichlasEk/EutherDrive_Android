@@ -1001,6 +1001,42 @@
 
                 <Border Classes="surface" Padding="12">
                   <StackPanel Spacing="8">
+                    <TextBlock Text="PSX Timing"
+                               FontWeight="Bold" />
+                    <Grid ColumnDefinitions="Auto,*"
+                          ColumnSpacing="10"
+                          RowDefinitions="Auto,Auto"
+                          RowSpacing="10">
+                      <TextBlock Text="PSX video"
+                                 VerticalAlignment="Center" />
+                      <ComboBox Grid.Column="1"
+                                SelectedIndex="{Binding PsxVideoStandardIndex}"
+                                SelectionChanged="OnPsxVideoStandardChanged">
+                        <ComboBoxItem Content="Auto" />
+                        <ComboBoxItem Content="PAL" />
+                        <ComboBoxItem Content="NTSC" />
+                      </ComboBox>
+
+                      <TextBlock Grid.Row="1"
+                                 Text="PSX rate"
+                                 VerticalAlignment="Center" />
+                      <ComboBox Grid.Row="1"
+                                Grid.Column="1"
+                                SelectedIndex="{Binding PsxFrameRateIndex}"
+                                SelectionChanged="OnPsxFrameRateChanged">
+                        <ComboBoxItem Content="Auto" />
+                        <ComboBoxItem Content="50 Hz" />
+                        <ComboBoxItem Content="60 Hz" />
+                      </ComboBox>
+                    </Grid>
+                    <TextBlock Text="Auto follows the game. Use PAL plus 50 Hz only if a PAL title still feels mistimed."
+                               Foreground="#91A8BD"
+                               TextWrapping="Wrap" />
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <StackPanel Spacing="8">
                     <TextBlock Text="Display"
                                FontWeight="Bold" />
                     <CheckBox Classes="settingsToggle"

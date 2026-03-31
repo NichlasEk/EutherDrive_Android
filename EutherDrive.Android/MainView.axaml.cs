@@ -66,6 +66,7 @@ public partial class MainView : UserControl
     private readonly string _legacyJsonSettingsPath;
     private readonly SavestateService _savestateService;
     private readonly Stopwatch _perfStopwatch = Stopwatch.StartNew();
+    private readonly PsxInterlaceReconstructor _psxInterlaceReconstructor = new();
     private IEmulatorCore? _core;
     private Thread? _emulationThread;
     private volatile bool _emulationThreadRunning;
@@ -112,8 +113,6 @@ public partial class MainView : UserControl
     private int _bootRequestSerial;
     private bool _bootInProgress;
     private int _presentLatestFrameQueued;
-    private bool _androidPsxInterlaceThrottleActive;
-    private int _androidPsxInterlacePresentParity = -1;
 
     public MainView()
     {
@@ -1377,6 +1376,7 @@ public partial class MainView : UserControl
             ForceOpaque: forceOpaque);
         if (_renderSurface is OpenGlRenderSurface glOwnedSurface)
         {
+            glOwnedSurface.SetInterlaceBlend(psxInterlaceBlend, psxInterlaceFieldParity);
             lock (_frameSync)
             {
                 if (ReferenceEquals(_presentFrameBuffer, frameBuffer))
@@ -1400,8 +1400,8 @@ public partial class MainView : UserControl
                     _presentFrameBuffer = Array.Empty<byte>();
             }
 
-            _ = nativeGlOwnedSurface.PresentOwnedBuffer(
-                frameBuffer,
+            _ = nativeGlOwnedSurface.Present(
+                frameBuffer.AsSpan(),
                 width,
                 height,
                 srcStride,
@@ -1607,7 +1607,7 @@ public partial class MainView : UserControl
         _latestPerfHeadline = "FPS --  MAX --";
         _viewModel.PerfSummary = "Perf idle";
         _viewModel.PerfHeadline = "FPS --  MAX --";
-        ResetAndroidPsxInterlaceThrottle();
+        _psxInterlaceReconstructor.Reset();
     }
 
     private void UpdatePerfStats(long emuTicks, long audioTicks, long blitTicks)
@@ -2338,6 +2338,22 @@ public partial class MainView : UserControl
         _viewModel.FooterStatus = $"PSX analog pad mode {(_viewModel.PsxAnalogControllerEnabled ? "enabled" : "disabled")}. Reboot the game if it does not detect the controller change live.";
     }
 
+    private void OnPsxVideoStandardChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        _viewModel.PsxVideoStandardIndex = Math.Clamp((sender as ComboBox)?.SelectedIndex ?? 0, 0, 2);
+        ApplyPsxExecutionSettings();
+        SaveSettings();
+        _viewModel.FooterStatus = $"PSX video set to {GetPsxVideoStandardMode(_viewModel.PsxVideoStandardIndex)}.";
+    }
+
+    private void OnPsxFrameRateChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        _viewModel.PsxFrameRateIndex = Math.Clamp((sender as ComboBox)?.SelectedIndex ?? 0, 0, 2);
+        ApplyPsxExecutionSettings();
+        SaveSettings();
+        _viewModel.FooterStatus = $"PSX rate set to {DescribeFrameRateMode(GetPsxFrameRateMode(_viewModel.PsxFrameRateIndex))}.";
+    }
+
     private void OnSharpPixelsToggle(object? sender, RoutedEventArgs e)
     {
         _viewModel.SharpPixelsEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked != false;
@@ -2387,16 +2403,53 @@ public partial class MainView : UserControl
 
     private void ApplyPsxExecutionSettings()
     {
+        FrameRateMode frameRateMode = GetPsxFrameRateMode(_viewModel.PsxFrameRateIndex);
+        PsxVideoStandardMode videoStandardMode = GetPsxVideoStandardMode(_viewModel.PsxVideoStandardIndex);
+
         PsxAdapter.AnalogControllerEnabled = _viewModel.PsxAnalogControllerEnabled;
         PsxAdapter.FastLoadEnabled = _viewModel.PsxFastLoadEnabled;
         PsxAdapter.SuperFastBootEnabled = _viewModel.PsxSuperFastBootEnabled;
+        PsxAdapter.FrameRateMode = frameRateMode;
+        PsxAdapter.VideoStandardMode = videoStandardMode;
 
         if (_core is PsxAdapter psx)
         {
             psx.SetAnalogControllerEnabled(_viewModel.PsxAnalogControllerEnabled);
             psx.SetFastLoadEnabled(_viewModel.PsxFastLoadEnabled);
             psx.SetSuperFastBootEnabled(_viewModel.PsxSuperFastBootEnabled);
+            psx.SetFrameRateMode(frameRateMode);
+            psx.SetVideoStandardMode(videoStandardMode);
         }
+    }
+
+    private static FrameRateMode GetPsxFrameRateMode(int selectedIndex)
+    {
+        return selectedIndex switch
+        {
+            1 => FrameRateMode.Hz50,
+            2 => FrameRateMode.Hz60,
+            _ => FrameRateMode.Auto
+        };
+    }
+
+    private static PsxVideoStandardMode GetPsxVideoStandardMode(int selectedIndex)
+    {
+        return selectedIndex switch
+        {
+            1 => PsxVideoStandardMode.PAL,
+            2 => PsxVideoStandardMode.NTSC,
+            _ => PsxVideoStandardMode.Auto
+        };
+    }
+
+    private static string DescribeFrameRateMode(FrameRateMode mode)
+    {
+        return mode switch
+        {
+            FrameRateMode.Hz50 => "50 Hz",
+            FrameRateMode.Hz60 => "60 Hz",
+            _ => "Auto"
+        };
     }
 
     private void ApplySharpPixelsSetting()
@@ -2449,6 +2502,8 @@ public partial class MainView : UserControl
             PsxAnalogControllerEnabled = _viewModel.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = _viewModel.PsxFastLoadEnabled,
             PsxSuperFastBootEnabled = _viewModel.PsxSuperFastBootEnabled,
+            PsxVideoStandardIndex = _viewModel.PsxVideoStandardIndex,
+            PsxFrameRateIndex = _viewModel.PsxFrameRateIndex,
             SharpPixelsEnabled = _viewModel.SharpPixelsEnabled,
             Dsp1Path = _viewModel.Dsp1Path,
             Dsp1Display = _viewModel.Dsp1Display,
@@ -2545,6 +2600,8 @@ public partial class MainView : UserControl
         _viewModel.PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled;
         _viewModel.PsxFastLoadEnabled = settings.PsxFastLoadEnabled;
         _viewModel.PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled;
+        _viewModel.PsxVideoStandardIndex = Math.Clamp(settings.PsxVideoStandardIndex, 0, 2);
+        _viewModel.PsxFrameRateIndex = Math.Clamp(settings.PsxFrameRateIndex, 0, 2);
         _viewModel.SharpPixelsEnabled = settings.SharpPixelsEnabled;
         _viewModel.Dsp1Path = settings.Dsp1Path;
         _viewModel.Dsp1Display = settings.Dsp1Display ?? "(none)";
@@ -2826,16 +2883,20 @@ public partial class MainView : UserControl
     {
         if (core is PsxAdapter psx && psx.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int swapWidth, out int swapHeight, out int swapStride, out double swapPresentationWidth, out double swapPresentationHeight, out PsxAdapter.PresentationFrameInfo psxFrameInfo))
         {
-            if (ShouldDeferAndroidPsxInterlacePresentation(psxFrameInfo))
-                return;
+            _psxInterlaceReconstructor.TryApplyInPlace(
+                _captureFrameBuffer.AsSpan(0, Math.Min(_captureFrameBuffer.Length, swapStride * swapHeight)),
+                swapWidth,
+                swapHeight,
+                swapStride,
+                psxFrameInfo);
 
             lock (_frameSync)
             {
                 _lastFrameWidth = swapWidth;
                 _lastFrameHeight = swapHeight;
                 _lastFrameStride = swapStride;
-                _lastPsxInterlaceBlend = psxFrameInfo.IsInterlaceWeave && psxFrameInfo.HasCompleteInterlacePair;
-                _lastPsxInterlaceFieldParity = _lastPsxInterlaceBlend ? (psxFrameInfo.InterlaceFieldParity & 1) : -1;
+                _lastPsxInterlaceBlend = false;
+                _lastPsxInterlaceFieldParity = -1;
                 _lastPresentationWidth = swapPresentationWidth;
                 _lastPresentationHeight = swapPresentationHeight;
                 (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
@@ -2847,7 +2908,7 @@ public partial class MainView : UserControl
             return;
         }
 
-        ResetAndroidPsxInterlaceThrottle();
+        _psxInterlaceReconstructor.Reset();
 
         if (core is SnesAdapter snes && snes.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int snesWidth, out int snesHeight, out int snesStride))
         {
@@ -2928,41 +2989,6 @@ public partial class MainView : UserControl
         QueuePresentLatestFrame();
     }
 
-    private bool ShouldDeferAndroidPsxInterlacePresentation(PsxAdapter.PresentationFrameInfo frameInfo)
-    {
-        if (_renderSurface is not AndroidNativeGlRenderSurface)
-        {
-            ResetAndroidPsxInterlaceThrottle();
-            return false;
-        }
-
-        if (!frameInfo.IsInterlaceWeave)
-        {
-            ResetAndroidPsxInterlaceThrottle();
-            return false;
-        }
-
-        // On Android native GL, prefer a stable 30 Hz woven presentation over pushing every raw 480i field.
-        if (!frameInfo.HasCompleteInterlacePair)
-            return true;
-
-        int fieldParity = frameInfo.InterlaceFieldParity & 1;
-        if (!_androidPsxInterlaceThrottleActive || _androidPsxInterlacePresentParity < 0)
-        {
-            _androidPsxInterlaceThrottleActive = true;
-            _androidPsxInterlacePresentParity = fieldParity;
-            return false;
-        }
-
-        return fieldParity != _androidPsxInterlacePresentParity;
-    }
-
-    private void ResetAndroidPsxInterlaceThrottle()
-    {
-        _androidPsxInterlaceThrottleActive = false;
-        _androidPsxInterlacePresentParity = -1;
-    }
-
     private static void EnsureFrameBufferCapacity(ref byte[] buffer, int requiredBytes)
     {
         if (buffer.Length < requiredBytes)
@@ -3000,11 +3026,29 @@ public partial class MainView : UserControl
 
     private IGameRenderSurface CreateRenderSurface()
     {
-        var surface = new AndroidNativeGlRenderSurface();
-        surface.SetOverlayInputCallbacks(SetNativeActionState, SetNativeDirections);
-        surface.SetScreenTapCallback(OnNativeScreenTapped);
-        surface.SetLandscapeOverlayEnabled(_viewModel.IsLandscapeMode);
-        return surface;
+        if (ShouldUseAndroidNativeGlSurface())
+        {
+            var nativeSurface = new AndroidNativeGlRenderSurface();
+            nativeSurface.SetOverlayInputCallbacks(SetNativeActionState, SetNativeDirections);
+            nativeSurface.SetScreenTapCallback(OnNativeScreenTapped);
+            nativeSurface.SetLandscapeOverlayEnabled(_viewModel.IsLandscapeMode);
+            return nativeSurface;
+        }
+
+        return new OpenGlRenderSurface();
+    }
+
+    private static bool ShouldUseAndroidNativeGlSurface()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_ANDROID_NATIVE_GL");
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        raw = raw.Trim();
+        return raw == "1"
+            || raw.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("yes", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("on", StringComparison.OrdinalIgnoreCase);
     }
 
     private void UpdateActiveRenderModeLabel()
@@ -3014,7 +3058,7 @@ public partial class MainView : UserControl
             WriteableBitmapRenderSurface => "Active: Bitmap fallback",
             AndroidNativeGlRenderSurface => "Active: OpenGL Native",
             OpenGlRenderSurface => "Active: OpenGL",
-            _ => "Active: OpenGL Native"
+            _ => "Active: OpenGL"
         };
         UpdateLandscapeNativeOverlayVisibility();
     }
@@ -3076,7 +3120,10 @@ public partial class MainView : UserControl
             _lastRenderSurfaceFallbackReason = string.Empty;
         }
         UpdateActiveRenderModeLabel();
-        if (_renderSurface.EnsureSize(width, height) || !IsRenderSurfaceAttachedToExpectedHost())
+        bool sizeChanged = _renderSurface.EnsureSize(width, height);
+        bool hostMismatch = !IsRenderSurfaceAttachedToExpectedHost();
+        bool shouldAttach = hostMismatch || (sizeChanged && _renderSurface is not AndroidNativeGlRenderSurface);
+        if (shouldAttach)
             AttachRenderSurfaceToActiveHost();
         ApplySharpPixelsSetting();
     }
@@ -3458,6 +3505,8 @@ public partial class MainView : UserControl
         private bool _psxAnalogControllerEnabled;
         private bool _psxFastLoadEnabled;
         private bool _psxSuperFastBootEnabled;
+        private int _psxVideoStandardIndex;
+        private int _psxFrameRateIndex;
         private bool _sharpPixelsEnabled = true;
         private string _dsp1Display = "(none)";
         private string _dsp2Display = "(none)";
@@ -3704,6 +3753,8 @@ public partial class MainView : UserControl
         public bool PsxAnalogControllerEnabled { get => _psxAnalogControllerEnabled; set => SetField(ref _psxAnalogControllerEnabled, value); }
         public bool PsxFastLoadEnabled { get => _psxFastLoadEnabled; set => SetField(ref _psxFastLoadEnabled, value); }
         public bool PsxSuperFastBootEnabled { get => _psxSuperFastBootEnabled; set => SetField(ref _psxSuperFastBootEnabled, value); }
+        public int PsxVideoStandardIndex { get => _psxVideoStandardIndex; set => SetField(ref _psxVideoStandardIndex, Math.Clamp(value, 0, 2)); }
+        public int PsxFrameRateIndex { get => _psxFrameRateIndex; set => SetField(ref _psxFrameRateIndex, Math.Clamp(value, 0, 2)); }
         public bool SharpPixelsEnabled { get => _sharpPixelsEnabled; set => SetField(ref _sharpPixelsEnabled, value); }
         public string Dsp1Display { get => _dsp1Display; set => SetField(ref _dsp1Display, value); }
         public string Dsp2Display { get => _dsp2Display; set => SetField(ref _dsp2Display, value); }
@@ -3866,6 +3917,8 @@ public partial class MainView : UserControl
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public bool PsxSuperFastBootEnabled { get; set; }
+        public int PsxVideoStandardIndex { get; set; }
+        public int PsxFrameRateIndex { get; set; }
         public bool SharpPixelsEnabled { get; set; } = true;
         public string? Dsp1Path { get; set; }
         public string? Dsp1Display { get; set; }
