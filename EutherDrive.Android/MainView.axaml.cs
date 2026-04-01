@@ -117,6 +117,8 @@ public partial class MainView : UserControl
     private int _bootRequestSerial;
     private bool _bootInProgress;
     private int _presentLatestFrameQueued;
+    private int _androidPsxTransientBlankBurst;
+    private bool _androidPsxHasStableVisibleFrame;
 
     public MainView()
     {
@@ -145,9 +147,12 @@ public partial class MainView : UserControl
         bool landscapeChanged = string.Equals(e.PropertyName, nameof(MainViewModel.IsLandscapeMode), StringComparison.Ordinal);
         bool debugChanged = string.Equals(e.PropertyName, nameof(MainViewModel.DebugVisible), StringComparison.Ordinal)
             || string.Equals(e.PropertyName, nameof(MainViewModel.DebugPageIndex), StringComparison.Ordinal);
-        if (!landscapeChanged && !debugChanged)
+        bool shellVisibilityChanged = string.Equals(e.PropertyName, nameof(MainViewModel.MainShellVisible), StringComparison.Ordinal)
+            || string.Equals(e.PropertyName, nameof(MainViewModel.SettingsVisible), StringComparison.Ordinal);
+        if (!landscapeChanged && !debugChanged && !shellVisibilityChanged)
             return;
 
+        UpdateNativeRenderSurfaceVisibility();
         AttachRenderSurfaceToActiveHost();
         UpdateLandscapeNativeOverlayVisibility();
         if (_lastFrameWidth > 0 && _lastFrameHeight > 0)
@@ -1326,16 +1331,17 @@ public partial class MainView : UserControl
     private unsafe void PresentLatestFrame()
     {
         bool quietNativeShellUi = ShouldQuietNativeShellUi();
+        if (_viewModel.PerfHeadline != _latestPerfHeadline)
+        {
+            _viewModel.PerfHeadline = _latestPerfHeadline;
+        }
+
         if (!quietNativeShellUi)
         {
             UpdateOverlaySummary();
             if (_viewModel.PerfSummary != _latestPerfSummary)
             {
                 _viewModel.PerfSummary = _latestPerfSummary;
-            }
-            if (_viewModel.PerfHeadline != _latestPerfHeadline)
-            {
-                _viewModel.PerfHeadline = _latestPerfHeadline;
             }
         }
 
@@ -1384,6 +1390,25 @@ public partial class MainView : UserControl
             || _core is MdTracerAdapter
             || _core is PceCdAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
+
+        if (_renderSurface is AndroidNativeGlRenderSurface
+            && frameIsPsx
+            && ShouldHoldTransientPsxBlank(psxFrameInfo))
+        {
+            lock (_frameSync)
+            {
+                if (ReferenceEquals(_presentFrameBuffer, frameBuffer))
+                    _presentFrameBuffer = Array.Empty<byte>();
+            }
+
+            Interlocked.Add(ref _perfAccumulatedPresentTicks, _perfStopwatch.ElapsedTicks - presentStart);
+            Interlocked.Increment(ref _perfPresentedWindowFrames);
+            long heldDroppedFrames = serial - previouslyPresentedSerial - 1;
+            if (heldDroppedFrames > 0)
+                Interlocked.Add(ref _perfDroppedWindowFrames, heldDroppedFrames);
+
+            return;
+        }
 
         if (frameIsPsx)
         {
@@ -1441,6 +1466,11 @@ public partial class MainView : UserControl
                 blitOptions,
                 measurePerf: false);
         }
+
+        if (frameIsPsx)
+            NotePresentedPsxFrame(psxFrameInfo);
+        else
+            ResetAndroidPsxTransientBlankState();
 
         if (TryGetRenderSurfaceFallbackReason(out string fallbackReason))
         {
@@ -1633,6 +1663,39 @@ public partial class MainView : UserControl
         _viewModel.PerfSummary = "Perf idle";
         _viewModel.PerfHeadline = "FPS --  MAX --";
         _psxInterlaceReconstructor.Reset();
+        ResetAndroidPsxTransientBlankState();
+    }
+
+    private bool ShouldHoldTransientPsxBlank(in PsxAdapter.PresentationFrameInfo frameInfo)
+    {
+        if (!(frameInfo.IsDisplayDisabled && frameInfo.IsMostlyBlack))
+        {
+            if (!frameInfo.IsMostlyBlack || !frameInfo.IsDisplayDisabled)
+                _androidPsxTransientBlankBurst = 0;
+            return false;
+        }
+
+        if (!_androidPsxHasStableVisibleFrame)
+            return false;
+
+        _androidPsxTransientBlankBurst++;
+        return _androidPsxTransientBlankBurst <= 4;
+    }
+
+    private void NotePresentedPsxFrame(in PsxAdapter.PresentationFrameInfo frameInfo)
+    {
+        if (frameInfo.IsDisplayDisabled && frameInfo.IsMostlyBlack)
+            return;
+
+        _androidPsxTransientBlankBurst = 0;
+        if (!frameInfo.IsMostlyBlack)
+            _androidPsxHasStableVisibleFrame = true;
+    }
+
+    private void ResetAndroidPsxTransientBlankState()
+    {
+        _androidPsxTransientBlankBurst = 0;
+        _androidPsxHasStableVisibleFrame = false;
     }
 
     private void UpdatePerfStats(long emuTicks, long audioTicks, long blitTicks)
@@ -3119,14 +3182,19 @@ public partial class MainView : UserControl
 
     private void UpdateActiveRenderModeLabel()
     {
-        _viewModel.ActiveRenderModeLabel = _renderSurface switch
+        string nextLabel = _renderSurface switch
         {
             WriteableBitmapRenderSurface => "Active: Bitmap fallback",
             AndroidNativeGlRenderSurface => "Active: OpenGL Native",
             OpenGlRenderSurface => "Active: OpenGL",
             _ => "Active: OpenGL"
         };
-        UpdateLandscapeNativeOverlayVisibility();
+
+        if (!string.Equals(_viewModel.ActiveRenderModeLabel, nextLabel, StringComparison.Ordinal))
+        {
+            _viewModel.ActiveRenderModeLabel = nextLabel;
+            UpdateLandscapeNativeOverlayVisibility();
+        }
     }
 
     private void UpdateLandscapeNativeOverlayVisibility()
@@ -3139,6 +3207,12 @@ public partial class MainView : UserControl
         LandscapeTopRightControls.IsVisible = !useNativeOverlay;
         LandscapeDPadSurface.IsVisible = !useNativeOverlay;
         LandscapeFaceSurface.IsVisible = !useNativeOverlay;
+    }
+
+    private void UpdateNativeRenderSurfaceVisibility()
+    {
+        if (_renderSurface is AndroidNativeGlRenderSurface nativeSurface)
+            nativeSurface.SetHostVisible(_viewModel.MainShellVisible && !_viewModel.SettingsVisible);
     }
 
     private bool TryGetRenderSurfaceFallbackReason(out string reason)
@@ -3186,6 +3260,12 @@ public partial class MainView : UserControl
             _lastRenderSurfaceFallbackReason = string.Empty;
         }
         UpdateActiveRenderModeLabel();
+        UpdateNativeRenderSurfaceVisibility();
+        if (_renderSurface is AndroidNativeGlRenderSurface nativeSurface)
+        {
+            double targetFps = _core != null ? GetLiveTargetFps(_core) : 0;
+            nativeSurface.SetPreferredFrameRate(targetFps);
+        }
         bool sizeChanged = _renderSurface.EnsureSize(width, height);
         bool hostMismatch = !IsRenderSurfaceAttachedToExpectedHost();
         bool shouldAttach = hostMismatch || (sizeChanged && _renderSurface is not AndroidNativeGlRenderSurface);
@@ -3217,15 +3297,14 @@ public partial class MainView : UserControl
         if (_renderSurface is AndroidNativeGlRenderSurface nativeSurface)
         {
             nativeSurface.SetPresentationSize(targetWidth, targetHeight);
-        }
-
-        if (isLandscape && _renderSurface is AndroidNativeGlRenderSurface && targetHost.Parent is Control nativeParent)
-        {
-            ApplyPresentationSize(targetHost, nativeParent.Bounds.Width, nativeParent.Bounds.Height);
-            _appliedPresentationWidth = nativeParent.Bounds.Width;
-            _appliedPresentationHeight = nativeParent.Bounds.Height;
-            _appliedPresentationLandscape = true;
-            return;
+            if (targetHost.Parent is Control nativeParent)
+            {
+                ApplyPresentationSize(targetHost, nativeParent.Bounds.Width, nativeParent.Bounds.Height);
+                _appliedPresentationWidth = nativeParent.Bounds.Width;
+                _appliedPresentationHeight = nativeParent.Bounds.Height;
+                _appliedPresentationLandscape = isLandscape;
+                return;
+            }
         }
 
         (double appliedWidth, double appliedHeight) = ComputePixelPerfectPresentationSize(targetHost, targetWidth, targetHeight);

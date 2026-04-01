@@ -7,12 +7,12 @@ using Android.Content;
 using Android.Graphics;
 using Android.Graphics.Drawables;
 using Android.Opengl;
+using Android.OS;
 using Android.Util;
 using Android.Views;
 using Android.Widget;
 using Avalonia.Controls;
 using Avalonia.Layout;
-using Avalonia.Platform;
 using Java.Nio;
 
 namespace EutherDrive.Rendering;
@@ -21,7 +21,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 {
     private readonly AndroidNativeGlHost _host = new();
 
-    public Control View => _host;
+    public Control View => _host.View;
     public int PixelWidth => _host.PixelWidth;
     public int PixelHeight => _host.PixelHeight;
 
@@ -65,6 +65,12 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
     public void SetPresentationSize(double width, double height)
         => _host.SetPresentationSize(width, height);
 
+    public void SetHostVisible(bool visible)
+        => _host.SetHostVisible(visible);
+
+    public void SetPreferredFrameRate(double fps)
+        => _host.SetPreferredFrameRate(fps);
+
     public void SetInterlaceBlend(bool enabled, int fieldParity)
         => _host.SetInterlaceBlend(enabled, fieldParity);
 
@@ -72,9 +78,10 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
     public void Dispose() => _host.DisposeSurface();
 
-    private sealed class AndroidNativeGlHost : NativeControlHost
+    private sealed class AndroidNativeGlHost
     {
         private readonly object _frameSync = new();
+        private readonly AndroidRenderSlot _view;
         private byte[] _frameBytes = Array.Empty<byte>();
         private byte[] _stagingBytes = Array.Empty<byte>();
         private int _frameWidth;
@@ -86,6 +93,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private bool _forceOpaque;
         private bool _applyScanlines;
         private float _scanlineDarken = 1.0f;
+        private long _firstPresentTick;
         private bool _interlaceBlendEnabled;
         private int _interlaceBlendFieldParity = -1;
         private int _presentCount;
@@ -95,6 +103,10 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private long _uploadTicksTotal;
         private long _lastRenderTicks;
         private long _lastUploadTicks;
+        private long _lastRenderEventTick;
+        private double _lastRenderIntervalMs;
+        private double _maxRenderIntervalMs;
+        private int _renderGapSpikeCount;
         private int _surfaceAvailableCount;
         private int _surfaceDestroyedCount;
         private int _surfaceSizeChangedCount;
@@ -105,6 +117,11 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private int _glInitCount;
         private int _blackClearCount;
         private int _reuseTextureCount;
+        private double _lastFrameAverageLuma;
+        private double _lastFrameDarkCoverage;
+        private int _sourceDarkPulseCount;
+        private long _lastSourceDarkPulseTick;
+        private double _lastSourceDarkPulseIntervalMs;
         private bool _initAttempted;
         private bool _initSucceeded;
         private string _fallbackReason = string.Empty;
@@ -117,15 +134,32 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private Action<IReadOnlyCollection<string>>? _directionsChanged;
         private Action? _screenTapped;
         private bool _landscapeOverlayEnabled;
+        private bool _hostVisible = true;
+        private float _preferredFrameRate;
         private AndroidGlRootView? _nativeView;
+        private bool _nativeViewAttached;
+        private bool _hasLastVisibleLayout;
+        private int _lastVisibleLeft;
+        private int _lastVisibleTop;
+        private int _lastVisibleWidth;
+        private int _lastVisibleHeight;
+        private int _displayViewportLeft;
+        private int _displayViewportTop;
+        private int _displayViewportWidth;
+        private int _displayViewportHeight;
         private double _presentationWidth;
         private double _presentationHeight;
 
         public AndroidNativeGlHost()
         {
-            HorizontalAlignment = HorizontalAlignment.Stretch;
-            VerticalAlignment = VerticalAlignment.Stretch;
+            _view = new AndroidRenderSlot(this)
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch
+            };
         }
+
+        public Control View => _view;
 
         public int PixelWidth
         {
@@ -158,6 +192,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
         public void SetLandscapeOverlayEnabled(bool enabled)
         {
+            if (_landscapeOverlayEnabled == enabled)
+                return;
+
             _landscapeOverlayEnabled = enabled;
             NoteLayoutRequest();
             _nativeView?.RequestLayout();
@@ -166,26 +203,34 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         public void SetPresentationSize(double width, double height)
         {
             bool changed;
-            double previousWidth;
-            double previousHeight;
             lock (_frameSync)
             {
-                previousWidth = _presentationWidth;
-                previousHeight = _presentationHeight;
                 changed = Math.Abs(_presentationWidth - width) > 0.5 || Math.Abs(_presentationHeight - height) > 0.5;
                 _presentationWidth = width;
                 _presentationHeight = height;
             }
 
-            bool requiresLayout = changed;
-            if (changed && _nativeView != null)
-                requiresLayout = _nativeView.ShouldRelayoutForPresentationSize(previousWidth, previousHeight, width, height);
+            if (changed)
+                _nativeView?.NotifyPresentationSizeChanged();
 
-            if (requiresLayout)
-            {
-                NoteLayoutRequest();
-                _nativeView?.RequestLayout();
-            }
+            SyncNativeViewPlacement();
+        }
+
+        public void SetHostVisible(bool visible)
+        {
+            if (_hostVisible == visible)
+                return;
+
+            _hostVisible = visible;
+            SyncNativeViewPlacement();
+        }
+
+        public void SetPreferredFrameRate(double fps)
+        {
+            float normalized = fps > 1.0 ? (float)fps : 0f;
+            _preferredFrameRate = normalized;
+            EutherDrive.Android.MainActivity.Current?.SetPreferredRefreshRate(normalized);
+            _nativeView?.SetPreferredFrameRate(normalized);
         }
 
         public void SetInterlaceBlend(bool enabled, int fieldParity)
@@ -224,6 +269,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             int dstStride = width * 4;
             int requiredBytes = checked(dstStride * height);
             long copyStart = Stopwatch.GetTimestamp();
+            (double avgLuma, double darkCoverage) = AnalyzeFrameBrightness(source, width, height, srcStride);
             byte[] stagingBytes;
 
             lock (_frameSync)
@@ -248,6 +294,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
             lock (_frameSync)
             {
+                if (_presentCount == 0)
+                    _firstPresentTick = Stopwatch.GetTimestamp();
                 (_frameBytes, _stagingBytes) = (_stagingBytes, _frameBytes);
                 _frameWidth = width;
                 _frameHeight = height;
@@ -260,6 +308,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _scanlineDarken = Math.Clamp(options.ScanlineDarkenFactor / 256f, 0f, 1f);
                 _presentCount++;
                 _lastUploadTicks = Stopwatch.GetTimestamp() - copyStart;
+                UpdateSourcePulseMetrics(avgLuma, darkCoverage);
             }
 
             _nativeView?.NotifyFrameUpdated(resized);
@@ -275,8 +324,12 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 return;
             }
 
+            (double avgLuma, double darkCoverage) = AnalyzeFrameBrightness(source.AsSpan(0, requiredBytes), width, height, srcStride);
+
             lock (_frameSync)
             {
+                if (_presentCount == 0)
+                    _firstPresentTick = Stopwatch.GetTimestamp();
                 _frameBytes = source;
                 _frameWidth = width;
                 _frameHeight = height;
@@ -288,6 +341,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _applyScanlines = options.ApplyScanlines;
                 _scanlineDarken = Math.Clamp(options.ScanlineDarkenFactor / 256f, 0f, 1f);
                 _presentCount++;
+                UpdateSourcePulseMetrics(avgLuma, darkCoverage);
             }
 
             _nativeView?.NotifyFrameUpdated(resized);
@@ -306,8 +360,18 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _renderRequested = true;
                 _applyScanlines = false;
                 _scanlineDarken = 1.0f;
+                _firstPresentTick = 0;
                 _interlaceBlendEnabled = false;
                 _interlaceBlendFieldParity = -1;
+                _lastRenderEventTick = 0;
+                _lastRenderIntervalMs = 0;
+                _maxRenderIntervalMs = 0;
+                _renderGapSpikeCount = 0;
+                _lastFrameAverageLuma = 0;
+                _lastFrameDarkCoverage = 0;
+                _sourceDarkPulseCount = 0;
+                _lastSourceDarkPulseTick = 0;
+                _lastSourceDarkPulseIntervalMs = 0;
             }
 
             _nativeView?.NotifyFrameUpdated(resized: true);
@@ -316,6 +380,23 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         public void DisposeSurface()
         {
             ResetFrame();
+            DetachNativeView();
+        }
+
+        public void OnSlotAttached()
+        {
+            AttachNativeView();
+            SyncNativeViewPlacement();
+        }
+
+        public void OnSlotDetached()
+        {
+            DetachNativeView();
+        }
+
+        public void OnSlotLayoutChanged()
+        {
+            SyncNativeViewPlacement();
         }
 
         public bool ShouldFallbackToBitmap(out string reason)
@@ -334,10 +415,31 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     return true;
                 }
 
-                if (_presentCount > 20 && _renderCount == 0)
+                if (_renderCount == 0 && _presentCount > 0)
                 {
-                    reason = "Native Android GL accepted frames but never rendered.";
-                    return true;
+                    long firstPresentTick = _firstPresentTick;
+                    if (firstPresentTick > 0)
+                    {
+                        double elapsedMs = (Stopwatch.GetTimestamp() - firstPresentTick) * 1000.0 / Stopwatch.Frequency;
+
+                        // GLSurfaceView hosted through NativeControlHost can take a while to finish
+                        // attach/measure/surface bring-up on real devices. Falling back after only a
+                        // couple dozen frames was racing that startup and forcing bitmap mode before
+                        // the first GL callback had any chance to land.
+                        if (_surfaceAvailableCount == 0 && _glInitCount == 0)
+                        {
+                            if (elapsedMs >= 5000.0)
+                            {
+                                reason = "Native Android GL surface never became available.";
+                                return true;
+                            }
+                        }
+                        else if (elapsedMs >= 3000.0)
+                        {
+                            reason = "Native Android GL accepted frames but never rendered.";
+                            return true;
+                        }
+                    }
                 }
             }
 
@@ -364,11 +466,18 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 double lastRenderMs = _lastRenderTicks > 0 ? _lastRenderTicks * 1000.0 / Stopwatch.Frequency : 0;
                 double lastUploadMs = _lastUploadTicks > 0 ? _lastUploadTicks * 1000.0 / Stopwatch.Frequency : 0;
                 summary = $"GL Present:{_presentCount} Render:{_renderCount} Upload:{_uploadCount} Pending:{(_renderRequested ? 1 : 0)} IL:{(_interlaceBlendEnabled ? 1 : 0)}/{_interlaceBlendFieldParity} R:{avgRenderMs:0.0}/{lastRenderMs:0.0}ms U:{avgUploadMs:0.0}/{lastUploadMs:0.0}ms";
-                summary = $"{summary}\nSurf a/d/s/z0/l:{_surfaceAvailableCount}/{_surfaceDestroyedCount}/{_surfaceSizeChangedCount}/{_surfaceZeroSizeCount}/{_layoutRequestCount} root:{_rootLayoutCount} game:{_gameViewLayoutCount} init:{_glInitCount} blk:{_blackClearCount} hold:{_reuseTextureCount}";
+                summary = $"{summary}\nSurf a/d/s/z0/l:{_surfaceAvailableCount}/{_surfaceDestroyedCount}/{_surfaceSizeChangedCount}/{_surfaceZeroSizeCount}/{_layoutRequestCount} root:{_rootLayoutCount} game:{_gameViewLayoutCount} vp:{_displayViewportLeft},{_displayViewportTop},{_displayViewportWidth}x{_displayViewportHeight} pfps:{_preferredFrameRate:0.00} init:{_glInitCount} blk:{_blackClearCount} hold:{_reuseTextureCount}";
+                summary = $"{summary}\nPulse src:{_sourceDarkPulseCount}@{_lastSourceDarkPulseIntervalMs:0}ms lum:{_lastFrameAverageLuma:0.0} dark:{_lastFrameDarkCoverage:0.00} gap:{_renderGapSpikeCount} last:{_lastRenderIntervalMs:0.0} max:{_maxRenderIntervalMs:0.0}ms";
                 if (!string.IsNullOrEmpty(_glVersion) || !string.IsNullOrEmpty(_glShadingLanguageVersion))
                     summary = $"{summary}\nGLES:{_glVersion} GLSL:{_glShadingLanguageVersion}";
                 if (!string.IsNullOrEmpty(_glVendor) || !string.IsNullOrEmpty(_glRenderer))
                     summary = $"{summary}\nGPU:{_glVendor} / {_glRenderer}";
+                if (EutherDrive.Android.MainActivity.Current is { } activity)
+                {
+                    string displaySummary = activity.GetRefreshDebugSummary();
+                    if (!string.IsNullOrEmpty(displaySummary))
+                        summary = $"{summary}\n{displaySummary}";
+                }
                 if (!string.IsNullOrEmpty(_fallbackReason))
                     summary = $"{summary}\nGL Fail:{_fallbackReason}";
                 if (!string.IsNullOrEmpty(_glInitDetails))
@@ -377,15 +486,17 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             }
         }
 
-        protected override IPlatformHandle CreateNativeControlCore(IPlatformHandle parent)
+        private void EnsureNativeView()
         {
+            if (_nativeView != null)
+                return;
+
             try
             {
                 Context context = EutherDrive.Android.MainActivity.Current ?? global::Android.App.Application.Context
                     ?? throw new InvalidOperationException("Android context is unavailable.");
-                var view = new AndroidGlRootView(context, this);
-                _nativeView = view;
-                return new Avalonia.Android.AndroidViewControlHandle(view);
+                _nativeView = new AndroidGlRootView(context, this);
+                _nativeView.SetPreferredFrameRate(_preferredFrameRate);
             }
             catch (Exception ex)
             {
@@ -393,31 +504,118 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 {
                     _initAttempted = true;
                     _initSucceeded = false;
-                    _fallbackReason = ex.Message;
+                    if (string.IsNullOrEmpty(_fallbackReason))
+                        _fallbackReason = ex.Message;
                 }
-
-                Context context = EutherDrive.Android.MainActivity.Current ?? global::Android.App.Application.Context
-                    ?? throw new InvalidOperationException("Android context is unavailable.");
-                return new Avalonia.Android.AndroidViewControlHandle(new View(context));
             }
         }
 
-        protected override void DestroyNativeControlCore(IPlatformHandle control)
+        private void AttachNativeView()
         {
-            if (control is Avalonia.Android.AndroidViewControlHandle androidHandle)
-            {
-                if (androidHandle.View is AndroidGlRootView view)
-                {
-                    if (ReferenceEquals(_nativeView, view))
-                        _nativeView = null;
-                    view.ReleaseSurface();
-                }
+            if (_nativeViewAttached)
+                return;
 
-                androidHandle.Destroy();
-            }
+            EnsureNativeView();
+            if (_nativeView == null)
+                return;
+
+            if (EutherDrive.Android.MainActivity.Current is not { } activity)
+                return;
+
+            activity.AttachNativeVideoView(_nativeView);
+            activity.SetPreferredRefreshRate(_preferredFrameRate);
+            _nativeViewAttached = true;
         }
 
-        private void BeginRender(out byte[] frameBytes, out int frameWidth, out int frameHeight, out bool frameDirty, out bool sharpPixelsEnabled, out bool forceOpaque, out bool applyScanlines, out float scanlineDarken, out bool interlaceBlendEnabled, out int interlaceBlendFieldParity)
+        private void DetachNativeView()
+        {
+            if (_nativeView is { } nativeView)
+            {
+                if (EutherDrive.Android.MainActivity.Current is { } activity)
+                    activity.DetachNativeVideoView(nativeView);
+
+                nativeView.ReleaseSurface();
+            }
+
+            _nativeViewAttached = false;
+            _hasLastVisibleLayout = false;
+            _lastVisibleLeft = 0;
+            _lastVisibleTop = 0;
+            _lastVisibleWidth = 0;
+            _lastVisibleHeight = 0;
+            EutherDrive.Android.MainActivity.Current?.SetPreferredRefreshRate(0f);
+            _nativeView = null;
+        }
+
+        private void SyncNativeViewPlacement()
+        {
+            AttachNativeView();
+            if (_nativeView is null || !_nativeViewAttached)
+                return;
+
+            if (EutherDrive.Android.MainActivity.Current is not { } activity)
+                return;
+
+            TopLevel? topLevel = TopLevel.GetTopLevel(_view);
+            Avalonia.Point? origin = topLevel != null
+                ? global::Avalonia.VisualExtensions.TranslatePoint(_view, new Avalonia.Point(0, 0), topLevel)
+                : null;
+            double renderScale = topLevel?.RenderScaling ?? 1.0;
+            if (renderScale <= 0)
+                renderScale = 1.0;
+
+            if (topLevel == null || !origin.HasValue)
+            {
+                return;
+            }
+
+            int width = Math.Max(0, (int)Math.Round(_view.Bounds.Width * renderScale));
+            int height = Math.Max(0, (int)Math.Round(_view.Bounds.Height * renderScale));
+            int left = Math.Max(0, (int)Math.Round(origin.Value.X * renderScale));
+            int top = Math.Max(0, (int)Math.Round(origin.Value.Y * renderScale));
+            if (width <= 0 || height <= 0)
+                return;
+
+            lock (_frameSync)
+            {
+                _displayViewportLeft = left;
+                _displayViewportTop = top;
+                _displayViewportWidth = width;
+                _displayViewportHeight = height;
+            }
+
+            if (!_hostVisible || !_view.IsVisible)
+            {
+                if (_hasLastVisibleLayout)
+                    activity.UpdateNativeVideoViewLayout(_nativeView, _lastVisibleLeft, _lastVisibleTop, _lastVisibleWidth, _lastVisibleHeight, visible: false);
+                return;
+            }
+
+            _hasLastVisibleLayout = true;
+            _lastVisibleLeft = left;
+            _lastVisibleTop = top;
+            _lastVisibleWidth = width;
+            _lastVisibleHeight = height;
+            activity.UpdateNativeVideoViewLayout(_nativeView, left, top, width, height, visible: true);
+        }
+
+        private void BeginRender(
+            out byte[] frameBytes,
+            out int frameWidth,
+            out int frameHeight,
+            out bool frameDirty,
+            out bool sharpPixelsEnabled,
+            out bool forceOpaque,
+            out bool applyScanlines,
+            out float scanlineDarken,
+            out bool interlaceBlendEnabled,
+            out int interlaceBlendFieldParity,
+            out double presentationWidth,
+            out double presentationHeight,
+            out int displayViewportLeft,
+            out int displayViewportTop,
+            out int displayViewportWidth,
+            out int displayViewportHeight)
         {
             lock (_frameSync)
             {
@@ -432,8 +630,110 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 scanlineDarken = _scanlineDarken;
                 interlaceBlendEnabled = _interlaceBlendEnabled;
                 interlaceBlendFieldParity = _interlaceBlendFieldParity;
+                presentationWidth = _presentationWidth;
+                presentationHeight = _presentationHeight;
+                displayViewportLeft = _displayViewportLeft;
+                displayViewportTop = _displayViewportTop;
+                displayViewportWidth = _displayViewportWidth;
+                displayViewportHeight = _displayViewportHeight;
                 _frameDirty = false;
             }
+        }
+
+        private void BeginRender(
+            out byte[] frameBytes,
+            out int frameWidth,
+            out int frameHeight,
+            out bool frameDirty,
+            out bool sharpPixelsEnabled,
+            out bool forceOpaque,
+            out bool applyScanlines,
+            out float scanlineDarken,
+            out bool interlaceBlendEnabled,
+            out int interlaceBlendFieldParity)
+        {
+            BeginRender(
+                out frameBytes,
+                out frameWidth,
+                out frameHeight,
+                out frameDirty,
+                out sharpPixelsEnabled,
+                out forceOpaque,
+                out applyScanlines,
+                out scanlineDarken,
+                out interlaceBlendEnabled,
+                out interlaceBlendFieldParity,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _);
+        }
+
+        private static (double avgLuma, double darkCoverage) AnalyzeFrameBrightness(ReadOnlySpan<byte> rgbaBytes, int width, int height, int stride)
+        {
+            if (width <= 0 || height <= 0 || stride <= 0 || rgbaBytes.IsEmpty)
+                return (0, 0);
+
+            int sampleCols = Math.Min(16, width);
+            int sampleRows = Math.Min(16, height);
+            int stepX = Math.Max(1, width / sampleCols);
+            int stepY = Math.Max(1, height / sampleRows);
+            double totalLuma = 0;
+            int darkSamples = 0;
+            int samples = 0;
+
+            for (int y = stepY / 2; y < height && samples < 256; y += stepY)
+            {
+                int rowOffset = y * stride;
+                for (int x = stepX / 2; x < width && samples < 256; x += stepX)
+                {
+                    int pixelOffset = rowOffset + (x * 4);
+                    if ((uint)(pixelOffset + 3) >= (uint)rgbaBytes.Length)
+                        break;
+
+                    byte r = rgbaBytes[pixelOffset];
+                    byte g = rgbaBytes[pixelOffset + 1];
+                    byte b = rgbaBytes[pixelOffset + 2];
+                    double luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+                    totalLuma += luma;
+                    if (luma <= 10.0)
+                        darkSamples++;
+                    samples++;
+                }
+            }
+
+            if (samples == 0)
+                return (0, 0);
+
+            return (totalLuma / samples, darkSamples / (double)samples);
+        }
+
+        private void UpdateSourcePulseMetrics(double avgLuma, double darkCoverage)
+        {
+            long nowTicks = Stopwatch.GetTimestamp();
+            bool isDarkPulse = avgLuma <= 12.0
+                && darkCoverage >= 0.92
+                && _lastFrameAverageLuma >= 20.0
+                && _lastFrameDarkCoverage <= 0.75;
+
+            if (isDarkPulse)
+            {
+                _sourceDarkPulseCount++;
+                if (_lastSourceDarkPulseTick > 0)
+                    _lastSourceDarkPulseIntervalMs = (nowTicks - _lastSourceDarkPulseTick) * 1000.0 / Stopwatch.Frequency;
+                _lastSourceDarkPulseTick = nowTicks;
+                if (_sourceDarkPulseCount <= 8 || (_sourceDarkPulseCount % 32) == 0)
+                {
+                    Log.Debug(
+                        "EutherDriveGL",
+                        $"source-dark-pulse count={_sourceDarkPulseCount} interval={_lastSourceDarkPulseIntervalMs:0}ms lum={avgLuma:0.0} dark={darkCoverage:0.00}");
+                }
+            }
+
+            _lastFrameAverageLuma = avgLuma;
+            _lastFrameDarkCoverage = darkCoverage;
         }
 
         private void NoteInitSuccess()
@@ -475,6 +775,21 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         {
             lock (_frameSync)
             {
+                long nowTicks = Stopwatch.GetTimestamp();
+                if (_lastRenderEventTick > 0)
+                {
+                    _lastRenderIntervalMs = (nowTicks - _lastRenderEventTick) * 1000.0 / Stopwatch.Frequency;
+                    if (_lastRenderIntervalMs > _maxRenderIntervalMs)
+                        _maxRenderIntervalMs = _lastRenderIntervalMs;
+                    if (_lastRenderIntervalMs >= 33.0)
+                    {
+                        _renderGapSpikeCount++;
+                        if (_renderGapSpikeCount <= 8 || (_renderGapSpikeCount % 32) == 0)
+                            Log.Debug("EutherDriveGL", $"render-gap {_lastRenderIntervalMs:0.0}ms uploaded={uploaded} present={_presentCount} render={_renderCount}");
+                    }
+                }
+
+                _lastRenderEventTick = nowTicks;
                 _renderCount++;
                 _renderTicksTotal += renderTicks;
                 _lastRenderTicks = renderTicks;
@@ -513,12 +828,14 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         {
             lock (_frameSync)
                 _surfaceAvailableCount++;
+            Log.Debug("EutherDriveGL", $"surface-available count={_surfaceAvailableCount}");
         }
 
         private void NoteSurfaceDestroyed()
         {
             lock (_frameSync)
                 _surfaceDestroyedCount++;
+            Log.Debug("EutherDriveGL", $"surface-destroyed count={_surfaceDestroyedCount}");
         }
 
         private void NoteSurfaceSizeChanged(int width, int height)
@@ -529,12 +846,14 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 if (width <= 0 || height <= 0)
                     _surfaceZeroSizeCount++;
             }
+            Log.Debug("EutherDriveGL", $"surface-size {width}x{height} count={_surfaceSizeChangedCount} zero={_surfaceZeroSizeCount}");
         }
 
         private void NoteGlInit()
         {
             lock (_frameSync)
                 _glInitCount++;
+            Log.Debug("EutherDriveGL", $"gl-init count={_glInitCount}");
         }
 
         private void NoteBlackClear()
@@ -549,24 +868,6 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _reuseTextureCount++;
         }
 
-        private void GetLatestFrameSize(out int frameWidth, out int frameHeight)
-        {
-            lock (_frameSync)
-            {
-                frameWidth = _frameWidth;
-                frameHeight = _frameHeight;
-            }
-        }
-
-        private void GetLatestPresentationSize(out double presentationWidth, out double presentationHeight)
-        {
-            lock (_frameSync)
-            {
-                presentationWidth = _presentationWidth;
-                presentationHeight = _presentationHeight;
-            }
-        }
-
         private void NotifyActionStateChanged(string tag, bool pressed)
             => _actionStateChanged?.Invoke(tag, pressed);
 
@@ -578,10 +879,39 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
         private bool IsLandscapeOverlayEnabled() => _landscapeOverlayEnabled;
 
+        private sealed class AndroidRenderSlot : Border
+        {
+            private readonly AndroidNativeGlHost _host;
+
+            public AndroidRenderSlot(AndroidNativeGlHost host)
+            {
+                _host = host;
+                Background = Avalonia.Media.Brushes.Transparent;
+                IsHitTestVisible = false;
+            }
+
+            protected override void OnAttachedToVisualTree(Avalonia.VisualTreeAttachmentEventArgs e)
+            {
+                base.OnAttachedToVisualTree(e);
+                LayoutUpdated += OnLayoutUpdated;
+                _host.OnSlotAttached();
+            }
+
+            protected override void OnDetachedFromVisualTree(Avalonia.VisualTreeAttachmentEventArgs e)
+            {
+                LayoutUpdated -= OnLayoutUpdated;
+                _host.OnSlotDetached();
+                base.OnDetachedFromVisualTree(e);
+            }
+
+            private void OnLayoutUpdated(object? sender, EventArgs e)
+            {
+                _host.OnSlotLayoutChanged();
+            }
+        }
+
         private sealed class AndroidGlRootView : FrameLayout
         {
-            private const float LandscapeIntegerSnapThreshold = 0.08f;
-            private const int PresentationLayoutJitterThresholdPx = 3;
             private const int OverlayDpadSizeDp = 192;
             private const int OverlayFaceButtonSizeDp = 74;
             private const int OverlayFaceAreaSizeDp = 212;
@@ -599,7 +929,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private readonly NativeActionButtonView _buttonY;
             private readonly NativeActionButtonView _buttonB;
             private readonly NativeActionButtonView _buttonA;
-            private Rect _lastGameRect;
+            private Rect _lastGameRect = new();
             private bool _hasLastGameRect;
 
             public AndroidGlRootView(Context context, AndroidNativeGlHost host) : base(context)
@@ -639,7 +969,17 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 AddView(_buttonA);
             }
 
+            public void SetPreferredFrameRate(float fps)
+            {
+                _gameView.SetPreferredFrameRate(fps);
+            }
+
             public void NotifyFrameUpdated(bool resized)
+            {
+                _gameView.RequestRenderSafe();
+            }
+
+            public void NotifyPresentationSizeChanged()
             {
                 _gameView.RequestRenderSafe();
             }
@@ -648,22 +988,6 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             {
                 ReleaseOverlayInputs();
                 _gameView.ReleaseSurface();
-            }
-
-            public bool ShouldRelayoutForPresentationSize(double previousWidth, double previousHeight, double nextWidth, double nextHeight)
-            {
-                int width = Width;
-                int height = Height;
-                if (width <= 0 || height <= 0)
-                    return true;
-
-                _host.GetLatestFrameSize(out int frameWidth, out int frameHeight);
-                Rect previousRect = ComputeGameRect(width, height, frameWidth, frameHeight, previousWidth, previousHeight);
-                Rect nextRect = ComputeGameRect(width, height, frameWidth, frameHeight, nextWidth, nextHeight);
-                return Math.Abs(previousRect.Left - nextRect.Left) > PresentationLayoutJitterThresholdPx
-                    || Math.Abs(previousRect.Top - nextRect.Top) > PresentationLayoutJitterThresholdPx
-                    || Math.Abs(previousRect.Right - nextRect.Right) > PresentationLayoutJitterThresholdPx
-                    || Math.Abs(previousRect.Bottom - nextRect.Bottom) > PresentationLayoutJitterThresholdPx;
             }
 
             protected override void OnLayout(bool changed, int left, int top, int right, int bottom)
@@ -677,9 +1001,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     return;
                 }
 
-                _host.GetLatestFrameSize(out int frameWidth, out int frameHeight);
-                _host.GetLatestPresentationSize(out double presentationWidth, out double presentationHeight);
-                Rect gameRect = ComputeGameRect(width, height, frameWidth, frameHeight, presentationWidth, presentationHeight);
+                Rect gameRect = new Rect(0, 0, width, height);
                 if (!_hasLastGameRect || !RectsEqual(_lastGameRect, gameRect))
                 {
                     _gameView.Layout(gameRect.Left, gameRect.Top, gameRect.Right, gameRect.Bottom);
@@ -773,28 +1095,6 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 view.Layout(x, y, x + width, y + height);
             }
 
-            private Rect ComputeGameRect(int width, int height, int frameWidth, int frameHeight, double presentationWidth, double presentationHeight)
-            {
-                double sourceWidth = presentationWidth > 0 ? presentationWidth : frameWidth;
-                double sourceHeight = presentationHeight > 0 ? presentationHeight : frameHeight;
-                if (sourceWidth <= 0 || sourceHeight <= 0)
-                    return new Rect(0, 0, width, height);
-
-                float fitScale = Math.Min((float)width / (float)sourceWidth, (float)height / (float)sourceHeight);
-                int integerScale = (int)MathF.Floor(fitScale);
-                float scale = fitScale;
-                if (width > height && integerScale >= 1 && fitScale - integerScale <= LandscapeIntegerSnapThreshold)
-                    scale = integerScale;
-                else if (integerScale >= 1 && width <= height)
-                    scale = integerScale;
-
-                int scaledWidth = Math.Max(1, (int)MathF.Round((float)sourceWidth * scale));
-                int scaledHeight = Math.Max(1, (int)MathF.Round((float)sourceHeight * scale));
-                int x = (width - scaledWidth) / 2;
-                int y = (height - scaledHeight) / 2;
-                return new Rect(x, y, x + scaledWidth, y + scaledHeight);
-            }
-
             private static bool RectsEqual(Rect a, Rect b)
             {
                 return a.Left == b.Left
@@ -823,9 +1123,9 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 Text = label;
                 Gravity = GravityFlags.Center;
                 TextAlignment = global::Android.Views.TextAlignment.Center;
-                SetTextColor(Color.Rgb(0xEE, 0xF6, 0xFF));
+                SetTextColor(global::Android.Graphics.Color.Rgb(0xEE, 0xF6, 0xFF));
                 SetTextSize(ComplexUnitType.Sp, textSizeSp);
-                Typeface = Typeface.Create(Typeface.Default, TypefaceStyle.Bold);
+                Typeface = global::Android.Graphics.Typeface.Create(global::Android.Graphics.Typeface.Default, TypefaceStyle.Bold);
                 SetSingleLine();
                 SetIncludeFontPadding(false);
                 Clickable = true;
@@ -879,8 +1179,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 var drawable = new GradientDrawable();
                 drawable.SetShape(ShapeType.Rectangle);
                 drawable.SetCornerRadius(MathF.Min(Width, Height) > 0 ? MathF.Min(Width, Height) / 4f : 22f);
-                drawable.SetColor(_pressed ? Color.Argb(0xB0, 0x34, 0xCF, 0xC1) : Color.Argb(0x70, 0x17, 0x2A, 0x3B));
-                drawable.SetStroke(_pressed ? 4 : 3, Color.Argb(0xCC, 0x7D, 0xD3, 0xFC));
+                drawable.SetColor(_pressed ? global::Android.Graphics.Color.Argb(0xB0, 0x34, 0xCF, 0xC1) : global::Android.Graphics.Color.Argb(0x70, 0x17, 0x2A, 0x3B));
+                drawable.SetStroke(_pressed ? 4 : 3, global::Android.Graphics.Color.Argb(0xCC, 0x7D, 0xD3, 0xFC));
                 Background = drawable;
                 Alpha = _pressed ? 1.0f : 0.92f;
             }
@@ -905,15 +1205,15 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _onDirectionsChanged = onDirectionsChanged;
                 Clickable = true;
                 Focusable = false;
-                _basePaint.Color = Color.Argb(0x55, 0x41, 0x79, 0xB8);
+                _basePaint.Color = global::Android.Graphics.Color.Argb(0x55, 0x41, 0x79, 0xB8);
                 _basePaint.SetStyle(Paint.Style.Stroke);
                 _basePaint.StrokeWidth = 4f;
-                _trackPaint.Color = Color.Argb(0x33, 0x73, 0xC0, 0xFF);
+                _trackPaint.Color = global::Android.Graphics.Color.Argb(0x33, 0x73, 0xC0, 0xFF);
                 _trackPaint.SetStyle(Paint.Style.Stroke);
                 _trackPaint.StrokeWidth = 3f;
-                _thumbPaint.Color = Color.Argb(0x88, 0x73, 0xC0, 0xFF);
+                _thumbPaint.Color = global::Android.Graphics.Color.Argb(0x88, 0x73, 0xC0, 0xFF);
                 _thumbPaint.SetStyle(Paint.Style.FillAndStroke);
-                _hintPaint.Color = Color.Argb(0x88, 0xD9, 0xEC, 0xFF);
+                _hintPaint.Color = global::Android.Graphics.Color.Argb(0x88, 0xD9, 0xEC, 0xFF);
                 _hintPaint.SetStyle(Paint.Style.FillAndStroke);
             }
 
@@ -1042,6 +1342,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private sealed class AndroidGlSurfaceView : GLSurfaceView, GLSurfaceView.IRenderer, ISurfaceHolderCallback
         {
             private const int GlColorBufferBit = 0x00004000;
+            private const int GlScissorTest = 0x0C11;
             private const int GlFloat = 0x1406;
             private const int GlFragmentShader = 0x8B30;
             private const int GlLinear = 0x2601;
@@ -1199,8 +1500,12 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private bool _surfaceReady;
             private bool _released;
             private bool _renderFailed;
+            private float _preferredFrameRate;
             private ByteBuffer? _directUploadBuffer;
             private int _directUploadCapacity;
+            private Choreographer? _choreographer;
+            private RenderFrameCallback? _renderFrameCallback;
+            private bool _continuousRenderScheduled;
 
             private readonly record struct ShaderSources(string Label, string VertexSource, string FragmentSource);
 
@@ -1214,6 +1519,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 SetEGLContextClientVersion(2);
                 PreserveEGLContextOnPause = true;
                 SetRenderer(this);
+                RenderMode = Rendermode.WhenDirty;
                 Clickable = true;
                 Focusable = false;
                 FocusableInTouchMode = false;
@@ -1223,6 +1529,27 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _vertexBuffer = vertexByteBuffer.AsFloatBuffer();
                 _vertexBuffer.Put(s_quadVertices);
                 _vertexBuffer.Position(0);
+            }
+
+            protected override void OnAttachedToWindow()
+            {
+                base.OnAttachedToWindow();
+                ResumeRendering();
+                StartContinuousRendering();
+            }
+
+            protected override void OnDetachedFromWindow()
+            {
+                StopContinuousRendering();
+                try
+                {
+                    OnPause();
+                }
+                catch
+                {
+                }
+
+                base.OnDetachedFromWindow();
             }
 
             public override bool OnTouchEvent(MotionEvent? e)
@@ -1261,6 +1588,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             public void ReleaseSurface()
             {
                 _released = true;
+                StopContinuousRendering();
                 lock (_surfaceSync)
                 {
                     _surfaceReady = false;
@@ -1286,6 +1614,12 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 }
             }
 
+            public void SetPreferredFrameRate(float fps)
+            {
+                _preferredFrameRate = fps > 1.0f ? fps : 0f;
+                ApplyPreferredFrameRate();
+            }
+
             public void RequestRenderSafe()
             {
                 if (_released)
@@ -1302,18 +1636,26 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
             public void SurfaceCreated(ISurfaceHolder holder)
             {
+                base.SurfaceCreated(holder);
+
                 lock (_surfaceSync)
                 {
                     _released = false;
                     _surfaceReady = true;
                 }
 
+                ResumeRendering();
+                StartContinuousRendering();
                 _host.NoteSurfaceAvailable();
+                ApplyPreferredFrameRate();
                 RequestRenderSafe();
             }
 
             public void SurfaceDestroyed(ISurfaceHolder holder)
             {
+                base.SurfaceDestroyed(holder);
+                StopContinuousRendering();
+
                 lock (_surfaceSync)
                 {
                     _surfaceReady = false;
@@ -1333,6 +1675,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
             public void SurfaceChanged(ISurfaceHolder holder, Format format, int width, int height)
             {
+                base.SurfaceChanged(holder, format, width, height);
+
                 lock (_surfaceSync)
                 {
                     _surfaceWidth = width;
@@ -1341,6 +1685,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 }
 
                 _host.NoteSurfaceSizeChanged(width, height);
+                ApplyPreferredFrameRate();
                 RequestRenderSafe();
             }
 
@@ -1362,6 +1707,76 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 {
                     _renderFailed = true;
                     _host.NoteInitFailure(ex.Message, BuildInitDetails(ex));
+                }
+            }
+
+            private void ResumeRendering()
+            {
+                try
+                {
+                    OnResume();
+                }
+                catch
+                {
+                }
+            }
+
+            private void StartContinuousRendering()
+            {
+                if (_released)
+                    return;
+
+                _choreographer ??= Choreographer.Instance;
+                _renderFrameCallback ??= new RenderFrameCallback(this);
+                if (_choreographer == null || _continuousRenderScheduled)
+                    return;
+
+                _continuousRenderScheduled = true;
+                _choreographer.PostFrameCallback(_renderFrameCallback);
+            }
+
+            private void StopContinuousRendering()
+            {
+                if (!_continuousRenderScheduled)
+                    return;
+
+                if (_choreographer != null && _renderFrameCallback != null)
+                    _choreographer.RemoveFrameCallback(_renderFrameCallback);
+                _continuousRenderScheduled = false;
+            }
+
+            private void OnChoreographerFrame()
+            {
+                if (_released)
+                {
+                    _continuousRenderScheduled = false;
+                    return;
+                }
+
+                RequestRenderSafe();
+
+                if (_choreographer != null && _renderFrameCallback != null)
+                    _choreographer.PostFrameCallback(_renderFrameCallback);
+                else
+                    _continuousRenderScheduled = false;
+            }
+
+            private void ApplyPreferredFrameRate()
+            {
+                if (Build.VERSION.SdkInt < BuildVersionCodes.R)
+                    return;
+
+                try
+                {
+                    Surface? surface = Holder?.Surface;
+                    if (surface == null || !surface.IsValid)
+                        return;
+
+                    int compatibility = (int)SurfaceFrameRateCompatibility.FixedSource;
+                    surface.SetFrameRate(_preferredFrameRate, compatibility);
+                }
+                catch
+                {
                 }
             }
 
@@ -1409,7 +1824,6 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 long renderStart = Stopwatch.GetTimestamp();
                 long uploadTicks = 0;
 
-                GLES20.GlViewport(0, 0, surfaceWidth, surfaceHeight);
                 _host.BeginRender(
                     out byte[] frameBytes,
                     out int frameWidth,
@@ -1420,11 +1834,20 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     out bool applyScanlines,
                     out float scanlineDarken,
                     out bool interlaceBlendEnabled,
-                    out int interlaceBlendFieldParity);
+                    out int interlaceBlendFieldParity,
+                    out double presentationWidth,
+                    out double presentationHeight,
+                    out int displayViewportLeft,
+                    out int displayViewportTop,
+                    out int displayViewportWidth,
+                    out int displayViewportHeight);
+                ComputeViewport(surfaceWidth, surfaceHeight, frameWidth, frameHeight, presentationWidth, presentationHeight, displayViewportLeft, displayViewportTop, displayViewportWidth, displayViewportHeight, out int viewportX, out int viewportY, out int viewportWidth, out int viewportHeight);
+                GLES20.GlDisable(GlScissorTest);
+                GLES20.GlViewport(0, 0, surfaceWidth, surfaceHeight);
+                GLES20.GlClearColor(0f, 0f, 0f, 1f);
+                GLES20.GlClear(GlColorBufferBit);
                 if (_programId == 0 || _textureId == 0)
                 {
-                    GLES20.GlClearColor(0f, 0f, 0f, 1f);
-                    GLES20.GlClear(GlColorBufferBit);
                     _host.NoteBlackClear();
                     _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
                     return;
@@ -1439,8 +1862,6 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 {
                     if (!haveUploadedTexture)
                     {
-                        GLES20.GlClearColor(0f, 0f, 0f, 1f);
-                        GLES20.GlClear(GlColorBufferBit);
                         _host.NoteBlackClear();
                         _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
                         return;
@@ -1470,13 +1891,12 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 }
                 else if (!haveFrameBytes)
                 {
-                    GLES20.GlClearColor(0f, 0f, 0f, 1f);
-                    GLES20.GlClear(GlColorBufferBit);
                     _host.NoteBlackClear();
                     _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
                     return;
                 }
 
+                GLES20.GlViewport(viewportX, viewportY, viewportWidth, viewportHeight);
                 GLES20.GlUseProgram(_programId);
                 GLES20.GlUniform1i(_samplerLocation, 0);
                 GLES20.GlUniform1f(_forceOpaqueLocation, forceOpaque ? 1.0f : 0.0f);
@@ -1500,6 +1920,71 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 GLES20.GlDrawArrays(GlTriangles, 0, 6);
 
                 _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, uploadTicks, uploaded);
+            }
+
+            private static void ComputeViewport(
+                int surfaceWidth,
+                int surfaceHeight,
+                int frameWidth,
+                int frameHeight,
+                double presentationWidth,
+                double presentationHeight,
+                int displayViewportLeft,
+                int displayViewportTop,
+                int displayViewportWidth,
+                int displayViewportHeight,
+                out int viewportX,
+                out int viewportY,
+                out int viewportWidth,
+                out int viewportHeight)
+            {
+                int outerX = 0;
+                int outerY = 0;
+                int outerWidth = Math.Max(1, surfaceWidth);
+                int outerHeight = Math.Max(1, surfaceHeight);
+
+                if (surfaceWidth <= 0 || surfaceHeight <= 0)
+                {
+                    viewportX = 0;
+                    viewportY = 0;
+                    viewportWidth = 1;
+                    viewportHeight = 1;
+                    return;
+                }
+
+                viewportX = outerX;
+                viewportY = outerY;
+                viewportWidth = Math.Max(1, outerWidth);
+                viewportHeight = Math.Max(1, outerHeight);
+
+                double sourceWidth = presentationWidth > 0.5 ? presentationWidth : frameWidth;
+                double sourceHeight = presentationHeight > 0.5 ? presentationHeight : frameHeight;
+                if (sourceWidth <= 0.5 || sourceHeight <= 0.5)
+                    return;
+
+                double scale = Math.Min(outerWidth / sourceWidth, outerHeight / sourceHeight);
+                if (scale <= 0.0)
+                    return;
+
+                viewportWidth = Math.Max(1, (int)Math.Round(sourceWidth * scale));
+                viewportHeight = Math.Max(1, (int)Math.Round(sourceHeight * scale));
+                viewportX = outerX + Math.Max(0, (outerWidth - viewportWidth) / 2);
+                viewportY = outerY + Math.Max(0, (outerHeight - viewportHeight) / 2);
+            }
+
+            private sealed class RenderFrameCallback : Java.Lang.Object, Choreographer.IFrameCallback
+            {
+                private readonly AndroidGlSurfaceView _owner;
+
+                public RenderFrameCallback(AndroidGlSurfaceView owner)
+                {
+                    _owner = owner;
+                }
+
+                public void DoFrame(long frameTimeNanos)
+                {
+                    _owner.OnChoreographerFrame();
+                }
             }
 
             private ByteBuffer GetOrCreateUploadBuffer(byte[] frameBytes, int requiredBytes)
