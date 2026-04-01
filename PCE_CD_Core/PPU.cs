@@ -573,8 +573,6 @@ namespace ePceCD
             m_BgCounterY = 0;
             m_BgOffsetY = 0;
             m_LatchedBxr = 0;
-            Array.Clear(m_BxrByLine);
-            Array.Clear(m_ByrByLine);
             m_FrameCounter = 0;
             m_DisplayCounter = 0;
             m_DoSAT_DMA = false;
@@ -588,47 +586,6 @@ namespace ePceCD
             _currentLineSpriteVisible = -1;
             _nextLineSpriteCount = 0;
             _nextLineSpriteVisible = -1;
-        }
-
-        private void RebuildScrollSchedule(int startVisibleLine)
-        {
-            RebuildScrollSchedule(startVisibleLine, m_VDC_BYR);
-        }
-
-        private void RebuildScrollSchedule(int startVisibleLine, int firstByrValue)
-        {
-            int vdw = m_LatchedVDW > 0 ? m_LatchedVDW : GetEffectiveVdw();
-            if (startVisibleLine < 0)
-                startVisibleLine = 0;
-            if (startVisibleLine >= vdw)
-                return;
-
-            int byr = firstByrValue & 0x3FF;
-            for (int line = startVisibleLine; line < vdw && line < m_BxrByLine.Length; line++)
-            {
-                m_BxrByLine[line] = m_VDC_BXR;
-                m_ByrByLine[line] = byr;
-                byr = (byr + 1) & 0x3FF;
-            }
-        }
-
-        private void ScheduleScrollWriteForNextLine(bool byrWritten)
-        {
-            int vds = Math.Max(14, m_LatchedVDS);
-            int currentVisibleLine = m_DisplayCounter - vds;
-            int nextVisibleLine = Math.Max(0, currentVisibleLine + 1);
-
-            if (!byrWritten)
-            {
-                RebuildScrollSchedule(nextVisibleLine);
-                return;
-            }
-
-            int firstByrValue = m_VDC_BYR;
-            if (currentVisibleLine >= 0 && currentVisibleLine < m_LatchedVDW && nextVisibleLine > 0)
-                firstByrValue = (firstByrValue + 1) & 0x3FF;
-
-            RebuildScrollSchedule(nextVisibleLine, firstByrValue);
         }
 
         private void BuildSpriteLineBuffer(int visibleLine)
@@ -797,7 +754,9 @@ namespace ePceCD
                 m_LatchedScreenWidth = (m_LatchedHDW + 1) * 8;
                 m_LatchedMWR = m_VDC_MWR;
                 m_DisplayCounter = 0;
-                RebuildScrollSchedule(0);
+                m_LatchedBxr = m_VDC_BXR & 0x3FF;
+                m_BgCounterY = m_VDC_BYR & 0x1FF;
+                m_BgOffsetY = m_BgCounterY;
                 _currentLineSpriteCount = 0;
                 _currentLineSpriteVisible = -1;
                 _nextLineSpriteCount = 0;
@@ -1157,9 +1116,6 @@ namespace ePceCD
             int screenWidth = m_LatchedScreenWidth > 0 ? m_LatchedScreenWidth : SCREEN_WIDTH;
             m_LatchedEnableBackground = m_VDC_EnableBackground;
             m_LatchedEnableSprites = m_VDC_EnableSprites;
-            m_LatchedBxr = m_BxrByLine[Math.Clamp(visibleLine, 0, m_BxrByLine.Length - 1)];
-            m_BgCounterY = m_ByrByLine[Math.Clamp(visibleLine, 0, m_ByrByLine.Length - 1)];
-            m_BgOffsetY = m_BgCounterY;
             int* ScanLinePtr = (int*)_screenBufPtr.ToPointer() + screenWidth * visibleLine;
             Span<int> spriteLine = stackalloc int[512];
             Span<int> spritePriorityLine = stackalloc int[512];
@@ -1177,6 +1133,12 @@ namespace ePceCD
 
             if (m_LatchedEnableBackground)
             {
+                if (visibleLine == 0)
+                    m_BgCounterY = m_VDC_BYR & 0x1FF;
+                else
+                    m_BgCounterY = (m_BgCounterY + 1) & 0x1FF;
+                m_BgOffsetY = m_BgCounterY;
+                m_LatchedBxr = m_VDC_BXR & 0x3FF;
                 int screenReg = (m_LatchedMWR >> 4) & 0x07;
                 bool bgCgMode = (m_LatchedMWR & 0x03) == 0x03 && (m_LatchedMWR & 0x80) != 0;
                 int screenSizeX = ScreenSizeX[screenReg];
@@ -1432,13 +1394,11 @@ namespace ePceCD
                 case 0x06: m_VDC_RCR = (m_VDC_RCR & 0x0300) | data; break;
                 case 0x07:
                     m_VDC_BXR = (m_VDC_BXR & 0x0300) | data;
-                    ScheduleScrollWriteForNextLine(byrWritten: false);
                     break;
                 case 0x08:
                     m_VDC_BYR_Offset = (m_RenderLine + 1 >= m_VDC_VDW || !m_VDC_EnableBackground) ? 0 : (m_RenderLine - 1);
                     m_VDC_BYR = (m_VDC_BYR & 0x0100) | data;
-                    m_BgCounterY = m_VDC_BYR;
-                    ScheduleScrollWriteForNextLine(byrWritten: true);
+                    m_BgCounterY = m_VDC_BYR & 0x1FF;
                     break;
                 case 0x09:
                     m_VDC_MWR = (m_VDC_MWR & 0xFF00) | data;
@@ -1522,13 +1482,11 @@ namespace ePceCD
                 case 0x06: m_VDC_RCR = (m_VDC_RCR & 0xFF) | ((data << 8) & 0x0300); break;
                 case 0x07:
                     m_VDC_BXR = (m_VDC_BXR & 0xFF) | ((data << 8) & 0x0300);
-                    ScheduleScrollWriteForNextLine(byrWritten: false);
                     break;
                 case 0x08:
                     m_VDC_BYR_Offset = (m_RenderLine + 1 >= m_VDC_VDW || !m_VDC_EnableBackground) ? 0 : (m_RenderLine - 1);
                     m_VDC_BYR = (m_VDC_BYR & 0xFF) | ((data << 8) & 0x0100);
-                    m_BgCounterY = m_VDC_BYR;
-                    ScheduleScrollWriteForNextLine(byrWritten: true);
+                    m_BgCounterY = m_VDC_BYR & 0x1FF;
                     break;
                 case 0x0A:
                     m_VDC_HDS = data & 0x7F;
