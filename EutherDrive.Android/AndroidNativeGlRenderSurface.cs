@@ -93,6 +93,16 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private long _uploadTicksTotal;
         private long _lastRenderTicks;
         private long _lastUploadTicks;
+        private int _surfaceAvailableCount;
+        private int _surfaceDestroyedCount;
+        private int _surfaceSizeChangedCount;
+        private int _surfaceZeroSizeCount;
+        private int _layoutRequestCount;
+        private int _rootLayoutCount;
+        private int _gameViewLayoutCount;
+        private int _glInitCount;
+        private int _blackClearCount;
+        private int _reuseTextureCount;
         private bool _initAttempted;
         private bool _initSucceeded;
         private string _fallbackReason = string.Empty;
@@ -147,6 +157,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         public void SetLandscapeOverlayEnabled(bool enabled)
         {
             _landscapeOverlayEnabled = enabled;
+            NoteLayoutRequest();
             _nativeView?.RequestLayout();
         }
 
@@ -169,7 +180,10 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 requiresLayout = _nativeView.ShouldRelayoutForPresentationSize(previousWidth, previousHeight, width, height);
 
             if (requiresLayout)
+            {
+                NoteLayoutRequest();
                 _nativeView?.RequestLayout();
+            }
         }
 
         public void SetInterlaceBlend(bool enabled, int fieldParity)
@@ -342,6 +356,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 double lastRenderMs = _lastRenderTicks > 0 ? _lastRenderTicks * 1000.0 / Stopwatch.Frequency : 0;
                 double lastUploadMs = _lastUploadTicks > 0 ? _lastUploadTicks * 1000.0 / Stopwatch.Frequency : 0;
                 summary = $"GL Present:{_presentCount} Render:{_renderCount} Upload:{_uploadCount} Pending:{(_renderRequested ? 1 : 0)} IL:{(_interlaceBlendEnabled ? 1 : 0)}/{_interlaceBlendFieldParity} R:{avgRenderMs:0.0}/{lastRenderMs:0.0}ms U:{avgUploadMs:0.0}/{lastUploadMs:0.0}ms";
+                summary = $"{summary}\nSurf a/d/s/z0/l:{_surfaceAvailableCount}/{_surfaceDestroyedCount}/{_surfaceSizeChangedCount}/{_surfaceZeroSizeCount}/{_layoutRequestCount} root:{_rootLayoutCount} game:{_gameViewLayoutCount} init:{_glInitCount} blk:{_blackClearCount} hold:{_reuseTextureCount}";
                 if (!string.IsNullOrEmpty(_glVersion) || !string.IsNullOrEmpty(_glShadingLanguageVersion))
                     summary = $"{summary}\nGLES:{_glVersion} GLSL:{_glShadingLanguageVersion}";
                 if (!string.IsNullOrEmpty(_glVendor) || !string.IsNullOrEmpty(_glRenderer))
@@ -466,6 +481,64 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             }
         }
 
+        private void NoteLayoutRequest()
+        {
+            lock (_frameSync)
+                _layoutRequestCount++;
+        }
+
+        private void NoteRootLayout()
+        {
+            lock (_frameSync)
+                _rootLayoutCount++;
+        }
+
+        private void NoteGameViewLayout()
+        {
+            lock (_frameSync)
+                _gameViewLayoutCount++;
+        }
+
+        private void NoteSurfaceAvailable()
+        {
+            lock (_frameSync)
+                _surfaceAvailableCount++;
+        }
+
+        private void NoteSurfaceDestroyed()
+        {
+            lock (_frameSync)
+                _surfaceDestroyedCount++;
+        }
+
+        private void NoteSurfaceSizeChanged(int width, int height)
+        {
+            lock (_frameSync)
+            {
+                _surfaceSizeChangedCount++;
+                if (width <= 0 || height <= 0)
+                    _surfaceZeroSizeCount++;
+            }
+        }
+
+        private void NoteGlInit()
+        {
+            lock (_frameSync)
+                _glInitCount++;
+        }
+
+        private void NoteBlackClear()
+        {
+            lock (_frameSync)
+                _blackClearCount++;
+        }
+
+        private void NoteTextureReuse()
+        {
+            lock (_frameSync)
+                _reuseTextureCount++;
+        }
+
         private void GetLatestFrameSize(out int frameWidth, out int frameHeight)
         {
             lock (_frameSync)
@@ -503,7 +576,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private const int OverlayFaceButtonSizeDp = 74;
             private const int OverlayFaceAreaSizeDp = 212;
             private readonly AndroidNativeGlHost _host;
-            private readonly AndroidGlTextureView _gameView;
+            private readonly AndroidGlSurfaceView _gameView;
             private readonly NativeDPadView _dPadView;
             private readonly NativeActionButtonView _buttonL2;
             private readonly NativeActionButtonView _buttonSelect;
@@ -516,6 +589,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private readonly NativeActionButtonView _buttonY;
             private readonly NativeActionButtonView _buttonB;
             private readonly NativeActionButtonView _buttonA;
+            private Rect _lastGameRect;
+            private bool _hasLastGameRect;
 
             public AndroidGlRootView(Context context, AndroidNativeGlHost host) : base(context)
             {
@@ -523,7 +598,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 SetClipChildren(false);
                 SetClipToPadding(false);
 
-                _gameView = new AndroidGlTextureView(context, host);
+                _gameView = new AndroidGlSurfaceView(context, host);
                 AddView(_gameView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent));
 
                 _buttonL2 = CreateActionButton(context, "L2", "L2", 12f);
@@ -583,6 +658,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
 
             protected override void OnLayout(bool changed, int left, int top, int right, int bottom)
             {
+                _host.NoteRootLayout();
                 int width = right - left;
                 int height = bottom - top;
                 if (width <= 0 || height <= 0)
@@ -594,7 +670,13 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _host.GetLatestFrameSize(out int frameWidth, out int frameHeight);
                 _host.GetLatestPresentationSize(out double presentationWidth, out double presentationHeight);
                 Rect gameRect = ComputeGameRect(width, height, frameWidth, frameHeight, presentationWidth, presentationHeight);
-                _gameView.Layout(gameRect.Left, gameRect.Top, gameRect.Right, gameRect.Bottom);
+                if (!_hasLastGameRect || !RectsEqual(_lastGameRect, gameRect))
+                {
+                    _gameView.Layout(gameRect.Left, gameRect.Top, gameRect.Right, gameRect.Bottom);
+                    _lastGameRect = gameRect;
+                    _hasLastGameRect = true;
+                    _host.NoteGameViewLayout();
+                }
 
                 bool showLandscapeOverlay = _host.IsLandscapeOverlayEnabled();
                 SetLandscapeOverlayVisibility(showLandscapeOverlay);
@@ -701,6 +783,14 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 int x = (width - scaledWidth) / 2;
                 int y = (height - scaledHeight) / 2;
                 return new Rect(x, y, x + scaledWidth, y + scaledHeight);
+            }
+
+            private static bool RectsEqual(Rect a, Rect b)
+            {
+                return a.Left == b.Left
+                    && a.Top == b.Top
+                    && a.Right == b.Right
+                    && a.Bottom == b.Bottom;
             }
 
             private int Dp(int value)
@@ -939,7 +1029,672 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             }
         }
 
-        private sealed class AndroidGlTextureView : TextureView, TextureView.ISurfaceTextureListener
+        private sealed class AndroidGlSurfaceView : GLSurfaceView, GLSurfaceView.IRenderer, ISurfaceHolderCallback
+        {
+            private const int GlColorBufferBit = 0x00004000;
+            private const int GlFloat = 0x1406;
+            private const int GlFragmentShader = 0x8B30;
+            private const int GlLinear = 0x2601;
+            private const int GlNearest = 0x2600;
+            private const int GlRgba = 0x1908;
+            private const int GlTexture0 = 0x84C0;
+            private const int GlTexture2D = 0x0DE1;
+            private const int GlTextureMagFilter = 0x2800;
+            private const int GlTextureMinFilter = 0x2801;
+            private const int GlTextureWrapS = 0x2802;
+            private const int GlTextureWrapT = 0x2803;
+            private const int GlClampToEdge = 0x812F;
+            private const int GlTriangles = 0x0004;
+            private const int GlUnsignedByte = 0x1401;
+            private const int GlVendor = 0x1F00;
+            private const int GlRenderer = 0x1F01;
+            private const int GlVersion = 0x1F02;
+            private const int GlVertexShader = 0x8B31;
+            private const int GlShadingLanguageVersion = 0x8B8C;
+            private const string VertexShaderSourceEs100 = """
+                #version 100
+                attribute vec2 aPos;
+                attribute vec2 aUv;
+                varying vec2 vUv;
+                void main()
+                {
+                    vUv = aUv;
+                    gl_Position = vec4(aPos, 0.0, 1.0);
+                }
+                """;
+            private const string FragmentShaderSourceEs100 = """
+                #version 100
+                precision mediump float;
+                varying vec2 vUv;
+                uniform sampler2D uTex;
+                uniform float uForceOpaque;
+                uniform vec2 uTextureSize;
+                uniform float uInterlaceBlend;
+                uniform float uInterlaceFieldParity;
+
+                vec4 softenInterlace(vec4 color)
+                {
+                    if (uInterlaceBlend <= 0.5 || uTextureSize.y < 2.0)
+                        return color;
+
+                    float row = floor(vUv.y * uTextureSize.y);
+                    float rowParity = mod(row, 2.0);
+                    if (abs(rowParity - uInterlaceFieldParity) <= 0.5)
+                        return color;
+
+                    vec2 texel = vec2(1.0 / uTextureSize.x, 1.0 / uTextureSize.y);
+                    vec2 uvUp = vec2(vUv.x, max(0.0, vUv.y - texel.y));
+                    vec2 uvDown = vec2(vUv.x, min(1.0, vUv.y + texel.y));
+                    vec4 blended = (texture2D(uTex, uvUp) + texture2D(uTex, uvDown)) * 0.5;
+                    return mix(color, blended, 0.65);
+                }
+
+                void main()
+                {
+                    vec4 color = texture2D(uTex, vUv);
+                    color = softenInterlace(color);
+                    float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
+                    gl_FragColor = vec4(color.b, color.g, color.r, alpha);
+                }
+                """;
+            private const string VertexShaderSourceEs300 = """
+                #version 300 es
+                in vec2 aPos;
+                in vec2 aUv;
+                out vec2 vUv;
+                void main()
+                {
+                    vUv = aUv;
+                    gl_Position = vec4(aPos, 0.0, 1.0);
+                }
+                """;
+            private const string FragmentShaderSourceEs300 = """
+                #version 300 es
+                precision mediump float;
+                in vec2 vUv;
+                uniform sampler2D uTex;
+                uniform float uForceOpaque;
+                uniform vec2 uTextureSize;
+                uniform float uInterlaceBlend;
+                uniform float uInterlaceFieldParity;
+                out vec4 fragColor;
+
+                vec4 softenInterlace(vec4 color)
+                {
+                    if (uInterlaceBlend <= 0.5 || uTextureSize.y < 2.0)
+                        return color;
+
+                    float row = floor(vUv.y * uTextureSize.y);
+                    float rowParity = mod(row, 2.0);
+                    if (abs(rowParity - uInterlaceFieldParity) <= 0.5)
+                        return color;
+
+                    vec2 texel = vec2(1.0 / uTextureSize.x, 1.0 / uTextureSize.y);
+                    vec2 uvUp = vec2(vUv.x, max(0.0, vUv.y - texel.y));
+                    vec2 uvDown = vec2(vUv.x, min(1.0, vUv.y + texel.y));
+                    vec4 blended = (texture(uTex, uvUp) + texture(uTex, uvDown)) * 0.5;
+                    return mix(color, blended, 0.65);
+                }
+
+                void main()
+                {
+                    vec4 color = texture(uTex, vUv);
+                    color = softenInterlace(color);
+                    float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
+                    fragColor = vec4(color.b, color.g, color.r, alpha);
+                }
+                """;
+
+            private static readonly float[] s_quadVertices =
+            {
+                -1f, -1f, 0f, 1f,
+                 1f, -1f, 1f, 1f,
+                -1f,  1f, 0f, 0f,
+                -1f,  1f, 0f, 0f,
+                 1f, -1f, 1f, 1f,
+                 1f,  1f, 1f, 0f
+            };
+
+            private readonly AndroidNativeGlHost _host;
+            private readonly FloatBuffer _vertexBuffer;
+            private readonly object _surfaceSync = new();
+            private float _touchDownX;
+            private float _touchDownY;
+            private bool _trackingTap;
+            private int _programId;
+            private int _textureId;
+            private int _positionLocation = -1;
+            private int _uvLocation = -1;
+            private int _samplerLocation = -1;
+            private int _forceOpaqueLocation = -1;
+            private int _textureSizeLocation = -1;
+            private int _interlaceBlendLocation = -1;
+            private int _interlaceFieldParityLocation = -1;
+            private int _textureWidth;
+            private int _textureHeight;
+            private bool _textureUsesNearest = true;
+            private bool _forceTextureUpload = true;
+            private int _surfaceWidth;
+            private int _surfaceHeight;
+            private bool _surfaceReady;
+            private bool _released;
+            private bool _renderFailed;
+            private ByteBuffer? _directUploadBuffer;
+            private int _directUploadCapacity;
+
+            private readonly record struct ShaderSources(string Label, string VertexSource, string FragmentSource);
+
+            public AndroidGlSurfaceView(Context context, AndroidNativeGlHost host) : base(context)
+            {
+                _host = host;
+                Holder?.AddCallback(this);
+                SetZOrderOnTop(false);
+                SetZOrderMediaOverlay(false);
+                SetSurfaceLifecycle(SurfaceViewLifecycle.FollowsAttachment);
+                SetEGLContextClientVersion(2);
+                PreserveEGLContextOnPause = true;
+                SetRenderer(this);
+                Clickable = true;
+                Focusable = false;
+                FocusableInTouchMode = false;
+
+                ByteBuffer vertexByteBuffer = ByteBuffer.AllocateDirect(s_quadVertices.Length * sizeof(float));
+                vertexByteBuffer.Order(ByteOrder.NativeOrder()!);
+                _vertexBuffer = vertexByteBuffer.AsFloatBuffer();
+                _vertexBuffer.Put(s_quadVertices);
+                _vertexBuffer.Position(0);
+            }
+
+            public override bool OnTouchEvent(MotionEvent? e)
+            {
+                if (e == null)
+                    return false;
+
+                if (_host.IsLandscapeOverlayEnabled())
+                    return false;
+
+                switch (e.ActionMasked)
+                {
+                    case MotionEventActions.Down:
+                        _touchDownX = e.GetX();
+                        _touchDownY = e.GetY();
+                        _trackingTap = true;
+                        return true;
+                    case MotionEventActions.Move:
+                        if (_trackingTap && (Math.Abs(e.GetX() - _touchDownX) > 18f || Math.Abs(e.GetY() - _touchDownY) > 18f))
+                            _trackingTap = false;
+                        return true;
+                    case MotionEventActions.Up:
+                        bool shouldToggle = _trackingTap;
+                        _trackingTap = false;
+                        if (shouldToggle)
+                            _host.NotifyScreenTapped();
+                        return true;
+                    case MotionEventActions.Cancel:
+                        _trackingTap = false;
+                        return true;
+                }
+
+                return base.OnTouchEvent(e);
+            }
+
+            public void ReleaseSurface()
+            {
+                _released = true;
+                lock (_surfaceSync)
+                {
+                    _surfaceReady = false;
+                    _surfaceWidth = 0;
+                    _surfaceHeight = 0;
+                }
+
+                _host.NoteSurfaceDestroyed();
+                try
+                {
+                    QueueEvent(DestroyGlResources);
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    OnPause();
+                }
+                catch
+                {
+                }
+            }
+
+            public void RequestRenderSafe()
+            {
+                if (_released)
+                    return;
+
+                try
+                {
+                    RequestRender();
+                }
+                catch
+                {
+                }
+            }
+
+            public void SurfaceCreated(ISurfaceHolder holder)
+            {
+                lock (_surfaceSync)
+                {
+                    _released = false;
+                    _surfaceReady = true;
+                }
+
+                _host.NoteSurfaceAvailable();
+                RequestRenderSafe();
+            }
+
+            public void SurfaceDestroyed(ISurfaceHolder holder)
+            {
+                lock (_surfaceSync)
+                {
+                    _surfaceReady = false;
+                    _surfaceWidth = 0;
+                    _surfaceHeight = 0;
+                }
+
+                _host.NoteSurfaceDestroyed();
+                try
+                {
+                    QueueEvent(DestroyGlResources);
+                }
+                catch
+                {
+                }
+            }
+
+            public void SurfaceChanged(ISurfaceHolder holder, Format format, int width, int height)
+            {
+                lock (_surfaceSync)
+                {
+                    _surfaceWidth = width;
+                    _surfaceHeight = height;
+                    _surfaceReady = width > 0 && height > 0;
+                }
+
+                _host.NoteSurfaceSizeChanged(width, height);
+                RequestRenderSafe();
+            }
+
+            public void OnSurfaceCreated(Javax.Microedition.Khronos.Opengles.IGL10? gl, Javax.Microedition.Khronos.Egl.EGLConfig? config)
+            {
+                try
+                {
+                    _renderFailed = false;
+                    _host.NoteGlInfo(
+                        SafeGetGlString(GlVendor),
+                        SafeGetGlString(GlRenderer),
+                        SafeGetGlString(GlVersion),
+                        SafeGetGlString(GlShadingLanguageVersion));
+                    CreateProgramAndTexture();
+                    _host.NoteInitSuccess();
+                    _host.NoteGlInit();
+                }
+                catch (Exception ex)
+                {
+                    _renderFailed = true;
+                    _host.NoteInitFailure(ex.Message, BuildInitDetails(ex));
+                }
+            }
+
+            public void OnSurfaceChanged(Javax.Microedition.Khronos.Opengles.IGL10? gl, int width, int height)
+            {
+                lock (_surfaceSync)
+                {
+                    _surfaceWidth = width;
+                    _surfaceHeight = height;
+                    _surfaceReady = width > 0 && height > 0;
+                }
+
+                GLES20.GlViewport(0, 0, width, height);
+            }
+
+            public void OnDrawFrame(Javax.Microedition.Khronos.Opengles.IGL10? gl)
+            {
+                if (_released || _renderFailed)
+                    return;
+
+                int surfaceWidth;
+                int surfaceHeight;
+                lock (_surfaceSync)
+                {
+                    if (!_surfaceReady || _surfaceWidth <= 0 || _surfaceHeight <= 0)
+                        return;
+
+                    surfaceWidth = _surfaceWidth;
+                    surfaceHeight = _surfaceHeight;
+                }
+
+                try
+                {
+                    DrawFrame(surfaceWidth, surfaceHeight);
+                }
+                catch (Exception ex)
+                {
+                    _renderFailed = true;
+                    _host.NoteInitFailure(ex.Message, BuildInitDetails(ex));
+                }
+            }
+
+            private void DrawFrame(int surfaceWidth, int surfaceHeight)
+            {
+                long renderStart = Stopwatch.GetTimestamp();
+                long uploadTicks = 0;
+
+                GLES20.GlViewport(0, 0, surfaceWidth, surfaceHeight);
+                _host.BeginRender(
+                    out byte[] frameBytes,
+                    out int frameWidth,
+                    out int frameHeight,
+                    out bool frameDirty,
+                    out bool sharpPixelsEnabled,
+                    out bool forceOpaque,
+                    out bool interlaceBlendEnabled,
+                    out int interlaceBlendFieldParity);
+                if (_programId == 0 || _textureId == 0)
+                {
+                    GLES20.GlClearColor(0f, 0f, 0f, 1f);
+                    GLES20.GlClear(GlColorBufferBit);
+                    _host.NoteBlackClear();
+                    _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
+                    return;
+                }
+
+                GLES20.GlActiveTexture(GlTexture0);
+                GLES20.GlBindTexture(GlTexture2D, _textureId);
+                UpdateTextureFiltering(sharpPixelsEnabled);
+
+                bool haveUploadedTexture = _textureWidth > 0 && _textureHeight > 0;
+                if (frameWidth <= 0 || frameHeight <= 0)
+                {
+                    if (!haveUploadedTexture)
+                    {
+                        GLES20.GlClearColor(0f, 0f, 0f, 1f);
+                        GLES20.GlClear(GlColorBufferBit);
+                        _host.NoteBlackClear();
+                        _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
+                        return;
+                    }
+
+                    frameWidth = _textureWidth;
+                    frameHeight = _textureHeight;
+                    _host.NoteTextureReuse();
+                }
+
+                bool uploaded = false;
+                bool haveFrameBytes = frameBytes.Length >= frameWidth * frameHeight * 4;
+                bool mustUploadTexture = _forceTextureUpload || frameDirty;
+                if (mustUploadTexture && haveFrameBytes)
+                {
+                    EnsureTextureStorage(frameWidth, frameHeight);
+                    long uploadStart = Stopwatch.GetTimestamp();
+                    ByteBuffer pixels = GetOrCreateUploadBuffer(frameBytes, frameWidth * frameHeight * 4);
+                    GLES20.GlTexSubImage2D(GlTexture2D, 0, 0, 0, frameWidth, frameHeight, GlRgba, GlUnsignedByte, pixels);
+                    uploadTicks = Stopwatch.GetTimestamp() - uploadStart;
+                    uploaded = true;
+                    _forceTextureUpload = false;
+                }
+                else if (!haveFrameBytes && haveUploadedTexture)
+                {
+                    _host.NoteTextureReuse();
+                }
+                else if (!haveFrameBytes)
+                {
+                    GLES20.GlClearColor(0f, 0f, 0f, 1f);
+                    GLES20.GlClear(GlColorBufferBit);
+                    _host.NoteBlackClear();
+                    _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
+                    return;
+                }
+
+                GLES20.GlUseProgram(_programId);
+                GLES20.GlUniform1i(_samplerLocation, 0);
+                GLES20.GlUniform1f(_forceOpaqueLocation, forceOpaque ? 1.0f : 0.0f);
+                if (_textureSizeLocation >= 0)
+                    GLES20.GlUniform2f(_textureSizeLocation, frameWidth, frameHeight);
+                if (_interlaceBlendLocation >= 0)
+                    GLES20.GlUniform1f(_interlaceBlendLocation, interlaceBlendEnabled ? 1.0f : 0.0f);
+                if (_interlaceFieldParityLocation >= 0)
+                    GLES20.GlUniform1f(_interlaceFieldParityLocation, interlaceBlendFieldParity == 1 ? 1.0f : 0.0f);
+
+                _vertexBuffer.Position(0);
+                GLES20.GlEnableVertexAttribArray(_positionLocation);
+                GLES20.GlVertexAttribPointer(_positionLocation, 2, GlFloat, false, 4 * sizeof(float), _vertexBuffer);
+                _vertexBuffer.Position(2);
+                GLES20.GlEnableVertexAttribArray(_uvLocation);
+                GLES20.GlVertexAttribPointer(_uvLocation, 2, GlFloat, false, 4 * sizeof(float), _vertexBuffer);
+                GLES20.GlDrawArrays(GlTriangles, 0, 6);
+
+                _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, uploadTicks, uploaded);
+            }
+
+            private ByteBuffer GetOrCreateUploadBuffer(byte[] frameBytes, int requiredBytes)
+            {
+                if (_directUploadBuffer == null || _directUploadCapacity < requiredBytes)
+                {
+                    _directUploadBuffer?.Dispose();
+                    _directUploadBuffer = ByteBuffer.AllocateDirect(requiredBytes);
+                    _directUploadCapacity = requiredBytes;
+                }
+
+                ByteBuffer uploadBuffer = _directUploadBuffer;
+                uploadBuffer.Position(0);
+                uploadBuffer.Put(frameBytes, 0, requiredBytes);
+                uploadBuffer.Position(0);
+                return uploadBuffer;
+            }
+
+            private void CreateProgramAndTexture()
+            {
+                DestroyGlResources();
+
+                ShaderSources preferredShaders = SelectShaderSources(
+                    SafeGetGlString(GlVersion),
+                    SafeGetGlString(GlShadingLanguageVersion));
+                ShaderSources fallbackShaders = string.Equals(preferredShaders.Label, "ES300", StringComparison.Ordinal)
+                    ? new ShaderSources("ES100", VertexShaderSourceEs100, FragmentShaderSourceEs100)
+                    : new ShaderSources("ES300", VertexShaderSourceEs300, FragmentShaderSourceEs300);
+
+                string? firstFailure = null;
+                try
+                {
+                    CreateProgramAndTexture(preferredShaders);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    firstFailure = BuildShaderAttemptDetails(preferredShaders, ex);
+                }
+
+                CreateProgramAndTexture(fallbackShaders);
+            }
+
+            private void CreateProgramAndTexture(ShaderSources shaderSources)
+            {
+                int vertexShader = CompileShader(GlVertexShader, shaderSources.VertexSource);
+                int fragmentShader = CompileShader(GlFragmentShader, shaderSources.FragmentSource);
+
+                _programId = GLES20.GlCreateProgram();
+                if (_programId == 0)
+                    throw new InvalidOperationException($"Native Android GL program creation failed: err=0x{GLES20.GlGetError():X}");
+                GLES20.GlAttachShader(_programId, vertexShader);
+                GLES20.GlAttachShader(_programId, fragmentShader);
+                GLES20.GlBindAttribLocation(_programId, 0, "aPos");
+                GLES20.GlBindAttribLocation(_programId, 1, "aUv");
+                GLES20.GlLinkProgram(_programId);
+
+                int[] status = new int[1];
+                GLES20.GlGetProgramiv(_programId, GLES20.GlLinkStatus, status, 0);
+                if (status[0] == 0)
+                {
+                    string info = GLES20.GlGetProgramInfoLog(_programId) ?? "unknown";
+                    throw new InvalidOperationException($"Native Android GL link failed: {info} err=0x{GLES20.GlGetError():X}");
+                }
+
+                GLES20.GlDeleteShader(vertexShader);
+                GLES20.GlDeleteShader(fragmentShader);
+
+                _positionLocation = GLES20.GlGetAttribLocation(_programId, "aPos");
+                _uvLocation = GLES20.GlGetAttribLocation(_programId, "aUv");
+                _samplerLocation = GLES20.GlGetUniformLocation(_programId, "uTex");
+                _forceOpaqueLocation = GLES20.GlGetUniformLocation(_programId, "uForceOpaque");
+                _textureSizeLocation = GLES20.GlGetUniformLocation(_programId, "uTextureSize");
+                _interlaceBlendLocation = GLES20.GlGetUniformLocation(_programId, "uInterlaceBlend");
+                _interlaceFieldParityLocation = GLES20.GlGetUniformLocation(_programId, "uInterlaceFieldParity");
+
+                int[] textures = new int[1];
+                GLES20.GlGenTextures(1, textures, 0);
+                _textureId = textures[0];
+                if (_textureId == 0)
+                    throw new InvalidOperationException($"Native Android GL texture creation failed: err=0x{GLES20.GlGetError():X}");
+                GLES20.GlBindTexture(GlTexture2D, _textureId);
+                GLES20.GlTexParameteri(GlTexture2D, GlTextureMinFilter, GlNearest);
+                GLES20.GlTexParameteri(GlTexture2D, GlTextureMagFilter, GlNearest);
+                GLES20.GlTexParameteri(GlTexture2D, GlTextureWrapS, GlClampToEdge);
+                GLES20.GlTexParameteri(GlTexture2D, GlTextureWrapT, GlClampToEdge);
+                _textureUsesNearest = true;
+                _textureWidth = 0;
+                _textureHeight = 0;
+                _forceTextureUpload = true;
+            }
+
+            private static int CompileShader(int shaderType, string source)
+            {
+                int shader = GLES20.GlCreateShader(shaderType);
+                if (shader == 0)
+                    throw new InvalidOperationException($"Native Android GL shader creation failed: type=0x{shaderType:X} err=0x{GLES20.GlGetError():X}");
+                GLES20.GlShaderSource(shader, source);
+                GLES20.GlCompileShader(shader);
+
+                int[] status = new int[1];
+                GLES20.GlGetShaderiv(shader, GLES20.GlCompileStatus, status, 0);
+                if (status[0] != 0)
+                    return shader;
+
+                string info = GLES20.GlGetShaderInfoLog(shader) ?? "unknown";
+                GLES20.GlDeleteShader(shader);
+                string shaderName = shaderType == GlVertexShader ? "vertex" : shaderType == GlFragmentShader ? "fragment" : $"0x{shaderType:X}";
+                throw new InvalidOperationException($"Native Android GL {shaderName} shader compile failed: {info} err=0x{GLES20.GlGetError():X}");
+            }
+
+            private static string SafeGetGlString(int name)
+            {
+                try
+                {
+                    return GLES20.GlGetString(name) ?? "unknown";
+                }
+                catch (Exception ex)
+                {
+                    return $"error:{ex.GetType().Name}";
+                }
+            }
+
+            private static ShaderSources SelectShaderSources(string glVersion, string shadingLanguageVersion)
+            {
+                int shadingMajor = ParseLeadingVersionComponent(shadingLanguageVersion);
+                int glMajor = ParseLeadingVersionComponent(glVersion);
+                if (shadingMajor >= 3 || glMajor >= 3)
+                    return new ShaderSources("ES300", VertexShaderSourceEs300, FragmentShaderSourceEs300);
+
+                return new ShaderSources("ES100", VertexShaderSourceEs100, FragmentShaderSourceEs100);
+            }
+
+            private static int ParseLeadingVersionComponent(string value)
+            {
+                for (int i = 0; i < value.Length; i++)
+                {
+                    if (!char.IsDigit(value[i]))
+                        continue;
+
+                    int start = i;
+                    while (i < value.Length && char.IsDigit(value[i]))
+                        i++;
+
+                    if (int.TryParse(value[start..i], out int parsed))
+                        return parsed;
+
+                    break;
+                }
+
+                return 0;
+            }
+
+            private static string BuildShaderAttemptDetails(ShaderSources shaderSources, Exception ex)
+            {
+                return
+                    $"Mode:{shaderSources.Label}\n" +
+                    $"Error:{ex.Message}\n" +
+                    $"Vertex Shader:\n{shaderSources.VertexSource}\n" +
+                    $"Fragment Shader:\n{shaderSources.FragmentSource}";
+            }
+
+            private static string BuildInitDetails(Exception ex)
+            {
+                return $"GL Init Detail:{ex.Message}";
+            }
+
+            private void EnsureTextureStorage(int frameWidth, int frameHeight)
+            {
+                if (_textureWidth == frameWidth && _textureHeight == frameHeight)
+                    return;
+
+                GLES20.GlTexImage2D(GlTexture2D, 0, GlRgba, frameWidth, frameHeight, 0, GlRgba, GlUnsignedByte, null);
+                _textureWidth = frameWidth;
+                _textureHeight = frameHeight;
+            }
+
+            private void UpdateTextureFiltering(bool sharpPixelsEnabled)
+            {
+                bool useNearest = sharpPixelsEnabled;
+                if (_textureUsesNearest == useNearest)
+                    return;
+
+                int filter = useNearest ? GlNearest : GlLinear;
+                GLES20.GlTexParameteri(GlTexture2D, GlTextureMinFilter, filter);
+                GLES20.GlTexParameteri(GlTexture2D, GlTextureMagFilter, filter);
+                _textureUsesNearest = useNearest;
+            }
+
+            private void DestroyGlResources()
+            {
+                if (_programId != 0)
+                {
+                    GLES20.GlDeleteProgram(_programId);
+                    _programId = 0;
+                }
+
+                if (_textureId != 0)
+                {
+                    int[] textures = { _textureId };
+                    GLES20.GlDeleteTextures(1, textures, 0);
+                    _textureId = 0;
+                }
+
+                _positionLocation = -1;
+                _uvLocation = -1;
+                _samplerLocation = -1;
+                _forceOpaqueLocation = -1;
+                _textureSizeLocation = -1;
+                _interlaceBlendLocation = -1;
+                _interlaceFieldParityLocation = -1;
+                _textureWidth = 0;
+                _textureHeight = 0;
+                _forceTextureUpload = true;
+                _directUploadBuffer?.Dispose();
+                _directUploadBuffer = null;
+                _directUploadCapacity = 0;
+            }
+        }
+
+        private sealed class AndroidGlTextureView : SurfaceView, ISurfaceHolderCallback
         {
             private const int FrameRepeatIntervalMs = 16;
             private const int GlColorBufferBit = 0x00004000;
@@ -1087,8 +1842,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private bool _textureUsesNearest = true;
             private bool _forceTextureUpload = true;
             private Thread? _renderThread;
-            private SurfaceTexture? _surfaceTexture;
-            private Surface? _windowSurface;
+            private ISurfaceHolder? _surfaceHolder;
             private EGLDisplay? _eglDisplay;
             private EGLContext? _eglContext;
             private EGLSurface? _eglSurface;
@@ -1106,10 +1860,12 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             public AndroidGlTextureView(Context context, AndroidNativeGlHost host) : base(context)
             {
                 _host = host;
-                // TextureView stays in the normal Android view hierarchy, so Avalonia's
-                // translucent touch controls can render above the game surface.
-                SurfaceTextureListener = this;
-                SetOpaque(true);
+                // SurfaceView gives Android a more stable dedicated producer surface than
+                // TextureView, which has shown periodic black flashes on some devices.
+                Holder?.AddCallback(this);
+                SetZOrderOnTop(false);
+                SetZOrderMediaOverlay(false);
+                SetSurfaceLifecycle(SurfaceViewLifecycle.FollowsAttachment);
                 Clickable = true;
                 Focusable = false;
                 FocusableInTouchMode = false;
@@ -1160,7 +1916,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 lock (_surfaceSync)
                 {
                     _surfaceReady = false;
-                    _surfaceTexture = null;
+                    _surfaceHolder = null;
                     _surfaceWidth = 0;
                     _surfaceHeight = 0;
                 }
@@ -1178,53 +1934,50 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _renderSignal.Set();
             }
 
-            public void OnSurfaceTextureAvailable(SurfaceTexture surface, int width, int height)
+            public void SurfaceCreated(ISurfaceHolder holder)
             {
                 lock (_surfaceSync)
                 {
-                    _surfaceTexture = surface;
+                    _surfaceHolder = holder;
+                    _surfaceReady = true;
+                }
+
+                _host.NoteSurfaceAvailable();
+                StartRenderThreadIfNeeded();
+                _renderSignal.Set();
+            }
+
+            public void SurfaceDestroyed(ISurfaceHolder holder)
+            {
+                lock (_surfaceSync)
+                {
+                    _surfaceReady = false;
+                    if (ReferenceEquals(_surfaceHolder, holder))
+                        _surfaceHolder = null;
+                    _surfaceWidth = 0;
+                    _surfaceHeight = 0;
+                }
+
+                _host.NoteSurfaceDestroyed();
+                _renderSignal.Set();
+                JoinRenderThread();
+                CleanupGl();
+            }
+
+            public void SurfaceChanged(ISurfaceHolder holder, Format format, int width, int height)
+            {
+                lock (_surfaceSync)
+                {
+                    _surfaceHolder = holder;
                     _surfaceWidth = width;
                     _surfaceHeight = height;
                     _surfaceReady = true;
                 }
 
-                StartRenderThreadIfNeeded();
+                _host.NoteSurfaceSizeChanged(width, height);
+                if (width > 0 && height > 0)
+                    StartRenderThreadIfNeeded();
                 _renderSignal.Set();
-            }
-
-            public bool OnSurfaceTextureDestroyed(SurfaceTexture surface)
-            {
-                lock (_surfaceSync)
-                {
-                    _surfaceReady = false;
-                    if (ReferenceEquals(_surfaceTexture, surface))
-                        _surfaceTexture = null;
-                    _surfaceWidth = 0;
-                    _surfaceHeight = 0;
-                }
-
-                _renderSignal.Set();
-                JoinRenderThread();
-                CleanupGl();
-                return true;
-            }
-
-            public void OnSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height)
-            {
-                lock (_surfaceSync)
-                {
-                    if (ReferenceEquals(_surfaceTexture, surface))
-                    {
-                        _surfaceWidth = width;
-                        _surfaceHeight = height;
-                    }
-                }
-
-                _renderSignal.Set();
-            }
-
-            public void OnSurfaceTextureUpdated(SurfaceTexture surface)
-            {
             }
 
             private void StartRenderThreadIfNeeded()
@@ -1272,20 +2025,23 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                         if (!signaled && !_host.HasRenderableFrame())
                             continue;
 
-                        SurfaceTexture? surfaceTexture;
+                        ISurfaceHolder? surfaceHolder;
                         int surfaceWidth;
                         int surfaceHeight;
                         lock (_surfaceSync)
                         {
-                            if (!_surfaceReady || _surfaceTexture == null || _surfaceWidth <= 0 || _surfaceHeight <= 0)
+                            if (!_surfaceReady || _surfaceHolder == null)
                                 break;
 
-                            surfaceTexture = _surfaceTexture;
+                            if (_surfaceWidth <= 0 || _surfaceHeight <= 0)
+                                continue;
+
+                            surfaceHolder = _surfaceHolder;
                             surfaceWidth = _surfaceWidth;
                             surfaceHeight = _surfaceHeight;
                         }
 
-                        EnsureGlReady(surfaceTexture, surfaceWidth, surfaceHeight);
+                        EnsureGlReady(surfaceHolder, surfaceWidth, surfaceHeight);
                         DrawFrame(surfaceWidth, surfaceHeight);
 
                         if (_eglDisplay != null && _eglSurface != null && !EGL14.EglSwapBuffers(_eglDisplay, _eglSurface))
@@ -1303,7 +2059,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 }
             }
 
-            private void EnsureGlReady(SurfaceTexture surfaceTexture, int surfaceWidth, int surfaceHeight)
+            private void EnsureGlReady(ISurfaceHolder surfaceHolder, int surfaceWidth, int surfaceHeight)
             {
                 if (_eglDisplay != null && _eglContext != null && _eglSurface != null)
                 {
@@ -1342,20 +2098,18 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 if (IsNoContext(context))
                     throw new InvalidOperationException($"Native Android GL context creation failed: err=0x{EGL14.EglGetError():X}");
 
-                Surface windowSurface = new(surfaceTexture);
+                Surface? windowSurface = surfaceHolder.Surface;
+                if (windowSurface == null || !windowSurface.IsValid)
+                    throw new InvalidOperationException("Native Android GL surface holder is not valid.");
                 int[] surfaceAttributes = { EGL14.EglNone };
                 EGLSurface? eglSurface = EGL14.EglCreateWindowSurface(display, configs[0], windowSurface, surfaceAttributes, 0);
                 if (IsNoSurface(eglSurface))
                 {
-                    windowSurface.Release();
-                    windowSurface.Dispose();
                     throw new InvalidOperationException($"Native Android GL window surface creation failed: err=0x{EGL14.EglGetError():X}");
                 }
 
                 if (!EGL14.EglMakeCurrent(display, eglSurface, eglSurface, context))
                 {
-                    windowSurface.Release();
-                    windowSurface.Dispose();
                     throw new InvalidOperationException($"Native Android GL make current failed: err=0x{EGL14.EglGetError():X}");
                 }
 
@@ -1363,7 +2117,6 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _eglConfig = configs[0];
                 _eglContext = context;
                 _eglSurface = eglSurface;
-                _windowSurface = windowSurface;
                 EGL14.EglSwapInterval(display, 1);
 
                 _host.NoteGlInfo(
@@ -1373,6 +2126,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     SafeGetGlString(GlShadingLanguageVersion));
                 CreateProgramAndTexture();
                 _host.NoteInitSuccess();
+                _host.NoteGlInit();
                 GLES20.GlViewport(0, 0, surfaceWidth, surfaceHeight);
             }
 
@@ -1391,10 +2145,11 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     out bool forceOpaque,
                     out bool interlaceBlendEnabled,
                     out int interlaceBlendFieldParity);
-                if (_programId == 0 || _textureId == 0 || frameWidth <= 0 || frameHeight <= 0)
+                if (_programId == 0 || _textureId == 0)
                 {
                     GLES20.GlClearColor(0f, 0f, 0f, 1f);
                     GLES20.GlClear(GlColorBufferBit);
+                    _host.NoteBlackClear();
                     _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
                     return;
                 }
@@ -1402,6 +2157,23 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 GLES20.GlActiveTexture(GlTexture0);
                 GLES20.GlBindTexture(GlTexture2D, _textureId);
                 UpdateTextureFiltering(sharpPixelsEnabled);
+
+                bool haveUploadedTexture = _textureWidth > 0 && _textureHeight > 0;
+                if (frameWidth <= 0 || frameHeight <= 0)
+                {
+                    if (!haveUploadedTexture)
+                    {
+                        GLES20.GlClearColor(0f, 0f, 0f, 1f);
+                        GLES20.GlClear(GlColorBufferBit);
+                        _host.NoteBlackClear();
+                        _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
+                        return;
+                    }
+
+                    frameWidth = _textureWidth;
+                    frameHeight = _textureHeight;
+                    _host.NoteTextureReuse();
+                }
 
                 bool uploaded = false;
                 bool haveFrameBytes = frameBytes.Length >= frameWidth * frameHeight * 4;
@@ -1415,6 +2187,18 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     uploadTicks = Stopwatch.GetTimestamp() - uploadStart;
                     uploaded = true;
                     _forceTextureUpload = false;
+                }
+                else if (!haveFrameBytes && haveUploadedTexture)
+                {
+                    _host.NoteTextureReuse();
+                }
+                else if (!haveFrameBytes)
+                {
+                    GLES20.GlClearColor(0f, 0f, 0f, 1f);
+                    GLES20.GlClear(GlColorBufferBit);
+                    _host.NoteBlackClear();
+                    _host.NoteRender(Stopwatch.GetTimestamp() - renderStart, 0, uploaded: false);
+                    return;
                 }
 
                 GLES20.GlUseProgram(_programId);
@@ -1677,13 +2461,6 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                         EGL14.EglDestroyContext(_eglDisplay, _eglContext);
                     EGL14.EglTerminate(_eglDisplay);
                     EGL14.EglReleaseThread();
-                }
-
-                if (_windowSurface != null)
-                {
-                    _windowSurface.Release();
-                    _windowSurface.Dispose();
-                    _windowSurface = null;
                 }
 
                 _eglSurface = null;

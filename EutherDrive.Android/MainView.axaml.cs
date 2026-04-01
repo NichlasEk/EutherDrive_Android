@@ -1323,14 +1323,18 @@ public partial class MainView : UserControl
 
     private unsafe void PresentLatestFrame()
     {
-        UpdateOverlaySummary();
-        if (_viewModel.PerfSummary != _latestPerfSummary)
+        bool quietNativeShellUi = ShouldQuietNativeShellUi();
+        if (!quietNativeShellUi)
         {
-            _viewModel.PerfSummary = _latestPerfSummary;
-        }
-        if (_viewModel.PerfHeadline != _latestPerfHeadline)
-        {
-            _viewModel.PerfHeadline = _latestPerfHeadline;
+            UpdateOverlaySummary();
+            if (_viewModel.PerfSummary != _latestPerfSummary)
+            {
+                _viewModel.PerfSummary = _latestPerfSummary;
+            }
+            if (_viewModel.PerfHeadline != _latestPerfHeadline)
+            {
+                _viewModel.PerfHeadline = _latestPerfHeadline;
+            }
         }
 
         long serial;
@@ -1708,6 +1712,12 @@ public partial class MainView : UserControl
         _perfAccumulatedEmuMs = 0;
         _perfAccumulatedAudioMs = 0;
         _perfAccumulatedBlitMs = 0;
+    }
+
+    private bool ShouldQuietNativeShellUi()
+    {
+        return _renderSurface is AndroidNativeGlRenderSurface
+            && !_viewModel.DebugVisible;
     }
 
     private static double StopwatchTicksToMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
