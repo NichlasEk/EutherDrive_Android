@@ -955,6 +955,7 @@ public partial class MainWindow : Window
         InputSurface.PointerPressed += OnInputSurfacePointerPressed;
         InputSurface.PointerReleased += OnInputSurfacePointerReleased;
         InputSurface.PointerCaptureLost += OnInputSurfacePointerCaptureLost;
+        InputSurface.SizeChanged += (_, _) => UpdatePresentationLayout();
     }
 
     private void HandleKeyDown(object? sender, KeyEventArgs e)
@@ -1113,9 +1114,10 @@ public partial class MainWindow : Window
 
             if (RenderBackendStateText != null)
             {
-                bool activeOpenGl = _renderSurface is IAcceleratedRenderSurface;
-                RenderBackendStateText.Text = GetRenderBackendStateText(activeOpenGl);
-                RenderBackendStateText.Foreground = new SolidColorBrush(Color.Parse(GetRenderBackendStateColor(activeOpenGl)));
+                bool activeAccelerated = _renderSurface is IAcceleratedRenderSurface;
+                bool activeVulkan = _renderSurface is VulkanRenderSurface;
+                RenderBackendStateText.Text = GetRenderBackendStateText(activeAccelerated, activeVulkan);
+                RenderBackendStateText.Foreground = new SolidColorBrush(Color.Parse(GetRenderBackendStateColor(activeAccelerated, activeVulkan)));
             }
         }
         finally
@@ -1154,33 +1156,37 @@ public partial class MainWindow : Window
             : new SolidColorBrush(Color.Parse("#7F90A7"));
     }
 
-    private string GetRenderBackendStateText(bool activeOpenGl)
+    private string GetRenderBackendStateText(bool activeAccelerated, bool activeVulkan)
     {
         return _renderBackendMode switch
         {
-            RenderBackendMode.OpenGl => activeOpenGl
+            RenderBackendMode.OpenGl => activeAccelerated
                 ? "Active: OpenGL"
                 : string.IsNullOrWhiteSpace(_renderBackendFallbackReason)
                     ? "Active: Bitmap fallback"
                     : $"Active: Bitmap fallback ({_renderBackendFallbackReason})",
             RenderBackendMode.Vulkan => !RenderBackendConfig.SupportsVulkanPlatform
                 ? "Active: Bitmap (Vulkan unsupported)"
-                : RenderBackendConfig.StartupMode == RenderBackendMode.Vulkan
+                : activeVulkan && RenderBackendConfig.StartupMode == RenderBackendMode.Vulkan
                     ? "Active: Vulkan"
-                    : "Active: Bitmap (Vulkan on restart)",
+                    : activeVulkan
+                        ? "Active: Vulkan presenter (desktop backend on restart)"
+                        : string.IsNullOrWhiteSpace(_renderBackendFallbackReason)
+                            ? "Active: Bitmap fallback"
+                            : $"Active: Bitmap fallback ({_renderBackendFallbackReason})",
             _ => "Active: Bitmap"
         };
     }
 
-    private string GetRenderBackendStateColor(bool activeOpenGl)
+    private string GetRenderBackendStateColor(bool activeAccelerated, bool activeVulkan)
     {
         return _renderBackendMode switch
         {
-            RenderBackendMode.OpenGl when !activeOpenGl => "#FF9A8A",
+            RenderBackendMode.OpenGl when !activeAccelerated => "#FF9A8A",
             RenderBackendMode.OpenGl => "#7BF0D5",
             RenderBackendMode.Vulkan when !RenderBackendConfig.SupportsVulkanPlatform => "#FF9A8A",
-            RenderBackendMode.Vulkan when RenderBackendConfig.StartupMode == RenderBackendMode.Vulkan => "#FFC56B",
-            RenderBackendMode.Vulkan => "#FFC56B",
+            RenderBackendMode.Vulkan when activeVulkan => "#FFC56B",
+            RenderBackendMode.Vulkan => "#FF9A8A",
             _ => "#9FB3C8"
         };
     }
@@ -6510,20 +6516,14 @@ public partial class MainWindow : Window
         {
             if (TraceUiRender)
                 Console.WriteLine($"[MainWindow] Recreating bitmap: {_lastPresentedWidth}x{_lastPresentedHeight} -> {w}x{h}");
-
-            if (ScreenGrid != null)
-            {
-                ScreenGrid.Width = w;
-                ScreenGrid.Height = h;
-            }
-            ScreenSurfaceHost.Width = w;
-            ScreenSurfaceHost.Height = h;
             if (SplashImage != null && !string.IsNullOrWhiteSpace(_romPath))
                 SplashImage.IsVisible = false;
 
             _lastPresentedWidth = w;
             _lastPresentedHeight = h;
         }
+
+        SetPresentationTargetSize(w, h);
     }
 
     private void EnsureDesktopRenderViewAttached()
@@ -6543,14 +6543,17 @@ public partial class MainWindow : Window
 
         view.Width = double.NaN;
         view.Height = double.NaN;
+        UpdatePresentationLayout();
     }
 
     private IGameRenderSurface CreateRenderSurface()
     {
-        // Vulkan is selected at the desktop platform layer during startup; the in-window presenter stays bitmap-backed for now.
-        return _renderBackendMode == RenderBackendMode.OpenGl
-            ? CreateAcceleratedRenderSurface()
-            : new WriteableBitmapRenderSurface();
+        return _renderBackendMode switch
+        {
+            RenderBackendMode.OpenGl => CreateAcceleratedRenderSurface(),
+            RenderBackendMode.Vulkan => new VulkanRenderSurface(),
+            _ => new WriteableBitmapRenderSurface()
+        };
     }
 
     private IGameRenderSurface CreateAcceleratedRenderSurface()
@@ -6568,6 +6571,8 @@ public partial class MainWindow : Window
     private long _uiProfileAudioTicks;
     private long _uiProfileSubmitTicks;
     private long _uiProfileRenderTicks;
+    private double _presentationTargetWidth;
+    private double _presentationTargetHeight;
 
     private void ResetPresentationState(bool clearBitmap)
     {
@@ -6590,6 +6595,8 @@ public partial class MainWindow : Window
         else
             _renderSurface?.Reset();
         _renderSurface = null;
+        _presentationTargetWidth = 0;
+        _presentationTargetHeight = 0;
         ScreenSurfaceHost.Children.Clear();
         UpdateRenderBackendUi();
     }
@@ -6675,9 +6682,9 @@ public partial class MainWindow : Window
             PerfHotspots.Add(PerfHotspot.UiBlit, metrics.BlitTicks);
         }
 
-        if (_renderSurface is IAcceleratedRenderSurface activeGlSurface && activeGlSurface.ShouldFallbackToBitmap(out string fallbackReason))
+        if (_renderSurface is IAcceleratedRenderSurface acceleratedSurface && acceleratedSurface.ShouldFallbackToBitmap(out string fallbackReason))
         {
-            Console.WriteLine($"[MainWindow] OpenGL fallback -> bitmap: {fallbackReason}");
+            Console.WriteLine($"[MainWindow] Accelerated fallback -> bitmap: {fallbackReason}");
             var bitmapSurface = new WriteableBitmapRenderSurface();
             if (_renderSurface is IDisposable disposableRenderSurface)
                 disposableRenderSurface.Dispose();
@@ -6687,6 +6694,7 @@ public partial class MainWindow : Window
             _renderBackendFallbackReason = fallbackReason;
             EnsureDesktopRenderViewAttached();
             UpdateRenderBackendUi();
+            UpdatePresentationLayout();
             _renderSurface.Present(
                 src,
                 w,
@@ -6716,13 +6724,13 @@ public partial class MainWindow : Window
             _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
     }
 
-    private bool TryRenderPsxAcceleratedFrame(PsxAdapter psx, IAcceleratedRenderSurface glSurface, in FrameBlitOptions options, long renderStart)
+    private bool TryRenderPsxAcceleratedFrame(PsxAdapter psx, IAcceleratedRenderSurface acceleratedSurface, in FrameBlitOptions options, long renderStart)
     {
         if (!psx.TrySwapPresentationBuffer(ref _glSwapPresentBuffer, out int width, out int height, out int srcStride, out double presentationWidth, out double presentationHeight, out PsxAdapter.PresentationFrameInfo frameInfo))
             return false;
 
         EnsureBitmapFromCore(width, height);
-        if (_renderSurface != glSurface)
+        if (_renderSurface != acceleratedSurface)
             return false;
 
         ApplyPresentationSize(
@@ -6741,9 +6749,9 @@ public partial class MainWindow : Window
             height,
             srcStride,
             frameInfo);
-        glSurface.SetInterlaceBlend(false, -1);
+        acceleratedSurface.SetInterlaceBlend(false, -1);
 
-        FrameBlitMetrics metrics = glSurface.Present(
+        FrameBlitMetrics metrics = acceleratedSurface.Present(
             _glSwapPresentBuffer.AsSpan(0, Math.Min(_glSwapPresentBuffer.Length, srcStride * height)),
             width,
             height,
@@ -6757,9 +6765,9 @@ public partial class MainWindow : Window
             PerfHotspots.Add(PerfHotspot.UiBlit, metrics.BlitTicks);
         }
 
-        if (glSurface.ShouldFallbackToBitmap(out string fallbackReason))
+        if (acceleratedSurface.ShouldFallbackToBitmap(out string fallbackReason))
         {
-            Console.WriteLine($"[MainWindow] OpenGL fallback -> bitmap: {fallbackReason}");
+            Console.WriteLine($"[MainWindow] Accelerated fallback -> bitmap: {fallbackReason}");
             var bitmapSurface = new WriteableBitmapRenderSurface();
             if (_renderSurface is IDisposable disposableRenderSurface)
                 disposableRenderSurface.Dispose();
@@ -6769,6 +6777,7 @@ public partial class MainWindow : Window
             _renderBackendFallbackReason = fallbackReason;
             EnsureDesktopRenderViewAttached();
             UpdateRenderBackendUi();
+            UpdatePresentationLayout();
             _renderSurface.Present(
                 _glSwapPresentBuffer,
                 width,
@@ -6811,9 +6820,54 @@ public partial class MainWindow : Window
 
     private void ApplyPresentationSize(double targetWidth, double targetHeight)
     {
-        if (ScreenGrid == null || targetWidth <= 0 || targetHeight <= 0)
+        if (targetWidth <= 0 || targetHeight <= 0)
             return;
 
+        SetPresentationTargetSize(targetWidth, targetHeight);
+    }
+
+    private void SetPresentationTargetSize(double targetWidth, double targetHeight)
+    {
+        if (targetWidth <= 0 || targetHeight <= 0)
+            return;
+
+        _presentationTargetWidth = targetWidth;
+        _presentationTargetHeight = targetHeight;
+        UpdatePresentationLayout();
+    }
+
+    private void UpdatePresentationLayout()
+    {
+        if (ScreenGrid == null || ScreenSurfaceHost == null)
+            return;
+
+        double targetWidth = _presentationTargetWidth > 0
+            ? _presentationTargetWidth
+            : (_lastPresentedWidth > 0 ? _lastPresentedWidth : 320);
+        double targetHeight = _presentationTargetHeight > 0
+            ? _presentationTargetHeight
+            : (_lastPresentedHeight > 0 ? _lastPresentedHeight : 224);
+        if (targetWidth <= 0 || targetHeight <= 0)
+            return;
+
+        if (UsesNativeDesktopPresentationLayout()
+            && InputSurface?.Bounds is Rect bounds
+            && bounds.Width > 1
+            && bounds.Height > 1)
+        {
+            double scale = Math.Min(bounds.Width / targetWidth, bounds.Height / targetHeight);
+            if (double.IsFinite(scale) && scale > 0)
+            {
+                targetWidth = Math.Max(1, Math.Round(targetWidth * scale));
+                targetHeight = Math.Max(1, Math.Round(targetHeight * scale));
+            }
+        }
+
+        ApplyPresentationLayoutSize(targetWidth, targetHeight);
+    }
+
+    private void ApplyPresentationLayoutSize(double targetWidth, double targetHeight)
+    {
         if (Math.Abs(ScreenGrid.Width - targetWidth) > 0.5 || Math.Abs(ScreenGrid.Height - targetHeight) > 0.5)
         {
             ScreenGrid.Width = targetWidth;
@@ -6826,6 +6880,9 @@ public partial class MainWindow : Window
             ScreenSurfaceHost.Height = targetHeight;
         }
     }
+
+    private bool UsesNativeDesktopPresentationLayout()
+        => _renderSurface is VulkanRenderSurface or SdlNativeRenderSurface;
 
     private void ApplyPsxAspectIfNeeded(IEmulatorCore core, int width, int height)
     {
