@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -38,6 +39,7 @@ public partial class MainView : UserControl
     private const double JoystickDiagonalRatio = 0.56;
     private const double JoystickPadding = 10.0;
     private const double LandscapeIntegerSnapThreshold = 0.08;
+    private const int DefaultScanlineStrengthPercent = 0;
     private const string SettingsFileName = "android-settings.toml";
     private const string LegacyJsonSettingsFileName = "android-settings.json";
 
@@ -1381,9 +1383,7 @@ public partial class MainView : UserControl
             || _core is SnesAdapter
             || _core is MdTracerAdapter
             || _core is PceCdAdapter;
-        var blitOptions = new FrameBlitOptions(
-            SharpPixels: _viewModel.SharpPixelsEnabled,
-            ForceOpaque: forceOpaque);
+        var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
 
         if (frameIsPsx)
         {
@@ -2395,6 +2395,19 @@ public partial class MainView : UserControl
             : "Sharp pixels disabled.";
     }
 
+    private void OnScanlineStrengthChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        int strength = ClampPercent((int)Math.Round(e.NewValue));
+        if (_viewModel.ScanlineStrengthPercent == strength)
+            return;
+
+        _viewModel.ScanlineStrengthPercent = strength;
+        SaveSettings();
+        _viewModel.FooterStatus = strength > 0
+            ? $"Scanline strength set to {strength}%."
+            : "Scanlines disabled.";
+    }
+
     private async void OnPickDsp1(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("DSP1", "Select DSP1 ROM", new[] { "*.bin", "*.*" });
     private void OnClearDsp1(object? sender, RoutedEventArgs e) => ClearSystemFile("DSP1");
     private async void OnPickDsp2(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("DSP2", "Select DSP2 ROM", new[] { "*.bin", "*.*" });
@@ -2483,6 +2496,19 @@ public partial class MainView : UserControl
         };
     }
 
+    private FrameBlitOptions CreateCurrentFrameBlitOptions(bool forceOpaque)
+    {
+        int scanlineStrength = ClampPercent(_viewModel.ScanlineStrengthPercent);
+        int scanlineDarkenFactor = 256 - ((scanlineStrength * 256) / 100);
+        return new FrameBlitOptions(
+            SharpPixels: _viewModel.SharpPixelsEnabled,
+            ForceOpaque: forceOpaque,
+            ApplyScanlines: scanlineStrength > 0,
+            ScanlineDarkenFactor: scanlineDarkenFactor);
+    }
+
+    private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);
+
     private void ApplySharpPixelsSetting()
     {
         if (_renderSurface?.View is not Image renderImage)
@@ -2536,6 +2562,7 @@ public partial class MainView : UserControl
             PsxVideoStandardIndex = _viewModel.PsxVideoStandardIndex,
             PsxFrameRateIndex = _viewModel.PsxFrameRateIndex,
             SharpPixelsEnabled = _viewModel.SharpPixelsEnabled,
+            ScanlineStrengthPercent = _viewModel.ScanlineStrengthPercent,
             Dsp1Path = _viewModel.Dsp1Path,
             Dsp1Display = _viewModel.Dsp1Display,
             Dsp2Path = _viewModel.Dsp2Path,
@@ -2634,6 +2661,7 @@ public partial class MainView : UserControl
         _viewModel.PsxVideoStandardIndex = Math.Clamp(settings.PsxVideoStandardIndex, 0, 2);
         _viewModel.PsxFrameRateIndex = Math.Clamp(settings.PsxFrameRateIndex, 0, 2);
         _viewModel.SharpPixelsEnabled = settings.SharpPixelsEnabled;
+        _viewModel.ScanlineStrengthPercent = ClampPercent(settings.ScanlineStrengthPercent);
         _viewModel.Dsp1Path = settings.Dsp1Path;
         _viewModel.Dsp1Display = settings.Dsp1Display ?? "(none)";
         _viewModel.Dsp2Path = settings.Dsp2Path;
@@ -3546,6 +3574,7 @@ public partial class MainView : UserControl
         private int _psxVideoStandardIndex;
         private int _psxFrameRateIndex;
         private bool _sharpPixelsEnabled = true;
+        private int _scanlineStrengthPercent = DefaultScanlineStrengthPercent;
         private string _dsp1Display = "(none)";
         private string _dsp2Display = "(none)";
         private string _dsp3Display = "(none)";
@@ -3794,6 +3823,21 @@ public partial class MainView : UserControl
         public int PsxVideoStandardIndex { get => _psxVideoStandardIndex; set => SetField(ref _psxVideoStandardIndex, Math.Clamp(value, 0, 2)); }
         public int PsxFrameRateIndex { get => _psxFrameRateIndex; set => SetField(ref _psxFrameRateIndex, Math.Clamp(value, 0, 2)); }
         public bool SharpPixelsEnabled { get => _sharpPixelsEnabled; set => SetField(ref _sharpPixelsEnabled, value); }
+        public int ScanlineStrengthPercent
+        {
+            get => _scanlineStrengthPercent;
+            set
+            {
+                int normalized = ClampPercent(value);
+                if (!SetField(ref _scanlineStrengthPercent, normalized))
+                {
+                    return;
+                }
+
+                OnPropertyChanged(nameof(ScanlineStrengthDisplay));
+            }
+        }
+        public string ScanlineStrengthDisplay => $"{_scanlineStrengthPercent}%";
         public string Dsp1Display { get => _dsp1Display; set => SetField(ref _dsp1Display, value); }
         public string Dsp2Display { get => _dsp2Display; set => SetField(ref _dsp2Display, value); }
         public string Dsp3Display { get => _dsp3Display; set => SetField(ref _dsp3Display, value); }
@@ -3958,6 +4002,7 @@ public partial class MainView : UserControl
         public int PsxVideoStandardIndex { get; set; }
         public int PsxFrameRateIndex { get; set; }
         public bool SharpPixelsEnabled { get; set; } = true;
+        public int ScanlineStrengthPercent { get; set; } = DefaultScanlineStrengthPercent;
         public string? Dsp1Path { get; set; }
         public string? Dsp1Display { get; set; }
         public string? Dsp2Path { get; set; }

@@ -84,6 +84,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
         private bool _renderRequested;
         private bool _sharpPixelsEnabled = true;
         private bool _forceOpaque;
+        private bool _applyScanlines;
+        private float _scanlineDarken = 1.0f;
         private bool _interlaceBlendEnabled;
         private int _interlaceBlendFieldParity = -1;
         private int _presentCount;
@@ -254,6 +256,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _renderRequested = true;
                 _sharpPixelsEnabled = options.SharpPixels;
                 _forceOpaque = options.ForceOpaque;
+                _applyScanlines = options.ApplyScanlines;
+                _scanlineDarken = Math.Clamp(options.ScanlineDarkenFactor / 256f, 0f, 1f);
                 _presentCount++;
                 _lastUploadTicks = Stopwatch.GetTimestamp() - copyStart;
             }
@@ -281,6 +285,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _renderRequested = true;
                 _sharpPixelsEnabled = options.SharpPixels;
                 _forceOpaque = options.ForceOpaque;
+                _applyScanlines = options.ApplyScanlines;
+                _scanlineDarken = Math.Clamp(options.ScanlineDarkenFactor / 256f, 0f, 1f);
                 _presentCount++;
             }
 
@@ -298,6 +304,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _frameStride = 0;
                 _frameDirty = false;
                 _renderRequested = true;
+                _applyScanlines = false;
+                _scanlineDarken = 1.0f;
                 _interlaceBlendEnabled = false;
                 _interlaceBlendFieldParity = -1;
             }
@@ -409,7 +417,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             }
         }
 
-        private void BeginRender(out byte[] frameBytes, out int frameWidth, out int frameHeight, out bool frameDirty, out bool sharpPixelsEnabled, out bool forceOpaque, out bool interlaceBlendEnabled, out int interlaceBlendFieldParity)
+        private void BeginRender(out byte[] frameBytes, out int frameWidth, out int frameHeight, out bool frameDirty, out bool sharpPixelsEnabled, out bool forceOpaque, out bool applyScanlines, out float scanlineDarken, out bool interlaceBlendEnabled, out int interlaceBlendFieldParity)
         {
             lock (_frameSync)
             {
@@ -420,6 +428,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 frameDirty = _frameDirty;
                 sharpPixelsEnabled = _sharpPixelsEnabled;
                 forceOpaque = _forceOpaque;
+                applyScanlines = _applyScanlines;
+                scanlineDarken = _scanlineDarken;
                 interlaceBlendEnabled = _interlaceBlendEnabled;
                 interlaceBlendFieldParity = _interlaceBlendFieldParity;
                 _frameDirty = false;
@@ -1068,6 +1078,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 varying vec2 vUv;
                 uniform sampler2D uTex;
                 uniform float uForceOpaque;
+                uniform float uApplyScanlines;
+                uniform float uScanlineDarken;
                 uniform vec2 uTextureSize;
                 uniform float uInterlaceBlend;
                 uniform float uInterlaceFieldParity;
@@ -1093,6 +1105,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 {
                     vec4 color = texture2D(uTex, vUv);
                     color = softenInterlace(color);
+                    if (uApplyScanlines > 0.5 && mod(floor(vUv.y * uTextureSize.y), 2.0) > 0.5)
+                        color.rgb *= uScanlineDarken;
                     float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
                     gl_FragColor = vec4(color.b, color.g, color.r, alpha);
                 }
@@ -1114,6 +1128,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 in vec2 vUv;
                 uniform sampler2D uTex;
                 uniform float uForceOpaque;
+                uniform float uApplyScanlines;
+                uniform float uScanlineDarken;
                 uniform vec2 uTextureSize;
                 uniform float uInterlaceBlend;
                 uniform float uInterlaceFieldParity;
@@ -1140,6 +1156,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 {
                     vec4 color = texture(uTex, vUv);
                     color = softenInterlace(color);
+                    if (uApplyScanlines > 0.5 && mod(floor(vUv.y * uTextureSize.y), 2.0) > 0.5)
+                        color.rgb *= uScanlineDarken;
                     float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
                     fragColor = vec4(color.b, color.g, color.r, alpha);
                 }
@@ -1167,6 +1185,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private int _uvLocation = -1;
             private int _samplerLocation = -1;
             private int _forceOpaqueLocation = -1;
+            private int _scanlinesLocation = -1;
+            private int _scanlineDarkenLocation = -1;
             private int _textureSizeLocation = -1;
             private int _interlaceBlendLocation = -1;
             private int _interlaceFieldParityLocation = -1;
@@ -1397,6 +1417,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     out bool frameDirty,
                     out bool sharpPixelsEnabled,
                     out bool forceOpaque,
+                    out bool applyScanlines,
+                    out float scanlineDarken,
                     out bool interlaceBlendEnabled,
                     out int interlaceBlendFieldParity);
                 if (_programId == 0 || _textureId == 0)
@@ -1458,6 +1480,10 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 GLES20.GlUseProgram(_programId);
                 GLES20.GlUniform1i(_samplerLocation, 0);
                 GLES20.GlUniform1f(_forceOpaqueLocation, forceOpaque ? 1.0f : 0.0f);
+                if (_scanlinesLocation >= 0)
+                    GLES20.GlUniform1f(_scanlinesLocation, applyScanlines ? 1.0f : 0.0f);
+                if (_scanlineDarkenLocation >= 0)
+                    GLES20.GlUniform1f(_scanlineDarkenLocation, scanlineDarken);
                 if (_textureSizeLocation >= 0)
                     GLES20.GlUniform2f(_textureSizeLocation, frameWidth, frameHeight);
                 if (_interlaceBlendLocation >= 0)
@@ -1546,6 +1572,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _uvLocation = GLES20.GlGetAttribLocation(_programId, "aUv");
                 _samplerLocation = GLES20.GlGetUniformLocation(_programId, "uTex");
                 _forceOpaqueLocation = GLES20.GlGetUniformLocation(_programId, "uForceOpaque");
+                _scanlinesLocation = GLES20.GlGetUniformLocation(_programId, "uApplyScanlines");
+                _scanlineDarkenLocation = GLES20.GlGetUniformLocation(_programId, "uScanlineDarken");
                 _textureSizeLocation = GLES20.GlGetUniformLocation(_programId, "uTextureSize");
                 _interlaceBlendLocation = GLES20.GlGetUniformLocation(_programId, "uInterlaceBlend");
                 _interlaceFieldParityLocation = GLES20.GlGetUniformLocation(_programId, "uInterlaceFieldParity");
@@ -1682,6 +1710,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _uvLocation = -1;
                 _samplerLocation = -1;
                 _forceOpaqueLocation = -1;
+                _scanlinesLocation = -1;
+                _scanlineDarkenLocation = -1;
                 _textureSizeLocation = -1;
                 _interlaceBlendLocation = -1;
                 _interlaceFieldParityLocation = -1;
@@ -1734,6 +1764,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 varying vec2 vUv;
                 uniform sampler2D uTex;
                 uniform float uForceOpaque;
+                uniform float uApplyScanlines;
+                uniform float uScanlineDarken;
                 uniform vec2 uTextureSize;
                 uniform float uInterlaceBlend;
                 uniform float uInterlaceFieldParity;
@@ -1759,6 +1791,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 {
                     vec4 color = texture2D(uTex, vUv);
                     color = softenInterlace(color);
+                    if (uApplyScanlines > 0.5 && mod(floor(vUv.y * uTextureSize.y), 2.0) > 0.5)
+                        color.rgb *= uScanlineDarken;
                     float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
                     gl_FragColor = vec4(color.b, color.g, color.r, alpha);
                 }
@@ -1780,6 +1814,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 in vec2 vUv;
                 uniform sampler2D uTex;
                 uniform float uForceOpaque;
+                uniform float uApplyScanlines;
+                uniform float uScanlineDarken;
                 uniform vec2 uTextureSize;
                 uniform float uInterlaceBlend;
                 uniform float uInterlaceFieldParity;
@@ -1806,6 +1842,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 {
                     vec4 color = texture(uTex, vUv);
                     color = softenInterlace(color);
+                    if (uApplyScanlines > 0.5 && mod(floor(vUv.y * uTextureSize.y), 2.0) > 0.5)
+                        color.rgb *= uScanlineDarken;
                     float alpha = uForceOpaque > 0.5 ? 1.0 : color.a;
                     fragColor = vec4(color.b, color.g, color.r, alpha);
                 }
@@ -1834,6 +1872,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
             private int _uvLocation = -1;
             private int _samplerLocation = -1;
             private int _forceOpaqueLocation = -1;
+            private int _scanlinesLocation = -1;
+            private int _scanlineDarkenLocation = -1;
             private int _textureSizeLocation = -1;
             private int _interlaceBlendLocation = -1;
             private int _interlaceFieldParityLocation = -1;
@@ -2143,6 +2183,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                     out bool frameDirty,
                     out bool sharpPixelsEnabled,
                     out bool forceOpaque,
+                    out bool applyScanlines,
+                    out float scanlineDarken,
                     out bool interlaceBlendEnabled,
                     out int interlaceBlendFieldParity);
                 if (_programId == 0 || _textureId == 0)
@@ -2204,6 +2246,10 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 GLES20.GlUseProgram(_programId);
                 GLES20.GlUniform1i(_samplerLocation, 0);
                 GLES20.GlUniform1f(_forceOpaqueLocation, forceOpaque ? 1.0f : 0.0f);
+                if (_scanlinesLocation >= 0)
+                    GLES20.GlUniform1f(_scanlinesLocation, applyScanlines ? 1.0f : 0.0f);
+                if (_scanlineDarkenLocation >= 0)
+                    GLES20.GlUniform1f(_scanlineDarkenLocation, scanlineDarken);
                 if (_textureSizeLocation >= 0)
                     GLES20.GlUniform2f(_textureSizeLocation, frameWidth, frameHeight);
                 if (_interlaceBlendLocation >= 0)
@@ -2301,6 +2347,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _uvLocation = GLES20.GlGetAttribLocation(_programId, "aUv");
                 _samplerLocation = GLES20.GlGetUniformLocation(_programId, "uTex");
                 _forceOpaqueLocation = GLES20.GlGetUniformLocation(_programId, "uForceOpaque");
+                _scanlinesLocation = GLES20.GlGetUniformLocation(_programId, "uApplyScanlines");
+                _scanlineDarkenLocation = GLES20.GlGetUniformLocation(_programId, "uScanlineDarken");
                 _textureSizeLocation = GLES20.GlGetUniformLocation(_programId, "uTextureSize");
                 _interlaceBlendLocation = GLES20.GlGetUniformLocation(_programId, "uInterlaceBlend");
                 _interlaceFieldParityLocation = GLES20.GlGetUniformLocation(_programId, "uInterlaceFieldParity");
@@ -2437,6 +2485,8 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 _uvLocation = -1;
                 _samplerLocation = -1;
                 _forceOpaqueLocation = -1;
+                _scanlinesLocation = -1;
+                _scanlineDarkenLocation = -1;
                 _textureSizeLocation = -1;
                 _interlaceBlendLocation = -1;
                 _interlaceFieldParityLocation = -1;

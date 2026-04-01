@@ -1046,6 +1046,23 @@
                     <TextBlock Text="Uses nearest-neighbor scaling for a crisp pixel look. Turn it off for smoother scaling."
                                Foreground="#91A8BD"
                                TextWrapping="Wrap" />
+                    <Grid ColumnDefinitions="Auto,*,Auto"
+                          ColumnSpacing="10">
+                      <TextBlock Text="Scanline strength"
+                                 VerticalAlignment="Center" />
+                      <Slider Grid.Column="1"
+                              Minimum="0"
+                              Maximum="100"
+                              Value="{Binding ScanlineStrengthPercent, Mode=OneWay}"
+                              ValueChanged="OnScanlineStrengthChanged" />
+                      <TextBlock Grid.Column="2"
+                                 Text="{Binding ScanlineStrengthDisplay}"
+                                 Foreground="#E8F3FF"
+                                 VerticalAlignment="Center" />
+                    </Grid>
+                    <TextBlock Text="0% turns scanlines off. Higher values darken every other row more strongly."
+                               Foreground="#91A8BD"
+                               TextWrapping="Wrap" />
                   </StackPanel>
                 </Border>
 
