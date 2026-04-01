@@ -340,7 +340,14 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
                     }
 
                     long renderStart = Stopwatch.GetTimestamp();
-                    bool uploaded = presenter.PresentFrame(frameBytes, frameWidth, frameHeight, frameStride, sharpPixelsEnabled, frameDirty);
+                    bool uploaded = presenter.PresentFrame(
+                        frameBytes,
+                        frameWidth,
+                        frameHeight,
+                        frameStride,
+                        sharpPixelsEnabled,
+                        frameDirty,
+                        drawableChanged);
                     long renderTicks = Stopwatch.GetTimestamp() - renderStart;
 
                     lock (_frameSync)
@@ -727,6 +734,7 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
         private IntPtr _commandBuffer;
         private ulong _imageAvailableSemaphore;
         private ulong _renderFinishedSemaphore;
+        private ulong _inFlightFence;
 
         private ulong _stagingBuffer;
         private ulong _stagingMemory;
@@ -775,7 +783,7 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             return true;
         }
 
-        public unsafe bool PresentFrame(byte[] frameBytes, int frameWidth, int frameHeight, int frameStride, bool sharpPixelsEnabled, bool frameDirty)
+        public unsafe bool PresentFrame(byte[] frameBytes, int frameWidth, int frameHeight, int frameStride, bool sharpPixelsEnabled, bool frameDirty, bool forcePresent)
         {
             if (_drawableWidth <= 0 || _drawableHeight <= 0)
             {
@@ -784,14 +792,16 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             }
 
             EnsureSwapchainMatchesDrawable();
+            if (!frameDirty && !_uploadImageReady)
+                return false;
+
+            if (!frameDirty && !forcePresent && HasPresentedFrame && SharpPixelsEnabled == sharpPixelsEnabled)
+                return false;
+
+            WaitForInFlightFrame();
 
             if (frameDirty)
                 UploadFrame(frameBytes, frameWidth, frameHeight, frameStride);
-            else if (!_uploadImageReady)
-                return false;
-
-            if (!frameDirty && HasPresentedFrame && SharpPixelsEnabled == sharpPixelsEnabled)
-                return false;
 
             SharpPixelsEnabled = sharpPixelsEnabled;
             DrawCurrentFrame(frameWidth, frameHeight);
@@ -817,6 +827,12 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             {
                 _vk.DestroySemaphore(_device, _renderFinishedSemaphore, IntPtr.Zero);
                 _renderFinishedSemaphore = 0;
+            }
+
+            if (_inFlightFence != 0)
+            {
+                _vk.DestroyFence(_device, _inFlightFence, IntPtr.Zero);
+                _inFlightFence = 0;
             }
 
             if (_commandPool != 0)
@@ -987,6 +1003,13 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             };
             _vk.Check(_vk.CreateSemaphore(_device, &semaphoreCreateInfo, IntPtr.Zero, out _imageAvailableSemaphore), "vkCreateSemaphore(imageAvailable)");
             _vk.Check(_vk.CreateSemaphore(_device, &semaphoreCreateInfo, IntPtr.Zero, out _renderFinishedSemaphore), "vkCreateSemaphore(renderFinished)");
+
+            VkFenceCreateInfo fenceCreateInfo = new()
+            {
+                SType = VulkanApi.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                Flags = VulkanApi.VK_FENCE_CREATE_SIGNALED_BIT
+            };
+            _vk.Check(_vk.CreateFence(_device, &fenceCreateInfo, IntPtr.Zero, out _inFlightFence), "vkCreateFence(inFlight)");
         }
 
         private unsafe bool TryFindQueueFamily(IntPtr physicalDevice, out uint queueFamilyIndex)
@@ -1060,10 +1083,22 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             uint presentMode = VulkanApi.VK_PRESENT_MODE_FIFO_KHR;
             for (int i = 0; i < presentModeCount; i++)
             {
-                if (presentModes[i] == VulkanApi.VK_PRESENT_MODE_FIFO_KHR)
+                if (presentModes[i] == VulkanApi.VK_PRESENT_MODE_MAILBOX_KHR)
                 {
                     presentMode = presentModes[i];
                     break;
+                }
+            }
+
+            if (presentMode == VulkanApi.VK_PRESENT_MODE_FIFO_KHR)
+            {
+                for (int i = 0; i < presentModeCount; i++)
+                {
+                    if (presentModes[i] == VulkanApi.VK_PRESENT_MODE_FIFO_KHR)
+                    {
+                        presentMode = presentModes[i];
+                        break;
+                    }
                 }
             }
 
@@ -1071,7 +1106,9 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
                 throw new InvalidOperationException("The Vulkan surface does not support transfer-destination swapchain images.");
 
             VkExtent2D imageExtent = ChooseSwapExtent(surfaceCaps);
-            uint minImageCount = surfaceCaps.MinImageCount + 1;
+            uint minImageCount = presentMode == VulkanApi.VK_PRESENT_MODE_MAILBOX_KHR
+                ? Math.Max(surfaceCaps.MinImageCount, 3u)
+                : Math.Max(surfaceCaps.MinImageCount, 2u);
             if (surfaceCaps.MaxImageCount > 0 && minImageCount > surfaceCaps.MaxImageCount)
                 minImageCount = surfaceCaps.MaxImageCount;
 
@@ -1131,6 +1168,24 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             _swapchainImages = Array.Empty<ulong>();
             _swapchainImageInitialized = Array.Empty<bool>();
             _swapchainExtent = default;
+        }
+
+        private unsafe void WaitForInFlightFrame()
+        {
+            if (_inFlightFence == 0)
+                return;
+
+            ulong inFlightFence = _inFlightFence;
+            _vk.Check(_vk.WaitForFences(_device, 1, &inFlightFence, 1, ulong.MaxValue), "vkWaitForFences");
+        }
+
+        private unsafe void ResetInFlightFence()
+        {
+            if (_inFlightFence == 0)
+                return;
+
+            ulong inFlightFence = _inFlightFence;
+            _vk.Check(_vk.ResetFences(_device, 1, &inFlightFence), "vkResetFences");
         }
 
         private unsafe void EnsureUploadResources(int width, int height, int stride)
@@ -1483,7 +1538,8 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
                 SignalSemaphoreCount = 1,
                 PSignalSemaphores = &signalSemaphore
             };
-            _vk.Check(_vk.QueueSubmit(_queue, 1, &submitInfo, 0), "vkQueueSubmit");
+            ResetInFlightFence();
+            _vk.Check(_vk.QueueSubmit(_queue, 1, &submitInfo, _inFlightFence), "vkQueueSubmit");
 
             ulong swapchain = _swapchain;
             VkPresentInfoKHR presentInfo = new()
@@ -1498,13 +1554,11 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             int presentResult = _vk.QueuePresentKHR(_queue, &presentInfo);
             if (presentResult == VulkanApi.VK_ERROR_OUT_OF_DATE_KHR || presentResult == VulkanApi.VK_SUBOPTIMAL_KHR)
             {
-                _vk.QueueWaitIdle(_queue);
                 CreateSwapchain();
                 return;
             }
 
             _vk.Check(presentResult, "vkQueuePresentKHR");
-            _vk.Check(_vk.QueueWaitIdle(_queue), "vkQueueWaitIdle");
 
             _uploadImageReady = true;
             if (imageIndex < _swapchainImageInitialized.Length)
@@ -1580,6 +1634,7 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
         public const uint VK_STRUCTURE_TYPE_SUBMIT_INFO = 4;
         public const uint VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO = 5;
         public const uint VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE = 6;
+        public const uint VK_STRUCTURE_TYPE_FENCE_CREATE_INFO = 8;
         public const uint VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO = 12;
         public const uint VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO = 14;
         public const uint VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO = 39;
@@ -1614,6 +1669,8 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
         public const uint VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT = 0x00002000;
         public const uint VK_IMAGE_ASPECT_COLOR_BIT = 0x00000001;
         public const uint VK_SAMPLE_COUNT_1_BIT = 0x00000001;
+        public const uint VK_PRESENT_MODE_IMMEDIATE_KHR = 0;
+        public const uint VK_PRESENT_MODE_MAILBOX_KHR = 1;
         public const uint VK_PRESENT_MODE_FIFO_KHR = 2;
         public const uint VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR = 0x00000001;
         public const uint VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR = 0x00000002;
@@ -1624,6 +1681,7 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
         public const uint VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT = 0x00000001;
         public const uint VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT = 0x00000002;
         public const uint VK_MEMORY_PROPERTY_HOST_COHERENT_BIT = 0x00000004;
+        public const uint VK_FENCE_CREATE_SIGNALED_BIT = 0x00000001;
         public const uint VK_QUEUE_FAMILY_IGNORED = 0xFFFFFFFF;
 
         private readonly IntPtr _libraryHandle;
@@ -1653,6 +1711,10 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
         public vkEndCommandBufferDelegate EndCommandBuffer = null!;
         public vkCreateSemaphoreDelegate CreateSemaphore = null!;
         public vkDestroySemaphoreDelegate DestroySemaphore = null!;
+        public vkCreateFenceDelegate CreateFence = null!;
+        public vkDestroyFenceDelegate DestroyFence = null!;
+        public vkWaitForFencesDelegate WaitForFences = null!;
+        public vkResetFencesDelegate ResetFences = null!;
         public vkCreateSwapchainKHRDelegate CreateSwapchainKHR = null!;
         public vkDestroySwapchainKHRDelegate DestroySwapchainKHR = null!;
         public vkGetSwapchainImagesKHRDelegate GetSwapchainImagesKHR = null!;
@@ -1717,6 +1779,10 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             EndCommandBuffer = LoadDevice<vkEndCommandBufferDelegate>(device, "vkEndCommandBuffer");
             CreateSemaphore = LoadDevice<vkCreateSemaphoreDelegate>(device, "vkCreateSemaphore");
             DestroySemaphore = LoadDevice<vkDestroySemaphoreDelegate>(device, "vkDestroySemaphore");
+            CreateFence = LoadDevice<vkCreateFenceDelegate>(device, "vkCreateFence");
+            DestroyFence = LoadDevice<vkDestroyFenceDelegate>(device, "vkDestroyFence");
+            WaitForFences = LoadDevice<vkWaitForFencesDelegate>(device, "vkWaitForFences");
+            ResetFences = LoadDevice<vkResetFencesDelegate>(device, "vkResetFences");
             CreateSwapchainKHR = LoadDevice<vkCreateSwapchainKHRDelegate>(device, "vkCreateSwapchainKHR");
             DestroySwapchainKHR = LoadDevice<vkDestroySwapchainKHRDelegate>(device, "vkDestroySwapchainKHR");
             GetSwapchainImagesKHR = LoadDevice<vkGetSwapchainImagesKHRDelegate>(device, "vkGetSwapchainImagesKHR");
@@ -1899,6 +1965,18 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate void vkDestroySemaphoreDelegate(IntPtr device, ulong semaphore, IntPtr pAllocator);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int vkCreateFenceDelegate(IntPtr device, VkFenceCreateInfo* pCreateInfo, IntPtr pAllocator, out ulong pFence);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate void vkDestroyFenceDelegate(IntPtr device, ulong fence, IntPtr pAllocator);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int vkWaitForFencesDelegate(IntPtr device, uint fenceCount, ulong* pFences, uint waitAll, ulong timeout);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int vkResetFencesDelegate(IntPtr device, uint fenceCount, ulong* pFences);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public unsafe delegate int vkCreateSwapchainKHRDelegate(IntPtr device, VkSwapchainCreateInfoKHR* pCreateInfo, IntPtr pAllocator, out ulong pSwapchain);
@@ -2163,6 +2241,14 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
 
     [StructLayout(LayoutKind.Sequential)]
     private struct VkSemaphoreCreateInfo
+    {
+        public uint SType;
+        public IntPtr PNext;
+        public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct VkFenceCreateInfo
     {
         public uint SType;
         public IntPtr PNext;

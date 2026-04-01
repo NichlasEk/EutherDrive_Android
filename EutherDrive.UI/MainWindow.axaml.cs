@@ -5630,7 +5630,7 @@ public partial class MainWindow : Window
             return;
         try
         {
-            bool postedPsxOpenGlPresent = ShouldUsePostedPsxOpenGlPresenter(_core);
+            bool postedPsxAcceleratedPresent = ShouldUsePostedPsxAcceleratedPresenter(_core);
             UpdateUiPresentTimerCadence();
             MaybeUpdateStatusText();
             long tickStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
@@ -5640,7 +5640,7 @@ public partial class MainWindow : Window
 
             // rendera frame
             var core = _core;
-            if (!postedPsxOpenGlPresent && _renderSkipEnabled)
+            if (!postedPsxAcceleratedPresent && _renderSkipEnabled)
             {
                 double emuFps = Volatile.Read(ref _emuActualFps);
                 double targetFps = GetLiveTargetFps();
@@ -5655,11 +5655,11 @@ public partial class MainWindow : Window
                     _renderSkipCounter = 0;
                 }
             }
-            if (!postedPsxOpenGlPresent && Dispatcher.UIThread.CheckAccess())
+            if (!postedPsxAcceleratedPresent && Dispatcher.UIThread.CheckAccess())
             {
                 RenderFrame(core);
             }
-            else if (!postedPsxOpenGlPresent)
+            else if (!postedPsxAcceleratedPresent)
             {
                 QueuePresentFrameOnUi(core);
             }
@@ -6917,9 +6917,8 @@ public partial class MainWindow : Window
         }
     }
 
-    private bool ShouldUsePostedPsxOpenGlPresenter(IEmulatorCore? core)
-        => _renderBackendMode == RenderBackendMode.OpenGl
-            && _renderSurface is IAcceleratedRenderSurface
+    private bool ShouldUsePostedPsxAcceleratedPresenter(IEmulatorCore? core)
+        => _renderSurface is IAcceleratedRenderSurface
             && core is PsxAdapter;
 
     private static bool ShouldUseNativeDesktopPsxPresenter(IEmulatorCore? core)
@@ -7233,7 +7232,7 @@ public partial class MainWindow : Window
                         _uiProfileAudioTicks += Stopwatch.GetTimestamp() - audioStart;
                 }
 
-                if (ShouldUsePostedPsxOpenGlPresenter(core))
+                if (ShouldUsePostedPsxAcceleratedPresenter(core))
                     QueuePresentFrameOnUi(core);
 
                 if (!emuLoopFirstFrameLogged)
@@ -7888,7 +7887,7 @@ public partial class MainWindow : Window
     private void UpdateUiPresentTimerCadence()
     {
         double targetFps = 60.0;
-        if (!ShouldUsePostedPsxOpenGlPresenter(_core) && _renderBackendMode == RenderBackendMode.OpenGl && _core is PsxAdapter)
+        if (!ShouldUsePostedPsxAcceleratedPresenter(_core) && _renderBackendMode == RenderBackendMode.OpenGl && _core is PsxAdapter)
             targetFps = GetLiveTargetFps();
 
         if (!double.IsFinite(targetFps) || targetFps < 1.0)
