@@ -6749,6 +6749,9 @@ public partial class MainWindow : Window
             height,
             srcStride,
             frameInfo);
+        FrameBlitOptions presentOptions = options.ApplyAdvancedPixelFilter
+            ? options with { AdvancedFilterProfile = AdvancedPixelFilterProfile.PsxTextSafe }
+            : options;
         acceleratedSurface.SetInterlaceBlend(false, -1);
 
         FrameBlitMetrics metrics = acceleratedSurface.Present(
@@ -6756,7 +6759,7 @@ public partial class MainWindow : Window
             width,
             height,
             srcStride,
-            options,
+            presentOptions,
             TracePerf);
 
         if (TracePerf)
@@ -6783,7 +6786,7 @@ public partial class MainWindow : Window
                 width,
                 height,
                 srcStride,
-                options,
+                presentOptions,
                 TracePerf);
         }
 
@@ -6904,17 +6907,14 @@ public partial class MainWindow : Window
 
     private void PresentPendingFrame()
     {
-        while (true)
-        {
-            Interlocked.Exchange(ref _pendingPresentQueued, 0);
-            var core = _pendingPresentCore;
-            _pendingPresentCore = null;
-            if (core != null && ReferenceEquals(core, _core))
-                RenderFrame(core);
+        Interlocked.Exchange(ref _pendingPresentQueued, 0);
+        var core = _pendingPresentCore;
+        _pendingPresentCore = null;
+        if (core != null && ReferenceEquals(core, _core))
+            RenderFrame(core);
 
-            if (Volatile.Read(ref _pendingPresentQueued) == 0)
-                break;
-        }
+        if (Volatile.Read(ref _pendingPresentQueued) != 0)
+            Dispatcher.UIThread.Post(_presentOnUiAction, DispatcherPriority.Background);
     }
 
     private bool ShouldUsePostedPsxAcceleratedPresenter(IEmulatorCore? core)

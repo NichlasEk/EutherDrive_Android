@@ -77,6 +77,8 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
         {
             HorizontalAlignment = HorizontalAlignment.Stretch;
             VerticalAlignment = VerticalAlignment.Stretch;
+            Focusable = false;
+            IsHitTestVisible = false;
         }
 
         public int PixelWidth
@@ -425,7 +427,8 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
                         rowBytes,
                         options.ForceOpaque,
                         options.ApplyScanlines,
-                        options.ScanlineDarkenFactor);
+                        options.ScanlineDarkenFactor,
+                        options.AdvancedFilterProfile);
                     return;
                 }
 
@@ -497,7 +500,8 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             int copyBytesPerRow,
             bool forceOpaque,
             bool applyScanlines,
-            int scanlineDarkenFactor)
+            int scanlineDarkenFactor,
+            AdvancedPixelFilterProfile profile)
         {
             const int strongEdgeThreshold = 84;
             const int mediumEdgeThreshold = 40;
@@ -505,6 +509,15 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             const int mediumGain256 = 152;
             const int baseGain256 = 96;
             const int clampSlack = 10;
+            const int interlacedTextSafeStrongGain256 = 160;
+            const int interlacedTextSafeMediumGain256 = 120;
+            const int interlacedTextSafeBaseGain256 = 64;
+            const int interlacedTextSafeClampSlack = 4;
+            const int interlacedTextProtectRangeThreshold = 72;
+            const int interlacedTextProtectExtremeThreshold = 28;
+            const int interlacedTextSupportThreshold = 28;
+            const int interlacedTextOppositeThreshold = 40;
+            const int interlacedTextPushToExtreme256 = 176;
 
             for (int y = 0; y < height; y++)
             {
@@ -537,30 +550,89 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
                     byte dg = pSrcRowDown[x + 1];
                     byte dr = pSrcRowDown[x + 2];
 
-                    int edge = Math.Abs(cr - lr) + Math.Abs(cr - rr) + Math.Abs(cr - ur) + Math.Abs(cr - dr)
-                        + Math.Abs(cg - lg) + Math.Abs(cg - rg) + Math.Abs(cg - ug) + Math.Abs(cg - dg)
-                        + Math.Abs(cb - lb) + Math.Abs(cb - rb) + Math.Abs(cb - ub) + Math.Abs(cb - db);
+                    int cY = ((77 * cr) + (150 * cg) + (29 * cb)) >> 8;
+                    int lY = ((77 * lr) + (150 * lg) + (29 * lb)) >> 8;
+                    int rY = ((77 * rr) + (150 * rg) + (29 * rb)) >> 8;
+                    int uY = ((77 * ur) + (150 * ug) + (29 * ub)) >> 8;
+                    int dY = ((77 * dr) + (150 * dg) + (29 * db)) >> 8;
+                    int edge = Math.Abs(cY - lY) + Math.Abs(cY - rY) + Math.Abs(cY - uY) + Math.Abs(cY - dY);
 
-                    int gain256 = baseGain256;
-                    if (edge >= strongEdgeThreshold)
-                        gain256 = strongGain256;
-                    else if (edge >= mediumEdgeThreshold)
-                        gain256 = mediumGain256;
+                    bool textSafeInterlaced = profile == AdvancedPixelFilterProfile.PsxInterlacedTextSafe;
+                    int minY = Math.Min(cY, Math.Min(Math.Min(lY, rY), Math.Min(uY, dY)));
+                    int maxY = Math.Max(cY, Math.Max(Math.Max(lY, rY), Math.Max(uY, dY)));
+                    bool nearBrightExtreme = (maxY - cY) <= interlacedTextProtectExtremeThreshold;
+                    bool nearDarkExtreme = (cY - minY) <= interlacedTextProtectExtremeThreshold;
+                    int supportNeighbors = 0;
+                    int oppositeNeighbors = 0;
+                    if (nearBrightExtreme)
+                    {
+                        if ((maxY - lY) <= interlacedTextSupportThreshold) supportNeighbors++;
+                        if ((maxY - rY) <= interlacedTextSupportThreshold) supportNeighbors++;
+                        if ((maxY - uY) <= interlacedTextSupportThreshold) supportNeighbors++;
+                        if ((maxY - dY) <= interlacedTextSupportThreshold) supportNeighbors++;
+                        if ((lY - minY) <= interlacedTextOppositeThreshold) oppositeNeighbors++;
+                        if ((rY - minY) <= interlacedTextOppositeThreshold) oppositeNeighbors++;
+                        if ((uY - minY) <= interlacedTextOppositeThreshold) oppositeNeighbors++;
+                        if ((dY - minY) <= interlacedTextOppositeThreshold) oppositeNeighbors++;
+                    }
+                    else if (nearDarkExtreme)
+                    {
+                        if ((lY - minY) <= interlacedTextSupportThreshold) supportNeighbors++;
+                        if ((rY - minY) <= interlacedTextSupportThreshold) supportNeighbors++;
+                        if ((uY - minY) <= interlacedTextSupportThreshold) supportNeighbors++;
+                        if ((dY - minY) <= interlacedTextSupportThreshold) supportNeighbors++;
+                        if ((maxY - lY) <= interlacedTextOppositeThreshold) oppositeNeighbors++;
+                        if ((maxY - rY) <= interlacedTextOppositeThreshold) oppositeNeighbors++;
+                        if ((maxY - uY) <= interlacedTextOppositeThreshold) oppositeNeighbors++;
+                        if ((maxY - dY) <= interlacedTextOppositeThreshold) oppositeNeighbors++;
+                    }
 
-                    int minB = Math.Min(Math.Min(lb, rb), Math.Min(ub, db)) - clampSlack;
-                    int minG = Math.Min(Math.Min(lg, rg), Math.Min(ug, dg)) - clampSlack;
-                    int minR = Math.Min(Math.Min(lr, rr), Math.Min(ur, dr)) - clampSlack;
-                    int maxB = Math.Max(Math.Max(lb, rb), Math.Max(ub, db)) + clampSlack;
-                    int maxG = Math.Max(Math.Max(lg, rg), Math.Max(ug, dg)) + clampSlack;
-                    int maxR = Math.Max(Math.Max(lr, rr), Math.Max(ur, dr)) + clampSlack;
+                    int textEdgePolarity = textSafeInterlaced
+                        && (maxY - minY) >= interlacedTextProtectRangeThreshold
+                        && supportNeighbors >= 1
+                        && oppositeNeighbors >= 1
+                        ? (nearBrightExtreme ? 1 : nearDarkExtreme ? -1 : 0)
+                        : 0;
 
-                    int blendB = (lb + rb + ub + db) >> 2;
-                    int blendG = (lg + rg + ug + dg) >> 2;
-                    int blendR = (lr + rr + ur + dr) >> 2;
+                    int gain256 = textSafeInterlaced
+                            ? edge >= strongEdgeThreshold
+                                ? interlacedTextSafeStrongGain256
+                                : edge >= mediumEdgeThreshold
+                                    ? interlacedTextSafeMediumGain256
+                                    : interlacedTextSafeBaseGain256
+                            : edge >= strongEdgeThreshold
+                                ? strongGain256
+                                : edge >= mediumEdgeThreshold
+                                    ? mediumGain256
+                                    : baseGain256;
+                    int localClampSlack = textSafeInterlaced ? interlacedTextSafeClampSlack : clampSlack;
 
-                    int outB = cb + (((cb - blendB) * gain256) >> 8);
-                    int outG = cg + (((cg - blendG) * gain256) >> 8);
-                    int outR = cr + (((cr - blendR) * gain256) >> 8);
+                    int minB = Math.Min(Math.Min(lb, rb), Math.Min(ub, db)) - localClampSlack;
+                    int minG = Math.Min(Math.Min(lg, rg), Math.Min(ug, dg)) - localClampSlack;
+                    int minR = Math.Min(Math.Min(lr, rr), Math.Min(ur, dr)) - localClampSlack;
+                    int maxB = Math.Max(Math.Max(lb, rb), Math.Max(ub, db)) + localClampSlack;
+                    int maxG = Math.Max(Math.Max(lg, rg), Math.Max(ug, dg)) + localClampSlack;
+                    int maxR = Math.Max(Math.Max(lr, rr), Math.Max(ur, dr)) + localClampSlack;
+
+                    int blendB = textSafeInterlaced ? ((cb * 3) + ((lb + rb) * 2) + ub + db) / 9 : (lb + rb + ub + db) >> 2;
+                    int blendG = textSafeInterlaced ? ((cg * 3) + ((lg + rg) * 2) + ug + dg) / 9 : (lg + rg + ug + dg) >> 2;
+                    int blendR = textSafeInterlaced ? ((cr * 3) + ((lr + rr) * 2) + ur + dr) / 9 : (lr + rr + ur + dr) >> 2;
+
+                    int outB;
+                    int outG;
+                    int outR;
+                    if (textEdgePolarity != 0)
+                    {
+                        outB = SharpenTextEdgeChannel(cb, minB, maxB, textEdgePolarity, interlacedTextPushToExtreme256);
+                        outG = SharpenTextEdgeChannel(cg, minG, maxG, textEdgePolarity, interlacedTextPushToExtreme256);
+                        outR = SharpenTextEdgeChannel(cr, minR, maxR, textEdgePolarity, interlacedTextPushToExtreme256);
+                    }
+                    else
+                    {
+                        outB = cb + (((cb - blendB) * gain256) >> 8);
+                        outG = cg + (((cg - blendG) * gain256) >> 8);
+                        outR = cr + (((cr - blendR) * gain256) >> 8);
+                    }
 
                     outB = Clamp(outB, minB, maxB);
                     outG = Clamp(outG, minG, maxG);
@@ -583,6 +655,15 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
 
         private static int Clamp(int value, int min, int max)
             => value < min ? min : (value > max ? max : value);
+
+        private static int SharpenTextEdgeChannel(int center, int minValue, int maxValue, int textEdgePolarity, int push256)
+        {
+            int target = textEdgePolarity > 0 ? maxValue : minValue;
+            int distance = textEdgePolarity > 0 ? target - center : center - target;
+            return textEdgePolarity > 0
+                ? center + ((distance * push256) >> 8)
+                : center - ((distance * push256) >> 8);
+        }
     }
 
     private abstract class NativeWindowBridge : IDisposable

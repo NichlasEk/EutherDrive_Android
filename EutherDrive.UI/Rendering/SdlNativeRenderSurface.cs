@@ -79,6 +79,8 @@ public sealed class SdlNativeRenderSurface : IAcceleratedRenderSurface, IDisposa
         {
             HorizontalAlignment = HorizontalAlignment.Stretch;
             VerticalAlignment = VerticalAlignment.Stretch;
+            Focusable = false;
+            IsHitTestVisible = false;
         }
 
         public int PixelWidth

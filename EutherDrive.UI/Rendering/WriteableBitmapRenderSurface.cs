@@ -17,6 +17,15 @@ public sealed class WriteableBitmapRenderSurface : IGameRenderSurface, IDisposab
     private const int AdvancedFilterMediumGain256 = 152;
     private const int AdvancedFilterBaseGain256 = 96;
     private const int AdvancedFilterClampSlack = 10;
+    private const int InterlacedTextSafeStrongGain256 = 160;
+    private const int InterlacedTextSafeMediumGain256 = 120;
+    private const int InterlacedTextSafeBaseGain256 = 64;
+    private const int InterlacedTextSafeClampSlack = 4;
+    private const int InterlacedTextProtectRangeThreshold = 72;
+    private const int InterlacedTextProtectExtremeThreshold = 28;
+    private const int InterlacedTextSupportThreshold = 28;
+    private const int InterlacedTextOppositeThreshold = 40;
+    private const int InterlacedTextPushToExtreme256 = 176;
 
     private readonly Image _image = new()
     {
@@ -89,7 +98,8 @@ public sealed class WriteableBitmapRenderSurface : IGameRenderSurface, IDisposab
                     rowBytes,
                     options.ForceOpaque,
                     options.ApplyScanlines,
-                    options.ScanlineDarkenFactor);
+                    options.ScanlineDarkenFactor,
+                    options.AdvancedFilterProfile);
             }
             else
             {
@@ -174,7 +184,8 @@ public sealed class WriteableBitmapRenderSurface : IGameRenderSurface, IDisposab
         int copyBytesPerRow,
         bool forceOpaque,
         bool applyScanlines,
-        int scanlineDarkenFactor)
+        int scanlineDarkenFactor,
+        AdvancedPixelFilterProfile profile)
     {
         for (int y = 0; y < height; y++)
         {
@@ -211,20 +222,33 @@ public sealed class WriteableBitmapRenderSurface : IGameRenderSurface, IDisposab
                 byte dr = pSrcRowDown[x + 2];
 
                 int cY = Luma(cr, cg, cb);
-                int edge = Math.Abs(cY - Luma(lr, lg, lb))
-                    + Math.Abs(cY - Luma(rr, rg, rb))
-                    + Math.Abs(cY - Luma(ur, ug, ub))
-                    + Math.Abs(cY - Luma(dr, dg, db));
+                int lY = Luma(lr, lg, lb);
+                int rY = Luma(rr, rg, rb);
+                int uY = Luma(ur, ug, ub);
+                int dY = Luma(dr, dg, db);
+                int edge = Math.Abs(cY - lY)
+                    + Math.Abs(cY - rY)
+                    + Math.Abs(cY - uY)
+                    + Math.Abs(cY - dY);
 
-                int gain256 = edge > AdvancedFilterStrongEdgeThreshold
-                    ? AdvancedFilterStrongGain256
-                    : edge > AdvancedFilterMediumEdgeThreshold
-                        ? AdvancedFilterMediumGain256
-                        : AdvancedFilterBaseGain256;
+                bool textSafeInterlaced = profile == AdvancedPixelFilterProfile.PsxInterlacedTextSafe;
+                int textEdgePolarity = textSafeInterlaced ? ClassifyTextEdge(cY, lY, rY, uY, dY) : 0;
+                int gain256 = textSafeInterlaced
+                        ? edge > AdvancedFilterStrongEdgeThreshold
+                            ? InterlacedTextSafeStrongGain256
+                            : edge > AdvancedFilterMediumEdgeThreshold
+                                ? InterlacedTextSafeMediumGain256
+                                : InterlacedTextSafeBaseGain256
+                        : edge > AdvancedFilterStrongEdgeThreshold
+                            ? AdvancedFilterStrongGain256
+                            : edge > AdvancedFilterMediumEdgeThreshold
+                                ? AdvancedFilterMediumGain256
+                                : AdvancedFilterBaseGain256;
+                int clampSlack = textSafeInterlaced ? InterlacedTextSafeClampSlack : AdvancedFilterClampSlack;
 
-                byte b = AdaptiveSharpenChannel(cb, lb, rb, ub, db, gain256);
-                byte g = AdaptiveSharpenChannel(cg, lg, rg, ug, dg, gain256);
-                byte r = AdaptiveSharpenChannel(cr, lr, rr, ur, dr, gain256);
+                byte b = AdaptiveSharpenChannel(cb, lb, rb, ub, db, gain256, clampSlack, textSafeInterlaced, textEdgePolarity);
+                byte g = AdaptiveSharpenChannel(cg, lg, rg, ug, dg, gain256, clampSlack, textSafeInterlaced, textEdgePolarity);
+                byte r = AdaptiveSharpenChannel(cr, lr, rr, ur, dr, gain256, clampSlack, textSafeInterlaced, textEdgePolarity);
 
                 if (darkenRow)
                 {
@@ -241,21 +265,75 @@ public sealed class WriteableBitmapRenderSurface : IGameRenderSurface, IDisposab
         }
     }
 
-    private static byte AdaptiveSharpenChannel(byte c, byte l, byte r, byte u, byte d, int gain256)
+    private static byte AdaptiveSharpenChannel(byte c, byte l, byte r, byte u, byte d, int gain256, int clampSlack, bool textSafeInterlaced, int textEdgePolarity)
     {
         int center = c;
-        int blur = ((center * 2) + l + r + u + d) / 6;
-        int detail = center - blur;
-        int sharpened = center + ((detail * gain256) >> 8);
-
         int minN = Math.Min(center, Math.Min(Math.Min(l, r), Math.Min(u, d)));
         int maxN = Math.Max(center, Math.Max(Math.Max(l, r), Math.Max(u, d)));
+        int low = Math.Max(0, minN - clampSlack);
+        int high = Math.Min(255, maxN + clampSlack);
+        int sharpened;
+        if (textEdgePolarity != 0)
+        {
+            int target = textEdgePolarity > 0 ? high : low;
+            int distance = textEdgePolarity > 0 ? target - center : center - target;
+            sharpened = textEdgePolarity > 0
+                ? center + ((distance * InterlacedTextPushToExtreme256) >> 8)
+                : center - ((distance * InterlacedTextPushToExtreme256) >> 8);
+        }
+        else
+        {
+            int blur = textSafeInterlaced
+                ? ((center * 3) + ((l + r) * 2) + u + d) / 9
+                : ((center * 2) + l + r + u + d) / 6;
+            int detail = center - blur;
+            sharpened = center + ((detail * gain256) >> 8);
+        }
 
-        int low = Math.Max(0, minN - AdvancedFilterClampSlack);
-        int high = Math.Min(255, maxN + AdvancedFilterClampSlack);
         if (sharpened < low) sharpened = low;
         if (sharpened > high) sharpened = high;
         return (byte)sharpened;
+    }
+
+    private static int ClassifyTextEdge(int center, int left, int right, int up, int down)
+    {
+        int minY = Math.Min(center, Math.Min(Math.Min(left, right), Math.Min(up, down)));
+        int maxY = Math.Max(center, Math.Max(Math.Max(left, right), Math.Max(up, down)));
+        if ((maxY - minY) < InterlacedTextProtectRangeThreshold)
+            return 0;
+
+        bool nearBrightExtreme = (maxY - center) <= InterlacedTextProtectExtremeThreshold;
+        bool nearDarkExtreme = (center - minY) <= InterlacedTextProtectExtremeThreshold;
+        if (!nearBrightExtreme && !nearDarkExtreme)
+            return 0;
+
+        int supportNeighbors = 0;
+        int oppositeNeighbors = 0;
+        AccumulateTextEdgeNeighbor(left, minY, maxY, nearBrightExtreme, ref supportNeighbors, ref oppositeNeighbors);
+        AccumulateTextEdgeNeighbor(right, minY, maxY, nearBrightExtreme, ref supportNeighbors, ref oppositeNeighbors);
+        AccumulateTextEdgeNeighbor(up, minY, maxY, nearBrightExtreme, ref supportNeighbors, ref oppositeNeighbors);
+        AccumulateTextEdgeNeighbor(down, minY, maxY, nearBrightExtreme, ref supportNeighbors, ref oppositeNeighbors);
+        if (supportNeighbors < 1 || oppositeNeighbors < 1)
+            return 0;
+
+        return nearBrightExtreme ? 1 : -1;
+    }
+
+    private static void AccumulateTextEdgeNeighbor(int neighbor, int minY, int maxY, bool brightEdge, ref int supportNeighbors, ref int oppositeNeighbors)
+    {
+        if (brightEdge)
+        {
+            if ((maxY - neighbor) <= InterlacedTextSupportThreshold)
+                supportNeighbors++;
+            if ((neighbor - minY) <= InterlacedTextOppositeThreshold)
+                oppositeNeighbors++;
+            return;
+        }
+
+        if ((neighbor - minY) <= InterlacedTextSupportThreshold)
+            supportNeighbors++;
+        if ((maxY - neighbor) <= InterlacedTextOppositeThreshold)
+            oppositeNeighbors++;
     }
 
     private static int Luma(byte r, byte g, byte b)

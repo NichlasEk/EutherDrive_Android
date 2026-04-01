@@ -110,6 +110,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
         private int _textureSizeLocation = -1;
         private int _forceOpaqueLocation = -1;
         private int _advancedFilterLocation = -1;
+        private int _advancedFilterProfileLocation = -1;
         private int _scanlinesLocation = -1;
         private int _scanlineDarkenLocation = -1;
         private int _swapRedBlueLocation = -1;
@@ -132,6 +133,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
         private bool _forceOpaque;
         private bool _applyScanlines;
         private bool _applyAdvancedPixelFilter;
+        private AdvancedPixelFilterProfile _advancedFilterProfile;
         private bool _interlaceBlendEnabled;
         private int _interlaceBlendFieldParity = -1;
         private float _scanlineDarken = 1.0f;
@@ -371,6 +373,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 uniform vec2 uTextureSize;
                 uniform float uForceOpaque;
                 uniform float uApplyAdvancedFilter;
+                uniform float uAdvancedFilterProfile;
                 uniform float uApplyScanlines;
                 uniform float uScanlineDarken;
                 uniform float uSwapRedBlue;
@@ -425,6 +428,91 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                     return clamp(sharpened, low, high);
                 }
 
+                float classifyTextEdge(float cY, float lY, float rY, float uY, float dY)
+                {
+                    float minY = min(cY, min(min(lY, rY), min(uY, dY)));
+                    float maxY = max(cY, max(max(lY, rY), max(uY, dY)));
+                    if ((maxY - minY) < (72.0 / 255.0))
+                        return 0.0;
+
+                    bool nearBrightExtreme = (maxY - cY) <= (28.0 / 255.0);
+                    bool nearDarkExtreme = (cY - minY) <= (28.0 / 255.0);
+                    if (!nearBrightExtreme && !nearDarkExtreme)
+                        return 0.0;
+
+                    float supportCount = 0.0;
+                    float oppositeCount = 0.0;
+                    if (nearBrightExtreme)
+                    {
+                        supportCount += (maxY - lY) <= (28.0 / 255.0) ? 1.0 : 0.0;
+                        supportCount += (maxY - rY) <= (28.0 / 255.0) ? 1.0 : 0.0;
+                        supportCount += (maxY - uY) <= (28.0 / 255.0) ? 1.0 : 0.0;
+                        supportCount += (maxY - dY) <= (28.0 / 255.0) ? 1.0 : 0.0;
+                        oppositeCount += (lY - minY) <= (40.0 / 255.0) ? 1.0 : 0.0;
+                        oppositeCount += (rY - minY) <= (40.0 / 255.0) ? 1.0 : 0.0;
+                        oppositeCount += (uY - minY) <= (40.0 / 255.0) ? 1.0 : 0.0;
+                        oppositeCount += (dY - minY) <= (40.0 / 255.0) ? 1.0 : 0.0;
+                    }
+                    else
+                    {
+                        supportCount += (lY - minY) <= (28.0 / 255.0) ? 1.0 : 0.0;
+                        supportCount += (rY - minY) <= (28.0 / 255.0) ? 1.0 : 0.0;
+                        supportCount += (uY - minY) <= (28.0 / 255.0) ? 1.0 : 0.0;
+                        supportCount += (dY - minY) <= (28.0 / 255.0) ? 1.0 : 0.0;
+                        oppositeCount += (maxY - lY) <= (40.0 / 255.0) ? 1.0 : 0.0;
+                        oppositeCount += (maxY - rY) <= (40.0 / 255.0) ? 1.0 : 0.0;
+                        oppositeCount += (maxY - uY) <= (40.0 / 255.0) ? 1.0 : 0.0;
+                        oppositeCount += (maxY - dY) <= (40.0 / 255.0) ? 1.0 : 0.0;
+                    }
+
+                    if (supportCount < 1.0 || oppositeCount < 1.0)
+                        return 0.0;
+
+                    return nearBrightExtreme ? 1.0 : -1.0;
+                }
+
+                vec3 sharpenInterlacedTextSafe(vec2 texelPos)
+                {
+                    vec4 c4 = sampleTexel(texelPos);
+                    vec3 center = c4.rgb;
+                    vec3 left = sampleTexel(texelPos + vec2(-1.0, 0.0)).rgb;
+                    vec3 right = sampleTexel(texelPos + vec2(1.0, 0.0)).rgb;
+                    vec3 up = sampleTexel(texelPos + vec2(0.0, -1.0)).rgb;
+                    vec3 down = sampleTexel(texelPos + vec2(0.0, 1.0)).rgb;
+
+                    float cY = luma(center);
+                    float lY = luma(left);
+                    float rY = luma(right);
+                    float uY = luma(up);
+                    float dY = luma(down);
+                    vec3 minN = min(center, min(min(left, right), min(up, down)));
+                    vec3 maxN = max(center, max(max(left, right), max(up, down)));
+                    float textEdgePolarity = classifyTextEdge(cY, lY, rY, uY, dY);
+                    if (abs(textEdgePolarity) > 0.5)
+                    {
+                        vec3 target = textEdgePolarity > 0.0 ? maxN + vec3(4.0 / 255.0) : max(vec3(0.0), minN - vec3(4.0 / 255.0));
+                        return center + ((target - center) * (176.0 / 256.0));
+                    }
+
+                    float edge = abs(cY - lY)
+                        + abs(cY - rY)
+                        + abs(cY - uY)
+                        + abs(cY - dY);
+                    float gain = edge > (84.0 / 255.0)
+                        ? (160.0 / 256.0)
+                        : edge > (40.0 / 255.0)
+                            ? (120.0 / 256.0)
+                            : (64.0 / 256.0);
+
+                    vec3 blur = ((center * 3.0) + ((left + right) * 2.0) + up + down) / 9.0;
+                    vec3 detail = center - blur;
+                    vec3 sharpened = center + (detail * gain);
+
+                    vec3 low = max(vec3(0.0), minN - vec3(4.0 / 255.0));
+                    vec3 high = min(vec3(1.0), maxN + vec3(4.0 / 255.0));
+                    return clamp(sharpened, low, high);
+                }
+
                 vec4 sampleCurrentField(vec2 texelPos)
                 {
                     float fieldParity = uInterlaceFieldParity;
@@ -460,7 +548,10 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
 
                     if (uApplyAdvancedFilter > 0.5)
                     {
-                        color = vec4(sharpen(texelPos), sampleTexel(texelPos).a);
+                        vec3 filtered = uAdvancedFilterProfile > 0.5
+                            ? sharpenInterlacedTextSafe(texelPos)
+                            : sharpen(texelPos);
+                        color = vec4(filtered, sampleTexel(texelPos).a);
                     }
 
                     color = softenInterlace(texelPos, color);
@@ -506,6 +597,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             _textureSizeLocation = GetUniformLocation("uTextureSize");
             _forceOpaqueLocation = GetUniformLocation("uForceOpaque");
             _advancedFilterLocation = GetUniformLocation("uApplyAdvancedFilter");
+            _advancedFilterProfileLocation = GetUniformLocation("uAdvancedFilterProfile");
             _scanlinesLocation = GetUniformLocation("uApplyScanlines");
             _scanlineDarkenLocation = GetUniformLocation("uScanlineDarken");
             _swapRedBlueLocation = GetUniformLocation("uSwapRedBlue");
@@ -593,6 +685,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             _textureSizeLocation = -1;
             _forceOpaqueLocation = -1;
             _advancedFilterLocation = -1;
+            _advancedFilterProfileLocation = -1;
             _scanlinesLocation = -1;
             _scanlineDarkenLocation = -1;
             _swapRedBlueLocation = -1;
@@ -619,6 +712,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             _textureSizeLocation = -1;
             _forceOpaqueLocation = -1;
             _advancedFilterLocation = -1;
+            _advancedFilterProfileLocation = -1;
             _scanlinesLocation = -1;
             _scanlineDarkenLocation = -1;
             _swapRedBlueLocation = -1;
@@ -668,6 +762,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             bool forceOpaque;
             bool applyScanlines;
             bool applyAdvancedPixelFilter;
+            AdvancedPixelFilterProfile advancedFilterProfile;
             bool interlaceBlendEnabled;
             int interlaceBlendFieldParity;
             float scanlineDarken;
@@ -681,6 +776,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 forceOpaque = _forceOpaque;
                 applyScanlines = _applyScanlines;
                 applyAdvancedPixelFilter = _applyAdvancedPixelFilter;
+                advancedFilterProfile = _advancedFilterProfile;
                 interlaceBlendEnabled = _interlaceBlendEnabled;
                 interlaceBlendFieldParity = _interlaceBlendFieldParity;
                 scanlineDarken = _scanlineDarken;
@@ -723,6 +819,8 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 _uniform1f.Invoke(_forceOpaqueLocation, forceOpaque ? 1.0f : 0.0f);
             if (_advancedFilterLocation >= 0 && _uniform1f != null)
                 _uniform1f.Invoke(_advancedFilterLocation, applyAdvancedPixelFilter ? 1.0f : 0.0f);
+            if (_advancedFilterProfileLocation >= 0 && _uniform1f != null)
+                _uniform1f.Invoke(_advancedFilterProfileLocation, (float)advancedFilterProfile);
             if (_scanlinesLocation >= 0 && _uniform1f != null)
                 _uniform1f.Invoke(_scanlinesLocation, applyScanlines ? 1.0f : 0.0f);
             if (_scanlineDarkenLocation >= 0 && _uniform1f != null)
@@ -801,6 +899,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             _forceOpaque = options.ForceOpaque;
             _applyScanlines = options.ApplyScanlines;
             _applyAdvancedPixelFilter = options.ApplyAdvancedPixelFilter;
+            _advancedFilterProfile = options.AdvancedFilterProfile;
             _scanlineDarken = Math.Clamp(options.ScanlineDarkenFactor / 256f, 0f, 1f);
         }
 
