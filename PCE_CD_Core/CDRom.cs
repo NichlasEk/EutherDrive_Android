@@ -31,6 +31,7 @@ namespace ePceCD
         private int _readSumCount;
         private int _cdRegLogCount;
         private int _cdRegLogLimit;
+        private int _cmdLogLimit;
         private int _lastRead6ExpectedBytes;
         private int _lastRead6ConsumedBytes;
         private byte _scsiDataLatch;
@@ -45,6 +46,14 @@ namespace ePceCD
         private int _lastCmdLen;
         private byte[] _lastCmdBuf = new byte[16];
         private byte messageByte;
+        [NonSerialized]
+        private int _busyStatusCyclesRemaining;
+        [NonSerialized]
+        private bool _busyStatusPending;
+        [NonSerialized]
+        private byte _busyStatusValue;
+        [NonSerialized]
+        private int _busyStatusMediaSector = -1;
         private int currentSector = -1;
         private int lastDataSector = -1;
         [NonSerialized]
@@ -248,6 +257,10 @@ namespace ePceCD
             _cdAudioQueueWrite = 0;
             _cdAudioQueueCount = 0;
             _cdSectorOffsetBytes = -1;
+            _busyStatusCyclesRemaining = 0;
+            _busyStatusPending = false;
+            _busyStatusValue = 0;
+            _busyStatusMediaSector = -1;
             _lastRead6ConsumedBytes = 0;
             _lastRead6ExpectedBytes = 0;
             ResetController();
@@ -287,7 +300,7 @@ namespace ePceCD
 
         public bool IRQPending()
         {
-            // Nitro CD_Check_IRQ only considers IRQ request bits 2..6 (mask 0x7C).
+            // Only IRQ request bits 2..6 are visible here (mask 0x7C).
             return (EnabledIrqs & ActiveIrqs & 0x7C) != 0;
         }
 
@@ -344,6 +357,36 @@ namespace ePceCD
         {
             if (cycles <= 0)
                 return;
+
+            if (_busyStatusPending)
+            {
+                if (_ScsiPhase != ScsiPhase.Busy)
+                {
+                    _busyStatusPending = false;
+                    _busyStatusCyclesRemaining = 0;
+                    _busyStatusMediaSector = -1;
+                }
+                else
+                {
+                    _busyStatusCyclesRemaining -= cycles;
+                    if (_busyStatusCyclesRemaining <= 0)
+                    {
+                        _busyStatusPending = false;
+                        _busyStatusCyclesRemaining = 0;
+                        if (_busyStatusMediaSector >= 0)
+                        {
+                            _currentMediaSector = _busyStatusMediaSector;
+                            _busyStatusMediaSector = -1;
+                        }
+                        if (TraceVerboseEnabled() && _lastCmd == ScsiCommand.AudioStartPos)
+                        {
+                            Console.WriteLine(
+                                $"CD-ROM: AudioStartPos busy complete mediaSector={_currentMediaSector} audioCS={AudioCS} state={_cdAudioState}");
+                        }
+                        SendStatus(_busyStatusValue);
+                    }
+                }
+            }
 
             _ADPCM.Clock(cycles);
             _cdAudioCycleCounter += cycles;
@@ -1101,6 +1144,139 @@ namespace ePceCD
             return 7159090.0 / 44100.0;
         }
 
+        private void BeginBusyStatus(byte status, int cycles)
+        {
+            _busyStatusValue = status;
+            _busyStatusCyclesRemaining = cycles < 0 ? 0 : cycles;
+            _busyStatusPending = true;
+            _busyStatusMediaSector = -1;
+            SetPhase(ScsiPhase.Busy);
+        }
+
+        private static int GetBusyStatusDelayCycles()
+        {
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_BUSY_STATUS_CYCLES");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int cycles) && cycles >= 0)
+                return cycles;
+
+            return -1;
+        }
+
+        private static int MillisecondsToCpuCycles(double ms)
+        {
+            if (ms <= 0)
+                return 0;
+
+            // BUS.Clock feeds HuC6280 CPU cycles at ~7.16 MHz into the CD logic.
+            return (int)Math.Round(ms * (7159090.0 / 1000.0));
+        }
+
+        private readonly struct SeekSectorGroup
+        {
+            public SeekSectorGroup(int sectorsPerRevolution, int sectorStart, int sectorEnd, double rotationMs)
+            {
+                SectorsPerRevolution = sectorsPerRevolution;
+                SectorStart = sectorStart;
+                SectorEnd = sectorEnd;
+                RotationMs = rotationMs;
+            }
+
+            public int SectorsPerRevolution { get; }
+            public int SectorStart { get; }
+            public int SectorEnd { get; }
+            public double RotationMs { get; }
+        }
+
+        private static readonly SeekSectorGroup[] s_seekSectorGroups =
+        {
+            new(10, 0, 12572, 133.47),
+            new(11, 12573, 30244, 146.82),
+            new(12, 30245, 49523, 160.17),
+            new(13, 49524, 70408, 173.51),
+            new(14, 70409, 92900, 186.86),
+            new(15, 92901, 116998, 200.21),
+            new(16, 116999, 142703, 213.56),
+            new(17, 142704, 170014, 226.90),
+            new(18, 170015, 198932, 240.25),
+            new(19, 198933, 229456, 253.60),
+            new(20, 229457, 261587, 266.95),
+            new(21, 261588, 295324, 280.29),
+            new(22, 295325, 330668, 293.64),
+            new(23, 330669, 333012, 306.99),
+        };
+
+        private static int SeekFindGroup(int sector)
+        {
+            for (int i = 0; i < s_seekSectorGroups.Length; i++)
+            {
+                SeekSectorGroup group = s_seekSectorGroups[i];
+                if (sector >= group.SectorStart && sector <= group.SectorEnd)
+                    return i;
+            }
+
+            return 0;
+        }
+
+        private static double GetCdSeekTimeMilliseconds(int startSector, int endSector)
+        {
+            int startIndex = SeekFindGroup(startSector);
+            int targetIndex = SeekFindGroup(endSector);
+            int sectorDifference = Math.Abs(endSector - startSector);
+            double trackDifference;
+
+            if (targetIndex == startIndex)
+            {
+                trackDifference = sectorDifference / (double)s_seekSectorGroups[targetIndex].SectorsPerRevolution;
+            }
+            else if (targetIndex > startIndex)
+            {
+                trackDifference =
+                    (s_seekSectorGroups[startIndex].SectorEnd - startSector) /
+                    (double)s_seekSectorGroups[startIndex].SectorsPerRevolution;
+                trackDifference +=
+                    (endSector - s_seekSectorGroups[targetIndex].SectorStart) /
+                    (double)s_seekSectorGroups[targetIndex].SectorsPerRevolution;
+                trackDifference += 1606.48 * (targetIndex - startIndex - 1);
+            }
+            else
+            {
+                trackDifference =
+                    (startSector - s_seekSectorGroups[startIndex].SectorStart) /
+                    (double)s_seekSectorGroups[startIndex].SectorsPerRevolution;
+                trackDifference +=
+                    (s_seekSectorGroups[targetIndex].SectorEnd - endSector) /
+                    (double)s_seekSectorGroups[targetIndex].SectorsPerRevolution;
+                trackDifference += 1606.48 * (startIndex - targetIndex - 1);
+            }
+
+            SeekSectorGroup targetGroup = s_seekSectorGroups[targetIndex];
+            if (sectorDifference < 2)
+                return (9.0 * 1000.0 / 60.0);
+            if (sectorDifference < 5)
+                return (9.0 * 1000.0 / 60.0) + (targetGroup.RotationMs / 2.0);
+            if (trackDifference <= 80.0)
+                return (18.0 * 1000.0 / 60.0) + (targetGroup.RotationMs / 2.0);
+            if (trackDifference <= 160.0)
+                return (22.0 * 1000.0 / 60.0) + (targetGroup.RotationMs / 2.0);
+            if (trackDifference <= 644.0)
+            {
+                return (22.0 * 1000.0 / 60.0) +
+                       (targetGroup.RotationMs / 2.0) +
+                       ((trackDifference - 161.0) * 16.66 / 80.0);
+            }
+
+            return (48.0 * 1000.0 / 60.0) + ((trackDifference - 644.0) * 16.66 / 195.0);
+        }
+
+        private int GetAudioStartStatusDelayCycles(int startSector, int previousSector)
+        {
+            int overrideCycles = GetBusyStatusDelayCycles();
+            if (overrideCycles >= 0)
+                return overrideCycles;
+
+            return MillisecondsToCpuCycles(GetCdSeekTimeMilliseconds(previousSector, startSector));
+        }
+
         private int GetCdRegLogLimit()
         {
             if (_cdRegLogLimit > 0)
@@ -1115,6 +1291,22 @@ namespace ePceCD
 
             _cdRegLogLimit = 200;
             return _cdRegLogLimit;
+        }
+
+        private int GetCmdLogLimit()
+        {
+            if (_cmdLogLimit > 0)
+                return _cmdLogLimit;
+
+            string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CMD_LOG_LIMIT");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int limit) && limit > 0)
+            {
+                _cmdLogLimit = limit;
+                return _cmdLogLimit;
+            }
+
+            _cmdLogLimit = 100;
+            return _cmdLogLimit;
         }
 
         private void MarkProgress()
@@ -1202,7 +1394,7 @@ namespace ePceCD
 
         private void UpdateScsiIrqs()
         {
-            // NitroGrafx behavior: transfer IRQ bits are not phase-derived.
+            // Transfer IRQ bits are not phase-derived.
             // They are explicitly set/cleared by command handlers and ACK transitions.
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_IRQ_LOG") == "1")
                 LogIrq();
@@ -1229,6 +1421,10 @@ namespace ePceCD
         {
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SCSI_LOG") == "1")
                 Console.WriteLine($"CD-ROM: SendStatus 0x{status:X2} phase={_ScsiPhase} dataOffset={dataOffset} dataLen={(dataBuffer != null ? dataBuffer.Length : 0)}");
+            // Command completion exposes transfer-done while STATUS is pending.
+            // DataIn paths already latch this bit on the final byte, so this is mainly for
+            // command-only completions such as AudioStartPos/AudioPause.
+            ActiveIrqs |= (byte)CdRomIrqSource.DataTransferDone;
             PrepareResponse(new byte[] { status });
             SetPhase(ScsiPhase.Status);
         }
@@ -1318,7 +1514,7 @@ namespace ePceCD
         {
             if (dataBuffer == null || dataBuffer.Position >= dataBuffer.Length)
             {
-                // Nitro behavior: status/message phase advances on ACK, not on data-port underflow.
+                // Status/message phase advances on ACK, not on data-port underflow.
                 if (_ScsiPhase == ScsiPhase.DataIn)
                     SendStatus(0);
                 return 0x00;
@@ -1369,7 +1565,7 @@ namespace ePceCD
 
         public void WriteDataPort(byte value)
         {
-            // Nitro CD01_W behavior: accept bus data only when IO=0, then consume on ACK.
+            // Accept bus data only when IO=0, then consume it on ACK.
             if (Signals[(int)ScsiSignal.Io])
                 return;
             _scsiDataLatch = value;
@@ -1377,7 +1573,7 @@ namespace ePceCD
 
         private int ScsiCMDLength(ScsiCommand cmd)
         {
-            // Match NitroGrafx framing:
+            // Match the controller framing:
             // commands below 0x20 are 6-byte CDBs, others are 10-byte CDBs.
             return (byte)cmd < 0x20 ? 6 : 10;
         }
@@ -1447,7 +1643,7 @@ namespace ePceCD
         private int _cmdLogCount = 0;
         private void LogCommand()
         {
-            if (_cmdLogCount >= 100)
+            if (_cmdLogCount >= GetCmdLogLimit())
                 return;
             _cmdLogCount++;
             int len = CMDLength > 0 ? CMDLength : 6;
@@ -1775,9 +1971,10 @@ namespace ePceCD
             qData[4] = ToBCD(relLba / (60 * 75));
             qData[5] = ToBCD((relLba / 75) % 60);
             qData[6] = ToBCD(relLba % 75);
-            qData[7] = ToBCD(subqSector / (60 * 75));
-            qData[8] = ToBCD((subqSector / 75) % 60);
-            qData[9] = ToBCD(subqSector % 75);
+            int absoluteMsfSector = subqSector + 150;
+            qData[7] = ToBCD(absoluteMsfSector / (60 * 75));
+            qData[8] = ToBCD((absoluteMsfSector / 75) % 60);
+            qData[9] = ToBCD(absoluteMsfSector % 75);
 
             PrepareResponse(qData);
 
@@ -1823,9 +2020,16 @@ namespace ePceCD
 
         private void AudioStartPos()
         {
+            int previousSector = _currentMediaSector >= 0
+                ? _currentMediaSector
+                : (CdPlaying
+                    ? AudioCS
+                    : (lastDataSector >= 0
+                        ? lastDataSector
+                        : (currentSector >= 0 ? currentSector : 0)));
+
             AudioSS = AudioGetPos();
             AudioCS = AudioSS;
-            _currentMediaSector = AudioSS;
             _cdSectorOffsetBytes = -1;
             CdLoopMode = CDLOOPMODE.STOP;
 
@@ -1848,7 +2052,7 @@ namespace ePceCD
                 CdPlaying = true;
                 _cdAudioState = CdAudioState.Playing;
             }
-            SendStatus(0x00);
+            BeginBusyStatus(0x00, GetAudioStartStatusDelayCycles(AudioSS, previousSector));
         }
 
         private void AudioEndPos()
@@ -1942,7 +2146,7 @@ namespace ePceCD
                     break;
 
                 case 0x01:
-                    // Nitro CD01_R returns the current SCSI data latch value.
+                    // Return the current SCSI data latch value.
                     // It should not advance the transfer pointer.
                     if (dataBuffer != null && dataBuffer.Length > 0)
                     {
@@ -1985,14 +2189,14 @@ namespace ePceCD
                     break;
 
                 case 0x07:
-                    // NitroGrafx CD07_R:
+                    // Reading 0x1807 clears the Sub-Q ready latch.
                     // clear Sub-Q ready latch and return 0.
                     ActiveIrqs = (byte)(ActiveIrqs & ~0x10);
                     ret = 0x00;
                     break;
 
                 case 0x08:
-                    // NitroGrafx behavior: 0x1808 acts as SCSI data port only in data phase.
+                    // 0x1808 acts as the SCSI data port only in data phase.
                     // Outside data phase it returns 0.
                     if (_ScsiPhase == ScsiPhase.DataIn)
                         ret = ReadDataPort();
@@ -2055,7 +2259,7 @@ namespace ePceCD
             switch (address & 0xF)
             {
                 case 0x00: // 状态/控制寄存器 处理硬件复位或其他控制信号
-                    // NitroGrafx CD00_W behavior:
+                    // 0x1800 command/control behavior:
                     // - 0x60 forces bus free (drops SCSI signal state)
                     // - 0x81 from bus free enters command phase
                     if (value == 0x60)
@@ -2078,7 +2282,7 @@ namespace ePceCD
                 case 0x02:
                     bool oldAck = Signals[(int)ScsiSignal.Ack];
                     bool newAck = (value & 0x80) != 0;
-                    // Nitro CD02_W stores the full low 7-bit mask on every write.
+                    // Store the full low 7-bit IRQ mask on every write.
                     EnabledIrqs = (byte)(value & 0x7F);
                     Signals[(int)ScsiSignal.Ack] = newAck;
                     bool ackRisingEdge = !oldAck && newAck;
@@ -2153,7 +2357,6 @@ namespace ePceCD
 
         private void ProcessACK()
         {
-            // NitroGrafx-style ACK dispatcher:
             // ACK pulse advances the current SCSI phase state machine.
             switch (_ScsiPhase)
             {
@@ -2162,7 +2365,7 @@ namespace ePceCD
                     break;
 
                 case ScsiPhase.CMD:
-                    // Nitro behavior: command byte is latched by 0x1801 write and consumed on ACK.
+                    // The command byte is latched by the 0x1801 write and consumed on ACK.
                     CMDBuffer[CMDBufferIndex++] = _scsiDataLatch;
                     if (CMDBufferIndex == 1)
                         CMDLength = ScsiCMDLength((ScsiCommand)_scsiDataLatch);
@@ -2178,7 +2381,7 @@ namespace ePceCD
                     break;
 
                 case ScsiPhase.DataIn:
-                    // Nitro behavior: ACK clocks SCSI data while in DataIn.
+                    // ACK clocks SCSI data while in DataIn.
                     // Allow opt-out for experiments.
                     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_ACK_CLOCKS_DATA") != "0")
                         _ = ReadDataPort();
@@ -2189,7 +2392,7 @@ namespace ePceCD
                     break;
 
                 case ScsiPhase.MessageIn:
-                    // Nitro sendMessage: clear DataTransferDone and drop to BusFree on ACK.
+                    // Clear DataTransferDone and drop to BusFree on ACK.
                     ActiveIrqs &= unchecked((byte)~(byte)CdRomIrqSource.DataTransferDone);
                     SetPhase(ScsiPhase.BusFree);
                     break;
