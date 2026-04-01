@@ -1039,6 +1039,24 @@
                   <StackPanel Spacing="8">
                     <TextBlock Text="Display"
                                FontWeight="Bold" />
+                    <Grid ColumnDefinitions="Auto,*"
+                          ColumnSpacing="10">
+                      <TextBlock Text="Android renderer"
+                                 VerticalAlignment="Center" />
+                      <ComboBox Grid.Column="1"
+                                SelectedIndex="{Binding AndroidRenderBackendIndex}"
+                                SelectionChanged="OnAndroidRenderBackendChanged">
+                        <ComboBoxItem Content="Vulkan bitmap" />
+                        <ComboBoxItem Content="Vulkan OpenGL" />
+                        <ComboBoxItem Content="OpenGL" />
+                      </ComboBox>
+                    </Grid>
+                    <TextBlock Text="{Binding AndroidRenderBackendStatus}"
+                               Foreground="#E8F3FF"
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="Vulkan bitmap uses the Vulkan app backend with the bitmap game presenter. Vulkan OpenGL keeps Vulkan for the app but uses the OpenGL game presenter. Changes apply after restart."
+                               Foreground="#91A8BD"
+                               TextWrapping="Wrap" />
                     <CheckBox Classes="settingsToggle"
                               Content="Sharp pixels"
                               IsChecked="{Binding SharpPixelsEnabled}"

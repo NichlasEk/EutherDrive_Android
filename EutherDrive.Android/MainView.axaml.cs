@@ -130,6 +130,7 @@ public partial class MainView : UserControl
         DataContext = _viewModel;
         LoadSettings();
         ApplySettings();
+        UpdateAndroidRenderBackendStatus();
         _viewModel.SettingsHint = "Small BIOS/chip files are imported into app storage. Large disc images are intentionally not cached here.";
         SettingsAboutZuulView.SetActive(false);
         SizeChanged += OnViewSizeChanged;
@@ -2458,6 +2459,23 @@ public partial class MainView : UserControl
             : "Sharp pixels disabled.";
     }
 
+    private void OnAndroidRenderBackendChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        int index = Math.Clamp((sender as ComboBox)?.SelectedIndex ?? 0, 0, 2);
+        if (_viewModel.AndroidRenderBackendIndex == index)
+        {
+            UpdateAndroidRenderBackendStatus();
+            return;
+        }
+
+        _viewModel.AndroidRenderBackendIndex = index;
+        UpdateAndroidRenderBackendStatus();
+        SaveSettings();
+
+        AndroidRenderBackendMode mode = GetAndroidRenderBackendModeFromIndex(index);
+        _viewModel.FooterStatus = $"{AndroidRenderBackendConfig.GetDisplayName(mode)} selected. Restart app to apply.";
+    }
+
     private void OnScanlineStrengthChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
         int strength = ClampPercent((int)Math.Round(e.NewValue));
@@ -2507,6 +2525,34 @@ public partial class MainView : UserControl
         SetEnv("EUTHERDRIVE_ST011_ROM", _viewModel.St011Path);
         SetEnv("EUTHERDRIVE_ST018_ROM", _viewModel.St018Path);
     }
+
+    private void UpdateAndroidRenderBackendStatus()
+    {
+        AndroidRenderBackendMode selected = GetAndroidRenderBackendModeFromIndex(_viewModel.AndroidRenderBackendIndex);
+        AndroidRenderBackendMode active = AndroidRenderBackendConfig.StartupMode;
+        string activeName = AndroidRenderBackendConfig.GetDisplayName(active);
+        string selectedName = AndroidRenderBackendConfig.GetDisplayName(selected);
+
+        _viewModel.AndroidRenderBackendStatus = selected == active
+            ? $"Active on this boot: {activeName}"
+            : $"Restart required. Current: {activeName}. Next: {selectedName}.";
+    }
+
+    private static AndroidRenderBackendMode GetAndroidRenderBackendModeFromIndex(int index)
+        => index switch
+        {
+            1 => AndroidRenderBackendMode.VulkanOpenGl,
+            2 => AndroidRenderBackendMode.OpenGl,
+            _ => AndroidRenderBackendMode.VulkanBitmap
+        };
+
+    private static int GetAndroidRenderBackendIndex(AndroidRenderBackendMode mode)
+        => mode switch
+        {
+            AndroidRenderBackendMode.VulkanOpenGl => 1,
+            AndroidRenderBackendMode.OpenGl => 2,
+            _ => 0
+        };
 
     private void ApplyPsxExecutionSettings()
     {
@@ -2624,6 +2670,7 @@ public partial class MainView : UserControl
             PsxSuperFastBootEnabled = _viewModel.PsxSuperFastBootEnabled,
             PsxVideoStandardIndex = _viewModel.PsxVideoStandardIndex,
             PsxFrameRateIndex = _viewModel.PsxFrameRateIndex,
+            AndroidRenderBackendMode = GetAndroidRenderBackendModeFromIndex(_viewModel.AndroidRenderBackendIndex).ToString(),
             SharpPixelsEnabled = _viewModel.SharpPixelsEnabled,
             ScanlineStrengthPercent = _viewModel.ScanlineStrengthPercent,
             Dsp1Path = _viewModel.Dsp1Path,
@@ -2723,6 +2770,10 @@ public partial class MainView : UserControl
         _viewModel.PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled;
         _viewModel.PsxVideoStandardIndex = Math.Clamp(settings.PsxVideoStandardIndex, 0, 2);
         _viewModel.PsxFrameRateIndex = Math.Clamp(settings.PsxFrameRateIndex, 0, 2);
+        AndroidRenderBackendMode backendMode = AndroidRenderBackendConfig.TryGetEnvironmentOverride(out AndroidRenderBackendMode envBackendMode)
+            ? envBackendMode
+            : AndroidRenderBackendConfig.Parse(settings.AndroidRenderBackendMode);
+        _viewModel.AndroidRenderBackendIndex = GetAndroidRenderBackendIndex(backendMode);
         _viewModel.SharpPixelsEnabled = settings.SharpPixelsEnabled;
         _viewModel.ScanlineStrengthPercent = ClampPercent(settings.ScanlineStrengthPercent);
         _viewModel.Dsp1Path = settings.Dsp1Path;
@@ -3151,6 +3202,11 @@ public partial class MainView : UserControl
 
     private IGameRenderSurface CreateRenderSurface()
     {
+        AndroidRenderBackendMode mode = AndroidRenderBackendConfig.StartupMode;
+
+        if (mode == AndroidRenderBackendMode.VulkanBitmap)
+            return new WriteableBitmapRenderSurface();
+
         if (ShouldUseAndroidNativeGlSurface())
         {
             var nativeSurface = new AndroidNativeGlRenderSurface();
@@ -3179,15 +3235,17 @@ public partial class MainView : UserControl
 
         return true;
     }
-
     private void UpdateActiveRenderModeLabel()
     {
+        AndroidRenderBackendMode startupMode = AndroidRenderBackendConfig.StartupMode;
         string nextLabel = _renderSurface switch
         {
+            WriteableBitmapRenderSurface when startupMode == AndroidRenderBackendMode.VulkanBitmap
+                => $"Active: {AndroidRenderBackendConfig.GetDisplayName(startupMode)}",
             WriteableBitmapRenderSurface => "Active: Bitmap fallback",
-            AndroidNativeGlRenderSurface => "Active: OpenGL Native",
-            OpenGlRenderSurface => "Active: OpenGL",
-            _ => "Active: OpenGL"
+            AndroidNativeGlRenderSurface => $"Active: {AndroidRenderBackendConfig.GetDisplayName(startupMode)} / Native GL",
+            OpenGlRenderSurface => $"Active: {AndroidRenderBackendConfig.GetDisplayName(startupMode)} / Shared GL",
+            _ => $"Active: {AndroidRenderBackendConfig.GetDisplayName(startupMode)}"
         };
 
         if (!string.Equals(_viewModel.ActiveRenderModeLabel, nextLabel, StringComparison.Ordinal))
@@ -3625,7 +3683,7 @@ public partial class MainView : UserControl
         private string _footerStatus = "Ready for ROM selection.";
         private string _perfSummary = "Perf idle";
         private string _perfHeadline = "FPS --  MAX --";
-        private string _activeRenderModeLabel = "Active: OpenGL";
+        private string _activeRenderModeLabel = $"Active: {AndroidRenderBackendConfig.GetDisplayName(AndroidRenderBackendConfig.StartupMode)}";
         private string _overlaySummary = "D:-  A:-";
         private bool _isFocusMode;
         private bool _isLandscapeMode;
@@ -3652,6 +3710,8 @@ public partial class MainView : UserControl
         private bool _psxSuperFastBootEnabled;
         private int _psxVideoStandardIndex;
         private int _psxFrameRateIndex;
+        private int _androidRenderBackendIndex = GetAndroidRenderBackendIndex(AndroidRenderBackendConfig.ResolvePreferredMode());
+        private string _androidRenderBackendStatus = $"Active on this boot: {AndroidRenderBackendConfig.GetDisplayName(AndroidRenderBackendConfig.StartupMode)}";
         private bool _sharpPixelsEnabled = true;
         private int _scanlineStrengthPercent = DefaultScanlineStrengthPercent;
         private string _dsp1Display = "(none)";
@@ -3901,6 +3961,8 @@ public partial class MainView : UserControl
         public bool PsxSuperFastBootEnabled { get => _psxSuperFastBootEnabled; set => SetField(ref _psxSuperFastBootEnabled, value); }
         public int PsxVideoStandardIndex { get => _psxVideoStandardIndex; set => SetField(ref _psxVideoStandardIndex, Math.Clamp(value, 0, 2)); }
         public int PsxFrameRateIndex { get => _psxFrameRateIndex; set => SetField(ref _psxFrameRateIndex, Math.Clamp(value, 0, 2)); }
+        public int AndroidRenderBackendIndex { get => _androidRenderBackendIndex; set => SetField(ref _androidRenderBackendIndex, Math.Clamp(value, 0, 2)); }
+        public string AndroidRenderBackendStatus { get => _androidRenderBackendStatus; set => SetField(ref _androidRenderBackendStatus, value); }
         public bool SharpPixelsEnabled { get => _sharpPixelsEnabled; set => SetField(ref _sharpPixelsEnabled, value); }
         public int ScanlineStrengthPercent
         {
@@ -4080,6 +4142,7 @@ public partial class MainView : UserControl
         public bool PsxSuperFastBootEnabled { get; set; }
         public int PsxVideoStandardIndex { get; set; }
         public int PsxFrameRateIndex { get; set; }
+        public string? AndroidRenderBackendMode { get; set; }
         public bool SharpPixelsEnabled { get; set; } = true;
         public int ScanlineStrengthPercent { get; set; } = DefaultScanlineStrengthPercent;
         public string? Dsp1Path { get; set; }

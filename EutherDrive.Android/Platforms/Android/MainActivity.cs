@@ -5,6 +5,7 @@ using Android.Content.PM;
 using Android.OS;
 using Android.Views;
 using Android.Widget;
+using Avalonia;
 using Avalonia.Android;
 using Orientation = Android.Content.Res.Orientation;
 
@@ -33,6 +34,12 @@ public class MainActivity : AvaloniaMainActivity<App>
     private int _lastPreferredDisplayModeId;
     private float _lastObservedDisplayRefresh;
     private int _lastObservedDisplayModeId;
+
+    protected override AppBuilder CustomizeAppBuilder(AppBuilder builder)
+    {
+        builder = base.CustomizeAppBuilder(builder);
+        return AndroidRenderBackendConfig.Configure(builder);
+    }
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
