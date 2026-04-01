@@ -105,7 +105,8 @@ internal static class RenderBackendConfig
                 if (line.Length == 0 || line.StartsWith('#'))
                     continue;
 
-                if (!line.StartsWith("RenderBackendMode", StringComparison.OrdinalIgnoreCase))
+                if (!line.StartsWith("RenderBackendMode", StringComparison.OrdinalIgnoreCase)
+                    && !line.StartsWith("render_backend_mode", StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 int equalsIndex = line.IndexOf('=');
