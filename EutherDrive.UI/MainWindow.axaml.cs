@@ -37,12 +37,6 @@ namespace EutherDrive.UI;
 
 public partial class MainWindow : Window
 {
-    private enum RenderBackendMode
-    {
-        Bitmap,
-        OpenGl
-    }
-
     private IEmulatorCore? _core;
     private readonly object _coreAudioLock = new();
     private readonly SavestateService _savestateService;
@@ -368,7 +362,7 @@ public partial class MainWindow : Window
     private bool _regionOverrideUpdating;
     private bool _frameRateUpdating;
     private bool _psxVideoStandardUpdating;
-    private const string SettingsFileName = "eutherdrive_settings.toml";
+    private const string SettingsFileName = RenderBackendConfig.SettingsFileName;
     private const string LegacyJsonSettingsFileName = "eutherdrive_settings.json";
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
     private const string LegacyLastRomPathFileName = "eutherdrive_last_rom.txt";
@@ -774,7 +768,7 @@ public partial class MainWindow : Window
         if (_updatingRenderBackendUi)
             return;
 
-        RenderBackendMode mode = e.NewValue >= 0.5 ? RenderBackendMode.OpenGl : RenderBackendMode.Bitmap;
+        RenderBackendMode mode = GetRenderBackendModeFromSlider(e.NewValue);
         SetRenderBackendMode(mode, save: true);
     }
 
@@ -802,9 +796,14 @@ public partial class MainWindow : Window
             }
         }
 
-        StatusText.Text = mode == RenderBackendMode.OpenGl
-            ? "Renderer: OpenGL"
-            : "Renderer: Bitmap";
+        StatusText.Text = mode switch
+        {
+            RenderBackendMode.OpenGl => "Renderer: OpenGL",
+            RenderBackendMode.Vulkan => RenderBackendConfig.StartupMode == RenderBackendMode.Vulkan
+                ? "Renderer: Vulkan"
+                : "Renderer: Vulkan (restart required)",
+            _ => "Renderer: Bitmap"
+        };
 
         if (save)
             SaveSettings();
@@ -1106,48 +1105,84 @@ public partial class MainWindow : Window
         try
         {
             if (RenderBackendSlider != null)
-                RenderBackendSlider.Value = _renderBackendMode == RenderBackendMode.OpenGl ? 1 : 0;
+                RenderBackendSlider.Value = GetRenderBackendSliderValue(_renderBackendMode);
 
-            if (RenderBackendBitmapLabel != null)
-            {
-                RenderBackendBitmapLabel.Opacity = _renderBackendMode == RenderBackendMode.Bitmap ? 1.0 : 0.45;
-                RenderBackendBitmapLabel.Foreground = _renderBackendMode == RenderBackendMode.Bitmap
-                    ? new SolidColorBrush(Color.Parse("#E9F3FF"))
-                    : new SolidColorBrush(Color.Parse("#7F90A7"));
-            }
-
-            if (RenderBackendOpenGlLabel != null)
-            {
-                RenderBackendOpenGlLabel.Opacity = _renderBackendMode == RenderBackendMode.OpenGl ? 1.0 : 0.45;
-                RenderBackendOpenGlLabel.Foreground = _renderBackendMode == RenderBackendMode.OpenGl
-                    ? new SolidColorBrush(Color.Parse("#7BF0D5"))
-                    : new SolidColorBrush(Color.Parse("#7F90A7"));
-            }
+            UpdateRenderBackendLabel(RenderBackendBitmapLabel, _renderBackendMode == RenderBackendMode.Bitmap, "#E9F3FF");
+            UpdateRenderBackendLabel(RenderBackendOpenGlLabel, _renderBackendMode == RenderBackendMode.OpenGl, "#7BF0D5");
+            UpdateRenderBackendLabel(RenderBackendVulkanLabel, _renderBackendMode == RenderBackendMode.Vulkan, "#FFC56B");
 
             if (RenderBackendStateText != null)
             {
-                bool requestedOpenGl = _renderBackendMode == RenderBackendMode.OpenGl;
                 bool activeOpenGl = _renderSurface is IAcceleratedRenderSurface;
-                string stateText = requestedOpenGl
-                    ? (activeOpenGl
-                        ? "Active: OpenGL"
-                        : string.IsNullOrWhiteSpace(_renderBackendFallbackReason)
-                            ? "Active: Bitmap fallback"
-                            : $"Active: Bitmap fallback ({_renderBackendFallbackReason})")
-                    : "Active: Bitmap";
-
-                RenderBackendStateText.Text = stateText;
-                RenderBackendStateText.Foreground = requestedOpenGl && !activeOpenGl
-                    ? new SolidColorBrush(Color.Parse("#FF9A8A"))
-                    : activeOpenGl
-                        ? new SolidColorBrush(Color.Parse("#7BF0D5"))
-                        : new SolidColorBrush(Color.Parse("#9FB3C8"));
+                RenderBackendStateText.Text = GetRenderBackendStateText(activeOpenGl);
+                RenderBackendStateText.Foreground = new SolidColorBrush(Color.Parse(GetRenderBackendStateColor(activeOpenGl)));
             }
         }
         finally
         {
             _updatingRenderBackendUi = false;
         }
+    }
+
+    private static RenderBackendMode GetRenderBackendModeFromSlider(double value)
+    {
+        int step = (int)Math.Round(Math.Clamp(value, 0.0, 2.0));
+        return step switch
+        {
+            1 => RenderBackendMode.OpenGl,
+            2 => RenderBackendMode.Vulkan,
+            _ => RenderBackendMode.Bitmap
+        };
+    }
+
+    private static int GetRenderBackendSliderValue(RenderBackendMode mode)
+        => mode switch
+        {
+            RenderBackendMode.OpenGl => 1,
+            RenderBackendMode.Vulkan => 2,
+            _ => 0
+        };
+
+    private static void UpdateRenderBackendLabel(TextBlock? label, bool isActive, string activeColor)
+    {
+        if (label == null)
+            return;
+
+        label.Opacity = isActive ? 1.0 : 0.45;
+        label.Foreground = isActive
+            ? new SolidColorBrush(Color.Parse(activeColor))
+            : new SolidColorBrush(Color.Parse("#7F90A7"));
+    }
+
+    private string GetRenderBackendStateText(bool activeOpenGl)
+    {
+        return _renderBackendMode switch
+        {
+            RenderBackendMode.OpenGl => activeOpenGl
+                ? "Active: OpenGL"
+                : string.IsNullOrWhiteSpace(_renderBackendFallbackReason)
+                    ? "Active: Bitmap fallback"
+                    : $"Active: Bitmap fallback ({_renderBackendFallbackReason})",
+            RenderBackendMode.Vulkan => !RenderBackendConfig.SupportsVulkanPlatform
+                ? "Active: Bitmap (Vulkan unsupported)"
+                : RenderBackendConfig.StartupMode == RenderBackendMode.Vulkan
+                    ? "Active: Vulkan"
+                    : "Active: Bitmap (Vulkan on restart)",
+            _ => "Active: Bitmap"
+        };
+    }
+
+    private string GetRenderBackendStateColor(bool activeOpenGl)
+    {
+        return _renderBackendMode switch
+        {
+            RenderBackendMode.OpenGl when !activeOpenGl => "#FF9A8A",
+            RenderBackendMode.OpenGl => "#7BF0D5",
+            RenderBackendMode.Vulkan when !RenderBackendConfig.SupportsVulkanPlatform => "#FF9A8A",
+            RenderBackendMode.Vulkan when RenderBackendConfig.StartupMode == RenderBackendMode.Vulkan => "#FFC56B",
+            RenderBackendMode.Vulkan => "#FFC56B",
+            _ => "#9FB3C8"
+        };
     }
 
     private void UpdateAdvancedPixelFilterUi()
@@ -4137,7 +4172,7 @@ public partial class MainWindow : Window
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
-        public RenderBackendMode RenderBackendMode { get; set; } = GetDefaultRenderBackendMode();
+        public RenderBackendMode RenderBackendMode { get; set; } = RenderBackendMode.Bitmap;
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public Dictionary<string, string>? RomPsxSbiPaths { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
@@ -4271,7 +4306,9 @@ public partial class MainWindow : Window
         PsxAdapter.AnalogControllerEnabled = _psxAnalogControllerEnabled;
         if (PsxAnalogPadCheck != null)
             PsxAnalogPadCheck.IsChecked = _psxAnalogControllerEnabled;
-        _renderBackendMode = settings.RenderBackendMode;
+        _renderBackendMode = RenderBackendConfig.TryGetEnvironmentOverride(out RenderBackendMode envRenderBackendMode)
+            ? envRenderBackendMode
+            : settings.RenderBackendMode;
         UpdateRenderBackendUi();
         _psxFastLoadEnabled = settings.PsxFastLoadEnabled;
         PsxAdapter.FastLoadEnabled = _psxFastLoadEnabled;
@@ -4782,22 +4819,10 @@ public partial class MainWindow : Window
     }
 
     private static RenderBackendMode GetDefaultRenderBackendMode()
-    {
-        string? mode = Environment.GetEnvironmentVariable("EUTHERDRIVE_RENDERER");
-        return ParseRenderBackendMode(mode);
-    }
+        => RenderBackendConfig.ResolvePreferredMode();
 
     private static RenderBackendMode ParseRenderBackendMode(string? raw)
-    {
-        if (string.Equals(raw, "opengl", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(raw, "gl", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(raw, "OpenGl", StringComparison.OrdinalIgnoreCase))
-        {
-            return RenderBackendMode.OpenGl;
-        }
-
-        return RenderBackendMode.Bitmap;
-    }
+        => RenderBackendConfig.Parse(raw);
 
     private static bool ApplyTomlMappings(Dictionary<string, string>? raw, Dictionary<string, Key> target)
     {
@@ -6522,6 +6547,7 @@ public partial class MainWindow : Window
 
     private IGameRenderSurface CreateRenderSurface()
     {
+        // Vulkan is selected at the desktop platform layer during startup; the in-window presenter stays bitmap-backed for now.
         return _renderBackendMode == RenderBackendMode.OpenGl
             ? CreateAcceleratedRenderSurface()
             : new WriteableBitmapRenderSurface();

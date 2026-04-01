@@ -1,5 +1,4 @@
 ﻿using Avalonia;
-using Avalonia.Native;
 using System;
 using System.Collections;
 using System.Diagnostics;
@@ -77,16 +76,9 @@ class Program
 
     // Avalonia configuration, don't remove; also used by visual designer.
     public static AppBuilder BuildAvaloniaApp()
-        => AppBuilder.Configure<App>()
+        => RenderBackendConfig.Configure(
+            AppBuilder.Configure<App>()
             .UsePlatformDetect()
-            .WithInterFont()
-            .With(new AvaloniaNativePlatformOptions
-            {
-                RenderingMode = new[]
-                {
-                    AvaloniaNativeRenderingMode.OpenGl,
-                    AvaloniaNativeRenderingMode.Software
-                }
-            })
+            .WithInterFont())
             .LogToTrace();
 }

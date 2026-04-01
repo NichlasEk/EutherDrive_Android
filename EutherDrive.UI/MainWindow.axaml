@@ -38,18 +38,41 @@
             </StackPanel>
           </Border>
           <Border Classes="panel" Padding="8,5">
-            <StackPanel Spacing="3">
+            <StackPanel Spacing="4">
               <TextBlock Classes="deck-label" Text="RENDERER"/>
-              <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                <TextBlock Name="RenderBackendBitmapLabel" Classes="kicker" Text="Bitmap" VerticalAlignment="Center"/>
+              <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" RowSpacing="2">
+                <TextBlock Grid.Row="0"
+                           Grid.Column="0"
+                           Name="RenderBackendBitmapLabel"
+                           Classes="kicker"
+                           Text="Bitmap"
+                           VerticalAlignment="Center"/>
+                <TextBlock Grid.Row="0"
+                           Grid.Column="1"
+                           Name="RenderBackendOpenGlLabel"
+                           Classes="kicker"
+                           Text="OpenGL"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+                <TextBlock Grid.Row="0"
+                           Grid.Column="2"
+                           Name="RenderBackendVulkanLabel"
+                           Classes="kicker"
+                           Text="Vulkan"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Center"/>
                 <Slider Name="RenderBackendSlider"
+                        Grid.Row="1"
+                        Grid.Column="0"
+                        Grid.ColumnSpan="3"
                         Minimum="0"
-                        Maximum="1"
-                        Width="64"
+                        Maximum="2"
+                        Width="156"
+                        TickFrequency="1"
+                        IsSnapToTickEnabled="True"
                         Value="0"
                         ValueChanged="OnRenderBackendSliderChanged"/>
-                <TextBlock Name="RenderBackendOpenGlLabel" Classes="kicker" Text="OpenGL" VerticalAlignment="Center"/>
-              </StackPanel>
+              </Grid>
               <TextBlock Name="RenderBackendStateText"
                          Classes="kicker"
                          Text="Active: Bitmap"
