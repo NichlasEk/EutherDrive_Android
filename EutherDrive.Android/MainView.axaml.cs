@@ -119,6 +119,7 @@ public partial class MainView : UserControl
     private int _presentLatestFrameQueued;
     private int _androidPsxTransientBlankBurst;
     private bool _androidPsxHasStableVisibleFrame;
+    private bool _isInitializingSettings = true;
 
     public MainView()
     {
@@ -127,10 +128,18 @@ public partial class MainView : UserControl
         _settingsPath = Path.Combine(_appDataDir, SettingsFileName);
         _legacyJsonSettingsPath = Path.Combine(_appDataDir, LegacyJsonSettingsFileName);
         _savestateService = new SavestateService(Path.Combine(_appDataDir, "savestates"));
-        DataContext = _viewModel;
-        LoadSettings();
-        ApplySettings();
-        UpdateAndroidRenderBackendStatus();
+        try
+        {
+            LoadSettings();
+            ApplySettings();
+            UpdateAndroidRenderBackendStatus();
+            DataContext = _viewModel;
+        }
+        finally
+        {
+            _isInitializingSettings = false;
+        }
+
         _viewModel.SettingsHint = "Small BIOS/chip files are imported into app storage. Large disc images are intentionally not cached here.";
         SettingsAboutZuulView.SetActive(false);
         SizeChanged += OnViewSizeChanged;
@@ -2411,6 +2420,9 @@ public partial class MainView : UserControl
     private void OnClearPsxBios(object? sender, RoutedEventArgs e) => ClearSystemFile("PSX BIOS");
     private void OnPsxFastLoadToggle(object? sender, RoutedEventArgs e)
     {
+        if (_isInitializingSettings)
+            return;
+
         _viewModel.PsxFastLoadEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked == true;
         ApplyPsxExecutionSettings();
         SaveSettings();
@@ -2419,6 +2431,9 @@ public partial class MainView : UserControl
 
     private void OnPsxSuperFastBootToggle(object? sender, RoutedEventArgs e)
     {
+        if (_isInitializingSettings)
+            return;
+
         _viewModel.PsxSuperFastBootEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked == true;
         ApplyPsxExecutionSettings();
         SaveSettings();
@@ -2427,6 +2442,9 @@ public partial class MainView : UserControl
 
     private void OnPsxAnalogControllerToggle(object? sender, RoutedEventArgs e)
     {
+        if (_isInitializingSettings)
+            return;
+
         _viewModel.PsxAnalogControllerEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked == true;
         ApplyPsxExecutionSettings();
         SaveSettings();
@@ -2435,6 +2453,9 @@ public partial class MainView : UserControl
 
     private void OnPsxVideoStandardChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (_isInitializingSettings)
+            return;
+
         _viewModel.PsxVideoStandardIndex = Math.Clamp((sender as ComboBox)?.SelectedIndex ?? 0, 0, 2);
         ApplyPsxExecutionSettings();
         SaveSettings();
@@ -2443,6 +2464,9 @@ public partial class MainView : UserControl
 
     private void OnPsxFrameRateChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (_isInitializingSettings)
+            return;
+
         _viewModel.PsxFrameRateIndex = Math.Clamp((sender as ComboBox)?.SelectedIndex ?? 0, 0, 2);
         ApplyPsxExecutionSettings();
         SaveSettings();
@@ -2451,6 +2475,9 @@ public partial class MainView : UserControl
 
     private void OnSharpPixelsToggle(object? sender, RoutedEventArgs e)
     {
+        if (_isInitializingSettings)
+            return;
+
         _viewModel.SharpPixelsEnabled = (sender as Avalonia.Controls.CheckBox)?.IsChecked != false;
         ApplySharpPixelsSetting();
         SaveSettings();
@@ -2461,6 +2488,9 @@ public partial class MainView : UserControl
 
     private void OnAndroidRenderBackendChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (_isInitializingSettings)
+            return;
+
         int index = Math.Clamp((sender as ComboBox)?.SelectedIndex ?? 0, 0, 2);
         if (_viewModel.AndroidRenderBackendIndex == index)
         {
@@ -2478,6 +2508,9 @@ public partial class MainView : UserControl
 
     private void OnScanlineStrengthChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
+        if (_isInitializingSettings)
+            return;
+
         int strength = ClampPercent((int)Math.Round(e.NewValue));
         if (_viewModel.ScanlineStrengthPercent == strength)
             return;
