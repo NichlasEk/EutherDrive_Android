@@ -389,7 +389,11 @@ public partial class MainWindow : Window
     private bool _psxVideoStandardUpdating;
     private bool _allowDangerousSportTitles;
     private List<string> _sportTitleKeywords = new(s_defaultSportTitleKeywords);
+    private readonly Dictionary<string, TitleStatsEntry> _titleStats = new(StringComparer.OrdinalIgnoreCase);
+    private string? _activeTitleStatsKey;
+    private DateTime _activeTitleStatsStartedUtc;
     private const string SettingsFileName = RenderBackendConfig.SettingsFileName;
+    private const string TitleStatsFileName = "eutherdrive_title_stats.toml";
     private const string LegacyJsonSettingsFileName = "eutherdrive_settings.json";
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
     private const string LegacyLastRomPathFileName = "eutherdrive_last_rom.txt";
@@ -477,6 +481,7 @@ public partial class MainWindow : Window
         _ymResampleLinear = IsEnvEnabled("EUTHERDRIVE_YM_RESAMPLE_LINEAR")
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
+        LoadTitleStats();
         ApplySnesSpecialRomOverrides();
         UpdateRecentRomCombo();
         if (MasterVolumeSlider != null)
@@ -499,6 +504,7 @@ public partial class MainWindow : Window
         Focusable = true;
         AttachedToVisualTree += (_, __) => Focus();
         PropertyChanged += OnWindowPropertyChanged;
+        Closing += OnMainWindowClosing;
 
         StatusText.Text = "Idle";
 
@@ -872,6 +878,11 @@ public partial class MainWindow : Window
             ? "Dangerous sport titles are allowed, but warnings remain active."
             : "SportShield is blocking dangerous sport titles.";
         SaveSettings();
+    }
+
+    private void OnMainWindowClosing(object? sender, WindowClosingEventArgs e)
+    {
+        EndTrackedPlaySession();
     }
 
     private void OnSpeedSliderChanged(object? sender, RangeBaseValueChangedEventArgs e)
@@ -1820,39 +1831,13 @@ public partial class MainWindow : Window
 
     private async void OnOpenRom(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        IStorageFolder? startFolder = null;
-        if (!string.IsNullOrWhiteSpace(_romPath))
-        {
-            string? folderPath = Path.GetDirectoryName(_romPath);
-            if (!string.IsNullOrWhiteSpace(folderPath))
-                startFolder = await StorageProvider.TryGetFolderFromPathAsync(folderPath);
-        }
-
-        var options = new FilePickerOpenOptions
-        {
-            Title = "Select ROM",
-            AllowMultiple = false,
-            FileTypeFilter = new[]
-            {
-                new FilePickerFileType("ROMs")
-                {
-                    Patterns = new[] { "*.bin", "*.md", "*.gen", "*.smd", "*.sms", "*.sg", "*.gg", "*.nes", "*.smc", "*.sfc", "*.pce", "*.cue", "*.zip", "*.7z", "*.iso", "*.img", "*.chd", "*.pbp", "*.exe", "*.*" }
-                }
-            }
-        };
-
-        if (startFolder != null)
-            options.SuggestedStartLocation = startFolder;
-        if (!string.IsNullOrWhiteSpace(_romPath))
-            options.SuggestedFileName = Path.GetFileName(_romPath);
-
-        var files = await StorageProvider.OpenFilePickerAsync(options);
-
-        if (files.Count == 0)
+        var dialog = new RomPickerDialog(_romPath, _uiScale, GetRomPickerStats);
+        bool selected = await dialog.ShowDialog<bool>(this);
+        if (!selected || string.IsNullOrWhiteSpace(dialog.SelectedPath))
             return;
 
-        _romPath = files[0].TryGetLocalPath();
-        RomPathText.Text = _romPath ?? files[0].Name;
+        _romPath = dialog.SelectedPath;
+        RomPathText.Text = _romPath;
         ApplyPsxSbiSelectionForRom(_romPath);
         StatusText.Text = "ROM selected";
         AddRecentRom(_romPath);
@@ -2282,6 +2267,7 @@ public partial class MainWindow : Window
             Console.WriteLine($"[UI] Start clicked. romPath='{_romPath}' exists={(!string.IsNullOrWhiteSpace(_romPath) && File.Exists(_romPath))}");
             if (await ShouldBlockSportTitleLaunchAsync())
                 return;
+            EndTrackedPlaySession();
             ApplyPsxSbiSelectionForRom(_romPath);
             DeactivateMouseCapture(updateStatus: false);
             _timer.Stop();
@@ -2361,6 +2347,7 @@ public partial class MainWindow : Window
                         // OCH i terminal (om du kör från terminal)
                         Console.WriteLine(m.RomInfo.Summary);
                         AddRecentRom(_romPath);
+                        BeginTrackedPlaySession(_romPath);
                     }
                     else
                     {
@@ -2390,6 +2377,7 @@ public partial class MainWindow : Window
                         _audioPullReady = true;
                         PrimePullAudio();
                         AddRecentRom(_romPath);
+                        BeginTrackedPlaySession(_romPath);
                     }
                 }
                 else
@@ -2702,7 +2690,7 @@ public partial class MainWindow : Window
             foreach (var path in _recentRomPaths)
             {
                 string name = Path.GetFileName(path);
-                var item = new ComboBoxItem { Content = name, Tag = path };
+                var item = new ComboBoxItem { Content = FormatRecentRomLabel(path, name), Tag = path };
                 ToolTip.SetTip(item, path);
                 RecentRomCombo.Items.Add(item);
                 if (!string.IsNullOrWhiteSpace(_romPath)
@@ -2717,6 +2705,54 @@ public partial class MainWindow : Window
         {
             _recentRomUpdating = false;
         }
+    }
+
+    private string FormatRecentRomLabel(string path, string fallbackName)
+    {
+        int stars = GetTitleStars(path);
+        string starsText = new string('★', stars) + new string('☆', Math.Max(0, 6 - stars));
+        string name = string.IsNullOrWhiteSpace(fallbackName) ? Path.GetFileName(path) : fallbackName;
+        return $"{starsText}  {name}";
+    }
+
+    private int GetTitleStars(string? romPath)
+    {
+        if (string.IsNullOrWhiteSpace(romPath))
+            return 0;
+
+        string? key = GetTitleStatsKey(romPath);
+        if (string.IsNullOrWhiteSpace(key) || !_titleStats.TryGetValue(key, out TitleStatsEntry? entry))
+            return 0;
+
+        double hours = entry.TotalPlaySeconds / 3600.0;
+        int stars = 0;
+        if (entry.LaunchCount >= 1 || entry.TotalPlaySeconds >= 5 * 60)
+            stars = 1;
+        if (entry.LaunchCount >= 3 || hours >= 0.5)
+            stars = 2;
+        if (entry.LaunchCount >= 5 || hours >= 2)
+            stars = 3;
+        if (entry.LaunchCount >= 10 || hours >= 6)
+            stars = 4;
+        if (entry.LaunchCount >= 20 || hours >= 15)
+            stars = 5;
+        if (entry.LaunchCount >= 40 || hours >= 40)
+            stars = 6;
+        return stars;
+    }
+
+    private RomPickerStats GetRomPickerStats(string romPath)
+    {
+        string? key = GetTitleStatsKey(romPath);
+        if (string.IsNullOrWhiteSpace(key) || !_titleStats.TryGetValue(key, out TitleStatsEntry? entry))
+            return new RomPickerStats(0, "Unplayed", 0, 0);
+
+        double hours = entry.TotalPlaySeconds / 3600.0;
+        string launchesText = entry.LaunchCount == 1 ? "1 start" : $"{entry.LaunchCount} starts";
+        string hoursText = hours >= 1
+            ? $"{hours:0.0}h"
+            : $"{Math.Max(0, Math.Round(entry.TotalPlaySeconds / 60.0)):0} min";
+        return new RomPickerStats(GetTitleStars(romPath), $"{launchesText} • {hoursText}", entry.LaunchCount, entry.TotalPlaySeconds);
     }
 
     private void OnRecentRomSelected(object? sender, SelectionChangedEventArgs e)
@@ -4461,6 +4497,31 @@ public partial class MainWindow : Window
         public Dictionary<string, string>? PsxGamepad2Mappings { get; set; }
     }
 
+    private sealed class TitleStatsEntry
+    {
+        public string Key { get; set; } = string.Empty;
+        public string DisplayTitle { get; set; } = string.Empty;
+        public int LaunchCount { get; set; }
+        public double TotalPlaySeconds { get; set; }
+        public DateTime? LastStartedUtc { get; set; }
+        public DateTime? LastPlayedUtc { get; set; }
+    }
+
+    private sealed class TitleStatsFileToml
+    {
+        public List<TitleStatsEntryToml>? Titles { get; set; }
+    }
+
+    private sealed class TitleStatsEntryToml
+    {
+        public string? Key { get; set; }
+        public string? DisplayTitle { get; set; }
+        public int LaunchCount { get; set; }
+        public double TotalPlaySeconds { get; set; }
+        public string? LastStartedUtc { get; set; }
+        public string? LastPlayedUtc { get; set; }
+    }
+
     private void LoadSettings()
     {
         string path = GetSettingsPath();
@@ -5167,6 +5228,7 @@ public partial class MainWindow : Window
     {
         DeactivateMouseCapture(updateStatus: false);
         _timer.Stop();
+        EndTrackedPlaySession();
         StopEmuLoop();
         StatusText.Text = "Stopped";
         StopAudioEngine();
@@ -5178,6 +5240,203 @@ public partial class MainWindow : Window
         ResetPresentationState(clearBitmap: true);
         _toneTestRunning = false;
         _psgBlipRunning = false;
+    }
+
+    private void BeginTrackedPlaySession(string? romPath)
+    {
+        if (string.IsNullOrWhiteSpace(romPath))
+            return;
+
+        string? key = GetTitleStatsKey(romPath);
+        if (string.IsNullOrWhiteSpace(key))
+            return;
+
+        TitleStatsEntry entry = GetOrCreateTitleStatsEntry(romPath, key);
+        entry.LaunchCount++;
+        entry.LastStartedUtc = DateTime.UtcNow;
+        entry.DisplayTitle = GetTitleStatsDisplayTitle(romPath);
+        _activeTitleStatsKey = key;
+        _activeTitleStatsStartedUtc = entry.LastStartedUtc.Value;
+        SaveTitleStats();
+        Dispatcher.UIThread.Post(UpdateRecentRomCombo, DispatcherPriority.Background);
+    }
+
+    private void EndTrackedPlaySession()
+    {
+        if (string.IsNullOrWhiteSpace(_activeTitleStatsKey))
+            return;
+
+        if (_titleStats.TryGetValue(_activeTitleStatsKey, out TitleStatsEntry? entry))
+        {
+            DateTime nowUtc = DateTime.UtcNow;
+            double elapsedSeconds = Math.Max(0, (nowUtc - _activeTitleStatsStartedUtc).TotalSeconds);
+            entry.TotalPlaySeconds += elapsedSeconds;
+            entry.LastPlayedUtc = nowUtc;
+            SaveTitleStats();
+        }
+
+        _activeTitleStatsKey = null;
+        Dispatcher.UIThread.Post(UpdateRecentRomCombo, DispatcherPriority.Background);
+    }
+
+    private void LoadTitleStats()
+    {
+        _titleStats.Clear();
+        TitleStatsFileToml? raw = TryLoadTitleStats(GetTitleStatsPath());
+        if (raw?.Titles == null)
+            return;
+
+        foreach (TitleStatsEntryToml item in raw.Titles)
+        {
+            if (string.IsNullOrWhiteSpace(item.Key))
+                continue;
+
+            string key = item.Key.Trim();
+            _titleStats[key] = new TitleStatsEntry
+            {
+                Key = key,
+                DisplayTitle = string.IsNullOrWhiteSpace(item.DisplayTitle) ? key : item.DisplayTitle.Trim(),
+                LaunchCount = Math.Max(0, item.LaunchCount),
+                TotalPlaySeconds = Math.Max(0, item.TotalPlaySeconds),
+                LastStartedUtc = ParseUtcTimestamp(item.LastStartedUtc),
+                LastPlayedUtc = ParseUtcTimestamp(item.LastPlayedUtc)
+            };
+        }
+    }
+
+    private static TitleStatsFileToml? TryLoadTitleStats(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+                return null;
+
+            return Toml.ToModel<TitleStatsFileToml>(File.ReadAllText(path));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void SaveTitleStats()
+    {
+        var model = new TitleStatsFileToml
+        {
+            Titles = _titleStats.Values
+                .OrderByDescending(static entry => entry.TotalPlaySeconds)
+                .ThenByDescending(static entry => entry.LaunchCount)
+                .ThenBy(static entry => entry.DisplayTitle, StringComparer.OrdinalIgnoreCase)
+                .Select(static entry => new TitleStatsEntryToml
+                {
+                    Key = entry.Key,
+                    DisplayTitle = entry.DisplayTitle,
+                    LaunchCount = entry.LaunchCount,
+                    TotalPlaySeconds = Math.Round(entry.TotalPlaySeconds, 1),
+                    LastStartedUtc = FormatUtcTimestamp(entry.LastStartedUtc),
+                    LastPlayedUtc = FormatUtcTimestamp(entry.LastPlayedUtc)
+                })
+                .ToList()
+        };
+
+        File.WriteAllText(GetTitleStatsPath(), Toml.FromModel(model));
+    }
+
+    private static string GetTitleStatsPath()
+        => Path.Combine(Directory.GetCurrentDirectory(), TitleStatsFileName);
+
+    private TitleStatsEntry GetOrCreateTitleStatsEntry(string romPath, string key)
+    {
+        if (_titleStats.TryGetValue(key, out TitleStatsEntry? existing))
+            return existing;
+
+        var entry = new TitleStatsEntry
+        {
+            Key = key,
+            DisplayTitle = GetTitleStatsDisplayTitle(romPath)
+        };
+        _titleStats[key] = entry;
+        return entry;
+    }
+
+    private static string? GetTitleStatsKey(string? romPath)
+    {
+        if (string.IsNullOrWhiteSpace(romPath))
+            return null;
+
+        string normalized = NormalizeTitleForStats(Path.GetFileNameWithoutExtension(romPath) ?? romPath);
+        return normalized.Length == 0 ? null : normalized.ToLowerInvariant();
+    }
+
+    private static string GetTitleStatsDisplayTitle(string romPath)
+    {
+        string normalized = NormalizeTitleForStats(Path.GetFileNameWithoutExtension(romPath) ?? romPath);
+        return normalized.Length == 0 ? Path.GetFileNameWithoutExtension(romPath) ?? romPath : normalized;
+    }
+
+    private static string NormalizeTitleForStats(string rawTitle)
+    {
+        if (string.IsNullOrWhiteSpace(rawTitle))
+            return string.Empty;
+
+        var sb = new StringBuilder(rawTitle.Length);
+        int parenDepth = 0;
+        int bracketDepth = 0;
+        foreach (char ch in rawTitle)
+        {
+            if (ch == '(')
+            {
+                parenDepth++;
+                continue;
+            }
+
+            if (ch == ')')
+            {
+                if (parenDepth > 0)
+                    parenDepth--;
+                continue;
+            }
+
+            if (ch == '[')
+            {
+                bracketDepth++;
+                continue;
+            }
+
+            if (ch == ']')
+            {
+                if (bracketDepth > 0)
+                    bracketDepth--;
+                continue;
+            }
+
+            if (parenDepth > 0 || bracketDepth > 0)
+                continue;
+
+            char normalized = ch is '_' or '-' or '.' ? ' ' : ch;
+            sb.Append(normalized);
+        }
+
+        string collapsed = string.Join(' ', sb.ToString()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        return collapsed.Trim();
+    }
+
+    private static string? FormatUtcTimestamp(DateTime? value)
+        => value?.ToString("O");
+
+    private static DateTime? ParseUtcTimestamp(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return DateTime.TryParse(
+            value,
+            null,
+            System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AssumeUniversal,
+            out DateTime parsed)
+            ? parsed.ToUniversalTime()
+            : null;
     }
 
     private void OnTestInterlace2(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

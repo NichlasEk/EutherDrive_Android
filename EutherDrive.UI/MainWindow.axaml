@@ -34,7 +34,7 @@
           <Border Classes="panel" Padding="6,5">
             <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
               <TextBlock Classes="kicker" Text="Recent"/>
-              <ComboBox Name="RecentRomCombo" Width="180" SelectionChanged="OnRecentRomSelected"/>
+              <ComboBox Name="RecentRomCombo" Width="280" SelectionChanged="OnRecentRomSelected"/>
             </StackPanel>
           </Border>
           <Border Classes="panel" Padding="8,5">
