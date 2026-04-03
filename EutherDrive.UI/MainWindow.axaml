@@ -174,6 +174,15 @@
             <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
             <CheckBox Content="Use 6-button controller" IsChecked="False" Name="SixButtonPadCheck"/>
             <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
+            <CheckBox Name="AllowDangerousSportTitlesCheck"
+                      Content="Allow dangerous sport titles"
+                      IsChecked="False"
+                      Checked="OnAllowDangerousSportTitlesToggle"
+                      Unchecked="OnAllowDangerousSportTitlesToggle"/>
+            <TextBlock Classes="muted"
+                       FontSize="12"
+                       Margin="18,0,0,0"
+                       Text="SportShield blocks suspected sports ROMs unless this override is enabled."/>
             <CheckBox Content="Mouse capture" IsChecked="False" Name="MouseCaptureCheck" Checked="OnMouseCaptureToggle" Unchecked="OnMouseCaptureToggle"/>
             <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Margin="18,0,0,0">
               <TextBlock Text="Sensitivity" Width="62" VerticalAlignment="Center"/>

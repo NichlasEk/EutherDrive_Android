@@ -77,6 +77,31 @@ public partial class MainWindow : Window
         GamepadButton.DPadRight
     };
 
+    private static readonly string[] s_defaultSportTitleKeywords =
+    {
+        "fifa",
+        "nhl",
+        "nba",
+        "nfl",
+        "mlb",
+        "madden",
+        "pga",
+        "ufc",
+        "wwe",
+        "boxing",
+        "soccer",
+        "football",
+        "baseball",
+        "basketball",
+        "hockey",
+        "golf",
+        "tennis",
+        "olympic",
+        "olympics",
+        "sports",
+        "sport"
+    };
+
     private static readonly Dictionary<GamepadButton, GameControllerButton> sdlButtonMap = new()
     {
         [GamepadButton.A] = GameControllerButton.A,
@@ -362,6 +387,8 @@ public partial class MainWindow : Window
     private bool _regionOverrideUpdating;
     private bool _frameRateUpdating;
     private bool _psxVideoStandardUpdating;
+    private bool _allowDangerousSportTitles;
+    private List<string> _sportTitleKeywords = new(s_defaultSportTitleKeywords);
     private const string SettingsFileName = RenderBackendConfig.SettingsFileName;
     private const string LegacyJsonSettingsFileName = "eutherdrive_settings.json";
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
@@ -499,6 +526,7 @@ public partial class MainWindow : Window
         UpdateSharpPixelsUi();
         UpdateAdvancedPixelFilterUi();
         UpdateCrtScanlinesUi();
+        UpdateDangerousSportTitlesUi();
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
@@ -828,6 +856,21 @@ public partial class MainWindow : Window
         _smsOverscanEnabled = SmsOverscanCheck?.IsChecked == true;
         if (_core is MdTracerAdapter adapter)
             adapter.SetShowSmsOverscan(_smsOverscanEnabled);
+        SaveSettings();
+    }
+
+    private void UpdateDangerousSportTitlesUi()
+    {
+        if (AllowDangerousSportTitlesCheck != null)
+            AllowDangerousSportTitlesCheck.IsChecked = _allowDangerousSportTitles;
+    }
+
+    private void OnAllowDangerousSportTitlesToggle(object? sender, RoutedEventArgs e)
+    {
+        _allowDangerousSportTitles = AllowDangerousSportTitlesCheck?.IsChecked == true;
+        StatusText.Text = _allowDangerousSportTitles
+            ? "Dangerous sport titles are allowed, but warnings remain active."
+            : "SportShield is blocking dangerous sport titles.";
         SaveSettings();
     }
 
@@ -2232,11 +2275,13 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
-    private void OnStart(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private async void OnStart(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         try
         {
             Console.WriteLine($"[UI] Start clicked. romPath='{_romPath}' exists={(!string.IsNullOrWhiteSpace(_romPath) && File.Exists(_romPath))}");
+            if (await ShouldBlockSportTitleLaunchAsync())
+                return;
             ApplyPsxSbiSelectionForRom(_romPath);
             DeactivateMouseCapture(updateStatus: false);
             _timer.Stop();
@@ -2404,6 +2449,154 @@ public partial class MainWindow : Window
             LogException(ex, "Start");
             _audioPullReady = false;
         }
+    }
+
+    private async Task<bool> ShouldBlockSportTitleLaunchAsync()
+    {
+        string? matchedKeyword = GetMatchedSportTitleKeyword(_romPath);
+        if (matchedKeyword == null)
+            return false;
+
+        if (!_allowDangerousSportTitles)
+        {
+            await ShowSportTitleBlockedDialogAsync(matchedKeyword);
+            StatusText.Text = $"SportShield blocked launch ({matchedKeyword}).";
+            return true;
+        }
+
+        bool continueLaunch = await ShowSportTitleAllowedWarningDialogAsync(matchedKeyword);
+        if (!continueLaunch)
+        {
+            StatusText.Text = $"Sport title launch aborted ({matchedKeyword}).";
+            return true;
+        }
+
+        StatusText.Text = $"Dangerous sport title allowed ({matchedKeyword}).";
+        return false;
+    }
+
+    private string? GetMatchedSportTitleKeyword(string? romPath)
+    {
+        if (string.IsNullOrWhiteSpace(romPath) || _sportTitleKeywords.Count == 0)
+            return null;
+
+        string candidate;
+        try
+        {
+            candidate = Path.GetFileNameWithoutExtension(romPath) ?? romPath;
+        }
+        catch
+        {
+            candidate = romPath;
+        }
+
+        foreach (string keyword in _sportTitleKeywords)
+        {
+            if (string.IsNullOrWhiteSpace(keyword))
+                continue;
+
+            if (candidate.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                return keyword;
+        }
+
+        return null;
+    }
+
+    private async Task ShowSportTitleBlockedDialogAsync(string keyword)
+    {
+        Window? dialog = null;
+        var root = new StackPanel { Spacing = 12, Margin = new Thickness(16) };
+        root.Children.Add(new TextBlock
+        {
+            Text = "SPORTSHIELD ALERT",
+            FontSize = 22,
+            FontWeight = FontWeight.Bold,
+            Foreground = new SolidColorBrush(Color.Parse("#FF6B57"))
+        });
+        root.Children.Add(new TextBlock
+        {
+            Text = $"You are trying to start a sport title. This can harm your mind and make you dumb.\n\nMatched keyword: {keyword}\n\nIf you want to continue, allow dangerous sport titles in the settings menu.",
+            TextWrapping = TextWrapping.Wrap
+        });
+
+        var dismissButton = new Button
+        {
+            Content = "Fine",
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            MinWidth = 90
+        };
+        dismissButton.Click += (_, _) => dialog?.Close();
+        root.Children.Add(dismissButton);
+
+        dialog = new Window
+        {
+            Title = "SportShield",
+            Width = ScaleDialogSize(500, _uiScale),
+            Height = ScaleDialogSize(280, _uiScale),
+            CanResize = false,
+            Background = new SolidColorBrush(Color.Parse("#1A0F11")),
+            Content = WrapDialogForUiScale(root, _uiScale),
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+
+        await dialog.ShowDialog(this);
+    }
+
+    private async Task<bool> ShowSportTitleAllowedWarningDialogAsync(string keyword)
+    {
+        Window? dialog = null;
+        bool continueLaunch = false;
+        var root = new StackPanel { Spacing = 12, Margin = new Thickness(16) };
+        root.Children.Add(new TextBlock
+        {
+            Text = "SPORT TITLE WARNING",
+            FontSize = 22,
+            FontWeight = FontWeight.Bold,
+            Foreground = new SolidColorBrush(Color.Parse("#FFC857"))
+        });
+        root.Children.Add(new TextBlock
+        {
+            Text = $"Dangerous sport titles are enabled, but this launch is still not recommended.\n\nMatched keyword: {keyword}\n\nProceed only if you accept a measurable risk of sports exposure.",
+            TextWrapping = TextWrapping.Wrap
+        });
+
+        var buttons = new StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Spacing = 8
+        };
+
+        var cancelButton = new Button { Content = "Back Off", MinWidth = 96 };
+        cancelButton.Click += (_, _) => dialog?.Close(false);
+        var continueButton = new Button
+        {
+            Content = "Launch Anyway",
+            MinWidth = 120
+        };
+        continueButton.Classes.Add("action");
+        continueButton.Click += (_, _) =>
+        {
+            continueLaunch = true;
+            dialog?.Close(true);
+        };
+        buttons.Children.Add(cancelButton);
+        buttons.Children.Add(continueButton);
+        root.Children.Add(buttons);
+
+        dialog = new Window
+        {
+            Title = "SportShield Override",
+            Width = ScaleDialogSize(520, _uiScale),
+            Height = ScaleDialogSize(300, _uiScale),
+            CanResize = false,
+            Background = new SolidColorBrush(Color.Parse("#17130F")),
+            Content = WrapDialogForUiScale(root, _uiScale),
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+
+        await dialog.ShowDialog(this);
+        return continueLaunch;
     }
 
     private void TryUpdateNesRomInfoOnFailure(string? path)
@@ -4196,6 +4389,8 @@ public partial class MainWindow : Window
         public bool RenderSkipEnabled { get; set; } = false;
         public double SpeedScale { get; set; } = 1.0;
         public bool SmsOverscanEnabled { get; set; } = false;
+        public bool AllowDangerousSportTitles { get; set; } = false;
+        public List<string>? SportTitleKeywords { get; set; }
         public bool SharpPixelsEnabled { get; set; } = true;
         public bool AdvancedPixelFilterEnabled { get; set; } = false;
         public bool CrtScanlinesEnabled { get; set; } = false;
@@ -4234,6 +4429,8 @@ public partial class MainWindow : Window
         public bool RenderSkipEnabled { get; set; } = false;
         public double SpeedScale { get; set; } = 1.0;
         public bool SmsOverscanEnabled { get; set; } = false;
+        public bool AllowDangerousSportTitles { get; set; } = false;
+        public List<string>? SportTitleKeywords { get; set; }
         public bool SharpPixelsEnabled { get; set; } = true;
         public bool AdvancedPixelFilterEnabled { get; set; } = false;
         public bool CrtScanlinesEnabled { get; set; } = false;
@@ -4372,6 +4569,8 @@ public partial class MainWindow : Window
         _renderSkipEnabled = settings.RenderSkipEnabled;
         _speedScale = settings.SpeedScale > 0 ? settings.SpeedScale : 1.0;
         _smsOverscanEnabled = settings.SmsOverscanEnabled;
+        _allowDangerousSportTitles = settings.AllowDangerousSportTitles;
+        _sportTitleKeywords = NormalizeSportTitleKeywords(settings.SportTitleKeywords);
         _sharpPixelsEnabled = settings.SharpPixelsEnabled;
         _advancedPixelFilterEnabled = settings.AdvancedPixelFilterEnabled;
         _crtScanlinesEnabled = settings.CrtScanlinesEnabled;
@@ -4441,6 +4640,7 @@ public partial class MainWindow : Window
         UpdateSpeedLockUi();
         UpdateRenderSkipUi();
         UpdateSpeedUi();
+        UpdateDangerousSportTitlesUi();
         UpdateSharpPixelsUi();
         UpdateAdvancedPixelFilterUi();
         UpdateCrtScanlinesUi();
@@ -4535,6 +4735,8 @@ public partial class MainWindow : Window
             RenderSkipEnabled = _renderSkipEnabled,
             SpeedScale = _speedScale,
             SmsOverscanEnabled = _smsOverscanEnabled,
+            AllowDangerousSportTitles = _allowDangerousSportTitles,
+            SportTitleKeywords = new List<string>(_sportTitleKeywords),
             SharpPixelsEnabled = _sharpPixelsEnabled,
             AdvancedPixelFilterEnabled = _advancedPixelFilterEnabled,
             CrtScanlinesEnabled = _crtScanlinesEnabled,
@@ -4628,6 +4830,8 @@ public partial class MainWindow : Window
             RenderSkipEnabled = settings.RenderSkipEnabled,
             SpeedScale = settings.SpeedScale,
             SmsOverscanEnabled = settings.SmsOverscanEnabled,
+            AllowDangerousSportTitles = settings.AllowDangerousSportTitles,
+            SportTitleKeywords = settings.SportTitleKeywords,
             SharpPixelsEnabled = settings.SharpPixelsEnabled,
             AdvancedPixelFilterEnabled = settings.AdvancedPixelFilterEnabled,
             CrtScanlinesEnabled = settings.CrtScanlinesEnabled,
@@ -4723,6 +4927,8 @@ public partial class MainWindow : Window
             RenderSkipEnabled = raw.RenderSkipEnabled,
             SpeedScale = raw.SpeedScale,
             SmsOverscanEnabled = raw.SmsOverscanEnabled,
+            AllowDangerousSportTitles = raw.AllowDangerousSportTitles,
+            SportTitleKeywords = raw.SportTitleKeywords,
             SharpPixelsEnabled = raw.SharpPixelsEnabled,
             AdvancedPixelFilterEnabled = raw.AdvancedPixelFilterEnabled,
             CrtScanlinesEnabled = raw.CrtScanlinesEnabled,
@@ -4789,6 +4995,22 @@ public partial class MainWindow : Window
 
         settings.InputMappings = ConvertTomlInputMappings(raw.InputMappings) ?? settings.InputMappings;
         return settings;
+    }
+
+    private static List<string> NormalizeSportTitleKeywords(List<string>? raw)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        IEnumerable<string> source = raw is { Count: > 0 } ? raw : s_defaultSportTitleKeywords;
+        foreach (string entry in source)
+        {
+            string value = entry?.Trim() ?? string.Empty;
+            if (value.Length == 0 || !seen.Add(value))
+                continue;
+            result.Add(value);
+        }
+
+        return result;
     }
 
     private sealed record SnesSpecialRomDefinition(
@@ -6656,23 +6878,42 @@ public partial class MainWindow : Window
             return;
         }
 
-        EnsureBitmapFromCore(w, h);
+        ReadOnlySpan<byte> presentSrc = src;
+        int presentWidth = w;
+        int presentHeight = h;
+        int presentStride = srcStride;
+
+        if (core is PceCdAdapter && h == 242)
+        {
+            const int pceCropTop = 11;
+            const int pceCropBottom = 7;
+            int croppedHeight = h - pceCropTop - pceCropBottom;
+            if (croppedHeight > 0 && src.Length >= srcStride * h)
+            {
+                // Match Geargrafx desktop's default visible scanline range (11..234)
+                // so PCE presentation comparisons use the same viewport.
+                presentSrc = src.Slice(pceCropTop * srcStride, croppedHeight * srcStride);
+                presentHeight = croppedHeight;
+            }
+        }
+
+        EnsureBitmapFromCore(presentWidth, presentHeight);
         if (_renderSurface == null)
             return;
 
-        ApplyPsxAspectIfNeeded(core, w, h);
+        ApplyPsxAspectIfNeeded(core, presentWidth, presentHeight);
 
         if (FrameBufferTraceEnabled)
         {
             _presentedFrames++;
-            Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} size={w}x{h} stride={srcStride} bytes={src.Length}");
+            Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} size={presentWidth}x{presentHeight} stride={presentStride} bytes={presentSrc.Length}");
         }
 
         FrameBlitMetrics metrics = _renderSurface.Present(
-            src,
-            w,
-            h,
-            srcStride,
+            presentSrc,
+            presentWidth,
+            presentHeight,
+            presentStride,
             blitOptions,
             TracePerf);
 
