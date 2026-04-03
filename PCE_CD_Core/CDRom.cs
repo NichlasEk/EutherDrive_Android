@@ -1069,6 +1069,8 @@ namespace ePceCD
                 case ScsiPhase.DataIn:
                     Signals[(int)ScsiSignal.Bsy] = true;
                     Signals[(int)ScsiSignal.Io] = true;
+                    // A new DataIn phase must not inherit transfer-done from a previous command.
+                    ActiveIrqs &= unchecked((byte)~(byte)CdRomIrqSource.DataTransferDone);
                     if (dataBuffer != null && dataBuffer.Length > 0)
                         Signals[(int)ScsiSignal.Req] = true;
                     break;

@@ -98,6 +98,22 @@ namespace ePceCD
             _cdRom = cdRom;
         }
 
+        internal string GetDebugSummary()
+        {
+            return
+                $"play={(_isPlaying ? 1 : 0)} pend={(_playPending ? 1 : 0)} len=0x{_adpcmLength:X5} ctl=0x{_control:X2} dma=0x{_dmaControl:X2} rate=0x{_playbackRate:X2} q={_audioQueueCount} out={_currentOutputSample} end={(_endReached ? 1 : 0)} half={(_halfReached ? 1 : 0)}";
+        }
+
+        internal bool HasDebugActivity()
+        {
+            return _isPlaying ||
+                   _playPending ||
+                   _audioQueueCount > 0 ||
+                   _currentOutputSample != 0 ||
+                   (_dmaControl & 0x03) != 0 ||
+                   _adpcmLength != 0;
+        }
+
         private void Trace(string message)
         {
             if (!TraceEnabled)
@@ -335,12 +351,11 @@ namespace ePceCD
                     _ram[_writeAddress & AdpcmRamMask] = _writeValue;
                     _writeAddress = (_writeAddress + 1) & AdpcmRamMask;
 
-                    SetHalfReached(_adpcmLength < 0x8000);
-                    if (_adpcmLength == 0)
-                        SetEndReached(true);
-
                     if (!IsLengthLatched())
                         _adpcmLength = (_adpcmLength + 1) & AdpcmLengthMask;
+
+                    SetHalfReached(_adpcmLength < 0x8000);
+                    SetEndReached(_adpcmLength == 0);
                 }
             }
         }
