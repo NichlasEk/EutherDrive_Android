@@ -159,9 +159,8 @@ namespace ePceCD
             if (TraceVramWriteMax >= 0 && address > TraceVramWriteMax)
                 return;
 
-            int vds = Math.Max(14, m_LatchedVDS);
-            int visibleLine = m_DisplayCounter - vds;
-            bool inDisplay = visibleLine >= 0 && visibleLine < m_LatchedVDW;
+            int visibleLine = m_DisplayCounter - GetFirstActiveDisplayLine();
+            bool inDisplay = visibleLine >= 0 && visibleLine < GetVisibleDisplayLineCount(m_LatchedVDW);
             _traceVramWriteCount++;
             WriteSpriteTrace($"[PCE-VRAMW] frame={m_FrameCounter} render={m_RenderLine} dispctr={m_DisplayCounter} vis={visibleLine} in_display={(inDisplay ? 1 : 0)} mawr=0x{address:X4} value=0x{value:X4} reg=0x{m_VDC_Reg:X2}");
         }
@@ -171,9 +170,8 @@ namespace ePceCD
             if (!TraceVceWrites || _traceVceWriteCount >= TraceVceWriteLimit)
                 return;
 
-            int vds = Math.Max(14, m_LatchedVDS);
-            int visibleLine = m_DisplayCounter - vds;
-            bool inDisplay = visibleLine >= 0 && visibleLine < m_LatchedVDW;
+            int visibleLine = m_DisplayCounter - GetFirstActiveDisplayLine();
+            bool inDisplay = visibleLine >= 0 && visibleLine < GetVisibleDisplayLineCount(m_LatchedVDW);
             _traceVceWriteCount++;
             WriteSpriteTrace($"[PCE-VCEW] frame={m_FrameCounter} render={m_RenderLine} dispctr={m_DisplayCounter} vis={visibleLine} in_display={(inDisplay ? 1 : 0)} addr=0x{address:X1} index=0x{index:X3} data=0x{data:X2} value=0x{value:X4}");
         }
@@ -386,9 +384,11 @@ namespace ePceCD
 
         private int GetEffectiveVds(int vdw)
         {
-            int vsw = m_VDC_VSR & 0x1F;
             int vds = (m_VDC_VSR >> 8) & 0xFF;
-            int start = vds + vsw;
+            // The framebuffer-visible top border tracks the VDS field more closely than
+            // the full VSW+VDS vertical-state distance. Folding VSW into the visible
+            // start shifts games like Kaze several lines downward.
+            int start = vds - 1;
             if (start < 0) start = 0;
             if (start > 261) start = 261;
             int maxStart = 262 - vdw;
@@ -397,6 +397,16 @@ namespace ePceCD
             if (start < 0)
                 start = 0;
             return start;
+        }
+
+        private int GetFirstActiveDisplayLine() => Math.Max(14, m_LatchedVDS);
+
+        private int GetVisibleDisplayLineCount(int vdw)
+        {
+            int firstActive = GetFirstActiveDisplayLine();
+            int lastActiveExclusive = Math.Min(m_LatchedVDS + vdw, 256);
+            int count = lastActiveExclusive - firstActive;
+            return count > 0 ? count : 0;
         }
 
         public int m_VDC_HDS;
@@ -588,7 +598,7 @@ namespace ePceCD
             _nextLineSpriteVisible = -1;
         }
 
-        private void BuildSpriteLineBuffer(int visibleLine)
+        private void BuildSpriteLineBuffer(int visibleLine, int rasterLine)
         {
             _nextLineSpriteCount = 0;
             _nextLineSpriteVisible = visibleLine;
@@ -597,6 +607,7 @@ namespace ePceCD
             int eligibleEntryCount = 0;
             int firstDroppedSat = -1;
             int firstDroppedX = 0;
+            int spriteRasterLine = rasterLine;
 
             for (int i = 0; i < 64; i++)
             {
@@ -609,10 +620,10 @@ namespace ePceCD
                 int flags = sat3;
                 int cgy = (flags >> 12) & 0x03;
                 int height = cgy == 0 ? 16 : (cgy == 1 ? 32 : 64);
-                if (visibleLine < spriteY || visibleLine >= spriteY + height)
+                if (spriteRasterLine < spriteY || spriteRasterLine >= spriteY + height)
                     continue;
 
-                int y = visibleLine - spriteY;
+                int y = spriteRasterLine - spriteY;
                 if (y >= height)
                     continue;
 
@@ -718,7 +729,7 @@ namespace ePceCD
                 TraceLineSelected(visibleLine, TraceSpriteLineOnly, TraceSpriteLineMin, TraceSpriteLineMax))
             {
                 _traceSpriteLineCount++;
-                WriteSpriteTrace($"[PCE-SPRLINE] frame={m_FrameCounter} render={m_RenderLine} line={visibleLine} count={_nextLineSpriteCount} eligible={eligibleEntryCount} dropped_sat={firstDroppedSat} dropped_x={firstDroppedX} dot={(int)m_VCE_DotClock} hdw={m_VDC_HDW} mwr=0x{m_VDC_MWR:X2}");
+                WriteSpriteTrace($"[PCE-SPRLINE] frame={m_FrameCounter} render={m_RenderLine} line={visibleLine} raster={spriteRasterLine} count={_nextLineSpriteCount} eligible={eligibleEntryCount} dropped_sat={firstDroppedSat} dropped_x={firstDroppedX} dot={(int)m_VCE_DotClock} hdw={m_VDC_HDW} mwr=0x{m_VDC_MWR:X2}");
                 for (int si = 0; si < _nextLineSpriteCount; si++)
                 {
                     var entry = _nextLineSprites[si];
@@ -764,14 +775,16 @@ namespace ePceCD
                 TraceSatFrameIfNeeded();
             }
             int vdw = m_LatchedVDW;
-            int vds = Math.Max(14, m_LatchedVDS);
-            int visibleLine = m_DisplayCounter - vds;
-            bool inDisplay = visibleLine >= 0 && visibleLine < vdw;
+            int visibleCount = GetVisibleDisplayLineCount(vdw);
+            int rasterLine = m_DisplayCounter - m_LatchedVDS;
+            int visibleLine = m_DisplayCounter - GetFirstActiveDisplayLine();
+            bool inVdw = rasterLine >= 0 && rasterLine < vdw;
+            bool inDisplay = visibleLine >= 0 && visibleLine < visibleCount;
             if (!inDisplay)
             {
                 HandleDMA();
-                if (visibleLine + 1 == 0 && _nextLineSpriteVisible != 0)
-                    BuildSpriteLineBuffer(0);
+                if (visibleCount > 0 && visibleLine + 1 == 0 && inVdw && (rasterLine + 1) < vdw && _nextLineSpriteVisible != 0)
+                    BuildSpriteLineBuffer(0, rasterLine + 1);
             }
             else
             {
@@ -791,19 +804,19 @@ namespace ePceCD
                     _currentLineSpriteVisible = visibleLine;
                 }
 
-                DrawScanLine(visibleLine);
+                DrawScanLine(visibleLine, rasterLine);
 
-                if (visibleLine + 1 < vdw)
-                    BuildSpriteLineBuffer(visibleLine + 1);
+                if (visibleLine + 1 < visibleCount && rasterLine + 1 < vdw)
+                    BuildSpriteLineBuffer(visibleLine + 1, rasterLine + 1);
             }
 
             m_RenderLine++;
             m_DisplayCounter++;
-            int displayReset = vds + vdw + 3 + (m_VDC_VCR & 0xFF);
+            int displayReset = m_LatchedVDS + vdw + 3 + (m_VDC_VCR & 0xFF);
             if (m_DisplayCounter >= displayReset)
                 m_DisplayCounter = 0;
 
-            if (visibleLine + 1 == vdw)
+            if (rasterLine + 1 == vdw)
             {
                 if (m_TriggerSAT_DMA || m_VDC_SATB_ENA)
                 {
@@ -825,7 +838,6 @@ namespace ePceCD
             }
             else
             {
-                int rasterLine = visibleLine;
                 if (rasterLine >= 0 && rasterLine < vdw && (m_VDC_RCR - 64) == rasterLine)
                 {
                     if (m_VDC_RCRIRQ)
@@ -1110,7 +1122,7 @@ namespace ePceCD
             return h;
         }
 
-        private unsafe void DrawScanLine(int visibleLine)
+        private unsafe void DrawScanLine(int visibleLine, int rasterLine)
         {
             int i;
             int screenWidth = m_LatchedScreenWidth > 0 ? m_LatchedScreenWidth : SCREEN_WIDTH;
@@ -1133,10 +1145,10 @@ namespace ePceCD
 
             if (m_LatchedEnableBackground)
             {
-                if (visibleLine == 0)
-                    m_BgCounterY = m_VDC_BYR & 0x1FF;
-                else
-                    m_BgCounterY = (m_BgCounterY + 1) & 0x1FF;
+                // The visible framebuffer line is not always the same as the internal
+                // HuC6270 raster line. When VDW starts before the global top crop, the PPU
+                // still advances BYR and sprite selection through those hidden lines.
+                m_BgCounterY = (m_VDC_BYR + rasterLine) & 0x1FF;
                 m_BgOffsetY = m_BgCounterY;
                 m_LatchedBxr = m_VDC_BXR & 0x3FF;
                 int screenReg = (m_LatchedMWR >> 4) & 0x07;
