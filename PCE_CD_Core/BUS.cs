@@ -34,6 +34,16 @@ namespace ePceCD
         public Controller JoyPort;
         public CDRom CDRom;
         public ArcadeCard? ArcadeCard;
+        public PceCdBiosRuntimeState BiosRuntimeState;
+
+        [NonSerialized]
+        private PceCdBiosDispatcher _biosDispatcher = null!;
+        [NonSerialized]
+        private PceCdBiosTrace _biosTrace = null!;
+        [NonSerialized]
+        private PceCdBiosCallCatalog _biosCatalog = null!;
+        private PceCdBiosMode _biosMode = PceCdBiosMode.Rom;
+        private bool _useHleBios = false;
 
         private bool m_EnableTIMER;
         private bool m_EnableIRQ1;
@@ -73,6 +83,8 @@ namespace ePceCD
             PPU = new PPU(render);
             JoyPort = new Controller();
             APU = new APU(audio, CDRom);
+
+            InitializeBiosSupport();
 
             InitBankList();
 
@@ -134,6 +146,7 @@ namespace ePceCD
 
         public void DeSerializable(IRenderHandler render, IAudioHandler audio)
         {
+            InitializeBiosSupport();
             RebuildBankList();
             CDRom.RebindAfterDeserialize(this);
             if (string.IsNullOrEmpty(CDfile))
@@ -169,6 +182,15 @@ namespace ePceCD
             EnsureArcadeCardConfigured();
             ApplyArcadeCardMappings();
             CPU.RebindBanks();
+        }
+
+        private void InitializeBiosSupport()
+        {
+            BiosRuntimeState ??= new PceCdBiosRuntimeState();
+            _biosTrace = new PceCdBiosTrace(this, forceEnable: false);
+            _biosCatalog = new PceCdBiosCallCatalog();
+            _biosDispatcher = new PceCdBiosDispatcher(this, _biosCatalog, _biosTrace);
+            _biosDispatcher.Configure(_biosMode, _useHleBios);
         }
 
         private void FixBankMirrors()

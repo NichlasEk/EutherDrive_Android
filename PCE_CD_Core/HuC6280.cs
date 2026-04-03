@@ -408,19 +408,39 @@ namespace ePceCD
         public byte PeekX() => m_X;
         public byte PeekY() => m_Y;
         public byte PeekS() => m_S;
+        public byte PeekP() => GetP(false);
 
-        public byte PeekP()
+        public void HleSetProgramCounter(ushort value) => m_PC = value;
+        public void HleSetA(byte value) => m_A = value;
+        public void HleSetX(byte value) => m_X = value;
+        public void HleSetY(byte value) => m_Y = value;
+        public void HleSetS(byte value) => m_S = value;
+        public void HleSetP(byte value) => SetP(value);
+        public void HleSetInterruptDisable(bool value) => m_IFlag = value;
+        public void HleSetCarryFlag(bool value) => m_CFlag = value;
+
+        public void HleSetMpr(int index, byte value)
         {
-            byte p = 0x20;
-            if (m_NFlag) p |= 0x80;
-            if (m_VFlag) p |= 0x40;
-            if (m_TFlag) p |= 0x20;
-            if (m_DFlag) p |= 0x08;
-            if (m_IFlag) p |= 0x04;
-            if (m_ZFlag) p |= 0x02;
-            if (m_CFlag) p |= 0x01;
-            return p;
+            m_MPR[index] = value;
+            m_Bank[index] = GetBank(value);
         }
+
+        public void HleReturnFromSubroutine()
+        {
+            m_PC = Pop16();
+            m_PC++;
+        }
+
+        public void HleReturnFromInterrupt()
+        {
+            SetP(Pop8());
+            m_PC = Pop16();
+        }
+
+        public byte HleReadMemory(ushort address) => Read8(address);
+        public byte HleReadZeroPage(byte address) => m_ZeroPage.ReadAt(address);
+        public void HleWriteMemory(ushort address, byte value) => Write8(address, value);
+        public void HleWriteZeroPage(byte address, byte value) => m_ZeroPage.WriteAt(address, value);
 
         private static int ParseOptionalHexEnv(string name, int fallback)
         {
