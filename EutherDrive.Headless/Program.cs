@@ -5,6 +5,7 @@
 //        EUTHERDRIVE_LOAD_SLOT1_ON_BOOT=1 dotnet run --project EutherDrive.Headless -- /path/to/rom.cue [frames]
 //        EUTHERDRIVE_HEADLESS_CORE=pce EUTHERDRIVE_SAVESTATE_SLOT=1 dotnet run --project EutherDrive.Headless -c Release -- --load-savestate /path/to/rom.cue /path/to/state.euthstate [frames]
 //        EUTHERDRIVE_HEADLESS_CORE=psx EUTHERDRIVE_PSX_BIOS=/path/to/scph1001.bin dotnet run --project EutherDrive.Headless -c Release -- /path/to/game.cue [frames]
+//        EUTHERDRIVE_HEADLESS_CORE=gba EUTHERDRIVE_GBA_HEADLESS_INPUT_SCRIPT="0-2:start;120-122:a" dotnet run --project EutherDrive.Headless -c Release -- /path/to/game.gba [frames]
 // Default: runs 120 frames
 
 using System;
@@ -315,6 +316,9 @@ class Program
                 || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
+            bool useGba = string.Equals(coreOverride, "gba", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "agb", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsGbaRomPath(romPath));
             bool useN64 = string.Equals(coreOverride, "n64", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsN64RomPath(romPath));
             bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
@@ -329,6 +333,7 @@ class Program
                 useNes = false;
                 useSnes = false;
                 usePsx = false;
+                useGba = false;
                 useN64 = false;
                 useSegaCd = false;
                 usePce = false;
@@ -576,6 +581,103 @@ class Program
                 snesAudioSink?.Dispose();
                 snesTraceWriter?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useGba)
+            {
+                Console.WriteLine("[HEADLESS] Using GBA core");
+                var gba = new GbaAdapter();
+                gba.LoadRom(romPath);
+                string gbaTracePath = Path.Combine(dumpDir, "headless_gba_trace.log");
+                using var gbaTraceWriter = new StreamWriter(gbaTracePath, append: false, Encoding.UTF8) { AutoFlush = true };
+                void TraceGba(string message)
+                {
+                    Console.WriteLine(message);
+                    gbaTraceWriter.WriteLine(message);
+                }
+
+                HeadlessAudioSink? gbaAudioSink = null;
+                bool enableGbaAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
+                if (enableGbaAudio)
+                    gbaAudioSink = new HeadlessAudioSink();
+
+                bool autoStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_GBA_HEADLESS_AUTO_START") == "1";
+                int autoStartDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_DELAY_FRAMES") ?? 0;
+                int autoStartPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_PULSE_FRAMES") ?? 2;
+                int autoStartPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_PERIOD_FRAMES") ?? 60;
+                int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_PULSE_COUNT") ?? 1;
+                bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_LOG") == "1";
+                bool traceGbaFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                bool lastStartPressed = false;
+                var gbaInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_GBA_HEADLESS_INPUT_SCRIPT"));
+
+                TraceGba($"[HEADLESS] {gba.RomSummary}");
+                TraceGba("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> fbIn = gba.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+                TraceGba($"[HEADLESS] GBA fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) frameCounter={gba.FrameCounter ?? -1} keyinput=0x{gba.DebugKeyInput ?? 0xFFFF:X4} fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    bool startPressed = autoStart &&
+                        ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount);
+                    var scriptInput = ResolveSnesInputForFrame(frame, gbaInputScript);
+                    gba.SetInputState(
+                        up: scriptInput.Up,
+                        down: scriptInput.Down,
+                        left: scriptInput.Left,
+                        right: scriptInput.Right,
+                        a: scriptInput.A,
+                        b: scriptInput.B,
+                        c: scriptInput.R,
+                        start: startPressed || scriptInput.Start,
+                        x: false,
+                        y: false,
+                        z: scriptInput.L,
+                        mode: scriptInput.Select,
+                        padType: PadType.SixButton);
+                    if (autoStartLog && startPressed != lastStartPressed)
+                        TraceGba($"[HEADLESS] GBA auto-start start={(startPressed ? 1 : 0)} frame={frame}");
+                    lastStartPressed = startPressed;
+
+                    gba.RunFrame();
+
+                    if (gbaAudioSink != null)
+                    {
+                        var audio = gba.GetAudioBuffer(out int rate, out int channels);
+                        if (frame == 0)
+                            gbaAudioSink.Start(rate, channels);
+                        if (!audio.IsEmpty)
+                            gbaAudioSink.Submit(audio);
+                    }
+
+                    ReadOnlySpan<byte> fb = gba.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? (unchangedFrames + 1) : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceGbaFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        TraceGba($"[HEADLESS] Frame {frame}: gba_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) frameCounter={gba.FrameCounter ?? -1} keyinput=0x{gba.DebugKeyInput ?? 0xFFFF:X4} fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+                    }
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                TraceGba("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> fbOut = gba.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                TraceGba($"[HEADLESS] GBA fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) frameCounter={gba.FrameCounter ?? -1} keyinput=0x{gba.DebugKeyInput ?? 0xFFFF:X4} fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                gbaAudioSink?.Dispose();
+                TraceGba($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
 
@@ -1351,6 +1453,12 @@ class Program
         return OpticalDiscDetector.Detect(path) == OpticalDiscKind.Psx;
     }
 
+    private static bool IsGbaRomPath(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".gba" or ".agb";
+    }
+
     private static bool IsSegaCdRomPath(string path)
     {
         return OpticalDiscDetector.Detect(path) == OpticalDiscKind.SegaCd;
@@ -1644,6 +1752,9 @@ class Program
                 || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
+            bool useGba = string.Equals(coreOverride, "gba", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "agb", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsGbaRomPath(romPath));
             bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
@@ -1867,6 +1978,116 @@ class Program
                 snesAudioSink?.Dispose();
                 snesTraceWriter?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useGba)
+            {
+                var gba = new GbaAdapter();
+                gba.LoadRom(romPath);
+                string gbaTracePath = Path.Combine(dumpDir, "headless_gba_trace.log");
+                using var gbaTraceWriter = new StreamWriter(gbaTracePath, append: false, Encoding.UTF8) { AutoFlush = true };
+                void TraceGba(string message)
+                {
+                    Console.WriteLine(message);
+                    gbaTraceWriter.WriteLine(message);
+                }
+
+                int? slotOverrideGba = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadGba = TryLoadSavestatePayload(savestatePath, gba.RomIdentity, slotOverrideGba, out var gbaError);
+                if (payloadGba == null)
+                {
+                    TraceGba($"[HEADLESS-ERROR] Savestate load failed: {gbaError}");
+                    return 1;
+                }
+
+                using (var gbaStateStream = new MemoryStream(payloadGba, writable: false))
+                using (var gbaStateReader = new BinaryReader(gbaStateStream))
+                    gba.LoadState(gbaStateReader);
+
+                TraceGba("[HEADLESS] Savestate loaded successfully (GBA)");
+                TraceGba($"[HEADLESS] {gba.RomSummary}");
+
+                HeadlessAudioSink? gbaAudioSink = null;
+                bool enableGbaAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
+                if (enableGbaAudio)
+                    gbaAudioSink = new HeadlessAudioSink();
+
+                bool autoStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_GBA_HEADLESS_AUTO_START") == "1";
+                int autoStartDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_DELAY_FRAMES") ?? 0;
+                int autoStartPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_PULSE_FRAMES") ?? 2;
+                int autoStartPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_PERIOD_FRAMES") ?? 60;
+                int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_PULSE_COUNT") ?? 1;
+                bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GBA_HEADLESS_AUTO_START_LOG") == "1";
+                bool traceGbaFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                bool lastStartPressed = false;
+                var gbaInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_GBA_HEADLESS_INPUT_SCRIPT"));
+
+                TraceGba("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> gbaFbIn = gba.GetFrameBuffer(out int gbaWIn, out int gbaHIn, out int gbaSIn);
+                var gbaStatsIn = GetFrameStats(gbaFbIn, gbaWIn, gbaHIn, gbaSIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(gbaFbIn, gbaWIn, gbaHIn, gbaSIn);
+                int unchangedFrames = 0;
+                TraceGba($"[HEADLESS] GBA fb_has_content={gbaStatsIn.HasContent} nonzero_pixels={gbaStatsIn.NonZeroPixels} first_nonzero=({gbaStatsIn.FirstX},{gbaStatsIn.FirstY}) frameCounter={gba.FrameCounter ?? -1} keyinput=0x{gba.DebugKeyInput ?? 0xFFFF:X4} fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(gbaFbIn, gbaWIn, gbaHIn, gbaSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    bool startPressed = autoStart &&
+                        ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount);
+                    var scriptInput = ResolveSnesInputForFrame(frame, gbaInputScript);
+                    gba.SetInputState(
+                        up: scriptInput.Up,
+                        down: scriptInput.Down,
+                        left: scriptInput.Left,
+                        right: scriptInput.Right,
+                        a: scriptInput.A,
+                        b: scriptInput.B,
+                        c: scriptInput.R,
+                        start: startPressed || scriptInput.Start,
+                        x: false,
+                        y: false,
+                        z: scriptInput.L,
+                        mode: scriptInput.Select,
+                        padType: PadType.SixButton);
+                    if (autoStartLog && startPressed != lastStartPressed)
+                        TraceGba($"[HEADLESS] GBA auto-start start={(startPressed ? 1 : 0)} frame={frame}");
+                    lastStartPressed = startPressed;
+
+                    gba.RunFrame();
+
+                    if (gbaAudioSink != null)
+                    {
+                        var audio = gba.GetAudioBuffer(out int rate, out int channels);
+                        if (frame == 0)
+                            gbaAudioSink.Start(rate, channels);
+                        if (!audio.IsEmpty)
+                            gbaAudioSink.Submit(audio);
+                    }
+
+                    ReadOnlySpan<byte> fb = gba.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? (unchangedFrames + 1) : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceGbaFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        TraceGba($"[HEADLESS] Frame {frame}: gba_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) frameCounter={gba.FrameCounter ?? -1} keyinput=0x{gba.DebugKeyInput ?? 0xFFFF:X4} fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+                    }
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                TraceGba("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> gbaFbOut = gba.GetFrameBuffer(out int gbaWOut, out int gbaHOut, out int gbaSOut);
+                var gbaStatsOut = GetFrameStats(gbaFbOut, gbaWOut, gbaHOut, gbaSOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(gbaFbOut, gbaWOut, gbaHOut, gbaSOut);
+                TraceGba($"[HEADLESS] GBA fb_has_content={gbaStatsOut.HasContent} nonzero_pixels={gbaStatsOut.NonZeroPixels} first_nonzero=({gbaStatsOut.FirstX},{gbaStatsOut.FirstY}) frameCounter={gba.FrameCounter ?? -1} keyinput=0x{gba.DebugKeyInput ?? 0xFFFF:X4} fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(gbaFbOut, gbaWOut, gbaHOut, gbaSOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                gbaAudioSink?.Dispose();
+                TraceGba($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
 

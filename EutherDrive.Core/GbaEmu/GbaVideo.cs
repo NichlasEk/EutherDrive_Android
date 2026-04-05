@@ -73,6 +73,7 @@ public partial class GbaVideo
 		_oamDirty = true;
 		_oamBatchOffset = 0;
 		_oamMax = 0;
+		_hasCapturedFrame = false;
 	}
 
 	public void WriteDispCnt( ushort value )

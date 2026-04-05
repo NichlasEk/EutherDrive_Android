@@ -30,6 +30,7 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
     public string? EffectiveBiosPath => _effectiveBiosPath;
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => _gba?.FrameCounter;
+    public ushort? DebugKeyInput => _gba?.Io.KeyInput;
 
     public double GetTargetFps() => GbaConstants.Fps;
 
