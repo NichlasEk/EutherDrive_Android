@@ -620,6 +620,8 @@ public partial class MainWindow : Window
 
         if (!string.IsNullOrWhiteSpace(path) && IsPceRom(path))
             return new PceCdAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && IsMasterSystemRomPath(path))
+            return new SmsGgAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsGbaRom(path))
             return new GbaAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsN64Rom(path))
@@ -661,14 +663,23 @@ public partial class MainWindow : Window
 
     private static bool IsGbaRom(string path)
     {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
+        string ext = GetEffectiveRomExtension(path);
         return ext is ".gba" or ".agb";
     }
 
     private static bool IsMasterSystemRomPath(string path)
     {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
+        string ext = GetEffectiveRomExtension(path);
         return ext is ".sms" or ".sg" or ".gg";
+    }
+
+    private static string GetEffectiveRomExtension(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if ((ext is ".zip" or ".7z") && RomArchiveExtractor.TryGetArchiveRomEntryExtension(path, out string archiveExt))
+            return archiveExt.ToLowerInvariant();
+
+        return ext;
     }
 
     private static bool IsSnesRom(string path)
@@ -773,6 +784,8 @@ public partial class MainWindow : Window
         double target = 60.0;
         if (_core is MdTracerAdapter adapter)
             target = adapter.GetTargetFps();
+        else if (_core is SmsGgAdapter sms)
+            target = sms.GetTargetFps();
         else if (_core is SnesAdapter snes)
             target = snes.GetTargetFps(RegionOverride);
         else if (_core is PceCdAdapter pce)
@@ -1362,6 +1375,7 @@ public partial class MainWindow : Window
             GbaAdapter => new AutoFireProfile("gba", _inputMappings.Snes, s_autoFireSnesButtons),
             SnesAdapter => new AutoFireProfile("snes", _inputMappings.Snes, s_autoFireSnesButtons),
             NesAdapter => new AutoFireProfile("nes", _inputMappings.Snes, s_autoFireTwoButtonButtons),
+            SmsGgAdapter => new AutoFireProfile("sms", _inputMappings.MdSms, s_autoFireTwoButtonButtons),
             MdTracerAdapter md when md.IsMasterSystemMode => new AutoFireProfile("sms", _inputMappings.MdSms, s_autoFireTwoButtonButtons),
             MdTracerAdapter => CreateMdFamilyAutoFireProfile("md", useSixButtonPad),
             EutherDrive.Core.SegaCd.SegaCdAdapter => CreateMdFamilyAutoFireProfile("sega-cd", useSixButtonPad),
@@ -2440,6 +2454,11 @@ public partial class MainWindow : Window
                             UpdateGbaRomInfo(_romPath, gba);
                             Console.WriteLine(gba.RomSummary ?? "GBA ROM loaded.");
                         }
+                        else if (_core is SmsGgAdapter sms)
+                        {
+                            UpdateRomInfo(sms.RomInfo);
+                            Console.WriteLine(sms.RomSummary ?? "SMS/GG ROM loaded.");
+                        }
                         else if (_core is NesAdapter nes)
                         {
                             UpdateNesRomInfo(nes);
@@ -3022,6 +3041,18 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_core is SmsGgAdapter sms)
+        {
+            sms.SetFrameRateMode(_frameRateMode);
+            UpdateEmuTargetFps();
+            if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
+            {
+                sms.Reset();
+                StatusText.Text = $"Frame rate set to {_frameRateMode}. Reset applied.";
+            }
+            return;
+        }
+
         if (_core is PsxAdapter psx)
         {
             psx.SetFrameRateMode(_frameRateMode);
@@ -3091,6 +3122,8 @@ public partial class MainWindow : Window
     {
         if (_core is MdTracerAdapter adapter)
             adapter.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is SmsGgAdapter sms)
+            sms.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is SnesAdapter snes)
             snes.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is PceCdAdapter pce)
@@ -3112,6 +3145,12 @@ public partial class MainWindow : Window
             adapter.SetPsgMixPercent(_psgMixPercent);
             adapter.SetYmMixPercent(_ymMixPercent);
             adapter.SetPsgNoiseMixPercent(_noiseMixPercent);
+        }
+        else if (_core is SmsGgAdapter sms)
+        {
+            sms.SetPsgMixPercent(_psgMixPercent);
+            sms.SetYmMixPercent(_ymMixPercent);
+            sms.SetPsgNoiseMixPercent(_noiseMixPercent);
         }
     }
 
@@ -6784,7 +6823,8 @@ public partial class MainWindow : Window
             }
         }
 
-        if (core is MdTracerAdapter smsAdapter && smsAdapter.IsMasterSystemMode)
+        if ((core is MdTracerAdapter smsAdapter && smsAdapter.IsMasterSystemMode) ||
+            (core is SmsGgAdapter smsGgAdapter && smsGgAdapter.IsMasterSystemMode))
         {
             // SMS Pause uses dedicated Pause mapping (separate from MD Start).
             start = pause;
@@ -7834,6 +7874,8 @@ public partial class MainWindow : Window
                     GenerateAudioFromSystemCycles(core);
                     if (core is MdTracerAdapter mdAudioAdapter)
                         TopUpMdAudioIfLow(mdAudioAdapter);
+                    else if (core is SmsGgAdapter smsAudioAdapter)
+                        TopUpSmsGgAudioIfLow(smsAudioAdapter);
                     if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
@@ -8086,17 +8128,37 @@ public partial class MainWindow : Window
 
     private void PrimePullAudio()
     {
-        if (!_audioPullMode || _core is not MdTracerAdapter adapter)
+        if (!_audioPullMode)
             return;
-        lock (_coreAudioLock)
+
+        if (_core is MdTracerAdapter adapter)
         {
-            if (!_audioPullReady)
-                return;
-            for (int i = 0; i < 3; i++)
+            lock (_coreAudioLock)
             {
-                ApplyInputToCore(adapter);
-                adapter.RunFrame();
-                GenerateAudioFromSystemCycles(adapter);
+                if (!_audioPullReady)
+                    return;
+                for (int i = 0; i < 3; i++)
+                {
+                    ApplyInputToCore(adapter);
+                    adapter.RunFrame();
+                    GenerateAudioFromSystemCycles(adapter);
+                }
+            }
+            return;
+        }
+
+        if (_core is SmsGgAdapter smsAdapter)
+        {
+            lock (_coreAudioLock)
+            {
+                if (!_audioPullReady)
+                    return;
+                for (int i = 0; i < 3; i++)
+                {
+                    ApplyInputToCore(smsAdapter);
+                    smsAdapter.RunFrame();
+                    GenerateAudioFromSystemCycles(smsAdapter);
+                }
             }
         }
     }
@@ -8108,6 +8170,13 @@ public partial class MainWindow : Window
             lock (_coreAudioLock)
             {
                 return adapter.GetAudioBufferForFrames(frames, out _, out _);
+            }
+        }
+        if (_core is SmsGgAdapter smsAdapter)
+        {
+            lock (_coreAudioLock)
+            {
+                return smsAdapter.GetAudioBufferForFrames(frames, out _, out _);
             }
         }
         if (_core is SnesAdapter || _core is PceCdAdapter || _core is GbaAdapter || _core is N64Adapter || _core is SegaCdAdapter)
@@ -8138,7 +8207,27 @@ public partial class MainWindow : Window
 
     private void GenerateAudioFromSystemCycles(IEmulatorCore core)
     {
-        if (_audioEngine == null || core is not MdTracerAdapter adapter)
+        if (_audioEngine == null)
+            return;
+
+        if (core is SmsGgAdapter smsAdapter)
+        {
+            if (AudioClockFrame)
+            {
+                GenerateAudioForEmuFrame(smsAdapter, smsAdapter.GetTargetFps());
+                return;
+            }
+            if (_audioPullMode)
+                return;
+            if (_audioTimedEnabled)
+            {
+                GenerateAudioFromWallClock(smsAdapter);
+                return;
+            }
+            return;
+        }
+
+        if (core is not MdTracerAdapter adapter)
             return;
 
         if (AudioClockFrame)
@@ -8265,6 +8354,35 @@ public partial class MainWindow : Window
         }
     }
 
+    private void TopUpSmsGgAudioIfLow(SmsGgAdapter adapter)
+    {
+        if (_audioEngine == null || _audioPullMode || _audioTimedEnabled || AudioClockFrame)
+            return;
+        if (AudioTargetBufferedFrames <= 0)
+            return;
+
+        int buffered = _audioEngine.BufferedFrames;
+        int lowWater = Math.Max(AudioBufferChunkFrames * 2, AudioTargetBufferedFrames / 2);
+        if (buffered >= lowWater)
+            return;
+
+        int needFrames = lowWater - buffered;
+        if (needFrames <= 0)
+            return;
+
+        int safety = 0;
+        while (needFrames > 0 && safety < 8)
+        {
+            int chunk = Math.Min(needFrames, AudioBufferChunkFrames);
+            var audio = adapter.GetAudioBufferForFrames(chunk, out int rate, out int channels);
+            if (audio.IsEmpty || rate != AudioSampleRate || channels != AudioChannels)
+                break;
+            _audioEngine.Submit(audio);
+            needFrames -= chunk;
+            safety++;
+        }
+    }
+
     private void GenerateAudioFromWallClock(MdTracerAdapter adapter)
     {
         if (_audioEngine == null)
@@ -8334,7 +8452,110 @@ public partial class MainWindow : Window
         }
     }
 
+    private void GenerateAudioFromWallClock(SmsGgAdapter adapter)
+    {
+        if (_audioEngine == null)
+            return;
+        if (_audioPullMode)
+            return;
+
+        long now = Stopwatch.GetTimestamp();
+        if (_audioLastTicks == 0)
+        {
+            _audioLastTicks = now;
+            return;
+        }
+
+        double elapsed = (now - _audioLastTicks) / (double)Stopwatch.Frequency;
+        _audioLastTicks = now;
+        if (elapsed <= 0)
+            return;
+
+        const double maxElapsed = 0.25;
+        if (elapsed > maxElapsed)
+            elapsed = maxElapsed;
+
+        int buffered = _audioEngine.BufferedFrames;
+        if (buffered >= AudioTargetBufferedFrames)
+            return;
+
+        _audioFrameAccumulator += elapsed * AudioSampleRate;
+        int frames = (int)_audioFrameAccumulator;
+        if (frames <= 0)
+            return;
+
+        int needFrames = AudioTargetBufferedFrames - buffered;
+        if (needFrames <= 0)
+            return;
+        if (frames > needFrames)
+            frames = needFrames;
+
+        _audioFrameAccumulator -= frames;
+        if (frames > AudioMaxFramesPerTick)
+            frames = AudioMaxFramesPerTick;
+        if (frames > AudioTimedMaxFrames)
+            frames = AudioTimedMaxFrames;
+
+        while (frames > 0)
+        {
+            int chunk = frames < AudioBufferChunkFrames ? frames : AudioBufferChunkFrames;
+            var audio = adapter.GetAudioBufferForFrames(chunk, out int rate, out int channels);
+            if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
+            {
+                _audioEngine.Submit(audio);
+                frames -= chunk;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
     private void GenerateAudioForEmuFrame(MdTracerAdapter adapter, double targetFps)
+    {
+        if (_audioEngine == null || targetFps <= 0)
+            return;
+
+        double rateScale = 1.0;
+        if (AudioPllEnabled && _audioEngine != null && AudioTargetBufferedFrames > 0)
+        {
+            int buffered = _audioEngine.BufferedFrames;
+            double error = (AudioTargetBufferedFrames - buffered) / (double)AudioTargetBufferedFrames;
+            if (error > 1.0) error = 1.0;
+            else if (error < -1.0) error = -1.0;
+            const double deadZone = 0.05;
+            if (Math.Abs(error) >= deadZone)
+                rateScale = 1.0 + (error * AudioPllMax);
+        }
+
+        double framesPerEmuFrame = (AudioSampleRate / targetFps) * rateScale;
+        _audioDrivenAccumulator += framesPerEmuFrame;
+        int frames = (int)_audioDrivenAccumulator;
+        if (frames <= 0)
+            return;
+
+        _audioDrivenAccumulator -= frames;
+        if (frames > AudioMaxFramesPerTick)
+            frames = AudioMaxFramesPerTick;
+
+        while (frames > 0)
+        {
+            int chunk = frames < AudioBufferChunkFrames ? frames : AudioBufferChunkFrames;
+            var audio = adapter.GetAudioBufferForFrames(chunk, out int rate, out int channels);
+            if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
+            {
+                _audioEngine.Submit(audio);
+                frames -= chunk;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
+    private void GenerateAudioForEmuFrame(SmsGgAdapter adapter, double targetFps)
     {
         if (_audioEngine == null || targetFps <= 0)
             return;
@@ -8509,6 +8730,8 @@ public partial class MainWindow : Window
     {
         if (_core is MdTracerAdapter adapter)
             return adapter.GetTargetFps() * _speedScale;
+        if (_core is SmsGgAdapter sms)
+            return sms.GetTargetFps() * _speedScale;
         if (_core is PsxAdapter psx)
             return psx.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;

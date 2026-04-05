@@ -5,7 +5,7 @@ using SharpCompress.Archives;
 
 namespace EutherDrive.Core;
 
-internal static class RomArchiveExtractor
+public static class RomArchiveExtractor
 {
     private static readonly string[] RomExtensions =
     {
@@ -97,6 +97,16 @@ internal static class RomArchiveExtractor
             error = ex.Message;
             return false;
         }
+    }
+
+    public static bool TryGetArchiveRomEntryExtension(string archivePath, out string extension)
+    {
+        extension = string.Empty;
+        if (!TryExtractRom(archivePath, out _, out string entryName, out _, out _))
+            return false;
+
+        extension = Path.GetExtension(entryName);
+        return !string.IsNullOrWhiteSpace(extension);
     }
 
     private static Dictionary<string, int> BuildExtensionPriorities()
