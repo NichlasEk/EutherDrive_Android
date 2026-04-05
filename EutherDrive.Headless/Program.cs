@@ -319,6 +319,10 @@ class Program
             bool useGba = string.Equals(coreOverride, "gba", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "agb", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsGbaRomPath(romPath));
+            bool useSmsGg = string.Equals(coreOverride, "smsgg", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "sms", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "gg", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsMasterSystemRomPath(romPath));
             bool useN64 = string.Equals(coreOverride, "n64", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsN64RomPath(romPath));
             bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
@@ -334,6 +338,7 @@ class Program
                 useSnes = false;
                 usePsx = false;
                 useGba = false;
+                useSmsGg = false;
                 useN64 = false;
                 useSegaCd = false;
                 usePce = false;
@@ -678,6 +683,92 @@ class Program
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 gbaAudioSink?.Dispose();
                 TraceGba($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useSmsGg)
+            {
+                Console.WriteLine("[HEADLESS] Using SMS/GG core");
+                var smsgg = new SmsGgAdapter();
+                smsgg.LoadRom(romPath);
+
+                HeadlessAudioSink? smsggAudioSink = null;
+                bool enableSmsGgAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
+                if (enableSmsGgAudio)
+                    smsggAudioSink = new HeadlessAudioSink();
+
+                bool autoStart = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMSGG_HEADLESS_AUTO_START") == "1";
+                int autoStartDelayFrames = ParseOptionalIntEnv("EUTHERDRIVE_SMSGG_HEADLESS_AUTO_START_DELAY_FRAMES") ?? 0;
+                int autoStartPulseFrames = ParseOptionalIntEnv("EUTHERDRIVE_SMSGG_HEADLESS_AUTO_START_PULSE_FRAMES") ?? 2;
+                int autoStartPeriodFrames = ParseOptionalIntEnv("EUTHERDRIVE_SMSGG_HEADLESS_AUTO_START_PERIOD_FRAMES") ?? 60;
+                int autoStartPulseCount = ParseOptionalIntEnv("EUTHERDRIVE_SMSGG_HEADLESS_AUTO_START_PULSE_COUNT") ?? 1;
+                bool autoStartLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMSGG_HEADLESS_AUTO_START_LOG") == "1";
+                bool traceSmsGgFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                bool lastStartPressed = false;
+
+                Console.WriteLine($"[HEADLESS] {smsgg.RomSummary}");
+                ReadOnlySpan<byte> fbIn = smsgg.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+                Console.WriteLine($"[HEADLESS] SMSGG fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    bool startPressed = autoStart &&
+                        ShouldPressStartPulse(frame, autoStartDelayFrames, autoStartPulseFrames, autoStartPeriodFrames, autoStartPulseCount);
+                    smsgg.SetInputState(
+                        up: false,
+                        down: false,
+                        left: false,
+                        right: false,
+                        a: false,
+                        b: false,
+                        c: false,
+                        start: startPressed,
+                        x: false,
+                        y: false,
+                        z: false,
+                        mode: false,
+                        padType: PadType.SixButton);
+                    if (autoStartLog && startPressed != lastStartPressed)
+                        Console.WriteLine($"[HEADLESS] SMSGG auto-start start={(startPressed ? 1 : 0)} frame={frame}");
+                    lastStartPressed = startPressed;
+
+                    smsgg.RunFrame();
+
+                    if (smsggAudioSink != null)
+                    {
+                        var audio = smsgg.GetAudioBuffer(out int rate, out int channels);
+                        if (frame == 0)
+                            smsggAudioSink.Start(rate, channels);
+                        if (!audio.IsEmpty)
+                            smsggAudioSink.Submit(audio);
+                    }
+
+                    ReadOnlySpan<byte> fb = smsgg.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? (unchangedFrames + 1) : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceSmsGgFrames || frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: smsgg_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+                    }
+
+                    if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = smsgg.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] SMSGG final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                smsggAudioSink?.Dispose();
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
 
@@ -1455,8 +1546,23 @@ class Program
 
     private static bool IsGbaRomPath(string path)
     {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
+        string ext = GetEffectiveRomExtension(path);
         return ext is ".gba" or ".agb";
+    }
+
+    private static bool IsMasterSystemRomPath(string path)
+    {
+        string ext = GetEffectiveRomExtension(path);
+        return ext is ".sms" or ".sg" or ".gg";
+    }
+
+    private static string GetEffectiveRomExtension(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if ((ext is ".zip" or ".7z") && RomArchiveExtractor.TryGetArchiveRomEntryExtension(path, out string archiveExt))
+            return archiveExt.ToLowerInvariant();
+
+        return ext;
     }
 
     private static bool IsSegaCdRomPath(string path)

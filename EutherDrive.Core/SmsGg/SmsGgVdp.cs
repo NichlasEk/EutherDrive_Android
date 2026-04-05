@@ -15,6 +15,8 @@ public sealed class SmsGgVdp
     private readonly byte[] _vram = new byte[VramLength];
     private readonly byte[] _cram = new byte[CramLength];
     private readonly byte[] _frameBuffer = new byte[ScreenWidth * ScreenHeight * 4];
+    private readonly byte[] _spritePixels = new byte[ScreenWidth];
+    private readonly bool[] _spriteCollisions = new bool[ScreenWidth];
 
     private SmsGgViewportSize _viewport;
     private SmsGgVdpMode _mode = SmsGgVdpMode.Mode4;
@@ -35,6 +37,11 @@ public sealed class SmsGgVdp
     private bool _doubleSpriteHeight;
     private bool _doubleSpriteSize;
     private bool _shiftSpritesLeft;
+    private ushort _latchedBaseSpriteTableAddress = 0x3F00;
+    private ushort _latchedBaseSpritePatternAddress = 0x2000;
+    private bool _latchedDoubleSpriteHeight;
+    private bool _latchedDoubleSpriteSize;
+    private bool _latchedShiftSpritesLeft;
     private bool _frameInterruptPending;
     private bool _frameInterruptFlag;
     private bool _lineInterruptPending;
@@ -50,7 +57,9 @@ public sealed class SmsGgVdp
     private byte _latchedHCounter;
     private ushort _scanline;
     private ushort _dot;
+    private byte _eventIndex;
     private int _cramTraceCount;
+    private bool _lineSpriteOverflow;
 
     public SmsGgVdp(SmsGgVdpVersion version, SmsGgEmulatorConfig config)
     {
@@ -192,89 +201,34 @@ public sealed class SmsGgVdp
 
     public bool Tick()
     {
+        ushort activeScanlines = ActiveScanlines();
+        ushort scanlinesPerFrame = ScanlinesPerFrame();
+
         _dot++;
-        if (_dot == 325)
+        if (_dot == 342)
         {
-            if (_scanline == ActiveScanlines())
-                _frameInterruptFlag = true;
-
-            DecrementLineCounter();
-        }
-        else if (_dot == 326 && _scanline == ActiveScanlines())
-        {
-            _frameInterruptPending = true;
-            _frameInterruptFlag = true;
+            _scanline++;
+            _dot = 0;
+            _eventIndex = 0;
+            if (_scanline >= scanlinesPerFrame)
+                _scanline = 0;
         }
 
-        if (_dot < 342)
-            return false;
+        ProcessEvents(activeScanlines, scanlinesPerFrame);
 
-        _dot = 0;
-        _scanline++;
-        if (_scanline >= ScanlinesPerFrame())
+        if (_displayEnabled &&
+            _scanline < activeScanlines &&
+            _spriteCollisions.ElementAtOrDefault((int)_dot - 2))
         {
-            _scanline = 0;
+            _spriteCollision = true;
         }
 
-        return _scanline == ActiveScanlines() + 1 && _dot == 0;
+        return _scanline == activeScanlines + 1 && _dot == 0;
     }
 
     public void RenderFrame()
     {
-        ClearFrameBuffer();
-        if (!_displayEnabled)
-            return;
-
-        ushort activeHeight = _mode == SmsGgVdpMode.Mode4_224 ? (ushort)224 : (ushort)192;
-        ushort rows = (ushort)Math.Min(activeHeight, _ggUseSmsResolution || _version.IsMasterSystem() ? 240 : 144);
-        ushort cols = (ushort)(_version == SmsGgVdpVersion.GameGear && !_ggUseSmsResolution ? 160 : 256);
-        ushort topOffset = (ushort)(_version == SmsGgVdpVersion.GameGear && !_ggUseSmsResolution ? 24 : 0);
-        ushort leftOffset = (ushort)(_version == SmsGgVdpVersion.GameGear && !_ggUseSmsResolution ? 48 : 0);
-        int nameTableRows = _mode == SmsGgVdpMode.Mode4_224 ? 32 : 28;
-        byte[] spritePixels = new byte[ScreenWidth];
-        bool[] spriteCollisions = new bool[ScreenWidth];
-
-        for (ushort y = 0; y < rows; y++)
-        {
-            int sourceY = y + topOffset;
-            Array.Clear(spritePixels);
-            Array.Clear(spriteCollisions);
-            RenderSpritesForScanline((ushort)sourceY, spritePixels, spriteCollisions);
-            if (Array.IndexOf(spriteCollisions, true) >= 0)
-                _spriteCollision = true;
-
-            int effectiveXScroll = sourceY < 16 && _horizontalScrollLock ? 0 : _xScroll;
-            int coarseXScroll = (effectiveXScroll >> 3) & 0x1F;
-            int fineXScroll = effectiveXScroll & 0x07;
-
-            for (ushort x = 0; x < cols; x++)
-            {
-                int sourceX = x + leftOffset;
-                if (_hideLeftColumn && sourceX < 8)
-                {
-                    SetPixel(x, y, BackdropColor());
-                    continue;
-                }
-
-                int column = (sourceX + fineXScroll) >> 3;
-                int bgTileCol = (sourceX + fineXScroll) & 0x07;
-                int coarseYScroll = (column >= 24 && _verticalScrollLock) ? 0 : (_yScroll >> 3);
-                int fineYScroll = (column >= 24 && _verticalScrollLock) ? 0 : (_yScroll & 0x07);
-                int nameTableRow = (((sourceY + fineYScroll) >> 3) + coarseYScroll) % nameTableRows;
-                int nameTableCol = (column + (32 - coarseXScroll)) % 32;
-                BgTileData bgTileData = ReadNameTableWord(nameTableRow, nameTableCol);
-                int tileRowBase = (sourceY + fineYScroll) & 0x07;
-                int tileRow = bgTileData.VerticalFlip ? 7 - tileRowBase : tileRowBase;
-                int tileCol = bgTileData.HorizontalFlip ? bgTileCol : 7 - bgTileCol;
-                byte colorId = GetTileColor(bgTileData.TileIndex, tileRow, tileCol);
-                byte spriteColorId = spritePixels[sourceX];
-                byte bgBaseCramAddress = bgTileData.Palette1 ? (byte)0x10 : (byte)0x00;
-                uint color = spriteColorId != 0 && (colorId == 0 || !bgTileData.Priority)
-                    ? GetPaletteColorWord((byte)(0x10 | spriteColorId))
-                    : GetPaletteColorWord(colorId == 0 ? (byte)(0x10 | _backdropColor) : (byte)(bgBaseCramAddress | colorId));
-                SetPixel(x, y, color);
-            }
-        }
+        // Frame output is built incrementally in Tick() using per-scanline events.
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer() => _frameBuffer;
@@ -375,21 +329,29 @@ public sealed class SmsGgVdp
         return (byte)(bit0 | (bit1 << 1) | (bit2 << 2) | (bit3 << 3));
     }
 
-    private void RenderSpritesForScanline(ushort scanline, Span<byte> spritePixels, Span<bool> spriteCollisions)
+    private bool RenderSpritesForScanline(
+        ushort scanline,
+        Span<byte> spritePixels,
+        Span<bool> spriteCollisions,
+        ushort baseSpriteTableAddress,
+        ushort baseSpritePatternAddress,
+        bool doubleSpriteHeight,
+        bool doubleSpriteSize,
+        bool shiftSpritesLeft)
     {
         spritePixels.Clear();
         spriteCollisions.Clear();
 
-        int spriteHeight = GetSpriteHeight();
-        int spriteWidth = GetSpriteWidth();
-        int satBase = _baseSpriteTableAddress & 0xFF00;
+        int spriteHeight = GetSpriteHeight(doubleSpriteSize, doubleSpriteHeight);
+        int spriteWidth = GetSpriteWidth(doubleSpriteSize);
+        int satBase = baseSpriteTableAddress & 0xFF00;
         int spriteCount = 0;
 
         for (int i = 0; i < 64; i++)
         {
             byte y = _vram[(satBase | i) & 0x3FFF];
             if (_mode != SmsGgVdpMode.Mode4_224 && y == 0xD0)
-                break;
+                return false;
 
             int spriteBottom = (y + spriteHeight) & 0xFF;
             bool overlaps = y < spriteBottom
@@ -401,16 +363,15 @@ public sealed class SmsGgVdp
             spriteCount++;
             if (spriteCount > 8)
             {
-                _spriteOverflow = true;
-                break;
+                return true;
             }
 
             byte x = _vram[(satBase | 0x80 | (2 * i)) & 0x3FFF];
             byte rawTileIndex = _vram[(satBase | 0x80 | (2 * i + 1)) & 0x3FFF];
-            int spriteTileRow = ((scanline - y) & 0xFF) >> (_doubleSpriteSize ? 1 : 0);
-            int tileIndex = _doubleSpriteHeight ? ((rawTileIndex & 0xFE) | (spriteTileRow >= 8 ? 1 : 0)) : rawTileIndex;
-            int tileAddress = ((_baseSpritePatternAddress & 0x2000) | (tileIndex * 32)) & 0x3FFF;
-            int spriteXDelta = _shiftSpritesLeft ? -8 : 0;
+            int spriteTileRow = ((scanline - y) & 0xFF) >> (doubleSpriteSize ? 1 : 0);
+            int tileIndex = doubleSpriteHeight ? ((rawTileIndex & 0xFE) | (spriteTileRow >= 8 ? 1 : 0)) : rawTileIndex;
+            int tileAddress = ((baseSpritePatternAddress & 0x2000) | (tileIndex * 32)) & 0x3FFF;
+            int spriteXDelta = shiftSpritesLeft ? -8 : 0;
 
             for (int dx = 0; dx < spriteWidth; dx++)
             {
@@ -418,7 +379,7 @@ public sealed class SmsGgVdp
                 if ((uint)pixelX >= ScreenWidth)
                     continue;
 
-                int spriteTileCol = dx >> (_doubleSpriteSize ? 1 : 0);
+                int spriteTileCol = dx >> (doubleSpriteSize ? 1 : 0);
                 byte colorId = GetTileColorAtAddress(tileAddress, spriteTileRow & 7, spriteTileCol);
                 if (colorId == 0)
                     continue;
@@ -429,6 +390,8 @@ public sealed class SmsGgVdp
                     spritePixels[pixelX] = colorId;
             }
         }
+
+        return false;
     }
 
     private byte GetTileColorAtAddress(int tileAddress, int row, int col)
@@ -441,9 +404,9 @@ public sealed class SmsGgVdp
         return (byte)(bit0 | (bit1 << 1) | (bit2 << 2) | (bit3 << 3));
     }
 
-    private int GetSpriteHeight()
+    private int GetSpriteHeight(bool doubleSpriteSize, bool doubleSpriteHeight)
     {
-        return (_doubleSpriteSize, _doubleSpriteHeight) switch
+        return (doubleSpriteSize, doubleSpriteHeight) switch
         {
             (true, true) => 32,
             (true, false) or (false, true) => 16,
@@ -451,7 +414,7 @@ public sealed class SmsGgVdp
         };
     }
 
-    private int GetSpriteWidth() => _doubleSpriteSize ? 16 : 8;
+    private int GetSpriteWidth(bool doubleSpriteSize) => doubleSpriteSize ? 16 : 8;
 
     private ushort GetNameTableBaseAddress()
     {
@@ -474,6 +437,211 @@ public sealed class SmsGgVdp
     }
 
     private uint BackdropColor() => GetPaletteColorWord((byte)(0x10 | _backdropColor));
+
+    private void ProcessEvents(ushort activeScanlines, ushort scanlinesPerFrame)
+    {
+        ReadOnlySpan<ushort> eventDots = stackalloc ushort[] { 297, 307, 308, 309, 325, 326, ushort.MaxValue };
+
+        while (_dot >= eventDots[_eventIndex])
+        {
+            switch (_eventIndex)
+            {
+                case 0:
+                    PerLineSpriteProcessing(activeScanlines, scanlinesPerFrame);
+                    LatchSpriteRegisters();
+                    break;
+                case 1:
+                {
+                    ushort nextLine = _scanline == scanlinesPerFrame - 1 ? (ushort)0 : (ushort)(_scanline + 1);
+                    if (nextLine < activeScanlines)
+                    {
+                        if (_displayEnabled)
+                            RenderScanline(nextLine);
+                        else
+                            ClearScanline(nextLine);
+                    }
+                    break;
+                }
+                case 2:
+                    _spriteOverflow |= _lineSpriteOverflow;
+                    break;
+                case 3:
+                    if (_scanline == activeScanlines)
+                        _frameInterruptFlag = true;
+                    break;
+                case 4:
+                    if (_scanline == activeScanlines)
+                    {
+                        _frameInterruptPending = true;
+                        _frameInterruptFlag = true;
+                    }
+                    break;
+                case 5:
+                    DecrementLineCounter();
+                    break;
+                default:
+                    return;
+            }
+
+            _eventIndex++;
+        }
+    }
+
+    private void PerLineSpriteProcessing(ushort activeScanlines, ushort scanlinesPerFrame)
+    {
+        Array.Clear(_spritePixels);
+        Array.Clear(_spriteCollisions);
+        _lineSpriteOverflow = false;
+
+        ushort spriteLine;
+        if (_scanline == scanlinesPerFrame - 1)
+            spriteLine = 255;
+        else if (_scanline < activeScanlines - 1)
+            spriteLine = _scanline;
+        else
+            return;
+
+        _lineSpriteOverflow = RenderSpritesForScanline(
+            spriteLine,
+            _spritePixels,
+            _spriteCollisions,
+            _latchedBaseSpriteTableAddress,
+            _latchedBaseSpritePatternAddress,
+            _latchedDoubleSpriteHeight,
+            _latchedDoubleSpriteSize,
+            _latchedShiftSpritesLeft);
+    }
+
+    private void LatchSpriteRegisters()
+    {
+        _latchedBaseSpriteTableAddress = _baseSpriteTableAddress;
+        _latchedBaseSpritePatternAddress = _baseSpritePatternAddress;
+        _latchedDoubleSpriteHeight = _doubleSpriteHeight;
+        _latchedDoubleSpriteSize = _doubleSpriteSize;
+        _latchedShiftSpritesLeft = _shiftSpritesLeft;
+    }
+
+    private void RenderScanline(ushort sourceScanline)
+    {
+        int targetY = sourceScanline;
+        int visibleLeft = 0;
+        int visibleWidth = ScreenWidth;
+
+        if (_version == SmsGgVdpVersion.GameGear && !_ggUseSmsResolution)
+        {
+            const int ggTop = 24;
+            const int ggLeft = 48;
+            const int ggHeight = 144;
+            const int ggWidth = 160;
+
+            if (sourceScanline < ggTop || sourceScanline >= ggTop + ggHeight)
+                return;
+
+            targetY = sourceScanline - ggTop;
+            visibleLeft = ggLeft;
+            visibleWidth = ggWidth;
+        }
+
+        uint backdropColor = BackdropColor();
+        ClearVisibleScanline(targetY, backdropColor, visibleWidth);
+
+        int coarseXScroll;
+        int fineXScroll;
+        if (sourceScanline < 16 && _horizontalScrollLock)
+        {
+            coarseXScroll = 0;
+            fineXScroll = 0;
+        }
+        else
+        {
+            coarseXScroll = (_xScroll >> 3) & 0x1F;
+            fineXScroll = _xScroll & 0x07;
+        }
+
+        for (int dot = 0; dot < fineXScroll; dot++)
+        {
+            if (dot >= visibleLeft && dot < visibleLeft + visibleWidth)
+                SetPixel(dot - visibleLeft, targetY, backdropColor);
+        }
+
+        int nameTableRows = _mode == SmsGgVdpMode.Mode4_224 ? 32 : 28;
+        for (int column = 0; column < 32; column++)
+        {
+            int coarseYScroll;
+            int fineYScroll;
+            if (column >= 24 && _verticalScrollLock)
+            {
+                coarseYScroll = 0;
+                fineYScroll = 0;
+            }
+            else
+            {
+                coarseYScroll = _yScroll >> 3;
+                fineYScroll = _yScroll & 0x07;
+            }
+
+            int nameTableRow = (((sourceScanline + fineYScroll) / 8) + coarseYScroll) % nameTableRows;
+            int nameTableCol = (column + (32 - coarseXScroll)) % 32;
+            BgTileData bgTileData = ReadNameTableWord(nameTableRow, nameTableCol);
+            int bgTileRow = bgTileData.VerticalFlip
+                ? 7 - ((sourceScanline + fineYScroll) % 8)
+                : (sourceScanline + fineYScroll) % 8;
+            byte bgBaseCramAddress = bgTileData.Palette1 ? (byte)0x10 : (byte)0x00;
+
+            for (int bgTileCol = 0; bgTileCol < 8; bgTileCol++)
+            {
+                int dot = (8 * column) + fineXScroll + bgTileCol;
+                if (dot >= ScreenWidth)
+                    break;
+
+                if (dot < visibleLeft || dot >= visibleLeft + visibleWidth)
+                    continue;
+
+                if (_hideLeftColumn && dot < 8)
+                {
+                    SetPixel(dot - visibleLeft, targetY, backdropColor);
+                    continue;
+                }
+
+                byte bgColorId = GetTileColor(
+                    bgTileData.TileIndex,
+                    bgTileRow,
+                    bgTileData.HorizontalFlip ? bgTileCol : 7 - bgTileCol);
+                byte spriteColorId = _spritePixels[dot];
+                uint color = spriteColorId != 0 && (bgColorId == 0 || !bgTileData.Priority)
+                    ? GetPaletteColorWord((byte)(0x10 | spriteColorId))
+                    : GetPaletteColorWord((byte)(bgBaseCramAddress | bgColorId));
+                SetPixel(dot - visibleLeft, targetY, color);
+            }
+        }
+    }
+
+    private void ClearScanline(ushort sourceScanline)
+    {
+        int targetY = sourceScanline;
+        int visibleWidth = ScreenWidth;
+
+        if (_version == SmsGgVdpVersion.GameGear && !_ggUseSmsResolution)
+        {
+            const int ggTop = 24;
+            const int ggHeight = 144;
+            const int ggWidth = 160;
+
+            if (sourceScanline < ggTop || sourceScanline >= ggTop + ggHeight)
+                return;
+
+            targetY = sourceScanline - ggTop;
+            visibleWidth = ggWidth;
+        }
+
+        ClearVisibleScanline(targetY, BackdropColor(), visibleWidth);
+    }
+
+    private void ClearVisibleScanline(int targetY, uint color, int width)
+    {
+        for (int x = 0; x < width; x++)
+            SetPixel(x, targetY, color);
+    }
 
     private uint GetPaletteColorWord(byte address)
     {
