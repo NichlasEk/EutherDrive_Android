@@ -97,6 +97,8 @@ public sealed class SmsGgPortSession
         string ext = Path.GetExtension(romPath).ToLowerInvariant();
         if (ext == ".gg")
             return SmsGgHardware.GameGear;
+        if (ext == ".sms" || ext == ".sg")
+            return SmsGgHardware.MasterSystem;
 
         if (LooksLikeGameGearHeader(romBytes))
             return SmsGgHardware.GameGear;

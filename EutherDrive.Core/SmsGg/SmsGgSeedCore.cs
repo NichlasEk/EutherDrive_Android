@@ -347,6 +347,9 @@ public sealed class SmsGgSeedCore
     {
         if (Path.GetExtension(displayName).Equals(".gg", StringComparison.OrdinalIgnoreCase))
             return SmsGgHardware.GameGear;
+        if (Path.GetExtension(displayName).Equals(".sms", StringComparison.OrdinalIgnoreCase)
+            || Path.GetExtension(displayName).Equals(".sg", StringComparison.OrdinalIgnoreCase))
+            return SmsGgHardware.MasterSystem;
 
         int[] headerLocations = { 0x1FF0, 0x3FF0, 0x7FF0 };
         foreach (int offset in headerLocations)
