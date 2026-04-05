@@ -18,7 +18,7 @@ public sealed class RomPickerDialog : Window
     private static readonly HashSet<string> s_supportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".bin", ".md", ".gen", ".smd", ".sms", ".sg", ".gg", ".nes", ".smc", ".sfc",
-        ".pce", ".cue", ".zip", ".7z", ".iso", ".img", ".chd", ".pbp", ".exe"
+        ".pce", ".gba", ".agb", ".cue", ".zip", ".7z", ".iso", ".img", ".chd", ".pbp", ".exe"
     };
 
     private readonly Func<string, RomPickerStats> _statsProvider;

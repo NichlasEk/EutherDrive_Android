@@ -155,6 +155,7 @@ public partial class MainWindow : Window
     private string? _romPath;
     private string? _romLibraryPath;
     private string? _pceBiosPath;
+    private string? _gbaBiosPath;
     private string? _psxBiosPath;
     private string? _psxSbiPath;
     private readonly List<string> _recentRomPaths = new();
@@ -619,6 +620,8 @@ public partial class MainWindow : Window
 
         if (!string.IsNullOrWhiteSpace(path) && IsPceRom(path))
             return new PceCdAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && IsGbaRom(path))
+            return new GbaAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsN64Rom(path))
             return new N64Adapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
@@ -654,6 +657,12 @@ public partial class MainWindow : Window
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
         return ext is ".z64" or ".n64" or ".v64";
+    }
+
+    private static bool IsGbaRom(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".gba" or ".agb";
     }
 
     private static bool IsMasterSystemRomPath(string path)
@@ -768,6 +777,8 @@ public partial class MainWindow : Window
             target = snes.GetTargetFps(RegionOverride);
         else if (_core is PceCdAdapter pce)
             target = pce.GetTargetFps();
+        else if (_core is GbaAdapter gba)
+            target = gba.GetTargetFps();
         else if (_core is PsxAdapter psx)
             target = psx.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
@@ -1348,6 +1359,7 @@ public partial class MainWindow : Window
         {
             PsxAdapter => new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons),
             PceCdAdapter => CreatePceAutoFireProfile(useSixButtonPad),
+            GbaAdapter => new AutoFireProfile("gba", _inputMappings.Snes, s_autoFireSnesButtons),
             SnesAdapter => new AutoFireProfile("snes", _inputMappings.Snes, s_autoFireSnesButtons),
             NesAdapter => new AutoFireProfile("nes", _inputMappings.Snes, s_autoFireTwoButtonButtons),
             MdTracerAdapter md when md.IsMasterSystemMode => new AutoFireProfile("sms", _inputMappings.MdSms, s_autoFireTwoButtonButtons),
@@ -1367,6 +1379,8 @@ public partial class MainWindow : Window
             return new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons);
         if (IsPceRom(path))
             return CreatePceAutoFireProfile(useSixButtonPad);
+        if (IsGbaRom(path))
+            return new AutoFireProfile("gba", _inputMappings.Snes, s_autoFireSnesButtons);
         if (IsNesRom(path))
             return new AutoFireProfile("nes", _inputMappings.Snes, s_autoFireTwoButtonButtons);
         if (IsSnesRom(path))
@@ -1891,6 +1905,51 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
+    private async void OnSelectGbaBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        IStorageFolder? startFolder = null;
+        if (!string.IsNullOrWhiteSpace(_gbaBiosPath))
+        {
+            string? folderPath = Path.GetDirectoryName(_gbaBiosPath);
+            if (!string.IsNullOrWhiteSpace(folderPath))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(folderPath);
+        }
+
+        if (startFolder == null)
+        {
+            string biosDirectory = Path.Combine(Directory.GetCurrentDirectory(), "bios");
+            if (Directory.Exists(biosDirectory))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(biosDirectory);
+        }
+
+        var options = new FilePickerOpenOptions
+        {
+            Title = "Select GBA BIOS (gba_bios.bin)",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("GBA BIOS")
+                {
+                    Patterns = new[] { "*.bin", "*.BIN", "*.rom", "*.ROM", "*.*" }
+                }
+            }
+        };
+
+        if (startFolder != null)
+            options.SuggestedStartLocation = startFolder;
+
+        var files = await StorageProvider.OpenFilePickerAsync(options);
+        if (files.Count == 0)
+            return;
+
+        _gbaBiosPath = files[0].TryGetLocalPath();
+        GbaAdapter.BiosPath = _gbaBiosPath;
+        if (GbaBiosPathText != null)
+            GbaBiosPathText.Text = _gbaBiosPath ?? files[0].Name;
+        StatusText.Text = "GBA BIOS selected";
+        SaveSettings();
+    }
+
     private async void OnSelectPsxSbi(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (string.IsNullOrWhiteSpace(_romPsxSbiKey))
@@ -1988,6 +2047,16 @@ public partial class MainWindow : Window
         if (PceBiosPathText != null)
             PceBiosPathText.Text = "(auto: ./bios/syscard*.pce|.bin)";
         StatusText.Text = "PCE BIOS cleared";
+        SaveSettings();
+    }
+
+    private void OnClearGbaBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        _gbaBiosPath = null;
+        GbaAdapter.BiosPath = null;
+        if (GbaBiosPathText != null)
+            GbaBiosPathText.Text = "(auto: ./bios/gba_bios.bin)";
+        StatusText.Text = "GBA BIOS cleared";
         SaveSettings();
     }
 
@@ -2365,6 +2434,11 @@ public partial class MainWindow : Window
                         {
                             UpdateSnesRomInfo(snes);
                             Console.WriteLine(snes.RomSummary ?? "SNES ROM loaded.");
+                        }
+                        else if (_core is GbaAdapter gba)
+                        {
+                            UpdateGbaRomInfo(_romPath, gba);
+                            Console.WriteLine(gba.RomSummary ?? "GBA ROM loaded.");
                         }
                         else if (_core is NesAdapter nes)
                         {
@@ -3021,6 +3095,8 @@ public partial class MainWindow : Window
             snes.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is PceCdAdapter pce)
             pce.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is GbaAdapter gba)
+            gba.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is NesAdapter nes)
             nes.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is PsxAdapter psx)
@@ -3193,6 +3269,20 @@ public partial class MainWindow : Window
     {
         if (RomInfoText != null)
             RomInfoText.Text = adapter.RomSummary ?? "NES ROM loaded.";
+        UpdateRomRegionHint(ConsoleRegion.Auto);
+        _romRegionKey = null;
+        _romSegaCdKey = null;
+        _segaCdRamCartEnabled = false;
+        _segaCdLoadCdToRam = false;
+        _segaCdForceNoDisc = false;
+        UpdateSegaCdOptionsUi();
+    }
+
+    private void UpdateGbaRomInfo(string romPath, GbaAdapter adapter)
+    {
+        string name = Path.GetFileName(romPath);
+        if (RomInfoText != null)
+            RomInfoText.Text = adapter.RomSummary ?? $"GBA: {name}";
         UpdateRomRegionHint(ConsoleRegion.Auto);
         _romRegionKey = null;
         _romSegaCdKey = null;
@@ -4416,6 +4506,7 @@ public partial class MainWindow : Window
         public string? RomLibraryPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
+        public string? GbaBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public RenderBackendMode RenderBackendMode { get; set; } = RenderBackendMode.Bitmap;
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
@@ -4457,6 +4548,7 @@ public partial class MainWindow : Window
         public string? RomLibraryPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
+        public string? GbaBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public string? RenderBackendMode { get; set; }
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
@@ -4580,6 +4672,13 @@ public partial class MainWindow : Window
             PsxAdapter.BiosPath = _psxBiosPath;
             if (PsxBiosPathText != null)
                 PsxBiosPathText.Text = _psxBiosPath;
+        }
+        if (!string.IsNullOrWhiteSpace(settings.GbaBiosPath))
+        {
+            _gbaBiosPath = settings.GbaBiosPath;
+            GbaAdapter.BiosPath = _gbaBiosPath;
+            if (GbaBiosPathText != null)
+                GbaBiosPathText.Text = _gbaBiosPath;
         }
         _psxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled;
         PsxAdapter.AnalogControllerEnabled = _psxAnalogControllerEnabled;
@@ -4789,6 +4888,7 @@ public partial class MainWindow : Window
             RomLibraryPath = _romLibraryPath,
             RecentRomPaths = _recentRomPaths.ToList(),
             PceBiosPath = _pceBiosPath,
+            GbaBiosPath = _gbaBiosPath,
             PsxBiosPath = _psxBiosPath,
             RenderBackendMode = _renderBackendMode,
             SnesSpecialRomPaths = _snesSpecialRomPaths.Count > 0
@@ -4889,6 +4989,7 @@ public partial class MainWindow : Window
             RomLibraryPath = settings.RomLibraryPath,
             RecentRomPaths = settings.RecentRomPaths,
             PceBiosPath = settings.PceBiosPath,
+            GbaBiosPath = settings.GbaBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
             RenderBackendMode = settings.RenderBackendMode.ToString(),
             SnesSpecialRomPaths = settings.SnesSpecialRomPaths,
@@ -4990,6 +5091,7 @@ public partial class MainWindow : Window
             RomLibraryPath = raw.RomLibraryPath,
             RecentRomPaths = raw.RecentRomPaths,
             PceBiosPath = raw.PceBiosPath,
+            GbaBiosPath = raw.GbaBiosPath,
             PsxBiosPath = raw.PsxBiosPath,
             RenderBackendMode = ParseRenderBackendMode(raw.RenderBackendMode),
             PsxAnalogControllerEnabled = raw.PsxAnalogControllerEnabled,
@@ -6519,8 +6621,9 @@ public partial class MainWindow : Window
         bool isSnes = core is SnesAdapter;
         bool isPce = core is PceCdAdapter;
         bool isNes = core is NesAdapter;
+        bool isGba = core is GbaAdapter;
         bool isPsx = core is PsxAdapter;
-        bool isSnesLike = isSnes || isNes;
+        bool isSnesLike = isSnes || isNes || isGba;
         var mappingSet = isPsx ? _inputMappings.Psx : (isSnesLike ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms));
         bool up;
         bool down;
@@ -7731,7 +7834,7 @@ public partial class MainWindow : Window
                     GenerateAudioFromSystemCycles(core);
                     if (core is MdTracerAdapter mdAudioAdapter)
                         TopUpMdAudioIfLow(mdAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -8007,7 +8110,7 @@ public partial class MainWindow : Window
                 return adapter.GetAudioBufferForFrames(frames, out _, out _);
             }
         }
-        if (_core is SnesAdapter || _core is PceCdAdapter || _core is N64Adapter || _core is SegaCdAdapter)
+        if (_core is SnesAdapter || _core is PceCdAdapter || _core is GbaAdapter || _core is N64Adapter || _core is SegaCdAdapter)
             return DequeueSnesAudio(frames);
         return ReadOnlySpan<short>.Empty;
     }

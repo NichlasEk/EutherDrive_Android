@@ -333,6 +333,13 @@
               <Button Classes="ghost" Content="Clear" Click="OnClearPceBios"/>
             </StackPanel>
             <Separator/>
+            <TextBlock Text="GBA BIOS" FontWeight="Bold"/>
+            <TextBlock Name="GbaBiosPathText" Text="(auto: ./bios/gba_bios.bin)" TextWrapping="Wrap"/>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Select BIOS…" Click="OnSelectGbaBios"/>
+              <Button Classes="ghost" Content="Clear" Click="OnClearGbaBios"/>
+            </StackPanel>
+            <Separator/>
             <TextBlock Text="PSX BIOS" FontWeight="Bold"/>
             <TextBlock Name="PsxBiosPathText" Text="(none)" TextWrapping="Wrap"/>
             <StackPanel Orientation="Horizontal" Spacing="6">
