@@ -1820,6 +1820,10 @@ public partial class MainView : UserControl
                     perfSummary = $"{perfSummary}\n{compactPpu}";
             }
         }
+        else if (_core is GbaAdapter gba && gba.TryGetFramePerfSummary(out string gbaFramePerf))
+        {
+            perfSummary = $"{perfSummary}\n{gbaFramePerf}";
+        }
 
         _latestPerfSummary = perfSummary;
 

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using EutherDrive.Core.GbaEmu;
 using EutherDrive.Core.Savestates;
 
@@ -10,6 +11,7 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
     private const int FrameHeight = GbaConstants.ScreenHeight;
     private const int FrameStride = FrameWidth * 4;
     private static readonly int OutputSampleRate = ParseOutputSampleRate();
+    private static readonly bool GbaPerfEnabled = Gba.IsPerfInstrumentationEnabled;
 
     private readonly object _stateLock = new();
     private Gba? _gba;
@@ -23,6 +25,22 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
     private short[] _scaledAudioBuffer = Array.Empty<short>();
     private short[] _resampledAudioBuffer = Array.Empty<short>();
     private double _resamplePhase;
+    private volatile string _framePerfSummary = "GBA perf --";
+    private long _framePerfWindowStartTicks = Stopwatch.GetTimestamp();
+    private long _framePerfAccumulatedCoreTicks;
+    private long _framePerfAccumulatedCpuTicks;
+    private long _framePerfAccumulatedDmaTicks;
+    private long _framePerfAccumulatedHaltTicks;
+    private long _framePerfAccumulatedVideoTicks;
+    private long _framePerfAccumulatedRenderTicks;
+    private long _framePerfAccumulatedSnapshotTicks;
+    private long _framePerfAccumulatedSaveTicks;
+    private long _framePerfAccumulatedAudioTicks;
+    private long _framePerfAccumulatedAudioFrames;
+    private long _framePerfAccumulatedCpuRuns;
+    private long _framePerfAccumulatedDmaUnits;
+    private long _framePerfAccumulatedHaltChunks;
+    private int _framePerfSamples;
 
     public static string? BiosPath { get; set; }
 
@@ -56,6 +74,7 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
             gba.Reset();
             ApplyBootBiosMode(gba);
             ResetAudioOutputState();
+            ResetFramePerfCounters();
             gba.Video.RefreshFrame();
 
             _gba = gba;
@@ -77,6 +96,7 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
             _gba.Reset();
             ApplyBootBiosMode(_gba);
             ResetAudioOutputState();
+            ResetFramePerfCounters();
             _gba.Video.RefreshFrame();
         }
     }
@@ -88,8 +108,14 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
             if (_gba == null)
                 return;
 
+            long coreStart = GbaPerfEnabled ? Stopwatch.GetTimestamp() : 0;
             _gba.RunFrame();
+            long coreTicks = GbaPerfEnabled ? Stopwatch.GetTimestamp() - coreStart : 0;
+            long saveStart = GbaPerfEnabled ? Stopwatch.GetTimestamp() : 0;
             FlushSaveDataIfNeeded(_gba);
+            long saveTicks = GbaPerfEnabled ? Stopwatch.GetTimestamp() - saveStart : 0;
+            if (GbaPerfEnabled)
+                UpdateFramePerfStats(_gba, coreTicks, saveTicks);
         }
     }
 
@@ -110,24 +136,38 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
         if (_gba == null)
             return ReadOnlySpan<short>.Empty;
 
+        long audioStart = GbaPerfEnabled ? Stopwatch.GetTimestamp() : 0;
         int samples = Math.Min(_gba.Audio.OutputBuffer.Length, _gba.Audio.SamplesWritten * 2);
         if (samples <= 0)
+        {
+            if (GbaPerfEnabled)
+                RecordAudioPerf(Stopwatch.GetTimestamp() - audioStart, 0);
             return ReadOnlySpan<short>.Empty;
+        }
 
         ReadOnlySpan<short> source = _gba.Audio.OutputBuffer.AsSpan(0, samples);
         if (OutputSampleRate == GbaAudio.SampleRate)
         {
             if (_masterVolumePercent >= 100)
+            {
+                if (GbaPerfEnabled)
+                    RecordAudioPerf(Stopwatch.GetTimestamp() - audioStart, samples / 2);
                 return source;
+            }
 
             EnsureScaledAudioCapacity(samples);
             int scale = _masterVolumePercent;
             for (int i = 0; i < samples; i++)
                 _scaledAudioBuffer[i] = (short)((source[i] * scale) / 100);
+            if (GbaPerfEnabled)
+                RecordAudioPerf(Stopwatch.GetTimestamp() - audioStart, samples / 2);
             return _scaledAudioBuffer.AsSpan(0, samples);
         }
 
-        return ResampleAudio(source);
+        ReadOnlySpan<short> resampled = ResampleAudio(source);
+        if (GbaPerfEnabled)
+            RecordAudioPerf(Stopwatch.GetTimestamp() - audioStart, resampled.Length / 2);
+        return resampled;
     }
 
     public void SetInputState(
@@ -211,8 +251,21 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
             GbaSerialize.Load(_gba, payload);
             ReapplyBiosAfterStateLoad(_gba);
             ResetAudioOutputState();
+            ResetFramePerfCounters();
             _gba.Video.RefreshFrame();
         }
+    }
+
+    public bool TryGetFramePerfSummary(out string summary)
+    {
+        if (!GbaPerfEnabled)
+        {
+            summary = string.Empty;
+            return false;
+        }
+
+        summary = _framePerfSummary;
+        return !string.IsNullOrWhiteSpace(summary);
     }
 
     private void RefreshBiosSelection()
@@ -365,6 +418,94 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
     {
         _resamplePhase = 0;
     }
+
+    private void ResetFramePerfCounters()
+    {
+        _framePerfWindowStartTicks = Stopwatch.GetTimestamp();
+        _framePerfAccumulatedCoreTicks = 0;
+        _framePerfAccumulatedCpuTicks = 0;
+        _framePerfAccumulatedDmaTicks = 0;
+        _framePerfAccumulatedHaltTicks = 0;
+        _framePerfAccumulatedVideoTicks = 0;
+        _framePerfAccumulatedRenderTicks = 0;
+        _framePerfAccumulatedSnapshotTicks = 0;
+        _framePerfAccumulatedSaveTicks = 0;
+        _framePerfAccumulatedAudioTicks = 0;
+        _framePerfAccumulatedAudioFrames = 0;
+        _framePerfAccumulatedCpuRuns = 0;
+        _framePerfAccumulatedDmaUnits = 0;
+        _framePerfAccumulatedHaltChunks = 0;
+        _framePerfSamples = 0;
+        _framePerfSummary = "GBA perf --";
+    }
+
+    private void UpdateFramePerfStats(Gba gba, long coreTicks, long saveTicks)
+    {
+        _framePerfAccumulatedCoreTicks += coreTicks;
+        _framePerfAccumulatedCpuTicks += gba.LastFrameCpuTicks;
+        _framePerfAccumulatedDmaTicks += gba.LastFrameDmaTicks;
+        _framePerfAccumulatedHaltTicks += gba.LastFrameHaltTicks;
+        _framePerfAccumulatedVideoTicks += gba.LastFrameVideoTicks;
+        _framePerfAccumulatedRenderTicks += gba.LastFrameVideoRenderTicks;
+        _framePerfAccumulatedSnapshotTicks += gba.LastFrameVideoSnapshotTicks;
+        _framePerfAccumulatedSaveTicks += saveTicks;
+        _framePerfAccumulatedCpuRuns += gba.LastFrameCpuRuns;
+        _framePerfAccumulatedDmaUnits += gba.LastFrameDmaUnits;
+        _framePerfAccumulatedHaltChunks += gba.LastFrameHaltChunks;
+        _framePerfSamples++;
+        MaybeRefreshFramePerfSummary();
+    }
+
+    private void RecordAudioPerf(long audioTicks, int audioFrames)
+    {
+        _framePerfAccumulatedAudioTicks += audioTicks;
+        _framePerfAccumulatedAudioFrames += audioFrames;
+        MaybeRefreshFramePerfSummary();
+    }
+
+    private void MaybeRefreshFramePerfSummary()
+    {
+        long nowTicks = Stopwatch.GetTimestamp();
+        double windowMs = (nowTicks - _framePerfWindowStartTicks) * 1000.0 / Stopwatch.Frequency;
+        if (windowMs < 250 || _framePerfSamples <= 0)
+            return;
+
+        double avgCoreMs = TicksToMs(_framePerfAccumulatedCoreTicks) / _framePerfSamples;
+        double avgCpuMs = TicksToMs(_framePerfAccumulatedCpuTicks) / _framePerfSamples;
+        double avgDmaMs = TicksToMs(_framePerfAccumulatedDmaTicks) / _framePerfSamples;
+        double avgHaltMs = TicksToMs(_framePerfAccumulatedHaltTicks) / _framePerfSamples;
+        double avgVideoMs = TicksToMs(_framePerfAccumulatedVideoTicks) / _framePerfSamples;
+        double avgRenderMs = TicksToMs(_framePerfAccumulatedRenderTicks) / _framePerfSamples;
+        double avgSnapshotMs = TicksToMs(_framePerfAccumulatedSnapshotTicks) / _framePerfSamples;
+        double avgSaveMs = TicksToMs(_framePerfAccumulatedSaveTicks) / _framePerfSamples;
+        double avgAudioMs = TicksToMs(_framePerfAccumulatedAudioTicks) / _framePerfSamples;
+        double avgOtherMs = Math.Max(0, avgCoreMs - avgCpuMs - avgDmaMs - avgHaltMs - avgVideoMs - avgSaveMs);
+        double avgCpuRuns = _framePerfAccumulatedCpuRuns / (double)_framePerfSamples;
+        double avgDmaUnits = _framePerfAccumulatedDmaUnits / (double)_framePerfSamples;
+        double avgHaltChunks = _framePerfAccumulatedHaltChunks / (double)_framePerfSamples;
+        double avgAudioFrames = _framePerfAccumulatedAudioFrames / (double)_framePerfSamples;
+
+        _framePerfSummary =
+            $"GBA core:{avgCoreMs:0.0}ms  cpu:{avgCpuMs:0.0}ms  dma:{avgDmaMs:0.0}ms  halt:{avgHaltMs:0.0}ms  vid:{avgVideoMs:0.0}ms(r:{avgRenderMs:0.0} s:{avgSnapshotMs:0.0})  other:{avgOtherMs:0.0}ms  mix:{avgAudioMs:0.0}ms  save:{avgSaveMs:0.0}ms  cpuRun:{avgCpuRuns:0}  dmaU:{avgDmaUnits:0}  haltW:{avgHaltChunks:0}  snd:{avgAudioFrames:0}f";
+
+        _framePerfWindowStartTicks = nowTicks;
+        _framePerfAccumulatedCoreTicks = 0;
+        _framePerfAccumulatedCpuTicks = 0;
+        _framePerfAccumulatedDmaTicks = 0;
+        _framePerfAccumulatedHaltTicks = 0;
+        _framePerfAccumulatedVideoTicks = 0;
+        _framePerfAccumulatedRenderTicks = 0;
+        _framePerfAccumulatedSnapshotTicks = 0;
+        _framePerfAccumulatedSaveTicks = 0;
+        _framePerfAccumulatedAudioTicks = 0;
+        _framePerfAccumulatedAudioFrames = 0;
+        _framePerfAccumulatedCpuRuns = 0;
+        _framePerfAccumulatedDmaUnits = 0;
+        _framePerfAccumulatedHaltChunks = 0;
+        _framePerfSamples = 0;
+    }
+
+    private static double TicksToMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
     private static int ParseOutputSampleRate()
     {

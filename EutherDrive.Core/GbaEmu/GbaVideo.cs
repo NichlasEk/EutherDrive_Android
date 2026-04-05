@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace EutherDrive.Core.GbaEmu;
 
 public partial class GbaVideo
@@ -39,6 +41,8 @@ public partial class GbaVideo
 	internal bool _oamDirty = true;
 	internal int _oamBatchOffset;
 	internal int _oamMax;
+	public long LastFrameSnapshotTicks { get; private set; }
+	public long LastFrameRenderTicks { get; private set; }
 
 	public GbaVideo( Gba gba )
 	{
@@ -74,6 +78,14 @@ public partial class GbaVideo
 		_oamBatchOffset = 0;
 		_oamMax = 0;
 		_hasCapturedFrame = false;
+		LastFrameSnapshotTicks = 0;
+		LastFrameRenderTicks = 0;
+	}
+
+	internal void ResetFramePerf()
+	{
+		LastFrameSnapshotTicks = 0;
+		LastFrameRenderTicks = 0;
 	}
 
 	public void WriteDispCnt( ushort value )
@@ -192,8 +204,21 @@ public partial class GbaVideo
 				Gba.Io.RaiseIrq( GbaIrq.VBlank );
 			Gba.Dma.OnVBlank();
 
-			SnapshotVram();
-			CommitFrame();
+			if ( Gba.IsPerfInstrumentationEnabled )
+			{
+				long snapshotStart = Stopwatch.GetTimestamp();
+				SnapshotVram();
+				LastFrameSnapshotTicks += Stopwatch.GetTimestamp() - snapshotStart;
+
+				long renderStart = Stopwatch.GetTimestamp();
+				CommitFrame();
+				LastFrameRenderTicks += Stopwatch.GetTimestamp() - renderStart;
+			}
+			else
+			{
+				SnapshotVram();
+				CommitFrame();
+			}
 
 			_oamDirty = true;
 			_oamBatchOffset = 0;

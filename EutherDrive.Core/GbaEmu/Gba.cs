@@ -1,7 +1,13 @@
+using System.Diagnostics;
+
 namespace EutherDrive.Core.GbaEmu;
 
 public class Gba
 {
+	private static readonly bool PerfEnabled =
+		string.Equals( Environment.GetEnvironmentVariable( "EUTHERDRIVE_GBA_PERF" ), "1", StringComparison.Ordinal )
+		|| OperatingSystem.IsAndroid();
+
 	public ArmCore Cpu { get; private set; }
 	public GbaMemory Memory { get; private set; }
 	public GbaVideo Video { get; private set; }
@@ -17,6 +23,16 @@ public class Gba
 	public int CyclesThisFrame { get; set; }
 	public long FrameCounter { get; set; }
 	public long TotalCycles { get; set; }
+	public long LastFrameCpuTicks { get; private set; }
+	public long LastFrameDmaTicks { get; private set; }
+	public long LastFrameHaltTicks { get; private set; }
+	public int LastFrameCpuRuns { get; private set; }
+	public int LastFrameDmaUnits { get; private set; }
+	public int LastFrameHaltChunks { get; private set; }
+	public long LastFrameVideoTicks => Video.LastFrameSnapshotTicks + Video.LastFrameRenderTicks;
+	public long LastFrameVideoSnapshotTicks => Video.LastFrameSnapshotTicks;
+	public long LastFrameVideoRenderTicks => Video.LastFrameRenderTicks;
+	public static bool IsPerfInstrumentationEnabled => PerfEnabled;
 
 	public Gba()
 	{
@@ -66,6 +82,17 @@ public class Gba
 	{
 		if ( !IsRunning ) return;
 
+		if ( PerfEnabled )
+		{
+			LastFrameCpuTicks = 0;
+			LastFrameDmaTicks = 0;
+			LastFrameHaltTicks = 0;
+			LastFrameCpuRuns = 0;
+			LastFrameDmaUnits = 0;
+			LastFrameHaltChunks = 0;
+			Video.ResetFramePerf();
+		}
+
 		Audio.BeginFrame();
 		Io.TestKeypadIrq();
 
@@ -94,17 +121,29 @@ public class Gba
 		{
 			if ( Dma.ActiveDma >= 0 )
 			{
+				long start = PerfEnabled ? Stopwatch.GetTimestamp() : 0;
 				ProcessDma( target );
+				if ( PerfEnabled )
+					LastFrameDmaTicks += Stopwatch.GetTimestamp() - start;
 				continue;
 			}
 
 			if ( Cpu.Halted )
 			{
+				long start = PerfEnabled ? Stopwatch.GetTimestamp() : 0;
 				ProcessHalt( target );
+				if ( PerfEnabled )
+					LastFrameHaltTicks += Stopwatch.GetTimestamp() - start;
 				continue;
 			}
 
+			long cpuStart = PerfEnabled ? Stopwatch.GetTimestamp() : 0;
 			Cpu.Run( target );
+			if ( PerfEnabled )
+			{
+				LastFrameCpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+				LastFrameCpuRuns++;
+			}
 		}
 	}
 
@@ -125,6 +164,8 @@ public class Gba
 			}
 
 			int unitCost = Dma.ServiceUnit();
+			if ( PerfEnabled )
+				LastFrameDmaUnits++;
 			AdvanceClock( unitCost );
 		}
 	}
@@ -141,6 +182,8 @@ public class Gba
 			nextEvent = Math.Min( nextEvent, target );
 
 			int chunk = Math.Max( 1, (int)(nextEvent - Cpu.Cycles) );
+			if ( PerfEnabled )
+				LastFrameHaltChunks++;
 			AdvanceClock( chunk );
 
 			if ( Dma.ActiveDma >= 0 && Dma.Channels[Dma.ActiveDma].When <= Cpu.Cycles )
