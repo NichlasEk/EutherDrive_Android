@@ -192,8 +192,9 @@ public partial class MainView : UserControl
                 {
                     Patterns = new[]
                     {
-                        "*.bin", "*.md", "*.smd", "*.gen", "*.sms", "*.gg",
-                        "*.nes", "*.smc", "*.sfc", "*.pce", "*.cue", "*.iso", "*.chd", "*.z64", "*.n64", "*.v64"
+                        "*.bin", "*.md", "*.smd", "*.gen", "*.sms", "*.sg", "*.gg",
+                        "*.nes", "*.smc", "*.sfc", "*.pce", "*.gba", "*.agb", "*.cue", "*.iso", "*.chd", "*.z64", "*.n64", "*.v64",
+                        "*.zip", "*.7z"
                     }
                 },
                 FilePickerFileTypes.All
@@ -1331,6 +1332,7 @@ public partial class MainView : UserControl
         return core switch
         {
             MdTracerAdapter md => md.GetTargetFps(),
+            GbaAdapter gba => gba.GetTargetFps(),
             SnesAdapter snes => snes.GetTargetFps(ConsoleRegion.Auto),
             PceCdAdapter pce => pce.GetTargetFps(),
             PsxAdapter psx => psx.GetTargetFps(),
@@ -2414,6 +2416,8 @@ public partial class MainView : UserControl
 
     private async void OnPickPceBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("PCE BIOS", "Select PCE BIOS", new[] { "*.pce", "*.bin", "*.*" });
     private void OnClearPceBios(object? sender, RoutedEventArgs e) => ClearSystemFile("PCE BIOS");
+    private async void OnPickGbaBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("GBA BIOS", "Select GBA BIOS", new[] { "*.bin", "*.rom", "*.*" });
+    private void OnClearGbaBios(object? sender, RoutedEventArgs e) => ClearSystemFile("GBA BIOS");
     private async void OnPickSegaCdBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("SEGA CD BIOS", "Select Sega CD BIOS", new[] { "*.bin", "*.*" });
     private void OnClearSegaCdBios(object? sender, RoutedEventArgs e) => ClearSystemFile("SEGA CD BIOS");
     private async void OnPickPsxBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("PSX BIOS", "Select PSX BIOS", new[] { "*.bin", "*.*" });
@@ -2540,6 +2544,7 @@ public partial class MainView : UserControl
     private void ApplySettings()
     {
         PceCdAdapter.BiosPath = RegisterSystemFileVirtualPath("PCE BIOS", _viewModel.PceBiosPath, _viewModel.PceBiosDisplay);
+        GbaAdapter.BiosPath = _viewModel.GbaBiosPath;
         string? segaCdBiosPath = RegisterSystemFileVirtualPath("SEGA CD BIOS", _viewModel.SegaCdBiosPath, _viewModel.SegaCdBiosDisplay);
         PsxAdapter.BiosPath = RegisterSystemFileVirtualPath("PSX BIOS", _viewModel.PsxBiosPath, _viewModel.PsxBiosDisplay);
         ApplyPsxExecutionSettings();
@@ -2694,6 +2699,8 @@ public partial class MainView : UserControl
         {
             PceBiosPath = _viewModel.PceBiosPath,
             PceBiosDisplay = _viewModel.PceBiosDisplay,
+            GbaBiosPath = _viewModel.GbaBiosPath,
+            GbaBiosDisplay = _viewModel.GbaBiosDisplay,
             SegaCdBiosPath = _viewModel.SegaCdBiosPath,
             SegaCdBiosDisplay = _viewModel.SegaCdBiosDisplay,
             PsxBiosPath = _viewModel.PsxBiosPath,
@@ -2794,6 +2801,8 @@ public partial class MainView : UserControl
     {
         _viewModel.PceBiosPath = settings.PceBiosPath;
         _viewModel.PceBiosDisplay = settings.PceBiosDisplay ?? "(auto)";
+        _viewModel.GbaBiosPath = settings.GbaBiosPath;
+        _viewModel.GbaBiosDisplay = settings.GbaBiosDisplay ?? "(auto: gba_bios.bin)";
         _viewModel.SegaCdBiosPath = settings.SegaCdBiosPath;
         _viewModel.SegaCdBiosDisplay = settings.SegaCdBiosDisplay ?? "(none)";
         _viewModel.PsxBiosPath = settings.PsxBiosPath;
@@ -2864,6 +2873,23 @@ public partial class MainView : UserControl
             if (core is IExtendedInputHandler extendedInputHandler)
             {
                 extendedInputHandler.SetExtendedInputState(input);
+            }
+            else if (core is GbaAdapter gba)
+            {
+                gba.SetInputState(
+                    input.Up,
+                    input.Down,
+                    input.Left,
+                    input.Right,
+                    input.South,
+                    input.East,
+                    input.R1,
+                    input.Start,
+                    input.North,
+                    input.West,
+                    input.L1,
+                    input.Select || input.Menu,
+                    input.PadType);
             }
             else
             {
@@ -3597,7 +3623,7 @@ public partial class MainView : UserControl
                 return new PceCdAdapter();
         }
 
-        string ext = Path.GetExtension(path).ToLowerInvariant();
+        string ext = GetEffectiveRomExtension(path);
         if (ext == ".cue")
         {
             throw new InvalidOperationException("Cue disc type could not be detected. Check that the selected cue bundle resolves to a valid PSX or PCE data track.");
@@ -3616,6 +3642,16 @@ public partial class MainView : UserControl
         if (ext is ".smc" or ".sfc")
         {
             return new SnesAdapter();
+        }
+
+        if (ext is ".gba" or ".agb")
+        {
+            return new GbaAdapter();
+        }
+
+        if (ext is ".sms" or ".sg" or ".gg")
+        {
+            return new SmsGgAdapter();
         }
 
         if (ext == ".nes")
@@ -3655,10 +3691,22 @@ public partial class MainView : UserControl
         }
     }
 
+    private static string GetEffectiveRomExtension(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if ((ext is ".zip" or ".7z") && RomArchiveExtractor.TryGetArchiveRomEntryExtension(path, out string archiveExt))
+            return archiveExt.ToLowerInvariant();
+
+        return ext;
+    }
+
     private static void SetDefaultCoreVolume(IEmulatorCore core)
     {
         switch (core)
         {
+            case GbaAdapter gba:
+                gba.SetMasterVolumePercent(100);
+                break;
             case SnesAdapter snes:
                 snes.SetMasterVolumePercent(100);
                 break;
@@ -3685,8 +3733,10 @@ public partial class MainView : UserControl
             EutherDrive.Core.SegaCd.SegaCdAdapter => "Sega CD",
             PceCdAdapter => "PC Engine CD",
             N64Adapter => "Nintendo 64",
+            GbaAdapter => "Game Boy Advance",
             SnesAdapter => "SNES",
             NesAdapter => "NES",
+            SmsGgAdapter sms => sms.IsGameGearMode ? "Game Gear" : "Master System",
             MdTracerAdapter => GuessConsoleLabelFromPath(romPath),
             _ => GuessConsoleLabelFromPath(romPath)
         };
@@ -3736,6 +3786,7 @@ public partial class MainView : UserControl
         private Thickness _screenContentMargin = new(12);
         private string _settingsHint = "Pick BIOS and chip ROMs here.";
         private string _pceBiosDisplay = "(auto)";
+        private string _gbaBiosDisplay = "(auto: gba_bios.bin)";
         private string _segaCdBiosDisplay = "(none)";
         private string _psxBiosDisplay = "(none)";
         private bool _psxAnalogControllerEnabled;
@@ -3758,6 +3809,7 @@ public partial class MainView : UserControl
         private bool _isRunning;
         private string? _selectedRomPath;
         private string? _pceBiosPath;
+        private string? _gbaBiosPath;
         private string? _segaCdBiosPath;
         private string? _psxBiosPath;
         private string? _dsp1Path;
@@ -3987,6 +4039,7 @@ public partial class MainView : UserControl
         }
 
         public string PceBiosDisplay { get => _pceBiosDisplay; set => SetField(ref _pceBiosDisplay, value); }
+        public string GbaBiosDisplay { get => _gbaBiosDisplay; set => SetField(ref _gbaBiosDisplay, value); }
         public string SegaCdBiosDisplay { get => _segaCdBiosDisplay; set => SetField(ref _segaCdBiosDisplay, value); }
         public string PsxBiosDisplay { get => _psxBiosDisplay; set => SetField(ref _psxBiosDisplay, value); }
         public bool PsxAnalogControllerEnabled { get => _psxAnalogControllerEnabled; set => SetField(ref _psxAnalogControllerEnabled, value); }
@@ -4034,6 +4087,7 @@ public partial class MainView : UserControl
         }
 
         public string? PceBiosPath { get => _pceBiosPath; set => SetField(ref _pceBiosPath, value); }
+        public string? GbaBiosPath { get => _gbaBiosPath; set => SetField(ref _gbaBiosPath, value); }
         public string? SegaCdBiosPath { get => _segaCdBiosPath; set => SetField(ref _segaCdBiosPath, value); }
         public string? PsxBiosPath { get => _psxBiosPath; set => SetField(ref _psxBiosPath, value); }
         public string? Dsp1Path { get => _dsp1Path; set => SetField(ref _dsp1Path, value); }
@@ -4065,7 +4119,7 @@ public partial class MainView : UserControl
         {
             _selectedRomPath = romPath;
             CurrentRomDisplay = displayName ?? romPath;
-            SelectedConsoleLabel = GuessConsole(displayName ?? romPath);
+            SelectedConsoleLabel = GuessConsole(romPath);
             FooterStatus = "ROM imported. Press Start to boot.";
             ScreenOverlayVisible = true;
             HeaderSubtitle = "Focused Android layout with quick ROM access and on-screen controls.";
@@ -4083,6 +4137,10 @@ public partial class MainView : UserControl
                 case "PCE BIOS":
                     PceBiosPath = path;
                     PceBiosDisplay = path == null ? "(auto)" : label;
+                    break;
+                case "GBA BIOS":
+                    GbaBiosPath = path;
+                    GbaBiosDisplay = path == null ? "(auto: gba_bios.bin)" : label;
                     break;
                 case "SEGA CD BIOS":
                     SegaCdBiosPath = path;
@@ -4130,11 +4188,13 @@ public partial class MainView : UserControl
 
         internal static string GuessConsole(string romPath)
         {
-            string ext = Path.GetExtension(romPath).ToLowerInvariant();
+            string ext = GetEffectiveRomExtension(romPath);
             return ext switch
             {
                 ".bin" or ".md" or ".smd" or ".gen" => "Mega Drive",
-                ".sms" or ".gg" => "Master System",
+                ".sms" or ".sg" => "Master System",
+                ".gg" => "Game Gear",
+                ".gba" or ".agb" => "Game Boy Advance",
                 ".smc" or ".sfc" => "SNES",
                 ".nes" => "NES",
                 ".pce" => "PC Engine",
@@ -4166,6 +4226,8 @@ public partial class MainView : UserControl
     {
         public string? PceBiosPath { get; set; }
         public string? PceBiosDisplay { get; set; }
+        public string? GbaBiosPath { get; set; }
+        public string? GbaBiosDisplay { get; set; }
         public string? SegaCdBiosPath { get; set; }
         public string? SegaCdBiosDisplay { get; set; }
         public string? PsxBiosPath { get; set; }

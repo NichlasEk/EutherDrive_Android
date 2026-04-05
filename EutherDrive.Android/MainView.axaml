@@ -958,6 +958,15 @@
 
                 <Border Classes="surface" Padding="12">
                   <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="GBA BIOS" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding GbaBiosDisplay}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickGbaBios" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearGbaBios" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
                     <TextBlock Text="SEGA CD BIOS" FontWeight="Bold" VerticalAlignment="Center" />
                     <TextBlock Grid.Column="1" Text="{Binding SegaCdBiosDisplay}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
                     <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickSegaCdBios" />
