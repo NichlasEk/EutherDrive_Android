@@ -25,22 +25,27 @@ public sealed class RomPickerDialog : Window
     private readonly ObservableCollection<RomPickerEntry> _entries = new();
     private readonly List<RomPickerEntry> _allEntries = new();
     private readonly TextBox _pathText;
+    private readonly TextBox _romLibraryText;
     private readonly TextBox _statusText;
     private readonly TextBox _searchBox;
     private readonly ComboBox _sortCombo;
     private readonly ComboBox _starsFilterCombo;
     private readonly ListBox _listBox;
     private readonly Button _openButton;
+    private readonly Button _romsButton;
     private readonly double _uiScale;
+    private string? _romLibraryPath;
     private string _currentDirectory;
 
     public string? SelectedPath { get; private set; }
+    public string? RomLibraryPath => _romLibraryPath;
 
-    public RomPickerDialog(string? initialPath, double uiScale, Func<string, RomPickerStats> statsProvider)
+    public RomPickerDialog(string? initialPath, string? romLibraryPath, double uiScale, Func<string, RomPickerStats> statsProvider)
     {
         _uiScale = uiScale;
         _statsProvider = statsProvider;
-        _currentDirectory = ResolveInitialDirectory(initialPath);
+        _romLibraryPath = NormalizeDirectoryPath(romLibraryPath);
+        _currentDirectory = ResolveInitialDirectory(initialPath, _romLibraryPath);
 
         Title = "ROM Picker";
         Width = ScaleDialogSize(980, uiScale);
@@ -65,6 +70,14 @@ public sealed class RomPickerDialog : Window
             BorderThickness = new Thickness(0),
             Background = Brushes.Transparent,
             Text = "Choose a ROM or navigate into a directory."
+        };
+
+        _romLibraryText = new TextBox
+        {
+            IsReadOnly = true,
+            BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent,
+            TextWrapping = TextWrapping.NoWrap
         };
 
         _searchBox = new TextBox
@@ -127,6 +140,15 @@ public sealed class RomPickerDialog : Window
         var homeButton = new Button { Content = "Home", MinWidth = 84 };
         homeButton.Click += (_, _) => NavigateTo(ResolveHomeDirectory());
 
+        _romsButton = new Button { Content = "Roms", MinWidth = 84 };
+        _romsButton.Click += (_, _) => NavigateToRomLibrary();
+
+        var setRomsButton = new Button { Content = "Set Roms", MinWidth = 98 };
+        setRomsButton.Click += (_, _) => SetCurrentDirectoryAsRomLibrary();
+
+        var drivesButton = new Button { Content = "Drives", MinWidth = 88 };
+        drivesButton.Click += async (_, _) => await OpenDrivePickerAsync();
+
         var refreshButton = new Button { Content = "Refresh", MinWidth = 88 };
         refreshButton.Click += (_, _) => LoadDirectory(_currentDirectory);
 
@@ -171,11 +193,26 @@ public sealed class RomPickerDialog : Window
                 Spacing = 8,
                 Children =
                 {
-                    new StackPanel
+                    new Grid
                     {
-                        Orientation = Orientation.Horizontal,
-                        Spacing = 8,
-                        Children = { upButton, homeButton, refreshButton }
+                        ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                        ColumnSpacing = 12,
+                        Children =
+                        {
+                            new StackPanel
+                            {
+                                [Grid.ColumnProperty] = 0,
+                                Orientation = Orientation.Horizontal,
+                                Spacing = 8,
+                                Children = { upButton, homeButton, _romsButton, drivesButton, refreshButton }
+                            },
+                            new Border
+                            {
+                                [Grid.ColumnProperty] = 1,
+                                Background = Brushes.Transparent,
+                                Child = setRomsButton
+                            }
+                        }
                     },
                     new StackPanel
                     {
@@ -189,6 +226,7 @@ public sealed class RomPickerDialog : Window
                         }
                     },
                     _pathText,
+                    _romLibraryText,
                     _statusText
                 }
             }
@@ -212,6 +250,7 @@ public sealed class RomPickerDialog : Window
         });
 
         Content = WrapDialogForUiScale(root, uiScale);
+        UpdateRomLibraryUi();
         LoadDirectory(_currentDirectory);
     }
 
@@ -342,6 +381,30 @@ public sealed class RomPickerDialog : Window
         LoadDirectory(path);
     }
 
+    private void NavigateToRomLibrary()
+    {
+        if (string.IsNullOrWhiteSpace(_romLibraryPath))
+        {
+            _statusText.Text = "ROM library folder is not set.";
+            return;
+        }
+
+        if (!Directory.Exists(_romLibraryPath))
+        {
+            _statusText.Text = $"ROM library folder is missing: {_romLibraryPath}";
+            return;
+        }
+
+        NavigateTo(_romLibraryPath);
+    }
+
+    private void SetCurrentDirectoryAsRomLibrary()
+    {
+        _romLibraryPath = NormalizeDirectoryPath(_currentDirectory);
+        UpdateRomLibraryUi();
+        _statusText.Text = $"ROM library set to {_romLibraryPath}";
+    }
+
     private void LoadDirectory(string path)
     {
         try
@@ -393,6 +456,15 @@ public sealed class RomPickerDialog : Window
         {
             _statusText.Text = $"Unable to read folder: {ex.Message}";
         }
+    }
+
+    private async System.Threading.Tasks.Task OpenDrivePickerAsync()
+    {
+        IReadOnlyList<DriveTarget> targets = BuildDriveTargets();
+        var dialog = new DrivePickerDialog(targets, _uiScale);
+        string? selectedPath = await dialog.ShowDialog<string?>(this);
+        if (!string.IsNullOrWhiteSpace(selectedPath))
+            NavigateTo(selectedPath);
     }
 
     private void ApplyFilters()
@@ -469,7 +541,21 @@ public sealed class RomPickerDialog : Window
         return new string('★', clamped) + new string('☆', 6 - clamped);
     }
 
-    private static string ResolveInitialDirectory(string? initialPath)
+    private void UpdateRomLibraryUi()
+    {
+        bool hasValue = !string.IsNullOrWhiteSpace(_romLibraryPath);
+        bool exists = hasValue && Directory.Exists(_romLibraryPath!);
+        _romsButton.IsEnabled = hasValue;
+        ToolTip.SetTip(_romsButton, hasValue ? _romLibraryPath : "ROM library folder is not set.");
+
+        _romLibraryText.Text = hasValue
+            ? exists
+                ? $"ROM library: {_romLibraryPath}"
+                : $"ROM library: {_romLibraryPath} (missing)"
+            : "ROM library: not set";
+    }
+
+    private static string ResolveInitialDirectory(string? initialPath, string? romLibraryPath)
     {
         try
         {
@@ -487,6 +573,9 @@ public sealed class RomPickerDialog : Window
         {
         }
 
+        if (!string.IsNullOrWhiteSpace(romLibraryPath) && Directory.Exists(romLibraryPath))
+            return romLibraryPath;
+
         string home = ResolveHomeDirectory();
         if (Directory.Exists(home))
             return home;
@@ -494,8 +583,136 @@ public sealed class RomPickerDialog : Window
         return Directory.GetCurrentDirectory();
     }
 
+    private static string? NormalizeDirectoryPath(string? path)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+
+            return Path.GetFullPath(path);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static string ResolveHomeDirectory()
         => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+    private static IReadOnlyList<DriveTarget> BuildDriveTargets()
+    {
+        var results = new List<DriveTarget>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddTarget(string label, string path)
+        {
+            string? fullPath = NormalizeDirectoryPath(path);
+            if (string.IsNullOrWhiteSpace(fullPath) || !Directory.Exists(fullPath))
+                return;
+
+            string key = Path.TrimEndingDirectorySeparator(fullPath);
+            if (key.Length == 0)
+                key = fullPath;
+
+            if (!seen.Add(key))
+                return;
+
+            results.Add(new DriveTarget(label, fullPath, fullPath));
+        }
+
+        string home = ResolveHomeDirectory();
+        string filesystemRoot = Path.GetPathRoot(home) ?? Path.DirectorySeparatorChar.ToString();
+        AddTarget("Filesystem", filesystemRoot);
+        AddTarget("Home", home);
+
+        foreach (DriveInfo drive in SafeGetDrives().OrderBy(static drive => drive.Name, StringComparer.OrdinalIgnoreCase))
+            AddTarget(BuildDriveLabel(drive), drive.RootDirectory.FullName);
+
+        foreach (string mountPath in EnumerateExtraMountPaths().OrderBy(static path => path, StringComparer.OrdinalIgnoreCase))
+            AddTarget(BuildMountLabel(mountPath), mountPath);
+
+        return results;
+    }
+
+    private static IEnumerable<DriveInfo> SafeGetDrives()
+    {
+        try
+        {
+            return DriveInfo.GetDrives();
+        }
+        catch
+        {
+            return Array.Empty<DriveInfo>();
+        }
+    }
+
+    private static IEnumerable<string> EnumerateExtraMountPaths()
+    {
+        var bases = new List<string>();
+        string home = ResolveHomeDirectory();
+        string userName = Path.GetFileName(Path.TrimEndingDirectorySeparator(home));
+
+        if (!string.IsNullOrWhiteSpace(userName))
+        {
+            bases.Add(Path.Combine("/run/media", userName));
+            bases.Add(Path.Combine("/media", userName));
+        }
+
+        bases.Add("/media");
+        bases.Add("/mnt");
+        bases.Add("/Volumes");
+
+        var yielded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string root in bases)
+        {
+            if (!Directory.Exists(root))
+                continue;
+
+            IEnumerable<string> directories;
+            try
+            {
+                directories = Directory.EnumerateDirectories(root);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (string directory in directories)
+            {
+                if (yielded.Add(directory))
+                    yield return directory;
+            }
+        }
+    }
+
+    private static string BuildDriveLabel(DriveInfo drive)
+    {
+        try
+        {
+            string label = drive.VolumeLabel?.Trim() ?? string.Empty;
+            if (label.Length > 0)
+                return label;
+        }
+        catch
+        {
+        }
+
+        return BuildMountLabel(drive.RootDirectory.FullName);
+    }
+
+    private static string BuildMountLabel(string path)
+    {
+        string trimmed = Path.TrimEndingDirectorySeparator(path);
+        string root = Path.TrimEndingDirectorySeparator(Path.GetPathRoot(path) ?? string.Empty);
+        if (trimmed.Length == 0 || string.Equals(trimmed, root, StringComparison.OrdinalIgnoreCase))
+            return "Filesystem";
+
+        string name = Path.GetFileName(trimmed);
+        return string.IsNullOrWhiteSpace(name) ? trimmed : name;
+    }
 
     private static double ScaleDialogSize(double value, double uiScale) => Math.Round(value * uiScale);
 
@@ -520,6 +737,127 @@ public sealed class RomPickerDialog : Window
     {
         public int LaunchCount { get; init; }
         public double PlaySeconds { get; init; }
+    }
+
+    private sealed record DriveTarget(string Label, string FullPath, string DetailText);
+
+    private sealed class DrivePickerDialog : Window
+    {
+        private readonly ListBox _listBox;
+        private readonly Button _openButton;
+
+        public DrivePickerDialog(IReadOnlyList<DriveTarget> targets, double uiScale)
+        {
+            Title = "Drives";
+            Width = ScaleDialogSize(360, uiScale);
+            Height = ScaleDialogSize(420, uiScale);
+            MinWidth = ScaleDialogSize(300, uiScale);
+            MinHeight = ScaleDialogSize(280, uiScale);
+            Background = new SolidColorBrush(Color.Parse("#0B1219"));
+            WindowStartupLocation = WindowStartupLocation.CenterOwner;
+
+            _listBox = new ListBox
+            {
+                ItemsSource = targets,
+                ItemTemplate = new FuncDataTemplate<DriveTarget>((target, _) => BuildDriveEntryView(target), true)
+            };
+            _listBox.DoubleTapped += (_, _) => OpenSelectedTarget();
+
+            _openButton = new Button
+            {
+                Content = "Open",
+                MinWidth = 96,
+                IsEnabled = targets.Count > 0
+            };
+            _openButton.Classes.Add("action");
+            _openButton.Click += (_, _) => OpenSelectedTarget();
+            _listBox.SelectionChanged += (_, _) => _openButton.IsEnabled = _listBox.SelectedItem is DriveTarget;
+
+            var cancelButton = new Button { Content = "Cancel", MinWidth = 96 };
+            cancelButton.Click += (_, _) => Close(null);
+
+            var root = new Grid
+            {
+                RowDefinitions = new RowDefinitions("Auto,*,Auto"),
+                RowSpacing = 10,
+                Margin = new Thickness(16)
+            };
+
+            root.Children.Add(new Border
+            {
+                [Grid.RowProperty] = 0,
+                Classes = { "panel" },
+                Padding = new Thickness(12, 10),
+                Child = new StackPanel
+                {
+                    Spacing = 6,
+                    Children =
+                    {
+                        new TextBlock { Text = "DRIVES", Classes = { "deck-label" } },
+                        new TextBlock
+                        {
+                            Text = "Jump to Filesystem, Home, and mounted storage.",
+                            Classes = { "muted" },
+                            FontSize = 12
+                        }
+                    }
+                }
+            });
+
+            root.Children.Add(new Border
+            {
+                [Grid.RowProperty] = 1,
+                Classes = { "panel" },
+                Padding = new Thickness(8),
+                Child = _listBox
+            });
+
+            root.Children.Add(new StackPanel
+            {
+                [Grid.RowProperty] = 2,
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Spacing = 8,
+                Children = { cancelButton, _openButton }
+            });
+
+            Content = WrapDialogForUiScale(root, uiScale);
+            _listBox.SelectedItem = targets.FirstOrDefault();
+        }
+
+        private static Control BuildDriveEntryView(DriveTarget target)
+        {
+            var stack = new StackPanel { Spacing = 3 };
+            stack.Children.Add(new TextBlock
+            {
+                Text = target.Label,
+                FontWeight = FontWeight.SemiBold
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = target.DetailText,
+                Classes = { "muted" },
+                FontSize = 11,
+                TextWrapping = TextWrapping.NoWrap
+            });
+
+            return new Border
+            {
+                Background = new SolidColorBrush(Color.Parse("#161C24")),
+                BorderBrush = new SolidColorBrush(Color.Parse("#304355")),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(10, 8),
+                Margin = new Thickness(0, 0, 0, 6),
+                Child = stack
+            };
+        }
+
+        private void OpenSelectedTarget()
+        {
+            if (_listBox.SelectedItem is DriveTarget target)
+                Close(target.FullPath);
+        }
     }
 }
 

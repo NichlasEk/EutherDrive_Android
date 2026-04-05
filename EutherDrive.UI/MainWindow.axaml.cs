@@ -153,6 +153,7 @@ public partial class MainWindow : Window
     private byte[] _glSwapPresentBuffer = Array.Empty<byte>();
 
     private string? _romPath;
+    private string? _romLibraryPath;
     private string? _pceBiosPath;
     private string? _psxBiosPath;
     private string? _psxSbiPath;
@@ -1831,10 +1832,18 @@ public partial class MainWindow : Window
 
     private async void OnOpenRom(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        var dialog = new RomPickerDialog(_romPath, _uiScale, GetRomPickerStats);
+        string? initialPickerPath = !string.IsNullOrWhiteSpace(_romPath) ? _romPath : _romLibraryPath;
+        var dialog = new RomPickerDialog(initialPickerPath, _romLibraryPath, _uiScale, GetRomPickerStats);
         bool selected = await dialog.ShowDialog<bool>(this);
+        bool romLibraryChanged = !string.Equals(_romLibraryPath, dialog.RomLibraryPath, StringComparison.OrdinalIgnoreCase);
+        if (romLibraryChanged)
+            _romLibraryPath = dialog.RomLibraryPath;
         if (!selected || string.IsNullOrWhiteSpace(dialog.SelectedPath))
+        {
+            if (romLibraryChanged)
+                SaveSettings();
             return;
+        }
 
         _romPath = dialog.SelectedPath;
         RomPathText.Text = _romPath;
@@ -4404,6 +4413,7 @@ public partial class MainWindow : Window
     private sealed class UiSettings
     {
         public string? LastRomPath { get; set; }
+        public string? RomLibraryPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
@@ -4444,6 +4454,7 @@ public partial class MainWindow : Window
     private sealed class UiSettingsToml
     {
         public string? LastRomPath { get; set; }
+        public string? RomLibraryPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
@@ -4553,6 +4564,10 @@ public partial class MainWindow : Window
 
     private void ApplySettings(UiSettings settings)
     {
+        _romLibraryPath = !string.IsNullOrWhiteSpace(settings.RomLibraryPath)
+            ? settings.RomLibraryPath
+            : null;
+
         if (!string.IsNullOrWhiteSpace(settings.LastRomPath))
         {
             _romPath = settings.LastRomPath;
@@ -4771,6 +4786,7 @@ public partial class MainWindow : Window
         var settings = new UiSettings
         {
             LastRomPath = _romPath,
+            RomLibraryPath = _romLibraryPath,
             RecentRomPaths = _recentRomPaths.ToList(),
             PceBiosPath = _pceBiosPath,
             PsxBiosPath = _psxBiosPath,
@@ -4870,6 +4886,7 @@ public partial class MainWindow : Window
         var model = new UiSettingsToml
         {
             LastRomPath = settings.LastRomPath,
+            RomLibraryPath = settings.RomLibraryPath,
             RecentRomPaths = settings.RecentRomPaths,
             PceBiosPath = settings.PceBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
@@ -4970,6 +4987,7 @@ public partial class MainWindow : Window
         var settings = new UiSettings
         {
             LastRomPath = raw.LastRomPath,
+            RomLibraryPath = raw.RomLibraryPath,
             RecentRomPaths = raw.RecentRomPaths,
             PceBiosPath = raw.PceBiosPath,
             PsxBiosPath = raw.PsxBiosPath,
@@ -5430,12 +5448,21 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(value))
             return null;
 
+        if (DateTimeOffset.TryParse(
+            value,
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind,
+            out DateTimeOffset roundtripParsed))
+        {
+            return roundtripParsed.UtcDateTime;
+        }
+
         return DateTime.TryParse(
             value,
-            null,
-            System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AssumeUniversal,
-            out DateTime parsed)
-            ? parsed.ToUniversalTime()
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+            out DateTime legacyParsed)
+            ? legacyParsed
             : null;
     }
 
