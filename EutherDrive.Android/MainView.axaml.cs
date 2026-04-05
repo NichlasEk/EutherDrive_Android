@@ -1226,6 +1226,7 @@ public partial class MainView : UserControl
             _core = loadedCore;
             loadedCore = null;
             _viewModel.SelectedConsoleLabel = consoleLabel;
+            RefreshSavestateUi(_core);
             InitializeAudio(core: _core);
             StartEmulationLoop(_core);
             _viewModel.IsRunning = true;
@@ -1607,6 +1608,7 @@ public partial class MainView : UserControl
             if (isLoad)
             {
                 _savestateService.Load(savestateCore, slotIndex);
+                InitializeAudio(core);
                 CaptureLatestFrame(core);
                 PresentLatestFrame();
                 _viewModel.ScreenOverlayVisible = false;
@@ -1617,6 +1619,8 @@ public partial class MainView : UserControl
                 _savestateService.Save(savestateCore, slotIndex);
                 _viewModel.FooterStatus = $"Saved slot {slotIndex}.";
             }
+
+            RefreshSavestateUi(core);
         }
         catch (Exception ex)
         {
@@ -1630,6 +1634,43 @@ public partial class MainView : UserControl
                 StartEmulationLoop(core);
             }
         }
+    }
+
+    private void RefreshSavestateUi(IEmulatorCore? core)
+    {
+        if (core is not ISavestateCapable savestateCore || savestateCore.RomIdentity == null)
+        {
+            _viewModel.CanUseSavestates = false;
+            _viewModel.CanLoadSlot1 = false;
+            _viewModel.CanLoadSlot2 = false;
+            _viewModel.SaveSlot1Label = "Sav1";
+            _viewModel.SaveSlot2Label = "Sav2";
+            _viewModel.LoadSlot1Label = "Load1";
+            _viewModel.LoadSlot2Label = "Load2";
+            return;
+        }
+
+        SavestateSlotInfo[] slots = _savestateService.GetSlotInfo(savestateCore);
+        SavestateSlotInfo slot1 = slots.Length > 0 ? slots[0] : new SavestateSlotInfo(1, false, false, null, 0, 0, null);
+        SavestateSlotInfo slot2 = slots.Length > 1 ? slots[1] : new SavestateSlotInfo(2, false, false, null, 0, 0, null);
+
+        _viewModel.CanUseSavestates = true;
+        _viewModel.CanLoadSlot1 = slot1.HasData;
+        _viewModel.CanLoadSlot2 = slot2.HasData;
+        _viewModel.SaveSlot1Label = BuildSavestateButtonLabel("Sav1", slot1);
+        _viewModel.SaveSlot2Label = BuildSavestateButtonLabel("Sav2", slot2);
+        _viewModel.LoadSlot1Label = slot1.HasData ? "Load1*" : "Load1";
+        _viewModel.LoadSlot2Label = slot2.HasData ? "Load2*" : "Load2";
+    }
+
+    private static string BuildSavestateButtonLabel(string prefix, SavestateSlotInfo slot)
+    {
+        if (!slot.HasData)
+            return prefix;
+
+        return slot.FrameCounter > 0
+            ? $"{prefix} {slot.FrameCounter}"
+            : $"{prefix}*";
     }
 
     private static string FormatExceptionForUi(Exception ex)
@@ -1836,6 +1877,7 @@ public partial class MainView : UserControl
         StopEmulationLoop();
         IEmulatorCore? core = _core;
         _core = null;
+        RefreshSavestateUi(core: null);
         _audioEngine?.Dispose();
         _audioEngine = null;
         _audioPullMode = false;
@@ -3778,6 +3820,13 @@ public partial class MainView : UserControl
         private bool _debugTracePageVisible;
         private bool _normalTopButtonsVisible = true;
         private bool _quickSaveButtonsVisible;
+        private bool _canUseSavestates;
+        private bool _canLoadSlot1;
+        private bool _canLoadSlot2;
+        private string _saveSlot1Label = "Sav1";
+        private string _saveSlot2Label = "Sav2";
+        private string _loadSlot1Label = "Load1";
+        private string _loadSlot2Label = "Load2";
         private bool _screenHudVisible = true;
         private Thickness _rootMargin = new(14);
         private double _rootRowSpacing = 12;
@@ -4006,6 +4055,48 @@ public partial class MainView : UserControl
         {
             get => _quickSaveButtonsVisible;
             set => SetField(ref _quickSaveButtonsVisible, value);
+        }
+
+        public bool CanUseSavestates
+        {
+            get => _canUseSavestates;
+            set => SetField(ref _canUseSavestates, value);
+        }
+
+        public bool CanLoadSlot1
+        {
+            get => _canLoadSlot1;
+            set => SetField(ref _canLoadSlot1, value);
+        }
+
+        public bool CanLoadSlot2
+        {
+            get => _canLoadSlot2;
+            set => SetField(ref _canLoadSlot2, value);
+        }
+
+        public string SaveSlot1Label
+        {
+            get => _saveSlot1Label;
+            set => SetField(ref _saveSlot1Label, value);
+        }
+
+        public string SaveSlot2Label
+        {
+            get => _saveSlot2Label;
+            set => SetField(ref _saveSlot2Label, value);
+        }
+
+        public string LoadSlot1Label
+        {
+            get => _loadSlot1Label;
+            set => SetField(ref _loadSlot1Label, value);
+        }
+
+        public string LoadSlot2Label
+        {
+            get => _loadSlot2Label;
+            set => SetField(ref _loadSlot2Label, value);
         }
 
         public bool ScreenHudVisible

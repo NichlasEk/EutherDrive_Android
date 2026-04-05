@@ -283,13 +283,13 @@
                 ColumnSpacing="8">
             <Button Grid.Column="0"
                     Classes="chrome"
-                    Content="Sav1"
-                    IsEnabled="{Binding IsRunning}"
+                    Content="{Binding SaveSlot1Label}"
+                    IsEnabled="{Binding CanUseSavestates}"
                     Click="OnSaveSlot1" />
             <Button Grid.Column="1"
                     Classes="chrome"
-                    Content="Load1"
-                    IsEnabled="{Binding IsRunning}"
+                    Content="{Binding LoadSlot1Label}"
+                    IsEnabled="{Binding CanLoadSlot1}"
                     Click="OnLoadSlot1" />
 
             <TextBlock Grid.Column="2"
@@ -303,13 +303,13 @@
 
             <Button Grid.Column="3"
                     Classes="chrome"
-                    Content="Sav2"
-                    IsEnabled="{Binding IsRunning}"
+                    Content="{Binding SaveSlot2Label}"
+                    IsEnabled="{Binding CanUseSavestates}"
                     Click="OnSaveSlot2" />
             <Button Grid.Column="4"
                     Classes="chrome"
-                    Content="Load2"
-                    IsEnabled="{Binding IsRunning}"
+                    Content="{Binding LoadSlot2Label}"
+                    IsEnabled="{Binding CanLoadSlot2}"
                     Click="OnLoadSlot2" />
           </Grid>
         </Grid>

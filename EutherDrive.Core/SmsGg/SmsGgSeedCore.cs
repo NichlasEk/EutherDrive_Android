@@ -1,10 +1,13 @@
+using System.IO;
 using EutherDrive.Core.Cpu.Z80Emu;
 using EutherDrive.Core.MdTracerCore;
+using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core.SmsGg;
 
 public sealed class SmsGgSeedCore
 {
+    private const int SavestateVersion = 1;
     private const int NtscMasterClockPerFrame = 342 * 262 * 10;
     private const int PalMasterClockPerFrame = 342 * 313 * 10;
     private const uint VdpDivider = 10;
@@ -259,8 +262,80 @@ public sealed class SmsGgSeedCore
         UpdatePsgOutputGain();
     }
 
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        if (_memory is null || _inputPorts is null || _vdp is null || _psg is null || _z80 is null)
+            throw new InvalidOperationException("SMS/GG seed core not initialized.");
+
+        writer.Write(SavestateVersion);
+        writer.Write((int)Hardware);
+        writer.Write((int)Region);
+        writer.Write((int)_vdpVersion);
+        writer.Write(_frameCounter);
+        writer.Write(_vdpMclkCounter);
+        writer.Write(_psgMclkCounter);
+        writer.Write(_masterVolumePercent);
+        writer.Write(_psgMixPercent);
+        writer.Write(_psgResamplePhase);
+        writer.Write(_psgResampleHasCarry);
+        writer.Write(_psgResampleCarry);
+        writer.Write(_psgDcBlockX1);
+        writer.Write(_psgDcBlockY1);
+        StateBinarySerializer.WriteInto(writer, _memory);
+        StateBinarySerializer.WriteInto(writer, _inputPorts);
+        StateBinarySerializer.WriteInto(writer, _vdp);
+        StateBinarySerializer.WriteInto(writer, _psg);
+        StateBinarySerializer.WriteInto(writer, _z80);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+
+        if (_memory is null || _inputPorts is null || _vdp is null || _psg is null || _z80 is null)
+            throw new InvalidOperationException("SMS/GG seed core not initialized.");
+
+        int version = reader.ReadInt32();
+        if (version != SavestateVersion)
+            throw new InvalidDataException($"Unsupported SMS/GG seed savestate version: {version}.");
+
+        Hardware = (SmsGgHardware)reader.ReadInt32();
+        Region = (SmsGgRegion)reader.ReadInt32();
+        _vdpVersion = (SmsGgVdpVersion)reader.ReadInt32();
+        _frameCounter = reader.ReadInt64();
+        _vdpMclkCounter = reader.ReadUInt32();
+        _psgMclkCounter = reader.ReadUInt32();
+        _masterVolumePercent = reader.ReadInt32();
+        _psgMixPercent = reader.ReadInt32();
+        _psgResamplePhase = reader.ReadDouble();
+        _psgResampleHasCarry = reader.ReadBoolean();
+        _psgResampleCarry = reader.ReadInt16();
+        _psgDcBlockX1 = reader.ReadDouble();
+        _psgDcBlockY1 = reader.ReadDouble();
+        StateBinarySerializer.ReadInto(reader, _memory);
+        StateBinarySerializer.ReadInto(reader, _inputPorts);
+        StateBinarySerializer.ReadInto(reader, _vdp);
+        StateBinarySerializer.ReadInto(reader, _psg);
+        StateBinarySerializer.ReadInto(reader, _z80);
+
+        RebuildBusAdapters();
+        UpdatePsgOutputGain();
+        LatchPresentationFrame();
+    }
+
     private int GetMasterClocksPerFrame() =>
         _vdpVersion.TimingMode() == SmsGgTimingMode.Pal ? PalMasterClockPerFrame : NtscMasterClockPerFrame;
+
+    private void RebuildBusAdapters()
+    {
+        if (_memory is null || _inputPorts is null || _vdp is null)
+            return;
+
+        _bus = new SmsGgBus(_vdpVersion, _memory, _inputPorts, _vdp, OnPsgWrite, OnStereoWrite);
+        _z80Bus = new SmsGgZ80BusAdapter(_bus);
+    }
 
     private int GetDefaultAudioFrameCount()
     {

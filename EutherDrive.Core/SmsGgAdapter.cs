@@ -5,18 +5,21 @@ namespace EutherDrive.Core;
 
 public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
 {
+    private const int SavestateMagic = 0x53474731;
+
     private readonly MdTracerAdapter _fallback = new();
     private readonly SmsGgSeedCore _seedCore = new();
     private SmsGgPortSession? _port;
     private string? _loadedPath;
+    private RomIdentity? _seedRomIdentity;
 
     public SmsGgHardware Hardware => _port?.Hardware ?? SmsGgHardware.MasterSystem;
     public bool IsMasterSystemMode => Hardware != SmsGgHardware.GameGear;
     public bool IsGameGearMode => Hardware == SmsGgHardware.GameGear;
     public RomInfo RomInfo { get; private set; } = new();
     public string? RomSummary => RomInfo.Summary;
-    public RomIdentity? RomIdentity => ((ISavestateCapable)_fallback).RomIdentity;
-    public long? FrameCounter => ((ISavestateCapable)_fallback).FrameCounter;
+    public RomIdentity? RomIdentity => IsGameGearMode ? _seedRomIdentity ?? ((ISavestateCapable)_fallback).RomIdentity : ((ISavestateCapable)_fallback).RomIdentity;
+    public long? FrameCounter => IsGameGearMode ? _seedCore.FrameCounter : ((ISavestateCapable)_fallback).FrameCounter;
 
     public void LoadRom(string path)
     {
@@ -24,6 +27,10 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
         _port = SmsGgPortSession.Load(path);
         RomInfo = _port.BuildRomInfo();
         _seedCore.LoadRom(path);
+        _seedRomIdentity = new RomIdentity(
+            Path.GetFileName(path),
+            RomIdentity.ComputeSha256(_port.RomBytes),
+            PersistentStoragePath.ResolveSavestateDirectory(path, _port.Hardware == SmsGgHardware.GameGear ? "gg" : "sms"));
         _fallback.PowerCycleAndLoadRom(path);
         _fallback.HardFlushAudioState();
     }
@@ -76,10 +83,47 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
         _fallback.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
     }
 
-    public void SaveState(BinaryWriter writer) => ((ISavestateCapable)_fallback).SaveState(writer);
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.Write(SavestateMagic);
+        writer.Write(IsGameGearMode);
+        if (IsGameGearMode)
+        {
+            _seedCore.SaveState(writer);
+            return;
+        }
+
+        ((ISavestateCapable)_fallback).SaveState(writer);
+    }
 
     public void LoadState(BinaryReader reader)
     {
+        ArgumentNullException.ThrowIfNull(reader);
+
+        long start = reader.BaseStream.CanSeek ? reader.BaseStream.Position : 0;
+        if (reader.BaseStream.CanSeek && reader.BaseStream.Length - start >= sizeof(int) + sizeof(bool))
+        {
+            int magic = reader.ReadInt32();
+            if (magic == SavestateMagic)
+            {
+                bool isGameGearState = reader.ReadBoolean();
+                if (isGameGearState)
+                {
+                    _seedCore.LoadState(reader);
+                    if (_port != null)
+                        _seedCore.SetInputState(_port.InputState);
+                    return;
+                }
+
+                ((ISavestateCapable)_fallback).LoadState(reader);
+                return;
+            }
+
+            reader.BaseStream.Position = start;
+        }
+
         ((ISavestateCapable)_fallback).LoadState(reader);
 
         // Seed GG video/input is currently the active render path for Game Gear.
