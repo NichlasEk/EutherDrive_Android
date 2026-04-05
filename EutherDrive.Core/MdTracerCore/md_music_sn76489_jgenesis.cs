@@ -28,9 +28,7 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private static WaveOutput Invert(WaveOutput value) => value == WaveOutput.Negative ? WaveOutput.Positive : WaveOutput.Negative;
-        // SN76489 tone/noise output is bipolar around zero. Using 0/1 injects a large DC
-        // offset that gets perceived as muddy/farty distortion after downstream filtering.
-        private static double ToSampleAmplitude(WaveOutput value) => value == WaveOutput.Positive ? 1.0 : -1.0;
+        private static double ToSampleAmplitude(WaveOutput value) => value == WaveOutput.Positive ? 1.0 : 0.0;
 
         private sealed class SquareWaveGenerator
         {
@@ -236,6 +234,7 @@ namespace EutherDrive.Core.MdTracerCore
         private long _writeCounter;
         private readonly long[] _lastWriteCounterByVoice = new long[4];
         private readonly long[] _lastStuckLogSampleByVoice = new long[4];
+        private double _outputGain = 1.0;
 
         public void Reset()
         {
@@ -313,6 +312,14 @@ namespace EutherDrive.Core.MdTracerCore
         public void WriteStereoControl(byte value)
         {
             _stereo.Write(value);
+        }
+
+        public void SetOutputGain(double gain)
+        {
+            if (double.IsNaN(gain) || double.IsInfinity(gain))
+                gain = 1.0;
+
+            _outputGain = Math.Clamp(gain, 0.0, 4.0);
         }
 
         public int UpdateSample(int[] outVol, int noiseGainPercent)
@@ -426,11 +433,19 @@ namespace EutherDrive.Core.MdTracerCore
                               + (_stereo.Square1L ? vol1 : 0.0)
                               + (_stereo.Square2L ? vol2 : 0.0)
                               + (_stereo.NoiseL ? noise : 0.0)) / 4.0;
+            double sampleR = ((_stereo.Square0R ? vol0 : 0.0)
+                              + (_stereo.Square1R ? vol1 : 0.0)
+                              + (_stereo.Square2R ? vol2 : 0.0)
+                              + (_stereo.NoiseR ? noise : 0.0)) / 4.0;
 
             if (AudioMuteFmPsg)
                 return 0;
 
-            double scaled = sampleL * short.MaxValue;
+            // The GG path is currently consumed as mono in EutherDrive, so mix stereo
+            // channels down first instead of taking only left. DC removal happens in
+            // the seed-core output path, matching the jgenesis pipeline more closely.
+            double mono = (sampleL + sampleR) * 0.5;
+            double scaled = mono * _outputGain * short.MaxValue;
             if (scaled > short.MaxValue) scaled = short.MaxValue;
             else if (scaled < short.MinValue) scaled = short.MinValue;
             return (short)Math.Round(scaled);

@@ -6,13 +6,23 @@ public sealed class SmsGgBus
     private readonly SmsGgMemory _memory;
     private readonly SmsGgInputPorts _input;
     private readonly SmsGgVdp _vdp;
+    private readonly Action<byte>? _psgWrite;
+    private readonly Action<byte>? _stereoWrite;
 
-    public SmsGgBus(SmsGgVdpVersion version, SmsGgMemory memory, SmsGgInputPorts input, SmsGgVdp vdp)
+    public SmsGgBus(
+        SmsGgVdpVersion version,
+        SmsGgMemory memory,
+        SmsGgInputPorts input,
+        SmsGgVdp vdp,
+        Action<byte>? psgWrite = null,
+        Action<byte>? stereoWrite = null)
     {
         _version = version;
         _memory = memory;
         _input = input;
         _vdp = vdp;
+        _psgWrite = psgWrite;
+        _stereoWrite = stereoWrite;
     }
 
     public byte ReadMemory(ushort address) => _memory.Read(address);
@@ -63,7 +73,7 @@ public sealed class SmsGgBus
                     _memory.GameGearRegisters.ParallelPort = value;
                     break;
                 case 0x06:
-                    // Game Gear stereo control; audio still comes from the fallback path for now.
+                    _stereoWrite?.Invoke(value);
                     break;
             }
             return;
@@ -86,7 +96,7 @@ public sealed class SmsGgBus
                 break;
             case (0, 1, 0):
             case (0, 1, 1):
-                // PSG writes; audio is still handled by the fallback path, but these ports are valid.
+                _psgWrite?.Invoke(value);
                 break;
             case (1, 0, 0):
                 _vdp.WriteData(value);

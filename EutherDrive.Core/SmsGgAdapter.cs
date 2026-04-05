@@ -46,10 +46,14 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
             : _fallback.GetFrameBuffer(out width, out height, out stride);
 
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels) =>
-        _fallback.GetAudioBuffer(out sampleRate, out channels);
+        IsGameGearMode
+            ? _seedCore.GetAudioBuffer(out sampleRate, out channels)
+            : _fallback.GetAudioBuffer(out sampleRate, out channels);
 
     public ReadOnlySpan<short> GetAudioBufferForFrames(int frames, out int sampleRate, out int channels) =>
-        _fallback.GetAudioBufferForFrames(frames, out sampleRate, out channels);
+        IsGameGearMode
+            ? _seedCore.GetAudioBufferForFrames(frames, out sampleRate, out channels)
+            : _fallback.GetAudioBufferForFrames(frames, out sampleRate, out channels);
 
     public void SetInputState(
         bool up,
@@ -92,9 +96,17 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
 
     public void SetFrameRateMode(FrameRateMode mode) => _fallback.SetFrameRateMode(mode);
 
-    public void SetMasterVolumePercent(int percent) => _fallback.SetMasterVolumePercent(percent);
+    public void SetMasterVolumePercent(int percent)
+    {
+        _seedCore.SetMasterVolumePercent(percent);
+        _fallback.SetMasterVolumePercent(percent);
+    }
 
-    public void SetPsgMixPercent(int percent) => _fallback.SetPsgMixPercent(percent);
+    public void SetPsgMixPercent(int percent)
+    {
+        _seedCore.SetPsgMixPercent(percent);
+        _fallback.SetPsgMixPercent(percent);
+    }
 
     public void SetYmMixPercent(int percent) => _fallback.SetYmMixPercent(percent);
 
