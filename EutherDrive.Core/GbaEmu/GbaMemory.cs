@@ -1,3 +1,7 @@
+using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
 namespace EutherDrive.Core.GbaEmu;
 
 public class GbaMemory
@@ -355,6 +359,101 @@ public class GbaMemory
 		}
 	}
 
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	public ushort Fetch16( uint address )
+	{
+		address &= ~1u;
+		switch ( address >> 24 )
+		{
+			case 0x0:
+				if ( address < GbaConstants.BiosSize )
+				{
+					if ( Gba.Cpu.Gprs[15] < GbaConstants.BiosSize )
+					{
+						uint addr = address & 0x3FFF;
+						BiosPrefetch = ReadWordFromArray( Bios, addr & ~3u );
+						return ReadHalfFromArray( Bios, addr );
+					}
+
+					return (ushort)(BiosPrefetch >> (int)((address & 2) * 8));
+				}
+
+				return Gba.Bios.HleActive
+					? (ushort)0
+					: (ushort)(Gba.Cpu.OpenBusPrefetch >> (int)((address & 2) * 8));
+
+			case 0x2: return ReadHalfFromArray( Wram, address & 0x3FFFF );
+			case 0x3: return ReadHalfFromArray( Iwram, address & 0x7FFF );
+
+			case 0x8:
+			case 0x9:
+			case 0xA:
+			case 0xB:
+			case 0xC:
+				{
+					uint romAddr = address & 0x1FFFFFF;
+					if ( romAddr < (uint)Rom.Length - 1 )
+						return ReadHalfFromArray( Rom, romAddr );
+					return (ushort)(romAddr >> 1);
+				}
+			case 0xD:
+				{
+					if ( Gba.Savedata.Type == SavedataType.Eeprom )
+						return Gba.Savedata.ReadEEPROM();
+
+					uint romAddr = address & 0x1FFFFFF;
+					if ( romAddr < (uint)Rom.Length - 1 )
+						return ReadHalfFromArray( Rom, romAddr );
+					return (ushort)(romAddr >> 1);
+				}
+
+			default:
+				return Load16( address );
+		}
+	}
+
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	public uint Fetch32( uint address )
+	{
+		address &= ~3u;
+		switch ( address >> 24 )
+		{
+			case 0x0:
+				if ( address < GbaConstants.BiosSize )
+				{
+					if ( Gba.Cpu.Gprs[15] < GbaConstants.BiosSize )
+					{
+						uint addr = address & 0x3FFF;
+						BiosPrefetch = ReadWordFromArray( Bios, addr );
+						return BiosPrefetch;
+					}
+
+					return BiosPrefetch;
+				}
+
+				return Gba.Bios.HleActive ? 0u : Gba.Cpu.OpenBusPrefetch;
+
+			case 0x2: return ReadWordFromArray( Wram, address & 0x3FFFF );
+			case 0x3: return ReadWordFromArray( Iwram, address & 0x7FFF );
+
+			case 0x8:
+			case 0x9:
+			case 0xA:
+			case 0xB:
+			case 0xC:
+			case 0xD:
+				{
+					uint romAddr = address & 0x1FFFFFF;
+					if ( romAddr < (uint)Rom.Length - 3 )
+						return ReadWordFromArray( Rom, romAddr );
+					return (romAddr >> 1) & 0xFFFF | ((romAddr >> 1) + 1) << 16;
+				}
+
+			default:
+				return Load32( address );
+		}
+	}
+
 	public void Store8( uint address, byte value )
 	{
 		int region = (int)(address >> 24);
@@ -601,27 +700,35 @@ public class GbaMemory
 		return addr;
 	}
 
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
 	private static ushort ReadHalfFromArray( byte[] arr, uint offset )
 	{
-		return (ushort)(arr[offset] | (arr[offset + 1] << 8));
+		ushort value = Unsafe.ReadUnaligned<ushort>( ref Unsafe.Add( ref MemoryMarshal.GetArrayDataReference( arr ), (nint)offset ) );
+		return BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness( value );
 	}
 
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
 	private static uint ReadWordFromArray( byte[] arr, uint offset )
 	{
-		return (uint)(arr[offset] | (arr[offset + 1] << 8) | (arr[offset + 2] << 16) | (arr[offset + 3] << 24));
+		uint value = Unsafe.ReadUnaligned<uint>( ref Unsafe.Add( ref MemoryMarshal.GetArrayDataReference( arr ), (nint)offset ) );
+		return BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness( value );
 	}
 
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
 	private static void WriteHalfToArray( byte[] arr, uint offset, ushort value )
 	{
-		arr[offset] = (byte)value;
-		arr[offset + 1] = (byte)(value >> 8);
+		if ( !BitConverter.IsLittleEndian )
+			value = BinaryPrimitives.ReverseEndianness( value );
+
+		Unsafe.WriteUnaligned( ref Unsafe.Add( ref MemoryMarshal.GetArrayDataReference( arr ), (nint)offset ), value );
 	}
 
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
 	private static void WriteWordToArray( byte[] arr, uint offset, uint value )
 	{
-		arr[offset] = (byte)value;
-		arr[offset + 1] = (byte)(value >> 8);
-		arr[offset + 2] = (byte)(value >> 16);
-		arr[offset + 3] = (byte)(value >> 24);
+		if ( !BitConverter.IsLittleEndian )
+			value = BinaryPrimitives.ReverseEndianness( value );
+
+		Unsafe.WriteUnaligned( ref Unsafe.Add( ref MemoryMarshal.GetArrayDataReference( arr ), (nint)offset ), value );
 	}
 }

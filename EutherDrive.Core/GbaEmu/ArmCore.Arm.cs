@@ -6,7 +6,7 @@ public partial class ArmCore
 	{
 		uint opcode = _prefetch0;
 		_prefetch0 = _prefetch1;
-		_prefetch1 = Memory.Load32( Gprs[15] );
+		_prefetch1 = Memory.Fetch32( Gprs[15] );
 		OpenBusPrefetch = _prefetch1;
 		Cycles += 1 + Memory.WaitstatesSeq32[(Gprs[15] >> 24) & 0xF];
 

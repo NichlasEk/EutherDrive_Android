@@ -105,51 +105,80 @@ public partial class ArmCore
 
 		while ( Cycles < targetCycles )
 		{
-			long cyclesBefore = Cycles;
-
-			if ( _prefetchFlushed )
+			if ( timers.NextGlobalEvent <= Cycles || io.NextIrqEvent <= Cycles || io.NextSioEvent <= Cycles )
 			{
-				FlushPipeline();
-				_prefetchFlushed = false;
+				SyncSubsystems( 0, timers, apu, io );
+				if ( Halted || CrashDetected )
+					return;
+
+				if ( dma.ActiveDma >= 0 )
+					return;
 			}
 
-			if ( IrqPending && !IrqDisable )
-			{
-				RaiseIrq();
-				IrqPending = false;
-				FlushPipeline();
-				_prefetchFlushed = false;
-			}
+			long chunkStartCycles = Cycles;
+			long syncTarget = targetCycles;
+			if ( timers.NextGlobalEvent < syncTarget ) syncTarget = timers.NextGlobalEvent;
+			if ( io.NextIrqEvent < syncTarget ) syncTarget = io.NextIrqEvent;
+			if ( io.NextSioEvent < syncTarget ) syncTarget = io.NextSioEvent;
 
-			uint instrAddr = ThumbMode ? Gprs[15] - 4 : Gprs[15] - 8;
-
-			if ( !IsExecutableAddress( instrAddr ) )
+			while ( Cycles < syncTarget )
 			{
-				if ( !CrashDetected )
+				if ( _prefetchFlushed )
 				{
-					CrashDetected = true;
-					CrashPc = instrAddr;
-					CrashCpsr = GetCpsrRaw();
-					CrashRegs = new uint[16];
-					Array.Copy( Gprs, CrashRegs, 16 );
-					CrashThumb = ThumbMode;
+					FlushPipeline();
+					_prefetchFlushed = false;
 				}
-				Cycles = targetCycles;
-				return;
+
+				if ( IrqPending && !IrqDisable )
+				{
+					RaiseIrq();
+					IrqPending = false;
+					FlushPipeline();
+					_prefetchFlushed = false;
+				}
+
+				uint instrAddr = ThumbMode ? Gprs[15] - 4 : Gprs[15] - 8;
+
+				if ( !IsExecutableAddress( instrAddr ) )
+				{
+					if ( !CrashDetected )
+					{
+						CrashDetected = true;
+						CrashPc = instrAddr;
+						CrashCpsr = GetCpsrRaw();
+						CrashRegs = new uint[16];
+						Array.Copy( Gprs, CrashRegs, 16 );
+						CrashThumb = ThumbMode;
+					}
+					Cycles = targetCycles;
+					return;
+				}
+
+				InstructionStartCycles = Cycles;
+
+				if ( ThumbMode )
+					ExecuteThumb();
+				else
+					ExecuteArm();
+
+				if ( Halted || CrashDetected )
+				{
+					SyncSubsystems( (int)(Cycles - chunkStartCycles), timers, apu, io );
+					return;
+				}
+
+				if ( dma.ActiveDma >= 0 )
+				{
+					SyncSubsystems( (int)(Cycles - chunkStartCycles), timers, apu, io );
+					return;
+				}
+
+				if ( timers.NextGlobalEvent < syncTarget ) syncTarget = timers.NextGlobalEvent;
+				if ( io.NextIrqEvent < syncTarget ) syncTarget = io.NextIrqEvent;
+				if ( io.NextSioEvent < syncTarget ) syncTarget = io.NextSioEvent;
 			}
 
-			InstructionStartCycles = Cycles;
-
-			if ( ThumbMode )
-				ExecuteThumb();
-			else
-				ExecuteArm();
-
-			int delta = (int)(Cycles - cyclesBefore);
-			timers.Tick( delta );
-			apu.Tick( delta );
-			io.FinishSioTransfer();
-			io.TickIrqDelay( delta );
+			SyncSubsystems( (int)(Cycles - chunkStartCycles), timers, apu, io );
 
 			if ( Halted || CrashDetected )
 				return;
@@ -157,6 +186,14 @@ public partial class ArmCore
 			if ( dma.ActiveDma >= 0 )
 				return;
 		}
+	}
+
+	private void SyncSubsystems( int cycles, GbaTimerController timers, GbaAudio apu, GbaIo io )
+	{
+		timers.Tick( cycles );
+		apu.Tick( cycles );
+		io.FinishSioTransfer();
+		io.TickIrqDelay( cycles );
 	}
 
 	private static bool IsExecutableAddress( uint addr )
@@ -173,17 +210,17 @@ public partial class ArmCore
 		if ( ThumbMode )
 		{
 			Gprs[15] &= ~1u;
-			_prefetch0 = Memory.Load16( Gprs[15] );
+			_prefetch0 = Memory.Fetch16( Gprs[15] );
 			Gprs[15] += 2;
-			_prefetch1 = Memory.Load16( Gprs[15] );
+			_prefetch1 = Memory.Fetch16( Gprs[15] );
 			Gprs[15] += 2;
 		}
 		else
 		{
 			Gprs[15] &= ~3u;
-			_prefetch0 = Memory.Load32( Gprs[15] );
+			_prefetch0 = Memory.Fetch32( Gprs[15] );
 			Gprs[15] += 4;
-			_prefetch1 = Memory.Load32( Gprs[15] );
+			_prefetch1 = Memory.Fetch32( Gprs[15] );
 			Gprs[15] += 4;
 		}
 
