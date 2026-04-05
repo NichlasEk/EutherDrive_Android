@@ -48,24 +48,24 @@ public partial class GbaVideo
     private const int OamSize = 1024;
     private const int PaletteSize = 1024;
 
-    private readonly uint[] _finalPixels = new uint[FrameWidth * FrameHeight];
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
     private readonly byte[] _screenshotBuffer = new byte[FrameWidth * FrameHeight * 4];
 
-    private readonly uint[] _bg0Pixels = new uint[FrameWidth * FrameHeight];
-    private readonly uint[] _bg1Pixels = new uint[FrameWidth * FrameHeight];
-    private readonly uint[] _bg2Pixels = new uint[FrameWidth * FrameHeight];
-    private readonly uint[] _bg3Pixels = new uint[FrameWidth * FrameHeight];
-    private readonly uint[] _objPixels = new uint[FrameWidth * FrameHeight];
-    private readonly byte[] _objPriorities = new byte[FrameWidth * FrameHeight];
-    private readonly byte[] _objOamIndices = new byte[FrameWidth * FrameHeight];
-    private readonly byte[] _objSemiTransparent = new byte[FrameWidth * FrameHeight];
-    private readonly byte[] _objWindowMask = new byte[FrameWidth * FrameHeight];
+    private readonly uint[] _bg0Scanline = new uint[FrameWidth];
+    private readonly uint[] _bg1Scanline = new uint[FrameWidth];
+    private readonly uint[] _bg2Scanline = new uint[FrameWidth];
+    private readonly uint[] _bg3Scanline = new uint[FrameWidth];
+    private readonly uint[] _objScanline = new uint[FrameWidth];
+    private readonly byte[] _objPriorities = new byte[FrameWidth];
+    private readonly byte[] _objOamIndices = new byte[FrameWidth];
+    private readonly byte[] _objSemiTransparent = new byte[FrameWidth];
+    private readonly byte[] _objWindowMask = new byte[FrameWidth];
     private readonly ScanlineState[] _scanlineStates = new ScanlineState[FrameHeight];
     private readonly byte[] _frameVram = new byte[VramSize];
     private readonly byte[] _frameOam = new byte[OamSize];
     private readonly byte[] _framePalette = new byte[PaletteSize * FrameHeight];
     private bool _hasCapturedFrame;
+    private bool _screenshotDirty = true;
 
     public ReadOnlySpan<byte> GetFrameBuffer() => _frameBuffer;
 
@@ -76,6 +76,11 @@ public partial class GbaVideo
 
     public byte[] CaptureScreenshot()
     {
+        if (_screenshotDirty)
+        {
+            RebuildScreenshotBuffer();
+        }
+
         byte[] copy = new byte[_screenshotBuffer.Length];
         Buffer.BlockCopy(_screenshotBuffer, 0, copy, 0, copy.Length);
         return copy;
@@ -217,53 +222,53 @@ public partial class GbaVideo
             return;
         }
 
-        Array.Clear(_bg0Pixels);
-        Array.Clear(_bg1Pixels);
-        Array.Clear(_bg2Pixels);
-        Array.Clear(_bg3Pixels);
-        Array.Clear(_objPixels);
-        Array.Fill(_objPriorities, byte.MaxValue);
-        Array.Fill(_objOamIndices, byte.MaxValue);
-        Array.Clear(_objSemiTransparent);
-        Array.Clear(_objWindowMask);
-
         int mode = firstState.DispCnt & 7;
-        switch (mode)
+        byte[] vram = _hasCapturedFrame ? _frameVram : Gba.Memory.Vram;
+        byte[] oam = _hasCapturedFrame ? _frameOam : Gba.Memory.Oam;
+        bool mapping1D = (firstState.DispCnt & 0x0040) != 0;
+
+        for (int y = 0; y < FrameHeight; y++)
         {
-            case 0:
-                RenderTextBackground(0, _bg0Pixels);
-                RenderTextBackground(1, _bg1Pixels);
-                RenderTextBackground(2, _bg2Pixels);
-                RenderTextBackground(3, _bg3Pixels);
-                break;
-            case 1:
-                RenderTextBackground(0, _bg0Pixels);
-                RenderTextBackground(1, _bg1Pixels);
-                RenderAffineBackground(2, _bg2Pixels);
-                break;
-            case 2:
-                RenderAffineBackground(2, _bg2Pixels);
-                RenderAffineBackground(3, _bg3Pixels);
-                break;
-            case 3:
-                RenderBitmapMode3(_bg2Pixels);
-                break;
-            case 4:
-                RenderBitmapMode4(_bg2Pixels);
-                break;
-            case 5:
-                RenderBitmapMode5(_bg2Pixels);
-                break;
+            ScanlineState state = GetScanlineState(y);
+            ClearScanlineBuffers();
+
+            switch (mode)
+            {
+                case 0:
+                    RenderTextBackgroundScanline(0, y, state, vram, _bg0Scanline);
+                    RenderTextBackgroundScanline(1, y, state, vram, _bg1Scanline);
+                    RenderTextBackgroundScanline(2, y, state, vram, _bg2Scanline);
+                    RenderTextBackgroundScanline(3, y, state, vram, _bg3Scanline);
+                    break;
+                case 1:
+                    RenderTextBackgroundScanline(0, y, state, vram, _bg0Scanline);
+                    RenderTextBackgroundScanline(1, y, state, vram, _bg1Scanline);
+                    RenderAffineBackgroundScanline(2, y, state, vram, _bg2Scanline);
+                    break;
+                case 2:
+                    RenderAffineBackgroundScanline(2, y, state, vram, _bg2Scanline);
+                    RenderAffineBackgroundScanline(3, y, state, vram, _bg3Scanline);
+                    break;
+                case 3:
+                    RenderBitmapMode3Scanline(y, state, vram, _bg2Scanline);
+                    break;
+                case 4:
+                    RenderBitmapMode4Scanline(y, state, vram, _bg2Scanline);
+                    break;
+                case 5:
+                    RenderBitmapMode5Scanline(y, state, vram, _bg2Scanline);
+                    break;
+            }
+
+            RenderSpritesScanline(y, state, oam, vram, mapping1D, mode);
+            FinalizeScanline(y, state);
         }
 
-        RenderSprites();
-        FinalizeLayers();
-        WriteFrameBuffers();
+        _screenshotDirty = true;
     }
 
     private void FillSolid(uint color)
     {
-        Array.Fill(_finalPixels, color);
         for (int i = 0; i < _frameBuffer.Length; i += 4)
         {
             _frameBuffer[i] = (byte)color;
@@ -272,214 +277,167 @@ public partial class GbaVideo
             _frameBuffer[i + 3] = (byte)(color >> 24);
         }
 
-        for (int i = 0; i < _screenshotBuffer.Length; i += 4)
-        {
-            _screenshotBuffer[i] = (byte)(color >> 16);
-            _screenshotBuffer[i + 1] = (byte)(color >> 8);
-            _screenshotBuffer[i + 2] = (byte)color;
-            _screenshotBuffer[i + 3] = (byte)(color >> 24);
-        }
+        _screenshotDirty = true;
     }
 
-    private void WriteFrameBuffers()
+    private void ClearScanlineBuffers()
     {
-        for (int i = 0, dst = 0; i < _finalPixels.Length; i++, dst += 4)
-        {
-            uint color = _finalPixels[i];
-            _frameBuffer[dst] = (byte)color;
-            _frameBuffer[dst + 1] = (byte)(color >> 8);
-            _frameBuffer[dst + 2] = (byte)(color >> 16);
-            _frameBuffer[dst + 3] = (byte)(color >> 24);
-
-            _screenshotBuffer[dst] = (byte)(color >> 16);
-            _screenshotBuffer[dst + 1] = (byte)(color >> 8);
-            _screenshotBuffer[dst + 2] = (byte)color;
-            _screenshotBuffer[dst + 3] = (byte)(color >> 24);
-        }
+        Array.Clear(_bg0Scanline);
+        Array.Clear(_bg1Scanline);
+        Array.Clear(_bg2Scanline);
+        Array.Clear(_bg3Scanline);
+        Array.Clear(_objScanline);
+        Array.Fill(_objPriorities, byte.MaxValue);
+        Array.Fill(_objOamIndices, byte.MaxValue);
+        Array.Clear(_objSemiTransparent);
+        Array.Clear(_objWindowMask);
     }
 
-    private void RenderTextBackground(int bg, uint[] target)
+    private void RenderTextBackgroundScanline(int bg, int y, ScanlineState state, byte[] vram, uint[] target)
     {
-        int mode = GetScanlineState(0).DispCnt & 7;
-        if (mode > 1 && bg < 2)
+        if ((state.EnabledMask & (1 << bg)) == 0)
             return;
-        byte[] vram = _hasCapturedFrame ? _frameVram : Gba.Memory.Vram;
 
-        for (int y = 0; y < FrameHeight; y++)
+        ushort control = GetBgCnt(state, bg);
+        int charBase = ((control >> 2) & 0x3) * 0x4000;
+        int screenBase = ((control >> 8) & 0x1F) * 0x800;
+        bool use256Colors = (control & 0x0080) != 0;
+        GetTextBgDimensions((control >> 14) & 0x3, out int width, out int height);
+        int blocksPerRow = width >> 8;
+        int sourceY = Mod9Bit(y + GetBgVOfs(state, bg), height);
+        int tileY = sourceY >> 3;
+        int rowInTile = sourceY & 0x7;
+        int blockY = tileY >> 5;
+
+        for (int x = 0; x < FrameWidth; x++)
         {
-            ScanlineState state = GetScanlineState(y);
-            if ((state.EnabledMask & (1 << bg)) == 0)
+            int sourceX = Mod9Bit(x + GetBgHOfs(state, bg), width);
+            int tileX = sourceX >> 3;
+            int blockX = tileX >> 5;
+            int blockIndex = blockY * blocksPerRow + blockX;
+            int mapOffset = screenBase + blockIndex * 0x800 + (((tileY & 31) * 32 + (tileX & 31)) * 2);
+            if ((uint)(mapOffset + 1) >= (uint)vram.Length)
                 continue;
 
-            ushort control = GetBgCnt(state, bg);
-            int charBase = ((control >> 2) & 0x3) * 0x4000;
-            int screenBase = ((control >> 8) & 0x1F) * 0x800;
-            bool use256Colors = (control & 0x0080) != 0;
-            GetTextBgDimensions((control >> 14) & 0x3, out int width, out int height);
-            int blocksPerRow = width >> 8;
-            int sourceY = Mod9Bit(y + GetBgVOfs(state, bg), height);
-            int tileY = sourceY >> 3;
-            int rowInTile = sourceY & 0x7;
-            int blockY = tileY >> 5;
+            ushort entry = ReadU16(vram, mapOffset);
+            int tileNumber = entry & 0x03FF;
+            bool hFlip = (entry & 0x0400) != 0;
+            bool vFlip = (entry & 0x0800) != 0;
+            int paletteBank = entry >> 12;
 
-            for (int x = 0; x < FrameWidth; x++)
-            {
-                int sourceX = Mod9Bit(x + GetBgHOfs(state, bg), width);
-                int tileX = sourceX >> 3;
-                int blockX = tileX >> 5;
-                int blockIndex = blockY * blocksPerRow + blockX;
-                int mapOffset = screenBase + blockIndex * 0x800 + (((tileY & 31) * 32 + (tileX & 31)) * 2);
-                if ((uint)(mapOffset + 1) >= (uint)vram.Length)
-                    continue;
+            int column = hFlip ? 7 - (sourceX & 0x7) : (sourceX & 0x7);
+            int row = vFlip ? 7 - rowInTile : rowInTile;
+            int colorIndex = ReadTilePixel(vram, charBase, tileNumber, row, column, use256Colors, paletteBank);
+            if (colorIndex == 0)
+                continue;
 
-                ushort entry = ReadU16(vram, mapOffset);
-                int tileNumber = entry & 0x03FF;
-                bool hFlip = (entry & 0x0400) != 0;
-                bool vFlip = (entry & 0x0800) != 0;
-                int paletteBank = entry >> 12;
-
-                int column = hFlip ? 7 - (sourceX & 0x7) : (sourceX & 0x7);
-                int row = vFlip ? 7 - rowInTile : rowInTile;
-                int colorIndex = ReadTilePixel(vram, charBase, tileNumber, row, column, use256Colors, paletteBank);
-                if (colorIndex == 0)
-                    continue;
-
-                target[y * FrameWidth + x] = ReadPaletteColor(y, colorIndex, objPalette: false);
-            }
+            target[x] = ReadPaletteColor(y, colorIndex, objPalette: false);
         }
     }
 
-    private void RenderAffineBackground(int bg, uint[] target)
+    private void RenderAffineBackgroundScanline(int bg, int y, ScanlineState state, byte[] vram, uint[] target)
     {
         int affineIndex = bg - 2;
-        if (affineIndex < 0 || affineIndex > 1)
+        if (affineIndex < 0 || affineIndex > 1 || (state.EnabledMask & (1 << bg)) == 0)
             return;
-        byte[] vram = _hasCapturedFrame ? _frameVram : Gba.Memory.Vram;
 
-        for (int y = 0; y < FrameHeight; y++)
+        ushort control = GetBgCnt(state, bg);
+        int charBase = ((control >> 2) & 0x3) * 0x4000;
+        int screenBase = ((control >> 8) & 0x1F) * 0x800;
+        bool wrap = (control & 0x2000) != 0;
+        int size = 128 << ((control >> 14) & 0x3);
+        int tilesPerAxis = size >> 3;
+        int refX = affineIndex == 0 ? state.Bg2X : state.Bg3X;
+        int refY = affineIndex == 0 ? state.Bg2Y : state.Bg3Y;
+        int pa = affineIndex == 0 ? state.Bg2PA : state.Bg3PA;
+        int pc = affineIndex == 0 ? state.Bg2PC : state.Bg3PC;
+
+        for (int x = 0; x < FrameWidth; x++)
         {
-            ScanlineState state = GetScanlineState(y);
-            if ((state.EnabledMask & (1 << bg)) == 0)
+            int sourceX = (refX + pa * x) >> 8;
+            int sourceY = (refY + pc * x) >> 8;
+
+            if (wrap)
+            {
+                sourceX &= size - 1;
+                sourceY &= size - 1;
+            }
+            else if ((uint)sourceX >= (uint)size || (uint)sourceY >= (uint)size)
+            {
+                continue;
+            }
+
+            int mapOffset = screenBase + (sourceY >> 3) * tilesPerAxis + (sourceX >> 3);
+            if ((uint)mapOffset >= (uint)vram.Length)
                 continue;
 
-            ushort control = GetBgCnt(state, bg);
-            int charBase = ((control >> 2) & 0x3) * 0x4000;
-            int screenBase = ((control >> 8) & 0x1F) * 0x800;
-            bool wrap = (control & 0x2000) != 0;
-            int size = 128 << ((control >> 14) & 0x3);
-            int tilesPerAxis = size >> 3;
-            int refX = affineIndex == 0 ? state.Bg2X : state.Bg3X;
-            int refY = affineIndex == 0 ? state.Bg2Y : state.Bg3Y;
-            int pa = affineIndex == 0 ? state.Bg2PA : state.Bg3PA;
-            int pb = affineIndex == 0 ? state.Bg2PB : state.Bg3PB;
-            int pc = affineIndex == 0 ? state.Bg2PC : state.Bg3PC;
-            int pd = affineIndex == 0 ? state.Bg2PD : state.Bg3PD;
+            int tileNumber = vram[mapOffset];
+            int pixelOffset = charBase + tileNumber * 64 + ((sourceY & 0x7) * 8) + (sourceX & 0x7);
+            if ((uint)pixelOffset >= (uint)vram.Length)
+                continue;
 
-            for (int x = 0; x < FrameWidth; x++)
-            {
-                int sourceX = (refX + pa * x) >> 8;
-                int sourceY = (refY + pc * x) >> 8;
+            int colorIndex = vram[pixelOffset];
+            if (colorIndex == 0)
+                continue;
 
-                if (wrap)
-                {
-                    sourceX &= size - 1;
-                    sourceY &= size - 1;
-                }
-                else if ((uint)sourceX >= (uint)size || (uint)sourceY >= (uint)size)
-                {
-                    continue;
-                }
-
-                int mapOffset = screenBase + (sourceY >> 3) * tilesPerAxis + (sourceX >> 3);
-                if ((uint)mapOffset >= (uint)vram.Length)
-                    continue;
-
-                int tileNumber = vram[mapOffset];
-                int pixelOffset = charBase + tileNumber * 64 + ((sourceY & 0x7) * 8) + (sourceX & 0x7);
-                if ((uint)pixelOffset >= (uint)vram.Length)
-                    continue;
-
-                int colorIndex = vram[pixelOffset];
-                if (colorIndex == 0)
-                    continue;
-
-                target[y * FrameWidth + x] = ReadPaletteColor(y, colorIndex, objPalette: false);
-            }
+            target[x] = ReadPaletteColor(y, colorIndex, objPalette: false);
         }
     }
 
-    private void RenderBitmapMode3(uint[] target)
+    private void RenderBitmapMode3Scanline(int y, ScanlineState state, byte[] vram, uint[] target)
     {
-        if ((GetScanlineState(0).DispCnt & 0x0400) == 0)
+        if ((state.EnabledMask & (1 << 2)) == 0 || (state.DispCnt & 0x0400) == 0)
             return;
 
-        byte[] vram = _hasCapturedFrame ? _frameVram : Gba.Memory.Vram;
-        for (int y = 0; y < FrameHeight; y++)
+        int rowBase = y * FrameWidth * 2;
+        for (int x = 0; x < FrameWidth; x++)
         {
-            int rowBase = y * FrameWidth * 2;
-            for (int x = 0; x < FrameWidth; x++)
-            {
-                int offset = rowBase + x * 2;
-                if ((uint)(offset + 1) >= (uint)vram.Length)
-                    continue;
-                target[y * FrameWidth + x] = ToBgra(ReadU16(vram, offset));
-            }
+            int offset = rowBase + x * 2;
+            if ((uint)(offset + 1) >= (uint)vram.Length)
+                continue;
+            target[x] = ToBgra(ReadU16(vram, offset));
         }
     }
 
-    private void RenderBitmapMode4(uint[] target)
+    private void RenderBitmapMode4Scanline(int y, ScanlineState state, byte[] vram, uint[] target)
     {
-        if ((GetScanlineState(0).DispCnt & 0x0400) == 0)
+        if ((state.EnabledMask & (1 << 2)) == 0 || (state.DispCnt & 0x0400) == 0)
             return;
 
-        int frameBase = (GetScanlineState(0).DispCnt & 0x0010) != 0 ? 0xA000 : 0;
-        byte[] vram = _hasCapturedFrame ? _frameVram : Gba.Memory.Vram;
-        for (int y = 0; y < FrameHeight; y++)
+        int frameBase = (state.DispCnt & 0x0010) != 0 ? 0xA000 : 0;
+        int rowBase = frameBase + y * FrameWidth;
+        for (int x = 0; x < FrameWidth; x++)
         {
-            int rowBase = frameBase + y * FrameWidth;
-            for (int x = 0; x < FrameWidth; x++)
-            {
-                int offset = rowBase + x;
-                if ((uint)offset >= (uint)vram.Length)
-                    continue;
-                int colorIndex = vram[offset];
-                if (colorIndex == 0)
-                    continue;
-                target[y * FrameWidth + x] = ReadPaletteColor(y, colorIndex, objPalette: false);
-            }
+            int offset = rowBase + x;
+            if ((uint)offset >= (uint)vram.Length)
+                continue;
+            int colorIndex = vram[offset];
+            if (colorIndex == 0)
+                continue;
+            target[x] = ReadPaletteColor(y, colorIndex, objPalette: false);
         }
     }
 
-    private void RenderBitmapMode5(uint[] target)
+    private void RenderBitmapMode5Scanline(int y, ScanlineState state, byte[] vram, uint[] target)
     {
-        if ((GetScanlineState(0).DispCnt & 0x0400) == 0)
+        if ((state.EnabledMask & (1 << 2)) == 0 || (state.DispCnt & 0x0400) == 0 || y >= 128)
             return;
 
-        int frameBase = (GetScanlineState(0).DispCnt & 0x0010) != 0 ? 0xA000 : 0;
-        byte[] vram = _hasCapturedFrame ? _frameVram : Gba.Memory.Vram;
-        for (int y = 0; y < 128; y++)
+        int frameBase = (state.DispCnt & 0x0010) != 0 ? 0xA000 : 0;
+        int rowBase = frameBase + y * 160 * 2;
+        for (int x = 0; x < 160; x++)
         {
-            int rowBase = frameBase + y * 160 * 2;
-            for (int x = 0; x < 160; x++)
-            {
-                int offset = rowBase + x * 2;
-                if ((uint)(offset + 1) >= (uint)vram.Length)
-                    continue;
-                target[y * FrameWidth + x] = ToBgra(ReadU16(vram, offset));
-            }
+            int offset = rowBase + x * 2;
+            if ((uint)(offset + 1) >= (uint)vram.Length)
+                continue;
+            target[x] = ToBgra(ReadU16(vram, offset));
         }
     }
 
-    private void RenderSprites()
+    private void RenderSpritesScanline(int y, ScanlineState state, byte[] oam, byte[] vram, bool mapping1D, int bgMode)
     {
-        if ((GetScanlineState(0).DispCnt & 0x1000) == 0)
+        if ((state.DispCnt & 0x1000) == 0)
             return;
-
-        byte[] oam = _hasCapturedFrame ? _frameOam : Gba.Memory.Oam;
-        byte[] vram = _hasCapturedFrame ? _frameVram : Gba.Memory.Vram;
-        ScanlineState firstState = GetScanlineState(0);
-        bool mapping1D = (firstState.DispCnt & 0x0040) != 0;
-        int bgMode = firstState.DispCnt & 0x7;
 
         for (int i = 127; i >= 0; i--)
         {
@@ -528,10 +486,8 @@ public partial class GbaVideo
             int renderWidth = doubleSize ? width * 2 : width;
             int renderHeight = doubleSize ? height * 2 : height;
             int left = Math.Max(spriteX, 0);
-            int top = Math.Max(spriteY, 0);
             int right = Math.Min(spriteX + renderWidth, FrameWidth);
-            int bottom = Math.Min(spriteY + renderHeight, FrameHeight);
-            if (left >= right || top >= bottom)
+            if (left >= right || y < spriteY || y >= spriteY + renderHeight)
                 continue;
 
             int priority = (attr2 >> 10) & 0x3;
@@ -554,61 +510,57 @@ public partial class GbaVideo
                 pd = (short)ReadU16(oam, affineIndex * 32 + 30);
             }
 
-            for (int y = top; y < bottom; y++)
+            for (int x = left; x < right; x++)
             {
-                for (int x = left; x < right; x++)
+                if (!TryResolveSpritePixel(
+                        x - spriteX,
+                        y - spriteY,
+                        width,
+                        height,
+                        renderWidth,
+                        renderHeight,
+                        isAffine,
+                        hFlip,
+                        vFlip,
+                        pa,
+                        pb,
+                        pc,
+                        pd,
+                        out int sourceX,
+                        out int sourceY))
                 {
-                    if (!TryResolveSpritePixel(
-                            x - spriteX,
-                            y - spriteY,
-                            width,
-                            height,
-                            renderWidth,
-                            renderHeight,
-                            isAffine,
-                            hFlip,
-                            vFlip,
-                            pa,
-                            pb,
-                            pc,
-                            pd,
-                            out int sourceX,
-                            out int sourceY))
-                    {
-                        continue;
-                    }
-
-                    int colorIndex = ReadObjectTilePixel(vram, charBase, tileBase, stride, sourceX, sourceY, use256Colors, paletteBank);
-                    if (colorIndex == 0)
-                        continue;
-
-                    int index = y * FrameWidth + x;
-                    if (objWindow)
-                    {
-                        _objWindowMask[index] = 1;
-                        continue;
-                    }
-
-                    if (!ShouldReplaceObjectPixel(index, priority, i))
-                        continue;
-
-                    _objPixels[index] = ReadPaletteColor(y, colorIndex, objPalette: true);
-                    _objPriorities[index] = (byte)priority;
-                    _objOamIndices[index] = (byte)i;
-                    _objSemiTransparent[index] = semiTransparent ? (byte)1 : (byte)0;
+                    continue;
                 }
+
+                int colorIndex = ReadObjectTilePixel(vram, charBase, tileBase, stride, sourceX, sourceY, use256Colors, paletteBank);
+                if (colorIndex == 0)
+                    continue;
+
+                if (objWindow)
+                {
+                    _objWindowMask[x] = 1;
+                    continue;
+                }
+
+                if (!ShouldReplaceObjectPixel(x, priority, i))
+                    continue;
+
+                _objScanline[x] = ReadPaletteColor(y, colorIndex, objPalette: true);
+                _objPriorities[x] = (byte)priority;
+                _objOamIndices[x] = (byte)i;
+                _objSemiTransparent[x] = semiTransparent ? (byte)1 : (byte)0;
             }
         }
     }
 
-    private bool ShouldReplaceObjectPixel(int index, int priority, int oamIndex)
+    private bool ShouldReplaceObjectPixel(int x, int priority, int oamIndex)
     {
-        byte currentPriority = _objPriorities[index];
+        byte currentPriority = _objPriorities[x];
         if (priority < currentPriority)
             return true;
         if (priority > currentPriority)
             return false;
-        return oamIndex < _objOamIndices[index];
+        return oamIndex < _objOamIndices[x];
     }
 
     private static bool TryResolveSpritePixel(
@@ -729,82 +681,96 @@ public partial class GbaVideo
         _ => 0,
     };
 
-    private void FinalizeLayers()
+    private void FinalizeScanline(int y, ScanlineState state)
     {
-        for (int y = 0; y < FrameHeight; y++)
+        bool windowsEnabled = (state.DispCnt & 0xE000) != 0;
+        uint backdrop = ReadPaletteColor(y, 0, objPalette: false);
+        int bg0Prio = state.BgCnt0 & 0x3;
+        int bg1Prio = state.BgCnt1 & 0x3;
+        int bg2Prio = state.BgCnt2 & 0x3;
+        int bg3Prio = state.BgCnt3 & 0x3;
+        uint bldCnt = state.BldCnt;
+        int blendEffect = (int)((bldCnt >> 6) & 0x3);
+        int eva = Math.Min(state.BldAlpha & 0x1F, 16);
+        int evb = Math.Min((state.BldAlpha >> 8) & 0x1F, 16);
+        int evy = Math.Min(state.BldY & 0x1F, 16);
+        int rowDst = y * FrameStride;
+
+        for (int x = 0; x < FrameWidth; x++)
         {
-            ScanlineState state = GetScanlineState(y);
-            uint backdrop = ReadPaletteColor(y, 0, objPalette: false);
-            int bg0Prio = state.BgCnt0 & 0x3;
-            int bg1Prio = state.BgCnt1 & 0x3;
-            int bg2Prio = state.BgCnt2 & 0x3;
-            int bg3Prio = state.BgCnt3 & 0x3;
-            uint bldCnt = state.BldCnt;
-            int blendEffect = (int)((bldCnt >> 6) & 0x3);
-            int eva = Math.Min(state.BldAlpha & 0x1F, 16);
-            int evb = Math.Min((state.BldAlpha >> 8) & 0x1F, 16);
-            int evy = Math.Min(state.BldY & 0x1F, 16);
+            uint windowMask = windowsEnabled ? ComputeWindowMask(state, x, y) : 0x3F;
 
-            for (int x = 0; x < FrameWidth; x++)
+            var top = new LayerCandidate(backdrop, priority: 32, t1: ((bldCnt >> 5) & 1) != 0, t2: ((bldCnt >> 13) & 1) != 0, semiTransparent: false);
+            var bottom = top;
+
+            if ((windowMask & 0x10) != 0 && _objScanline[x] != 0)
             {
-                int index = y * FrameWidth + x;
-                uint windowMask = ComputeWindowMask(state, x, y);
-
-                var top = new LayerCandidate(backdrop, priority: 32, t1: ((bldCnt >> 5) & 1) != 0, t2: ((bldCnt >> 13) & 1) != 0, semiTransparent: false);
-                var bottom = top;
-
-                if ((windowMask & 0x10) != 0 && _objPixels[index] != 0)
-                {
-                    CompositeCandidate(
-                        ref top,
-                        ref bottom,
-                        new LayerCandidate(
-                            _objPixels[index],
-                            _objPriorities[index],
-                            t1: ((bldCnt >> 4) & 1) != 0 || _objSemiTransparent[index] != 0,
-                            t2: ((bldCnt >> 12) & 1) != 0,
-                            semiTransparent: _objSemiTransparent[index] != 0));
-                }
-
-                if ((windowMask & 0x01) != 0 && _bg0Pixels[index] != 0 && (state.DispCnt & 0x0100) != 0)
-                {
-                    CompositeCandidate(ref top, ref bottom, new LayerCandidate(_bg0Pixels[index], bg0Prio, (bldCnt & 1) != 0, ((bldCnt >> 8) & 1) != 0, false));
-                }
-
-                if ((windowMask & 0x02) != 0 && _bg1Pixels[index] != 0 && (state.DispCnt & 0x0200) != 0)
-                {
-                    CompositeCandidate(ref top, ref bottom, new LayerCandidate(_bg1Pixels[index], bg1Prio, ((bldCnt >> 1) & 1) != 0, ((bldCnt >> 9) & 1) != 0, false));
-                }
-
-                if ((windowMask & 0x04) != 0 && _bg2Pixels[index] != 0 && (state.DispCnt & 0x0400) != 0)
-                {
-                    CompositeCandidate(ref top, ref bottom, new LayerCandidate(_bg2Pixels[index], bg2Prio, ((bldCnt >> 2) & 1) != 0, ((bldCnt >> 10) & 1) != 0, false));
-                }
-
-                if ((windowMask & 0x08) != 0 && _bg3Pixels[index] != 0 && (state.DispCnt & 0x0800) != 0)
-                {
-                    CompositeCandidate(ref top, ref bottom, new LayerCandidate(_bg3Pixels[index], bg3Prio, ((bldCnt >> 3) & 1) != 0, ((bldCnt >> 11) & 1) != 0, false));
-                }
-
-                if ((windowMask & 0x20) == 0)
-                    top.T1 = false;
-
-                uint finalColor = top.Color;
-                if ((top.SemiTransparent || (blendEffect == 1 && top.T1)) && bottom.T2)
-                {
-                    finalColor = BlendColors(top.Color, bottom.Color, eva, evb);
-                }
-                else if (!top.SemiTransparent && top.T1)
-                {
-                    if (blendEffect == 2)
-                        finalColor = BrightenColor(top.Color, evy);
-                    else if (blendEffect == 3)
-                        finalColor = DarkenColor(top.Color, evy);
-                }
-
-                _finalPixels[index] = finalColor;
+                CompositeCandidate(
+                    ref top,
+                    ref bottom,
+                    new LayerCandidate(
+                        _objScanline[x],
+                        _objPriorities[x],
+                        t1: ((bldCnt >> 4) & 1) != 0 || _objSemiTransparent[x] != 0,
+                        t2: ((bldCnt >> 12) & 1) != 0,
+                        semiTransparent: _objSemiTransparent[x] != 0));
             }
+
+            if ((windowMask & 0x01) != 0 && _bg0Scanline[x] != 0 && (state.DispCnt & 0x0100) != 0)
+            {
+                CompositeCandidate(ref top, ref bottom, new LayerCandidate(_bg0Scanline[x], bg0Prio, (bldCnt & 1) != 0, ((bldCnt >> 8) & 1) != 0, false));
+            }
+
+            if ((windowMask & 0x02) != 0 && _bg1Scanline[x] != 0 && (state.DispCnt & 0x0200) != 0)
+            {
+                CompositeCandidate(ref top, ref bottom, new LayerCandidate(_bg1Scanline[x], bg1Prio, ((bldCnt >> 1) & 1) != 0, ((bldCnt >> 9) & 1) != 0, false));
+            }
+
+            if ((windowMask & 0x04) != 0 && _bg2Scanline[x] != 0 && (state.DispCnt & 0x0400) != 0)
+            {
+                CompositeCandidate(ref top, ref bottom, new LayerCandidate(_bg2Scanline[x], bg2Prio, ((bldCnt >> 2) & 1) != 0, ((bldCnt >> 10) & 1) != 0, false));
+            }
+
+            if ((windowMask & 0x08) != 0 && _bg3Scanline[x] != 0 && (state.DispCnt & 0x0800) != 0)
+            {
+                CompositeCandidate(ref top, ref bottom, new LayerCandidate(_bg3Scanline[x], bg3Prio, ((bldCnt >> 3) & 1) != 0, ((bldCnt >> 11) & 1) != 0, false));
+            }
+
+            if ((windowMask & 0x20) == 0)
+                top.T1 = false;
+
+            uint finalColor = top.Color;
+            if ((top.SemiTransparent || (blendEffect == 1 && top.T1)) && bottom.T2)
+            {
+                finalColor = BlendColors(top.Color, bottom.Color, eva, evb);
+            }
+            else if (!top.SemiTransparent && top.T1)
+            {
+                if (blendEffect == 2)
+                    finalColor = BrightenColor(top.Color, evy);
+                else if (blendEffect == 3)
+                    finalColor = DarkenColor(top.Color, evy);
+            }
+
+            int dst = rowDst + (x * 4);
+            _frameBuffer[dst] = (byte)finalColor;
+            _frameBuffer[dst + 1] = (byte)(finalColor >> 8);
+            _frameBuffer[dst + 2] = (byte)(finalColor >> 16);
+            _frameBuffer[dst + 3] = (byte)(finalColor >> 24);
         }
+    }
+
+    private void RebuildScreenshotBuffer()
+    {
+        for (int i = 0; i < _frameBuffer.Length; i += 4)
+        {
+            _screenshotBuffer[i] = _frameBuffer[i + 2];
+            _screenshotBuffer[i + 1] = _frameBuffer[i + 1];
+            _screenshotBuffer[i + 2] = _frameBuffer[i];
+            _screenshotBuffer[i + 3] = _frameBuffer[i + 3];
+        }
+
+        _screenshotDirty = false;
     }
 
     private uint ComputeWindowMask(ScanlineState state, int x, int y)
@@ -819,7 +785,7 @@ public partial class GbaVideo
             return (uint)(state.WinIn & 0x3F);
         if (win1Enable && WindowContains(x, y, state.Win1H, state.Win1V))
             return (uint)((state.WinIn >> 8) & 0x3F);
-        if (objWinEnable && _objWindowMask[y * FrameWidth + x] != 0)
+        if (objWinEnable && _objWindowMask[x] != 0)
             return (uint)((state.WinOut >> 8) & 0x3F);
         return (uint)(state.WinOut & 0x3F);
     }
