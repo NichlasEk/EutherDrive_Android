@@ -93,7 +93,7 @@ public sealed class SegaCdCddStub
     private bool _subcodeInterruptPending;
     private readonly byte[] _status = new byte[10];
     private readonly byte[] _sectorBuffer = new byte[CdRom.BytesPerSector];
-    private CdRom? _disc;
+    [NonSerialized] private CdRom? _disc;
     private CdModel _model = CdModel.One;
     private int _divider75Hz = Divider75Hz;
     private ushort _faderVolume;

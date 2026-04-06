@@ -1729,6 +1729,10 @@ class Program
             || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
+        bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "sega-cd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "mega-cd", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
 
         if (usePsx)
         {
@@ -1771,6 +1775,48 @@ class Program
             }
 
             Console.WriteLine("[HEADLESS] PSX savestate roundtrip ok.");
+            return 0;
+        }
+
+        if (useSegaCd)
+        {
+            var scd = new SegaCdAdapter();
+            scd.LoadRom(romPath);
+
+            for (int i = 0; i < 10; i++)
+                scd.RunFrame();
+
+            byte[] snapshotScd;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                scd.SaveState(writer);
+                writer.Flush();
+                snapshotScd = ms.ToArray();
+            }
+
+            using (var ms = new MemoryStream(snapshotScd))
+            using (var reader = new BinaryReader(ms))
+            {
+                scd.LoadState(reader);
+            }
+
+            byte[] snapshotAfterScd;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                scd.SaveState(writer);
+                writer.Flush();
+                snapshotAfterScd = ms.ToArray();
+            }
+
+            if (!snapshotScd.SequenceEqual(snapshotAfterScd))
+            {
+                Console.Error.WriteLine("[HEADLESS] Sega CD savestate roundtrip failed: payload mismatch.");
+                return 1;
+            }
+
+            Console.WriteLine("[HEADLESS] Sega CD savestate roundtrip ok.");
             return 0;
         }
 
@@ -1858,6 +1904,10 @@ class Program
                 || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
+            bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "sega-cd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "mega-cd", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
             bool useGba = string.Equals(coreOverride, "gba", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "agb", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsGbaRomPath(romPath));
@@ -2265,6 +2315,48 @@ class Program
                 Console.WriteLine($"[HEADLESS] PSX fb_has_content={psxStatsOut.HasContent} nonzero_pixels={psxStatsOut.NonZeroPixels} first_nonzero=({psxStatsOut.FirstX},{psxStatsOut.FirstY})");
                 DumpBgraToPpm(psxFbOut, psxWOut, psxHOut, psxSOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useSegaCd)
+            {
+                var scd = new SegaCdAdapter();
+                scd.LoadRom(romPath);
+
+                int? slotOverrideScd = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadScd = TryLoadSavestatePayload(savestatePath, scd.RomIdentity, slotOverrideScd, out var scdError);
+                if (payloadScd == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {scdError}");
+                    return 1;
+                }
+
+                using (var scdStateStream = new MemoryStream(payloadScd, writable: false))
+                using (var scdStateReader = new BinaryReader(scdStateStream))
+                    scd.LoadState(scdStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (Sega CD)");
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> scdFbIn = scd.GetFrameBuffer(out int scdWIn, out int scdHIn, out int scdSIn);
+                var scdStatsIn = GetFrameStats(scdFbIn, scdWIn, scdHIn, scdSIn);
+                Console.WriteLine($"[HEADLESS] SegaCD fb_has_content={scdStatsIn.HasContent} nonzero_pixels={scdStatsIn.NonZeroPixels} first_nonzero=({scdStatsIn.FirstX},{scdStatsIn.FirstY})");
+                DumpBgraToPpm(scdFbIn, scdWIn, scdHIn, scdSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    scd.RunFrame();
+                    ReadOnlySpan<byte> fb = scd.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    Console.WriteLine($"[HEADLESS] Frame {frame}: scd_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> scdFbOut = scd.GetFrameBuffer(out int scdWOut, out int scdHOut, out int scdSOut);
+                var scdStatsOut = GetFrameStats(scdFbOut, scdWOut, scdHOut, scdSOut);
+                Console.WriteLine($"[HEADLESS] SegaCD fb_has_content={scdStatsOut.HasContent} nonzero_pixels={scdStatsOut.NonZeroPixels} first_nonzero=({scdStatsOut.FirstX},{scdStatsOut.FirstY})");
+                DumpBgraToPpm(scdFbOut, scdWOut, scdHOut, scdSOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 return 0;
             }
 
@@ -2676,6 +2768,10 @@ class Program
                 || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
+            bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "sega-cd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "mega-cd", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
             bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
@@ -2742,6 +2838,37 @@ class Program
                 string outPathPce = Path.Combine(dumpDir, "headless_output.ppm");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, outPathPce);
                 Console.WriteLine($"[HEADLESS] Framebuffer dumped to {outPathPce}");
+                return 0;
+            }
+
+            if (useSegaCd)
+            {
+                var scd = new SegaCdAdapter();
+                scd.LoadRom(romPath);
+
+                using (var fs = new FileStream(rawStatePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var reader = new BinaryReader(fs))
+                {
+                    scd.LoadState(reader);
+                }
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    scd.RunFrame();
+                    Console.WriteLine($"[HEADLESS] Frame {frame} completed");
+                    if (frame == 0 || frame == 5 || frame == 10)
+                    {
+                        ReadOnlySpan<byte> fb = scd.GetFrameBuffer(out int w, out int h, out int s);
+                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                        DumpBgraToPpm(fb, w, h, s, ppmPath);
+                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = scd.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                string outPathScd = Path.Combine(dumpDir, "headless_output.ppm");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, outPathScd);
+                Console.WriteLine($"[HEADLESS] Framebuffer dumped to {outPathScd}");
                 return 0;
             }
 

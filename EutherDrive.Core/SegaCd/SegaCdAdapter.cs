@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using EutherDrive.Core.Cpu.M68000Emu;
 using EutherDrive.Core.MdTracerCore;
+using EutherDrive.Core.Savestates;
 using ProjectPSX.IO;
 
 namespace EutherDrive.Core.SegaCd;
@@ -13,11 +14,12 @@ namespace EutherDrive.Core.SegaCd;
 // NOTE: This is the initial scaffold for Sega CD core porting.
 // Emulation core translation from jgenesis is in progress; this adapter
 // currently loads BIOS + disc info and exposes a blank framebuffer/audio.
-public sealed class SegaCdAdapter : IEmulatorCore
+public sealed class SegaCdAdapter : IEmulatorCore, ISavestateCapable
 {
     private const int DefaultW = 320;
     private const int DefaultH = 224;
     private const int DefaultStride = DefaultW * 4;
+    private const int SavestateVersion = 1;
 
     private byte[] _frameBuffer = new byte[DefaultStride * DefaultH];
     private short[] _audioBuffer = Array.Empty<short>();
@@ -249,8 +251,11 @@ public sealed class SegaCdAdapter : IEmulatorCore
     private bool _enableRamCartridge = true;
     private bool _loadCdIntoRam;
     private bool _forceNoDisc;
+    private RomIdentity? _romIdentity;
 
     public SegaCdDiscInfo? DiscInfo => _discInfo;
+    public RomIdentity? RomIdentity => _romIdentity;
+    public long? FrameCounter => _currentScdFrameCounter >= 0 ? _currentScdFrameCounter : null;
     public ConsoleRegion RegionHint { get; private set; } = ConsoleRegion.Auto;
     public bool EnableRamCartridge
     {
@@ -401,6 +406,7 @@ public sealed class SegaCdAdapter : IEmulatorCore
         _scdMclkCycles = 0;
         _genesisMasterClockHz = GenesisMasterClockHzNtsc;
         _subCpuWaitCycles = 0;
+        _romIdentity = BuildRomIdentity(path);
     }
 
     private bool ShouldForceNoDisc()
@@ -429,6 +435,143 @@ public sealed class SegaCdAdapter : IEmulatorCore
     {
         if (!string.IsNullOrWhiteSpace(_romPath))
             LoadRom(_romPath);
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        if (_memory == null || _mainBus == null || _subBus == null || string.IsNullOrWhiteSpace(_romPath))
+            throw new InvalidOperationException("Sega CD core is not loaded.");
+
+        writer.Write(SavestateVersion);
+        writer.Write(_romPath);
+        writer.Write(_enableRamCartridge);
+        writer.Write(_loadCdIntoRam);
+        writer.Write(_forceNoDisc);
+        writer.Write(_useMainM68kEmu);
+        writer.Write(_useSubM68kEmu);
+
+        var mdSerializer = new MdTracerStateSerializer();
+        var adapterState = new SegaCdAdapterSavestateData
+        {
+            FrameWidth = _frameWidth,
+            FrameHeight = _frameHeight,
+            CurrentScdFrameCounter = _currentScdFrameCounter,
+            MainCycleRemainder = _mainCycleRemainder,
+            SubCycleRemainder = _subCycleRemainder,
+            Z80CycleRemainder = _z80CycleRemainder,
+            ScdMclkCycleProduct = _scdMclkCycleProduct,
+            ScdMclkCycles = _scdMclkCycles,
+            GenesisMasterClockHz = _genesisMasterClockHz,
+            SubCpuWaitCycles = _subCpuWaitCycles,
+            LastTargetFps = _lastTargetFps,
+            YmResamplePhase = _ymResamplePhase,
+            YmResampleHasCarry = _ymResampleHasCarry,
+            YmResampleCarryL = _ymResampleCarryL,
+            YmResampleCarryR = _ymResampleCarryR,
+            Z80PendingTicksCarry = _z80PendingTicksCarry,
+            UseMainM68kEmu = _useMainM68kEmu,
+            UseSubM68kEmu = _useSubM68kEmu,
+            SubCpuNeedsReset = _subCpuNeedsReset,
+            LastSubReset = _lastSubReset
+        };
+
+        IM68kBusOverride? savedMainOverride = _mainBus.OverrideBus;
+        IM68kBusOverride? savedSubOverride = _subBus.OverrideBus;
+        _mainBus.OverrideBus = null;
+        _subBus.OverrideBus = null;
+        try
+        {
+            mdSerializer.Save(writer);
+            StateBinarySerializer.WriteInto(writer, _memory);
+            StateBinarySerializer.WriteInto(writer, _subBus);
+            StateBinarySerializer.WriteInto(writer, adapterState);
+            StateBinarySerializer.WriteInto(writer, _pcmResampler);
+            StateBinarySerializer.WriteObject(writer, _pcmLowPass);
+            StateBinarySerializer.WriteObject(writer, _cdLowPass);
+            StateBinarySerializer.WriteObject(writer, _mainContext);
+            StateBinarySerializer.WriteObject(writer, _subContext);
+            StateBinarySerializer.WriteInto(writer, _mainCpu);
+            StateBinarySerializer.WriteInto(writer, _subCpu);
+        }
+        finally
+        {
+            _mainBus.OverrideBus = savedMainOverride;
+            _subBus.OverrideBus = savedSubOverride;
+        }
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+
+        int version = reader.ReadInt32();
+        if (version != SavestateVersion)
+            throw new InvalidDataException($"Unsupported Sega CD savestate version: {version}.");
+
+        string romPath = reader.ReadString();
+        bool enableRamCart = reader.ReadBoolean();
+        bool loadCdIntoRam = reader.ReadBoolean();
+        bool forceNoDisc = reader.ReadBoolean();
+        bool useMainM68kEmu = reader.ReadBoolean();
+        bool useSubM68kEmu = reader.ReadBoolean();
+
+        if (_useMainM68kEmu != useMainM68kEmu || _useSubM68kEmu != useSubM68kEmu)
+        {
+            throw new InvalidDataException(
+                $"Sega CD savestate CPU mode mismatch. state main/sub={useMainM68kEmu}/{useSubM68kEmu}, current={_useMainM68kEmu}/{_useSubM68kEmu}.");
+        }
+
+        EnableRamCartridge = enableRamCart;
+        LoadCdIntoRam = loadCdIntoRam;
+        ForceNoDisc = forceNoDisc;
+
+        if (!string.Equals(_romPath, romPath, StringComparison.Ordinal))
+            LoadRom(romPath);
+        else
+            Reset();
+
+        if (_memory == null || _mainBus == null || _subBus == null)
+            throw new InvalidOperationException("Sega CD core failed to initialize before savestate load.");
+
+        var mdSerializer = new MdTracerStateSerializer();
+        mdSerializer.Load(reader);
+        StateBinarySerializer.ReadInto(reader, _memory);
+        StateBinarySerializer.ReadInto(reader, _subBus);
+
+        var adapterState = new SegaCdAdapterSavestateData();
+        StateBinarySerializer.ReadInto(reader, adapterState);
+        StateBinarySerializer.ReadInto(reader, _pcmResampler);
+        _pcmLowPass = ReadOptionalObject<BiquadLowPass>(reader, _pcmLowPass);
+        _cdLowPass = ReadOptionalObject<BiquadLowPass>(reader, _cdLowPass);
+        _mainContext = ReadOptionalObject<md_m68k.MdM68kContext>(reader, _mainContext);
+        _subContext = ReadOptionalObject<md_m68k.MdM68kContext>(reader, _subContext);
+        StateBinarySerializer.ReadInto(reader, _mainCpu);
+        StateBinarySerializer.ReadInto(reader, _subCpu);
+
+        _frameWidth = adapterState.FrameWidth;
+        _frameHeight = adapterState.FrameHeight;
+        _currentScdFrameCounter = adapterState.CurrentScdFrameCounter;
+        _mainCycleRemainder = adapterState.MainCycleRemainder;
+        _subCycleRemainder = adapterState.SubCycleRemainder;
+        _z80CycleRemainder = adapterState.Z80CycleRemainder;
+        _scdMclkCycleProduct = adapterState.ScdMclkCycleProduct;
+        _scdMclkCycles = adapterState.ScdMclkCycles;
+        _genesisMasterClockHz = adapterState.GenesisMasterClockHz;
+        _subCpuWaitCycles = adapterState.SubCpuWaitCycles;
+        _lastTargetFps = adapterState.LastTargetFps;
+        _ymResamplePhase = adapterState.YmResamplePhase;
+        _ymResampleHasCarry = adapterState.YmResampleHasCarry;
+        _ymResampleCarryL = adapterState.YmResampleCarryL;
+        _ymResampleCarryR = adapterState.YmResampleCarryR;
+        _z80PendingTicksCarry = adapterState.Z80PendingTicksCarry;
+        _subCpuNeedsReset = adapterState.SubCpuNeedsReset;
+        _lastSubReset = adapterState.LastSubReset;
+        EnsureFrameBufferCapacity(_frameWidth > 0 ? _frameWidth : DefaultW, _frameHeight > 0 ? _frameHeight : DefaultH);
+        _audioBuffer = Array.Empty<short>();
+        Array.Clear(_frameBuffer, 0, _frameBuffer.Length);
+
+        RebindSavestateRuntimeState();
     }
 
     public void DumpPrgRam(string path)
@@ -2952,6 +3095,104 @@ public sealed class SegaCdAdapter : IEmulatorCore
         ushort msw = memory.ReadSubWord(address);
         ushort lsw = memory.ReadSubWord(address + 2);
         return (uint)((msw << 16) | lsw);
+    }
+
+    private RomIdentity? BuildRomIdentity(string path)
+    {
+        try
+        {
+            using var stream = VirtualFileSystem.OpenRead(path);
+            return new RomIdentity(
+                Path.GetFileName(path),
+                RomIdentity.ComputeSha256(stream),
+                PersistentStoragePath.ResolveSavestateDirectory(path, "segacd"));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void RebindSavestateRuntimeState()
+    {
+        if (_memory == null || _mainBus == null || _subBus == null)
+            return;
+
+        _memory.EnableRamCartridge = _enableRamCartridge;
+        _memory.MainCommunicationReadSync = SyncSubCpuForMainCommunicationRead;
+        _mainBus.OverrideBus = new SegaCdMainBusOverride(_memory);
+        _subBus.OverrideBus = new SegaCdSubBusOverride(_memory);
+
+        if (_useMainM68kEmu)
+        {
+            _mainCpuBus ??= new SegaCdMainM68kBus(_mainBus, _memory);
+            _memory.MainPcProvider = () => _mainCpu.Pc;
+        }
+        else
+        {
+            _memory.MainPcProvider = () => _mainContext?.RegPc ?? 0;
+        }
+
+        if (_useSubM68kEmu)
+        {
+            _subCpuBus ??= new SegaCdSubM68kBus(_memory);
+            _memory.SubPcProvider = () => _subCpu.Pc;
+        }
+        else
+        {
+            _memory.SubPcProvider = () => _subContext?.RegPc ?? 0;
+        }
+
+        md_main.g_md_bus = _mainBus;
+        if (md_main.g_md_io != null)
+        {
+            md_io.Current = md_main.g_md_io;
+            md_main.g_md_io.SetRomRegionHint(RegionHint);
+        }
+    }
+
+    private void EnsureFrameBufferCapacity(int width, int height)
+    {
+        int stride = width * 4;
+        int required = Math.Max(1, stride * height);
+        if (_frameBuffer.Length != required)
+            _frameBuffer = new byte[required];
+    }
+
+    private static T? ReadOptionalObject<T>(BinaryReader reader, T? existing) where T : class
+    {
+        bool hasObject = reader.ReadBoolean();
+        if (!hasObject)
+            return null;
+
+        T target = existing ?? (Activator.CreateInstance(typeof(T), nonPublic: true) as T
+            ?? throw new InvalidOperationException($"Unable to create savestate target for {typeof(T).FullName}."));
+        StateBinarySerializer.ReadInto(reader, target);
+        return target;
+    }
+
+    private sealed class SegaCdAdapterSavestateData
+    {
+        public int FrameWidth;
+        public int FrameHeight;
+        public long CurrentScdFrameCounter;
+        public double MainCycleRemainder;
+        public double SubCycleRemainder;
+        public double Z80CycleRemainder;
+        public ulong ScdMclkCycleProduct;
+        public ulong ScdMclkCycles;
+        public ulong GenesisMasterClockHz;
+        public uint SubCpuWaitCycles;
+        public double LastTargetFps;
+        public double YmResamplePhase;
+        public bool YmResampleHasCarry;
+        public short YmResampleCarryL;
+        public short YmResampleCarryR;
+        public int Z80PendingTicksCarry;
+        public bool UseMainM68kEmu;
+        public bool UseSubM68kEmu;
+        public bool SubCpuNeedsReset;
+        public bool LastSubReset;
     }
 
     private static EutherDrive.Core.MdTracerCore.md_m68k.MdM68kContext CreateResetContext(uint initialPc, uint initialSp)
