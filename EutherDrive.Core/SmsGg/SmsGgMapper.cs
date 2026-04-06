@@ -97,7 +97,7 @@ public static class SmsGgMapper
         if (bytes.Length == 0)
             return 0xFF;
 
-        int wrappedAddress = (int)(address & (uint)(bytes.Length - 1));
+        int wrappedAddress = (int)(address % (uint)bytes.Length);
         return bytes[wrappedAddress];
     }
 
@@ -106,7 +106,7 @@ public static class SmsGgMapper
         if (bytes.Length == 0)
             return;
 
-        int wrappedAddress = (int)(address & (uint)(bytes.Length - 1));
+        int wrappedAddress = (int)(address % (uint)bytes.Length);
         bytes[wrappedAddress] = value;
     }
 
