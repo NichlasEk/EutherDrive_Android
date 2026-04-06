@@ -1,7 +1,11 @@
+using System.Runtime.InteropServices;
+
 namespace EutherDrive.Core.GbaEmu;
 
 public partial class GbaVideo
 {
+    private static readonly uint[] ColorLookup = BuildColorLookup();
+
     private struct ScanlineState
     {
         public ushort DispCnt;
@@ -48,7 +52,7 @@ public partial class GbaVideo
     private const int OamSize = 1024;
     private const int PaletteSize = 1024;
 
-    private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
+    private readonly uint[] _frameBuffer = new uint[FrameWidth * FrameHeight];
     private readonly byte[] _screenshotBuffer = new byte[FrameWidth * FrameHeight * 4];
 
     private readonly uint[] _bg0Scanline = new uint[FrameWidth];
@@ -64,10 +68,12 @@ public partial class GbaVideo
     private readonly byte[] _frameVram = new byte[VramSize];
     private readonly byte[] _frameOam = new byte[OamSize];
     private readonly byte[] _framePalette = new byte[PaletteSize * FrameHeight];
+    private readonly uint[] _bgPaletteCache = new uint[256];
+    private readonly uint[] _objPaletteCache = new uint[256];
     private bool _hasCapturedFrame;
     private bool _screenshotDirty = true;
 
-    public ReadOnlySpan<byte> GetFrameBuffer() => _frameBuffer;
+    public ReadOnlySpan<byte> GetFrameBuffer() => MemoryMarshal.AsBytes<uint>(_frameBuffer);
 
     public void RefreshFrame()
     {
@@ -231,6 +237,7 @@ public partial class GbaVideo
         {
             ScanlineState state = GetScanlineState(y);
             ClearScanlineBuffers();
+            BuildPaletteCache(y);
 
             switch (mode)
             {
@@ -269,13 +276,7 @@ public partial class GbaVideo
 
     private void FillSolid(uint color)
     {
-        for (int i = 0; i < _frameBuffer.Length; i += 4)
-        {
-            _frameBuffer[i] = (byte)color;
-            _frameBuffer[i + 1] = (byte)(color >> 8);
-            _frameBuffer[i + 2] = (byte)(color >> 16);
-            _frameBuffer[i + 3] = (byte)(color >> 24);
-        }
+        Array.Fill(_frameBuffer, color);
 
         _screenshotDirty = true;
     }
@@ -308,30 +309,33 @@ public partial class GbaVideo
         int tileY = sourceY >> 3;
         int rowInTile = sourceY & 0x7;
         int blockY = tileY >> 5;
+        int sourceX = Mod9Bit(GetBgHOfs(state, bg), width);
 
-        for (int x = 0; x < FrameWidth; x++)
+        for (int x = 0; x < FrameWidth;)
         {
-            int sourceX = Mod9Bit(x + GetBgHOfs(state, bg), width);
             int tileX = sourceX >> 3;
             int blockX = tileX >> 5;
             int blockIndex = blockY * blocksPerRow + blockX;
             int mapOffset = screenBase + blockIndex * 0x800 + (((tileY & 31) * 32 + (tileX & 31)) * 2);
-            if ((uint)(mapOffset + 1) >= (uint)vram.Length)
-                continue;
+            int columnStart = sourceX & 0x7;
+            int run = Math.Min(FrameWidth - x, 8 - columnStart);
 
-            ushort entry = ReadU16(vram, mapOffset);
-            int tileNumber = entry & 0x03FF;
-            bool hFlip = (entry & 0x0400) != 0;
-            bool vFlip = (entry & 0x0800) != 0;
-            int paletteBank = entry >> 12;
+            if ((uint)(mapOffset + 1) < (uint)vram.Length)
+            {
+                ushort entry = ReadU16(vram, mapOffset);
+                int tileNumber = entry & 0x03FF;
+                bool hFlip = (entry & 0x0400) != 0;
+                bool vFlip = (entry & 0x0800) != 0;
+                int paletteBank = entry >> 12;
+                int row = vFlip ? 7 - rowInTile : rowInTile;
 
-            int column = hFlip ? 7 - (sourceX & 0x7) : (sourceX & 0x7);
-            int row = vFlip ? 7 - rowInTile : rowInTile;
-            int colorIndex = ReadTilePixel(vram, charBase, tileNumber, row, column, use256Colors, paletteBank);
-            if (colorIndex == 0)
-                continue;
+                RenderTextTileRun(vram, target, x, run, charBase, tileNumber, row, columnStart, use256Colors, paletteBank, hFlip);
+            }
 
-            target[x] = ReadPaletteColor(y, colorIndex, objPalette: false);
+            x += run;
+            sourceX += run;
+            if (sourceX >= width)
+                sourceX -= width;
         }
     }
 
@@ -380,7 +384,7 @@ public partial class GbaVideo
             if (colorIndex == 0)
                 continue;
 
-            target[x] = ReadPaletteColor(y, colorIndex, objPalette: false);
+            target[x] = _bgPaletteCache[colorIndex];
         }
     }
 
@@ -395,7 +399,7 @@ public partial class GbaVideo
             int offset = rowBase + x * 2;
             if ((uint)(offset + 1) >= (uint)vram.Length)
                 continue;
-            target[x] = ToBgra(ReadU16(vram, offset));
+            target[x] = ColorLookup[ReadU16(vram, offset) & 0x7FFF];
         }
     }
 
@@ -414,7 +418,7 @@ public partial class GbaVideo
             int colorIndex = vram[offset];
             if (colorIndex == 0)
                 continue;
-            target[x] = ReadPaletteColor(y, colorIndex, objPalette: false);
+            target[x] = _bgPaletteCache[colorIndex];
         }
     }
 
@@ -430,7 +434,7 @@ public partial class GbaVideo
             int offset = rowBase + x * 2;
             if ((uint)(offset + 1) >= (uint)vram.Length)
                 continue;
-            target[x] = ToBgra(ReadU16(vram, offset));
+            target[x] = ColorLookup[ReadU16(vram, offset) & 0x7FFF];
         }
     }
 
@@ -545,7 +549,7 @@ public partial class GbaVideo
                 if (!ShouldReplaceObjectPixel(x, priority, i))
                     continue;
 
-                _objScanline[x] = ReadPaletteColor(y, colorIndex, objPalette: true);
+                _objScanline[x] = _objPaletteCache[colorIndex & 0xFF];
                 _objPriorities[x] = (byte)priority;
                 _objOamIndices[x] = (byte)i;
                 _objSemiTransparent[x] = semiTransparent ? (byte)1 : (byte)0;
@@ -654,6 +658,57 @@ public partial class GbaVideo
         return (paletteBank << 4) | nibble;
     }
 
+    private void RenderTextTileRun(
+        byte[] vram,
+        uint[] target,
+        int targetX,
+        int runLength,
+        int charBase,
+        int tileNumber,
+        int row,
+        int columnStart,
+        bool use256Colors,
+        int paletteBank,
+        bool hFlip)
+    {
+        if (use256Colors)
+        {
+            int rowBase = charBase + tileNumber * 64 + row * 8;
+            if ((uint)(rowBase + 7) >= (uint)vram.Length)
+                return;
+
+            for (int i = 0; i < runLength; i++)
+            {
+                int sampleColumn = columnStart + i;
+                if (hFlip)
+                    sampleColumn = 7 - sampleColumn;
+
+                int colorIndex = vram[rowBase + sampleColumn];
+                if (colorIndex != 0)
+                    target[targetX + i] = _bgPaletteCache[colorIndex];
+            }
+
+            return;
+        }
+
+        int packedRowBase = charBase + tileNumber * 32 + row * 4;
+        if ((uint)(packedRowBase + 3) >= (uint)vram.Length)
+            return;
+
+        int paletteBase = paletteBank << 4;
+        for (int i = 0; i < runLength; i++)
+        {
+            int sampleColumn = columnStart + i;
+            if (hFlip)
+                sampleColumn = 7 - sampleColumn;
+
+            int packed = vram[packedRowBase + (sampleColumn >> 1)];
+            int nibble = (sampleColumn & 1) == 0 ? (packed & 0x0F) : (packed >> 4);
+            if (nibble != 0)
+                target[targetX + i] = _bgPaletteCache[paletteBase | nibble];
+        }
+    }
+
     private static ushort GetBgCnt(ScanlineState state, int bg) => bg switch
     {
         0 => state.BgCnt0,
@@ -684,7 +739,7 @@ public partial class GbaVideo
     private void FinalizeScanline(int y, ScanlineState state)
     {
         bool windowsEnabled = (state.DispCnt & 0xE000) != 0;
-        uint backdrop = ReadPaletteColor(y, 0, objPalette: false);
+        uint backdrop = _bgPaletteCache[0];
         int bg0Prio = state.BgCnt0 & 0x3;
         int bg1Prio = state.BgCnt1 & 0x3;
         int bg2Prio = state.BgCnt2 & 0x3;
@@ -694,7 +749,7 @@ public partial class GbaVideo
         int eva = Math.Min(state.BldAlpha & 0x1F, 16);
         int evb = Math.Min((state.BldAlpha >> 8) & 0x1F, 16);
         int evy = Math.Min(state.BldY & 0x1F, 16);
-        int rowDst = y * FrameStride;
+        int rowDst = y * FrameWidth;
 
         for (int x = 0; x < FrameWidth; x++)
         {
@@ -752,22 +807,46 @@ public partial class GbaVideo
                     finalColor = DarkenColor(top.Color, evy);
             }
 
-            int dst = rowDst + (x * 4);
-            _frameBuffer[dst] = (byte)finalColor;
-            _frameBuffer[dst + 1] = (byte)(finalColor >> 8);
-            _frameBuffer[dst + 2] = (byte)(finalColor >> 16);
-            _frameBuffer[dst + 3] = (byte)(finalColor >> 24);
+            _frameBuffer[rowDst + x] = finalColor;
+        }
+    }
+
+    private void BuildPaletteCache(int y)
+    {
+        if (_hasCapturedFrame)
+        {
+            int lineBase = y * PaletteSize;
+            for (int i = 0; i < 256; i++)
+            {
+                int bgOffset = lineBase + (i * 2);
+                int objOffset = lineBase + 0x200 + (i * 2);
+                _bgPaletteCache[i] = ColorLookup[ReadU16(_framePalette, bgOffset) & 0x7FFF];
+                _objPaletteCache[i] = ColorLookup[ReadU16(_framePalette, objOffset) & 0x7FFF];
+            }
+
+            return;
+        }
+
+        byte[] paletteRam = Gba.Memory.PaletteRam;
+        for (int i = 0; i < 256; i++)
+        {
+            int bgOffset = i * 2;
+            int objOffset = 0x200 + (i * 2);
+            _bgPaletteCache[i] = ColorLookup[ReadU16(paletteRam, bgOffset) & 0x7FFF];
+            _objPaletteCache[i] = ColorLookup[ReadU16(paletteRam, objOffset) & 0x7FFF];
         }
     }
 
     private void RebuildScreenshotBuffer()
     {
-        for (int i = 0; i < _frameBuffer.Length; i += 4)
+        for (int i = 0; i < _frameBuffer.Length; i++)
         {
-            _screenshotBuffer[i] = _frameBuffer[i + 2];
-            _screenshotBuffer[i + 1] = _frameBuffer[i + 1];
-            _screenshotBuffer[i + 2] = _frameBuffer[i];
-            _screenshotBuffer[i + 3] = _frameBuffer[i + 3];
+            uint color = _frameBuffer[i];
+            int dst = i * 4;
+            _screenshotBuffer[dst] = (byte)(color >> 16);
+            _screenshotBuffer[dst + 1] = (byte)(color >> 8);
+            _screenshotBuffer[dst + 2] = (byte)color;
+            _screenshotBuffer[dst + 3] = (byte)(color >> 24);
         }
 
         _screenshotDirty = false;
@@ -850,23 +929,6 @@ public partial class GbaVideo
         return (uint)(Math.Max(b, 0) | (Math.Max(g, 0) << 8) | (Math.Max(r, 0) << 16) | 0xFF000000);
     }
 
-    private uint ReadPaletteColor(int y, int colorIndex, bool objPalette)
-    {
-        int baseOffset = objPalette ? 0x200 : 0;
-        int offset = baseOffset + colorIndex * 2;
-        if (_hasCapturedFrame)
-        {
-            int lineOffset = y * PaletteSize + offset;
-            if ((uint)(lineOffset + 1) >= (uint)_framePalette.Length)
-                return 0;
-            return ToBgra(ReadU16(_framePalette, lineOffset));
-        }
-
-        if ((uint)(offset + 1) >= (uint)Gba.Memory.PaletteRam.Length)
-            return 0;
-        return ToBgra(ReadU16(Gba.Memory.PaletteRam, offset));
-    }
-
     private static void GetTextBgDimensions(int size, out int width, out int height)
     {
         switch (size & 0x3)
@@ -941,6 +1003,14 @@ public partial class GbaVideo
         g = (g << 3) | (g >> 2);
         b = (b << 3) | (b >> 2);
         return b | (g << 8) | (r << 16) | 0xFF000000u;
+    }
+
+    private static uint[] BuildColorLookup()
+    {
+        uint[] lookup = new uint[0x8000];
+        for (int i = 0; i < lookup.Length; i++)
+            lookup[i] = ToBgra((ushort)i);
+        return lookup;
     }
 
     private struct LayerCandidate
