@@ -3,18 +3,29 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 
 namespace EutherDrive.UI;
 
 public sealed class RomPickerDialog : Window
 {
+    private static readonly HttpClient s_httpClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(15)
+    };
+
     private static readonly HashSet<string> s_supportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".bin", ".md", ".gen", ".smd", ".sms", ".sg", ".gg", ".nes", ".smc", ".sfc",
@@ -26,16 +37,30 @@ public sealed class RomPickerDialog : Window
     private readonly List<RomPickerEntry> _allEntries = new();
     private readonly TextBox _pathText;
     private readonly TextBox _romLibraryText;
+    private readonly TextBox _coverCacheText;
     private readonly TextBox _statusText;
+    private readonly TextBlock _coverSyncStatusText;
     private readonly TextBox _searchBox;
     private readonly ComboBox _sortCombo;
     private readonly ComboBox _starsFilterCombo;
     private readonly ListBox _listBox;
+    private readonly Image _coverPreviewImage;
+    private readonly TextBlock _coverPreviewTitle;
     private readonly Button _openButton;
     private readonly Button _romsButton;
+    private readonly Button _syncCoversButton;
     private readonly double _uiScale;
+    private readonly object _coverIndexLock = new();
     private string? _romLibraryPath;
     private string _currentDirectory;
+    private Bitmap? _coverPreviewBitmap;
+    private Task? _coverSyncTask;
+    private CancellationTokenSource? _coverSyncCts;
+    private string? _coverSyncLibraryPath;
+    private string _coverSyncStatus = "Cover sync: idle";
+    private Dictionary<string, CoverIndexEntry> _coverIndexByPath = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, CoverIndexEntry> _coverIndexByHash = new(StringComparer.OrdinalIgnoreCase);
+    private bool _coverIndexDirty;
 
     public string? SelectedPath { get; private set; }
     public string? RomLibraryPath => _romLibraryPath;
@@ -77,6 +102,22 @@ public sealed class RomPickerDialog : Window
             IsReadOnly = true,
             BorderThickness = new Thickness(0),
             Background = Brushes.Transparent,
+            TextWrapping = TextWrapping.NoWrap
+        };
+
+        _coverCacheText = new TextBox
+        {
+            IsReadOnly = true,
+            BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent,
+            TextWrapping = TextWrapping.NoWrap
+        };
+
+        _coverSyncStatusText = new TextBlock
+        {
+            Text = _coverSyncStatus,
+            Classes = { "muted" },
+            FontSize = 11,
             TextWrapping = TextWrapping.NoWrap
         };
 
@@ -146,6 +187,9 @@ public sealed class RomPickerDialog : Window
         var setRomsButton = new Button { Content = "Set Roms", MinWidth = 98 };
         setRomsButton.Click += (_, _) => SetCurrentDirectoryAsRomLibrary();
 
+        _syncCoversButton = new Button { Content = "Sync Covers", MinWidth = 112 };
+        _syncCoversButton.Click += (_, _) => StartCoverSync(forceRestart: true);
+
         var drivesButton = new Button { Content = "Drives", MinWidth = 88 };
         drivesButton.Click += async (_, _) => await OpenDrivePickerAsync();
 
@@ -154,6 +198,24 @@ public sealed class RomPickerDialog : Window
 
         var cancelButton = new Button { Content = "Cancel", MinWidth = 96 };
         cancelButton.Click += (_, _) => Close(false);
+
+        _coverPreviewImage = new Image
+        {
+            Width = 88,
+            Height = 122,
+            Stretch = Stretch.UniformToFill,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        _coverPreviewTitle = new TextBlock
+        {
+            Text = "No cover",
+            Classes = { "muted" },
+            FontSize = 11,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextAlignment = TextAlignment.Center
+        };
 
         var root = new Grid
         {
@@ -167,17 +229,34 @@ public sealed class RomPickerDialog : Window
             [Grid.RowProperty] = 0,
             Classes = { "panel" },
             Padding = new Thickness(12, 10),
-            Child = new StackPanel
+            Child = new Grid
             {
-                Spacing = 6,
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                ColumnSpacing = 12,
                 Children =
                 {
-                    new TextBlock { Text = "ROM PICKER", Classes = { "deck-label" } },
-                    new TextBlock
+                    new StackPanel
                     {
-                        Text = "Browse local ROM folders with stars, launch counts and total play time.",
-                        Classes = { "muted" },
-                        FontSize = 12
+                        [Grid.ColumnProperty] = 0,
+                        Spacing = 6,
+                        Children =
+                        {
+                            new TextBlock { Text = "ROM PICKER", Classes = { "deck-label" } },
+                            new TextBlock
+                            {
+                                Text = "Browse local ROM folders with stars, launch counts and total play time.",
+                                Classes = { "muted" },
+                                FontSize = 12
+                            }
+                        }
+                    },
+                    new StackPanel
+                    {
+                        [Grid.ColumnProperty] = 1,
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 8,
+                        VerticalAlignment = VerticalAlignment.Top,
+                        Children = { _syncCoversButton, setRomsButton }
                     }
                 }
             }
@@ -188,46 +267,81 @@ public sealed class RomPickerDialog : Window
             [Grid.RowProperty] = 1,
             Classes = { "panel" },
             Padding = new Thickness(12, 10),
-            Child = new StackPanel
+            Child = new Grid
             {
-                Spacing = 8,
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                ColumnSpacing = 16,
                 Children =
                 {
-                    new Grid
+                    new StackPanel
                     {
-                        ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                        ColumnSpacing = 12,
+                        [Grid.ColumnProperty] = 0,
+                        Spacing = 8,
                         Children =
                         {
                             new StackPanel
                             {
-                                [Grid.ColumnProperty] = 0,
                                 Orientation = Orientation.Horizontal,
                                 Spacing = 8,
                                 Children = { upButton, homeButton, _romsButton, drivesButton, refreshButton }
                             },
-                            new Border
+                            new StackPanel
                             {
-                                [Grid.ColumnProperty] = 1,
-                                Background = Brushes.Transparent,
-                                Child = setRomsButton
+                                Orientation = Orientation.Horizontal,
+                                Spacing = 8,
+                                Children =
+                                {
+                                    _searchBox,
+                                    _sortCombo,
+                                    _starsFilterCombo
+                                }
+                            },
+                            _pathText,
+                            _romLibraryText,
+                            _coverCacheText,
+                            new Grid
+                            {
+                                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                                ColumnSpacing = 12,
+                                Children =
+                                {
+                                    _statusText,
+                                    new Border
+                                    {
+                                        [Grid.ColumnProperty] = 1,
+                                        Background = new SolidColorBrush(Color.Parse("#1B2430")),
+                                        BorderBrush = new SolidColorBrush(Color.Parse("#304355")),
+                                        BorderThickness = new Thickness(1),
+                                        CornerRadius = new CornerRadius(8),
+                                        Padding = new Thickness(8, 6),
+                                        Child = _coverSyncStatusText
+                                    }
+                                }
                             }
                         }
                     },
                     new StackPanel
                     {
-                        Orientation = Orientation.Horizontal,
+                        [Grid.ColumnProperty] = 1,
                         Spacing = 8,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        VerticalAlignment = VerticalAlignment.Top,
                         Children =
                         {
-                            _searchBox,
-                            _sortCombo,
-                            _starsFilterCombo
+                            new Border
+                            {
+                                Width = 88,
+                                Height = 122,
+                                CornerRadius = new CornerRadius(12),
+                                BorderThickness = new Thickness(1),
+                                BorderBrush = new SolidColorBrush(Color.Parse("#304355")),
+                                Background = new SolidColorBrush(Color.Parse("#111821")),
+                                Padding = new Thickness(4),
+                                Child = _coverPreviewImage
+                            },
+                            _coverPreviewTitle
                         }
-                    },
-                    _pathText,
-                    _romLibraryText,
-                    _statusText
+                    }
                 }
             }
         });
@@ -251,6 +365,8 @@ public sealed class RomPickerDialog : Window
 
         Content = WrapDialogForUiScale(root, uiScale);
         UpdateRomLibraryUi();
+        UpdateCoverCacheUi();
+        ReloadCoverIndex();
         LoadDirectory(_currentDirectory);
     }
 
@@ -278,7 +394,7 @@ public sealed class RomPickerDialog : Window
         stack.Children.Add(new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
-            ColumnSpacing = 12,
+            ColumnSpacing = 10,
             Children =
             {
                 new TextBlock
@@ -291,9 +407,11 @@ public sealed class RomPickerDialog : Window
                 new TextBlock
                 {
                     [Grid.ColumnProperty] = 1,
-                    Text = titleText,
+                    Text = entry.IsDirectory ? $"{titleText}  ·  {entry.DetailText}" : titleText,
                     FontWeight = FontWeight.SemiBold,
-                    TextWrapping = TextWrapping.NoWrap
+                    FontSize = 13,
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis
                 },
                 new TextBlock
                 {
@@ -301,18 +419,23 @@ public sealed class RomPickerDialog : Window
                     Text = badgeText,
                     Foreground = new SolidColorBrush(Color.Parse(accent)),
                     FontWeight = FontWeight.Bold,
+                    FontSize = 12,
                     VerticalAlignment = VerticalAlignment.Center
                 }
             }
         });
 
-        stack.Children.Add(new TextBlock
+        if (!entry.IsDirectory)
         {
-            Text = entry.DetailText,
-            Classes = { "muted" },
-            FontSize = 11,
-            TextWrapping = TextWrapping.NoWrap
-        });
+            stack.Children.Add(new TextBlock
+            {
+                Text = entry.DetailText,
+                Classes = { "muted" },
+                FontSize = 10,
+                TextWrapping = TextWrapping.NoWrap,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            });
+        }
 
         return new Border
         {
@@ -320,8 +443,8 @@ public sealed class RomPickerDialog : Window
             BorderBrush = new SolidColorBrush(Color.Parse(border)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(10, 8),
-            Margin = new Thickness(0, 0, 0, 6),
+            Padding = new Thickness(10, 6),
+            Margin = new Thickness(0, 0, 0, 4),
             Child = stack
         };
     }
@@ -331,12 +454,14 @@ public sealed class RomPickerDialog : Window
         if (_listBox.SelectedItem is not RomPickerEntry entry)
         {
             _openButton.IsEnabled = false;
+            UpdateCoverPreview(null);
             return;
         }
 
         _openButton.IsEnabled = true;
         _openButton.Content = entry.IsDirectory ? "Enter" : "Open";
         _statusText.Text = entry.DetailText;
+        UpdateCoverPreview(entry);
     }
 
     private void OnListDoubleTapped(object? sender, TappedEventArgs e)
@@ -402,6 +527,9 @@ public sealed class RomPickerDialog : Window
     {
         _romLibraryPath = NormalizeDirectoryPath(_currentDirectory);
         UpdateRomLibraryUi();
+        UpdateCoverCacheUi();
+        ReloadCoverIndex();
+        StartCoverSync(forceRestart: true);
         _statusText.Text = $"ROM library set to {_romLibraryPath}";
     }
 
@@ -451,6 +579,9 @@ public sealed class RomPickerDialog : Window
                 ? "No ROMs or directories found here."
                 : $"{_entries.Count} entries in {_currentDirectory}";
             _listBox.SelectedItem = _entries.FirstOrDefault();
+            if (_listBox.SelectedItem == null)
+                UpdateCoverPreview(null);
+            StartCoverSync(forceRestart: false);
         }
         catch (Exception ex)
         {
@@ -550,9 +681,762 @@ public sealed class RomPickerDialog : Window
 
         _romLibraryText.Text = hasValue
             ? exists
-                ? $"ROM library: {_romLibraryPath}"
+                ? $"ROMs: {_romLibraryPath}"
                 : $"ROM library: {_romLibraryPath} (missing)"
             : "ROM library: not set";
+    }
+
+    private void UpdateCoverCacheUi()
+    {
+        string? coverCacheRoot = GetCoverCacheRoot();
+        bool hasValue = !string.IsNullOrWhiteSpace(coverCacheRoot);
+        bool exists = hasValue && Directory.Exists(coverCacheRoot!);
+
+        _syncCoversButton.IsEnabled = !string.IsNullOrWhiteSpace(_romLibraryPath) && Directory.Exists(_romLibraryPath!);
+        _coverCacheText.Text = hasValue
+            ? exists
+                ? $"Covers: {coverCacheRoot}"
+                : $"Covers: {coverCacheRoot} (empty)"
+            : "Covers: set a ROM library first";
+        _coverSyncStatusText.Text = _coverSyncStatus;
+    }
+
+    private void UpdateCoverPreview(RomPickerEntry? entry)
+    {
+        DisposeCoverPreviewBitmap();
+
+        if (entry == null || entry.IsDirectory)
+        {
+            _coverPreviewImage.Source = null;
+            _coverPreviewTitle.Text = "No cover";
+            return;
+        }
+
+        string? coverCacheRoot = GetCoverCacheRoot();
+        string? coverPath = TryResolveCoverPathFromIndex(entry.FullPath, coverCacheRoot)
+            ?? (string.IsNullOrWhiteSpace(coverCacheRoot)
+            ? null
+            : ResolveCoverPath(entry.FullPath, coverCacheRoot));
+        if (string.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
+        {
+            _coverPreviewImage.Source = null;
+            _coverPreviewTitle.Text = "Missing";
+            QueueCoverDownload(entry.FullPath);
+            return;
+        }
+
+        try
+        {
+            _coverPreviewBitmap = new Bitmap(coverPath);
+            _coverPreviewImage.Source = _coverPreviewBitmap;
+            _coverPreviewTitle.Text = Path.GetFileNameWithoutExtension(coverPath);
+        }
+        catch
+        {
+            _coverPreviewImage.Source = null;
+            _coverPreviewTitle.Text = "Unreadable cover";
+        }
+    }
+
+    private void DisposeCoverPreviewBitmap()
+    {
+        if (_coverPreviewBitmap != null)
+        {
+            _coverPreviewImage.Source = null;
+            _coverPreviewBitmap.Dispose();
+            _coverPreviewBitmap = null;
+        }
+    }
+
+    private static string? ResolveCoverPath(string romPath, string thumbnailPackPath)
+    {
+        if (string.IsNullOrWhiteSpace(thumbnailPackPath))
+            return null;
+
+        string romName = Path.GetFileNameWithoutExtension(romPath);
+        if (string.IsNullOrWhiteSpace(romName))
+            return null;
+
+        string[] nameCandidates =
+        [
+            NormalizeThumbnailName(romName),
+            NormalizeThumbnailName(RemoveBracketedSegments(romName)),
+            NormalizeThumbnailName(romName.Replace('_', ' ')),
+            NormalizeThumbnailName(RemoveBracketedSegments(romName.Replace('_', ' ')))
+        ];
+
+        IEnumerable<string> distinctNames = nameCandidates
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        string extension = Path.GetExtension(romPath);
+        foreach (string systemDir in GetThumbnailPlaylistCandidates(romPath, extension))
+        {
+            foreach (string artDir in GetThumbnailArtDirectoryCandidates(thumbnailPackPath, systemDir))
+            {
+                string? match = FindThumbnailByName(artDir, distinctNames);
+                if (match != null)
+                    return match;
+            }
+        }
+
+        foreach (string artDir in GetThumbnailArtDirectoryCandidates(thumbnailPackPath, systemDir: null))
+        {
+            string? match = FindThumbnailByName(artDir, distinctNames);
+            if (match != null)
+                return match;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> GetThumbnailPlaylistCandidates(string romPath, string extension)
+    {
+        var candidates = new List<string>();
+        void Add(string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value) && !candidates.Contains(value, StringComparer.OrdinalIgnoreCase))
+                candidates.Add(value);
+        }
+
+        switch (extension.ToLowerInvariant())
+        {
+            case ".gba":
+            case ".agb":
+                Add("Nintendo - Game Boy Advance");
+                Add("Nintendo - Game Boy Advance (No-Intro)");
+                Add("Game Boy Advance");
+                break;
+            case ".gb":
+                Add("Nintendo - Game Boy");
+                Add("Game Boy");
+                break;
+            case ".gbc":
+                Add("Nintendo - Game Boy Color");
+                Add("Game Boy Color");
+                break;
+            case ".gg":
+                Add("Sega - Game Gear");
+                Add("Game Gear");
+                break;
+            case ".sms":
+            case ".sg":
+                Add("Sega - Master System - Mark III");
+                Add("Sega - Master System");
+                Add("Master System");
+                break;
+            case ".md":
+            case ".gen":
+            case ".bin":
+            case ".smd":
+                Add("Sega - Mega Drive - Genesis");
+                Add("Sega Genesis");
+                Add("Sega Mega Drive");
+                break;
+            case ".nes":
+                Add("Nintendo - Nintendo Entertainment System");
+                Add("Nintendo Entertainment System");
+                Add("NES");
+                break;
+            case ".smc":
+            case ".sfc":
+                Add("Nintendo - Super Nintendo Entertainment System");
+                Add("Super Nintendo Entertainment System");
+                Add("SNES");
+                break;
+            case ".pce":
+            case ".cue":
+            case ".chd":
+                Add("NEC - PC Engine - TurboGrafx 16");
+                Add("NEC - PC Engine CD - TurboGrafx-CD");
+                Add("PC Engine");
+                break;
+        }
+
+        string directoryHint = Path.GetDirectoryName(romPath) ?? string.Empty;
+        if (directoryHint.Contains("GameGear", StringComparison.OrdinalIgnoreCase))
+            Add("Sega - Game Gear");
+        if (directoryHint.Contains("GBA", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Game Boy Advance", StringComparison.OrdinalIgnoreCase))
+            Add("Nintendo - Game Boy Advance");
+        if (directoryHint.Contains("SMS", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Master System", StringComparison.OrdinalIgnoreCase))
+            Add("Sega - Master System - Mark III");
+
+        return candidates;
+    }
+
+    private static IEnumerable<string> GetThumbnailArtDirectoryCandidates(string root, string? systemDir)
+    {
+        static IEnumerable<string> ArtNames()
+        {
+            yield return "Named_Boxarts";
+            yield return "Named Boxarts";
+            yield return "Boxarts";
+            yield return "Named_Snaps";
+            yield return "Named Snaps";
+        }
+
+        if (!string.IsNullOrWhiteSpace(systemDir))
+        {
+            string systemPath = Path.Combine(root, systemDir);
+            foreach (string artName in ArtNames())
+                yield return Path.Combine(systemPath, artName);
+        }
+
+        foreach (string artName in ArtNames())
+            yield return Path.Combine(root, artName);
+    }
+
+    private static string? FindThumbnailByName(string artDirectory, IEnumerable<string> nameCandidates)
+    {
+        if (!Directory.Exists(artDirectory))
+            return null;
+
+        foreach (string name in nameCandidates)
+        {
+            foreach (string extension in new[] { ".png", ".jpg", ".jpeg", ".webp" })
+            {
+                string path = Path.Combine(artDirectory, name + extension);
+                if (File.Exists(path))
+                    return path;
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeThumbnailName(string value)
+    {
+        string normalized = value.Trim();
+        foreach (char ch in "&*/:`<>?\\|\"")
+            normalized = normalized.Replace(ch, '_');
+        return normalized.Replace("  ", " ", StringComparison.Ordinal).Trim();
+    }
+
+    private static string RemoveBracketedSegments(string value)
+    {
+        Span<char> buffer = stackalloc char[value.Length];
+        int depthParen = 0;
+        int depthBracket = 0;
+        int written = 0;
+
+        foreach (char ch in value)
+        {
+            switch (ch)
+            {
+                case '(':
+                    depthParen++;
+                    continue;
+                case ')':
+                    if (depthParen > 0)
+                        depthParen--;
+                    continue;
+                case '[':
+                    depthBracket++;
+                    continue;
+                case ']':
+                    if (depthBracket > 0)
+                        depthBracket--;
+                    continue;
+            }
+
+            if (depthParen == 0 && depthBracket == 0)
+                buffer[written++] = ch;
+        }
+
+        return new string(buffer[..written]).Trim();
+    }
+
+    private string? GetCoverCacheRoot()
+    {
+        if (string.IsNullOrWhiteSpace(_romLibraryPath))
+            return null;
+
+        return Path.Combine(_romLibraryPath, ".eutherdrive-thumbnails");
+    }
+
+    private void ReloadCoverIndex()
+    {
+        string? coverCacheRoot = GetCoverCacheRoot();
+        var byPath = new Dictionary<string, CoverIndexEntry>(StringComparer.OrdinalIgnoreCase);
+        var byHash = new Dictionary<string, CoverIndexEntry>(StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrWhiteSpace(coverCacheRoot))
+        {
+            string indexPath = GetCoverIndexPath(coverCacheRoot);
+            if (File.Exists(indexPath))
+            {
+                try
+                {
+                    CoverIndexFile? file = JsonSerializer.Deserialize<CoverIndexFile>(File.ReadAllText(indexPath));
+                    if (file?.Entries != null)
+                    {
+                        foreach (CoverIndexEntry entry in file.Entries)
+                        {
+                            if (string.IsNullOrWhiteSpace(entry.RomPath) ||
+                                string.IsNullOrWhiteSpace(entry.CoverRelativePath))
+                            {
+                                continue;
+                            }
+
+                            byPath[entry.RomPath] = entry;
+                            if (!string.IsNullOrWhiteSpace(entry.HashHex))
+                                byHash[entry.HashHex] = entry;
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        lock (_coverIndexLock)
+        {
+            _coverIndexByPath = byPath;
+            _coverIndexByHash = byHash;
+            _coverIndexDirty = false;
+        }
+    }
+
+    private void SaveCoverIndexIfDirty()
+    {
+        string? coverCacheRoot = GetCoverCacheRoot();
+        if (string.IsNullOrWhiteSpace(coverCacheRoot))
+            return;
+
+        CoverIndexEntry[] entries;
+        lock (_coverIndexLock)
+        {
+            if (!_coverIndexDirty)
+                return;
+
+            entries = _coverIndexByPath.Values
+                .OrderBy(static entry => entry.RomPath, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            _coverIndexDirty = false;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(coverCacheRoot);
+            string json = JsonSerializer.Serialize(new CoverIndexFile { Entries = entries }, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+            File.WriteAllText(GetCoverIndexPath(coverCacheRoot), json);
+        }
+        catch
+        {
+            lock (_coverIndexLock)
+                _coverIndexDirty = true;
+        }
+    }
+
+    private void UpsertCoverIndex(string romPath, string? hashHex, string coverPath, bool saveNow)
+    {
+        string? coverCacheRoot = GetCoverCacheRoot();
+        if (string.IsNullOrWhiteSpace(coverCacheRoot))
+            return;
+
+        FileInfo? romInfo = TryGetFileInfo(romPath);
+        if (romInfo == null)
+            return;
+
+        string relativePath = Path.GetRelativePath(coverCacheRoot, coverPath);
+        var entry = new CoverIndexEntry
+        {
+            RomPath = romPath,
+            HashHex = hashHex,
+            FileLength = romInfo.Length,
+            LastWriteUtcTicks = romInfo.LastWriteTimeUtc.Ticks,
+            CoverRelativePath = relativePath
+        };
+
+        lock (_coverIndexLock)
+        {
+            _coverIndexByPath[romPath] = entry;
+            if (!string.IsNullOrWhiteSpace(hashHex))
+                _coverIndexByHash[hashHex] = entry;
+            _coverIndexDirty = true;
+        }
+
+        if (saveNow)
+            SaveCoverIndexIfDirty();
+    }
+
+    private string? TryResolveCoverPathFromIndex(string romPath, string? coverCacheRoot)
+    {
+        if (string.IsNullOrWhiteSpace(coverCacheRoot))
+            return null;
+
+        FileInfo? fileInfo = TryGetFileInfo(romPath);
+        if (fileInfo == null)
+            return null;
+
+        lock (_coverIndexLock)
+        {
+            if (!_coverIndexByPath.TryGetValue(romPath, out CoverIndexEntry? entry))
+                return null;
+
+            if (entry.FileLength != fileInfo.Length || entry.LastWriteUtcTicks != fileInfo.LastWriteTimeUtc.Ticks)
+                return null;
+
+            string fullCoverPath = Path.Combine(coverCacheRoot, entry.CoverRelativePath);
+            return File.Exists(fullCoverPath) ? fullCoverPath : null;
+        }
+    }
+
+    private string? TryResolveCoverPathByHash(string hashHex, string? coverCacheRoot)
+    {
+        if (string.IsNullOrWhiteSpace(coverCacheRoot) || string.IsNullOrWhiteSpace(hashHex))
+            return null;
+
+        lock (_coverIndexLock)
+        {
+            if (!_coverIndexByHash.TryGetValue(hashHex, out CoverIndexEntry? entry))
+                return null;
+
+            string fullCoverPath = Path.Combine(coverCacheRoot, entry.CoverRelativePath);
+            return File.Exists(fullCoverPath) ? fullCoverPath : null;
+        }
+    }
+
+    private static string GetCoverIndexPath(string coverCacheRoot)
+        => Path.Combine(coverCacheRoot, ".cover-index.json");
+
+    private void StartCoverSync(bool forceRestart)
+    {
+        string? romLibraryPath = _romLibraryPath;
+        string? coverCacheRoot = GetCoverCacheRoot();
+        if (string.IsNullOrWhiteSpace(romLibraryPath) || !Directory.Exists(romLibraryPath) || string.IsNullOrWhiteSpace(coverCacheRoot))
+            return;
+
+        if (!forceRestart &&
+            _coverSyncTask is { IsCompleted: false } &&
+            string.Equals(_coverSyncLibraryPath, romLibraryPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (forceRestart)
+        {
+            _coverSyncCts?.Cancel();
+            _coverSyncTask = null;
+        }
+
+        _coverSyncLibraryPath = romLibraryPath;
+        _coverSyncCts = new CancellationTokenSource();
+        Directory.CreateDirectory(coverCacheRoot);
+        _coverSyncStatus = "Cover sync: scanning ROM library...";
+        UpdateCoverCacheUi();
+
+        _coverSyncTask = Task.Run(() => SyncMissingCoversAsync(romLibraryPath, coverCacheRoot, _coverSyncCts.Token));
+    }
+
+    private async Task SyncMissingCoversAsync(string romLibraryPath, string coverCacheRoot, CancellationToken cancellationToken)
+    {
+        try
+        {
+            List<string> roms = EnumerateRomFiles(romLibraryPath).ToList();
+            int total = roms.Count;
+            int scanned = 0;
+            int downloaded = 0;
+            int cached = 0;
+            int notFound = 0;
+            int networkErrors = 0;
+
+            if (total == 0)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    _coverSyncStatus = "Cover sync: no ROMs found in ROM library.";
+                    UpdateCoverCacheUi();
+                });
+                return;
+            }
+
+            foreach (string romPath in roms)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                scanned++;
+
+                CoverDownloadResult result = await EnsureCoverAsync(romPath, coverCacheRoot, cancellationToken);
+                switch (result)
+                {
+                    case CoverDownloadResult.Downloaded:
+                        downloaded++;
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            if (_listBox.SelectedItem is RomPickerEntry selected &&
+                                string.Equals(selected.FullPath, romPath, StringComparison.OrdinalIgnoreCase))
+                            {
+                                UpdateCoverPreview(selected);
+                            }
+                        });
+                        break;
+                    case CoverDownloadResult.AlreadyCached:
+                        cached++;
+                        break;
+                    case CoverDownloadResult.NetworkError:
+                        networkErrors++;
+                        break;
+                    case CoverDownloadResult.NotFound:
+                        notFound++;
+                        break;
+                }
+
+                if ((scanned % 10) == 0 || scanned == total)
+                {
+                    int percent = (int)Math.Round((double)scanned * 100 / total);
+                    int scannedSnapshot = scanned;
+                    int downloadedSnapshot = downloaded;
+                    int cachedSnapshot = cached;
+                    int notFoundSnapshot = notFound;
+                    int networkSnapshot = networkErrors;
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        _coverSyncStatus = networkSnapshot > 0 && downloadedSnapshot == 0 && cachedSnapshot == 0
+                            ? $"Cover sync: {percent}% - no contact with Libretro thumbnail server ({scannedSnapshot}/{total})"
+                            : $"Cover sync: {percent}% - {downloadedSnapshot} downloaded, {cachedSnapshot} cached, {notFoundSnapshot} missing ({scannedSnapshot}/{total})";
+                        UpdateCoverCacheUi();
+                    });
+                }
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                _coverSyncStatus = networkErrors > 0 && downloaded == 0 && cached == 0
+                    ? "Cover sync: no contact with Libretro thumbnail server."
+                    : $"Cover sync: done. {downloaded} downloaded, {cached} cached, {notFound} missing.";
+                UpdateCoverCacheUi();
+            });
+            SaveCoverIndexIfDirty();
+        }
+        catch (OperationCanceledException)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                _coverSyncStatus = "Cover sync: cancelled";
+                UpdateCoverCacheUi();
+            });
+            SaveCoverIndexIfDirty();
+        }
+        catch (Exception ex)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                _coverSyncStatus = $"Cover sync: failed - {ex.Message}";
+                UpdateCoverCacheUi();
+            });
+        }
+    }
+
+    private void QueueCoverDownload(string romPath)
+    {
+        string? coverCacheRoot = GetCoverCacheRoot();
+        if (string.IsNullOrWhiteSpace(coverCacheRoot))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                CoverDownloadResult result = await EnsureCoverAsync(romPath, coverCacheRoot, CancellationToken.None);
+                if (result == CoverDownloadResult.Downloaded || result == CoverDownloadResult.AlreadyCached)
+                {
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (_listBox.SelectedItem is RomPickerEntry selected &&
+                            string.Equals(selected.FullPath, romPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            UpdateCoverPreview(selected);
+                        }
+
+                        UpdateCoverCacheUi();
+                    });
+                }
+
+                SaveCoverIndexIfDirty();
+            }
+            catch
+            {
+            }
+        });
+    }
+
+    private static IEnumerable<string> EnumerateRomFiles(string root)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+
+        while (pending.Count > 0)
+        {
+            string current = pending.Pop();
+            IEnumerable<string> subdirs = Array.Empty<string>();
+            IEnumerable<string> files = Array.Empty<string>();
+
+            try
+            {
+                subdirs = Directory.EnumerateDirectories(current);
+            }
+            catch
+            {
+            }
+
+            foreach (string subdir in subdirs)
+            {
+                string name = Path.GetFileName(subdir);
+                if (name.Equals(".eutherdrive-thumbnails", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                pending.Push(subdir);
+            }
+
+            try
+            {
+                files = Directory.EnumerateFiles(current);
+            }
+            catch
+            {
+            }
+
+            foreach (string file in files)
+            {
+                if (IsSupportedRomFile(file))
+                    yield return file;
+            }
+        }
+    }
+
+    private static string? GetExpectedCoverLocalPath(string romPath, string coverCacheRoot)
+    {
+        string romName = Path.GetFileNameWithoutExtension(romPath);
+        if (string.IsNullOrWhiteSpace(romName))
+            return null;
+
+        string? playlist = GetThumbnailPlaylistCandidates(romPath, Path.GetExtension(romPath)).FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(playlist))
+            return null;
+
+        string name = NormalizeThumbnailName(romName);
+        return Path.Combine(coverCacheRoot, playlist, "Named_Boxarts", name + ".png");
+    }
+
+    private async Task<CoverDownloadResult> EnsureCoverAsync(string romPath, string coverCacheRoot, CancellationToken cancellationToken)
+    {
+        string? localPath = GetExpectedCoverLocalPath(romPath, coverCacheRoot);
+        if (!string.IsNullOrWhiteSpace(localPath) && File.Exists(localPath))
+        {
+            string? cachedHash = await TryComputeRomHashHexAsync(romPath, cancellationToken);
+            UpsertCoverIndex(romPath, cachedHash, localPath, saveNow: false);
+            return CoverDownloadResult.AlreadyCached;
+        }
+
+        string? hashHex = await TryComputeRomHashHexAsync(romPath, cancellationToken);
+        string? indexedCoverPath = TryResolveCoverPathByHash(hashHex ?? string.Empty, coverCacheRoot);
+        if (!string.IsNullOrWhiteSpace(indexedCoverPath))
+        {
+            UpsertCoverIndex(romPath, hashHex, indexedCoverPath, saveNow: false);
+            return CoverDownloadResult.AlreadyCached;
+        }
+
+        CoverDownloadResult result = await TryDownloadCoverAsync(romPath, coverCacheRoot, cancellationToken);
+        if (result is CoverDownloadResult.Downloaded or CoverDownloadResult.AlreadyCached)
+        {
+            string? resolvedPath = TryResolveCoverPathFromIndex(romPath, coverCacheRoot)
+                ?? ResolveCoverPath(romPath, coverCacheRoot)
+                ?? GetExpectedCoverLocalPath(romPath, coverCacheRoot);
+
+            if (!string.IsNullOrWhiteSpace(resolvedPath) && File.Exists(resolvedPath))
+                UpsertCoverIndex(romPath, hashHex, resolvedPath, saveNow: false);
+        }
+
+        return result;
+    }
+
+    private static async Task<string?> TryComputeRomHashHexAsync(string romPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using FileStream stream = File.OpenRead(romPath);
+            byte[] hash = await SHA256.HashDataAsync(stream, cancellationToken);
+            return Convert.ToHexString(hash);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static FileInfo? TryGetFileInfo(string romPath)
+    {
+        try
+        {
+            if (!File.Exists(romPath))
+                return null;
+
+            return new FileInfo(romPath);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task<CoverDownloadResult> TryDownloadCoverAsync(string romPath, string coverCacheRoot, CancellationToken cancellationToken)
+    {
+        string romName = Path.GetFileNameWithoutExtension(romPath);
+        if (string.IsNullOrWhiteSpace(romName))
+            return CoverDownloadResult.NotFound;
+
+        IEnumerable<string> playlistCandidates = GetThumbnailPlaylistCandidates(romPath, Path.GetExtension(romPath));
+        IEnumerable<string> fileNameCandidates = new[]
+        {
+            NormalizeThumbnailName(romName),
+            NormalizeThumbnailName(RemoveBracketedSegments(romName)),
+            NormalizeThumbnailName(romName.Replace('_', ' ')),
+            NormalizeThumbnailName(RemoveBracketedSegments(romName.Replace('_', ' ')))
+        }.Where(static value => !string.IsNullOrWhiteSpace(value))
+         .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        bool sawNetworkError = false;
+
+        foreach (string playlist in playlistCandidates)
+        {
+            foreach (string fileName in fileNameCandidates)
+            {
+                string localDirectory = Path.Combine(coverCacheRoot, playlist, "Named_Boxarts");
+                string localPath = Path.Combine(localDirectory, fileName + ".png");
+                if (File.Exists(localPath))
+                    return CoverDownloadResult.AlreadyCached;
+
+                string url = $"https://thumbnails.libretro.com/{Uri.EscapeDataString(playlist)}/Named_Boxarts/{Uri.EscapeDataString(fileName)}.png";
+
+                try
+                {
+                    using HttpResponseMessage response = await s_httpClient.GetAsync(url, cancellationToken);
+                    if (!response.IsSuccessStatusCode)
+                        continue;
+
+                    byte[] bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+                    if (bytes.Length == 0)
+                        continue;
+
+                    Directory.CreateDirectory(localDirectory);
+                    await File.WriteAllBytesAsync(localPath, bytes, cancellationToken);
+                    return CoverDownloadResult.Downloaded;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                    sawNetworkError = true;
+                }
+            }
+        }
+
+        return sawNetworkError ? CoverDownloadResult.NetworkError : CoverDownloadResult.NotFound;
     }
 
     private static string ResolveInitialDirectory(string? initialPath, string? romLibraryPath)
@@ -858,6 +1742,36 @@ public sealed class RomPickerDialog : Window
             if (_listBox.SelectedItem is DriveTarget target)
                 Close(target.FullPath);
         }
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _coverSyncCts?.Cancel();
+        SaveCoverIndexIfDirty();
+        DisposeCoverPreviewBitmap();
+        base.OnClosed(e);
+    }
+
+    private enum CoverDownloadResult
+    {
+        AlreadyCached,
+        Downloaded,
+        NotFound,
+        NetworkError
+    }
+
+    private sealed class CoverIndexFile
+    {
+        public CoverIndexEntry[]? Entries { get; set; }
+    }
+
+    private sealed class CoverIndexEntry
+    {
+        public string RomPath { get; set; } = string.Empty;
+        public string? HashHex { get; set; }
+        public long FileLength { get; set; }
+        public long LastWriteUtcTicks { get; set; }
+        public string CoverRelativePath { get; set; } = string.Empty;
     }
 }
 

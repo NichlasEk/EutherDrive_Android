@@ -7,6 +7,8 @@ It now also includes PC Engine (HuCard) and PC Engine CD support.
 The project is based on core code from [MDTracer](https://github.com/sasayaki-japan/MDTracer) (MIT license) and extends it with a modern, cross-platform UI and improved compatibility.
 
 The emulator also runs Sega Master System games. All titles tested so far work, including Korean mappers and Codemasters titles.
+Game Gear support is integrated and playable.
+Game Boy Advance support is also integrated and playable with BIOS support.
 
 Basic SNES support is integrated via the SuperNintendoEmulator project (see references below).
 Basic NES support is integrated via XamariNES (see references below).
@@ -21,7 +23,10 @@ A future plan is to integrate ProjectPSX into the UI to continue development tow
 
 ## Features
 - Loads and runs Mega Drive ROMs directly from a file picker
+- Desktop ROM picker with offline cover cache + background cover sync
 - Basic SNES support (via separate core)
+- Sega Master System and Game Gear support
+- Game Boy Advance support
 - PC Engine (HuCard) and PC Engine CD support
 - Avalonia-based frontend (Windows, Linux, macOS, Android)
 - Keyboard and gamepad input handling
@@ -31,6 +36,19 @@ A future plan is to integrate ProjectPSX into the UI to continue development tow
 - Interlace support, including Sonic 2 interlaced mode
 - PAL/NTSC switch
 - Region handling
+
+## ROM Picker Covers
+The desktop ROM picker can download and cache cover art in the background for the configured ROM library only.
+
+- Cover art is fetched from the Libretro thumbnail repository/server
+- The local cache is stored under `ROM_LIBRARY/.eutherdrive-thumbnails`
+- Matching is designed around Libretro playlist naming and local cache/index reuse
+- The picker only scans the selected ROM library, not the whole computer
+
+Current source:
+- `https://thumbnails.libretro.com/`
+
+This is intentionally an offline-friendly cache once downloaded. The current implementation uses Libretro thumbnail naming directly; a fuller hash-to-database lookup layer can be added on top later.
 
 ## PC Engine CD BIOS
 You can set the PC Engine CD BIOS in two ways:
