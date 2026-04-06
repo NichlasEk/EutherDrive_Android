@@ -1184,6 +1184,11 @@ public partial class MainView : UserControl
         string romPath = _selectedRomPath;
         string romDisplayName = _selectedRomDisplayName ?? Path.GetFileName(romPath);
 
+        romPath = await EnsureAndroidRomBootPathAsync(romPath, romDisplayName);
+        if (bootRequestSerial != _bootRequestSerial)
+            return;
+        _selectedRomPath = romPath;
+
         StopSession(clearSelection: false, footerStatus: null);
         _presentedFrames = 0;
         ResetPerfCounters();
@@ -1316,6 +1321,48 @@ public partial class MainView : UserControl
             }
 
             SleepUntil(nextFrameTicks);
+        }
+    }
+
+    private async Task<string> EnsureAndroidRomBootPathAsync(string romPath, string romDisplayName)
+    {
+        if (string.IsNullOrWhiteSpace(romPath)
+            || romPath.StartsWith("/__eutherdrive_virtual__/", StringComparison.Ordinal)
+            || IsPathUnderDirectory(romPath, _appDataDir)
+            || !File.Exists(romPath))
+        {
+            return romPath;
+        }
+
+        string ext = GetEffectiveRomExtension(romPath);
+        if (ext is ".cue" or ".iso" or ".img" or ".chd" or ".pbp")
+            return romPath;
+
+        string baseDir = Path.Combine(_appDataDir, "rom-cache");
+        Directory.CreateDirectory(baseDir);
+
+        string safeName = SanitizeFileComponent(Path.GetFileNameWithoutExtension(romDisplayName), fallback: "rom");
+        await using FileStream source = File.OpenRead(romPath);
+        return await CopyToDeterministicCacheAsync(source, baseDir, safeName, Path.GetExtension(romPath));
+    }
+
+    private static bool IsPathUnderDirectory(string path, string rootDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(rootDirectory))
+            return false;
+
+        try
+        {
+            string fullPath = Path.GetFullPath(path);
+            string fullRoot = Path.GetFullPath(rootDirectory);
+            if (!fullRoot.EndsWith(Path.DirectorySeparatorChar))
+                fullRoot += Path.DirectorySeparatorChar;
+
+            return fullPath.StartsWith(fullRoot, StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
         }
     }
 
