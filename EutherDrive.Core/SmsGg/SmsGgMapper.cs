@@ -24,6 +24,10 @@ public static class SmsGgMapper
         if (rom.Length < 32 * 1024)
             return new SegaMapper();
 
+        if (rom.Length <= CodemastersChecksumAddress + 1)
+            return new SegaMapper();
+
+        bool headerFound = HasSegaHeader(rom);
         ushort expectedChecksum = (ushort)(rom[CodemastersChecksumAddress] | (rom[CodemastersChecksumAddress + 1] << 8));
         ushort checksum = 0;
         int evenLength = rom.Length & ~1;
@@ -36,7 +40,56 @@ public static class SmsGgMapper
             checksum = (ushort)(checksum + word);
         }
 
-        return checksum == expectedChecksum ? new CodemastersMapper() : new SegaMapper();
+        if (checksum == expectedChecksum)
+            return new CodemastersMapper();
+
+        if (!headerFound && LooksLikeCodemastersMapper(rom))
+            return new CodemastersMapper();
+
+        return new SegaMapper();
+    }
+
+    private static bool HasSegaHeader(byte[] rom)
+    {
+        ReadOnlySpan<byte> tmr = "TMR SEGA"u8;
+        ReadOnlySpan<int> candidates = stackalloc[] { 0x1FF0, 0x3FF0, 0x7FF0 };
+        foreach (int offset in candidates)
+        {
+            if (offset + tmr.Length > rom.Length)
+                continue;
+
+            if (rom.AsSpan(offset, tmr.Length).SequenceEqual(tmr))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool LooksLikeCodemastersMapper(byte[] rom)
+    {
+        int writesToA000 = 0;
+        int writesTo0000 = 0;
+        int writesTo4000 = 0;
+        int writesTo8000 = 0;
+        for (int i = 0; i + 2 < rom.Length; i++)
+        {
+            if (rom[i] != 0x32)
+                continue;
+
+            ushort address = (ushort)(rom[i + 1] | (rom[i + 2] << 8));
+            if (address == 0xA000)
+                writesToA000++;
+            else if (address == 0x0000)
+                writesTo0000++;
+            else if (address == 0x4000)
+                writesTo4000++;
+            else if (address == 0x8000)
+                writesTo8000++;
+        }
+
+        bool hasCodemastersTriplet =
+            writesTo0000 >= 2 && writesTo4000 >= 2 && writesTo8000 >= 2;
+        return hasCodemastersTriplet || (writesToA000 >= 8 && writesTo8000 >= 2);
     }
 
     private static byte ReadWrapped(byte[] bytes, uint address)
