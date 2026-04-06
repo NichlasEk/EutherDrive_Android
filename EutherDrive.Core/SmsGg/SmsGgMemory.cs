@@ -169,7 +169,7 @@ public sealed class SmsGgMemory
     {
         public Cartridge(byte[] rom, byte[]? initialRam)
         {
-            Rom = MirrorToNextPowerOfTwo(rom);
+            Rom = (byte[])rom.Clone();
             Mapper = SmsGgMapper.DetectFromRom(Rom);
             Crc32 = ComputeCrc32(Rom);
             HasBattery = SmsGgCartridgeMetadata.HasBatteryBackup(Crc32);
