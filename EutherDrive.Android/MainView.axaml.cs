@@ -128,6 +128,7 @@ public partial class MainView : UserControl
         _settingsPath = Path.Combine(_appDataDir, SettingsFileName);
         _legacyJsonSettingsPath = Path.Combine(_appDataDir, LegacyJsonSettingsFileName);
         _savestateService = new SavestateService(Path.Combine(_appDataDir, "savestates"));
+        InitializeAndroidSmsDumpDirectory();
         try
         {
             LoadSettings();
@@ -2777,6 +2778,18 @@ public partial class MainView : UserControl
     private static void SetEnv(string key, string? value)
     {
         Environment.SetEnvironmentVariable(key, string.IsNullOrWhiteSpace(value) ? null : value);
+    }
+
+    private void InitializeAndroidSmsDumpDirectory()
+    {
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR")))
+            return;
+
+        string baseDir = string.IsNullOrWhiteSpace(_appDataDir)
+            ? Path.Combine(Path.GetTempPath(), "eutherdrive", "logs")
+            : Path.Combine(_appDataDir, "logs");
+        Directory.CreateDirectory(baseDir);
+        Environment.SetEnvironmentVariable("EUTHERDRIVE_SMS_DUMP_DIR", baseDir);
     }
 
     private void SaveSettings()
