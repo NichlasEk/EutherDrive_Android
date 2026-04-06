@@ -95,8 +95,6 @@ public sealed class SmsGgPortSession
     private static SmsGgHardware DetectHardware(string romPath, byte[] romBytes)
     {
         string ext = Path.GetExtension(romPath).ToLowerInvariant();
-        if (ext == ".gg" && SmsGgMapper.DetectFromRom(romBytes).MapperType == SmsGgMapperType.Codemasters)
-            return SmsGgHardware.MasterSystem;
         if (ext == ".gg")
             return SmsGgHardware.GameGear;
         if (ext == ".sms" || ext == ".sg")

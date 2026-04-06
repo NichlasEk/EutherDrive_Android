@@ -420,12 +420,6 @@ public sealed class SmsGgSeedCore
 
     private static SmsGgHardware DetectHardware(string displayName, byte[] romBytes)
     {
-        if (Path.GetExtension(displayName).Equals(".gg", StringComparison.OrdinalIgnoreCase)
-            && SmsGgMapper.DetectFromRom(romBytes).MapperType == SmsGgMapperType.Codemasters)
-        {
-            return SmsGgHardware.MasterSystem;
-        }
-
         if (Path.GetExtension(displayName).Equals(".gg", StringComparison.OrdinalIgnoreCase))
             return SmsGgHardware.GameGear;
         if (Path.GetExtension(displayName).Equals(".sms", StringComparison.OrdinalIgnoreCase)
