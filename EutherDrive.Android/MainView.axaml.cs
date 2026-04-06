@@ -2142,14 +2142,6 @@ public partial class MainView : UserControl
     private async Task<string> ImportRomAsync(IStorageProvider? storageProvider, IStorageFile file, bool isSystemFile)
     {
         string extension = Path.GetExtension(file.Name);
-        string? localPath = file.TryGetLocalPath();
-        if (!isSystemFile
-            && !string.IsNullOrWhiteSpace(localPath)
-            && File.Exists(localPath))
-        {
-            return localPath;
-        }
-
         if (!isSystemFile)
         {
             string ext = extension.ToLowerInvariant();
