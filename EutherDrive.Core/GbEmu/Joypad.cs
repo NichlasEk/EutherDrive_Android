@@ -4,6 +4,9 @@ namespace EutherDrive.Core.GbEmu
 {
     internal class Joypad
     {
+        [NonSerialized]
+        private readonly Cpu _cpu;
+
         // These will hold the current state of each button. True = pressed.
         private bool _up, _down, _left, _right;
         private bool _a, _b, _start, _select;
@@ -13,7 +16,7 @@ namespace EutherDrive.Core.GbEmu
 
         public Joypad(Cpu cpu)
         {
-            _ = cpu;
+            _cpu = cpu;
         }
 
         // This method will be called by the MMU when the game writes to 0xFF00
@@ -53,6 +56,8 @@ namespace EutherDrive.Core.GbEmu
 
         public void SetState(bool up, bool down, bool left, bool right, bool a, bool b, bool start, bool select)
         {
+            bool hadPressedButton = _up || _down || _left || _right || _a || _b || _start || _select;
+
             _up = up;
             _down = down;
             _left = left;
@@ -61,6 +66,10 @@ namespace EutherDrive.Core.GbEmu
             _b = b;
             _start = start;
             _select = select;
+
+            bool hasPressedButton = _up || _down || _left || _right || _a || _b || _start || _select;
+            if (!hadPressedButton && hasPressedButton)
+                _cpu.RequestInterrupt(Cpu.Interrupt.Joypad);
         }
     }
 }

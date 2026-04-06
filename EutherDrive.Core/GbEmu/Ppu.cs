@@ -47,6 +47,7 @@ namespace EutherDrive.Core.GbEmu
             public byte X;
             public byte Y;
             public byte TileIndex;
+            public byte OamIndex;
             public bool FlipX;
             public bool FlipY;
 
@@ -136,6 +137,16 @@ namespace EutherDrive.Core.GbEmu
         public void SetMmu(Mmu mmu)
         {
             _mmu = mmu;
+        }
+
+        public void SetPostBootState(byte ly, PpuMode mode)
+        {
+            _ly = ly;
+            _cyclesCounter = 0;
+            _windowLineCounter = 0;
+            _currentMode = mode;
+            _stat = (byte)((_stat & ~0b11) | (byte)mode);
+            CheckLyLyc();
         }
         
         // --- GBC ENHANCEMENT: Method to set the PPU into GBC mode ---
@@ -763,6 +774,7 @@ namespace EutherDrive.Core.GbEmu
                         X = spriteX,
                         Y = spriteY,
                         TileIndex = tileIndex,
+                        OamIndex = (byte)i,
                         FlipX = (attributes & 0x20) != 0,
                         FlipY = (attributes & 0x40) != 0,
                     };
@@ -785,9 +797,10 @@ namespace EutherDrive.Core.GbEmu
             // In DMG mode only, sort by X-coordinate for priority
             if (!_isGbcMode)
             {
-                spritesOnLine.Sort((a,b) => {
+                spritesOnLine.Sort((a, b) =>
+                {
                     int result = a.X.CompareTo(b.X);
-                    return result;
+                    return result != 0 ? result : a.OamIndex.CompareTo(b.OamIndex);
                 });
                 // DMG can only display 10 sprites per line
                 if (spritesOnLine.Count > 10)

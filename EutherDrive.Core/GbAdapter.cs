@@ -181,6 +181,7 @@ public sealed class GbAdapter : IEmulatorCore, IDisposable, ISavestateCapable
         StateBinarySerializer.ReadInto(reader, _emulator.Timer);
         StateBinarySerializer.ReadInto(reader, _emulator.Apu);
         StateBinarySerializer.ReadInto(reader, _emulator.Joypad);
+        _emulator.Cpu.Continue();
         ResetRuntimeAudioState();
     }
 

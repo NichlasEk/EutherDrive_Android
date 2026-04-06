@@ -65,11 +65,13 @@ namespace EutherDrive.Core.GbEmu
             {
                 Cpu.InitializeForGbc();
                 InitializeHardwareForGbc();
+                Ppu.SetPostBootState(0x90, Ppu.PpuMode.VBlank);
             }
             else
             {
                 Cpu.InitializeForDmg();
                 InitializeHardwareForDmg();
+                Ppu.SetPostBootState(0x00, Ppu.PpuMode.OamScan);
             }
 
             Cpu.Continue();

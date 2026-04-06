@@ -32,9 +32,13 @@ namespace EutherDrive.Core.GbEmu
         private Mmu Mmu => _mmu ?? throw new InvalidOperationException("MMU not initialized");
 
         // Debugging and stepping
+        [field: NonSerialized]
         public bool IsStepping { get; set; } = false;
+        [field: NonSerialized]
         public bool IsPaused { get; set; } = false;
+        [field: NonSerialized]
         public OpcodeInfo LastExecutedOpcode { get; private set; }
+        [field: NonSerialized]
         public string LastOpcodeLog { get; private set; } = "";
 
         // Helper properties for 16-bit register pairs

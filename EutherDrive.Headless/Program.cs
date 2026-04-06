@@ -1770,6 +1770,10 @@ class Program
         Console.WriteLine($"[HEADLESS] Savestate roundtrip test: {romPath}");
 
         string? coreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
+        bool useGb = string.Equals(coreOverride, "gb", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "gbc", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "gameboy", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && IsGbRomPath(romPath));
         bool usePsx = string.Equals(coreOverride, "psx", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
@@ -1778,6 +1782,48 @@ class Program
             || string.Equals(coreOverride, "sega-cd", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "mega-cd", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
+
+        if (useGb)
+        {
+            var gb = new GbAdapter();
+            gb.LoadRom(romPath);
+
+            for (int i = 0; i < 10; i++)
+                gb.RunFrame();
+
+            byte[] snapshotGb;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                gb.SaveState(writer);
+                writer.Flush();
+                snapshotGb = ms.ToArray();
+            }
+
+            using (var ms = new MemoryStream(snapshotGb))
+            using (var reader = new BinaryReader(ms))
+            {
+                gb.LoadState(reader);
+            }
+
+            byte[] snapshotAfterGb;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                gb.SaveState(writer);
+                writer.Flush();
+                snapshotAfterGb = ms.ToArray();
+            }
+
+            if (!snapshotGb.SequenceEqual(snapshotAfterGb))
+            {
+                Console.Error.WriteLine("[HEADLESS] GB savestate roundtrip failed: payload mismatch.");
+                return 1;
+            }
+
+            Console.WriteLine("[HEADLESS] GB savestate roundtrip ok.");
+            return 0;
+        }
 
         if (usePsx)
         {
@@ -1954,6 +2000,10 @@ class Program
                 || string.Equals(coreOverride, "sega-cd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "mega-cd", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
+            bool useGb = string.Equals(coreOverride, "gb", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "gbc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "gameboy", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsGbRomPath(romPath));
             bool useGba = string.Equals(coreOverride, "gba", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "agb", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsGbaRomPath(romPath));
@@ -1961,6 +2011,59 @@ class Program
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
+
+            if (useGb)
+            {
+                var gb = new GbAdapter();
+                gb.LoadRom(romPath);
+
+                int? slotOverrideGb = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadGb = TryLoadSavestatePayload(savestatePath, gb.RomIdentity, slotOverrideGb, out var gbError);
+                if (payloadGb == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {gbError}");
+                    return 1;
+                }
+
+                using (var gbStateStream = new MemoryStream(payloadGb, writable: false))
+                using (var gbStateReader = new BinaryReader(gbStateStream))
+                    gb.LoadState(gbStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (GB)");
+                Console.WriteLine($"[HEADLESS] {gb.RomSummary}");
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> gbFbIn = gb.GetFrameBuffer(out int gbWIn, out int gbHIn, out int gbSIn);
+                var gbStatsIn = GetFrameStats(gbFbIn, gbWIn, gbHIn, gbSIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(gbFbIn, gbWIn, gbHIn, gbSIn);
+                int unchangedFrames = 0;
+                Console.WriteLine($"[HEADLESS] GB fb_has_content={gbStatsIn.HasContent} nonzero_pixels={gbStatsIn.NonZeroPixels} first_nonzero=({gbStatsIn.FirstX},{gbStatsIn.FirstY}) frameCounter={gb.FrameCounter ?? -1} fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(gbFbIn, gbWIn, gbHIn, gbSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    gb.RunFrame();
+
+                    ReadOnlySpan<byte> fb = gb.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? (unchangedFrames + 1) : 0;
+                    lastFingerprint = fingerprint;
+
+                    Console.WriteLine($"[HEADLESS] Frame {frame}: gb_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) frameCounter={gb.FrameCounter ?? -1} fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> gbFbOut = gb.GetFrameBuffer(out int gbWOut, out int gbHOut, out int gbSOut);
+                var gbStatsOut = GetFrameStats(gbFbOut, gbWOut, gbHOut, gbSOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(gbFbOut, gbWOut, gbHOut, gbSOut);
+                Console.WriteLine($"[HEADLESS] GB fb_has_content={gbStatsOut.HasContent} nonzero_pixels={gbStatsOut.NonZeroPixels} first_nonzero=({gbStatsOut.FirstX},{gbStatsOut.FirstY}) frameCounter={gb.FrameCounter ?? -1} fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(gbFbOut, gbWOut, gbHOut, gbSOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
 
             if (useNes)
             {
