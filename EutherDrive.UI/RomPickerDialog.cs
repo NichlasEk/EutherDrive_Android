@@ -223,8 +223,8 @@ public sealed class RomPickerDialog : Window
 
         _coverPreviewImage = new Image
         {
-            Width = 104,
-            Height = 144,
+            Width = 128,
+            Height = 176,
             Stretch = Stretch.UniformToFill,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
@@ -348,13 +348,13 @@ public sealed class RomPickerDialog : Window
                         Spacing = 8,
                         HorizontalAlignment = HorizontalAlignment.Left,
                         VerticalAlignment = VerticalAlignment.Top,
-                        Margin = new Thickness(12, 0, 0, 0),
+                        Margin = new Thickness(4, 0, 0, 0),
                         Children =
                         {
                             new Border
                             {
-                                Width = 104,
-                                Height = 144,
+                                Width = 128,
+                                Height = 176,
                                 CornerRadius = new CornerRadius(12),
                                 BorderThickness = new Thickness(1),
                                 BorderBrush = new SolidColorBrush(Color.Parse("#304355")),
@@ -362,7 +362,16 @@ public sealed class RomPickerDialog : Window
                                 Padding = new Thickness(4),
                                 Child = _coverPreviewImage
                             },
-                            _coverPreviewTitle
+                            new TextBlock
+                            {
+                                MaxWidth = 156,
+                                TextWrapping = TextWrapping.Wrap,
+                                TextAlignment = TextAlignment.Center,
+                                HorizontalAlignment = HorizontalAlignment.Center,
+                                Classes = { "muted" },
+                                FontSize = 11,
+                                [!TextBlock.TextProperty] = _coverPreviewTitle[!TextBlock.TextProperty]
+                            }
                         }
                     }
                 }
@@ -1516,11 +1525,11 @@ public sealed class RomPickerDialog : Window
     }
 
     private static string? GetExpectedCoverLocalPath(string romPath, string coverCacheRoot)
-        => GetExpectedCoverLocalPath(romPath, coverCacheRoot, canonicalName: null);
+        => GetExpectedCoverLocalPath(romPath, coverCacheRoot, canonicalNames: null);
 
-    private static string? GetExpectedCoverLocalPath(string romPath, string coverCacheRoot, string? canonicalName)
+    private static string? GetExpectedCoverLocalPath(string romPath, string coverCacheRoot, IReadOnlyList<string>? canonicalNames)
     {
-        string? preferredName = BuildCoverNameCandidates(romPath, canonicalName).FirstOrDefault();
+        string? preferredName = BuildCoverNameCandidates(romPath, canonicalNames).FirstOrDefault();
         if (string.IsNullOrWhiteSpace(preferredName))
             return null;
 
@@ -1533,8 +1542,8 @@ public sealed class RomPickerDialog : Window
 
     private async Task<CoverDownloadResult> EnsureCoverAsync(string romPath, string coverCacheRoot, CancellationToken cancellationToken)
     {
-        string? canonicalName = await TryResolveCanonicalCoverNameAsync(romPath, coverCacheRoot, cancellationToken);
-        string? localPath = GetExpectedCoverLocalPath(romPath, coverCacheRoot, canonicalName);
+        IReadOnlyList<string>? canonicalNames = await TryResolveCanonicalCoverNamesAsync(romPath, coverCacheRoot, cancellationToken);
+        string? localPath = GetExpectedCoverLocalPath(romPath, coverCacheRoot, canonicalNames);
         if (!string.IsNullOrWhiteSpace(localPath) && File.Exists(localPath))
         {
             string? cachedHash = await TryComputeRomHashHexAsync(romPath, cancellationToken);
@@ -1550,12 +1559,12 @@ public sealed class RomPickerDialog : Window
             return CoverDownloadResult.AlreadyCached;
         }
 
-        CoverDownloadResult result = await TryDownloadCoverAsync(romPath, coverCacheRoot, canonicalName, cancellationToken);
+        CoverDownloadResult result = await TryDownloadCoverAsync(romPath, coverCacheRoot, canonicalNames, cancellationToken);
         if (result is CoverDownloadResult.Downloaded or CoverDownloadResult.AlreadyCached)
         {
             string? resolvedPath = TryResolveCoverPathFromIndex(romPath, coverCacheRoot)
                 ?? ResolveCoverPath(romPath, coverCacheRoot)
-                ?? GetExpectedCoverLocalPath(romPath, coverCacheRoot, canonicalName);
+                ?? GetExpectedCoverLocalPath(romPath, coverCacheRoot, canonicalNames);
 
             if (!string.IsNullOrWhiteSpace(resolvedPath) && File.Exists(resolvedPath))
                 UpsertCoverIndex(romPath, hashHex, resolvedPath, saveNow: false);
@@ -1564,7 +1573,7 @@ public sealed class RomPickerDialog : Window
         return result;
     }
 
-    private async Task<string?> TryResolveCanonicalCoverNameAsync(string romPath, string coverCacheRoot, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<string>?> TryResolveCanonicalCoverNamesAsync(string romPath, string coverCacheRoot, CancellationToken cancellationToken)
     {
         string? crcHex = await TryComputeRomCrc32HexAsync(romPath, cancellationToken);
         if (string.IsNullOrWhiteSpace(crcHex))
@@ -1576,8 +1585,8 @@ public sealed class RomPickerDialog : Window
             if (dat == null)
                 continue;
 
-            if (dat.TitleByCrc.TryGetValue(crcHex, out string? canonicalName) && !string.IsNullOrWhiteSpace(canonicalName))
-                return canonicalName;
+            if (dat.TitlesByCrc.TryGetValue(crcHex, out List<string>? canonicalNames) && canonicalNames.Count > 0)
+                return canonicalNames;
         }
 
         return null;
@@ -1712,13 +1721,13 @@ public sealed class RomPickerDialog : Window
         }
     }
 
-    private static async Task<CoverDownloadResult> TryDownloadCoverAsync(string romPath, string coverCacheRoot, string? canonicalName, CancellationToken cancellationToken)
+    private static async Task<CoverDownloadResult> TryDownloadCoverAsync(string romPath, string coverCacheRoot, IReadOnlyList<string>? canonicalNames, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(Path.GetFileNameWithoutExtension(romPath)))
             return CoverDownloadResult.NotFound;
 
         IEnumerable<string> playlistCandidates = GetThumbnailPlaylistCandidates(romPath, Path.GetExtension(romPath));
-        IEnumerable<string> fileNameCandidates = BuildCoverNameCandidates(romPath, canonicalName);
+        IEnumerable<string> fileNameCandidates = BuildCoverNameCandidates(romPath, canonicalNames);
 
         bool sawNetworkError = false;
 
@@ -1761,20 +1770,64 @@ public sealed class RomPickerDialog : Window
         return sawNetworkError ? CoverDownloadResult.NetworkError : CoverDownloadResult.NotFound;
     }
 
-    private static IEnumerable<string> BuildCoverNameCandidates(string romPath, string? canonicalName)
+    private static IEnumerable<string> BuildCoverNameCandidates(string romPath, IReadOnlyList<string>? canonicalNames)
     {
         string romName = Path.GetFileNameWithoutExtension(romPath);
-        return new[]
+        IEnumerable<string> canonicalVariants = (canonicalNames ?? Array.Empty<string>())
+            .SelectMany(ExpandCoverNameVariants);
+
+        IEnumerable<string> romVariants = ExpandCoverNameVariants(romName)
+            .Concat(ExpandCoverNameVariants(romName.Replace('_', ' ')));
+
+        return canonicalVariants
+            .Concat(romVariants)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> ExpandCoverNameVariants(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            yield break;
+
+        string trimmed = value.Trim();
+        string noBrackets = RemoveBracketedSegments(trimmed);
+
+        foreach (string candidate in new[]
+                 {
+                     trimmed,
+                     noBrackets,
+                     trimmed.Replace('_', ' '),
+                     noBrackets.Replace('_', ' '),
+                     RewriteTrailingArticle(trimmed),
+                     RewriteTrailingArticle(noBrackets),
+                     RemoveTrailingRegion(trimmed),
+                     RemoveTrailingRegion(noBrackets)
+                 })
         {
-            canonicalName,
-            NormalizeThumbnailName(canonicalName ?? string.Empty),
-            NormalizeThumbnailName(RemoveBracketedSegments(canonicalName ?? string.Empty)),
-            NormalizeThumbnailName(romName),
-            NormalizeThumbnailName(RemoveBracketedSegments(romName)),
-            NormalizeThumbnailName(romName.Replace('_', ' ')),
-            NormalizeThumbnailName(RemoveBracketedSegments(romName.Replace('_', ' ')))
-        }.Where(static value => !string.IsNullOrWhiteSpace(value))
-         .Distinct(StringComparer.OrdinalIgnoreCase);
+            string normalized = NormalizeThumbnailName(candidate);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                yield return normalized;
+        }
+    }
+
+    private static string RewriteTrailingArticle(string value)
+    {
+        foreach (string article in new[] { ", The", ", A", ", An" })
+        {
+            if (value.EndsWith(article, StringComparison.OrdinalIgnoreCase))
+                return article[2..] + " " + value[..^article.Length];
+        }
+
+        return value;
+    }
+
+    private static string RemoveTrailingRegion(string value)
+    {
+        int lastOpen = value.LastIndexOf(" (", StringComparison.Ordinal);
+        if (lastOpen >= 0 && value.EndsWith(")", StringComparison.Ordinal))
+            return value[..lastOpen].TrimEnd();
+        return value;
     }
 
     private async Task EnsureDatMetadataForRomsAsync(IEnumerable<string> romPaths, string coverCacheRoot, CancellationToken cancellationToken)
@@ -1874,7 +1927,7 @@ public sealed class RomPickerDialog : Window
 
     private static CoverDatEntry ParseCoverDat(string datPath, string datName)
     {
-        var titleByCrc = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var titlesByCrc = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
         string? currentName = null;
         string? currentDescription = null;
@@ -1920,17 +1973,27 @@ public sealed class RomPickerDialog : Window
                 continue;
 
             string crcHex = line[start..end].ToUpperInvariant();
-            string title = currentDescription ?? currentName ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(title))
+            string? romName = ExtractDatQuotedValue(line);
+
+            var titleCandidates = new[]
+            {
+                currentDescription,
+                currentName,
+                Path.GetFileNameWithoutExtension(romName ?? string.Empty)
+            }.Where(static value => !string.IsNullOrWhiteSpace(value))
+             .Distinct(StringComparer.OrdinalIgnoreCase)
+             .ToList();
+
+            if (titleCandidates.Count == 0)
                 continue;
 
-            titleByCrc[crcHex] = title;
+            titlesByCrc[crcHex] = titleCandidates!;
         }
 
         return new CoverDatEntry
         {
             DatName = datName,
-            TitleByCrc = titleByCrc
+            TitlesByCrc = titlesByCrc
         };
     }
 
@@ -2283,7 +2346,7 @@ public sealed class RomPickerDialog : Window
     private sealed class CoverDatEntry
     {
         public string DatName { get; set; } = string.Empty;
-        public Dictionary<string, string> TitleByCrc { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, List<string>> TitlesByCrc { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private static uint[] BuildCrc32Table()
