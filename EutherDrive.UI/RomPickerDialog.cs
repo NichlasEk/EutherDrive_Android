@@ -33,7 +33,7 @@ public sealed class RomPickerDialog : Window
 
     private static readonly HashSet<string> s_supportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".bin", ".md", ".gen", ".smd", ".sms", ".sg", ".gg", ".nes", ".smc", ".sfc",
+        ".bin", ".md", ".gen", ".smd", ".sms", ".sg", ".gg", ".nes", ".smc", ".sfc", ".gb", ".gbc",
         ".pce", ".gba", ".agb", ".cue", ".zip", ".7z", ".iso", ".img", ".chd", ".pbp", ".exe"
     };
 
@@ -975,10 +975,14 @@ public sealed class RomPickerDialog : Window
             Add("Sega - Game Gear");
         if (directoryHint.Contains("GBA", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Game Boy Advance", StringComparison.OrdinalIgnoreCase))
             Add("Nintendo - Game Boy Advance");
-        if (directoryHint.Contains("GB ", StringComparison.OrdinalIgnoreCase) || directoryHint.EndsWith("/GB", StringComparison.OrdinalIgnoreCase))
-            Add("Nintendo - Game Boy");
         if (directoryHint.Contains("GBC", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Game Boy Color", StringComparison.OrdinalIgnoreCase))
             Add("Nintendo - Game Boy Color");
+        if (directoryHint.Contains("/GB/", StringComparison.OrdinalIgnoreCase) ||
+            directoryHint.Contains("\\GB\\", StringComparison.OrdinalIgnoreCase) ||
+            directoryHint.EndsWith("/GB", StringComparison.OrdinalIgnoreCase) ||
+            directoryHint.EndsWith("\\GB", StringComparison.OrdinalIgnoreCase) ||
+            directoryHint.Contains("Game Boy", StringComparison.OrdinalIgnoreCase))
+            Add("Nintendo - Game Boy");
         if (directoryHint.Contains("SMS", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Master System", StringComparison.OrdinalIgnoreCase))
             Add("Sega - Master System - Mark III");
         if (directoryHint.Contains("SegaCD", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Sega CD", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Mega-CD", StringComparison.OrdinalIgnoreCase))

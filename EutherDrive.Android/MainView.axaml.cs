@@ -193,7 +193,7 @@ public partial class MainView : UserControl
                     Patterns = new[]
                     {
                         "*.bin", "*.md", "*.smd", "*.gen", "*.sms", "*.sg", "*.gg",
-                        "*.nes", "*.smc", "*.sfc", "*.pce", "*.gba", "*.agb", "*.cue", "*.iso", "*.chd", "*.z64", "*.n64", "*.v64",
+                        "*.nes", "*.smc", "*.sfc", "*.gb", "*.gbc", "*.pce", "*.gba", "*.agb", "*.cue", "*.iso", "*.chd", "*.z64", "*.n64", "*.v64",
                         "*.zip", "*.7z"
                     }
                 },
@@ -3690,6 +3690,11 @@ public partial class MainView : UserControl
             return new SnesAdapter();
         }
 
+        if (ext is ".gb" or ".gbc")
+        {
+            return new GbAdapter();
+        }
+
         if (ext is ".gba" or ".agb")
         {
             return new GbaAdapter();
@@ -3750,6 +3755,9 @@ public partial class MainView : UserControl
     {
         switch (core)
         {
+            case GbAdapter gb:
+                gb.SetMasterVolumePercent(100);
+                break;
             case GbaAdapter gba:
                 gba.SetMasterVolumePercent(100);
                 break;
@@ -3779,6 +3787,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.SegaCd.SegaCdAdapter => "Sega CD",
             PceCdAdapter => "PC Engine CD",
             N64Adapter => "Nintendo 64",
+            GbAdapter => "Game Boy",
             GbaAdapter => "Game Boy Advance",
             SnesAdapter => "SNES",
             NesAdapter => "NES",
@@ -4289,6 +4298,8 @@ public partial class MainView : UserControl
                 ".bin" or ".md" or ".smd" or ".gen" => "Mega Drive",
                 ".sms" or ".sg" => "Master System",
                 ".gg" => "Game Gear",
+                ".gb" => "Game Boy",
+                ".gbc" => "Game Boy Color",
                 ".gba" or ".agb" => "Game Boy Advance",
                 ".smc" or ".sfc" => "SNES",
                 ".nes" => "NES",

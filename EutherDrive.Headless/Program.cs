@@ -316,6 +316,10 @@ class Program
                 || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
+            bool useGb = string.Equals(coreOverride, "gb", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "gbc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "gameboy", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsGbRomPath(romPath));
             bool useGba = string.Equals(coreOverride, "gba", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "agb", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsGbaRomPath(romPath));
@@ -337,6 +341,7 @@ class Program
                 useNes = false;
                 useSnes = false;
                 usePsx = false;
+                useGb = false;
                 useGba = false;
                 useSmsGg = false;
                 useN64 = false;
@@ -585,6 +590,40 @@ class Program
                     Console.WriteLine(DumpSnesPeek(snes, "after", snesPeekAddrs));
                 snesAudioSink?.Dispose();
                 snesTraceWriter?.Dispose();
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useGb)
+            {
+                Console.WriteLine("[HEADLESS] Using GB/GBC core");
+                var gb = new GbAdapter();
+                gb.LoadRom(romPath);
+                Console.WriteLine($"[HEADLESS] {gb.RomSummary}");
+
+                HeadlessAudioSink? gbAudioSink = null;
+                bool enableGbAudio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
+                if (enableGbAudio)
+                    gbAudioSink = new HeadlessAudioSink();
+
+                ReadOnlySpan<byte> gbFbIn = gb.GetFrameBuffer(out int gbWIn, out int gbHIn, out int gbSIn);
+                DumpBgraToPpm(gbFbIn, gbWIn, gbHIn, gbSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    gb.RunFrame();
+                    var samples = gb.GetAudioBuffer(out int sampleRate, out int channels);
+                    if (!samples.IsEmpty)
+                    {
+                        gbAudioSink ??= new HeadlessAudioSink();
+                        gbAudioSink.Start(sampleRate, channels);
+                        gbAudioSink.Submit(samples);
+                    }
+                }
+
+                ReadOnlySpan<byte> gbFbOut = gb.GetFrameBuffer(out int gbWOut, out int gbHOut, out int gbSOut);
+                DumpBgraToPpm(gbFbOut, gbWOut, gbHOut, gbSOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                gbAudioSink?.Dispose();
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -1550,6 +1589,12 @@ class Program
         return ext is ".gba" or ".agb";
     }
 
+    private static bool IsGbRomPath(string path)
+    {
+        string ext = GetEffectiveRomExtension(path);
+        return ext is ".gb" or ".gbc";
+    }
+
     private static bool IsMasterSystemRomPath(string path)
     {
         string ext = GetEffectiveRomExtension(path);
@@ -1904,7 +1949,8 @@ class Program
                 || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
-            bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
+            bool useSegaCd = string.Equals(coreOverride, "scd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "sega-cd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "mega-cd", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));

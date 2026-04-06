@@ -624,6 +624,8 @@ public partial class MainWindow : Window
             return new PceCdAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsMasterSystemRomPath(path))
             return new SmsGgAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && IsGbRom(path))
+            return new GbAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsGbaRom(path))
             return new GbaAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsN64Rom(path))
@@ -667,6 +669,12 @@ public partial class MainWindow : Window
     {
         string ext = GetEffectiveRomExtension(path);
         return ext is ".gba" or ".agb";
+    }
+
+    private static bool IsGbRom(string path)
+    {
+        string ext = GetEffectiveRomExtension(path);
+        return ext is ".gb" or ".gbc";
     }
 
     private static bool IsMasterSystemRomPath(string path)
@@ -1395,6 +1403,8 @@ public partial class MainWindow : Window
             return new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons);
         if (IsPceRom(path))
             return CreatePceAutoFireProfile(useSixButtonPad);
+        if (IsGbRom(path))
+            return new AutoFireProfile("gb", _inputMappings.Snes, s_autoFireTwoButtonButtons);
         if (IsGbaRom(path))
             return new AutoFireProfile("gba", _inputMappings.Snes, s_autoFireSnesButtons);
         if (IsNesRom(path))
@@ -2456,6 +2466,11 @@ public partial class MainWindow : Window
                             UpdateGbaRomInfo(_romPath, gba);
                             Console.WriteLine(gba.RomSummary ?? "GBA ROM loaded.");
                         }
+                        else if (_core is GbAdapter gb)
+                        {
+                            UpdateGbRomInfo(_romPath, gb);
+                            Console.WriteLine(gb.RomSummary ?? "GB ROM loaded.");
+                        }
                         else if (_core is SmsGgAdapter sms)
                         {
                             UpdateRomInfo(sms.RomInfo);
@@ -3231,6 +3246,8 @@ public partial class MainWindow : Window
             pce.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is GbaAdapter gba)
             gba.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is GbAdapter gb)
+            gb.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is NesAdapter nes)
             nes.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is PsxAdapter psx)
@@ -3423,6 +3440,20 @@ public partial class MainWindow : Window
         string name = Path.GetFileName(romPath);
         if (RomInfoText != null)
             RomInfoText.Text = adapter.RomSummary ?? $"GBA: {name}";
+        UpdateRomRegionHint(ConsoleRegion.Auto);
+        _romRegionKey = null;
+        _romSegaCdKey = null;
+        _segaCdRamCartEnabled = false;
+        _segaCdLoadCdToRam = false;
+        _segaCdForceNoDisc = false;
+        UpdateSegaCdOptionsUi();
+    }
+
+    private void UpdateGbRomInfo(string romPath, GbAdapter adapter)
+    {
+        string name = Path.GetFileName(romPath);
+        if (RomInfoText != null)
+            RomInfoText.Text = adapter.RomSummary ?? $"GB: {name}";
         UpdateRomRegionHint(ConsoleRegion.Auto);
         _romRegionKey = null;
         _romSegaCdKey = null;
@@ -6820,9 +6851,10 @@ public partial class MainWindow : Window
         bool isSnes = core is SnesAdapter;
         bool isPce = core is PceCdAdapter;
         bool isNes = core is NesAdapter;
+        bool isGb = core is GbAdapter;
         bool isGba = core is GbaAdapter;
         bool isPsx = core is PsxAdapter;
-        bool isSnesLike = isSnes || isNes || isGba;
+        bool isSnesLike = isSnes || isNes || isGb || isGba;
         var mappingSet = isPsx ? _inputMappings.Psx : (isSnesLike ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms));
         bool up;
         bool down;
@@ -8036,7 +8068,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -8339,7 +8371,7 @@ public partial class MainWindow : Window
                 return smsAdapter.GetAudioBufferForFrames(frames, out _, out _);
             }
         }
-        if (_core is SnesAdapter || _core is PceCdAdapter || _core is GbaAdapter || _core is N64Adapter || _core is SegaCdAdapter)
+        if (_core is SnesAdapter || _core is PceCdAdapter || _core is GbaAdapter || _core is GbAdapter || _core is N64Adapter || _core is SegaCdAdapter)
             return DequeueSnesAudio(frames);
         return ReadOnlySpan<short>.Empty;
     }
