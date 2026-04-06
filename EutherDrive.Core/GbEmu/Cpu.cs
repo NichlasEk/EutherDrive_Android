@@ -2204,6 +2204,11 @@ namespace EutherDrive.Core.GbEmu
             IsPaused = true;
         }
 
+        public string GetDebugState()
+        {
+            return $"pc=0x{PC:X4} sp=0x{SP:X4} af=0x{AF:X4} bc=0x{BC:X4} de=0x{DE:X4} hl=0x{HL:X4} ime={(_interruptMasterEnable ? 1 : 0)} ie=0x{ie_register:X2} if=0x{if_register:X2} halt={(is_halted ? 1 : 0)} pause={(IsPaused ? 1 : 0)} step={(IsStepping ? 1 : 0)}";
+        }
+
         private static string Hex2(byte v)
         {
             return $"0x{v:X2}";

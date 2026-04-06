@@ -37,6 +37,11 @@ namespace EutherDrive.Core.GbEmu
         public byte ReadTMA() => _tma;
         public byte ReadTAC() => _tac;
 
+        public string GetDebugState()
+        {
+            return $"div=0x{_div:X2} tima=0x{_tima:X2} tma=0x{_tma:X2} tac=0x{_tac:X2} divCnt={_divCounter} timaCnt={_timaCounter}";
+        }
+
         // Timer register write methods
         public void WriteDIV(byte value)
         {

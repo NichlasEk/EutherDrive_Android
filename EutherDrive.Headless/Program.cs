@@ -2036,7 +2036,10 @@ class Program
                 var gbStatsIn = GetFrameStats(gbFbIn, gbWIn, gbHIn, gbSIn);
                 ulong lastFingerprint = ComputeFrameFingerprint(gbFbIn, gbWIn, gbHIn, gbSIn);
                 int unchangedFrames = 0;
+                bool traceGbState = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_GB_STATE") == "1";
                 Console.WriteLine($"[HEADLESS] GB fb_has_content={gbStatsIn.HasContent} nonzero_pixels={gbStatsIn.NonZeroPixels} first_nonzero=({gbStatsIn.FirstX},{gbStatsIn.FirstY}) frameCounter={gb.FrameCounter ?? -1} fp=0x{lastFingerprint:X16}");
+                if (traceGbState && !string.IsNullOrWhiteSpace(gb.DebugState))
+                    Console.WriteLine($"[HEADLESS][GB-STATE] before {gb.DebugState}");
                 DumpBgraToPpm(gbFbIn, gbWIn, gbHIn, gbSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
 
                 for (int frame = 0; frame < framesToRun; frame++)
@@ -2050,6 +2053,8 @@ class Program
                     lastFingerprint = fingerprint;
 
                     Console.WriteLine($"[HEADLESS] Frame {frame}: gb_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) frameCounter={gb.FrameCounter ?? -1} fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+                    if (traceGbState && !string.IsNullOrWhiteSpace(gb.DebugState))
+                        Console.WriteLine($"[HEADLESS][GB-STATE] frame={frame} {gb.DebugState}");
 
                     if (frame == 0 || frame == 5 || frame == 10)
                         DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));

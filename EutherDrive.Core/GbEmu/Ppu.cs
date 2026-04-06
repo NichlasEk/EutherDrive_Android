@@ -148,6 +148,11 @@ namespace EutherDrive.Core.GbEmu
             _stat = (byte)((_stat & ~0b11) | (byte)mode);
             CheckLyLyc();
         }
+
+        public string GetDebugState()
+        {
+            return $"lcdc=0x{_lcdc:X2} stat=0x{_stat:X2} mode={_currentMode} ly={_ly} lyc={_lyc} scx={_scx} scy={_scy} wx={_wx} wy={_wy} winLine={_windowLineCounter} cyc={_cyclesCounter}";
+        }
         
         // --- GBC ENHANCEMENT: Method to set the PPU into GBC mode ---
         public void SetGbcMode(bool isGbc)
@@ -203,12 +208,23 @@ namespace EutherDrive.Core.GbEmu
         // PPU Register Write Methods
         public void WriteLCDC(byte value)
         {
+            bool wasEnabled = (_lcdc & 0x80) != 0;
+            bool willBeEnabled = (value & 0x80) != 0;
             _lcdc = value;
-            if ((value & 0x80) == 0)
+            if (!willBeEnabled)
             {
                 _ly = 0;
+                _cyclesCounter = 0;
                 _windowLineCounter = 0;
                 SetPpuMode((byte)PpuMode.VBlank);
+            }
+            else if (!wasEnabled)
+            {
+                _ly = 0;
+                _cyclesCounter = 0;
+                _windowLineCounter = 0;
+                SetPpuMode((byte)PpuMode.OamScan);
+                CheckLyLyc();
             }
         }
         public void WriteSTAT(byte value) => _stat = (byte)((_stat & 0b00000111) | (value & 0b11111000));
@@ -259,8 +275,15 @@ namespace EutherDrive.Core.GbEmu
 
         public void Step(int cpuCycles)
         {
+            if ((_lcdc & 0b10000000) == 0)
+            {
+                _cyclesCounter = 0;
+                _ly = 0;
+                _windowLineCounter = 0;
+                return; // LCD Disabled
+            }
+
             _cyclesCounter += cpuCycles;
-            if ((_lcdc & 0b10000000) == 0) return; // LCD Disabled
 
             byte currentMode = (byte)(_stat & 0x3);
             switch (currentMode)

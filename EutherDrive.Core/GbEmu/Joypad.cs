@@ -71,5 +71,10 @@ namespace EutherDrive.Core.GbEmu
             if (!hadPressedButton && hasPressedButton)
                 _cpu.RequestInterrupt(Cpu.Interrupt.Joypad);
         }
+
+        public string GetDebugState()
+        {
+            return $"p1=0x{_p1Register:X2} up={(_up ? 1 : 0)} down={(_down ? 1 : 0)} left={(_left ? 1 : 0)} right={(_right ? 1 : 0)} a={(_a ? 1 : 0)} b={(_b ? 1 : 0)} start={(_start ? 1 : 0)} select={(_select ? 1 : 0)}";
+        }
     }
 }

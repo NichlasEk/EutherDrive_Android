@@ -132,6 +132,11 @@ namespace EutherDrive.Core.GbEmu
                 Array.Clear(_audioBuffer, 0, _audioBuffer.Length);
         }
 
+        public string GetDebugState()
+        {
+            return $"{Cpu.GetDebugState()} | {Ppu.GetDebugState()} | {Timer.GetDebugState()} | {Joypad.GetDebugState()}";
+        }
+
         private void OnAudioBufferReady(short[] leftChannel, short[] rightChannel)
         {
             int samples = Math.Min(leftChannel.Length, rightChannel.Length);

@@ -29,6 +29,7 @@ public sealed class GbAdapter : IEmulatorCore, IDisposable, ISavestateCapable
     public string? RomSummary => _romSummary;
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => _frameCounter;
+    public string? DebugState => _emulator?.GetDebugState();
 
     public void LoadRom(string path)
     {
