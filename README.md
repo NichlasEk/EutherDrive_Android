@@ -42,13 +42,16 @@ The desktop ROM picker can download and cache cover art in the background for th
 
 - Cover art is fetched from the Libretro thumbnail repository/server
 - The local cache is stored under `ROM_LIBRARY/.eutherdrive-thumbnails`
-- Matching is designed around Libretro playlist naming and local cache/index reuse
+- Matching first reuses the local cache/index, then tries No-Intro DAT title resolution by CRC32, and finally falls back to Libretro-style filename matching
+- System DAT files are cached under `ROM_LIBRARY/.eutherdrive-thumbnails/.dat-cache`
+- DAT metadata is refreshed only when missing or stale, not on every picker open
 - The picker only scans the selected ROM library, not the whole computer
+- Opening the picker uses the existing cache immediately; `Sync Covers` performs a full refresh, while lightweight delta sync can pick up newly added ROMs
 
 Current source:
 - `https://thumbnails.libretro.com/`
 
-This is intentionally an offline-friendly cache once downloaded. The current implementation uses Libretro thumbnail naming directly; a fuller hash-to-database lookup layer can be added on top later.
+This is intentionally an offline-friendly cache once downloaded. Libretro thumbnails remain the image source, while canonical names are improved locally with cached DAT metadata for better match rates on renamed files, archives, and mixed sets.
 
 ## PC Engine CD BIOS
 You can set the PC Engine CD BIOS in two ways:

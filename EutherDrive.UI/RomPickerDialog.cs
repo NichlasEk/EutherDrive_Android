@@ -19,11 +19,13 @@ using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using EutherDrive.Core;
+using SharpCompress.Archives;
 
 namespace EutherDrive.UI;
 
 public sealed class RomPickerDialog : Window
 {
+    private static readonly uint[] s_crc32Table = BuildCrc32Table();
     private static readonly HttpClient s_httpClient = new()
     {
         Timeout = TimeSpan.FromSeconds(15)
@@ -54,6 +56,7 @@ public sealed class RomPickerDialog : Window
     private readonly Button _syncCoversButton;
     private readonly double _uiScale;
     private readonly object _coverIndexLock = new();
+    private readonly object _coverDatLock = new();
     private string? _romLibraryPath;
     private string _currentDirectory;
     private Bitmap? _coverPreviewBitmap;
@@ -65,6 +68,7 @@ public sealed class RomPickerDialog : Window
     private string _coverSyncStatus = "Cover sync: idle";
     private Dictionary<string, CoverIndexEntry> _coverIndexByPath = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, CoverIndexEntry> _coverIndexByHash = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, CoverDatEntry> _coverDatCache = new(StringComparer.OrdinalIgnoreCase);
     private bool _coverIndexDirty;
 
     public string? SelectedPath { get; private set; }
@@ -1177,6 +1181,9 @@ public sealed class RomPickerDialog : Window
     private static string GetCoverIndexPath(string coverCacheRoot)
         => Path.Combine(coverCacheRoot, ".cover-index.json");
 
+    private static string GetCoverDatRoot(string coverCacheRoot)
+        => Path.Combine(coverCacheRoot, ".dat-cache");
+
     private void StartCoverSync(bool forceRestart)
     {
         string? romLibraryPath = _romLibraryPath;
@@ -1253,6 +1260,13 @@ public sealed class RomPickerDialog : Window
                 });
                 return;
             }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                _coverSyncStatus = "Cover sync: refreshing local DAT metadata...";
+                UpdateCoverCacheUi();
+            });
+            await EnsureDatMetadataForRomsAsync(roms, coverCacheRoot, cancellationToken);
 
             foreach (string romPath in roms)
             {
@@ -1350,6 +1364,8 @@ public sealed class RomPickerDialog : Window
                 });
                 return;
             }
+
+            await EnsureDatMetadataForRomsAsync(pending, coverCacheRoot, CancellationToken.None);
 
             int done = 0;
             int downloaded = 0;
@@ -1500,22 +1516,25 @@ public sealed class RomPickerDialog : Window
     }
 
     private static string? GetExpectedCoverLocalPath(string romPath, string coverCacheRoot)
+        => GetExpectedCoverLocalPath(romPath, coverCacheRoot, canonicalName: null);
+
+    private static string? GetExpectedCoverLocalPath(string romPath, string coverCacheRoot, string? canonicalName)
     {
-        string romName = Path.GetFileNameWithoutExtension(romPath);
-        if (string.IsNullOrWhiteSpace(romName))
+        string? preferredName = BuildCoverNameCandidates(romPath, canonicalName).FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(preferredName))
             return null;
 
         string? playlist = GetThumbnailPlaylistCandidates(romPath, Path.GetExtension(romPath)).FirstOrDefault();
         if (string.IsNullOrWhiteSpace(playlist))
             return null;
 
-        string name = NormalizeThumbnailName(romName);
-        return Path.Combine(coverCacheRoot, playlist, "Named_Boxarts", name + ".png");
+        return Path.Combine(coverCacheRoot, playlist, "Named_Boxarts", preferredName + ".png");
     }
 
     private async Task<CoverDownloadResult> EnsureCoverAsync(string romPath, string coverCacheRoot, CancellationToken cancellationToken)
     {
-        string? localPath = GetExpectedCoverLocalPath(romPath, coverCacheRoot);
+        string? canonicalName = await TryResolveCanonicalCoverNameAsync(romPath, coverCacheRoot, cancellationToken);
+        string? localPath = GetExpectedCoverLocalPath(romPath, coverCacheRoot, canonicalName);
         if (!string.IsNullOrWhiteSpace(localPath) && File.Exists(localPath))
         {
             string? cachedHash = await TryComputeRomHashHexAsync(romPath, cancellationToken);
@@ -1531,18 +1550,37 @@ public sealed class RomPickerDialog : Window
             return CoverDownloadResult.AlreadyCached;
         }
 
-        CoverDownloadResult result = await TryDownloadCoverAsync(romPath, coverCacheRoot, cancellationToken);
+        CoverDownloadResult result = await TryDownloadCoverAsync(romPath, coverCacheRoot, canonicalName, cancellationToken);
         if (result is CoverDownloadResult.Downloaded or CoverDownloadResult.AlreadyCached)
         {
             string? resolvedPath = TryResolveCoverPathFromIndex(romPath, coverCacheRoot)
                 ?? ResolveCoverPath(romPath, coverCacheRoot)
-                ?? GetExpectedCoverLocalPath(romPath, coverCacheRoot);
+                ?? GetExpectedCoverLocalPath(romPath, coverCacheRoot, canonicalName);
 
             if (!string.IsNullOrWhiteSpace(resolvedPath) && File.Exists(resolvedPath))
                 UpsertCoverIndex(romPath, hashHex, resolvedPath, saveNow: false);
         }
 
         return result;
+    }
+
+    private async Task<string?> TryResolveCanonicalCoverNameAsync(string romPath, string coverCacheRoot, CancellationToken cancellationToken)
+    {
+        string? crcHex = await TryComputeRomCrc32HexAsync(romPath, cancellationToken);
+        if (string.IsNullOrWhiteSpace(crcHex))
+            return null;
+
+        foreach (string playlist in GetThumbnailPlaylistCandidates(romPath, Path.GetExtension(romPath)))
+        {
+            CoverDatEntry? dat = await EnsureDatLoadedAsync(playlist, coverCacheRoot, cancellationToken);
+            if (dat == null)
+                continue;
+
+            if (dat.TitleByCrc.TryGetValue(crcHex, out string? canonicalName) && !string.IsNullOrWhiteSpace(canonicalName))
+                return canonicalName;
+        }
+
+        return null;
     }
 
     private static async Task<string?> TryComputeRomHashHexAsync(string romPath, CancellationToken cancellationToken)
@@ -1557,6 +1595,106 @@ public sealed class RomPickerDialog : Window
         {
             return null;
         }
+    }
+
+    private static async Task<string?> TryComputeRomCrc32HexAsync(string romPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            byte[] romBytes;
+            string extension = Path.GetExtension(romPath);
+            if ((extension.Equals(".zip", StringComparison.OrdinalIgnoreCase) || extension.Equals(".7z", StringComparison.OrdinalIgnoreCase)) &&
+                TryExtractArchiveRomBytes(romPath, out byte[]? data))
+            {
+                romBytes = data;
+            }
+            else
+            {
+                romBytes = await File.ReadAllBytesAsync(romPath, cancellationToken);
+            }
+
+            return ComputeCrc32Hex(romBytes);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryExtractArchiveRomBytes(string archivePath, out byte[]? data)
+    {
+        data = null;
+
+        try
+        {
+            using var archive = ArchiveFactory.Open(archivePath);
+            IArchiveEntry? best = null;
+            int bestPriority = int.MaxValue;
+            long bestSize = -1;
+
+            foreach (IArchiveEntry entry in archive.Entries)
+            {
+                if (entry.IsDirectory)
+                    continue;
+
+                string ext = Path.GetExtension(entry.Key);
+                int priority = GetArchiveExtensionPriority(ext);
+                long size = entry.Size;
+
+                if (best == null || priority < bestPriority || (priority == bestPriority && size > bestSize))
+                {
+                    best = entry;
+                    bestPriority = priority;
+                    bestSize = size;
+                }
+            }
+
+            if (best == null)
+                return false;
+
+            using var stream = best.OpenEntryStream();
+            using var ms = new MemoryStream();
+            stream.CopyTo(ms);
+            data = ms.ToArray();
+            return data.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int GetArchiveExtensionPriority(string extension)
+        => extension.ToLowerInvariant() switch
+        {
+            ".md" => 0,
+            ".bin" => 1,
+            ".gen" => 2,
+            ".smd" => 3,
+            ".sms" => 4,
+            ".sg" => 5,
+            ".gg" => 6,
+            ".iso" => 7,
+            ".nes" => 8,
+            ".smc" => 9,
+            ".sfc" => 10,
+            ".gb" => 11,
+            ".gbc" => 12,
+            ".gba" => 13,
+            ".agb" => 14,
+            ".pce" => 15,
+            ".cue" => 16,
+            ".chd" => 17,
+            _ => int.MaxValue
+        };
+
+    private static string ComputeCrc32Hex(byte[] data)
+    {
+        uint crc = 0xFFFFFFFFu;
+        foreach (byte value in data)
+            crc = (crc >> 8) ^ s_crc32Table[(crc ^ value) & 0xFF];
+        crc ^= 0xFFFFFFFFu;
+        return crc.ToString("X8");
     }
 
     private static FileInfo? TryGetFileInfo(string romPath)
@@ -1574,21 +1712,13 @@ public sealed class RomPickerDialog : Window
         }
     }
 
-    private static async Task<CoverDownloadResult> TryDownloadCoverAsync(string romPath, string coverCacheRoot, CancellationToken cancellationToken)
+    private static async Task<CoverDownloadResult> TryDownloadCoverAsync(string romPath, string coverCacheRoot, string? canonicalName, CancellationToken cancellationToken)
     {
-        string romName = Path.GetFileNameWithoutExtension(romPath);
-        if (string.IsNullOrWhiteSpace(romName))
+        if (string.IsNullOrWhiteSpace(Path.GetFileNameWithoutExtension(romPath)))
             return CoverDownloadResult.NotFound;
 
         IEnumerable<string> playlistCandidates = GetThumbnailPlaylistCandidates(romPath, Path.GetExtension(romPath));
-        IEnumerable<string> fileNameCandidates = new[]
-        {
-            NormalizeThumbnailName(romName),
-            NormalizeThumbnailName(RemoveBracketedSegments(romName)),
-            NormalizeThumbnailName(romName.Replace('_', ' ')),
-            NormalizeThumbnailName(RemoveBracketedSegments(romName.Replace('_', ' ')))
-        }.Where(static value => !string.IsNullOrWhiteSpace(value))
-         .Distinct(StringComparer.OrdinalIgnoreCase);
+        IEnumerable<string> fileNameCandidates = BuildCoverNameCandidates(romPath, canonicalName);
 
         bool sawNetworkError = false;
 
@@ -1629,6 +1759,190 @@ public sealed class RomPickerDialog : Window
         }
 
         return sawNetworkError ? CoverDownloadResult.NetworkError : CoverDownloadResult.NotFound;
+    }
+
+    private static IEnumerable<string> BuildCoverNameCandidates(string romPath, string? canonicalName)
+    {
+        string romName = Path.GetFileNameWithoutExtension(romPath);
+        return new[]
+        {
+            canonicalName,
+            NormalizeThumbnailName(canonicalName ?? string.Empty),
+            NormalizeThumbnailName(RemoveBracketedSegments(canonicalName ?? string.Empty)),
+            NormalizeThumbnailName(romName),
+            NormalizeThumbnailName(RemoveBracketedSegments(romName)),
+            NormalizeThumbnailName(romName.Replace('_', ' ')),
+            NormalizeThumbnailName(RemoveBracketedSegments(romName.Replace('_', ' ')))
+        }.Where(static value => !string.IsNullOrWhiteSpace(value))
+         .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task EnsureDatMetadataForRomsAsync(IEnumerable<string> romPaths, string coverCacheRoot, CancellationToken cancellationToken)
+    {
+        var playlists = romPaths
+            .SelectMany(path => GetThumbnailPlaylistCandidates(path, Path.GetExtension(path)))
+            .Select(TryMapPlaylistToDatName)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        foreach (string datName in playlists!)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await EnsureDatLoadedAsync(datName, coverCacheRoot, cancellationToken);
+        }
+    }
+
+    private async Task<CoverDatEntry?> EnsureDatLoadedAsync(string playlist, string coverCacheRoot, CancellationToken cancellationToken)
+    {
+        string? datName = TryMapPlaylistToDatName(playlist);
+        if (string.IsNullOrWhiteSpace(datName))
+            return null;
+
+        lock (_coverDatLock)
+        {
+            if (_coverDatCache.TryGetValue(datName, out CoverDatEntry? cached))
+                return cached;
+        }
+
+        string? localPath = await EnsureDatFileLocalAsync(datName, coverCacheRoot, cancellationToken);
+        if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+            return null;
+
+        CoverDatEntry parsed = ParseCoverDat(localPath, datName);
+        lock (_coverDatLock)
+            _coverDatCache[datName] = parsed;
+        return parsed;
+    }
+
+    private static string? TryMapPlaylistToDatName(string playlist)
+        => playlist switch
+        {
+            "Nintendo - Game Boy Advance" or "Nintendo - Game Boy Advance (No-Intro)" or "Game Boy Advance"
+                => "Nintendo - Game Boy Advance",
+            "Nintendo - Game Boy" or "Game Boy"
+                => "Nintendo - Game Boy",
+            "Nintendo - Game Boy Color" or "Game Boy Color"
+                => "Nintendo - Game Boy Color",
+            "Sega - Game Gear" or "Game Gear"
+                => "Sega - Game Gear",
+            "Sega - Master System - Mark III" or "Sega - Master System" or "Master System"
+                => "Sega - Master System - Mark III",
+            "Sega - Mega Drive - Genesis" or "Sega Genesis" or "Sega Mega Drive"
+                => "Sega - Mega Drive - Genesis",
+            "Nintendo - Nintendo Entertainment System" or "Nintendo Entertainment System" or "NES"
+                => "Nintendo - Nintendo Entertainment System",
+            "Nintendo - Super Nintendo Entertainment System" or "Super Nintendo Entertainment System" or "SNES"
+                => "Nintendo - Super Nintendo Entertainment System",
+            _ => null
+        };
+
+    private static string GetDatFileUrl(string datName)
+        => $"https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/{Uri.EscapeDataString(datName)}.dat";
+
+    private static async Task<string?> EnsureDatFileLocalAsync(string datName, string coverCacheRoot, CancellationToken cancellationToken)
+    {
+        string datRoot = GetCoverDatRoot(coverCacheRoot);
+        string localPath = Path.Combine(datRoot, datName + ".dat");
+
+        try
+        {
+            Directory.CreateDirectory(datRoot);
+            if (File.Exists(localPath))
+            {
+                DateTime utcAge = File.GetLastWriteTimeUtc(localPath);
+                if (utcAge >= DateTime.UtcNow.AddDays(-14))
+                    return localPath;
+            }
+
+            using HttpResponseMessage response = await s_httpClient.GetAsync(GetDatFileUrl(datName), cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                return File.Exists(localPath) ? localPath : null;
+
+            byte[] bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            if (bytes.Length == 0)
+                return File.Exists(localPath) ? localPath : null;
+
+            await File.WriteAllBytesAsync(localPath, bytes, cancellationToken);
+            return localPath;
+        }
+        catch
+        {
+            return File.Exists(localPath) ? localPath : null;
+        }
+    }
+
+    private static CoverDatEntry ParseCoverDat(string datPath, string datName)
+    {
+        var titleByCrc = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        string? currentName = null;
+        string? currentDescription = null;
+
+        foreach (string rawLine in File.ReadLines(datPath))
+        {
+            string line = rawLine.Trim();
+
+            if (line.StartsWith("game", StringComparison.Ordinal))
+            {
+                currentName = null;
+                currentDescription = null;
+                continue;
+            }
+
+            if (line.StartsWith("name ", StringComparison.Ordinal))
+            {
+                currentName = ExtractDatQuotedValue(line);
+                continue;
+            }
+
+            if (line.StartsWith("description ", StringComparison.Ordinal))
+            {
+                currentDescription = ExtractDatQuotedValue(line);
+                continue;
+            }
+
+            if (!line.StartsWith("rom ", StringComparison.Ordinal) && !line.StartsWith("rom(", StringComparison.Ordinal))
+                continue;
+
+            int crcIndex = line.IndexOf(" crc ", StringComparison.OrdinalIgnoreCase);
+            if (crcIndex < 0)
+                crcIndex = line.IndexOf(" crc\t", StringComparison.OrdinalIgnoreCase);
+            if (crcIndex < 0)
+                continue;
+
+            int start = crcIndex + 5;
+            int end = start;
+            while (end < line.Length && Uri.IsHexDigit(line[end]))
+                end++;
+
+            if (end <= start)
+                continue;
+
+            string crcHex = line[start..end].ToUpperInvariant();
+            string title = currentDescription ?? currentName ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(title))
+                continue;
+
+            titleByCrc[crcHex] = title;
+        }
+
+        return new CoverDatEntry
+        {
+            DatName = datName,
+            TitleByCrc = titleByCrc
+        };
+    }
+
+    private static string? ExtractDatQuotedValue(string line)
+    {
+        int firstQuote = line.IndexOf('"');
+        if (firstQuote < 0)
+            return null;
+        int secondQuote = line.IndexOf('"', firstQuote + 1);
+        if (secondQuote <= firstQuote)
+            return null;
+        return line[(firstQuote + 1)..secondQuote];
     }
 
     private static string ResolveInitialDirectory(string? initialPath, string? romLibraryPath)
@@ -1964,6 +2278,31 @@ public sealed class RomPickerDialog : Window
         public long FileLength { get; set; }
         public long LastWriteUtcTicks { get; set; }
         public string CoverRelativePath { get; set; } = string.Empty;
+    }
+
+    private sealed class CoverDatEntry
+    {
+        public string DatName { get; set; } = string.Empty;
+        public Dictionary<string, string> TitleByCrc { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static uint[] BuildCrc32Table()
+    {
+        var table = new uint[256];
+        for (uint i = 0; i < table.Length; i++)
+        {
+            uint value = i;
+            for (int bit = 0; bit < 8; bit++)
+            {
+                value = (value & 1) != 0
+                    ? 0xEDB88320u ^ (value >> 1)
+                    : value >> 1;
+            }
+
+            table[i] = value;
+        }
+
+        return table;
     }
 }
 
