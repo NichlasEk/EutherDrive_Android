@@ -1,8 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using EutherDrive.Core.MdTracerCore;
+using EutherDrive.Core.Savestates;
 using static EutherDrive.Core.MdTracerCore.md_m68k;
 
 namespace EutherDrive.Core.MdTracerCore
@@ -688,6 +690,9 @@ namespace EutherDrive.Core.MdTracerCore
                 int size = _smsCartRamEffectiveSize;
                 if (size <= 0 || size > _smsCartRam.Length)
                     size = _smsCartRam.Length;
+                string? directory = Path.GetDirectoryName(_smsCartRamPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                    Directory.CreateDirectory(directory);
                 byte[] data = new byte[size];
                 Buffer.BlockCopy(_smsCartRam, 0, data, 0, size);
                 File.WriteAllBytes(_smsCartRamPath, data);
@@ -709,7 +714,12 @@ namespace EutherDrive.Core.MdTracerCore
                 return null;
             try
             {
-                return Path.ChangeExtension(romPath, ".srm");
+                string systemName = Path.GetExtension(romPath).Equals(".gg", StringComparison.OrdinalIgnoreCase)
+                    ? "gg"
+                    : "sms";
+                string saveDirectory = PersistentStoragePath.ResolveSaveDirectory(romPath, systemName);
+                string fileName = Path.ChangeExtension(Path.GetFileName(romPath), ".srm");
+                return Path.Combine(saveDirectory, fileName);
             }
             catch
             {
