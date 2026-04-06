@@ -14,13 +14,12 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
     private RomIdentity? _seedRomIdentity;
 
     public SmsGgHardware Hardware => _port?.Hardware ?? SmsGgHardware.MasterSystem;
-    private bool UseSeedRenderPath => Hardware == SmsGgHardware.GameGear && _port?.MapperType != SmsGgMapperType.Codemasters;
     public bool IsMasterSystemMode => Hardware != SmsGgHardware.GameGear;
     public bool IsGameGearMode => Hardware == SmsGgHardware.GameGear;
     public RomInfo RomInfo { get; private set; } = new();
     public string? RomSummary => RomInfo.Summary;
-    public RomIdentity? RomIdentity => UseSeedRenderPath ? _seedRomIdentity ?? ((ISavestateCapable)_fallback).RomIdentity : ((ISavestateCapable)_fallback).RomIdentity;
-    public long? FrameCounter => UseSeedRenderPath ? _seedCore.FrameCounter : ((ISavestateCapable)_fallback).FrameCounter;
+    public RomIdentity? RomIdentity => IsGameGearMode ? _seedRomIdentity ?? ((ISavestateCapable)_fallback).RomIdentity : ((ISavestateCapable)_fallback).RomIdentity;
+    public long? FrameCounter => IsGameGearMode ? _seedCore.FrameCounter : ((ISavestateCapable)_fallback).FrameCounter;
 
     public void LoadRom(string path)
     {
@@ -49,17 +48,17 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride) =>
-        UseSeedRenderPath
+        IsGameGearMode
             ? _seedCore.GetFrameBuffer(out width, out height, out stride)
             : _fallback.GetFrameBuffer(out width, out height, out stride);
 
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels) =>
-        UseSeedRenderPath
+        IsGameGearMode
             ? _seedCore.GetAudioBuffer(out sampleRate, out channels)
             : _fallback.GetAudioBuffer(out sampleRate, out channels);
 
     public ReadOnlySpan<short> GetAudioBufferForFrames(int frames, out int sampleRate, out int channels) =>
-        UseSeedRenderPath
+        IsGameGearMode
             ? _seedCore.GetAudioBufferForFrames(frames, out sampleRate, out channels)
             : _fallback.GetAudioBufferForFrames(frames, out sampleRate, out channels);
 
@@ -89,8 +88,8 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
         ArgumentNullException.ThrowIfNull(writer);
 
         writer.Write(SavestateMagic);
-        writer.Write(UseSeedRenderPath);
-        if (UseSeedRenderPath)
+        writer.Write(IsGameGearMode);
+        if (IsGameGearMode)
         {
             _seedCore.SaveState(writer);
             return;
@@ -109,8 +108,8 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
             int magic = reader.ReadInt32();
             if (magic == SavestateMagic)
             {
-                bool isSeedState = reader.ReadBoolean();
-                if (isSeedState)
+                bool isGameGearState = reader.ReadBoolean();
+                if (isGameGearState)
                 {
                     _seedCore.LoadState(reader);
                     if (_port != null)
@@ -129,7 +128,7 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
 
         // Seed GG video/input is currently the active render path for Game Gear.
         // Reinitialize it after fallback state loads so at least runtime input/video stay coherent.
-        if (UseSeedRenderPath && !string.IsNullOrWhiteSpace(_loadedPath))
+        if (IsGameGearMode && !string.IsNullOrWhiteSpace(_loadedPath))
         {
             _seedCore.LoadRom(_loadedPath);
             if (_port != null)
@@ -137,7 +136,7 @@ public sealed class SmsGgAdapter : IEmulatorCore, ISavestateCapable
         }
     }
 
-    public double GetTargetFps() => UseSeedRenderPath ? _seedCore.TargetFps : _fallback.GetTargetFps();
+    public double GetTargetFps() => IsGameGearMode ? _seedCore.TargetFps : _fallback.GetTargetFps();
 
     public void SetFrameRateMode(FrameRateMode mode) => _fallback.SetFrameRateMode(mode);
 
