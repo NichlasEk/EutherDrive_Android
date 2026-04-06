@@ -1333,6 +1333,7 @@ public partial class MainView : UserControl
         return core switch
         {
             MdTracerAdapter md => md.GetTargetFps(),
+            GbAdapter gb => gb.GetTargetFps(),
             GbaAdapter gba => gba.GetTargetFps(),
             SnesAdapter snes => snes.GetTargetFps(ConsoleRegion.Auto),
             PceCdAdapter pce => pce.GetTargetFps(),
@@ -3787,7 +3788,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.SegaCd.SegaCdAdapter => "Sega CD",
             PceCdAdapter => "PC Engine CD",
             N64Adapter => "Nintendo 64",
-            GbAdapter => "Game Boy",
+            GbAdapter => GetEffectiveRomExtension(romPath) == ".gbc" ? "Game Boy Color" : "Game Boy",
             GbaAdapter => "Game Boy Advance",
             SnesAdapter => "SNES",
             NesAdapter => "NES",
