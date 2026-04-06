@@ -856,6 +856,8 @@ public sealed class RomPickerDialog : Window
 
         string effectiveExtension = GetEffectiveCoverRomExtension(romPath, extension);
 
+        OpticalDiscKind discKind = GetCoverDiscKind(romPath, effectiveExtension);
+
         switch (effectiveExtension.ToLowerInvariant())
         {
             case ".gba":
@@ -882,9 +884,37 @@ public sealed class RomPickerDialog : Window
                 Add("Sega - Master System");
                 Add("Master System");
                 break;
+            case ".bin":
+                if (discKind == OpticalDiscKind.Psx)
+                {
+                    Add("Sony - PlayStation");
+                    Add("Sony PlayStation");
+                    Add("PlayStation");
+                    break;
+                }
+
+                if (discKind == OpticalDiscKind.SegaCd)
+                {
+                    Add("Sega - Mega-CD - Sega CD");
+                    Add("Sega CD");
+                    Add("Mega-CD");
+                    break;
+                }
+
+                if (discKind == OpticalDiscKind.PceCd)
+                {
+                    Add("NEC - PC Engine CD - TurboGrafx-CD");
+                    Add("PC Engine CD");
+                    Add("TurboGrafx-CD");
+                    break;
+                }
+
+                Add("Sega - Mega Drive - Genesis");
+                Add("Sega Genesis");
+                Add("Sega Mega Drive");
+                break;
             case ".md":
             case ".gen":
-            case ".bin":
             case ".smd":
                 Add("Sega - Mega Drive - Genesis");
                 Add("Sega Genesis");
@@ -902,9 +932,37 @@ public sealed class RomPickerDialog : Window
                 Add("SNES");
                 break;
             case ".pce":
+                Add("NEC - PC Engine - TurboGrafx 16");
+                Add("PC Engine");
+                break;
             case ".cue":
             case ".chd":
-                Add("NEC - PC Engine - TurboGrafx 16");
+            case ".iso":
+            case ".img":
+                if (discKind == OpticalDiscKind.Psx)
+                {
+                    Add("Sony - PlayStation");
+                    Add("Sony PlayStation");
+                    Add("PlayStation");
+                    break;
+                }
+
+                if (discKind == OpticalDiscKind.SegaCd)
+                {
+                    Add("Sega - Mega-CD - Sega CD");
+                    Add("Sega CD");
+                    Add("Mega-CD");
+                    break;
+                }
+
+                if (discKind == OpticalDiscKind.PceCd)
+                {
+                    Add("NEC - PC Engine CD - TurboGrafx-CD");
+                    Add("PC Engine CD");
+                    Add("TurboGrafx-CD");
+                    break;
+                }
+
                 Add("NEC - PC Engine CD - TurboGrafx-CD");
                 Add("PC Engine");
                 break;
@@ -923,8 +981,12 @@ public sealed class RomPickerDialog : Window
             Add("Nintendo - Game Boy Color");
         if (directoryHint.Contains("SMS", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Master System", StringComparison.OrdinalIgnoreCase))
             Add("Sega - Master System - Mark III");
+        if (directoryHint.Contains("SegaCD", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Sega CD", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Mega-CD", StringComparison.OrdinalIgnoreCase))
+            Add("Sega - Mega-CD - Sega CD");
         if (directoryHint.Contains("Mega Drive", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Genesis", StringComparison.OrdinalIgnoreCase) || directoryHint.EndsWith("/md", StringComparison.OrdinalIgnoreCase))
             Add("Sega - Mega Drive - Genesis");
+        if (directoryHint.Contains("PSX", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("PlayStation", StringComparison.OrdinalIgnoreCase))
+            Add("Sony - PlayStation");
         if (directoryHint.Contains("NES", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Nintendo Entertainment System", StringComparison.OrdinalIgnoreCase))
             Add("Nintendo - Nintendo Entertainment System");
         if (directoryHint.Contains("SNES", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Super Nintendo", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Super Famicom", StringComparison.OrdinalIgnoreCase))
@@ -933,6 +995,21 @@ public sealed class RomPickerDialog : Window
             Add("NEC - PC Engine - TurboGrafx 16");
 
         return candidates;
+    }
+
+    private static OpticalDiscKind GetCoverDiscKind(string romPath, string effectiveExtension)
+    {
+        if (effectiveExtension is not (".cue" or ".bin" or ".img" or ".iso" or ".chd"))
+            return OpticalDiscKind.Unknown;
+
+        try
+        {
+            return OpticalDiscDetector.Detect(romPath);
+        }
+        catch
+        {
+            return OpticalDiscKind.Unknown;
+        }
     }
 
     private static string GetEffectiveCoverRomExtension(string romPath, string extension)
@@ -1518,10 +1595,71 @@ public sealed class RomPickerDialog : Window
 
             foreach (string file in files)
             {
-                if (IsSupportedRomFile(file))
+                if (IsSupportedRomFile(file) && IsCoverSyncCandidate(file))
                     yield return file;
             }
         }
+    }
+
+    private static bool IsCoverSyncCandidate(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is not ".bin" and not ".img")
+            return true;
+
+        string stem = Path.GetFileNameWithoutExtension(path);
+        if (stem.Contains("(Track ", StringComparison.OrdinalIgnoreCase) ||
+            stem.Contains("Track ", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string? directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            return true;
+
+        try
+        {
+            foreach (string cuePath in Directory.EnumerateFiles(directory, "*.cue"))
+            {
+                if (CueReferencesFile(cuePath, path))
+                    return false;
+            }
+        }
+        catch
+        {
+        }
+
+        return true;
+    }
+
+    private static bool CueReferencesFile(string cuePath, string targetPath)
+    {
+        string targetName = Path.GetFileName(targetPath);
+
+        try
+        {
+            foreach (string rawLine in File.ReadLines(cuePath))
+            {
+                string line = rawLine.Trim();
+                if (!line.StartsWith("FILE ", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                int firstQuote = line.IndexOf('"');
+                int secondQuote = firstQuote >= 0 ? line.IndexOf('"', firstQuote + 1) : -1;
+                if (firstQuote >= 0 && secondQuote > firstQuote)
+                {
+                    string referenced = line[(firstQuote + 1)..secondQuote];
+                    if (string.Equals(Path.GetFileName(referenced), targetName, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
     }
 
     private static string? GetExpectedCoverLocalPath(string romPath, string coverCacheRoot)
@@ -1773,16 +1911,37 @@ public sealed class RomPickerDialog : Window
     private static IEnumerable<string> BuildCoverNameCandidates(string romPath, IReadOnlyList<string>? canonicalNames)
     {
         string romName = Path.GetFileNameWithoutExtension(romPath);
+        string? parentTitle = GetCueParentTitleCandidate(romPath);
         IEnumerable<string> canonicalVariants = (canonicalNames ?? Array.Empty<string>())
             .SelectMany(ExpandCoverNameVariants);
 
         IEnumerable<string> romVariants = ExpandCoverNameVariants(romName)
+            .Concat(ExpandCoverNameVariants(parentTitle))
             .Concat(ExpandCoverNameVariants(romName.Replace('_', ' ')));
 
         return canonicalVariants
             .Concat(romVariants)
             .Where(static value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string? GetCueParentTitleCandidate(string romPath)
+    {
+        if (!Path.GetExtension(romPath).Equals(".cue", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        try
+        {
+            string? parent = Path.GetDirectoryName(romPath);
+            if (string.IsNullOrWhiteSpace(parent))
+                return null;
+
+            return Path.GetFileName(parent);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static IEnumerable<string> ExpandCoverNameVariants(string? value)
