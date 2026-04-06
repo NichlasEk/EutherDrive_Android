@@ -2,40 +2,67 @@
 
 ![EutherDrive logo](Icons/logo.jpeg)
 
-EutherDrive is a Mega Drive / Genesis emulator written in C# with [Avalonia UI](https://avaloniaui.net/) as the frontend.
-It now also includes PC Engine (HuCard) and PC Engine CD support.
-The project is based on core code from [MDTracer](https://github.com/sasayaki-japan/MDTracer) (MIT license) and extends it with a modern, cross-platform UI and improved compatibility.
+EutherDrive is a multi-system emulator frontend and core collection written in C# with [Avalonia UI](https://avaloniaui.net/).
+It started as a Mega Drive / Genesis project based on [MDTracer](https://github.com/sasayaki-japan/MDTracer) and has since grown into a unified desktop + Android emulator shell with shared savestates, ROM management, BIOS handling, and cover art caching.
 
-The emulator also runs Sega Master System games. All titles tested so far work, including Korean mappers and Codemasters titles.
-Game Gear support is integrated and playable.
-Game Boy Advance support is also integrated and playable with BIOS support.
+## Current Status
+EutherDrive currently has active UI integration for:
 
-Basic SNES support is integrated via the SuperNintendoEmulator project (see references below).
-Basic NES support is integrated via XamariNES (see references below).
+- Mega Drive / Genesis
+- Sega CD
+- Master System
+- Game Gear
+- Game Boy Advance
+- NES
+- SNES
+- PC Engine / TurboGrafx-16 HuCard
+- PC Engine CD
+- N64
+- PSX
 
-The SNES implementation has been extended with special chips and a new audio engine, mostly ported from jgenesis.
-EutherDrive now runs many SNES titles.
+The most mature paths right now are the Mega Drive family, Master System / Game Gear, Game Boy Advance, PSX, and the desktop/Android frontend itself.
 
-PC Engine (HuCard) and PC Engine CD are supported. A CD BIOS is required.
-CD audio support is still work in progress.
+## Frontends
+- Desktop frontend: Avalonia UI on Linux / Windows / macOS
+- Android frontend: dedicated `EutherDrive.Android` head with ROM picker, settings, savestates, Android audio, and mobile render backend selection
+- Headless frontend: `EutherDrive.Headless` for regression testing, savestate boot, frame dumping, and debug probes
 
-A future plan is to integrate ProjectPSX into the UI to continue development toward playable PSX titles.
+## Core Features
+- Shared ROM picker with library navigation, drive picker, search, sorting, stars, launch counts, and play-time stats
+- Desktop ROM picker cover art with offline cache and Libretro thumbnail sync
+- Shared savestate system with 3 slots per ROM
+- SRAM / battery save handling
+- Keyboard and gamepad input
+- BIOS selection in UI where required
+- Audio/video backend abstraction for desktop and Android
+- Archive-aware ROM detection for `.zip` / `.7z` where supported
 
-## Features
-- Loads and runs Mega Drive ROMs directly from a file picker
-- Desktop ROM picker with offline cover cache + background cover sync
-- Basic SNES support (via separate core)
-- Sega Master System and Game Gear support
-- Game Boy Advance support
-- PC Engine (HuCard) and PC Engine CD support
-- Avalonia-based frontend (Windows, Linux, macOS, Android)
-- Keyboard and gamepad input handling
-- Audio output via Pipewire on Linux (Android fork planned)
-- Savestates (3 slots per ROM, one save file per ROM)
-- SRAM saving
-- Interlace support, including Sonic 2 interlaced mode
-- PAL/NTSC switch
-- Region handling
+## System Notes
+- Mega Drive / Genesis remains the original core path and still forms the base for several Sega-family integrations
+- Master System and Game Gear are integrated through the newer `SmsGgAdapter` path
+- Game Boy Advance is integrated with BIOS support and software-renderer optimizations
+- SNES support includes multiple enhancement-chip paths and newer audio work
+- PC Engine CD requires a BIOS and remains an active compatibility area
+- PSX is integrated and working well in current testing, including support for `.sbi` data used by protected discs
+- N64 is wired into the frontend, but still needs significantly more work before it should be treated as usable
+
+## Savestates
+Savestates are now a first-class feature in the project rather than a one-off debug path.
+
+- Desktop UI has an integrated savestate panel
+- Android has savestate support in its UI flow as well
+- The headless runner can boot from savestates and run scripted validation from them
+- The shared savestate service stores 3 slots per ROM identity
+
+Keyboard shortcuts in the desktop UI:
+
+- `F1`: Fullscreen
+- `F5`: Save Slot 1
+- `F6`: Save Slot 2
+- `F7`: Save Slot 3
+- `F8`: Load Slot 1
+- `F9`: Load Slot 2
+- `F10`: Load Slot 3
 
 ## ROM Picker Covers
 The desktop ROM picker can download and cache cover art in the background for the configured ROM library only.
@@ -53,6 +80,9 @@ Current source:
 
 This is intentionally an offline-friendly cache once downloaded. Libretro thumbnails remain the image source, while canonical names are improved locally with cached DAT metadata for better match rates on renamed files, archives, and mixed sets.
 
+## BIOS Support
+The UI currently exposes BIOS selection for the systems that need it most in normal use.
+
 ## PC Engine CD BIOS
 You can set the PC Engine CD BIOS in two ways:
 
@@ -67,6 +97,16 @@ You can set the PC Engine CD BIOS in two ways:
 - `syscard3.pce`, `syscard2.pce`, `syscard1.pce`, `systemcard.pce`, `bios.pce`
 
 Note: explicit Arcade Card emulation is not implemented yet.
+
+## GBA BIOS
+You can set the GBA BIOS from both desktop and Android UI.
+
+- Desktop: use the `GBA BIOS` section in the left-side settings
+- Android: use the `GBA BIOS` entry in the Android settings page
+
+Default fallback location:
+
+- `EutherDrive/bios/gba_bios.bin`
 
 ## DSP BIOS
 DSP1/DSP2/DSP3/DSP4 support expects the coprocessor ROM to be present in the repository BIOS folder.
@@ -127,15 +167,6 @@ If you want to override it, set:
 EUTHERDRIVE_ST011_ROM=/full/path/to/st011.bin
 ```
 
-## Keyboard Shortcuts (UI)
-- `F1`: Fullscreen
-- `F5`: Save Slot 1
-- `F6`: Save Slot 2
-- `F7`: Save Slot 3
-- `F8`: Load Slot 1
-- `F9`: Load Slot 2
-- `F10`: Load Slot 3
-
 ## Installation
 Build from source with .NET 8:
 
@@ -146,23 +177,23 @@ dotnet build
 dotnet run --project EutherDrive.UI
 ```
 
-## Android Fork Bootstrap
-There is now a separate Android head project at `EutherDrive.Android/`.
+## Android Build
+The Android version lives in `EutherDrive.Android/`.
 
-- It is intentionally not added to `EutherDrive.sln` yet, so the existing desktop solution still builds on machines without Android workloads.
-- Install the .NET Android workload first:
+- It is kept separate from the default desktop solution so normal desktop builds do not require Android workloads
+- The Android app now includes its own ROM picker flow, settings, GBA/PCE BIOS handling, savestates, and Android-specific audio/render paths
+
+Install the .NET Android workload first:
 
 ```bash
 dotnet workload install android
 ```
 
-- Then build the Android head directly:
+Then build the Android head directly:
 
 ```bash
 dotnet build EutherDrive.Android/EutherDrive.Android.csproj
 ```
-
-This Android head is currently a minimal shell. The next required work is to extract a reusable emulator view from the desktop window, add an Android-specific audio output path, and build a touch-first layout around it.
 
 ## References
 - https://github.com/sasayaki-japan/MDTracer-Genesis-megadrive-Emulator
@@ -173,8 +204,8 @@ This Android head is currently a minimal shell. The next required work is to ext
 - https://github.com/BluestormDNA/ProjectPSX
 
 ## TODO
-- Fix Z80-dependent audio behavior (currently broken)
-- Implement player 2 controls
-- Complete joypad support
-- Add touchscreen control overlay for Android
-- Potentially implement a more accurate HBLANK method based on `TODO.md`
+- Continue improving Game Gear seed-core parity and remaining hybrid areas
+- Keep improving PC Engine CD compatibility and audio behavior
+- Expand Android touch-first controls and overlay UX
+- Continue improving and documenting N64 support
+- Keep iterating on render/audio performance hot paths where needed
