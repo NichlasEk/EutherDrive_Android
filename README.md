@@ -12,6 +12,8 @@ EutherDrive currently has active UI integration for:
 - Sega CD
 - Master System
 - Game Gear
+- Game Boy
+- Game Boy Color
 - Game Boy Advance
 - NES
 - SNES
@@ -20,7 +22,7 @@ EutherDrive currently has active UI integration for:
 - N64
 - PSX
 
-The most mature paths right now are the Mega Drive family, Master System / Game Gear, Game Boy Advance, PSX, and the desktop/Android frontend itself.
+The most mature paths right now are the Mega Drive family, Master System / Game Gear, Game Boy / Game Boy Color, Game Boy Advance, PSX, and the desktop/Android frontend itself.
 
 ## Frontends
 - Desktop frontend: Avalonia UI on Linux / Windows / macOS
@@ -40,6 +42,7 @@ The most mature paths right now are the Mega Drive family, Master System / Game 
 ## System Notes
 - Mega Drive / Genesis remains the original core path and still forms the base for several Sega-family integrations
 - Master System and Game Gear are integrated through the newer `SmsGgAdapter` path
+- Game Boy / Game Boy Color are integrated through `GbAdapter`, with the adopted core based on `gameboy_sharp`
 - Game Boy Advance is integrated with BIOS support and software-renderer optimizations
 - SNES support includes multiple enhancement-chip paths and newer audio work
 - PC Engine CD requires a BIOS and remains an active compatibility area
@@ -181,7 +184,7 @@ dotnet run --project EutherDrive.UI
 The Android version lives in `EutherDrive.Android/`.
 
 - It is kept separate from the default desktop solution so normal desktop builds do not require Android workloads
-- The Android app now includes its own ROM picker flow, settings, GBA/PCE BIOS handling, savestates, and Android-specific audio/render paths
+- The Android app now includes its own ROM picker flow, settings, GB/GBC/GBA/PCE BIOS handling where applicable, savestates, and Android-specific audio/render paths
 
 Install the .NET Android workload first:
 
@@ -202,6 +205,8 @@ dotnet build EutherDrive.Android/EutherDrive.Android.csproj
 - https://github.com/enusbaum/XamariNES
 - https://github.com/jsgroth/jgenesis
 - https://github.com/BluestormDNA/ProjectPSX
+- https://github.com/Asphaltian/sgba
+- https://github.com/sokie/gameboy_sharp
 
 ## TODO
 - Continue improving Game Gear seed-core parity and remaining hybrid areas
