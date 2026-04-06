@@ -10,11 +10,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Styling;
 using Avalonia.Threading;
 
 namespace EutherDrive.UI;
@@ -57,6 +59,8 @@ public sealed class RomPickerDialog : Window
     private Task? _coverSyncTask;
     private CancellationTokenSource? _coverSyncCts;
     private string? _coverSyncLibraryPath;
+    private Task? _coverDeltaSyncTask;
+    private string? _coverDeltaSyncLibraryPath;
     private string _coverSyncStatus = "Cover sync: idle";
     private Dictionary<string, CoverIndexEntry> _coverIndexByPath = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, CoverIndexEntry> _coverIndexByHash = new(StringComparer.OrdinalIgnoreCase);
@@ -161,7 +165,20 @@ public sealed class RomPickerDialog : Window
         _listBox = new ListBox
         {
             ItemsSource = _entries,
-            ItemTemplate = new FuncDataTemplate<RomPickerEntry>((entry, _) => BuildEntryView(entry), true)
+            ItemTemplate = new FuncDataTemplate<RomPickerEntry>((entry, _) => BuildEntryView(entry), true),
+            Styles =
+            {
+                new Style(x => x.OfType<ListBoxItem>())
+                {
+                    Setters =
+                    {
+                        new Setter(Layoutable.MarginProperty, new Thickness(0)),
+                        new Setter(TemplatedControl.PaddingProperty, new Thickness(0)),
+                        new Setter(Layoutable.MinHeightProperty, 0d),
+                        new Setter(Visual.ClipToBoundsProperty, true)
+                    }
+                }
+            }
         };
         _listBox.SelectionChanged += OnSelectionChanged;
         _listBox.DoubleTapped += OnListDoubleTapped;
@@ -201,8 +218,8 @@ public sealed class RomPickerDialog : Window
 
         _coverPreviewImage = new Image
         {
-            Width = 88,
-            Height = 122,
+            Width = 104,
+            Height = 144,
             Stretch = Stretch.UniformToFill,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
@@ -324,14 +341,15 @@ public sealed class RomPickerDialog : Window
                     {
                         [Grid.ColumnProperty] = 1,
                         Spacing = 8,
-                        HorizontalAlignment = HorizontalAlignment.Right,
+                        HorizontalAlignment = HorizontalAlignment.Left,
                         VerticalAlignment = VerticalAlignment.Top,
+                        Margin = new Thickness(12, 0, 0, 0),
                         Children =
                         {
                             new Border
                             {
-                                Width = 88,
-                                Height = 122,
+                                Width = 104,
+                                Height = 144,
                                 CornerRadius = new CornerRadius(12),
                                 BorderThickness = new Thickness(1),
                                 BorderBrush = new SolidColorBrush(Color.Parse("#304355")),
@@ -367,7 +385,9 @@ public sealed class RomPickerDialog : Window
         UpdateRomLibraryUi();
         UpdateCoverCacheUi();
         ReloadCoverIndex();
+        SetIdleCoverSyncStatus();
         LoadDirectory(_currentDirectory);
+        StartCoverDeltaSyncIfNeeded();
     }
 
     private static Control BuildEntryView(RomPickerEntry entry)
@@ -444,7 +464,7 @@ public sealed class RomPickerDialog : Window
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
             Padding = new Thickness(10, 6),
-            Margin = new Thickness(0, 0, 0, 4),
+            Margin = new Thickness(0),
             Child = stack
         };
     }
@@ -526,11 +546,13 @@ public sealed class RomPickerDialog : Window
     private void SetCurrentDirectoryAsRomLibrary()
     {
         _romLibraryPath = NormalizeDirectoryPath(_currentDirectory);
+        _coverDeltaSyncLibraryPath = null;
         UpdateRomLibraryUi();
         UpdateCoverCacheUi();
         ReloadCoverIndex();
-        StartCoverSync(forceRestart: true);
+        SetIdleCoverSyncStatus();
         _statusText.Text = $"ROM library set to {_romLibraryPath}";
+        StartCoverDeltaSyncIfNeeded();
     }
 
     private void LoadDirectory(string path)
@@ -581,7 +603,6 @@ public sealed class RomPickerDialog : Window
             _listBox.SelectedItem = _entries.FirstOrDefault();
             if (_listBox.SelectedItem == null)
                 UpdateCoverPreview(null);
-            StartCoverSync(forceRestart: false);
         }
         catch (Exception ex)
         {
@@ -699,6 +720,26 @@ public sealed class RomPickerDialog : Window
                 : $"Covers: {coverCacheRoot} (empty)"
             : "Covers: set a ROM library first";
         _coverSyncStatusText.Text = _coverSyncStatus;
+    }
+
+    private void SetIdleCoverSyncStatus()
+    {
+        string? coverCacheRoot = GetCoverCacheRoot();
+        if (string.IsNullOrWhiteSpace(coverCacheRoot))
+        {
+            _coverSyncStatus = "Cover sync: set a ROM library first";
+            UpdateCoverCacheUi();
+            return;
+        }
+
+        int indexedCount;
+        lock (_coverIndexLock)
+            indexedCount = _coverIndexByPath.Count;
+
+        _coverSyncStatus = indexedCount > 0
+            ? $"Cover sync: cache ready ({indexedCount} indexed). Click Sync Covers to refresh."
+            : "Cover sync: cache empty. Click Sync Covers to download covers.";
+        UpdateCoverCacheUi();
     }
 
     private void UpdateCoverPreview(RomPickerEntry? entry)
@@ -1133,6 +1174,32 @@ public sealed class RomPickerDialog : Window
         _coverSyncTask = Task.Run(() => SyncMissingCoversAsync(romLibraryPath, coverCacheRoot, _coverSyncCts.Token));
     }
 
+    private void StartCoverDeltaSyncIfNeeded()
+    {
+        string? romLibraryPath = _romLibraryPath;
+        string? coverCacheRoot = GetCoverCacheRoot();
+        if (string.IsNullOrWhiteSpace(romLibraryPath) || !Directory.Exists(romLibraryPath) || string.IsNullOrWhiteSpace(coverCacheRoot))
+            return;
+
+        if (_coverSyncTask is { IsCompleted: false })
+            return;
+
+        if (_coverDeltaSyncTask is { IsCompleted: false } &&
+            string.Equals(_coverDeltaSyncLibraryPath, romLibraryPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (string.Equals(_coverDeltaSyncLibraryPath, romLibraryPath, StringComparison.OrdinalIgnoreCase) &&
+            _coverDeltaSyncTask?.IsCompleted == true)
+        {
+            return;
+        }
+
+        _coverDeltaSyncLibraryPath = romLibraryPath;
+        _coverDeltaSyncTask = Task.Run(() => DeltaSyncNewRomsAsync(romLibraryPath, coverCacheRoot));
+    }
+
     private async Task SyncMissingCoversAsync(string romLibraryPath, string coverCacheRoot, CancellationToken cancellationToken)
     {
         try
@@ -1231,6 +1298,86 @@ public sealed class RomPickerDialog : Window
         }
     }
 
+    private async Task DeltaSyncNewRomsAsync(string romLibraryPath, string coverCacheRoot)
+    {
+        try
+        {
+            List<string> pending = new();
+            foreach (string romPath in EnumerateRomFiles(romLibraryPath))
+            {
+                if (!NeedsCoverSync(romPath, coverCacheRoot))
+                    continue;
+                pending.Add(romPath);
+            }
+
+            if (pending.Count == 0)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    SetIdleCoverSyncStatus();
+                });
+                return;
+            }
+
+            int done = 0;
+            int downloaded = 0;
+            int cached = 0;
+            int notFound = 0;
+            int networkErrors = 0;
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                _coverSyncStatus = $"Cover sync: delta mode found {pending.Count} new or changed ROMs";
+                UpdateCoverCacheUi();
+            });
+
+            foreach (string romPath in pending)
+            {
+                CoverDownloadResult result = await EnsureCoverAsync(romPath, coverCacheRoot, CancellationToken.None);
+                done++;
+                switch (result)
+                {
+                    case CoverDownloadResult.Downloaded:
+                        downloaded++;
+                        break;
+                    case CoverDownloadResult.AlreadyCached:
+                        cached++;
+                        break;
+                    case CoverDownloadResult.NotFound:
+                        notFound++;
+                        break;
+                    case CoverDownloadResult.NetworkError:
+                        networkErrors++;
+                        break;
+                }
+
+                if ((done % 5) == 0 || done == pending.Count)
+                {
+                    int percent = (int)Math.Round((double)done * 100 / pending.Count);
+                    int downloadedSnapshot = downloaded;
+                    int cachedSnapshot = cached;
+                    int notFoundSnapshot = notFound;
+                    int networkSnapshot = networkErrors;
+                    int doneSnapshot = done;
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        _coverSyncStatus = networkSnapshot > 0 && downloadedSnapshot == 0 && cachedSnapshot == 0
+                            ? $"Cover sync: delta {percent}% - no contact with Libretro thumbnail server ({doneSnapshot}/{pending.Count})"
+                            : $"Cover sync: delta {percent}% - {downloadedSnapshot} downloaded, {cachedSnapshot} cached, {notFoundSnapshot} missing ({doneSnapshot}/{pending.Count})";
+                        UpdateCoverCacheUi();
+                    });
+                }
+            }
+
+            SaveCoverIndexIfDirty();
+            Dispatcher.UIThread.Post(SetIdleCoverSyncStatus);
+        }
+        catch
+        {
+            Dispatcher.UIThread.Post(SetIdleCoverSyncStatus);
+        }
+    }
+
     private void QueueCoverDownload(string romPath)
     {
         string? coverCacheRoot = GetCoverCacheRoot();
@@ -1262,6 +1409,19 @@ public sealed class RomPickerDialog : Window
             {
             }
         });
+    }
+
+    private bool NeedsCoverSync(string romPath, string coverCacheRoot)
+    {
+        string? indexedPath = TryResolveCoverPathFromIndex(romPath, coverCacheRoot);
+        if (!string.IsNullOrWhiteSpace(indexedPath) && File.Exists(indexedPath))
+            return false;
+
+        string? expectedPath = GetExpectedCoverLocalPath(romPath, coverCacheRoot);
+        if (!string.IsNullOrWhiteSpace(expectedPath) && File.Exists(expectedPath))
+            return false;
+
+        return true;
     }
 
     private static IEnumerable<string> EnumerateRomFiles(string root)
