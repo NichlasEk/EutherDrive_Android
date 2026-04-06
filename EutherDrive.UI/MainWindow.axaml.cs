@@ -391,11 +391,13 @@ public partial class MainWindow : Window
     private bool _psxVideoStandardUpdating;
     private bool _allowDangerousSportTitles;
     private List<string> _sportTitleKeywords = new(s_defaultSportTitleKeywords);
+    private readonly HashSet<string> _trustedSportTitleExceptions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TitleStatsEntry> _titleStats = new(StringComparer.OrdinalIgnoreCase);
     private string? _activeTitleStatsKey;
     private DateTime _activeTitleStatsStartedUtc;
     private const string SettingsFileName = RenderBackendConfig.SettingsFileName;
     private const string TitleStatsFileName = "eutherdrive_title_stats.toml";
+    private const string TrustedSportExceptionsFileName = "trusted_exceptions.toml";
     private const string LegacyJsonSettingsFileName = "eutherdrive_settings.json";
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
     private const string LegacyLastRomPathFileName = "eutherdrive_last_rom.txt";
@@ -2549,13 +2551,27 @@ public partial class MainWindow : Window
 
         if (!_allowDangerousSportTitles)
         {
-            await ShowSportTitleBlockedDialogAsync(matchedKeyword);
+            SportShieldDecision blockedDecision = await ShowSportTitleBlockedDialogAsync(matchedKeyword);
+            if (blockedDecision == SportShieldDecision.TrustAndLaunch)
+            {
+                TrustCurrentSportTitle();
+                StatusText.Text = "SportShield trusted this title permanently.";
+                return false;
+            }
+
             StatusText.Text = $"SportShield blocked launch ({matchedKeyword}).";
             return true;
         }
 
-        bool continueLaunch = await ShowSportTitleAllowedWarningDialogAsync(matchedKeyword);
-        if (!continueLaunch)
+        SportShieldDecision warningDecision = await ShowSportTitleAllowedWarningDialogAsync(matchedKeyword);
+        if (warningDecision == SportShieldDecision.TrustAndLaunch)
+        {
+            TrustCurrentSportTitle();
+            StatusText.Text = "SportShield trusted this title permanently.";
+            return false;
+        }
+
+        if (warningDecision != SportShieldDecision.Launch)
         {
             StatusText.Text = $"Sport title launch aborted ({matchedKeyword}).";
             return true;
@@ -2580,6 +2596,10 @@ public partial class MainWindow : Window
             candidate = romPath;
         }
 
+        string? normalizedTitle = NormalizeTrustedSportTitle(candidate);
+        if (!string.IsNullOrWhiteSpace(normalizedTitle) && _trustedSportTitleExceptions.Contains(normalizedTitle))
+            return null;
+
         foreach (string keyword in _sportTitleKeywords)
         {
             if (string.IsNullOrWhiteSpace(keyword))
@@ -2592,9 +2612,36 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private async Task ShowSportTitleBlockedDialogAsync(string keyword)
+    private static string? NormalizeTrustedSportTitle(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        string normalized = value.Trim();
+        foreach (char ch in Path.GetInvalidFileNameChars())
+            normalized = normalized.Replace(ch.ToString(), string.Empty, StringComparison.Ordinal);
+
+        normalized = normalized.Replace('_', ' ');
+        while (normalized.Contains("  ", StringComparison.Ordinal))
+            normalized = normalized.Replace("  ", " ", StringComparison.Ordinal);
+
+        return normalized.Trim().ToLowerInvariant();
+    }
+
+    private void TrustCurrentSportTitle()
+    {
+        string? title = NormalizeTrustedSportTitle(Path.GetFileNameWithoutExtension(_romPath ?? string.Empty));
+        if (string.IsNullOrWhiteSpace(title))
+            return;
+
+        _trustedSportTitleExceptions.Add(title);
+        SaveTrustedSportExceptions();
+    }
+
+    private async Task<SportShieldDecision> ShowSportTitleBlockedDialogAsync(string keyword)
     {
         Window? dialog = null;
+        SportShieldDecision decision = SportShieldDecision.Cancel;
         var root = new StackPanel { Spacing = 12, Margin = new Thickness(16) };
         root.Children.Add(new TextBlock
         {
@@ -2605,24 +2652,53 @@ public partial class MainWindow : Window
         });
         root.Children.Add(new TextBlock
         {
-            Text = $"You are trying to start a sport title. This can harm your mind and make you dumb.\n\nMatched keyword: {keyword}\n\nIf you want to continue, allow dangerous sport titles in the settings menu.",
+            Text = $"You are trying to start a sport title. This can harm your mind and make you dumb.\n\nMatched keyword: {keyword}\n\nYou can still trust this title permanently if SportShield got it wrong.",
             TextWrapping = TextWrapping.Wrap
         });
 
-        var dismissButton = new Button
+        var promiseCheck = new CheckBox
         {
-            Content = "Fine",
-            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
-            MinWidth = 90
+            Content = "I hereby promise that this is not a sport title or anything adjacent."
         };
-        dismissButton.Click += (_, _) => dialog?.Close();
-        root.Children.Add(dismissButton);
+        root.Children.Add(promiseCheck);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Spacing = 8
+        };
+
+        var dismissButton = new Button { Content = "Fine", MinWidth = 90 };
+        dismissButton.Click += (_, _) =>
+        {
+            decision = SportShieldDecision.Cancel;
+            dialog?.Close(false);
+        };
+
+        var trustButton = new Button
+        {
+            Content = "Trust This Title",
+            MinWidth = 140,
+            IsEnabled = false
+        };
+        trustButton.Classes.Add("action");
+        promiseCheck.IsCheckedChanged += (_, _) => trustButton.IsEnabled = promiseCheck.IsChecked == true;
+        trustButton.Click += (_, _) =>
+        {
+            decision = SportShieldDecision.TrustAndLaunch;
+            dialog?.Close(true);
+        };
+
+        buttons.Children.Add(dismissButton);
+        buttons.Children.Add(trustButton);
+        root.Children.Add(buttons);
 
         dialog = new Window
         {
             Title = "SportShield",
             Width = ScaleDialogSize(500, _uiScale),
-            Height = ScaleDialogSize(280, _uiScale),
+            Height = ScaleDialogSize(340, _uiScale),
             CanResize = false,
             Background = new SolidColorBrush(Color.Parse("#1A0F11")),
             Content = WrapDialogForUiScale(root, _uiScale),
@@ -2630,12 +2706,13 @@ public partial class MainWindow : Window
         };
 
         await dialog.ShowDialog(this);
+        return decision;
     }
 
-    private async Task<bool> ShowSportTitleAllowedWarningDialogAsync(string keyword)
+    private async Task<SportShieldDecision> ShowSportTitleAllowedWarningDialogAsync(string keyword)
     {
         Window? dialog = null;
-        bool continueLaunch = false;
+        SportShieldDecision decision = SportShieldDecision.Cancel;
         var root = new StackPanel { Spacing = 12, Margin = new Thickness(16) };
         root.Children.Add(new TextBlock
         {
@@ -2646,9 +2723,15 @@ public partial class MainWindow : Window
         });
         root.Children.Add(new TextBlock
         {
-            Text = $"Dangerous sport titles are enabled, but this launch is still not recommended.\n\nMatched keyword: {keyword}\n\nProceed only if you accept a measurable risk of sports exposure.",
+            Text = $"Dangerous sport titles are enabled, but this launch is still not recommended.\n\nMatched keyword: {keyword}\n\nProceed only if you accept a measurable risk of sports exposure, or trust this title permanently if SportShield got it wrong.",
             TextWrapping = TextWrapping.Wrap
         });
+
+        var promiseCheck = new CheckBox
+        {
+            Content = "I hereby promise that this is not a sport title or anything adjacent."
+        };
+        root.Children.Add(promiseCheck);
 
         var buttons = new StackPanel
         {
@@ -2658,7 +2741,11 @@ public partial class MainWindow : Window
         };
 
         var cancelButton = new Button { Content = "Back Off", MinWidth = 96 };
-        cancelButton.Click += (_, _) => dialog?.Close(false);
+        cancelButton.Click += (_, _) =>
+        {
+            decision = SportShieldDecision.Cancel;
+            dialog?.Close(false);
+        };
         var continueButton = new Button
         {
             Content = "Launch Anyway",
@@ -2667,18 +2754,32 @@ public partial class MainWindow : Window
         continueButton.Classes.Add("action");
         continueButton.Click += (_, _) =>
         {
-            continueLaunch = true;
+            decision = SportShieldDecision.Launch;
+            dialog?.Close(true);
+        };
+        var trustButton = new Button
+        {
+            Content = "Trust This Title",
+            MinWidth = 140,
+            IsEnabled = false
+        };
+        trustButton.Classes.Add("action");
+        promiseCheck.IsCheckedChanged += (_, _) => trustButton.IsEnabled = promiseCheck.IsChecked == true;
+        trustButton.Click += (_, _) =>
+        {
+            decision = SportShieldDecision.TrustAndLaunch;
             dialog?.Close(true);
         };
         buttons.Children.Add(cancelButton);
         buttons.Children.Add(continueButton);
+        buttons.Children.Add(trustButton);
         root.Children.Add(buttons);
 
         dialog = new Window
         {
             Title = "SportShield Override",
             Width = ScaleDialogSize(520, _uiScale),
-            Height = ScaleDialogSize(300, _uiScale),
+            Height = ScaleDialogSize(360, _uiScale),
             CanResize = false,
             Background = new SolidColorBrush(Color.Parse("#17130F")),
             Content = WrapDialogForUiScale(root, _uiScale),
@@ -2686,7 +2787,7 @@ public partial class MainWindow : Window
         };
 
         await dialog.ShowDialog(this);
-        return continueLaunch;
+        return decision;
     }
 
     private void TryUpdateNesRomInfoOnFailure(string? path)
@@ -4664,8 +4765,22 @@ public partial class MainWindow : Window
         public string? LastPlayedUtc { get; set; }
     }
 
+    private enum SportShieldDecision
+    {
+        Cancel,
+        Launch,
+        TrustAndLaunch
+    }
+
+    private sealed class TrustedExceptionsToml
+    {
+        public List<string>? TrustedTitles { get; set; }
+    }
+
     private void LoadSettings()
     {
+        LoadTrustedSportExceptions();
+
         string path = GetSettingsPath();
         if (File.Exists(path))
         {
@@ -4974,6 +5089,51 @@ public partial class MainWindow : Window
 
     private static string GetLegacyJsonSettingsPath()
         => Path.Combine(Directory.GetCurrentDirectory(), LegacyJsonSettingsFileName);
+
+    private static string GetTrustedSportExceptionsPath()
+        => Path.Combine(Directory.GetCurrentDirectory(), TrustedSportExceptionsFileName);
+
+    private void LoadTrustedSportExceptions()
+    {
+        _trustedSportTitleExceptions.Clear();
+        string path = GetTrustedSportExceptionsPath();
+        if (!File.Exists(path))
+            return;
+
+        try
+        {
+            TrustedExceptionsToml? raw = Toml.ToModel<TrustedExceptionsToml>(File.ReadAllText(path));
+            if (raw?.TrustedTitles == null)
+                return;
+
+            foreach (string title in raw.TrustedTitles)
+            {
+                string? normalized = NormalizeTrustedSportTitle(title);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    _trustedSportTitleExceptions.Add(normalized);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private void SaveTrustedSportExceptions()
+    {
+        try
+        {
+            var model = new TrustedExceptionsToml
+            {
+                TrustedTitles = _trustedSportTitleExceptions
+                    .OrderBy(static title => title, StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+            };
+            File.WriteAllText(GetTrustedSportExceptionsPath(), Toml.FromModel(model));
+        }
+        catch
+        {
+        }
+    }
 
     private static UiSettings? TryLoadTomlSettings(string path)
     {
