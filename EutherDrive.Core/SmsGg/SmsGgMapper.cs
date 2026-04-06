@@ -174,12 +174,13 @@ public static class SmsGgMapper
 
         public byte Read(ushort address, byte[] rom, byte[] ram)
         {
+            uint bankCount = (uint)Math.Max(1, (rom.Length + 0x3FFF) / 0x4000);
             return address switch
             {
-                <= 0x9FFF => Read16KbBanked(rom, address, _romBanks[address / 0x4000]),
+                <= 0x9FFF => Read16KbBanked(rom, address, _romBanks[address / 0x4000] % bankCount),
                 <= 0xBFFF => _ramEnabled
                     ? ReadWrapped(ram, (uint)(address & 0x1FFF))
-                    : Read16KbBanked(rom, address, _romBanks[2]),
+                    : Read16KbBanked(rom, address, _romBanks[2] % bankCount),
                 _ => throw new InvalidOperationException($"Invalid cartridge address {address:X4}")
             };
         }
