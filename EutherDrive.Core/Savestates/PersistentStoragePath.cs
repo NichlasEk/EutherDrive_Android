@@ -54,7 +54,8 @@ internal static class PersistentStoragePath
     {
         try
         {
-            Directory.CreateDirectory(directory);
+            if (!Directory.Exists(directory))
+                Directory.CreateDirectory(directory);
             string probePath = Path.Combine(directory, $".eutherdrive_write_probe_{Guid.NewGuid():N}.tmp");
             using (FileStream stream = File.Open(probePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
