@@ -18,6 +18,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using EutherDrive.Core;
 
 namespace EutherDrive.UI;
 
@@ -840,7 +841,9 @@ public sealed class RomPickerDialog : Window
                 candidates.Add(value);
         }
 
-        switch (extension.ToLowerInvariant())
+        string effectiveExtension = GetEffectiveCoverRomExtension(romPath, extension);
+
+        switch (effectiveExtension.ToLowerInvariant())
         {
             case ".gba":
             case ".agb":
@@ -897,12 +900,41 @@ public sealed class RomPickerDialog : Window
         string directoryHint = Path.GetDirectoryName(romPath) ?? string.Empty;
         if (directoryHint.Contains("GameGear", StringComparison.OrdinalIgnoreCase))
             Add("Sega - Game Gear");
+        if (directoryHint.Contains("gg", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("game gear", StringComparison.OrdinalIgnoreCase))
+            Add("Sega - Game Gear");
         if (directoryHint.Contains("GBA", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Game Boy Advance", StringComparison.OrdinalIgnoreCase))
             Add("Nintendo - Game Boy Advance");
+        if (directoryHint.Contains("GB ", StringComparison.OrdinalIgnoreCase) || directoryHint.EndsWith("/GB", StringComparison.OrdinalIgnoreCase))
+            Add("Nintendo - Game Boy");
+        if (directoryHint.Contains("GBC", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Game Boy Color", StringComparison.OrdinalIgnoreCase))
+            Add("Nintendo - Game Boy Color");
         if (directoryHint.Contains("SMS", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Master System", StringComparison.OrdinalIgnoreCase))
             Add("Sega - Master System - Mark III");
+        if (directoryHint.Contains("Mega Drive", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Genesis", StringComparison.OrdinalIgnoreCase) || directoryHint.EndsWith("/md", StringComparison.OrdinalIgnoreCase))
+            Add("Sega - Mega Drive - Genesis");
+        if (directoryHint.Contains("NES", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Nintendo Entertainment System", StringComparison.OrdinalIgnoreCase))
+            Add("Nintendo - Nintendo Entertainment System");
+        if (directoryHint.Contains("SNES", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Super Nintendo", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Super Famicom", StringComparison.OrdinalIgnoreCase))
+            Add("Nintendo - Super Nintendo Entertainment System");
+        if (directoryHint.Contains("PCE", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("PC Engine", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("TurboGrafx", StringComparison.OrdinalIgnoreCase))
+            Add("NEC - PC Engine - TurboGrafx 16");
 
         return candidates;
+    }
+
+    private static string GetEffectiveCoverRomExtension(string romPath, string extension)
+    {
+        if (extension.Equals(".zip", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".7z", StringComparison.OrdinalIgnoreCase))
+        {
+            if (RomArchiveExtractor.TryGetArchiveRomEntryExtension(romPath, out string archiveExtension) &&
+                !string.IsNullOrWhiteSpace(archiveExtension))
+            {
+                return archiveExtension;
+            }
+        }
+
+        return extension;
     }
 
     private static IEnumerable<string> GetThumbnailArtDirectoryCandidates(string root, string? systemDir)
