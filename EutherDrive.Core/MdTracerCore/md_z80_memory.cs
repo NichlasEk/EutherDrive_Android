@@ -3025,31 +3025,40 @@ namespace EutherDrive.Core.MdTracerCore
                     bank = (byte)((value & 0x7F) % bankCount);
                     if (addr <= 0x3FFF)
                     {
-                        _smsBank0 = bank;
-                        LogSmsMapperWriteIfNeeded(addr, value);
-                        LogSmsMapperWriteFile(addr, value, "Codemasters");
-                        return true;
-                    }
-                    if (addr <= 0x7FFF)
-                    {
-                        _smsBank1 = bank;
-                        LogSmsMapperWriteIfNeeded(addr, value);
-                        LogSmsMapperWriteFile(addr, value, "Codemasters");
-                        return true;
-                    }
-                    if (addr <= 0xBFFF)
-                    {
-                        if (_smsCodemastersRamEnabled && addr >= 0xA000)
+                        if (addr == 0x0000)
                         {
-                            g_ram[(ushort)(addr & 0x1FFF)] = value;
+                            _smsBank0 = bank;
                             LogSmsMapperWriteIfNeeded(addr, value);
                             LogSmsMapperWriteFile(addr, value, "Codemasters");
-                            return true;
                         }
-                        _smsBank2 = bank;
-                        _smsCodemastersRamEnabled = (value & 0x80) != 0;
-                        LogSmsMapperWriteIfNeeded(addr, value);
-                        LogSmsMapperWriteFile(addr, value, "Codemasters");
+                        return true;
+                    }
+                    else if (addr <= 0x7FFF)
+                    {
+                        if (addr == 0x4000)
+                        {
+                            _smsBank1 = bank;
+                            _smsCodemastersRamEnabled = (value & 0x80) != 0;
+                            LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Codemasters");
+                        }
+                        return true;
+                    }
+                    else if (addr <= 0xBFFF)
+                    {
+                        if (addr == 0x8000)
+                        {
+                            _smsBank2 = bank;
+                            LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Codemasters");
+                        }
+                        
+                        if (_smsCodemastersRamEnabled && addr >= 0xA000)
+                        {
+                            SmsCartRamWrite(addr & 0x1FFF, value);
+                            LogSmsMapperWriteIfNeeded(addr, value);
+                            LogSmsMapperWriteFile(addr, value, "Codemasters");
+                        }
                         return true;
                     }
                     return false;

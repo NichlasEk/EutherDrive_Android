@@ -237,6 +237,11 @@ public sealed class SmsGgVdp
 
     public ReadOnlySpan<byte> GetFrameBuffer() => _frameBuffer;
 
+    private bool _m1;
+    private bool _m2;
+    private bool _m3;
+    private bool _m4;
+
     private void WriteRegister(byte register, byte value)
     {
         switch (register)
@@ -247,14 +252,18 @@ public sealed class SmsGgVdp
                 _hideLeftColumn = (value & 0x20) != 0;
                 _lineInterruptEnabled = (value & 0x10) != 0;
                 _shiftSpritesLeft = (value & 0x08) != 0;
-                UpdateMode((value & 0x04) != 0, null, (value & 0x02) != 0, null);
+                _m4 = (value & 0x04) != 0;
+                _m2 = (value & 0x02) != 0;
+                UpdateMode();
                 break;
             case 1:
                 _displayEnabled = (value & 0x40) != 0;
                 _frameInterruptEnabled = (value & 0x20) != 0;
+                _m1 = (value & 0x10) != 0;
+                _m3 = (value & 0x08) != 0;
                 _doubleSpriteHeight = (value & 0x02) != 0;
                 _doubleSpriteSize = (value & 0x01) != 0;
-                UpdateMode(null, (value & 0x10) != 0, null, (value & 0x08) != 0);
+                UpdateMode();
                 break;
             case 2:
                 _baseNameTableAddress = (ushort)((value & 0x0F) << 10);
@@ -283,16 +292,11 @@ public sealed class SmsGgVdp
         }
     }
 
-    private void UpdateMode(bool? bit3, bool? bit0, bool? bit1, bool? bit2)
+    private void UpdateMode()
     {
-        bool m3 = bit3 ?? (_mode == SmsGgVdpMode.Mode4 || _mode == SmsGgVdpMode.Mode4_224);
-        bool m0 = bit0 ?? (_mode == SmsGgVdpMode.Mode4 || _mode == SmsGgVdpMode.Mode4_224);
-        bool m1 = bit1 ?? false;
-        bool m2 = bit2 ?? (_mode == SmsGgVdpMode.Mode4 || _mode == SmsGgVdpMode.Mode4_224);
-
-        _mode = (m3, m0, m1, m2) switch
+        _mode = (_m4, _m2, _m1, _m3) switch
         {
-            (true, true, false, true) => SmsGgVdpMode.Mode4_224,
+            (true, true, true, false) => SmsGgVdpMode.Mode4_224,
             _ => SmsGgVdpMode.Mode4
         };
 
@@ -542,70 +546,46 @@ public sealed class SmsGgVdp
     {
         int targetY = sourceScanline;
         uint backdropColor = BackdropColor();
-        ClearVisibleScanline(targetY, backdropColor, ScreenWidth);
 
-        int coarseXScroll;
-        int fineXScroll;
-        if (sourceScanline < 16 && _horizontalScrollLock)
-        {
-            coarseXScroll = 0;
-            fineXScroll = 0;
-        }
-        else
-        {
-            coarseXScroll = (_xScroll >> 3) & 0x1F;
-            fineXScroll = _xScroll & 0x07;
-        }
-
-        for (int dot = 0; dot < fineXScroll; dot++)
-            SetPixel(dot, targetY, backdropColor);
+        bool hScrollLocked = sourceScanline < 16 && _horizontalScrollLock;
+        int xScroll = hScrollLocked ? 0 : _xScroll;
+        int yScroll = _yScroll;
 
         int nameTableRows = _mode == SmsGgVdpMode.Mode4_224 ? 32 : 28;
-        for (int column = 0; column < 32; column++)
+
+        for (int dot = 0; dot < ScreenWidth; dot++)
         {
-            int coarseYScroll;
-            int fineYScroll;
-            if (column >= 24 && _verticalScrollLock)
+            if (_hideLeftColumn && dot < 8)
             {
-                coarseYScroll = 0;
-                fineYScroll = 0;
-            }
-            else
-            {
-                coarseYScroll = _yScroll >> 3;
-                fineYScroll = _yScroll & 0x07;
+                SetPixel(dot, targetY, backdropColor);
+                continue;
             }
 
-            int nameTableRow = (((sourceScanline + fineYScroll) / 8) + coarseYScroll) % nameTableRows;
-            int nameTableCol = (column + (32 - coarseXScroll)) % 32;
-            BgTileData bgTileData = ReadNameTableWord(nameTableRow, nameTableCol);
-            int bgTileRow = bgTileData.VerticalFlip
-                ? 7 - ((sourceScanline + fineYScroll) % 8)
-                : (sourceScanline + fineYScroll) % 8;
+            int screenColumn = dot >> 3;
+            int backgroundX = (dot - xScroll) & 0xFF;
+            int column = backgroundX >> 3;
+            int bgTileCol = backgroundX & 0x07;
+
+            int effectiveYScroll = (screenColumn >= 24 && _verticalScrollLock) ? 0 : yScroll;
+            int backgroundY = (sourceScanline + effectiveYScroll) % (nameTableRows * 8);
+            int row = backgroundY >> 3;
+            int bgTileRow = backgroundY & 0x07;
+
+            BgTileData bgTileData = ReadNameTableWord(row, column);
+            if (bgTileData.VerticalFlip)
+                bgTileRow = 7 - bgTileRow;
+            
+            int tileCol = bgTileData.HorizontalFlip ? bgTileCol : 7 - bgTileCol;
+            byte bgColorId = GetTileColor(bgTileData.TileIndex, bgTileRow, tileCol);
+            
+            byte spriteColorId = _spritePixels[dot];
             byte bgBaseCramAddress = bgTileData.Palette1 ? (byte)0x10 : (byte)0x00;
-
-            for (int bgTileCol = 0; bgTileCol < 8; bgTileCol++)
-            {
-                int dot = (8 * column) + fineXScroll + bgTileCol;
-                if (dot >= ScreenWidth)
-                    break;
-
-                if (_hideLeftColumn && dot < 8)
-                {
-                    SetPixel(dot, targetY, backdropColor);
-                    continue;
-                }
-
-                byte bgColorId = GetTileColor(
-                    bgTileData.TileIndex,
-                    bgTileRow,
-                    bgTileData.HorizontalFlip ? bgTileCol : 7 - bgTileCol);
-                byte spriteColorId = _spritePixels[dot];
-                uint color = spriteColorId != 0 && (bgColorId == 0 || !bgTileData.Priority)
-                    ? GetPaletteColorWord((byte)(0x10 | spriteColorId))
-                    : GetPaletteColorWord((byte)(bgBaseCramAddress | bgColorId));
-                SetPixel(dot, targetY, color);
-            }
+            
+            uint color = spriteColorId != 0 && (bgColorId == 0 || !bgTileData.Priority)
+                ? GetPaletteColorWord((byte)(0x10 | spriteColorId))
+                : GetPaletteColorWord((byte)(bgBaseCramAddress | bgColorId));
+            
+            SetPixel(dot, targetY, color);
         }
     }
 

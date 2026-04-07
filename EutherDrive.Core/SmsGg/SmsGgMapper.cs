@@ -3,8 +3,7 @@ namespace EutherDrive.Core.SmsGg;
 public enum SmsGgMapperType
 {
     Sega = 0,
-    Codemasters = 1,
-    CosmicSpacehead = 2
+    Codemasters = 1
 }
 
 public interface ISmsGgMapper
@@ -21,7 +20,6 @@ public interface ICodemastersRamSupport
 
 public static class SmsGgMapper
 {
-    private const uint CosmicSpaceheadCrc32 = 0x6CAA625Bu;
     private const int CodemastersChecksumAddress = 0x7FE6;
     private const int SegaHeaderStart = 0x7FF0;
     private const int SegaHeaderEnd = 0x7FFF;
@@ -38,9 +36,6 @@ public static class SmsGgMapper
         if (rom.Length <= CodemastersChecksumAddress + 1)
             return new SegaMapper();
 
-        if (crc32 == CosmicSpaceheadCrc32)
-            return new CodemastersMapper(cosmicSpacehead: true);
-
         bool headerFound = HasSegaHeader(rom);
         ushort expectedChecksum = (ushort)(rom[CodemastersChecksumAddress] | (rom[CodemastersChecksumAddress + 1] << 8));
         ushort checksum = 0;
@@ -55,10 +50,10 @@ public static class SmsGgMapper
         }
 
         if (checksum == expectedChecksum)
-            return new CodemastersMapper();
+            return new CodemastersMapper(rom.Length);
 
         if (!headerFound && LooksLikeCodemastersMapper(rom))
-            return new CodemastersMapper();
+            return new CodemastersMapper(rom.Length);
 
         return new SegaMapper();
     }
@@ -188,38 +183,33 @@ public static class SmsGgMapper
     {
         // Codemasters carts power on with slots 0/1/2 mapped as 0,1,0.
         private readonly uint[] _romBanks = { 0, 1, 0 };
+        private readonly uint _bankCount;
         private bool _ramEnabled;
         [NonSerialized]
         private bool _ramSupported;
         [NonSerialized]
         private int _traceRemaining = TraceCodemastersLimit;
-        [NonSerialized]
-        private readonly bool _cosmicSpacehead;
+        public SmsGgMapperType MapperType => SmsGgMapperType.Codemasters;
 
-        public CodemastersMapper(bool cosmicSpacehead = false)
+        public CodemastersMapper(int romLength)
         {
-            _cosmicSpacehead = cosmicSpacehead;
+            _bankCount = (uint)Math.Max(1, (romLength + 0x3FFF) / 0x4000);
         }
-
-        public SmsGgMapperType MapperType => _cosmicSpacehead ? SmsGgMapperType.CosmicSpacehead : SmsGgMapperType.Codemasters;
 
         public void SetRamSupported(bool supported)
         {
             _ramSupported = supported;
-            if (!supported)
-                _ramEnabled = false;
         }
 
         public byte Read(ushort address, byte[] rom, byte[] ram)
         {
-            uint bankCount = (uint)Math.Max(1, (rom.Length + 0x3FFF) / 0x4000);
             return address switch
                 {
-                <= 0x3FFF => Read16KbBanked(rom, address, _romBanks[0] % bankCount),
-                <= 0x7FFF => Read16KbBanked(rom, address, _romBanks[1] % bankCount),
+                <= 0x3FFF => Read16KbBanked(rom, address, _romBanks[0]),
+                <= 0x7FFF => Read16KbBanked(rom, address, _romBanks[1]),
                 <= 0xBFFF => _ramSupported && _ramEnabled && address >= 0xA000
                     ? ReadWrapped(ram, (uint)(address & 0x1FFF))
-                    : Read16KbBanked(rom, address, _romBanks[2] % bankCount),
+                    : Read16KbBanked(rom, address, _romBanks[2]),
                 _ => throw new InvalidOperationException($"Invalid cartridge address {address:X4}")
             };
         }
@@ -231,26 +221,31 @@ public static class SmsGgMapper
             uint oldBank2 = _romBanks[2];
             bool oldRamEnabled = _ramEnabled;
 
-            switch (address)
+            if (address <= 0x3FFF)
             {
-                case <= 0x3FFF:
-                    _romBanks[0] = (uint)(value & 0x7F);
-                    break;
-                case <= 0x7FFF:
-                    _romBanks[1] = (uint)(value & 0x7F);
+                if (address == 0x0000)
+                    _romBanks[0] = (uint)((value & 0x7F) % _bankCount);
+            }
+            else if (address <= 0x7FFF)
+            {
+                if (address == 0x4000)
+                {
+                    _romBanks[1] = (uint)((value & 0x7F) % _bankCount);
                     _ramEnabled = _ramSupported && (value & 0x80) != 0;
-                    break;
-                case <= 0xBFFF:
-                    if (_ramSupported && _ramEnabled && address >= 0xA000)
-                    {
-                        WriteWrapped(ram, (uint)(address & 0x1FFF), value);
-                        ramDirty = true;
-                    }
-                    else
-                    {
-                        _romBanks[2] = (uint)(value & 0x7F);
-                    }
-                    break;
+                }
+            }
+            else if (address <= 0xBFFF)
+            {
+                if (address == 0x8000)
+                {
+                    _romBanks[2] = (uint)((value & 0x7F) % _bankCount);
+                }
+                
+                if (_ramSupported && _ramEnabled && address >= 0xA000)
+                {
+                    WriteWrapped(ram, (uint)(address & 0x1FFF), value);
+                    ramDirty = true;
+                }
             }
 
             if (TraceCodemasters && _traceRemaining > 0 &&
@@ -258,7 +253,7 @@ public static class SmsGgMapper
             {
                 _traceRemaining--;
                 Console.WriteLine(
-                    $"{(_cosmicSpacehead ? "[GG-COSMIC]" : "[GG-CODEM]")} addr=0x{address:X4} val=0x{value:X2} " +
+                    $"[GG-CODEM] addr=0x{address:X4} val=0x{value:X2} " +
                     $"b0:{oldBank0:X2}->{_romBanks[0]:X2} b1:{oldBank1:X2}->{_romBanks[1]:X2} b2:{oldBank2:X2}->{_romBanks[2]:X2} " +
                     $"ram:{(oldRamEnabled ? 1 : 0)}->{(_ramEnabled ? 1 : 0)} supported:{(_ramSupported ? 1 : 0)}");
             }

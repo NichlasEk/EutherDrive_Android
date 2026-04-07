@@ -1849,7 +1849,7 @@ NextPc:;
             _smsBankSelect = 0;
             _smsBank0 = 0;
             _smsBank1 = 1;
-            _smsBank2 = 2;
+            _smsBank2 = (byte)(md_main.g_masterSystemMapper == SmsMapperType.Codemasters ? 0 : 2);
             _smsCodemastersRamEnabled = false;
             _smsSegaRamEnabled = false;
             _smsSegaRamBank = 0;
