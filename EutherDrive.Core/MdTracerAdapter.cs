@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using EutherDrive.Core.Savestates;
 using EutherDrive.Core.MdTracerCore;
+using EutherDrive.Core.Sega32X;
 
 namespace EutherDrive.Core;
 
@@ -75,6 +76,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private int _captainAmericaMailboxWaitGroup;
     private int _captainAmericaMailboxStableFrames;
     private uint _captainAmericaMailboxLastSemState;
+    private Sega32XScaffoldCore? _sega32XCore;
+    private bool _isSega32XRom;
 
     // Framebuffer analyzer for live debugging
     public FramebufferAnalyzer FbAnalyzer { get; } = null!;
@@ -1059,6 +1062,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => md_main.g_md_vdp?.FrameCounter;
+    public uint? Debug32XMasterProgramCounter => _sega32XCore?.MasterSh2.Registers.ProgramCounter;
+    public uint? Debug32XSlaveProgramCounter => _sega32XCore?.SlaveSh2.Registers.ProgramCounter;
 
     public readonly struct MainInterruptDebugState
     {
@@ -1378,6 +1383,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     md_main.g_md_cartridge.g_file_size = 0;
                 }
                 _bus = null;
+                _sega32XCore = null;
+                _isSega32XRom = false;
                 md_bus.Current = null;
                 EutherDrive.Core.MdTracerCore.md_bus.Current = null;
                 if (md_main.g_md_bus != null)
@@ -1417,7 +1424,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     $"[MdTracerAdapter] ROM source for bus: {(useNormalizedForBus ? "normalized" : "raw")} " +
                     $"(raw={rawData.Length} bytes, cart={md_main.g_md_cartridge.g_file.Length} bytes, " +
                     $"header={md_main.g_md_cartridge.g_smd_header_size}, deint={(md_main.g_md_cartridge.g_smd_deinterleaved ? 1 : 0)})");
+                _isSega32XRom = Sega32XRomDetector.IsSega32XRom(_rom, path);
                 _bus = new MegaDriveBus(_rom);
+                if (_isSega32XRom)
+                {
+                    var shared32XRegisters = new Sega32XSystemRegisters();
+                    _sega32XCore = new Sega32XScaffoldCore(_rom, shared32XRegisters);
+                    _bus.Attach32XBus(_sega32XCore.Bus);
+                    Console.WriteLine("[MdTracerAdapter] 32X host bridge enabled.");
+                }
+                else
+                {
+                    _sega32XCore = null;
+                }
                 md_bus.Current = _bus;
                 EutherDrive.Core.MdTracerCore.md_bus.Current = _bus;
                 if (md_main.g_md_bus != null)
@@ -1479,7 +1498,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 $"VEC SP=0x{sp:X8} PC=0x{pc:X8} OP@PC=0x{op:X4} | CPU API ok";
             }
 
-            Console.WriteLine($"[ROMMODE] type={(isSms ? "SMS" : "MD")} masterSystemMode={(md_main.g_masterSystemMode ? 1 : 0)}");
+            Console.WriteLine($"[ROMMODE] type={(isSms ? "SMS" : (_isSega32XRom ? "32X" : "MD"))} masterSystemMode={(md_main.g_masterSystemMode ? 1 : 0)}");
             ArmBootRecover();
             Reset();
             LogFrameBufferIdentity("LoadRom");
@@ -2088,6 +2107,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         // Nollställ RAM
         _bus?.Reset();
+        _sega32XCore?.Reset();
         md_main.g_md_bus?.Reset();
         md_main.ResetZ80WaitState();
         _vdp.reset();
@@ -2784,6 +2804,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 md_main.ResetAladdinDebug();
             }
         }
+
+            if (!md_main.g_masterSystemMode && _sega32XCore != null)
+            {
+                _sega32XCore.RunFrame();
+            }
 
             if (TracePerf && _cpuReady && _cpu != null)
             {

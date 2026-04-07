@@ -622,6 +622,8 @@ public partial class MainWindow : Window
 
         if (!string.IsNullOrWhiteSpace(path) && IsPceRom(path))
             return new PceCdAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && IsSega32XRom(path))
+            return new MdTracerAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsMasterSystemRomPath(path))
             return new SmsGgAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsGbRom(path))
@@ -671,6 +673,12 @@ public partial class MainWindow : Window
         return ext is ".gba" or ".agb";
     }
 
+    private static bool IsSega32XRom(string path)
+    {
+        string ext = GetEffectiveRomExtension(path);
+        return ext is ".32x";
+    }
+
     private static bool IsGbRom(string path)
     {
         string ext = GetEffectiveRomExtension(path);
@@ -700,6 +708,8 @@ public partial class MainWindow : Window
         if (ext is ".sms" or ".sg" or ".gg")
             return false;
         if (ext is ".nes")
+            return false;
+        if (ext is ".32x")
             return false;
         if (ext is ".md" or ".gen" or ".smd" or ".bin")
             return false;

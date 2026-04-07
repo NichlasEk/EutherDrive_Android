@@ -33,7 +33,7 @@ public sealed class RomPickerDialog : Window
 
     private static readonly HashSet<string> s_supportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".bin", ".md", ".gen", ".smd", ".sms", ".sg", ".gg", ".nes", ".smc", ".sfc", ".gb", ".gbc",
+        ".32x", ".bin", ".md", ".gen", ".smd", ".sms", ".sg", ".gg", ".nes", ".smc", ".sfc", ".gb", ".gbc",
         ".pce", ".gba", ".agb", ".cue", ".zip", ".7z", ".iso", ".img", ".chd", ".pbp", ".exe"
     };
 
@@ -860,6 +860,14 @@ public sealed class RomPickerDialog : Window
 
         switch (effectiveExtension.ToLowerInvariant())
         {
+            case ".32x":
+                Add("Sega - 32X");
+                Add("Sega 32X");
+                Add("32X");
+                Add("Sega - Mega Drive - Genesis");
+                Add("Sega Genesis");
+                Add("Sega Mega Drive");
+                break;
             case ".gba":
             case ".agb":
                 Add("Nintendo - Game Boy Advance");
@@ -1818,24 +1826,25 @@ public sealed class RomPickerDialog : Window
     private static int GetArchiveExtensionPriority(string extension)
         => extension.ToLowerInvariant() switch
         {
-            ".md" => 0,
-            ".bin" => 1,
-            ".gen" => 2,
-            ".smd" => 3,
-            ".sms" => 4,
-            ".sg" => 5,
-            ".gg" => 6,
-            ".iso" => 7,
-            ".nes" => 8,
-            ".smc" => 9,
-            ".sfc" => 10,
-            ".gb" => 11,
-            ".gbc" => 12,
-            ".gba" => 13,
-            ".agb" => 14,
-            ".pce" => 15,
-            ".cue" => 16,
-            ".chd" => 17,
+            ".32x" => 0,
+            ".md" => 1,
+            ".bin" => 2,
+            ".gen" => 3,
+            ".smd" => 4,
+            ".sms" => 5,
+            ".sg" => 6,
+            ".gg" => 7,
+            ".iso" => 8,
+            ".nes" => 9,
+            ".smc" => 10,
+            ".sfc" => 11,
+            ".gb" => 12,
+            ".gbc" => 13,
+            ".gba" => 14,
+            ".agb" => 15,
+            ".pce" => 16,
+            ".cue" => 17,
+            ".chd" => 18,
             _ => int.MaxValue
         };
 
