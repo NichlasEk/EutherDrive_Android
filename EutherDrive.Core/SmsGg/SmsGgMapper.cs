@@ -3,7 +3,8 @@ namespace EutherDrive.Core.SmsGg;
 public enum SmsGgMapperType
 {
     Sega = 0,
-    Codemasters = 1
+    Codemasters = 1,
+    CosmicSpacehead = 2
 }
 
 public interface ISmsGgMapper
@@ -13,19 +14,32 @@ public interface ISmsGgMapper
     void Write(ushort address, byte value, byte[] ram, ref bool ramDirty);
 }
 
+public interface ICodemastersRamSupport
+{
+    void SetRamSupported(bool supported);
+}
+
 public static class SmsGgMapper
 {
+    private const uint CosmicSpaceheadCrc32 = 0x6CAA625Bu;
     private const int CodemastersChecksumAddress = 0x7FE6;
     private const int SegaHeaderStart = 0x7FF0;
     private const int SegaHeaderEnd = 0x7FFF;
+    private static readonly bool TraceCodemasters =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_GG_CODEMASTERS"), "1", StringComparison.Ordinal);
+    private static readonly int TraceCodemastersLimit =
+        ParseTraceLimit(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_GG_CODEMASTERS_LIMIT"), 256);
 
-    public static ISmsGgMapper DetectFromRom(byte[] rom)
+    public static ISmsGgMapper DetectFromRom(byte[] rom, uint crc32)
     {
         if (rom.Length < 32 * 1024)
             return new SegaMapper();
 
         if (rom.Length <= CodemastersChecksumAddress + 1)
             return new SegaMapper();
+
+        if (crc32 == CosmicSpaceheadCrc32)
+            return new CodemastersMapper(cosmicSpacehead: true);
 
         bool headerFound = HasSegaHeader(rom);
         ushort expectedChecksum = (ushort)(rom[CodemastersChecksumAddress] | (rom[CodemastersChecksumAddress + 1] << 8));
@@ -122,6 +136,11 @@ public static class SmsGgMapper
         WriteWrapped(bytes, romAddress, value);
     }
 
+    private static int ParseTraceLimit(string? rawValue, int defaultValue)
+    {
+        return int.TryParse(rawValue, out int parsed) && parsed > 0 ? parsed : defaultValue;
+    }
+
     public sealed class SegaMapper : ISmsGgMapper
     {
         private readonly uint[] _romBanks = { 0, 1, 2 };
@@ -165,20 +184,40 @@ public static class SmsGgMapper
         }
     }
 
-    public sealed class CodemastersMapper : ISmsGgMapper
+    public sealed class CodemastersMapper : ISmsGgMapper, ICodemastersRamSupport
     {
-        private readonly uint[] _romBanks = { 0, 1, 2 };
+        // Codemasters carts power on with slots 0/1/2 mapped as 0,1,0.
+        private readonly uint[] _romBanks = { 0, 1, 0 };
         private bool _ramEnabled;
+        [NonSerialized]
+        private bool _ramSupported;
+        [NonSerialized]
+        private int _traceRemaining = TraceCodemastersLimit;
+        [NonSerialized]
+        private readonly bool _cosmicSpacehead;
 
-        public SmsGgMapperType MapperType => SmsGgMapperType.Codemasters;
+        public CodemastersMapper(bool cosmicSpacehead = false)
+        {
+            _cosmicSpacehead = cosmicSpacehead;
+        }
+
+        public SmsGgMapperType MapperType => _cosmicSpacehead ? SmsGgMapperType.CosmicSpacehead : SmsGgMapperType.Codemasters;
+
+        public void SetRamSupported(bool supported)
+        {
+            _ramSupported = supported;
+            if (!supported)
+                _ramEnabled = false;
+        }
 
         public byte Read(ushort address, byte[] rom, byte[] ram)
         {
             uint bankCount = (uint)Math.Max(1, (rom.Length + 0x3FFF) / 0x4000);
             return address switch
-            {
-                <= 0x9FFF => Read16KbBanked(rom, address, _romBanks[address / 0x4000] % bankCount),
-                <= 0xBFFF => _ramEnabled
+                {
+                <= 0x3FFF => Read16KbBanked(rom, address, _romBanks[0] % bankCount),
+                <= 0x7FFF => Read16KbBanked(rom, address, _romBanks[1] % bankCount),
+                <= 0xBFFF => _ramSupported && _ramEnabled && address >= 0xA000
                     ? ReadWrapped(ram, (uint)(address & 0x1FFF))
                     : Read16KbBanked(rom, address, _romBanks[2] % bankCount),
                 _ => throw new InvalidOperationException($"Invalid cartridge address {address:X4}")
@@ -187,6 +226,11 @@ public static class SmsGgMapper
 
         public void Write(ushort address, byte value, byte[] ram, ref bool ramDirty)
         {
+            uint oldBank0 = _romBanks[0];
+            uint oldBank1 = _romBanks[1];
+            uint oldBank2 = _romBanks[2];
+            bool oldRamEnabled = _ramEnabled;
+
             switch (address)
             {
                 case <= 0x3FFF:
@@ -194,10 +238,10 @@ public static class SmsGgMapper
                     break;
                 case <= 0x7FFF:
                     _romBanks[1] = (uint)(value & 0x7F);
-                    _ramEnabled = (value & 0x80) != 0;
+                    _ramEnabled = _ramSupported && (value & 0x80) != 0;
                     break;
                 case <= 0xBFFF:
-                    if (_ramEnabled && address >= 0xA000)
+                    if (_ramSupported && _ramEnabled && address >= 0xA000)
                     {
                         WriteWrapped(ram, (uint)(address & 0x1FFF), value);
                         ramDirty = true;
@@ -207,6 +251,16 @@ public static class SmsGgMapper
                         _romBanks[2] = (uint)(value & 0x7F);
                     }
                     break;
+            }
+
+            if (TraceCodemasters && _traceRemaining > 0 &&
+                (oldBank0 != _romBanks[0] || oldBank1 != _romBanks[1] || oldBank2 != _romBanks[2] || oldRamEnabled != _ramEnabled))
+            {
+                _traceRemaining--;
+                Console.WriteLine(
+                    $"{(_cosmicSpacehead ? "[GG-COSMIC]" : "[GG-CODEM]")} addr=0x{address:X4} val=0x{value:X2} " +
+                    $"b0:{oldBank0:X2}->{_romBanks[0]:X2} b1:{oldBank1:X2}->{_romBanks[1]:X2} b2:{oldBank2:X2}->{_romBanks[2]:X2} " +
+                    $"ram:{(oldRamEnabled ? 1 : 0)}->{(_ramEnabled ? 1 : 0)} supported:{(_ramSupported ? 1 : 0)}");
             }
         }
     }

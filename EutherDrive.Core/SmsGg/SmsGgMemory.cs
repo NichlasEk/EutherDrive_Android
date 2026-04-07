@@ -170,9 +170,10 @@ public sealed class SmsGgMemory
         public Cartridge(byte[] rom, byte[]? initialRam)
         {
             Rom = (byte[])rom.Clone();
-            Mapper = SmsGgMapper.DetectFromRom(Rom);
             Crc32 = ComputeCrc32(Rom);
+            Mapper = SmsGgMapper.DetectFromRom(Rom, Crc32);
             HasBattery = SmsGgCartridgeMetadata.HasBatteryBackup(Crc32);
+            ApplyMapperMetadata();
             Ram = initialRam is { Length: CartridgeRamSize } ? (byte[])initialRam.Clone() : new byte[CartridgeRamSize];
         }
 
@@ -211,10 +212,17 @@ public sealed class SmsGgMemory
         {
             Rom = rom;
             Ram = ram;
-            Mapper = SmsGgMapper.DetectFromRom(rom);
             Crc32 = ComputeCrc32(rom);
+            Mapper = SmsGgMapper.DetectFromRom(rom, Crc32);
             HasBattery = SmsGgCartridgeMetadata.HasBatteryBackup(Crc32) || RamDirty;
+            ApplyMapperMetadata();
             RamDirty = false;
+        }
+
+        private void ApplyMapperMetadata()
+        {
+            if (Mapper is ICodemastersRamSupport codemasters)
+                codemasters.SetRamSupported(HasBattery);
         }
 
         private static byte[] MirrorToNextPowerOfTwo(byte[] data)
