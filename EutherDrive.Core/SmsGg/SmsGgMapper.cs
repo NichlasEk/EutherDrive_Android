@@ -194,6 +194,7 @@ public static class SmsGgMapper
                     break;
                 case <= 0x7FFF:
                     _romBanks[1] = (uint)(value & 0x7F);
+                    _ramEnabled = (value & 0x80) != 0;
                     break;
                 case <= 0xBFFF:
                     if (_ramEnabled && address >= 0xA000)
@@ -204,7 +205,6 @@ public static class SmsGgMapper
                     else
                     {
                         _romBanks[2] = (uint)(value & 0x7F);
-                        _ramEnabled = (value & 0x80) != 0;
                     }
                     break;
             }

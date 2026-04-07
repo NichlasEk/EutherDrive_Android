@@ -3,6 +3,9 @@ namespace EutherDrive.Core.SmsGg;
 public sealed class SmsGgVdp
 {
     private static readonly bool TraceGgCram = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_GG_CRAM") == "1";
+    private static readonly bool TraceGgSprites = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_GG_SPRITES") == "1";
+    private static readonly int TraceGgSpritesLineMin = ParseTraceInt("EUTHERDRIVE_TRACE_GG_SPRITES_LINE_MIN", 0);
+    private static readonly int TraceGgSpritesLineMax = ParseTraceInt("EUTHERDRIVE_TRACE_GG_SPRITES_LINE_MAX", 255);
     public const int ScreenWidth = 256;
     public const int ScreenHeight = 240;
 
@@ -60,6 +63,7 @@ public sealed class SmsGgVdp
     private byte _eventIndex;
     private int _cramTraceCount;
     private bool _lineSpriteOverflow;
+    private int _spriteTraceCount;
 
     public SmsGgVdp(SmsGgVdpVersion version, SmsGgEmulatorConfig config)
     {
@@ -373,6 +377,19 @@ public sealed class SmsGgVdp
             int tileAddress = ((baseSpritePatternAddress & 0x2000) | (tileIndex * 32)) & 0x3FFF;
             int spriteXDelta = shiftSpritesLeft ? -8 : 0;
 
+            bool interestingSprite = x != 0 || y != 0 || rawTileIndex != 0;
+            if (TraceGgSprites &&
+                _version == SmsGgVdpVersion.GameGear &&
+                interestingSprite &&
+                scanline >= TraceGgSpritesLineMin &&
+                scanline <= TraceGgSpritesLineMax &&
+                _spriteTraceCount < 256)
+            {
+                Console.WriteLine(
+                    $"[GG-SPR] line={scanline} idx={i} sat=0x{satBase:X4} x=0x{x:X2} y=0x{y:X2} tile=0x{rawTileIndex:X2} row={spriteTileRow} size={spriteWidth}x{spriteHeight} shift={(shiftSpritesLeft ? 1 : 0)}");
+                _spriteTraceCount++;
+            }
+
             for (int dx = 0; dx < spriteWidth; dx++)
             {
                 int pixelX = x + dx + spriteXDelta;
@@ -524,26 +541,8 @@ public sealed class SmsGgVdp
     private void RenderScanline(ushort sourceScanline)
     {
         int targetY = sourceScanline;
-        int visibleLeft = 0;
-        int visibleWidth = ScreenWidth;
-
-        if (_version == SmsGgVdpVersion.GameGear && !_ggUseSmsResolution)
-        {
-            const int ggTop = 24;
-            const int ggLeft = 48;
-            const int ggHeight = 144;
-            const int ggWidth = 160;
-
-            if (sourceScanline < ggTop || sourceScanline >= ggTop + ggHeight)
-                return;
-
-            targetY = sourceScanline - ggTop;
-            visibleLeft = ggLeft;
-            visibleWidth = ggWidth;
-        }
-
         uint backdropColor = BackdropColor();
-        ClearVisibleScanline(targetY, backdropColor, visibleWidth);
+        ClearVisibleScanline(targetY, backdropColor, ScreenWidth);
 
         int coarseXScroll;
         int fineXScroll;
@@ -559,10 +558,7 @@ public sealed class SmsGgVdp
         }
 
         for (int dot = 0; dot < fineXScroll; dot++)
-        {
-            if (dot >= visibleLeft && dot < visibleLeft + visibleWidth)
-                SetPixel(dot - visibleLeft, targetY, backdropColor);
-        }
+            SetPixel(dot, targetY, backdropColor);
 
         int nameTableRows = _mode == SmsGgVdpMode.Mode4_224 ? 32 : 28;
         for (int column = 0; column < 32; column++)
@@ -594,12 +590,9 @@ public sealed class SmsGgVdp
                 if (dot >= ScreenWidth)
                     break;
 
-                if (dot < visibleLeft || dot >= visibleLeft + visibleWidth)
-                    continue;
-
                 if (_hideLeftColumn && dot < 8)
                 {
-                    SetPixel(dot - visibleLeft, targetY, backdropColor);
+                    SetPixel(dot, targetY, backdropColor);
                     continue;
                 }
 
@@ -611,7 +604,7 @@ public sealed class SmsGgVdp
                 uint color = spriteColorId != 0 && (bgColorId == 0 || !bgTileData.Priority)
                     ? GetPaletteColorWord((byte)(0x10 | spriteColorId))
                     : GetPaletteColorWord((byte)(bgBaseCramAddress | bgColorId));
-                SetPixel(dot - visibleLeft, targetY, color);
+                SetPixel(dot, targetY, color);
             }
         }
     }
@@ -619,22 +612,7 @@ public sealed class SmsGgVdp
     private void ClearScanline(ushort sourceScanline)
     {
         int targetY = sourceScanline;
-        int visibleWidth = ScreenWidth;
-
-        if (_version == SmsGgVdpVersion.GameGear && !_ggUseSmsResolution)
-        {
-            const int ggTop = 24;
-            const int ggHeight = 144;
-            const int ggWidth = 160;
-
-            if (sourceScanline < ggTop || sourceScanline >= ggTop + ggHeight)
-                return;
-
-            targetY = sourceScanline - ggTop;
-            visibleWidth = ggWidth;
-        }
-
-        ClearVisibleScanline(targetY, BackdropColor(), visibleWidth);
+        ClearVisibleScanline(targetY, BackdropColor(), ScreenWidth);
     }
 
     private void ClearVisibleScanline(int targetY, uint color, int width)
@@ -702,6 +680,15 @@ public sealed class SmsGgVdp
         }
 
         return viewport;
+    }
+
+    private static int ParseTraceInt(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+
+        return int.TryParse(raw.Trim(), out int value) ? value : fallback;
     }
 
     private enum SmsGgVdpMode

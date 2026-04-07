@@ -361,10 +361,19 @@ public sealed class SmsGgSeedCore
             return;
 
         const int sourceStride = SmsFrameWidth * SmsBytesPerPixel;
-        const int rowBytes = GgFrameWidth * SmsBytesPerPixel;
-        for (int y = 0; y < GgFrameHeight; y++)
+        SmsGgViewportSize viewport = _vdp.Viewport;
+        int cropLeft = viewport.Left;
+        int cropTop = viewport.Top;
+        int cropWidth = viewport.WidthWithoutBorder;
+        int cropHeight = viewport.HeightWithoutBorder;
+        int rowBytes = cropWidth * SmsBytesPerPixel;
+
+        Array.Clear(_presentGgFrameBuffer);
+
+        for (int y = 0; y < cropHeight && y < GgFrameHeight; y++)
         {
-            _presentFrameBuffer.AsSpan(y * sourceStride, rowBytes)
+            int sourceOffset = ((cropTop + y) * sourceStride) + (cropLeft * SmsBytesPerPixel);
+            _presentFrameBuffer.AsSpan(sourceOffset, rowBytes)
                 .CopyTo(_presentGgFrameBuffer.AsSpan(y * rowBytes, rowBytes));
         }
     }
