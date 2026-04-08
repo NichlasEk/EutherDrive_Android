@@ -488,6 +488,40 @@ internal sealed class Sega32XSh2Cpu
                 }
                 break;
             case 0x4000:
+                if ((opcode & 0xF00F) == 0x400F) // MAC.W @Rm+, @Rn+
+                {
+                    short valM = (short)bus.ReadWord(Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data);
+                    Registers.GeneralPurposeRegisters[m] += 2;
+                    short valN = (short)bus.ReadWord(Registers.GeneralPurposeRegisters[n], Sega32XSh2AccessContext.Data);
+                    Registers.GeneralPurposeRegisters[n] += 2;
+                    
+                    int product = valM * valN;
+                    if (Registers.StatusRegister.S)
+                    {
+                        long currentMacL = (int)Registers.MacLow;
+                        long result = currentMacL + product;
+                        if (result > int.MaxValue)
+                        {
+                            Registers.MacLow = int.MaxValue;
+                            Registers.MacHigh |= 1;
+                        }
+                        else if (result < int.MinValue)
+                        {
+                            Registers.MacLow = unchecked((uint)int.MinValue);
+                            Registers.MacHigh |= 1;
+                        }
+                        else
+                        {
+                            Registers.MacLow = (uint)result;
+                        }
+                    }
+                    else
+                    {
+                        SetMac(GetMac() + product);
+                    }
+                    return true;
+                }
+
                 switch (opcode & 0xF0FF)
                 {
                     case 0x4015: // CMP/PL Rn
@@ -672,6 +706,20 @@ internal sealed class Sega32XSh2Cpu
                             Registers.GeneralPurposeRegisters[n] += 4;
                             return true;
                         }
+                    case 0x4006: // LDS.L @Rn+, MACH
+                        {
+                            uint addr = Registers.GeneralPurposeRegisters[n];
+                            Registers.MacHigh = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data);
+                            Registers.GeneralPurposeRegisters[n] += 4;
+                            return true;
+                        }
+                    case 0x4016: // LDS.L @Rn+, MACL
+                        {
+                            uint addr = Registers.GeneralPurposeRegisters[n];
+                            Registers.MacLow = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data);
+                            Registers.GeneralPurposeRegisters[n] += 4;
+                            return true;
+                        }
                     case 0x402A: // LDS Rn, PR
                         Registers.ProcedureRegister = Registers.GeneralPurposeRegisters[n];
                         return true;
@@ -835,6 +883,47 @@ internal sealed class Sega32XSh2Cpu
                     case 0x9: Registers.GeneralPurposeRegisters[0] &= (uint)(opcode & 0xFF); return true;
                     case 0xA: Registers.GeneralPurposeRegisters[0] ^= (uint)(opcode & 0xFF); return true;
                     case 0xB: Registers.GeneralPurposeRegisters[0] |= (uint)(opcode & 0xFF); return true;
+                    case 0xC: // TST.B #imm, @(R0, GBR)
+                        {
+                            uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0];
+                            byte val = bus.ReadByte(address, Sega32XSh2AccessContext.Data);
+                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+                            sr.T = (val & (uint)(opcode & 0xFF)) == 0;
+                            Registers.StatusRegister = sr;
+                            bus.IncrementCycleCounter(3);
+                            CycleCounter += 3;
+                            return true;
+                        }
+                    case 0xD: // AND.B #imm, @(R0, GBR)
+                        {
+                            uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0];
+                            byte val = bus.ReadByte(address, Sega32XSh2AccessContext.Data);
+                            val &= (byte)(opcode & 0xFF);
+                            bus.WriteByte(address, val, Sega32XSh2AccessContext.Data);
+                            bus.IncrementCycleCounter(3);
+                            CycleCounter += 3;
+                            return true;
+                        }
+                    case 0xE: // XOR.B #imm, @(R0, GBR)
+                        {
+                            uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0];
+                            byte val = bus.ReadByte(address, Sega32XSh2AccessContext.Data);
+                            val ^= (byte)(opcode & 0xFF);
+                            bus.WriteByte(address, val, Sega32XSh2AccessContext.Data);
+                            bus.IncrementCycleCounter(3);
+                            CycleCounter += 3;
+                            return true;
+                        }
+                    case 0xF: // OR.B #imm, @(R0, GBR)
+                        {
+                            uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0];
+                            byte val = bus.ReadByte(address, Sega32XSh2AccessContext.Data);
+                            val |= (byte)(opcode & 0xFF);
+                            bus.WriteByte(address, val, Sega32XSh2AccessContext.Data);
+                            bus.IncrementCycleCounter(3);
+                            CycleCounter += 3;
+                            return true;
+                        }
                     case 0x7: Registers.GeneralPurposeRegisters[0] = (Registers.NextProgramCounter & ~3u) + (uint)((opcode & 0xFF) << 2); return true;
                     case 0x3:
                         {
