@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
+using EutherDrive.Core.Sega32X;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -51,6 +52,41 @@ namespace EutherDrive.Core.MdTracerCore
                 }
             }
             catch { }
+        }
+
+        private static readonly bool Trace32XM68kRegs =
+            string.Equals(
+                Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_M68K_REGS"),
+                "1",
+                StringComparison.Ordinal);
+
+        private static bool ShouldForwardToCurrent32X(uint address)
+        {
+            MegaDriveBus? current = Current;
+            return current != null && current.Is32XMappedAddress(address & 0x00FF_FFFF);
+        }
+
+        private static bool Is32XSystemRegisterAddress(uint address)
+        {
+            address &= 0x00FF_FFFF;
+            return address >= 0xA15100 && address <= 0xA1512F;
+        }
+
+        private static void Log32XM68kRegisterAccess(string op, uint address, uint value, int sizeBytes)
+        {
+            if (!Trace32XM68kRegs || !Is32XSystemRegisterAddress(address))
+                return;
+
+            string format = sizeBytes switch
+            {
+                1 => "X2",
+                2 => "X4",
+                _ => "X8",
+            };
+
+            Console.WriteLine(
+                $"[S32X-M68K-REG] {op}{sizeBytes * 8} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{address & 0x00FF_FFFF:X6} val=0x{value.ToString(format)} " +
+                $"D0=0x{md_m68k.g_reg_data[0].l:X8} D1=0x{md_m68k.g_reg_data[1].l:X8} A0=0x{md_m68k.g_reg_addr[0].l:X8}");
         }
         // ------------------------------------------------------------
         // READ
@@ -1634,6 +1670,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (OverrideBus != null && OverrideBus.TryRead8(in_address, out byte overrideValue))
                 return overrideValue;
+
+            if (ShouldForwardToCurrent32X(in_address))
+            {
+                byte value = Current!.Read8(in_address);
+                Log32XM68kRegisterAccess("R", in_address, value, 1);
+                return value;
+            }
             
             // Debug logging for Madou palette reads (DMA)
             if (TraceBusReadDebug && ((in_address >= 0xFF95F0 && in_address <= 0xFF96F0) || (in_address >= 0xFF94F0 && in_address <= 0xFF95F0)))
@@ -1844,6 +1887,13 @@ namespace EutherDrive.Core.MdTracerCore
             if (OverrideBus != null && OverrideBus.TryRead16(in_address, out ushort overrideValue))
                 return overrideValue;
 
+            if (ShouldForwardToCurrent32X(in_address))
+            {
+                ushort value = Current!.Read16(in_address);
+                Log32XM68kRegisterAccess("R", in_address, value, 2);
+                return value;
+            }
+
             if (IsZ80BusReq(in_address))
             {
                 ushort val = BuildBusAckRead16();
@@ -1999,6 +2049,13 @@ namespace EutherDrive.Core.MdTracerCore
             if (OverrideBus != null && OverrideBus.TryRead32(in_address, out uint overrideValue))
                 return overrideValue;
 
+            if (ShouldForwardToCurrent32X(in_address))
+            {
+                uint value = Current!.Read32(in_address);
+                Log32XM68kRegisterAccess("R", in_address, value, 4);
+                return value;
+            }
+
             if (IsZ80BusReq(in_address))
             {
                 ushort word = BuildBusAckRead16();
@@ -2144,6 +2201,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (OverrideBus != null && OverrideBus.TryWrite8(in_address, in_data))
                 return;
+
+            if (ShouldForwardToCurrent32X(in_address))
+            {
+                Log32XM68kRegisterAccess("W", in_address, in_data, 1);
+                Current!.Write8(in_address, in_data);
+                return;
+            }
             LogBusWatch(in_address, 1, write: true, value: in_data);
             
             // Debug logging for Madou palette writes and VDP register writes
@@ -2391,6 +2455,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (OverrideBus != null && OverrideBus.TryWrite16(in_address, in_data))
                 return;
+
+            if (ShouldForwardToCurrent32X(in_address))
+            {
+                Log32XM68kRegisterAccess("W", in_address, in_data, 2);
+                Current!.Write16(in_address, in_data);
+                return;
+            }
             LogBusWatch(in_address, 2, write: true, value: in_data);
             
             // Debug logging for Madou palette writes
@@ -2736,6 +2807,13 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (OverrideBus != null && OverrideBus.TryWrite32(in_address, in_data))
                 return;
+
+            if (ShouldForwardToCurrent32X(in_address))
+            {
+                Log32XM68kRegisterAccess("W", in_address, in_data, 4);
+                Current!.Write32(in_address, in_data);
+                return;
+            }
             LogBusWatch(in_address, 4, write: true, value: in_data);
 
             if (IsZ80BusReq(in_address))

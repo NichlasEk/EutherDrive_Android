@@ -19,6 +19,8 @@ namespace ePceCD
     {
         private static readonly bool TraceVdcRegs =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_LOG"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceVdcWrites =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_WRITE_TRACE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSpriteFetch =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_SPR_FETCH_TRACE"), "1", StringComparison.Ordinal);
         private static readonly bool SpriteDrawForward =
@@ -91,8 +93,12 @@ namespace ePceCD
         }
         private static readonly ConditionalWeakTable<PPU, TransientState> TransientStates = new();
         private static readonly int TraceVdcRegsLimit = 200;
+        private static readonly int TraceVdcWriteLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_VDC_WRITE_TRACE_LIMIT"), out int vdwLim) && vdwLim > 0 ? vdwLim : 4000;
         [NonSerialized]
         private int _traceVdcRegsCount;
+        [NonSerialized]
+        private int _traceVdcWriteCount;
         [NonSerialized]
         private int _traceSpriteFetchCount;
         [NonSerialized]
@@ -162,7 +168,9 @@ namespace ePceCD
             int visibleLine = m_DisplayCounter - GetFirstActiveDisplayLine();
             bool inDisplay = visibleLine >= 0 && visibleLine < GetVisibleDisplayLineCount(m_LatchedVDW);
             _traceVramWriteCount++;
-            WriteSpriteTrace($"[PCE-VRAMW] frame={m_FrameCounter} render={m_RenderLine} dispctr={m_DisplayCounter} vis={visibleLine} in_display={(inDisplay ? 1 : 0)} mawr=0x{address:X4} value=0x{value:X4} reg=0x{m_VDC_Reg:X2}");
+            string mode = m_VDC_DMA_Enable ? "dma" : "cpu";
+            string src = m_VDC_DMA_Enable ? $"0x{Transient.VramTransferSrc:X4}" : $"0x{Transient.VdcVwr:X4}";
+            WriteSpriteTrace($"[PCE-VRAMW] frame={m_FrameCounter} render={m_RenderLine} dispctr={m_DisplayCounter} vis={visibleLine} in_display={(inDisplay ? 1 : 0)} mode={mode} src={src} mawr=0x{address:X4} value=0x{value:X4} reg=0x{m_VDC_Reg:X2}");
         }
 
         private void TraceVceWriteIfNeeded(int address, int index, ushort value, byte data)
@@ -323,6 +331,8 @@ namespace ePceCD
         private int m_VDC_Reg;
         private int m_VDC_MAWR;
         private int m_VDC_MARR;
+        [NonSerialized]
+        private ushort m_VDC_ReadBuffer;
         private int m_VDC_RCR;
         private int m_VDC_BXR;
         private int m_VDC_BYR;
@@ -380,6 +390,20 @@ namespace ePceCD
             if (_traceVdcRegsCount++ >= TraceVdcRegsLimit)
                 return;
             Console.WriteLine($"[PCE-VDC] {tag} reg=0x{m_VDC_Reg:X2} HDS={m_VDC_HDS} HDE={m_VDC_HDE} HDW={m_VDC_HDW} VSR=0x{m_VDC_VSR:X4} VDW={m_VDC_VDW} line={m_RenderLine}");
+        }
+
+        private void TraceVdcWriteIfNeeded(string phase, int reg, byte data)
+        {
+            if (!TraceVdcWrites)
+                return;
+            if (_traceVdcWriteCount++ >= TraceVdcWriteLimit)
+                return;
+
+            Console.WriteLine(
+                $"[PCE-VDCW] frame={m_FrameCounter} render={m_RenderLine} dispctr={m_DisplayCounter} phase={phase} reg=0x{reg:X2} data=0x{data:X2} " +
+                $"CR={(m_VDC_EnableBackground ? 1 : 0)}:{(m_VDC_EnableSprites ? 1 : 0)} mawr=0x{m_VDC_MAWR:X4} marr=0x{m_VDC_MARR:X4} " +
+                $"rcr=0x{m_VDC_RCR:X4} bxr=0x{m_VDC_BXR:X4} byr=0x{m_VDC_BYR:X4} " +
+                $"mwr=0x{m_VDC_MWR:X4} vsr=0x{m_VDC_VSR:X4} vdw=0x{m_VDC_VDW:X4} vcr=0x{m_VDC_VCR:X2}");
         }
 
         private int GetEffectiveVds(int vdw)
@@ -506,6 +530,7 @@ namespace ePceCD
 
             m_VCE_DotClock = DotClock.MHZ_5;
             m_VDC_Increment = 1;
+            m_VDC_ReadBuffer = 0xFFFF;
 
             m_VDC_BSY = false;
             m_LatchedVDS = 14;
@@ -550,6 +575,7 @@ namespace ePceCD
 
             m_VCE_DotClock = DotClock.MHZ_5;
             m_VDC_Increment = 1;
+            m_VDC_ReadBuffer = 0xFFFF;
 
             m_VDC_BSY = false;
             m_LatchedVDS = 14;
@@ -582,6 +608,7 @@ namespace ePceCD
             m_WaitingIRQ = false;
             m_BgCounterY = 0;
             m_BgOffsetY = 0;
+            m_VDC_ReadBuffer = 0xFFFF;
             m_LatchedBxr = 0;
             m_FrameCounter = 0;
             m_DisplayCounter = 0;
@@ -1388,8 +1415,14 @@ namespace ePceCD
         {
             switch (reg)
             {
-                case 0x00: m_VDC_MAWR = (m_VDC_MAWR & 0xFF00) | data; break;
-                case 0x01: m_VDC_MARR = (m_VDC_MARR & 0xFF00) | data; break;
+                case 0x00:
+                    m_VDC_MAWR = (m_VDC_MAWR & 0xFF00) | data;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
+                    break;
+                case 0x01:
+                    m_VDC_MARR = (m_VDC_MARR & 0xFF00) | data;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
+                    break;
                 case 0x02:
                     Transient.VdcVwr = (ushort)((Transient.VdcVwr & 0xFF00) | data);
                     break;
@@ -1400,17 +1433,23 @@ namespace ePceCD
                     m_VDC_RCRIRQ = (data & 0x04) != 0;
                     m_VDC_SprOvIRQ = (data & 0x02) != 0;
                     m_VDC_Spr0Col = (data & 0x01) != 0;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
                     if (TraceVdcRegs)
                         Console.WriteLine($"[PCE-VDC] LSB-CR data=0x{data:X2} BG={(m_VDC_EnableBackground ? 1 : 0)} SPR={(m_VDC_EnableSprites ? 1 : 0)} VBKIRQ={(m_VDC_VBKIRQ ? 1 : 0)}");
                     break;
-                case 0x06: m_VDC_RCR = (m_VDC_RCR & 0x0300) | data; break;
+                case 0x06:
+                    m_VDC_RCR = (m_VDC_RCR & 0x0300) | data;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
+                    break;
                 case 0x07:
                     m_VDC_BXR = (m_VDC_BXR & 0x0300) | data;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
                     break;
                 case 0x08:
                     m_VDC_BYR_Offset = (m_RenderLine + 1 >= m_VDC_VDW || !m_VDC_EnableBackground) ? 0 : (m_RenderLine - 1);
                     m_VDC_BYR = (m_VDC_BYR & 0x0100) | data;
                     m_BgCounterY = m_VDC_BYR & 0x1FF;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
                     break;
                 case 0x09:
                     m_VDC_MWR = (m_VDC_MWR & 0xFF00) | data;
@@ -1430,6 +1469,7 @@ namespace ePceCD
                     //SpriteAccessMode = (data >> 2) & 0x03;
                     m_VDC_BAT_Height = ((data & 0x40) == 0) ? 32 : 64;
                     //m_VDC_CgMode = (data & 0x80) != 0;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
                     break;
                 case 0x0A:
                     //m_VDC_HSW = data & 0x1F;
@@ -1441,10 +1481,17 @@ namespace ePceCD
                     break;
                 case 0x0C:
                     m_VDC_VSR = (m_VDC_VSR & 0xFF00) | data;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
                     LogVdcRegs("LSB-VSR");
                     break;
-                case 0x0D: m_VDC_VDW = (m_VDC_VDW & 0x100) | data; break;
-                case 0x0E: m_VDC_VCR = data; break;
+                case 0x0D:
+                    m_VDC_VDW = (m_VDC_VDW & 0x100) | data;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
+                    break;
+                case 0x0E:
+                    m_VDC_VCR = data;
+                    TraceVdcWriteIfNeeded("LSB", reg, data);
+                    break;
                 case 0x0F:
                     m_VDC_SATBDMA_IRQ = (data & 0x01) != 0;
                     m_VDC_VRAMDMA_IRQ = (data & 0x02) != 0;
@@ -1465,8 +1512,16 @@ namespace ePceCD
         {
             switch (reg)
             {
-                case 0x00: m_VDC_MAWR = (m_VDC_MAWR & 0xFF) | (data << 8); break;
-                case 0x01: m_VDC_MARR = (m_VDC_MARR & 0xFF) | (data << 8); break;
+                case 0x00:
+                    m_VDC_MAWR = (m_VDC_MAWR & 0xFF) | (data << 8);
+                    TraceVdcWriteIfNeeded("MSB", reg, data);
+                    break;
+                case 0x01:
+                    m_VDC_MARR = (m_VDC_MARR & 0xFF) | (data << 8);
+                    m_VDC_ReadBuffer = m_VRAM[m_VDC_MARR & 0x7FFF];
+                    m_VDC_MARR = (m_VDC_MARR + m_VDC_Increment) & 0x7FFF;
+                    TraceVdcWriteIfNeeded("MSB", reg, data);
+                    break;
                 case 0x02:
                     ushort vdcVwr = (ushort)((Transient.VdcVwr & 0x00FF) | (data << 8));
                     Transient.VdcVwr = vdcVwr;
@@ -1490,15 +1545,21 @@ namespace ePceCD
                             m_VDC_Increment = 128;
                             break;
                     }
+                    TraceVdcWriteIfNeeded("MSB", reg, data);
                     break;
-                case 0x06: m_VDC_RCR = (m_VDC_RCR & 0xFF) | ((data << 8) & 0x0300); break;
+                case 0x06:
+                    m_VDC_RCR = (m_VDC_RCR & 0xFF) | ((data << 8) & 0x0300);
+                    TraceVdcWriteIfNeeded("MSB", reg, data);
+                    break;
                 case 0x07:
                     m_VDC_BXR = (m_VDC_BXR & 0xFF) | ((data << 8) & 0x0300);
+                    TraceVdcWriteIfNeeded("MSB", reg, data);
                     break;
                 case 0x08:
                     m_VDC_BYR_Offset = (m_RenderLine + 1 >= m_VDC_VDW || !m_VDC_EnableBackground) ? 0 : (m_RenderLine - 1);
                     m_VDC_BYR = (m_VDC_BYR & 0xFF) | ((data << 8) & 0x0100);
                     m_BgCounterY = m_VDC_BYR & 0x1FF;
+                    TraceVdcWriteIfNeeded("MSB", reg, data);
                     break;
                 case 0x0A:
                     m_VDC_HDS = data & 0x7F;
@@ -1510,10 +1571,16 @@ namespace ePceCD
                     break;
                 case 0x0C:
                     m_VDC_VSR = ((data << 8) & 0xFF00) | (m_VDC_VSR & 0x00FF);
+                    TraceVdcWriteIfNeeded("MSB", reg, data);
                     LogVdcRegs("MSB-VSR");
                     break;
-                case 0x0D: m_VDC_VDW = ((data << 8) & 0x100) | (m_VDC_VDW & 0xFF); break;
-                case 0x0E: break;
+                case 0x0D:
+                    m_VDC_VDW = ((data << 8) & 0x100) | (m_VDC_VDW & 0xFF);
+                    TraceVdcWriteIfNeeded("MSB", reg, data);
+                    break;
+                case 0x0E:
+                    TraceVdcWriteIfNeeded("MSB", reg, data);
+                    break;
                 case 0x10: m_VDC_DSR = (ushort)((m_VDC_DSR & 0xFF) | (data << 8)); break;
                 case 0x11: m_VDC_DESR = (ushort)((m_VDC_DESR & 0xFF) | (data << 8)); break;
                 case 0x12:
@@ -1578,11 +1645,15 @@ namespace ePceCD
                     m_WaitingIRQ = false;
                     return status;
 
-                case 2: return (byte)m_VRAM[m_VDC_MARR];
+                case 2:
+                    return (byte)m_VDC_ReadBuffer;
                 case 3:
-                    byte data = (byte)(m_VRAM[m_VDC_MARR] >> 8);
+                    byte data = (byte)(m_VDC_ReadBuffer >> 8);
                     if (m_VDC_Reg == 2)
+                    {
+                        m_VDC_ReadBuffer = m_VRAM[m_VDC_MARR & 0x7FFF];
                         m_VDC_MARR = (m_VDC_MARR + m_VDC_Increment) & 0x7FFF;
+                    }
                     return data;
             }
             return 0;

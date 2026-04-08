@@ -143,6 +143,26 @@ internal sealed class Sega32XDmaRegisters
 
 internal sealed class Sega32XSystemRegisters
 {
+    private static readonly bool TraceSh2ControlWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_CONTROL_WRITES"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceM68kControlWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_M68K_CONTROL_WRITES"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceCommPorts =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_COMM_PORTS"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceDreq =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_DREQ"),
+            "1",
+            StringComparison.Ordinal);
     public bool AdapterEnabled { get; private set; }
     public bool ResetSh2 { get; private set; }
     public Sega32XAccess VdpAccess { get; private set; }
@@ -152,14 +172,6 @@ internal sealed class Sega32XSystemRegisters
     public Sega32XSh2Interrupts SlaveInterrupts { get; } = new();
     public Sega32XDmaRegisters Dma { get; } = new();
     public ushort SegaTvBits { get; private set; }
-    public ushort HInterruptInterval { get; private set; }
-    public bool HInterruptInVBlank { get; private set; }
-    public ushort DisplayMode { get; private set; }
-    public ushort ScreenShift { get; private set; }
-    public ushort AutoFillLength { get; private set; } = 1;
-    public ushort AutoFillStartAddress { get; private set; }
-    public ushort AutoFillData { get; private set; }
-    public ushort FrameBufferControl { get; private set; }
 
     public Sega32XSystemRegisters()
     {
@@ -181,14 +193,6 @@ internal sealed class Sega32XSystemRegisters
         Dma.Length = 0xFFFF;
         Dma.Fifo.Clear();
         SegaTvBits = 0;
-        HInterruptInterval = 0;
-        HInterruptInVBlank = false;
-        DisplayMode = 0;
-        ScreenShift = 0;
-        AutoFillLength = 1;
-        AutoFillStartAddress = 0;
-        AutoFillData = 0;
-        FrameBufferControl = 0;
 
         MasterInterrupts.ResetPending = true;
         SlaveInterrupts.ResetPending = true;
@@ -210,10 +214,6 @@ internal sealed class Sega32XSystemRegisters
             0xA1510E => (ushort)Dma.DestinationAddress,
             0xA15110 => Dma.Length,
             0xA1511A => SegaTvBits,
-            0xA15180 => DisplayMode,
-            0xA15182 => ScreenShift,
-            0xA15184 => (ushort)((AutoFillLength - 1) & 0x00FF),
-            0xA15186 => AutoFillStartAddress,
             >= 0xA15120 and <= 0xA1512F => ReadCommunicationPort(address),
             _ => 0,
         };
@@ -224,9 +224,20 @@ internal sealed class Sega32XSystemRegisters
         switch (address)
         {
             case 0xA15100:
+                bool oldAdapterEnabled = AdapterEnabled;
+                bool oldResetSh2 = ResetSh2;
+                Sega32XAccess oldVdpAccess = VdpAccess;
                 AdapterEnabled = (value & 0x0001) != 0;
                 ResetSh2 = (value & 0x0002) == 0;
                 VdpAccess = (value & 0x8000) != 0 ? Sega32XAccess.Sh2 : Sega32XAccess.M68k;
+                if (TraceM68kControlWrites)
+                {
+                    Console.WriteLine(
+                        $"[S32X-M68K-CTRL] addr=0x{address:X8} value=0x{value:X4} " +
+                        $"aden:{(oldAdapterEnabled ? 1 : 0)}->{(AdapterEnabled ? 1 : 0)} " +
+                        $"reset:{(oldResetSh2 ? 1 : 0)}->{(ResetSh2 ? 1 : 0)} " +
+                        $"fm:{(oldVdpAccess == Sega32XAccess.Sh2 ? 1 : 0)}->{(VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)}");
+                }
                 break;
             case 0xA15102:
                 MasterInterrupts.CommandPending = (value & 0x0001) != 0;
@@ -243,6 +254,13 @@ internal sealed class Sega32XSystemRegisters
                 Dma.Active = (value & 0x0004) != 0;
                 if (!Dma.Active)
                     Dma.Fifo.Clear();
+                if (TraceDreq)
+                {
+                    Console.WriteLine(
+                        $"[S32X-DREQ-M68K-CTRL] value=0x{value:X4} active={(Dma.Active ? 1 : 0)} " +
+                        $"rv={(Dma.RomToVramDma ? 1 : 0)} b1={(Dma.UnknownBit1 ? 1 : 0)} " +
+                        $"len=0x{Dma.Length:X4} full={(Dma.Fifo.IsFull ? 1 : 0)} empty={(Dma.Fifo.Sh2IsEmpty ? 1 : 0)}");
+                }
                 break;
             case 0xA15108:
                 Dma.SourceAddress = (Dma.SourceAddress & 0x0000FFFFu) | ((uint)(value & 0x00FF) << 16);
@@ -258,31 +276,27 @@ internal sealed class Sega32XSystemRegisters
                 break;
             case 0xA15110:
                 Dma.Length = (ushort)(value & 0xFFFC);
+                if (TraceDreq)
+                {
+                    Console.WriteLine(
+                        $"[S32X-DREQ-M68K-LEN] value=0x{value:X4} latched=0x{Dma.Length:X4} " +
+                        $"active={(Dma.Active ? 1 : 0)}");
+                }
                 break;
             case 0xA15112:
                 if (Dma.Active)
+                {
                     Dma.Fifo.Push(value);
+                    if (TraceDreq)
+                    {
+                        Console.WriteLine(
+                            $"[S32X-DREQ-M68K-PUSH] value=0x{value:X4} len=0x{Dma.Length:X4} " +
+                            $"full={(Dma.Fifo.IsFull ? 1 : 0)} empty={(Dma.Fifo.Sh2IsEmpty ? 1 : 0)}");
+                    }
+                }
                 break;
             case 0xA1511A:
                 SegaTvBits = (ushort)(value & 0x0101);
-                break;
-            case 0xA15180:
-                DisplayMode = (ushort)(value & 0x00C3);
-                break;
-            case 0xA15182:
-                ScreenShift = (ushort)(value & 0x0001);
-                break;
-            case 0xA15184:
-                AutoFillLength = (ushort)((value & 0x00FF) + 1);
-                break;
-            case 0xA15186:
-                AutoFillStartAddress = value;
-                break;
-            case 0xA15188:
-                AutoFillData = value;
-                break;
-            case 0xA1518A:
-                FrameBufferControl = (ushort)(value & 0x0001);
                 break;
             default:
                 if (address >= 0xA15120 && address <= 0xA1512F)
@@ -291,12 +305,12 @@ internal sealed class Sega32XSystemRegisters
         }
     }
 
-    public ushort Sh2Read(uint address, Sega32XCpu whichCpu)
+    public ushort Sh2Read(uint address, Sega32XCpu whichCpu, Sega32XVdp vdp)
     {
         return address switch
         {
-            0x4000 => ReadSh2InterruptMask(whichCpu),
-            0x4004 => HInterruptInterval,
+            0x4000 => ReadSh2InterruptMask(whichCpu, vdp),
+            0x4004 => vdp.HInterruptInterval,
             0x4006 => ReadSh2DreqControl(),
             0x4008 => (ushort)(Dma.SourceAddress >> 16),
             0x400A => (ushort)Dma.SourceAddress,
@@ -305,25 +319,29 @@ internal sealed class Sega32XSystemRegisters
             0x4010 => Dma.Length,
             0x4012 => ReadSh2DreqFifo(),
             >= 0x4020 and <= 0x402F => ReadCommunicationPort(address),
-            0x4100 => DisplayMode,
-            0x4102 => ScreenShift,
-            0x4104 => (ushort)((AutoFillLength - 1) & 0x00FF),
-            0x4106 => AutoFillStartAddress,
             _ => 0,
         };
     }
 
-    public void Sh2Write(uint address, ushort value, Sega32XCpu whichCpu)
+    public void Sh2Write(uint address, ushort value, Sega32XCpu whichCpu, Sega32XVdp vdp)
     {
+        if (TraceSh2ControlWrites
+            && (address == 0x4000 || address == 0x4004 || (address >= 0x4020 && address <= 0x402F)))
+        {
+            Console.WriteLine(
+                $"[S32X-SH2-WRITE] cpu={whichCpu} addr=0x{address:X4} value=0x{value:X4} " +
+                $"aden={(AdapterEnabled ? 1 : 0)} fm={(VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)}");
+        }
+
         switch (address)
         {
             case 0x4000:
                 VdpAccess = (value & 0x8000) != 0 ? Sega32XAccess.Sh2 : Sega32XAccess.M68k;
-                HInterruptInVBlank = (value & 0x0080) != 0;
+                vdp.WriteHenBit((value & 0x0080) != 0);
                 GetInterrupts(whichCpu).WriteMaskBits(value);
                 break;
             case 0x4004:
-                HInterruptInterval = (ushort)(value & 0x00FF);
+                vdp.WriteHInterruptInterval(value);
                 break;
             case 0x4014:
                 GetInterrupts(whichCpu).ClearReset();
@@ -339,24 +357,6 @@ internal sealed class Sega32XSystemRegisters
                 break;
             case 0x401C:
                 GetInterrupts(whichCpu).ClearPwm();
-                break;
-            case 0x4100:
-                DisplayMode = (ushort)(value & 0x00C3);
-                break;
-            case 0x4102:
-                ScreenShift = (ushort)(value & 0x0001);
-                break;
-            case 0x4104:
-                AutoFillLength = (ushort)((value & 0x00FF) + 1);
-                break;
-            case 0x4106:
-                AutoFillStartAddress = value;
-                break;
-            case 0x4108:
-                AutoFillData = value;
-                break;
-            case 0x410A:
-                FrameBufferControl = (ushort)(value & 0x0001);
                 break;
             default:
                 if (address >= 0x4020 && address <= 0x402F)
@@ -415,39 +415,62 @@ internal sealed class Sega32XSystemRegisters
 
     private ushort ReadSh2DreqControl()
     {
-        return (ushort)(((Dma.Fifo.IsFull ? 1 : 0) << 15)
+        ushort value = (ushort)(((Dma.Fifo.IsFull ? 1 : 0) << 15)
             | ((Dma.Fifo.Sh2IsEmpty ? 1 : 0) << 14)
             | ((Dma.Active ? 1 : 0) << 2)
             | ((Dma.UnknownBit1 ? 1 : 0) << 1)
             | (Dma.RomToVramDma ? 1 : 0));
+        if (TraceDreq)
+        {
+            Console.WriteLine(
+                $"[S32X-DREQ-SH2-CTRL] value=0x{value:X4} active={(Dma.Active ? 1 : 0)} " +
+                $"len=0x{Dma.Length:X4} full={(Dma.Fifo.IsFull ? 1 : 0)} empty={(Dma.Fifo.Sh2IsEmpty ? 1 : 0)}");
+        }
+        return value;
     }
 
-    private ushort ReadSh2InterruptMask(Sega32XCpu whichCpu)
+    private ushort ReadSh2InterruptMask(Sega32XCpu whichCpu, Sega32XVdp vdp)
     {
         Sega32XSh2Interrupts interrupts = GetInterrupts(whichCpu);
         return (ushort)(((ushort)VdpAccess << 15)
             | (AdapterEnabled ? 1 << 9 : 0)
-            | (HInterruptInVBlank ? 1 << 7 : 0)
+            | (vdp.HInterruptInVBlank ? 1 << 7 : 0)
             | interrupts.MaskBits);
     }
 
     private ushort ReadSh2DreqFifo()
     {
+        ushort value = Dma.Fifo.Pop();
         Dma.Length = (ushort)(Dma.Length - 1);
         if (Dma.Length == 0)
             Dma.Active = false;
-        return Dma.Fifo.Pop();
+        if (TraceDreq)
+        {
+            Console.WriteLine(
+                $"[S32X-DREQ-SH2-POP] value=0x{value:X4} len=0x{Dma.Length:X4} " +
+                $"active={(Dma.Active ? 1 : 0)} full={(Dma.Fifo.IsFull ? 1 : 0)} empty={(Dma.Fifo.Sh2IsEmpty ? 1 : 0)}");
+        }
+        return value;
     }
 
     private ushort ReadCommunicationPort(uint address)
     {
         int index = (int)((address >> 1) & 0x7);
-        return CommunicationPorts[index];
+        ushort value = CommunicationPorts[index];
+        if (TraceCommPorts)
+            Console.WriteLine($"[S32X-COMM-READ] addr=0x{address:X8} idx={index} value=0x{value:X4}");
+        return value;
     }
 
     private void WriteCommunicationPort(uint address, ushort value)
     {
         int index = (int)((address >> 1) & 0x7);
+        if (TraceCommPorts)
+        {
+            ushort oldValue = CommunicationPorts[index];
+            string source = address >= 0xA15120 ? "M68K" : "SH2";
+            Console.WriteLine($"[S32X-COMM-WRITE] src={source} addr=0x{address:X8} idx={index} old=0x{oldValue:X4} new=0x{value:X4}");
+        }
         CommunicationPorts[index] = value;
     }
 

@@ -1,6 +1,6 @@
 namespace EutherDrive.Core.SmsGg;
 
-public readonly record struct SmsGgViewportSize(
+public record struct SmsGgViewportSize(
     ushort Width,
     ushort Height,
     ushort Top,

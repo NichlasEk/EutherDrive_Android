@@ -14,5 +14,14 @@ public sealed record SmsGgEmulatorConfig
     public bool FmSoundUnitEnabled { get; init; }
     public uint Z80Divider { get; init; } = 15;
 
-    public SmsGgRegion ResolveRegion(SmsGgMemory memory) => ForcedRegion ?? memory.GuessCartridgeRegion();
+    public SmsGgRegion ResolveRegion(SmsGgMemory memory)
+    {
+        string? debugForcedRegion = Environment.GetEnvironmentVariable("EUTHERDRIVE_SMSGG_FORCE_REGION");
+        if (string.Equals(debugForcedRegion, "domestic", StringComparison.OrdinalIgnoreCase))
+            return SmsGgRegion.Domestic;
+        if (string.Equals(debugForcedRegion, "international", StringComparison.OrdinalIgnoreCase))
+            return SmsGgRegion.International;
+
+        return ForcedRegion ?? memory.GuessCartridgeRegion();
+    }
 }

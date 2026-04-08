@@ -30,7 +30,7 @@ public sealed class SmsGgInputState
     }
 }
 
-public readonly record struct SmsGgPadState(
+public record struct SmsGgPadState(
     bool Up,
     bool Down,
     bool Left,

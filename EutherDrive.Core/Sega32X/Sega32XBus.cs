@@ -76,18 +76,24 @@ internal sealed class Sega32XBus
 
         if (address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd)
         {
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return 0xFF;
             ushort word = Vdp.ReadRegister(address & ~1u);
             return (address & 1) == 0 ? (byte)(word >> 8) : (byte)word;
         }
 
         if (address >= M68kFrameBufferStart && address <= M68kOverwriteImageEnd)
         {
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return 0xFF;
             ushort word = Vdp.ReadFrameBufferWord(address - M68kFrameBufferStart);
             return (address & 1) == 0 ? (byte)(word >> 8) : (byte)word;
         }
 
         if (address >= M68kCramStart && address <= M68kCramEnd)
         {
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return 0xFF;
             ushort word = Vdp.ReadCramWord(address - M68kCramStart);
             return (address & 1) == 0 ? (byte)(word >> 8) : (byte)word;
         }
@@ -124,16 +130,31 @@ internal sealed class Sega32XBus
             return Registers.M68kRead(aligned);
 
         if (aligned >= M68kVdpRegistersStart && aligned <= M68kVdpRegistersEnd)
+        {
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return 0xFFFF;
             return Vdp.ReadRegister(aligned);
+        }
 
         if (aligned >= M68kFrameBufferStart && aligned <= M68kOverwriteImageEnd)
+        {
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return 0xFFFF;
             return Vdp.ReadFrameBufferWord(aligned - M68kFrameBufferStart);
+        }
 
         if (aligned >= M68kCramStart && aligned <= M68kCramEnd)
+        {
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return 0xFFFF;
             return Vdp.ReadCramWord(aligned - M68kCramStart);
+        }
 
         if (aligned >= M68k32XIdStart && aligned <= M68k32XIdEnd)
-            return (ushort)((MarsId[0] << 8) | MarsId[1]);
+        {
+            int offset = (int)(aligned - M68k32XIdStart) & 0x2;
+            return (ushort)((MarsId[offset] << 8) | MarsId[offset + 1]);
+        }
 
         return 0xFFFF;
     }
@@ -150,7 +171,11 @@ internal sealed class Sega32XBus
                 ? (ushort)((word & 0x00FF) | (value << 8))
                 : (ushort)((word & 0xFF00) | value);
             if (isVdpRegister)
+            {
+                if (Registers.VdpAccess != Sega32XAccess.M68k)
+                    return;
                 Vdp.WriteRegister(aligned, word);
+            }
             else
                 Registers.M68kWrite(aligned, word);
             return;
@@ -158,16 +183,16 @@ internal sealed class Sega32XBus
 
         if (address >= M68kFrameBufferStart && address <= M68kOverwriteImageEnd)
         {
-            ushort current = Vdp.ReadFrameBufferWord(address - M68kFrameBufferStart);
-            ushort merged = (address & 1) == 0
-                ? (ushort)((current & 0x00FF) | (value << 8))
-                : (ushort)((current & 0xFF00) | value);
-            Vdp.WriteFrameBufferWord(address - M68kFrameBufferStart, merged);
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return;
+            Vdp.WriteFrameBufferByte(address - M68kFrameBufferStart, value);
             return;
         }
 
         if (address >= M68kCramStart && address <= M68kCramEnd)
         {
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return;
             ushort current = Vdp.ReadCramWord(address - M68kCramStart);
             ushort merged = (address & 1) == 0
                 ? (ushort)((current & 0x00FF) | (value << 8))
@@ -182,7 +207,11 @@ internal sealed class Sega32XBus
             || (address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd))
         {
             if (address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd)
+            {
+                if (Registers.VdpAccess != Sega32XAccess.M68k)
+                    return;
                 Vdp.WriteRegister(address & ~1u, value);
+            }
             else
                 Registers.M68kWrite(address & ~1u, value);
             return;
@@ -190,6 +219,8 @@ internal sealed class Sega32XBus
 
         if (address >= M68kFrameBufferStart && address <= M68kOverwriteImageEnd)
         {
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return;
             if (address < M68kOverwriteImageStart)
                 Vdp.WriteFrameBufferWord(address - M68kFrameBufferStart, value);
             else
@@ -198,7 +229,11 @@ internal sealed class Sega32XBus
         }
 
         if (address >= M68kCramStart && address <= M68kCramEnd)
+        {
+            if (Registers.VdpAccess != Sega32XAccess.M68k)
+                return;
             Vdp.WriteCramWord(address - M68kCramStart, value);
+        }
     }
 
     private byte ReadCartridgeByte(uint romAddress)

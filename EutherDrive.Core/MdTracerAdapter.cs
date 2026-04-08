@@ -1064,6 +1064,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     public long? FrameCounter => md_main.g_md_vdp?.FrameCounter;
     public uint? Debug32XMasterProgramCounter => _sega32XCore?.MasterSh2.Registers.ProgramCounter;
     public uint? Debug32XSlaveProgramCounter => _sega32XCore?.SlaveSh2.Registers.ProgramCounter;
+    public string? Debug32XMasterWords => _sega32XCore == null ? null : Get32XWordsNearPc(_sega32XCore.MasterSh2.Registers.ProgramCounter, true);
+    public string? Debug32XSlaveWords => _sega32XCore == null ? null : Get32XWordsNearPc(_sega32XCore.SlaveSh2.Registers.ProgramCounter, false);
+    public string? Debug32XCommPorts => _sega32XCore == null
+        ? null
+        : $"0x{_sega32XCore.Registers.CommunicationPorts[0]:X4}/0x{_sega32XCore.Registers.CommunicationPorts[1]:X4}/0x{_sega32XCore.Registers.CommunicationPorts[2]:X4}/0x{_sega32XCore.Registers.CommunicationPorts[3]:X4}";
 
     public readonly struct MainInterruptDebugState
     {
@@ -1176,6 +1181,50 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             RunFrameLastM68kCalls = runFrameLastM68kCalls;
             RunFrameLastM68kBudget = runFrameLastM68kBudget;
         }
+    }
+
+    private string Get32XWordsNearPc(uint pc, bool masterCpu)
+    {
+        if (_sega32XCore == null)
+            return string.Empty;
+
+        if (pc >= 0x06000000 && pc < 0x06040000)
+        {
+            int baseIndex = (int)((pc - 0x06000000) >> 1);
+            var words = new StringBuilder();
+            for (int i = 0; i < 6; i++)
+            {
+                int index = baseIndex + i;
+                if ((uint)index >= _sega32XCore.Bus.Sdram.Length)
+                    break;
+                if (i != 0)
+                    words.Append(',');
+                words.Append("0x");
+                words.Append(_sega32XCore.Bus.Sdram[index].ToString("X4"));
+            }
+            return words.ToString();
+        }
+
+        if (pc < 0x00004000)
+        {
+            ReadOnlySpan<byte> rom = masterCpu ? _sega32XCore.MasterBootRom : _sega32XCore.SlaveBootRom;
+            int offset = (int)(pc & ~1u);
+            var words = new StringBuilder();
+            for (int i = 0; i < 6; i++)
+            {
+                int wordOffset = offset + (i * 2);
+                if (wordOffset + 1 >= rom.Length)
+                    break;
+                ushort word = (ushort)((rom[wordOffset] << 8) | rom[wordOffset + 1]);
+                if (i != 0)
+                    words.Append(',');
+                words.Append("0x");
+                words.Append(word.ToString("X4"));
+            }
+            return words.ToString();
+        }
+
+        return string.Empty;
     }
 
     public MainInterruptDebugState GetMainInterruptDebugState()
@@ -2595,6 +2644,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 ResetAudioFrameState();
             }
             int vlines = ApplyFrameRateMode(effectiveFrameRateMode);
+            ulong s32xTicksPerFrame = _sega32XCore?.Sh2InstructionsPerFrame ?? 0;
+            ulong s32xBaseTicksPerLine = vlines > 0 ? s32xTicksPerFrame / (ulong)vlines : 0;
+            ulong s32xRemainderTicks = vlines > 0 ? s32xTicksPerFrame % (ulong)vlines : 0;
             long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
             long systemCyclesBeforeFrame = md_main.SystemCycles;
             MaybeCaptainAmericaMailboxRecovery(frame);
@@ -2707,6 +2759,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     }
 
                     md_main.FlushScheduledAudio();
+                    Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
                 }
 
                 if (TracePerf)
@@ -2740,7 +2793,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 if (!SkipVdpRenderEnabled)
                 {
                     for (int v = 0; v < vlines; v++)
+                    {
                         _vdp.run(v);
+                        Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                    }
                 }
             }
 
@@ -2806,9 +2862,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         }
 
             if (!md_main.g_masterSystemMode && _sega32XCore != null)
-            {
-                _sega32XCore.RunFrame();
-            }
+                _sega32XCore.FinishFrame();
 
             if (TracePerf && _cpuReady && _cpu != null)
             {
@@ -2820,11 +2874,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         // Safety net for YM timer cadence (helps avoid tempo/jitter artifacts).
         md_main.g_md_music?.YmEnsureAdvanceEachFrame();
 
-        // Blitta VDP RGB555 -> UI BGRA staging buffer
+        // Compose MD and 32X into the shared presentation buffer.
         EnsureFramebufferInitialized("RunFrame");
-             var vdpBuffer = _vdp.GetFrameBuffer();
-            if (vdpBuffer.Length > 0)
-            {
+        Array.Clear(_frameBufferBack, 0, _frameBufferBack.Length);
+        var vdpBuffer = _vdp.GetFrameBuffer();
+        if (vdpBuffer.Length > 0)
+        {
             int vdpWidth = _vdp.FrameWidth;
             int vdpHeight = _vdp.FrameHeight;
             if (vdpWidth <= 0)
@@ -2832,8 +2887,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             if (vdpHeight <= 0)
                 vdpHeight = 224;
 
-                if (FrameBufferTraceEnabled && ShouldLogPerSecond(ref _lastVdpLogTicks))
-                {
+            if (FrameBufferTraceEnabled && ShouldLogPerSecond(ref _lastVdpLogTicks))
+            {
                 int id = RuntimeHelpers.GetHashCode(vdpBuffer);
                 uint p0 = vdpBuffer.Length > 0 ? vdpBuffer[0] : 0;
                 uint p1 = vdpBuffer.Length > 1 ? vdpBuffer[1] : 0;
@@ -2860,9 +2915,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 }
 
                 if (diffCount == 0)
-                {
                     Console.WriteLine($"[MdTracerAdapter] VDP summary base=0x{baseColor:X8} diff=0 size={vdpWidth}x{vdpHeight}");
-                }
                 else
                 {
                     int fx = firstDiff % vdpWidth;
@@ -2871,14 +2924,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                 }
             }
 
-                ReadOnlySpan<uint> vdpSpan = vdpBuffer;
-                long blitStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
-                BlitArgbToBgra8888(vdpSpan, _frameBufferBack, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
-                _frameBufferBack = Interlocked.Exchange(ref _frameBufferFront, _frameBufferBack);
-                if (TracePerf)
-                    PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
-            }
+            ReadOnlySpan<uint> vdpSpan = vdpBuffer;
+            long blitStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
+            BlitArgbToBgra8888(vdpSpan, _frameBufferBack, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
+            if (TracePerf)
+                PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
         }
+
+        bool composited32X = TryPresent32XFrame();
+        if (composited32X || vdpBuffer.Length > 0)
+            _frameBufferBack = Interlocked.Exchange(ref _frameBufferFront, _frameBufferBack);
 
         // Analyze framebuffer if enabled
         FbAnalyzer.AnalyzeFrame();
@@ -2888,11 +2943,41 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         {
             StreamFrameToAsciiViewer();
         }
+        }
     }
 
     private System.IO.FileStream? _asciiFileStream;
     private readonly object _asciiStreamLock = new();
     private long _asciiFrameNumber;
+
+    private void Run32XInterleavedLine(int line, ulong baseTicksPerLine, ulong remainderTicks)
+    {
+        if (_sega32XCore == null)
+            return;
+
+        ulong ticks = baseTicksPerLine + ((ulong)line < remainderTicks ? 1UL : 0UL);
+        if (ticks != 0)
+            _sega32XCore.RunSlice(ticks);
+    }
+
+    private bool TryPresent32XFrame()
+    {
+        if (_sega32XCore?.Bus?.Vdp == null)
+            return false;
+
+        return _sega32XCore.Bus.Vdp.CompositeBgraOver(_frameBufferBack, _fbStride);
+    }
+
+    private static bool HasVisiblePixels(ReadOnlySpan<byte> buffer)
+    {
+        for (int i = 0; i + 3 < buffer.Length; i += 4)
+        {
+            if ((buffer[i] | buffer[i + 1] | buffer[i + 2]) != 0)
+                return true;
+        }
+
+        return false;
+    }
 
     private void StreamFrameToAsciiViewer()
     {

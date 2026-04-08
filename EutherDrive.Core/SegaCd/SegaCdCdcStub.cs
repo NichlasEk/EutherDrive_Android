@@ -55,7 +55,6 @@ public sealed class SegaCdCdcStub
     private bool _transferEndInterruptPending;
     private bool _decoderInterruptEnabled = true;
     private bool _decoderInterruptPending;
-    private bool _decoderInterruptClearReady;
     private bool _scdInterruptFlag;
     private bool _decoderInterruptLogged;
     private bool _destLogged;
@@ -138,7 +137,6 @@ public sealed class SegaCdCdcStub
         WriteCtrl1(0x00);
         _transferEndInterruptPending = false;
         _decoderInterruptPending = false;
-        _decoderInterruptClearReady = false;
     }
 
     public void SetDeviceDestination(byte destBits)
@@ -245,22 +243,15 @@ public sealed class SegaCdCdcStub
 
     private void PopulateHostDataBuffer()
     {
-        ushort remainingBytes = _dataByteCounter;
         ushort msb = _bufferRam[_dataAddressCounter];
         ushort lsb = _bufferRam[(_dataAddressCounter + 1) & BufferRamAddressMask];
         _hostDataBuffer = (ushort)((msb << 8) | lsb);
         _dataAddressCounter = (ushort)((_dataAddressCounter + 2) & BufferRamAddressMask);
-
-        // Host-port transfers should expose the final word and raise EOD immediately
-        // after it is latched, not after a spurious extra prefetch.
-        if (remainingBytes <= 2)
-        {
-            _dataByteCounter = 0;
+        ushort newByteCounter = (ushort)(_dataByteCounter - 2);
+        bool overflowed = newByteCounter > _dataByteCounter;
+        _dataByteCounter = newByteCounter;
+        if (overflowed)
             EndDmaTransfer();
-            return;
-        }
-
-        _dataByteCounter = (ushort)(remainingBytes - 2);
     }
 
     private void EndDmaTransfer()
@@ -286,7 +277,6 @@ public sealed class SegaCdCdcStub
                 value = 0xFF;
                 break;
             case 1:
-                ExpireDecoderInterruptIfReady();
                 value = (byte)(0x95
                     | (( _transferEndInterruptPending ? 0 : 1) << 6)
                     | (( _decoderInterruptPending ? 0 : 1) << 5)
@@ -329,7 +319,6 @@ public sealed class SegaCdCdcStub
             case 15:
                 value = (byte)((_decoderInterruptPending ? 0 : 1) << 7);
                 _decoderInterruptPending = false;
-                _decoderInterruptClearReady = false;
                 RefreshInterruptLine();
                 break;
             default:
@@ -438,7 +427,6 @@ public sealed class SegaCdCdcStub
 
     private void WriteIfCtrl(byte value)
     {
-        ExpireDecoderInterruptIfReady();
         bool prevDtei = _transferEndInterruptEnabled;
         bool prevDeci = _decoderInterruptEnabled;
 
@@ -475,7 +463,6 @@ public sealed class SegaCdCdcStub
         if (!_decoderEnabled)
         {
             _decoderInterruptPending = false;
-            _decoderInterruptClearReady = false;
             RefreshInterruptLine();
         }
         if (!_decoderEnabled || !_decoderWritesEnabled)
@@ -512,7 +499,6 @@ public sealed class SegaCdCdcStub
             return;
 
         _decodedLast75HzCycle = true;
-        _decoderInterruptClearReady = false;
         Array.Copy(sectorBuffer, 12, _headerData, 0, 4);
         Array.Copy(sectorBuffer, 16, _subheaderData, 0, 4);
         SetDecoderInterruptFlag();
@@ -570,7 +556,6 @@ public sealed class SegaCdCdcStub
     private void SetDecoderInterruptFlag()
     {
         _decoderInterruptPending = true;
-        _decoderInterruptClearReady = false;
         if (_decoderInterruptEnabled && (!_transferEndInterruptEnabled || !_transferEndInterruptPending))
             _scdInterruptFlag = true;
         if (!_decoderInterruptLogged)
@@ -584,7 +569,6 @@ public sealed class SegaCdCdcStub
 
     private void SetTransferEndInterruptFlag()
     {
-        ExpireDecoderInterruptIfReady();
         if (_transferEndInterruptEnabled && !_transferEndInterruptPending
             && (!_decoderInterruptEnabled || !_decoderInterruptPending))
         {
@@ -599,8 +583,11 @@ public sealed class SegaCdCdcStub
             ProgressDma(wordRam, prgRam, prgRamAccessible, pcm);
 
         _cycles44100SinceDecode++;
-        if (_cycles44100SinceDecode >= DecoderInterruptClearCycle)
-            _decoderInterruptClearReady = true;
+        if (_decoderInterruptPending && _cycles44100SinceDecode >= DecoderInterruptClearCycle)
+        {
+            _decoderInterruptPending = false;
+            RefreshInterruptLine();
+        }
     }
 
     public void Clock75Hz()
@@ -609,16 +596,6 @@ public sealed class SegaCdCdcStub
             SetDecoderInterruptFlag();
         _decodedLast75HzCycle = false;
         _cycles44100SinceDecode = 0;
-    }
-
-    private void ExpireDecoderInterruptIfReady()
-    {
-        if (!_decoderInterruptPending || !_decoderInterruptClearReady)
-            return;
-
-        _decoderInterruptPending = false;
-        _decoderInterruptClearReady = false;
-        RefreshInterruptLine();
     }
 
     private static string TraceStamp()

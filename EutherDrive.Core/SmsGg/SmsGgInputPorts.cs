@@ -84,7 +84,7 @@ public sealed class SmsGgInputPorts
             (!p2.Left ? 1 : 0));
     }
 
-    private readonly record struct PinDirection(bool IsInput, bool OutputValue)
+    private record struct PinDirection(bool IsInput, bool OutputValue)
     {
         public static PinDirection Input { get; } = new(true, false);
         public static PinDirection Output(bool value) => new(false, value);

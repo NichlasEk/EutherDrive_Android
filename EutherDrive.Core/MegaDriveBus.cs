@@ -45,6 +45,8 @@ public sealed class MegaDriveBus
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80REG_DECODE"), "1", StringComparison.Ordinal);
     private static readonly bool TraceZ80Reset =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_RESET"), "1", StringComparison.Ordinal);
+    private static readonly bool Trace32XComm68k =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_M68K_COMM"), "1", StringComparison.Ordinal);
     private static bool TraceZ80Sig => MdTracerCore.MdLog.TraceZ80Sig;
     private static bool MapZ80OddReadToNext => ReadEnvDefaultOn("EUTHERDRIVE_Z80_ODD_READ_TO_NEXT");
 
@@ -59,6 +61,20 @@ public sealed class MegaDriveBus
             || (addr >= Sega32XBus.M68kCramStart && addr <= Sega32XBus.M68kCramEnd);
     }
 
+    private static bool Is32XCommPort(uint addr)
+    {
+        uint aligned = addr & 0xFFFFFEu;
+        return aligned >= 0xA15120 && aligned <= 0xA1512Eu;
+    }
+
+    private static void Log32XComm68k(string op, uint addr, ushort value)
+    {
+        if (!Trace32XComm68k)
+            return;
+
+        Console.WriteLine($"[S32X-M68K-COMM] {op} addr=0x{(addr & 0xFFFFFEu):X8} value=0x{value:X4}");
+    }
+
     public MegaDriveBus(byte[] rom)
     {
         _rom = rom ?? throw new ArgumentNullException(nameof(rom));
@@ -68,6 +84,13 @@ public sealed class MegaDriveBus
     internal void Attach32XBus(Sega32XBus? bus)
     {
         _s32xBus = bus;
+    }
+
+    internal bool Has32XBusAttached => _s32xBus != null;
+
+    internal bool Is32XMappedAddress(uint addr)
+    {
+        return _s32xBus != null && Is32XM68kMapped(addr);
     }
 
     public void Reset()
@@ -150,7 +173,12 @@ public sealed class MegaDriveBus
     private byte Read8Core(uint addr)
     {
         if (_s32xBus != null && Is32XM68kMapped(addr))
-            return _s32xBus.ReadM68kByte(addr);
+        {
+            byte result = _s32xBus.ReadM68kByte(addr);
+            if (Is32XCommPort(addr))
+                Log32XComm68k("read8", addr, _s32xBus.ReadM68kWord(addr & 0xFFFFFEu));
+            return result;
+        }
 
         if (IsZ80BusReq(addr))
         {
@@ -217,6 +245,8 @@ public sealed class MegaDriveBus
         if (_s32xBus != null && Is32XM68kMapped(addr))
         {
             ushort s32xValue = _s32xBus.ReadM68kWord(addr & 0xFFFFFEu);
+            if (Is32XCommPort(addr))
+                Log32XComm68k("read16", addr, s32xValue);
             md_m68k.RecordBusAccess(addr, 2, false, s32xValue);
             return s32xValue;
         }
@@ -418,6 +448,8 @@ public sealed class MegaDriveBus
                 ? (ushort)((current & 0x00FF) | (value << 8))
                 : (ushort)((current & 0xFF00) | value);
             _s32xBus.WriteM68kWord(aligned, merged);
+            if (Is32XCommPort(addr))
+                Log32XComm68k("write8", addr, merged);
             md_m68k.RecordBusAccess(addr, 1, true, value);
             return;
         }
@@ -532,6 +564,8 @@ public sealed class MegaDriveBus
         if (_s32xBus != null && Is32XM68kMapped(addr))
         {
             _s32xBus.WriteM68kWord(addr & 0xFFFFFEu, value);
+            if (Is32XCommPort(addr))
+                Log32XComm68k("write16", addr, value);
             md_m68k.RecordBusAccess(addr, 2, true, value);
             return;
         }

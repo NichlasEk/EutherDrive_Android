@@ -802,6 +802,7 @@ public sealed class SegaCdCddStub
         {
             (State.MotorStopped, null) => State.NoDisc,
             (State.MotorStopped, _) => State.Paused,
+            (_, not null) when _reportType == ReportType.TrackNStartTime => State.ReadingToc,
             _ => _state
         };
 

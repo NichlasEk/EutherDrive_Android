@@ -21,6 +21,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.IO.Compression;
 using EutherDrive.Core;
+using EutherDrive.Core.Sega32X;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.Savestates;
@@ -323,6 +324,10 @@ class Program
             bool useGba = string.Equals(coreOverride, "gba", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "agb", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsGbaRomPath(romPath));
+            bool use32X = string.Equals(coreOverride, "32x", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "s32x", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "sega32x", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && Is32XRomPath(romPath));
             bool useSmsGg = string.Equals(coreOverride, "smsgg", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "sms", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "gg", StringComparison.OrdinalIgnoreCase)
@@ -343,6 +348,7 @@ class Program
                 usePsx = false;
                 useGb = false;
                 useGba = false;
+                use32X = false;
                 useSmsGg = false;
                 useN64 = false;
                 useSegaCd = false;
@@ -722,6 +728,131 @@ class Program
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 gbaAudioSink?.Dispose();
                 TraceGba($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (use32X)
+            {
+                bool use32XScaffold = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_32X_SCAFFOLD") == "1";
+                if (!use32XScaffold)
+                {
+                    Console.WriteLine("[HEADLESS] Using Sega 32X core via MD host bridge");
+                    var md = new MdTracerAdapter();
+                    md.LoadRom(romPath);
+
+                    ReadOnlySpan<byte> hostFbIn = md.GetFrameBuffer(out int hostWIn, out int hostHIn, out int hostSIn);
+                    var hostStatsIn = GetFrameStats(hostFbIn, hostWIn, hostHIn, hostSIn);
+                    ulong hostLastFingerprint = ComputeFrameFingerprint(hostFbIn, hostWIn, hostHIn, hostSIn);
+                    int hostUnchangedFrames = 0;
+                    bool hostTrace32XFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                    bool hostTrace32XWords = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_32X_WORDS") == "1";
+
+                    Console.WriteLine(
+                        $"[HEADLESS] 32X-host fb_has_content={hostStatsIn.HasContent} nonzero_pixels={hostStatsIn.NonZeroPixels} " +
+                        $"first_nonzero=({hostStatsIn.FirstX},{hostStatsIn.FirstY}) frameCounter={md.FrameCounter ?? -1} " +
+                        $"m68k=0x{md.GetM68kPc():X6} " +
+                        $"mpc=0x{md.Debug32XMasterProgramCounter ?? 0:X8} spc=0x{md.Debug32XSlaveProgramCounter ?? 0:X8} fp=0x{hostLastFingerprint:X16}");
+                    if (hostTrace32XWords)
+                    {
+                        Console.WriteLine(
+                            $"[HEADLESS] 32X-host words m={md.Debug32XMasterWords ?? string.Empty} s={md.Debug32XSlaveWords ?? string.Empty} comm={md.Debug32XCommPorts ?? string.Empty}");
+                    }
+                    DumpBgraToPpm(hostFbIn, hostWIn, hostHIn, hostSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                    for (int frame = 0; frame < framesToRun; frame++)
+                    {
+                        md.RunFrame();
+                        ReadOnlySpan<byte> hostFb = md.GetFrameBuffer(out int hostW, out int hostH, out int hostS);
+                        var hostStats = GetFrameStats(hostFb, hostW, hostH, hostS);
+                        ulong hostFingerprint = ComputeFrameFingerprint(hostFb, hostW, hostH, hostS);
+                        hostUnchangedFrames = hostFingerprint == hostLastFingerprint ? (hostUnchangedFrames + 1) : 0;
+                        hostLastFingerprint = hostFingerprint;
+
+                        if (hostTrace32XFrames || frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        {
+                            Console.WriteLine(
+                                $"[HEADLESS] Frame {frame}: 32x_host_fb_has_content={hostStats.HasContent} nonzero_pixels={hostStats.NonZeroPixels} " +
+                                $"first_nonzero=({hostStats.FirstX},{hostStats.FirstY}) frameCounter={md.FrameCounter ?? -1} " +
+                                $"m68k=0x{md.GetM68kPc():X6} " +
+                                $"mpc=0x{md.Debug32XMasterProgramCounter ?? 0:X8} spc=0x{md.Debug32XSlaveProgramCounter ?? 0:X8} " +
+                                $"fp=0x{hostFingerprint:X16} unchanged={hostUnchangedFrames}");
+                            if (hostTrace32XWords)
+                            {
+                                Console.WriteLine(
+                                    $"[HEADLESS] Frame {frame}: 32x_host_words m={md.Debug32XMasterWords ?? string.Empty} s={md.Debug32XSlaveWords ?? string.Empty} comm={md.Debug32XCommPorts ?? string.Empty}");
+                            }
+                        }
+
+                        if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10)
+                            DumpBgraToPpm(hostFb, hostW, hostH, hostS, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                    }
+
+                    ReadOnlySpan<byte> hostFbOut = md.GetFrameBuffer(out int hostWOut, out int hostHOut, out int hostSOut);
+                    var hostStatsOut = GetFrameStats(hostFbOut, hostWOut, hostHOut, hostSOut);
+                    ulong hostFinalFingerprint = ComputeFrameFingerprint(hostFbOut, hostWOut, hostHOut, hostSOut);
+                    Console.WriteLine(
+                        $"[HEADLESS] 32X-host final fb_has_content={hostStatsOut.HasContent} nonzero_pixels={hostStatsOut.NonZeroPixels} " +
+                        $"first_nonzero=({hostStatsOut.FirstX},{hostStatsOut.FirstY}) frameCounter={md.FrameCounter ?? -1} " +
+                        $"m68k=0x{md.GetM68kPc():X6} " +
+                        $"mpc=0x{md.Debug32XMasterProgramCounter ?? 0:X8} spc=0x{md.Debug32XSlaveProgramCounter ?? 0:X8} fp=0x{hostFinalFingerprint:X16}");
+                    if (hostTrace32XWords)
+                    {
+                        Console.WriteLine(
+                            $"[HEADLESS] 32X-host final words m={md.Debug32XMasterWords ?? string.Empty} s={md.Debug32XSlaveWords ?? string.Empty} comm={md.Debug32XCommPorts ?? string.Empty}");
+                    }
+                    DumpBgraToPpm(hostFbOut, hostWOut, hostHOut, hostSOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                    Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                    return 0;
+                }
+
+                Console.WriteLine("[HEADLESS] Using Sega 32X scaffold core");
+                var s32x = new Sega32XAdapter();
+                s32x.LoadRom(romPath);
+
+                Console.WriteLine($"[HEADLESS] {s32x.RomSummary}");
+                ReadOnlySpan<byte> fbIn = s32x.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+                bool trace32XFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+
+                Console.WriteLine(
+                    $"[HEADLESS] 32X fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} " +
+                    $"first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) frameCounter={s32x.FrameCounter ?? -1} " +
+                    $"mpc=0x{s32x.DebugMasterProgramCounter ?? 0:X8} spc=0x{s32x.DebugSlaveProgramCounter ?? 0:X8} fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    s32x.RunFrame();
+                    ReadOnlySpan<byte> fb = s32x.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? (unchangedFrames + 1) : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (trace32XFrames || frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        Console.WriteLine(
+                            $"[HEADLESS] Frame {frame}: 32x_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} " +
+                            $"first_nonzero=({stats.FirstX},{stats.FirstY}) frameCounter={s32x.FrameCounter ?? -1} " +
+                            $"mpc=0x{s32x.DebugMasterProgramCounter ?? 0:X8} spc=0x{s32x.DebugSlaveProgramCounter ?? 0:X8} " +
+                            $"fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+                    }
+
+                    if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = s32x.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine(
+                    $"[HEADLESS] 32X final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} " +
+                    $"first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) frameCounter={s32x.FrameCounter ?? -1} " +
+                    $"mpc=0x{s32x.DebugMasterProgramCounter ?? 0:X8} spc=0x{s32x.DebugSlaveProgramCounter ?? 0:X8} fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
 
@@ -1589,6 +1720,26 @@ class Program
         return ext is ".gba" or ".agb";
     }
 
+    private static bool Is32XRomPath(string path)
+    {
+        string ext = GetEffectiveRomExtension(path);
+        if (ext == ".32x")
+            return true;
+
+        if (!File.Exists(path))
+            return false;
+
+        try
+        {
+            byte[] romData = File.ReadAllBytes(path);
+            return Sega32XRomDetector.IsSega32XRom(romData, path);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static bool IsGbRomPath(string path)
     {
         string ext = GetEffectiveRomExtension(path);
@@ -1778,10 +1929,51 @@ class Program
             || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
+        bool use32X = string.Equals(coreOverride, "32x", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "s32x", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "sega32x", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && Is32XRomPath(romPath));
         bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "sega-cd", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "mega-cd", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
+
+        if (use32X)
+        {
+            var s32x = new Sega32XAdapter();
+            s32x.LoadRom(romPath);
+
+            for (int i = 0; i < 10; i++)
+                s32x.RunFrame();
+
+            byte[] snapshot32X;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                s32x.SaveState(writer);
+                writer.Flush();
+                snapshot32X = ms.ToArray();
+            }
+
+            using (var ms = new MemoryStream(snapshot32X))
+            using (var reader = new BinaryReader(ms))
+            {
+                s32x.LoadState(reader);
+            }
+
+            byte[] snapshotAfter32X;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                s32x.SaveState(writer);
+                writer.Flush();
+                snapshotAfter32X = ms.ToArray();
+            }
+
+            bool match32X = snapshot32X.SequenceEqual(snapshotAfter32X);
+            Console.WriteLine($"[HEADLESS] Sega 32X roundtrip {(match32X ? "OK" : "MISMATCH")}");
+            return match32X ? 0 : 2;
+        }
 
         if (useGb)
         {
@@ -2007,6 +2199,10 @@ class Program
             bool useGba = string.Equals(coreOverride, "gba", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "agb", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsGbaRomPath(romPath));
+            bool useSmsGg = string.Equals(coreOverride, "smsgg", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "sms", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "gg", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsMasterSystemRomPath(romPath));
             bool usePce = string.Equals(coreOverride, "pce", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
@@ -2398,6 +2594,59 @@ class Program
                 DumpBgraToPpm(gbaFbOut, gbaWOut, gbaHOut, gbaSOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 gbaAudioSink?.Dispose();
                 TraceGba($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useSmsGg)
+            {
+                var smsgg = new SmsGgAdapter();
+                smsgg.LoadRom(romPath);
+
+                int? slotOverrideSmsGg = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadSmsGg = TryLoadSavestatePayload(savestatePath, smsgg.RomIdentity, slotOverrideSmsGg, out var smsggError);
+                if (payloadSmsGg == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {smsggError}");
+                    return 1;
+                }
+
+                using (var smsggStateStream = new MemoryStream(payloadSmsGg, writable: false))
+                using (var smsggStateReader = new BinaryReader(smsggStateStream))
+                    smsgg.LoadState(smsggStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (SMS/GG)");
+                Console.WriteLine($"[HEADLESS] {smsgg.RomSummary}");
+                Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
+                ReadOnlySpan<byte> smsggFbIn = smsgg.GetFrameBuffer(out int smsggWIn, out int smsggHIn, out int smsggSIn);
+                var smsggStatsIn = GetFrameStats(smsggFbIn, smsggWIn, smsggHIn, smsggSIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(smsggFbIn, smsggWIn, smsggHIn, smsggSIn);
+                int unchangedFrames = 0;
+                Console.WriteLine($"[HEADLESS] SMSGG fb_has_content={smsggStatsIn.HasContent} nonzero_pixels={smsggStatsIn.NonZeroPixels} first_nonzero=({smsggStatsIn.FirstX},{smsggStatsIn.FirstY}) fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(smsggFbIn, smsggWIn, smsggHIn, smsggSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    smsgg.RunFrame();
+
+                    ReadOnlySpan<byte> fb = smsgg.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? (unchangedFrames + 1) : 0;
+                    lastFingerprint = fingerprint;
+
+                    Console.WriteLine($"[HEADLESS] Frame {frame}: smsgg_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                ReadOnlySpan<byte> smsggFbOut = smsgg.GetFrameBuffer(out int smsggWOut, out int smsggHOut, out int smsggSOut);
+                var smsggStatsOut = GetFrameStats(smsggFbOut, smsggWOut, smsggHOut, smsggSOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(smsggFbOut, smsggWOut, smsggHOut, smsggSOut);
+                Console.WriteLine($"[HEADLESS] SMSGG fb_has_content={smsggStatsOut.HasContent} nonzero_pixels={smsggStatsOut.NonZeroPixels} first_nonzero=({smsggStatsOut.FirstX},{smsggStatsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(smsggFbOut, smsggWOut, smsggHOut, smsggSOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
 
@@ -2922,6 +3171,10 @@ class Program
                 || string.Equals(coreOverride, "ps1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "playstation", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPsxRomPath(romPath));
+            bool use32X = string.Equals(coreOverride, "32x", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "s32x", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "sega32x", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && Is32XRomPath(romPath));
             bool useSegaCd = string.Equals(coreOverride, "segacd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "sega-cd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "mega-cd", StringComparison.OrdinalIgnoreCase)
@@ -2930,6 +3183,29 @@ class Program
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
+
+            if (use32X)
+            {
+                var s32x = new Sega32XAdapter();
+                s32x.LoadRom(romPath);
+
+                using (var fs = new FileStream(rawStatePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var reader = new BinaryReader(fs))
+                {
+                    s32x.LoadState(reader);
+                }
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    s32x.RunFrame();
+                    Console.WriteLine(
+                        $"[HEADLESS] Frame {frame} completed (32X mpc=0x{s32x.DebugMasterProgramCounter ?? 0:X8} spc=0x{s32x.DebugSlaveProgramCounter ?? 0:X8})");
+                }
+
+                ReadOnlySpan<byte> fbOut = s32x.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                return 0;
+            }
 
             if (usePsx)
             {
@@ -3160,7 +3436,7 @@ class Program
     {
         if (ShouldSilenceConsole())
         {
-            bool verbose = IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE") || IsEnvEnabled("EUTHERDRIVE_TRACE_VERBOSE");
+            bool verbose = IsVerboseHeadless();
             bool keepStdErr = IsEnvEnabled("EUTHERDRIVE_SCD_PROFILE") && !verbose;
             Console.SetOut(TextWriter.Null);
             if (!keepStdErr)
@@ -3172,9 +3448,8 @@ class Program
 
     private static bool ShouldSilenceConsole()
     {
-        // If any trace flag is set, enable all console output
-        if (IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE") || IsEnvEnabled("EUTHERDRIVE_TRACE_VERBOSE"))
-        {
+        // Headless mode is verbose by default unless explicitly disabled.
+        if (IsVerboseHeadless()) {
             return false;
         }
 
@@ -3195,6 +3470,17 @@ class Program
         return true;
     }
 
+    private static bool IsVerboseHeadless()
+    {
+        if (IsEnvEnabled("EUTHERDRIVE_LOG_VERBOSE") || IsEnvEnabled("EUTHERDRIVE_TRACE_VERBOSE"))
+            return true;
+
+        if (IsEnvDisabled("EUTHERDRIVE_LOG_VERBOSE") || IsEnvDisabled("EUTHERDRIVE_TRACE_VERBOSE"))
+            return false;
+
+        return true;
+    }
+
     private static bool IsEnvEnabled(string key)
     {
         var value = Environment.GetEnvironmentVariable(key);
@@ -3208,6 +3494,19 @@ class Program
             || value.Equals("true", StringComparison.OrdinalIgnoreCase)
             || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
             || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsEnvDisabled(string key)
+    {
+        var value = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        value = value.Trim();
+        return value == "0"
+            || value.Equals("false", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("no", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("off", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void ConfigurePsxAdapterFromEnv()

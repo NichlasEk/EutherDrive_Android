@@ -14,6 +14,9 @@ namespace EutherDrive.Core.MdTracerCore
             ParseTraceLimit("EUTHERDRIVE_FORCE_B154_READ_LIMIT", 8);
         private static int _forceB154ReadRemaining = ForceB154ReadLimit;
         private static int _stackRetWatchLogRemaining = ParseTraceLimit("EUTHERDRIVE_M68K_STACK_WATCH_LIMIT", 0);
+        private static readonly bool TraceTermFe26Write =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_TERM_FE26"), "1", StringComparison.Ordinal);
+        private static int _traceTermFe26WriteRemaining = 64;
 
         /// <summary>
         /// Säkerställ att RAM/ROM-address-space är allokerad.
@@ -116,6 +119,48 @@ namespace EutherDrive.Core.MdTracerCore
             return !IsCartRamAddress(addr);
         }
 
+        private static bool TryRead32XMappedByte(uint logical, out byte value)
+        {
+            value = 0;
+            var bus = md_main.g_md_bus;
+            if (bus == null)
+                return false;
+
+            if (md_bus.Current == null || !md_bus.Current.Is32XMappedAddress(logical))
+                return false;
+
+            value = bus.read8(logical);
+            return true;
+        }
+
+        private static bool TryRead32XMappedWord(uint logical, out ushort value)
+        {
+            value = 0;
+            var bus = md_main.g_md_bus;
+            if (bus == null)
+                return false;
+
+            if (md_bus.Current == null || !md_bus.Current.Is32XMappedAddress(logical))
+                return false;
+
+            value = bus.read16(logical);
+            return true;
+        }
+
+        private static bool TryRead32XMappedLong(uint logical, out uint value)
+        {
+            value = 0;
+            var bus = md_main.g_md_bus;
+            if (bus == null)
+                return false;
+
+            if (md_bus.Current == null || !md_bus.Current.Is32XMappedAddress(logical))
+                return false;
+
+            value = bus.read32(logical);
+            return true;
+        }
+
         private static void MaybeLogStackRetWrite(uint logicalAddr, byte size, uint value)
         {
             if (_stackRetWatchLogRemaining <= 0)
@@ -146,6 +191,8 @@ namespace EutherDrive.Core.MdTracerCore
             if (bus?.OverrideBus != null && bus.OverrideBus.TryRead8(addr, out byte overrideValue))
                 return overrideValue;
             uint logical = in_address & 0x00FF_FFFF;
+            if (TryRead32XMappedByte(logical, out byte mappedByte))
+                return mappedByte;
             var cart = md_main.g_md_cartridge;
             if (cart != null && cart.g_file_size > 0)
             {
@@ -182,6 +229,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             uint addr1 = NormalizeAddr(in_address + 1);
             uint logical = in_address & 0x00FF_FFFF;
+            if (TryRead32XMappedWord(logical, out ushort mappedWord))
+                return mappedWord;
             var cart = md_main.g_md_cartridge;
             if (cart != null && cart.g_file_size > 0)
             {
@@ -217,6 +266,8 @@ namespace EutherDrive.Core.MdTracerCore
             uint addr3 = NormalizeAddr(in_address + 3);
 
             uint logical = in_address & 0x00FF_FFFF;
+            if (TryRead32XMappedLong(logical, out uint mappedLong))
+                return mappedLong;
             var cart = md_main.g_md_cartridge;
             if (cart != null && cart.g_file_size > 0)
             {
@@ -261,6 +312,13 @@ namespace EutherDrive.Core.MdTracerCore
             mem[addr] = in_data;
             md_main.g_md_bus?.LogRamRangeDirect(logical, 1, write: true, in_data);
             MaybeLogStackRetWrite(logical, 1, in_data);
+            if (TraceTermFe26Write && _traceTermFe26WriteRemaining > 0 && logical == 0x00FFFE26)
+            {
+                _traceTermFe26WriteRemaining--;
+                Console.WriteLine(
+                    $"[TERM-FE26-W8] pc=0x{g_reg_PC:X6} op=0x{g_opcode:X4} logical=0x{logical:X6} " +
+                    $"norm=0x{addr:X6} val=0x{in_data:X2} sp=0x{g_reg_addr[7].l:X8}");
+            }
             if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAMFF"), "1", StringComparison.Ordinal)
                 && logical >= 0x00FFFD00 && logical <= 0x00FFFF00)
             {

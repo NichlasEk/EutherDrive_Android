@@ -21,6 +21,11 @@ namespace EutherDrive.Core.MdTracerCore
         private static bool _bootTraceEnabled = TraceM68kBoot;
         private static int _bootTraceRemaining = TraceM68kBoot ? TraceM68kBootLimit : 0;
         private static int _bootTraceProbeRemaining = TraceM68kBoot ? TraceM68kBootProbeLimit : 0;
+        private static readonly bool TraceM68kStack =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_M68K_STACK"), "1", StringComparison.Ordinal)
+            && TraceConsoleEnabled;
+        private static readonly int TraceM68kStackLimit =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_M68K_STACK_LIMIT", 32);
         private static int _btstLogRemaining = 16;
         private static int _bneLogRemaining = 32;
         private static int _d1LogRemaining = 64;
@@ -30,11 +35,11 @@ namespace EutherDrive.Core.MdTracerCore
         private static int _illegalOpLogRemaining = 16;
         private static int _illegalVectorLogRemaining = 16;
         private static int _headerPcLogRemaining = 16;
-        private static int _spWatchRemaining = 32;
-        private static int _rtsBadLogRemaining = 16;
-        private static int _spOverflowLogRemaining = 16;
-        private static int _spZeroLogRemaining = 16;
-        private static int _spZeroAsyncLogRemaining = 16;
+        private static int _spWatchRemaining = TraceM68kStack ? TraceM68kStackLimit : 0;
+        private static int _rtsBadLogRemaining = TraceM68kStack ? TraceM68kStackLimit : 0;
+        private static int _spOverflowLogRemaining = TraceM68kStack ? TraceM68kStackLimit : 0;
+        private static int _spZeroLogRemaining = TraceM68kStack ? TraceM68kStackLimit : 0;
+        private static int _spZeroAsyncLogRemaining = TraceM68kStack ? TraceM68kStackLimit : 0;
         private static readonly bool TraceA7Write =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_A7_WRITE"), "1", StringComparison.Ordinal);
         private static readonly bool TraceOp30FC =
@@ -61,6 +66,9 @@ namespace EutherDrive.Core.MdTracerCore
             && TraceConsoleEnabled;
         private static readonly bool TraceM68kIntPending =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_M68K_INT_PENDING"), "1", StringComparison.Ordinal)
+            && TraceConsoleEnabled;
+        private static readonly bool TraceM68kLineEmu =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_M68K_LINE_EMU"), "1", StringComparison.Ordinal)
             && TraceConsoleEnabled;
         private static readonly int TraceM68kIntLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_M68K_INT_LIMIT", 64);
         private static int _traceM68kIntRemaining = TraceM68kInt ? TraceM68kIntLimit : 0;
@@ -470,7 +478,8 @@ namespace EutherDrive.Core.MdTracerCore
                     var opinfo = g_opcode_info != null ? g_opcode_info[g_opcode] : null;
                     if (opinfo?.opcode == null)
                     {
-                        if (_illegalOpLogRemaining > 0)
+                        bool isLineEmu = (g_opcode & 0xF000) == 0xA000 || (g_opcode & 0xF000) == 0xF000;
+                        if (_illegalOpLogRemaining > 0 && (!isLineEmu || TraceM68kLineEmu))
                         {
                             _illegalOpLogRemaining--;
                             Console.WriteLine($"[m68k] missing opcode handler op=0x{g_opcode:X4} pc=0x{g_reg_PC:X6}");
@@ -801,7 +810,8 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             uint start = read32(vectorAddress);
-            if (_illegalVectorLogRemaining > 0)
+            bool traceThisException = kind != "LINE-A" && kind != "LINE-F" || TraceM68kLineEmu;
+            if (_illegalVectorLogRemaining > 0 && traceThisException)
             {
                 _illegalVectorLogRemaining--;
                 ushort v0 = read16(start);

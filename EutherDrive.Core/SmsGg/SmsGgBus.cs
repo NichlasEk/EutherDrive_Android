@@ -35,6 +35,8 @@ public sealed class SmsGgBus
         {
             return address switch
             {
+                // GG mode port 00 exposes both Start (bit 7, active low) and region (bit 6).
+                // Some games rely on the combined value instead of masking the Start bit cleanly.
                 0x00 => (byte)(((_input.PausePressed ? 0 : 1) << 7) | ((_input.Region == SmsGgRegion.International ? 1 : 0) << 6)),
                 0x01 => _memory.GameGearRegisters.ExtPort,
                 0x02 => _memory.GameGearRegisters.ParallelPort,
