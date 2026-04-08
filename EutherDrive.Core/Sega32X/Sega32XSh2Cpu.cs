@@ -463,14 +463,11 @@ internal sealed class Sega32XSh2Cpu
                         {
                             uint divisor = Registers.GeneralPurposeRegisters[m];
                             uint dividend = Registers.GeneralPurposeRegisters[n];
-                            
                             Sega32XSh2StatusRegister sr = Registers.StatusRegister;
                             bool oldQ = sr.Q;
                             sr.Q = (dividend & 0x80000000) != 0;
-                            
                             dividend <<= 1;
                             if (sr.T) dividend |= 1;
-                            
                             if (oldQ == sr.M)
                             {
                                 uint prev = dividend;
@@ -483,10 +480,8 @@ internal sealed class Sega32XSh2Cpu
                                 dividend = unchecked(dividend + divisor);
                                 sr.T = dividend < prev;
                             }
-                            
                             sr.Q = (sr.Q ^ sr.M ^ sr.T);
                             sr.T = (sr.Q == sr.M);
-                            
                             Registers.StatusRegister = sr;
                             Registers.GeneralPurposeRegisters[n] = dividend;
                             return true;
@@ -552,22 +547,12 @@ internal sealed class Sega32XSh2Cpu
                         Registers.ProcedureRegister = Registers.NextProgramCounter; Registers.NextProgramCounter = Registers.GeneralPurposeRegisters[n]; Registers.NextInstructionInDelaySlot = true; bus.IncrementCycleCounter(1); CycleCounter += 1; return true;
                     case 0x402B: // JMP @Rn
                         Registers.NextProgramCounter = Registers.GeneralPurposeRegisters[n]; Registers.NextInstructionInDelaySlot = true; bus.IncrementCycleCounter(1); CycleCounter += 1; return true;
-                    case 0x4002: // STS.L MACH, @-Rn
-                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.MacHigh, Sega32XSh2AccessContext.Data); return true;
-                    case 0x4012: // STS.L MACL, @-Rn
-                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.MacLow, Sega32XSh2AccessContext.Data); return true;
-                    case 0x4022: // STS.L PR, @-Rn
-                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.ProcedureRegister, Sega32XSh2AccessContext.Data); return true;
-                    case 0x4003: // STC.L SR, @-Rn
-                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.StatusRegister.ToUInt32(), Sega32XSh2AccessContext.Data); return true;
-                    case 0x4013: // STC.L GBR, @-Rn
-                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.GlobalBaseRegister, Sega32XSh2AccessContext.Data); return true;
-                    case 0x4023: // STC.L VBR, @-Rn
-                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.VectorBaseRegister, Sega32XSh2AccessContext.Data); return true;
-                    case 0x400A: // STS MACH, Rn
-                        Registers.GeneralPurposeRegisters[n] = Registers.MacHigh; return true;
-                    case 0x401A: // STS MACL, Rn
-                        Registers.GeneralPurposeRegisters[n] = Registers.MacLow; return true;
+                    case 0x400A: // LDS Rn, MACH
+                        Registers.MacHigh = Registers.GeneralPurposeRegisters[n]; return true;
+                    case 0x401A: // LDS Rn, MACL
+                        Registers.MacLow = Registers.GeneralPurposeRegisters[n]; return true;
+                    case 0x402A: // LDS Rn, PR
+                        Registers.ProcedureRegister = Registers.GeneralPurposeRegisters[n]; return true;
                     case 0x400E: // LDC Rn, SR
                         Registers.StatusRegister = Sega32XSh2StatusRegister.FromUInt32(Registers.GeneralPurposeRegisters[n]); return true;
                     case 0x401E: // LDC Rn, GBR
@@ -586,6 +571,18 @@ internal sealed class Sega32XSh2Cpu
                         { uint addr = Registers.GeneralPurposeRegisters[n]; Registers.GlobalBaseRegister = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data); Registers.GeneralPurposeRegisters[n] += 4; return true; }
                     case 0x4027: // LDC.L @Rn+, VBR
                         { uint addr = Registers.GeneralPurposeRegisters[n]; Registers.VectorBaseRegister = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data); Registers.GeneralPurposeRegisters[n] += 4; return true; }
+                    case 0x4002: // STS.L MACH, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.MacHigh, Sega32XSh2AccessContext.Data); return true;
+                    case 0x4012: // STS.L MACL, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.MacLow, Sega32XSh2AccessContext.Data); return true;
+                    case 0x4022: // STS.L PR, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.ProcedureRegister, Sega32XSh2AccessContext.Data); return true;
+                    case 0x4003: // STC.L SR, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.StatusRegister.ToUInt32(), Sega32XSh2AccessContext.Data); return true;
+                    case 0x4013: // STC.L GBR, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.GlobalBaseRegister, Sega32XSh2AccessContext.Data); return true;
+                    case 0x4023: // STC.L VBR, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.VectorBaseRegister, Sega32XSh2AccessContext.Data); return true;
                     case 0x401B: // TAS.B @Rn
                         { uint addr = Registers.GeneralPurposeRegisters[n]; byte val = bus.ReadByte(addr, Sega32XSh2AccessContext.Data); bus.WriteByte(addr, (byte)(val | 0x80), Sega32XSh2AccessContext.Data); Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = val == 0; Registers.StatusRegister = sr; bus.IncrementCycleCounter(3); CycleCounter += 3; return true; }
                 }
