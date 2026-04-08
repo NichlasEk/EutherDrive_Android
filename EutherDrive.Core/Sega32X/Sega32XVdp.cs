@@ -598,26 +598,32 @@ internal sealed class Sega32XVdp
         }
     }
 
-    private static uint ToBgra(ushort color)
+    private static readonly uint[] ColorLookupTable = BuildColorLookupTable();
+
+    private static uint[] BuildColorLookupTable()
     {
-        int r = (color >> 0) & 0x1F;
-        int g = (color >> 5) & 0x1F;
-        int b = (color >> 10) & 0x1F;
-        byte rb = (byte)((r << 3) | (r >> 2));
-        byte gb = (byte)((g << 3) | (g >> 2));
-        byte bb = (byte)((b << 3) | (b >> 2));
-        return 0xFF000000u | ((uint)rb << 16) | ((uint)gb << 8) | bb;
+        uint[] table = new uint[32768];
+        for (int i = 0; i < 32768; i++)
+        {
+            int r = (i >> 0) & 0x1F;
+            int g = (i >> 5) & 0x1F;
+            int b = (i >> 10) & 0x1F;
+            byte rb = (byte)((r << 3) | (r >> 2));
+            byte gb = (byte)((g << 3) | (g >> 2));
+            byte bb = (byte)((b << 3) | (b >> 2));
+            table[i] = 0xFF000000u | ((uint)rb << 16) | ((uint)gb << 8) | bb;
+        }
+        return table;
     }
+
+    private static uint ToBgra(ushort color) => ColorLookupTable[color & 0x7FFF];
 
     private static void WritePixel(byte[] output, int offset, uint bgra)
     {
-        if ((uint)(offset + 3) >= output.Length)
-            return;
-
-        output[offset] = (byte)(bgra & 0xFF);
-        output[offset + 1] = (byte)((bgra >> 8) & 0xFF);
-        output[offset + 2] = (byte)((bgra >> 16) & 0xFF);
-        output[offset + 3] = 0xFF;
+        output[offset] = (byte)bgra;
+        output[offset + 1] = (byte)(bgra >> 8);
+        output[offset + 2] = (byte)(bgra >> 16);
+        output[offset + 3] = (byte)(bgra >> 24);
     }
 
     private void TraceVdpStateIfEnabled(Sega32XFrameBufferMode mode, ushort[] frameBuffer, string phase)

@@ -556,6 +556,11 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         }
 
         WriteThroughCacheLongword(address, value);
+        if ((address >> 29) == 0)
+        {
+            WriteBackingLongword(address & 0x1FFFFFFF, value, context);
+            return;
+        }
         WriteWord(address, (ushort)(value >> 16), context);
         WriteWord(address + 2, (ushort)value, context);
     }
@@ -781,6 +786,25 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 break;
             case >= 0xFFFFFF10 and <= 0xFFFFFF13:
                 _divuDivisor = value;
+                if (_divuDivisor == 0)
+                {
+                    _divuControl |= 0x00000001u; // Set overflow bit on divide by zero
+                }
+                else
+                {
+                    long dividend = ((long)(int)_divuDividendHigh << 32) | _divuDividendLow;
+                    long quotient = dividend / (int)_divuDivisor;
+                    long remainder = dividend % (int)_divuDivisor;
+                    
+                    _divuDividendHigh = (uint)(remainder >> 32); // SH-2 docs say high bits are updated
+                    _divuDividendLow = (uint)quotient;
+                    
+                    // Actually SH-2 DIVU works like this:
+                    // DVDNTL / DVSR -> DVDNTL (quotient), DVDNTH (remainder)
+                    // Let's match typical emu logic:
+                    _divuDividendLow = (uint)quotient;
+                    _divuDividendHigh = (uint)remainder;
+                }
                 break;
             case 0xFFFFFF40:
                 _breakAddressA = value;
@@ -848,13 +872,18 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private void AssociativePurge(uint address)
     {
         int entryIndex = CacheEntryIndex(address);
-        ulong mask = ~(1UL << entryIndex);
+        uint tag = address & 0x1FFFFC00;
+        ulong mask = 1UL << entryIndex;
+        
         for (int way = 0; way < 4; way++)
         {
-            _cacheAddressValidBits[way] &= mask;
+            if ((_cacheAddressValidBits[way] & mask) != 0 && _cacheAddressTags[entryIndex * 4 + way] == tag)
+            {
+                _cacheAddressValidBits[way] &= ~mask;
+                // LRU update not strictly required for purge but good for consistency
+                return;
+            }
         }
-
-        _cacheAddressLruBits[entryIndex] = 0;
     }
 
     private void PurgeAllCache()
@@ -1148,6 +1177,90 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         ushort high = ReadBackingWord(masked & ~1u, context);
         ushort low = ReadBackingWord((masked & ~1u) + 2, context);
         return ((uint)high << 16) | low;
+    }
+
+    private void WriteBackingLongword(uint masked, uint value, Sega32XSh2AccessContext context)
+    {
+        if (masked >= 0x06000000 && masked < 0x06040000)
+        {
+            CycleCounter += 1 + Sh2SdramWriteCycles;
+            int wordIndex = (int)(((masked - 0x06000000) >> 1) & ~1u);
+            if ((uint)(wordIndex + 1) < _core.Bus.Sdram.Length)
+            {
+                _core.Bus.Sdram[wordIndex] = (ushort)(value >> 16);
+                _core.Bus.Sdram[wordIndex + 1] = (ushort)value;
+            }
+            return;
+        }
+
+        if (masked >= 0x04000000 && masked < 0x06000000)
+        {
+            if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                return;
+            CycleCounter += 2 * (1 + 4); // FB Write cycles
+            _core.Bus.Vdp.WriteFrameBufferWord(masked - 0x04000000, (ushort)(value >> 16));
+            _core.Bus.Vdp.WriteFrameBufferWord((masked - 0x04000000) | 2, (ushort)value);
+            return;
+        }
+
+        if (masked >= 0x00004200 && masked <= 0x000043FF)
+        {
+            if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                return;
+            CycleCounter += 2;
+            _core.Bus.Vdp.WriteCramWord(masked - 0x00004200, (ushort)(value >> 16));
+            _core.Bus.Vdp.WriteCramWord((masked - 0x00004200) | 2, (ushort)value);
+            return;
+        }
+
+        WriteBackingWord(masked & ~1u, (ushort)(value >> 16), context);
+        WriteBackingWord((masked & ~1u) + 2, (ushort)value, context);
+    }
+
+    private void WriteBackingWord(uint masked, ushort value, Sega32XSh2AccessContext context)
+    {
+        if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
+        {
+            SyncIfCommPortAccessed(masked);
+            if (IsSh2VdpRegister(masked))
+            {
+                if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                    return;
+                CycleCounter += 1 + Sh2VdpCycles;
+                _core.Bus.Vdp.WriteRegister(masked & ~1u, value);
+            }
+            else
+            {
+                _core.Registers.Sh2Write(masked & ~1u, value, _whichCpu, _core.Bus.Vdp);
+            }
+            return;
+        }
+
+        if (masked >= 0x06000000 && masked < 0x06040000)
+        {
+            CycleCounter += 1 + Sh2SdramWriteCycles;
+            int wordIndex = (int)((masked - 0x06000000) >> 1);
+            if ((uint)wordIndex < _core.Bus.Sdram.Length)
+                _core.Bus.Sdram[wordIndex] = value;
+            return;
+        }
+
+        if (masked >= 0x04000000 && masked < 0x06000000)
+        {
+            if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                return;
+            CycleCounter += 1 + 4; // FB Write
+            _core.Bus.Vdp.WriteFrameBufferWord(masked - 0x04000000, value);
+            return;
+        }
+
+        if (masked >= 0x00004200 && masked <= 0x000043FF)
+        {
+            if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                return;
+            CycleCounter += 1;
+            _core.Bus.Vdp.WriteCramWord(masked - 0x00004200, value);
+        }
     }
 
     private static bool IsSh2SystemRegister(uint masked) => masked >= 0x00004000 && masked <= 0x0000402F;
