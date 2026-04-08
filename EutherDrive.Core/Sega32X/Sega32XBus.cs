@@ -60,7 +60,7 @@ internal sealed class Sega32XBus
             return ReadCartridgeByte(address);
 
         if (address >= M68kFirstCartBankStart && address <= M68kFirstCartBankEnd)
-            return ReadCartridgeByte(address & 0x7FFFF);
+            return ReadCartridgeByte(address & 0xFFFFF);
 
         if (address >= M68kMappableCartBankStart && address <= M68kMappableCartBankEnd)
         {
@@ -118,7 +118,7 @@ internal sealed class Sega32XBus
             return ReadCartridgeWord(aligned);
 
         if (aligned >= M68kFirstCartBankStart && aligned <= M68kFirstCartBankEnd)
-            return ReadCartridgeWord(aligned & 0x7FFFF);
+            return ReadCartridgeWord(aligned & 0xFFFFF);
 
         if (aligned >= M68kMappableCartBankStart && aligned <= M68kMappableCartBankEnd)
         {

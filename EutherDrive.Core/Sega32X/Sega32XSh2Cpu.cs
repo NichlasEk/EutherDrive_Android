@@ -2,7 +2,7 @@ namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XSh2Cpu
 {
-    private const int MaxUnsupportedLogs = 100;
+    private const int MaxUnsupportedLogs = 100_000;
     public string Name { get; }
     public Sega32XSh2Registers Registers { get; } = new();
     public ulong CycleCounter { get; private set; }
@@ -828,6 +828,9 @@ internal sealed class Sega32XSh2Cpu
                             Registers.StatusRegister = sr;
                             return true;
                         }
+                    case 0x001B: // SLEEP
+                        // For now, treat as NOP but in a real scheduler this would yield cycles
+                        return true;
                     case 0x0028: // CLRMAC
                         Registers.MacLow = 0; Registers.MacHigh = 0;
                         return true;
