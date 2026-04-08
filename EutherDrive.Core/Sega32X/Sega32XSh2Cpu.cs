@@ -463,24 +463,30 @@ internal sealed class Sega32XSh2Cpu
                         {
                             uint divisor = Registers.GeneralPurposeRegisters[m];
                             uint dividend = Registers.GeneralPurposeRegisters[n];
-                            bool pS = (dividend & 0x80000000) != 0;
-                            dividend = (dividend << 1) | (Registers.StatusRegister.T ? 1u : 0u);
-                            bool ov;
-                            if (Registers.StatusRegister.Q == Registers.StatusRegister.M)
+                            
+                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+                            bool oldQ = sr.Q;
+                            sr.Q = (dividend & 0x80000000) != 0;
+                            
+                            dividend <<= 1;
+                            if (sr.T) dividend |= 1;
+                            
+                            if (oldQ == sr.M)
                             {
                                 uint prev = dividend;
                                 dividend = unchecked(dividend - divisor);
-                                ov = dividend > prev;
+                                sr.T = dividend > prev;
                             }
                             else
                             {
                                 uint prev = dividend;
                                 dividend = unchecked(dividend + divisor);
-                                ov = dividend < prev;
+                                sr.T = dividend < prev;
                             }
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.Q = ov ^ pS ^ sr.M;
-                            sr.T = sr.Q == sr.M;
+                            
+                            sr.Q = (sr.Q ^ sr.M ^ sr.T);
+                            sr.T = (sr.Q == sr.M);
+                            
                             Registers.StatusRegister = sr;
                             Registers.GeneralPurposeRegisters[n] = dividend;
                             return true;
@@ -494,356 +500,152 @@ internal sealed class Sega32XSh2Cpu
                     Registers.GeneralPurposeRegisters[m] += 2;
                     short valN = (short)bus.ReadWord(Registers.GeneralPurposeRegisters[n], Sega32XSh2AccessContext.Data);
                     Registers.GeneralPurposeRegisters[n] += 2;
-                    
                     int product = valM * valN;
                     if (Registers.StatusRegister.S)
                     {
                         long currentMacL = (int)Registers.MacLow;
                         long result = currentMacL + product;
-                        if (result > int.MaxValue)
-                        {
-                            Registers.MacLow = int.MaxValue;
-                            Registers.MacHigh |= 1;
-                        }
-                        else if (result < int.MinValue)
-                        {
-                            Registers.MacLow = unchecked((uint)int.MinValue);
-                            Registers.MacHigh |= 1;
-                        }
-                        else
-                        {
-                            Registers.MacLow = (uint)result;
-                        }
+                        if (result > int.MaxValue) { Registers.MacLow = int.MaxValue; Registers.MacHigh |= 1; }
+                        else if (result < int.MinValue) { Registers.MacLow = unchecked((uint)int.MinValue); Registers.MacHigh |= 1; }
+                        else Registers.MacLow = (uint)result;
                     }
-                    else
-                    {
-                        SetMac(GetMac() + product);
-                    }
+                    else SetMac(GetMac() + product);
                     return true;
                 }
 
                 switch (opcode & 0xF0FF)
                 {
                     case 0x4015: // CMP/PL Rn
-                        {
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = (int)Registers.GeneralPurposeRegisters[n] > 0;
-                            Registers.StatusRegister = sr;
-                            return true;
-                        }
+                        { Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = (int)Registers.GeneralPurposeRegisters[n] > 0; Registers.StatusRegister = sr; return true; }
                     case 0x4011: // CMP/PZ Rn
-                        {
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = (int)Registers.GeneralPurposeRegisters[n] >= 0;
-                            Registers.StatusRegister = sr;
-                            return true;
-                        }
+                        { Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = (int)Registers.GeneralPurposeRegisters[n] >= 0; Registers.StatusRegister = sr; return true; }
                     case 0x4010: // DT Rn
-                        {
-                            Registers.GeneralPurposeRegisters[n] = unchecked(Registers.GeneralPurposeRegisters[n] - 1);
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = Registers.GeneralPurposeRegisters[n] == 0;
-                            Registers.StatusRegister = sr;
-                            return true;
-                        }
+                        { Registers.GeneralPurposeRegisters[n] = unchecked(Registers.GeneralPurposeRegisters[n] - 1); Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = Registers.GeneralPurposeRegisters[n] == 0; Registers.StatusRegister = sr; return true; }
                     case 0x4001: // SHLR Rn
-                        {
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = (Registers.GeneralPurposeRegisters[n] & 1) != 0;
-                            Registers.StatusRegister = sr;
-                            Registers.GeneralPurposeRegisters[n] >>= 1;
-                            return true;
-                        }
+                        { Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = (Registers.GeneralPurposeRegisters[n] & 1) != 0; Registers.StatusRegister = sr; Registers.GeneralPurposeRegisters[n] >>= 1; return true; }
                     case 0x4000: // SHLL Rn
                     case 0x4020: // SHAL Rn
-                        {
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = (Registers.GeneralPurposeRegisters[n] & 0x80000000) != 0;
-                            Registers.StatusRegister = sr;
-                            Registers.GeneralPurposeRegisters[n] <<= 1;
-                            return true;
-                        }
+                        { Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = (Registers.GeneralPurposeRegisters[n] & 0x80000000) != 0; Registers.StatusRegister = sr; Registers.GeneralPurposeRegisters[n] <<= 1; return true; }
                     case 0x4021: // SHAR Rn
-                        {
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = (Registers.GeneralPurposeRegisters[n] & 1) != 0;
-                            Registers.StatusRegister = sr;
-                            Registers.GeneralPurposeRegisters[n] = (uint)((int)Registers.GeneralPurposeRegisters[n] >> 1);
-                            return true;
-                        }
+                        { Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = (Registers.GeneralPurposeRegisters[n] & 1) != 0; Registers.StatusRegister = sr; Registers.GeneralPurposeRegisters[n] = (uint)((int)Registers.GeneralPurposeRegisters[n] >> 1); return true; }
                     case 0x4004: // ROTL Rn
-                        {
-                            uint val = Registers.GeneralPurposeRegisters[n];
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = (val & 0x80000000) != 0;
-                            Registers.StatusRegister = sr;
-                            Registers.GeneralPurposeRegisters[n] = (val << 1) | (val >> 31);
-                            return true;
-                        }
+                        { uint val = Registers.GeneralPurposeRegisters[n]; Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = (val & 0x80000000) != 0; Registers.StatusRegister = sr; Registers.GeneralPurposeRegisters[n] = (val << 1) | (val >> 31); return true; }
                     case 0x4005: // ROTR Rn
-                        {
-                            uint val = Registers.GeneralPurposeRegisters[n];
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = (val & 1) != 0;
-                            Registers.StatusRegister = sr;
-                            Registers.GeneralPurposeRegisters[n] = (val >> 1) | (val << 31);
-                            return true;
-                        }
+                        { uint val = Registers.GeneralPurposeRegisters[n]; Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = (val & 1) != 0; Registers.StatusRegister = sr; Registers.GeneralPurposeRegisters[n] = (val >> 1) | (val << 31); return true; }
                     case 0x4024: // ROTCL Rn
-                        {
-                            uint val = Registers.GeneralPurposeRegisters[n];
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            bool cO = (val & 0x80000000) != 0;
-                            Registers.GeneralPurposeRegisters[n] = (val << 1) | (sr.T ? 1u : 0u);
-                            sr.T = cO;
-                            Registers.StatusRegister = sr;
-                            return true;
-                        }
+                        { uint val = Registers.GeneralPurposeRegisters[n]; Sega32XSh2StatusRegister sr = Registers.StatusRegister; bool cO = (val & 0x80000000) != 0; Registers.GeneralPurposeRegisters[n] = (val << 1) | (sr.T ? 1u : 0u); sr.T = cO; Registers.StatusRegister = sr; return true; }
                     case 0x4025: // ROTCR Rn
-                        {
-                            uint val = Registers.GeneralPurposeRegisters[n];
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            bool cO = (val & 1) != 0;
-                            Registers.GeneralPurposeRegisters[n] = (val >> 1) | ((sr.T ? 1u : 0u) << 31);
-                            sr.T = cO;
-                            Registers.StatusRegister = sr;
-                            return true;
-                        }
+                        { uint val = Registers.GeneralPurposeRegisters[n]; Sega32XSh2StatusRegister sr = Registers.StatusRegister; bool cO = (val & 1) != 0; Registers.GeneralPurposeRegisters[n] = (val >> 1) | ((sr.T ? 1u : 0u) << 31); sr.T = cO; Registers.StatusRegister = sr; return true; }
                     case 0x4008: // SHLL2 Rn
-                        Registers.GeneralPurposeRegisters[n] <<= 2;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] <<= 2; return true;
                     case 0x4009: // SHLR2 Rn
-                        Registers.GeneralPurposeRegisters[n] >>= 2;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] >>= 2; return true;
                     case 0x4018: // SHLL8 Rn
-                        Registers.GeneralPurposeRegisters[n] <<= 8;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] <<= 8; return true;
                     case 0x4019: // SHLR8 Rn
-                        Registers.GeneralPurposeRegisters[n] >>= 8;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] >>= 8; return true;
                     case 0x4028: // SHLL16 Rn
-                        Registers.GeneralPurposeRegisters[n] <<= 16;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] <<= 16; return true;
                     case 0x4029: // SHLR16 Rn
-                        Registers.GeneralPurposeRegisters[n] >>= 16;
-                        return true;
-                    case 0x4002: // STS.L MACH, @-Rn
-                        {
-                            Registers.GeneralPurposeRegisters[n] -= 4;
-                            bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.MacHigh, Sega32XSh2AccessContext.Data);
-                            return true;
-                        }
-                    case 0x4012: // STS.L MACL, @-Rn
-                        {
-                            Registers.GeneralPurposeRegisters[n] -= 4;
-                            bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.MacLow, Sega32XSh2AccessContext.Data);
-                            return true;
-                        }
-                    case 0x4022: // STS.L PR, @-Rn
-                        {
-                            Registers.GeneralPurposeRegisters[n] -= 4;
-                            bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.ProcedureRegister, Sega32XSh2AccessContext.Data);
-                            return true;
-                        }
-                    case 0x4003: // STC.L SR, @-Rn
-                        {
-                            Registers.GeneralPurposeRegisters[n] -= 4;
-                            bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.StatusRegister.ToUInt32(), Sega32XSh2AccessContext.Data);
-                            return true;
-                        }
-                    case 0x4013: // STC.L GBR, @-Rn
-                        {
-                            Registers.GeneralPurposeRegisters[n] -= 4;
-                            bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.GlobalBaseRegister, Sega32XSh2AccessContext.Data);
-                            return true;
-                        }
-                    case 0x4023: // STC.L VBR, @-Rn
-                        {
-                            Registers.GeneralPurposeRegisters[n] -= 4;
-                            bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.VectorBaseRegister, Sega32XSh2AccessContext.Data);
-                            return true;
-                        }
+                        Registers.GeneralPurposeRegisters[n] >>= 16; return true;
                     case 0x400B: // JSR @Rn
-                        Registers.ProcedureRegister = Registers.NextProgramCounter;
-                        Registers.NextProgramCounter = Registers.GeneralPurposeRegisters[n];
-                        Registers.NextInstructionInDelaySlot = true;
-                        bus.IncrementCycleCounter(1);
-                        CycleCounter += 1;
-                        return true;
+                        Registers.ProcedureRegister = Registers.NextProgramCounter; Registers.NextProgramCounter = Registers.GeneralPurposeRegisters[n]; Registers.NextInstructionInDelaySlot = true; bus.IncrementCycleCounter(1); CycleCounter += 1; return true;
                     case 0x402B: // JMP @Rn
-                        Registers.NextProgramCounter = Registers.GeneralPurposeRegisters[n];
-                        Registers.NextInstructionInDelaySlot = true;
-                        bus.IncrementCycleCounter(1);
-                        CycleCounter += 1;
-                        return true;
+                        Registers.NextProgramCounter = Registers.GeneralPurposeRegisters[n]; Registers.NextInstructionInDelaySlot = true; bus.IncrementCycleCounter(1); CycleCounter += 1; return true;
+                    case 0x4002: // STS.L MACH, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.MacHigh, Sega32XSh2AccessContext.Data); return true;
+                    case 0x4012: // STS.L MACL, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.MacLow, Sega32XSh2AccessContext.Data); return true;
+                    case 0x4022: // STS.L PR, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.ProcedureRegister, Sega32XSh2AccessContext.Data); return true;
+                    case 0x4003: // STC.L SR, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.StatusRegister.ToUInt32(), Sega32XSh2AccessContext.Data); return true;
+                    case 0x4013: // STC.L GBR, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.GlobalBaseRegister, Sega32XSh2AccessContext.Data); return true;
+                    case 0x4023: // STC.L VBR, @-Rn
+                        Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.VectorBaseRegister, Sega32XSh2AccessContext.Data); return true;
+                    case 0x400A: // STS MACH, Rn
+                        Registers.GeneralPurposeRegisters[n] = Registers.MacHigh; return true;
+                    case 0x401A: // STS MACL, Rn
+                        Registers.GeneralPurposeRegisters[n] = Registers.MacLow; return true;
                     case 0x400E: // LDC Rn, SR
-                        Registers.StatusRegister = Sega32XSh2StatusRegister.FromUInt32(Registers.GeneralPurposeRegisters[n]);
-                        return true;
+                        Registers.StatusRegister = Sega32XSh2StatusRegister.FromUInt32(Registers.GeneralPurposeRegisters[n]); return true;
                     case 0x401E: // LDC Rn, GBR
-                        Registers.GlobalBaseRegister = Registers.GeneralPurposeRegisters[n];
-                        return true;
+                        Registers.GlobalBaseRegister = Registers.GeneralPurposeRegisters[n]; return true;
                     case 0x402E: // LDC Rn, VBR
-                        Registers.VectorBaseRegister = Registers.GeneralPurposeRegisters[n];
-                        return true;
-                    case 0x4007: // LDC.L @Rn+, SR
-                        {
-                            uint addr = Registers.GeneralPurposeRegisters[n];
-                            Registers.StatusRegister = Sega32XSh2StatusRegister.FromUInt32(bus.ReadLongword(addr, Sega32XSh2AccessContext.Data));
-                            Registers.GeneralPurposeRegisters[n] += 4;
-                            return true;
-                        }
-                    case 0x4017: // LDC.L @Rn+, GBR
-                        {
-                            uint addr = Registers.GeneralPurposeRegisters[n];
-                            Registers.GlobalBaseRegister = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data);
-                            Registers.GeneralPurposeRegisters[n] += 4;
-                            return true;
-                        }
-                    case 0x4027: // LDC.L @Rn+, VBR
-                        {
-                            uint addr = Registers.GeneralPurposeRegisters[n];
-                            Registers.VectorBaseRegister = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data);
-                            Registers.GeneralPurposeRegisters[n] += 4;
-                            return true;
-                        }
+                        Registers.VectorBaseRegister = Registers.GeneralPurposeRegisters[n]; return true;
                     case 0x4006: // LDS.L @Rn+, MACH
-                        {
-                            uint addr = Registers.GeneralPurposeRegisters[n];
-                            Registers.MacHigh = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data);
-                            Registers.GeneralPurposeRegisters[n] += 4;
-                            return true;
-                        }
+                        { uint addr = Registers.GeneralPurposeRegisters[n]; Registers.MacHigh = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data); Registers.GeneralPurposeRegisters[n] += 4; return true; }
                     case 0x4016: // LDS.L @Rn+, MACL
-                        {
-                            uint addr = Registers.GeneralPurposeRegisters[n];
-                            Registers.MacLow = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data);
-                            Registers.GeneralPurposeRegisters[n] += 4;
-                            return true;
-                        }
-                    case 0x402A: // LDS Rn, PR
-                        Registers.ProcedureRegister = Registers.GeneralPurposeRegisters[n];
-                        return true;
+                        { uint addr = Registers.GeneralPurposeRegisters[n]; Registers.MacLow = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data); Registers.GeneralPurposeRegisters[n] += 4; return true; }
                     case 0x4026: // LDS.L @Rn+, PR
-                        {
-                            uint addr = Registers.GeneralPurposeRegisters[n];
-                            Registers.ProcedureRegister = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data);
-                            Registers.GeneralPurposeRegisters[n] += 4;
-                            return true;
-                        }
+                        { uint addr = Registers.GeneralPurposeRegisters[n]; Registers.ProcedureRegister = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data); Registers.GeneralPurposeRegisters[n] += 4; return true; }
+                    case 0x4007: // LDC.L @Rn+, SR
+                        { uint addr = Registers.GeneralPurposeRegisters[n]; Registers.StatusRegister = Sega32XSh2StatusRegister.FromUInt32(bus.ReadLongword(addr, Sega32XSh2AccessContext.Data)); Registers.GeneralPurposeRegisters[n] += 4; return true; }
+                    case 0x4017: // LDC.L @Rn+, GBR
+                        { uint addr = Registers.GeneralPurposeRegisters[n]; Registers.GlobalBaseRegister = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data); Registers.GeneralPurposeRegisters[n] += 4; return true; }
+                    case 0x4027: // LDC.L @Rn+, VBR
+                        { uint addr = Registers.GeneralPurposeRegisters[n]; Registers.VectorBaseRegister = bus.ReadLongword(addr, Sega32XSh2AccessContext.Data); Registers.GeneralPurposeRegisters[n] += 4; return true; }
                     case 0x401B: // TAS.B @Rn
-                        {
-                            uint addr = Registers.GeneralPurposeRegisters[n];
-                            byte val = bus.ReadByte(addr, Sega32XSh2AccessContext.Data);
-                            bus.WriteByte(addr, (byte)(val | 0x80), Sega32XSh2AccessContext.Data);
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = val == 0;
-                            Registers.StatusRegister = sr;
-                            bus.IncrementCycleCounter(3);
-                            CycleCounter += 3;
-                            return true;
-                        }
+                        { uint addr = Registers.GeneralPurposeRegisters[n]; byte val = bus.ReadByte(addr, Sega32XSh2AccessContext.Data); bus.WriteByte(addr, (byte)(val | 0x80), Sega32XSh2AccessContext.Data); Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = val == 0; Registers.StatusRegister = sr; bus.IncrementCycleCounter(3); CycleCounter += 3; return true; }
                 }
                 break;
             case 0x0000:
                 switch (opcode & 0xF00F)
                 {
                     case 0x0004: // MOV.B Rm, @(R0, Rn)
-                        bus.WriteByte(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[n], (byte)Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data);
-                        return true;
+                        bus.WriteByte(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[n], (byte)Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data); return true;
                     case 0x0005: // MOV.W Rm, @(R0, Rn)
-                        bus.WriteWord(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[n], (ushort)Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data);
-                        return true;
+                        bus.WriteWord(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[n], (ushort)Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data); return true;
                     case 0x0006: // MOV.L Rm, @(R0, Rn)
-                        bus.WriteLongword(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[n], Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data);
-                        return true;
+                        bus.WriteLongword(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[n], Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data); return true;
                     case 0x000C: // MOV.B @(R0, Rm), Rn
-                        Registers.GeneralPurposeRegisters[n] = unchecked((uint)(sbyte)bus.ReadByte(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data));
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = unchecked((uint)(sbyte)bus.ReadByte(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data)); return true;
                     case 0x000D: // MOV.W @(R0, Rm), Rn
-                        Registers.GeneralPurposeRegisters[n] = unchecked((uint)(short)bus.ReadWord(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data));
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = unchecked((uint)(short)bus.ReadWord(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data)); return true;
                     case 0x000E: // MOV.L @(R0, Rm), Rn
-                        Registers.GeneralPurposeRegisters[n] = bus.ReadLongword(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data);
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = bus.ReadLongword(Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data); return true;
                     case 0x0007: // MUL.L Rm, Rn
-                        Registers.MacLow = unchecked(Registers.GeneralPurposeRegisters[n] * Registers.GeneralPurposeRegisters[m]);
-                        return true;
+                        Registers.MacLow = unchecked(Registers.GeneralPurposeRegisters[n] * Registers.GeneralPurposeRegisters[m]); return true;
                     case 0x000F: // MAC.L @Rm+, @Rn+
                         {
-                            uint valM = bus.ReadLongword(Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data);
-                            Registers.GeneralPurposeRegisters[m] += 4;
-                            uint valN = bus.ReadLongword(Registers.GeneralPurposeRegisters[n], Sega32XSh2AccessContext.Data);
-                            Registers.GeneralPurposeRegisters[n] += 4;
+                            uint valM = bus.ReadLongword(Registers.GeneralPurposeRegisters[m], Sega32XSh2AccessContext.Data); Registers.GeneralPurposeRegisters[m] += 4;
+                            uint valN = bus.ReadLongword(Registers.GeneralPurposeRegisters[n], Sega32XSh2AccessContext.Data); Registers.GeneralPurposeRegisters[n] += 4;
                             long pS = unchecked(((long)(int)valM * (int)valN) + GetMac());
-                            if (Registers.StatusRegister.S)
-                            {
-                                const long Min48 = -(1L << 47);
-                                const long Max48 = (1L << 47) - 1;
-                                pS = Math.Clamp(pS, Min48, Max48);
-                            }
-                            SetMac(pS);
-                            return true;
+                            if (Registers.StatusRegister.S) { const long Min48 = -(1L << 47); const long Max48 = (1L << 47) - 1; pS = Math.Clamp(pS, Min48, Max48); }
+                            SetMac(pS); return true;
                         }
                 }
                 switch (opcode & 0xF0FF)
                 {
                     case 0x0002: // STC SR, Rn
-                        Registers.GeneralPurposeRegisters[n] = Registers.StatusRegister.ToUInt32();
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = Registers.StatusRegister.ToUInt32(); return true;
                     case 0x0012: // STC GBR, Rn
-                        Registers.GeneralPurposeRegisters[n] = Registers.GlobalBaseRegister;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = Registers.GlobalBaseRegister; return true;
                     case 0x0022: // STC VBR, Rn
-                        Registers.GeneralPurposeRegisters[n] = Registers.VectorBaseRegister;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = Registers.VectorBaseRegister; return true;
                     case 0x000A: // STS MACH, Rn
-                        Registers.GeneralPurposeRegisters[n] = Registers.MacHigh;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = Registers.MacHigh; return true;
                     case 0x001A: // STS MACL, Rn
-                        Registers.GeneralPurposeRegisters[n] = Registers.MacLow;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = Registers.MacLow; return true;
                     case 0x002A: // STS PR, Rn
-                        Registers.GeneralPurposeRegisters[n] = Registers.ProcedureRegister;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = Registers.ProcedureRegister; return true;
                     case 0x0003: // BSRF Rn
-                        Registers.ProcedureRegister = Registers.NextProgramCounter;
-                        Registers.NextProgramCounter = Registers.NextProgramCounter + Registers.GeneralPurposeRegisters[n];
-                        Registers.NextInstructionInDelaySlot = true;
-                        return true;
+                        Registers.ProcedureRegister = Registers.NextProgramCounter; Registers.NextProgramCounter = Registers.NextProgramCounter + Registers.GeneralPurposeRegisters[n]; Registers.NextInstructionInDelaySlot = true; return true;
                     case 0x0023: // BRAF Rn
-                        Registers.NextProgramCounter = Registers.NextProgramCounter + Registers.GeneralPurposeRegisters[n];
-                        Registers.NextInstructionInDelaySlot = true;
-                        return true;
+                        Registers.NextProgramCounter = Registers.NextProgramCounter + Registers.GeneralPurposeRegisters[n]; Registers.NextInstructionInDelaySlot = true; return true;
                     case 0x0008: // CLRT
-                        {
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = false;
-                            Registers.StatusRegister = sr;
-                            return true;
-                        }
+                        { Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = false; Registers.StatusRegister = sr; return true; }
                     case 0x0018: // SETT
-                        {
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = true;
-                            Registers.StatusRegister = sr;
-                            return true;
-                        }
+                        { Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = true; Registers.StatusRegister = sr; return true; }
                     case 0x001B: // SLEEP
-                        // For now, treat as NOP but in a real scheduler this would yield cycles
                         return true;
                     case 0x0028: // CLRMAC
-                        Registers.MacLow = 0; Registers.MacHigh = 0;
-                        return true;
+                        Registers.MacLow = 0; Registers.MacHigh = 0; return true;
                     case 0x0019: // DIV0U
-                        {
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.M = false; sr.Q = false; sr.T = false;
-                            Registers.StatusRegister = sr;
-                            return true;
-                        }
+                        { Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.M = false; sr.Q = false; sr.T = false; Registers.StatusRegister = sr; return true; }
                     case 0x0029: // MOVT Rn
-                        Registers.GeneralPurposeRegisters[n] = Registers.StatusRegister.T ? 1u : 0u;
-                        return true;
+                        Registers.GeneralPurposeRegisters[n] = Registers.StatusRegister.T ? 1u : 0u; return true;
                 }
                 if (opcode == 0x000B) { Registers.NextProgramCounter = Registers.ProcedureRegister; Registers.NextInstructionInDelaySlot = true; return true; }
                 if (opcode == 0x002B) {
@@ -853,8 +655,7 @@ internal sealed class Sega32XSh2Cpu
                     Registers.StatusRegister = Sega32XSh2StatusRegister.FromUInt32(bus.ReadLongword(Registers.StackPointer, Sega32XSh2AccessContext.Data));
                     Registers.StackPointer += 4;
                     Registers.NextInstructionInDelaySlot = true;
-                    bus.IncrementCycleCounter(3);
-                    CycleCounter += 3;
+                    bus.IncrementCycleCounter(3); CycleCounter += 3;
                     return true;
                 }
                 if (opcode == 0x0009) return true;
@@ -886,47 +687,10 @@ internal sealed class Sega32XSh2Cpu
                     case 0x9: Registers.GeneralPurposeRegisters[0] &= (uint)(opcode & 0xFF); return true;
                     case 0xA: Registers.GeneralPurposeRegisters[0] ^= (uint)(opcode & 0xFF); return true;
                     case 0xB: Registers.GeneralPurposeRegisters[0] |= (uint)(opcode & 0xFF); return true;
-                    case 0xC: // TST.B #imm, @(R0, GBR)
-                        {
-                            uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0];
-                            byte val = bus.ReadByte(address, Sega32XSh2AccessContext.Data);
-                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-                            sr.T = (val & (uint)(opcode & 0xFF)) == 0;
-                            Registers.StatusRegister = sr;
-                            bus.IncrementCycleCounter(3);
-                            CycleCounter += 3;
-                            return true;
-                        }
-                    case 0xD: // AND.B #imm, @(R0, GBR)
-                        {
-                            uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0];
-                            byte val = bus.ReadByte(address, Sega32XSh2AccessContext.Data);
-                            val &= (byte)(opcode & 0xFF);
-                            bus.WriteByte(address, val, Sega32XSh2AccessContext.Data);
-                            bus.IncrementCycleCounter(3);
-                            CycleCounter += 3;
-                            return true;
-                        }
-                    case 0xE: // XOR.B #imm, @(R0, GBR)
-                        {
-                            uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0];
-                            byte val = bus.ReadByte(address, Sega32XSh2AccessContext.Data);
-                            val ^= (byte)(opcode & 0xFF);
-                            bus.WriteByte(address, val, Sega32XSh2AccessContext.Data);
-                            bus.IncrementCycleCounter(3);
-                            CycleCounter += 3;
-                            return true;
-                        }
-                    case 0xF: // OR.B #imm, @(R0, GBR)
-                        {
-                            uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0];
-                            byte val = bus.ReadByte(address, Sega32XSh2AccessContext.Data);
-                            val |= (byte)(opcode & 0xFF);
-                            bus.WriteByte(address, val, Sega32XSh2AccessContext.Data);
-                            bus.IncrementCycleCounter(3);
-                            CycleCounter += 3;
-                            return true;
-                        }
+                    case 0xC: { uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0]; byte val = bus.ReadByte(address, Sega32XSh2AccessContext.Data); Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = (val & (uint)(opcode & 0xFF)) == 0; Registers.StatusRegister = sr; bus.IncrementCycleCounter(3); CycleCounter += 3; return true; }
+                    case 0xD: { uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0]; byte val = (byte)(bus.ReadByte(address, Sega32XSh2AccessContext.Data) & (opcode & 0xFF)); bus.WriteByte(address, val, Sega32XSh2AccessContext.Data); bus.IncrementCycleCounter(3); CycleCounter += 3; return true; }
+                    case 0xE: { uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0]; byte val = (byte)(bus.ReadByte(address, Sega32XSh2AccessContext.Data) ^ (opcode & 0xFF)); bus.WriteByte(address, val, Sega32XSh2AccessContext.Data); bus.IncrementCycleCounter(3); CycleCounter += 3; return true; }
+                    case 0xF: { uint address = Registers.GlobalBaseRegister + Registers.GeneralPurposeRegisters[0]; byte val = (byte)(bus.ReadByte(address, Sega32XSh2AccessContext.Data) | (opcode & 0xFF)); bus.WriteByte(address, val, Sega32XSh2AccessContext.Data); bus.IncrementCycleCounter(3); CycleCounter += 3; return true; }
                     case 0x7: Registers.GeneralPurposeRegisters[0] = (Registers.NextProgramCounter & ~3u) + (uint)((opcode & 0xFF) << 2); return true;
                     case 0x3:
                         {
