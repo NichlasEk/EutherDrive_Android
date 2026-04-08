@@ -32,13 +32,18 @@ internal static class Sega32XBootRom
 
     private static byte[] LoadPatchedM68kVectors()
     {
-        byte[] vectors = LoadResource("m68k_vectors.bin", M68kVectorsLength);
+        // Load the available bytes and pad to 1024 if the file is smaller.
+        byte[] vectors = new byte[M68kVectorsLength];
+        try 
+        {
+            byte[] raw = LoadResource("m68k_vectors.bin", -1);
+            Buffer.BlockCopy(raw, 0, vectors, 0, Math.Min(raw.Length, M68kVectorsLength));
+        }
+        catch 
+        {
+            // Fallback
+        }
 
-        // Match jgenesis/testpico behavior: HINT vector starts at zero.
-        vectors[0x70] = 0;
-        vectors[0x71] = 0;
-        vectors[0x72] = 0;
-        vectors[0x73] = 0;
         return vectors;
     }
 
@@ -62,7 +67,8 @@ internal static class Sega32XBootRom
         if (stream == null)
             throw new InvalidOperationException($"Embedded 32X boot ROM resource '{resourceName}' was not found.");
 
-        byte[] data = new byte[expectedLength];
+        int len = expectedLength > 0 ? expectedLength : (int)stream.Length;
+        byte[] data = new byte[len];
         int offset = 0;
         while (offset < data.Length)
         {
@@ -72,7 +78,7 @@ internal static class Sega32XBootRom
             offset += read;
         }
 
-        if (offset != expectedLength)
+        if (expectedLength > 0 && offset != expectedLength)
             throw new InvalidOperationException($"Embedded 32X boot ROM '{fileName}' had length {offset}, expected {expectedLength}.");
 
         return data;

@@ -43,6 +43,8 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
             _romData = romData;
             _core = new Sega32X.Sega32XScaffoldCore(romData);
             _core.Reset();
+            // Bootstrap standalone adapter into enabled state since there's no M68K to do it
+            _core.Registers.M68kWrite(0xA15100, 0x0003);
             _romPath = path;
             _romIdentity = new RomIdentity(
                 Path.GetFileName(path),
@@ -61,6 +63,8 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
         {
             _frameCounter = 0;
             _core?.Reset();
+            // Bootstrap standalone adapter into enabled state since there's no M68K to do it
+            _core?.Registers.M68kWrite(0xA15100, 0x0003);
             ClearFrameBuffer();
             if (_romData != null)
                 RenderFrame();

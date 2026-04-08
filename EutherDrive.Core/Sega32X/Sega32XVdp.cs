@@ -298,9 +298,9 @@ internal sealed class Sega32XVdp
         return waitCycles;
     }
 
-    public void WriteFrameBufferByte(uint address, byte value)
+    public void WriteFrameBufferByte(uint address, byte value, bool overwrite = false)
     {
-        if (value == 0)
+        if (value == 0 && !overwrite)
             return;
 
         ushort[] frameBuffer = GetWriteBuffer();
@@ -315,13 +315,6 @@ internal sealed class Sega32XVdp
 
     public void WriteFrameBufferWord(uint address, ushort value)
     {
-        ushort[] frameBuffer = GetWriteBuffer();
-        frameBuffer[((address & 0x1FFFF) >> 1) % frameBuffer.Length] = value;
-        TraceFrameBufferWriteIfEnabled("word", address, value, frameBuffer);
-    }
-
-    public void OverwriteFrameBufferWord(uint address, ushort value)
-    {
         if (value == 0)
             return;
 
@@ -335,7 +328,14 @@ internal sealed class Sega32XVdp
         if (low != 0)
             current = (ushort)((current & 0xFF00) | low);
         frameBuffer[index] = current;
-        TraceFrameBufferWriteIfEnabled("ovr", address, current, frameBuffer);
+        TraceFrameBufferWriteIfEnabled("word", address, current, frameBuffer);
+    }
+
+    public void OverwriteFrameBufferWord(uint address, ushort value)
+    {
+        ushort[] frameBuffer = GetWriteBuffer();
+        frameBuffer[((address & 0x1FFFF) >> 1) % frameBuffer.Length] = value;
+        TraceFrameBufferWriteIfEnabled("ovr", address, value, frameBuffer);
     }
 
     public ushort ReadCramWord(uint address)
@@ -503,10 +503,11 @@ internal sealed class Sega32XVdp
 
     private void RenderDirectColorLine(byte[] output, int row, ushort[] frameBuffer, int line)
     {
-        ushort lineAddress = frameBuffer[line % frameBuffer.Length];
+        // Line addresses are stored at the beginning of the frame buffer (first 256 words)
+        ushort lineAddress = frameBuffer[line & 0xFF];
         for (int x = 0; x < FrameWidth; x++)
         {
-            ushort color = frameBuffer[(lineAddress + x) % frameBuffer.Length];
+            ushort color = frameBuffer[(lineAddress + x) & 0xFFFF];
             WritePixel(output, row + (x * 4), ToBgra(color));
         }
     }
@@ -514,10 +515,11 @@ internal sealed class Sega32XVdp
     private void RenderRunLengthLine(byte[] output, int row, ushort[] frameBuffer, int line)
     {
         int x = 0;
-        int readIndex = frameBuffer[line % frameBuffer.Length];
+        // Line addresses are stored at the beginning of the frame buffer (first 256 words)
+        int readIndex = frameBuffer[line & 0xFF];
         while (x < FrameWidth)
         {
-            ushort word = frameBuffer[readIndex % frameBuffer.Length];
+            ushort word = frameBuffer[readIndex & 0xFFFF];
             readIndex++;
             int runLength = ((word >> 8) & 0xFF) + 1;
             uint bgra = ToBgra(_cram[word & 0xFF]);

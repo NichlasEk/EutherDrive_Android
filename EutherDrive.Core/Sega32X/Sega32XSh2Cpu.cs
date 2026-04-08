@@ -69,25 +69,24 @@ internal sealed class Sega32XSh2Cpu
             return;
         }
 
-        if (Registers.NextInstructionInDelaySlot)
+        while (ticks > 0)
         {
+            // Always check interrupts if we're not in a delay slot
+            if (!Registers.NextInstructionInDelaySlot)
+            {
+                byte externalInterruptLevel = bus.InterruptLevel;
+                if (externalInterruptLevel > Registers.StatusRegister.InterruptMask)
+                {
+                    uint vectorNumber = 64u + (uint)(externalInterruptLevel >> 1);
+                    HandleException(externalInterruptLevel, vectorNumber, bus);
+                    // Exceptions take cycles and might change ticks context, but for now just count as 5
+                    if (ticks > 5) ticks -= 5; else ticks = 0;
+                    if (ticks == 0) break;
+                }
+            }
+
             ExecuteSingleInstruction(bus);
             ticks--;
-            if (ticks == 0)
-                return;
-        }
-
-        byte externalInterruptLevel = bus.InterruptLevel;
-        if (externalInterruptLevel > Registers.StatusRegister.InterruptMask)
-        {
-            uint vectorNumber = 64u + (uint)(externalInterruptLevel >> 1);
-            HandleException(externalInterruptLevel, vectorNumber, bus);
-            return;
-        }
-
-        for (ulong i = 0; i < ticks; i++)
-        {
-            ExecuteSingleInstruction(bus);
         }
     }
 

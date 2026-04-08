@@ -4,7 +4,7 @@ internal sealed class Sega32XBus
 {
     public const uint M68kVectorsStart = 0x000000;
     public const uint M68kVectorsEnd = 0x0000FF;
-    public const uint M68kCartridgeStart = 0x000100;
+    public const uint M68kCartridgeStart = 0x000000;
     public const uint M68kCartridgeEnd = 0x3FFFFF;
     public const uint M68kFrameBufferStart = 0x840000;
     public const uint M68kFrameBufferEnd = 0x85FFFF;
@@ -185,7 +185,7 @@ internal sealed class Sega32XBus
         {
             if (Registers.VdpAccess != Sega32XAccess.M68k)
                 return;
-            Vdp.WriteFrameBufferByte(address - M68kFrameBufferStart, value);
+            Vdp.WriteFrameBufferByte(address - M68kFrameBufferStart, value, address >= M68kOverwriteImageStart);
             return;
         }
 

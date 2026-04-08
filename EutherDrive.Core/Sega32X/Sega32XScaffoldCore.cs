@@ -136,7 +136,7 @@ internal sealed class Sega32XScaffoldCore
         if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
             return parsed;
 
-        return 50;
+        return 500;
     }
 
     private void DumpWordsNearPc(string tag, uint pc)

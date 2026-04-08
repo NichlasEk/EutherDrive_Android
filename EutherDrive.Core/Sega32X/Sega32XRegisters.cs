@@ -31,53 +31,60 @@ internal sealed class Sega32XSh2Interrupts
         | (CommandEnabled ? 1 << 1 : 0)
         | (PwmEnabled ? 1 : 0));
 
-    public void WriteMaskBits(ushort value)
+    public void WriteMaskBits(ushort value, bool adapterEnabled)
     {
         VEnabled = (value & 0x0008) != 0;
         HEnabled = (value & 0x0004) != 0;
         CommandEnabled = (value & 0x0002) != 0;
         PwmEnabled = (value & 0x0001) != 0;
-        UpdateInterruptLevel();
+        UpdateInterruptLevel(adapterEnabled);
     }
 
-    public void ClearReset()
+    public void ClearReset(bool adapterEnabled)
     {
         ResetPending = false;
-        UpdateInterruptLevel();
+        UpdateInterruptLevel(adapterEnabled);
     }
 
-    public void ClearV()
+    public void ClearV(bool adapterEnabled)
     {
+        // Clear pending flag only if VINTs are enabled (verified on hardware by jgenesis)
         if (VEnabled)
             VPending = false;
-        UpdateInterruptLevel();
+        UpdateInterruptLevel(adapterEnabled);
     }
 
-    public void ClearH()
+    public void ClearH(bool adapterEnabled)
     {
         HPending = false;
-        UpdateInterruptLevel();
+        UpdateInterruptLevel(adapterEnabled);
     }
 
-    public void ClearCommand()
+    public void ClearCommand(bool adapterEnabled)
     {
         CommandPending = false;
-        UpdateInterruptLevel();
+        UpdateInterruptLevel(adapterEnabled);
     }
 
-    public void ClearPwm()
+    public void ClearPwm(bool adapterEnabled)
     {
         PwmPending = false;
-        UpdateInterruptLevel();
+        UpdateInterruptLevel(adapterEnabled);
     }
 
-    public void UpdateInterruptLevel()
+    public void UpdateInterruptLevel(bool adapterEnabled)
     {
+        if (!adapterEnabled)
+        {
+            CurrentInterruptLevel = 0;
+            return;
+        }
+
         CurrentInterruptLevel = ResetPending ? (byte)14
             : VPending && VEnabled ? (byte)12
-            : HPending ? (byte)10
+            : HPending && HEnabled ? (byte)10
             : CommandPending && CommandEnabled ? (byte)8
-            : PwmPending ? (byte)6
+            : PwmPending && PwmEnabled ? (byte)6
             : (byte)0;
     }
 }
@@ -121,8 +128,8 @@ internal sealed class Sega32XDmaFifo
 
     public void Clear()
     {
-        Array.Clear(_blocks);
-        Array.Clear(_ready);
+        Array.Clear(_blocks, 0, _blocks.Length);
+        Array.Clear(_ready, 0, _ready.Length);
         _m68kBlock = 0;
         _m68kIndex = 0;
         _sh2Block = 0;
@@ -181,10 +188,10 @@ internal sealed class Sega32XSystemRegisters
     public void Reset()
     {
         AdapterEnabled = false;
-        ResetSh2 = false;
+        ResetSh2 = true;
         VdpAccess = Sega32XAccess.M68k;
         M68kRomBank = 0;
-        Array.Clear(CommunicationPorts);
+        Array.Clear(CommunicationPorts, 0, CommunicationPorts.Length);
         Dma.RomToVramDma = false;
         Dma.UnknownBit1 = false;
         Dma.Active = false;
@@ -196,8 +203,7 @@ internal sealed class Sega32XSystemRegisters
 
         MasterInterrupts.ResetPending = true;
         SlaveInterrupts.ResetPending = true;
-        MasterInterrupts.UpdateInterruptLevel();
-        SlaveInterrupts.UpdateInterruptLevel();
+        UpdateInterruptLevels();
     }
 
     public ushort M68kRead(uint address)
@@ -230,6 +236,10 @@ internal sealed class Sega32XSystemRegisters
                 AdapterEnabled = (value & 0x0001) != 0;
                 ResetSh2 = (value & 0x0002) == 0;
                 VdpAccess = (value & 0x8000) != 0 ? Sega32XAccess.Sh2 : Sega32XAccess.M68k;
+                
+                if (oldAdapterEnabled != AdapterEnabled)
+                    UpdateInterruptLevels();
+
                 if (TraceM68kControlWrites)
                 {
                     Console.WriteLine(
@@ -242,8 +252,7 @@ internal sealed class Sega32XSystemRegisters
             case 0xA15102:
                 MasterInterrupts.CommandPending = (value & 0x0001) != 0;
                 SlaveInterrupts.CommandPending = (value & 0x0002) != 0;
-                MasterInterrupts.UpdateInterruptLevel();
-                SlaveInterrupts.UpdateInterruptLevel();
+                UpdateInterruptLevels();
                 break;
             case 0xA15104:
                 M68kRomBank = (byte)(value & 0x0003);
@@ -275,6 +284,7 @@ internal sealed class Sega32XSystemRegisters
                 Dma.DestinationAddress = (Dma.DestinationAddress & 0xFFFF0000u) | value;
                 break;
             case 0xA15110:
+                // Lowest 2 bits are forced to 0
                 Dma.Length = (ushort)(value & 0xFFFC);
                 if (TraceDreq)
                 {
@@ -284,6 +294,7 @@ internal sealed class Sega32XSystemRegisters
                 }
                 break;
             case 0xA15112:
+                // Virtua Racing Deluxe depends on this: only push if active
                 if (Dma.Active)
                 {
                     Dma.Fifo.Push(value);
@@ -338,25 +349,25 @@ internal sealed class Sega32XSystemRegisters
             case 0x4000:
                 VdpAccess = (value & 0x8000) != 0 ? Sega32XAccess.Sh2 : Sega32XAccess.M68k;
                 vdp.WriteHenBit((value & 0x0080) != 0);
-                GetInterrupts(whichCpu).WriteMaskBits(value);
+                GetInterrupts(whichCpu).WriteMaskBits(value, AdapterEnabled);
                 break;
             case 0x4004:
                 vdp.WriteHInterruptInterval(value);
                 break;
             case 0x4014:
-                GetInterrupts(whichCpu).ClearReset();
+                GetInterrupts(whichCpu).ClearReset(AdapterEnabled);
                 break;
             case 0x4016:
-                GetInterrupts(whichCpu).ClearV();
+                GetInterrupts(whichCpu).ClearV(AdapterEnabled);
                 break;
             case 0x4018:
-                GetInterrupts(whichCpu).ClearH();
+                GetInterrupts(whichCpu).ClearH(AdapterEnabled);
                 break;
             case 0x401A:
-                GetInterrupts(whichCpu).ClearCommand();
+                GetInterrupts(whichCpu).ClearCommand(AdapterEnabled);
                 break;
             case 0x401C:
-                GetInterrupts(whichCpu).ClearPwm();
+                GetInterrupts(whichCpu).ClearPwm(AdapterEnabled);
                 break;
             default:
                 if (address >= 0x4020 && address <= 0x402F)
@@ -369,27 +380,37 @@ internal sealed class Sega32XSystemRegisters
     {
         MasterInterrupts.VPending = true;
         SlaveInterrupts.VPending = true;
-        MasterInterrupts.UpdateInterruptLevel();
-        SlaveInterrupts.UpdateInterruptLevel();
+        UpdateInterruptLevels();
     }
 
     public void NotifyVBlankEnd()
     {
         MasterInterrupts.VPending = false;
         SlaveInterrupts.VPending = false;
-        MasterInterrupts.UpdateInterruptLevel();
-        SlaveInterrupts.UpdateInterruptLevel();
+        UpdateInterruptLevels();
     }
 
     public void NotifyHInterrupt()
     {
         MasterInterrupts.HPending |= MasterInterrupts.HEnabled;
         SlaveInterrupts.HPending |= SlaveInterrupts.HEnabled;
-        MasterInterrupts.UpdateInterruptLevel();
-        SlaveInterrupts.UpdateInterruptLevel();
+        UpdateInterruptLevels();
+    }
+
+    public void NotifyPwmTimer()
+    {
+        MasterInterrupts.PwmPending |= MasterInterrupts.PwmEnabled;
+        SlaveInterrupts.PwmPending |= SlaveInterrupts.PwmEnabled;
+        UpdateInterruptLevels();
     }
 
     public bool EitherHInterruptEnabled => MasterInterrupts.HEnabled || SlaveInterrupts.HEnabled;
+
+    public void UpdateInterruptLevels()
+    {
+        MasterInterrupts.UpdateInterruptLevel(AdapterEnabled);
+        SlaveInterrupts.UpdateInterruptLevel(AdapterEnabled);
+    }
 
     private ushort ReadAdapterControl()
     {

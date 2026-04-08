@@ -68,9 +68,14 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             Sega32XSh2Cpu otherCpu = _core.GetOtherCpu(_whichCpu);
             Sega32XSh2Bus otherBus = _core.GetOtherBus(_whichCpu);
             ulong limit = CycleCounter;
+            
+            // Execute in small chunks to maintain handshake precision while keeping performance.
+            // 1-by-1 is too slow (12 FPS), whole-budget is too coarse (no boot).
+            const ulong ChunkSize = 10;
             while (otherBus.CycleCounter < limit)
             {
-                otherCpu.Execute(1, otherBus);
+                ulong toRun = Math.Min(ChunkSize, limit - otherBus.CycleCounter);
+                otherCpu.Execute(toRun, otherBus);
             }
         }
         finally
@@ -395,7 +400,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 return;
             CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
             uint frameBufferAddress = masked - 0x04000000;
-            _core.Bus.Vdp.WriteFrameBufferByte(frameBufferAddress, value);
+            _core.Bus.Vdp.WriteFrameBufferByte(frameBufferAddress, value, IsFrameBufferOverwrite(masked));
             return;
         }
 
