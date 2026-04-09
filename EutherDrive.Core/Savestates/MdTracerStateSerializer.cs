@@ -3,18 +3,21 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using EutherDrive.Core.MdTracerCore;
+using EutherDrive.Core.Sega32X;
 
 namespace EutherDrive.Core.Savestates;
 
 internal sealed class MdTracerStateSerializer
 {
     private const string StateMagic = "EDST";
-    private const int StateVersion = 2;
+    private const int StateVersion = 3;
 
     private readonly List<IStatefulComponent> _components;
+    private readonly bool _has32XState;
 
-    public MdTracerStateSerializer()
+    public MdTracerStateSerializer(Sega32XScaffoldCore? sega32XCore = null)
     {
+        _has32XState = sega32XCore != null;
         _components = new List<IStatefulComponent>
         {
             new MdMainStateComponent(),
@@ -26,6 +29,9 @@ internal sealed class MdTracerStateSerializer
             // md_io innehaller byref-like/stackalloc state som inte gaar att serialisera via reflection.
             new ReflectionStateComponent("md_control", () => md_main.g_md_control)
         };
+
+        if (sega32XCore != null)
+            _components.Add(new Sega32XStateComponent(sega32XCore));
     }
 
     public void Save(BinaryWriter writer)
@@ -64,8 +70,15 @@ internal sealed class MdTracerStateSerializer
             throw new InvalidDataException($"State payload magic mismatch: '{magic}'.");
 
         int version = reader.ReadInt32();
-        if (version != StateVersion)
+        if (version != 2 && version != StateVersion)
             throw new InvalidDataException($"State payload version mismatch: {version}.");
+
+        if (version < StateVersion && _has32XState)
+        {
+            Console.WriteLine(
+                "[Savestate] WARNING: legacy MD savestate loaded for 32X host bridge; " +
+                "32X core state is missing and restore may be incomplete.");
+        }
 
         int componentCount = reader.ReadInt32();
         var lookup = new Dictionary<string, IStatefulComponent>(StringComparer.Ordinal);
@@ -156,5 +169,21 @@ internal sealed class MdTracerStateSerializer
                 return;
             StateBinarySerializer.ReadInto(reader, obj);
         }
+    }
+
+    private sealed class Sega32XStateComponent : IStatefulComponent
+    {
+        private readonly Sega32XScaffoldCore _core;
+
+        public Sega32XStateComponent(Sega32XScaffoldCore core)
+        {
+            _core = core;
+        }
+
+        public string Id => "sega32x_core";
+
+        public void Save(BinaryWriter writer) => _core.SaveState(writer);
+
+        public void Load(BinaryReader reader) => _core.LoadState(reader);
     }
 }

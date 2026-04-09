@@ -3168,7 +3168,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             throw new ArgumentNullException(nameof(writer));
         lock (_stateLock)
         {
-            var serializer = new MdTracerStateSerializer();
+            var serializer = new MdTracerStateSerializer(_sega32XCore);
             serializer.Save(writer);
         }
     }
@@ -3179,7 +3179,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             throw new ArgumentNullException(nameof(reader));
         lock (_stateLock)
         {
-            var serializer = new MdTracerStateSerializer();
+            var serializer = new MdTracerStateSerializer(_sega32XCore);
             serializer.Load(reader);
 
             // Keep loaded BUSREQ/RESET state from savestate; just resync Z80 active bit.

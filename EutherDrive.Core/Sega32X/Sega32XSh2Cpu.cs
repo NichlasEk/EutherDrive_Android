@@ -1,3 +1,5 @@
+using EutherDrive.Core.Savestates;
+
 namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XSh2Cpu
@@ -20,6 +22,10 @@ internal sealed class Sega32XSh2Cpu
         Name = name;
         RequestReset();
     }
+
+    public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
+
+    public void LoadState(BinaryReader reader) => StateBinarySerializer.ReadInto(reader, this);
 
     public void RequestReset()
     {

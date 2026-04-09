@@ -1,3 +1,5 @@
+using EutherDrive.Core.Savestates;
+
 namespace EutherDrive.Core.Sega32X;
 
 internal enum Sega32XFrameBufferMode : ushort
@@ -62,6 +64,10 @@ internal sealed class Sega32XVdp
     public ushort HInterruptInterval { get; private set; }
     public bool HInterruptInVBlank { get; private set; }
     public bool Priority => (DisplayMode & 0x0080) != 0;
+
+    public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
+
+    public void LoadState(BinaryReader reader) => StateBinarySerializer.ReadInto(reader, this);
 
     public ushort ReadRegister(uint address)
     {
@@ -315,20 +321,10 @@ internal sealed class Sega32XVdp
 
     public void WriteFrameBufferWord(uint address, ushort value)
     {
-        if (value == 0)
-            return;
-
         ushort[] frameBuffer = GetWriteBuffer();
         int index = (int)(((address & 0x1FFFF) >> 1) % frameBuffer.Length);
-        ushort current = frameBuffer[index];
-        byte high = (byte)(value >> 8);
-        byte low = (byte)value;
-        if (high != 0)
-            current = (ushort)((current & 0x00FF) | (high << 8));
-        if (low != 0)
-            current = (ushort)((current & 0xFF00) | low);
-        frameBuffer[index] = current;
-        TraceFrameBufferWriteIfEnabled("word", address, current, frameBuffer);
+        frameBuffer[index] = value;
+        TraceFrameBufferWriteIfEnabled("word", address, value, frameBuffer);
     }
 
     public void OverwriteFrameBufferWord(uint address, ushort value)

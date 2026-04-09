@@ -1,3 +1,5 @@
+using EutherDrive.Core.Savestates;
+
 namespace EutherDrive.Core.Sega32X;
 
 internal enum Sega32XAccess : ushort
@@ -410,6 +412,14 @@ internal sealed class Sega32XSystemRegisters
     {
         MasterInterrupts.UpdateInterruptLevel(AdapterEnabled);
         SlaveInterrupts.UpdateInterruptLevel(AdapterEnabled);
+    }
+
+    public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
+
+    public void LoadState(BinaryReader reader)
+    {
+        StateBinarySerializer.ReadInto(reader, this);
+        UpdateInterruptLevels();
     }
 
     private ushort ReadAdapterControl()

@@ -1,3 +1,5 @@
+using EutherDrive.Core.Savestates;
+
 namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
@@ -14,8 +16,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_BOOT_LOOP"),
             "1",
             StringComparison.Ordinal);
-    private readonly Sega32XScaffoldCore _core;
-    private readonly Sega32XCpu _whichCpu;
+    [NonSerialized] private readonly Sega32XScaffoldCore _core;
+    [NonSerialized] private readonly Sega32XCpu _whichCpu;
     private readonly ushort[] _cacheDataArray = new ushort[CacheDataArrayLengthWords];
     private readonly byte[] _serialRegisters = new byte[6];
     private readonly byte[] _freeRunTimerRegisters = new byte[10];
@@ -54,6 +56,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     public byte InterruptLevel => _whichCpu == Sega32XCpu.Master
         ? _core.Registers.MasterInterrupts.CurrentInterruptLevel
         : _core.Registers.SlaveInterrupts.CurrentInterruptLevel;
+
+    public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
+
+    public void LoadState(BinaryReader reader) => StateBinarySerializer.ReadInto(reader, this);
 
     private void SyncIfCommPortAccessed(uint maskedAddress)
     {

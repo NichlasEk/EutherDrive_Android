@@ -1,3 +1,5 @@
+using EutherDrive.Core.Savestates;
+
 namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XScaffoldCore
@@ -117,6 +119,29 @@ internal sealed class Sega32XScaffoldCore
 
     public Sega32XSh2Bus GetOtherBus(Sega32XCpu whichCpu) =>
         whichCpu == Sega32XCpu.Master ? _slaveBus : _masterBus;
+
+    public void SaveState(BinaryWriter writer)
+    {
+        writer.Write(FrameCounter);
+        writer.Write(_commPortSyncInProgress);
+        Bus.SaveState(writer);
+        MasterSh2.SaveState(writer);
+        SlaveSh2.SaveState(writer);
+        _masterBus.SaveState(writer);
+        _slaveBus.SaveState(writer);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        FrameCounter = reader.ReadInt64();
+        _commPortSyncInProgress = reader.ReadBoolean();
+        Bus.LoadState(reader);
+        MasterSh2.LoadState(reader);
+        SlaveSh2.LoadState(reader);
+        _masterBus.LoadState(reader);
+        _slaveBus.LoadState(reader);
+        Registers.UpdateInterruptLevels();
+    }
 
     private static ulong ParseInstructionBudget()
     {

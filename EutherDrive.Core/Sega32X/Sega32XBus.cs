@@ -1,3 +1,5 @@
+using EutherDrive.Core.Savestates;
+
 namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XBus
@@ -25,8 +27,8 @@ internal sealed class Sega32XBus
 
     private static ReadOnlySpan<byte> MarsId => "MARS"u8;
 
-    private readonly byte[] _cartridgeRom;
-    private readonly byte[] _m68kVectors;
+    [NonSerialized] private readonly byte[] _cartridgeRom;
+    [NonSerialized] private readonly byte[] _m68kVectors;
 
     public Sega32XBus(byte[] cartridgeRom, byte[] m68kVectors, Sega32XSystemRegisters registers)
     {
@@ -46,6 +48,14 @@ internal sealed class Sega32XBus
     public ushort[] Sh2FrameBuffer { get; }
     public ushort[] Sh2Cram { get; }
     public ushort[] Sh2PwmRegisters { get; }
+
+    public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
+
+    public void LoadState(BinaryReader reader)
+    {
+        StateBinarySerializer.ReadInto(reader, this);
+        Registers.UpdateInterruptLevels();
+    }
 
     public byte ReadM68kByte(uint address)
     {
