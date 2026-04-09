@@ -8,10 +8,11 @@ public enum PerfHotspot
     CpuStep = 0,
     VdpRender = 1,
     VdpBlit = 2,
-    UiBlit = 3,
-    UiLock = 4,
-    UiTick = 5,
-    Count = 6
+    S32xComposite = 3,
+    UiBlit = 4,
+    UiLock = 5,
+    UiTick = 6,
+    Count = 7
 }
 
 public static class PerfHotspots
@@ -39,6 +40,7 @@ public static class PerfHotspots
             PerfHotspot.CpuStep => "CPU",
             PerfHotspot.VdpRender => "VDP",
             PerfHotspot.VdpBlit => "VDPBlit",
+            PerfHotspot.S32xComposite => "32XComp",
             PerfHotspot.UiBlit => "UIBlit",
             PerfHotspot.UiLock => "UILock",
             PerfHotspot.UiTick => "UITick",

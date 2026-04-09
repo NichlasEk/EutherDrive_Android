@@ -157,6 +157,11 @@ internal sealed class Sega32XSystemRegisters
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_CONTROL_WRITES"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool TraceSh2ControlReads =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_CONTROL_READS"),
+            "1",
+            StringComparison.Ordinal);
     private static readonly bool TraceM68kControlWrites =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_M68K_CONTROL_WRITES"),
@@ -275,15 +280,23 @@ internal sealed class Sega32XSystemRegisters
                 break;
             case 0xA15108:
                 Dma.SourceAddress = (Dma.SourceAddress & 0x0000FFFFu) | ((uint)(value & 0x00FF) << 16);
+                if (TraceDreq)
+                    Console.WriteLine($"[S32X-DREQ-M68K-SRC-HI] value=0x{value:X4} src=0x{Dma.SourceAddress:X6}");
                 break;
             case 0xA1510A:
                 Dma.SourceAddress = (Dma.SourceAddress & 0xFFFF0000u) | (uint)(value & 0xFFFE);
+                if (TraceDreq)
+                    Console.WriteLine($"[S32X-DREQ-M68K-SRC-LO] value=0x{value:X4} src=0x{Dma.SourceAddress:X6}");
                 break;
             case 0xA1510C:
                 Dma.DestinationAddress = (Dma.DestinationAddress & 0x0000FFFFu) | ((uint)(value & 0x00FF) << 16);
+                if (TraceDreq)
+                    Console.WriteLine($"[S32X-DREQ-M68K-DST-HI] value=0x{value:X4} dst=0x{Dma.DestinationAddress:X6}");
                 break;
             case 0xA1510E:
                 Dma.DestinationAddress = (Dma.DestinationAddress & 0xFFFF0000u) | value;
+                if (TraceDreq)
+                    Console.WriteLine($"[S32X-DREQ-M68K-DST-LO] value=0x{value:X4} dst=0x{Dma.DestinationAddress:X6}");
                 break;
             case 0xA15110:
                 // Lowest 2 bits are forced to 0
@@ -320,7 +333,7 @@ internal sealed class Sega32XSystemRegisters
 
     public ushort Sh2Read(uint address, Sega32XCpu whichCpu, Sega32XVdp vdp)
     {
-        return address switch
+        ushort value = address switch
         {
             0x4000 => ReadSh2InterruptMask(whichCpu, vdp),
             0x4004 => vdp.HInterruptInterval,
@@ -334,12 +347,21 @@ internal sealed class Sega32XSystemRegisters
             >= 0x4020 and <= 0x402F => ReadCommunicationPort(address),
             _ => 0,
         };
+
+        if (TraceSh2ControlReads && address >= 0x4000 && address <= 0x401C)
+        {
+            Console.WriteLine(
+                $"[S32X-SH2-READ] cpu={whichCpu} addr=0x{address:X4} value=0x{value:X4} " +
+                $"aden={(AdapterEnabled ? 1 : 0)} fm={(VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)}");
+        }
+
+        return value;
     }
 
     public void Sh2Write(uint address, ushort value, Sega32XCpu whichCpu, Sega32XVdp vdp)
     {
         if (TraceSh2ControlWrites
-            && (address == 0x4000 || address == 0x4004 || (address >= 0x4020 && address <= 0x402F)))
+            && ((address >= 0x4000 && address <= 0x401C) || (address >= 0x4020 && address <= 0x402F)))
         {
             Console.WriteLine(
                 $"[S32X-SH2-WRITE] cpu={whichCpu} addr=0x{address:X4} value=0x{value:X4} " +

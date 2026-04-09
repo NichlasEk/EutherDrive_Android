@@ -1205,6 +1205,22 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return words.ToString();
         }
 
+        if ((pc >> 29) == 6)
+        {
+            Sega32XSh2Bus bus = _sega32XCore.GetBus(masterCpu ? Sega32XCpu.Master : Sega32XCpu.Slave);
+            var words = new StringBuilder();
+            for (int i = 0; i < 6; i++)
+            {
+                uint wordAddress = (pc & ~1u) + (uint)(i * 2);
+                ushort word = bus.DebugReadCacheDataArrayWord(wordAddress);
+                if (i != 0)
+                    words.Append(',');
+                words.Append("0x");
+                words.Append(word.ToString("X4"));
+            }
+            return words.ToString();
+        }
+
         if (pc < 0x00004000)
         {
             ReadOnlySpan<byte> rom = masterCpu ? _sega32XCore.MasterBootRom : _sega32XCore.SlaveBootRom;
@@ -2876,8 +2892,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
 
         // Compose MD and 32X into the shared presentation buffer.
         EnsureFramebufferInitialized("RunFrame");
-        Array.Clear(_frameBufferBack, 0, _frameBufferBack.Length);
         var vdpBuffer = _vdp.GetFrameBuffer();
+        bool mdCoversEntireFrame = false;
         if (vdpBuffer.Length > 0)
         {
             int vdpWidth = _vdp.FrameWidth;
@@ -2929,9 +2945,20 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             BlitArgbToBgra8888(vdpSpan, _frameBufferBack, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
             if (TracePerf)
                 PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
+
+            mdCoversEntireFrame = vdpWidth >= _fbW && vdpHeight >= _fbH;
+            if (!mdCoversEntireFrame)
+                ClearFramebufferOutsideMdContent(vdpWidth, vdpHeight);
+        }
+        else
+        {
+            Array.Clear(_frameBufferBack, 0, _frameBufferBack.Length);
         }
 
+        long compositeStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
         bool composited32X = TryPresent32XFrame();
+        if (TracePerf)
+            PerfHotspots.Add(PerfHotspot.S32xComposite, Stopwatch.GetTimestamp() - compositeStart);
         if (composited32X || vdpBuffer.Length > 0)
             _frameBufferBack = Interlocked.Exchange(ref _frameBufferFront, _frameBufferBack);
 
@@ -2966,6 +2993,28 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return false;
 
         return _sega32XCore.Bus.Vdp.CompositeBgraOver(_frameBufferBack, _fbStride);
+    }
+
+    private void ClearFramebufferOutsideMdContent(int contentWidth, int contentHeight)
+    {
+        int clearWidth = Math.Clamp(contentWidth, 0, _fbW);
+        int clearHeight = Math.Clamp(contentHeight, 0, _fbH);
+        int bytesPerPixel = 4;
+
+        if (clearWidth < _fbW)
+        {
+            int clearOffset = clearWidth * bytesPerPixel;
+            int clearBytesPerRow = (_fbW - clearWidth) * bytesPerPixel;
+            for (int y = 0; y < clearHeight; y++)
+                Array.Clear(_frameBufferBack, (y * _fbStride) + clearOffset, clearBytesPerRow);
+        }
+
+        if (clearHeight < _fbH)
+        {
+            int clearOffset = clearHeight * _fbStride;
+            int clearBytes = (_fbH - clearHeight) * _fbStride;
+            Array.Clear(_frameBufferBack, clearOffset, clearBytes);
+        }
     }
 
     private static bool HasVisiblePixels(ReadOnlySpan<byte> buffer)
@@ -3781,37 +3830,76 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             return;
         }
 
-        int width = _fbW;
-        int height = _fbH;
-
         try
         {
-            using var writer = new StreamWriter(filePath);
-            writer.WriteLine("P3");
-            writer.WriteLine($"{width} {height}");
-            writer.WriteLine("255");
-
-             // _frameBufferFront is BGRA, so we need to convert back to RGB for PPM
-            for (int y = 0; y < height; y++)
-            {
-                int rowOffset = y * _fbStride;
-                for (int x = 0; x < width; x++)
-                {
-                    int colOffset = rowOffset + (x * 4);
-                    byte b = _frameBufferFront[colOffset + 0];
-                    byte g = _frameBufferFront[colOffset + 1];
-                    byte r = _frameBufferFront[colOffset + 2];
-                    // Skip alpha (colOffset + 3)
-                    writer.Write($"{r} {g} {b} ");
-                }
-                writer.WriteLine();
-            }
-
+            DumpBgraBufferToPpm(filePath, _frameBufferFront, _fbW, _fbH, _fbStride);
             Console.WriteLine($"[MdTracerAdapter] Dumped framebuffer to {filePath}");
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[MdTracerAdapter] Failed to dump framebuffer: {ex.Message}");
+        }
+    }
+
+    public bool Dump32XLayerToPpm(string filePath)
+    {
+        if (_sega32XCore?.Bus?.Vdp == null)
+            return false;
+
+        try
+        {
+            byte[] layer = new byte[_fbStride * _fbH];
+            _sega32XCore.Bus.Vdp.RenderBgra(layer, _fbStride);
+            DumpBgraBufferToPpm(filePath, layer, _fbW, _fbH, _fbStride);
+            Console.WriteLine($"[MdTracerAdapter] Dumped 32X layer to {filePath}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MdTracerAdapter] Failed to dump 32X layer: {ex.Message}");
+            return false;
+        }
+    }
+
+    public bool Dump32XOtherLayerToPpm(string filePath)
+    {
+        if (_sega32XCore?.Bus?.Vdp == null)
+            return false;
+
+        try
+        {
+            byte[] layer = new byte[_fbStride * _fbH];
+            _sega32XCore.Bus.Vdp.DebugRenderOtherBufferBgra(layer, _fbStride);
+            DumpBgraBufferToPpm(filePath, layer, _fbW, _fbH, _fbStride);
+            Console.WriteLine($"[MdTracerAdapter] Dumped alternate 32X layer to {filePath}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MdTracerAdapter] Failed to dump alternate 32X layer: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static void DumpBgraBufferToPpm(string filePath, ReadOnlySpan<byte> bgraBuffer, int width, int height, int stride)
+    {
+        using var writer = new StreamWriter(filePath);
+        writer.WriteLine("P3");
+        writer.WriteLine($"{width} {height}");
+        writer.WriteLine("255");
+
+        for (int y = 0; y < height; y++)
+        {
+            int rowOffset = y * stride;
+            for (int x = 0; x < width; x++)
+            {
+                int colOffset = rowOffset + (x * 4);
+                byte b = bgraBuffer[colOffset + 0];
+                byte g = bgraBuffer[colOffset + 1];
+                byte r = bgraBuffer[colOffset + 2];
+                writer.Write($"{r} {g} {b} ");
+            }
+            writer.WriteLine();
         }
     }
 

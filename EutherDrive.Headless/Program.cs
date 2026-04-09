@@ -2900,12 +2900,18 @@ class Program
             Console.WriteLine($"[HEADLESS] Savestate loaded successfully from file");
             audioLastSystemCycles = 0;
             audioFrameAccumulator = 0;
+            bool dump32XLayer = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_32X_LAYER") == "1";
+            bool dump32XOtherLayer = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_32X_OTHER_LAYER") == "1";
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_YM") == "1")
                 adapter.SetYmEnabled(true);
 
             Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
             adapter.FrameBufferHasContent();
             adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_frame0.ppm"));
+            if (dump32XLayer)
+                adapter.Dump32XLayerToPpm(Path.Combine(dumpDir, "headless_frame0_32x.ppm"));
+            if (dump32XOtherLayer)
+                adapter.Dump32XOtherLayerToPpm(Path.Combine(dumpDir, "headless_frame0_32x_other.ppm"));
 
             int hangFrames = ParseOptionalIntEnv("EUTHERDRIVE_HANG_FRAMES") ?? 120;
             int videoStallFrames = ParseOptionalIntEnv("EUTHERDRIVE_VIDEO_STALL_FRAMES") ?? 180;
@@ -2941,6 +2947,8 @@ class Program
                     $"[HEADLESS-MD-INPUT] hold up={mdHoldUp} down={mdHoldDown} left={mdHoldLeft} right={mdHoldRight} " +
                     $"a={mdHoldA} b={mdHoldB} c={mdHoldC} start={mdHoldStart} x={mdHoldX} y={mdHoldY} z={mdHoldZ} mode={mdHoldMode}");
             }
+            bool trace32XFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+            bool trace32XWords = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_32X_WORDS") == "1";
 
             var dumpFrames = new HashSet<int>();
             string? dumpFramesRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
@@ -3083,6 +3091,22 @@ class Program
                         waitLoops++;
                     }
                 }
+                if (trace32XFrames)
+                {
+                    var stats = GetFrameStats(frameBuffer, fbWidth, fbHeight, fbStride);
+                    Console.WriteLine(
+                        $"[HEADLESS] Frame {frame}: savestate_fb_has_content={stats.HasContent} " +
+                        $"nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) " +
+                        $"m68k=0x{m68kPc:X6} z80=0x{z80Pc:X4} " +
+                        $"mpc=0x{adapter.Debug32XMasterProgramCounter ?? 0:X8} spc=0x{adapter.Debug32XSlaveProgramCounter ?? 0:X8} " +
+                        $"fp=0x{videoFingerprint:X16} unchanged={videoUnchangedFrames}");
+                    if (trace32XWords)
+                    {
+                        Console.WriteLine(
+                            $"[HEADLESS] Frame {frame}: savestate_32x_words m={adapter.Debug32XMasterWords ?? string.Empty} " +
+                            $"s={adapter.Debug32XSlaveWords ?? string.Empty} comm={adapter.Debug32XCommPorts ?? string.Empty}");
+                    }
+                }
                 Console.WriteLine($"[HEADLESS] Frame {frame} completed");
 
                 if (frame == 0 || frame == 5 || frame == 10 || dumpFrames.Contains(frame))
@@ -3090,12 +3114,20 @@ class Program
                     string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
                     adapter.DumpFrameBufferToPpm(ppmPath);
                     Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                    if (dump32XLayer)
+                        adapter.Dump32XLayerToPpm(Path.Combine(dumpDir, $"headless_frame{frame}_32x.ppm"));
+                    if (dump32XOtherLayer)
+                        adapter.Dump32XOtherLayerToPpm(Path.Combine(dumpDir, $"headless_frame{frame}_32x_other.ppm"));
                 }
             }
 
             Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
             adapter.FrameBufferHasContent();
             adapter.DumpFrameBufferToPpm(Path.Combine(dumpDir, "headless_output.ppm"));
+            if (dump32XLayer)
+                adapter.Dump32XLayerToPpm(Path.Combine(dumpDir, "headless_output_32x.ppm"));
+            if (dump32XOtherLayer)
+                adapter.Dump32XOtherLayerToPpm(Path.Combine(dumpDir, "headless_output_32x_other.ppm"));
 
             Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
             return hangTriggered ? 2 : 0;

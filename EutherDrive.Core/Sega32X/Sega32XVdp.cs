@@ -427,6 +427,8 @@ internal sealed class Sega32XVdp
 
         TraceVdpStateIfEnabled(mode, GetDisplayBuffer(), "composite");
         bool wroteAnyPixel = false;
+        int rowBytes = FrameWidth * 4;
+        bool outputFullyCoversFrame = output.Length >= (((FrameHeight - 1) * stride) + rowBytes);
 
         for (int y = 0; y < FrameHeight; y++)
         {
@@ -437,7 +439,7 @@ internal sealed class Sega32XVdp
                 ushort pixel = _renderedFrame[sourceRow + x];
                 bool use32xPixel = (pixel & 0x8000) != 0;
                 int offset = row + (x * 4);
-                if ((uint)(offset + 3) >= output.Length)
+                if (!outputFullyCoversFrame && (uint)(offset + 3) >= output.Length)
                     continue;
 
                 bool mdHasVisiblePixel = output[offset + 3] != 0;
