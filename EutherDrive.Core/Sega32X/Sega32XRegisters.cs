@@ -76,12 +76,6 @@ internal sealed class Sega32XSh2Interrupts
 
     public void UpdateInterruptLevel(bool adapterEnabled)
     {
-        if (!adapterEnabled)
-        {
-            CurrentInterruptLevel = 0;
-            return;
-        }
-
         CurrentInterruptLevel = ResetPending ? (byte)14
             : VPending && VEnabled ? (byte)12
             : HPending && HEnabled ? (byte)10

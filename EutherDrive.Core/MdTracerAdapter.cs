@@ -2685,6 +2685,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             {
                 long cpuTicks = 0;
                 long vdpTicks = 0;
+                long s32xSliceTicks = 0;
+                long audioFlushTicks = 0;
                 int z80Budget = md_main.GetZ80CyclesPerLine();
                 int cpuBudget = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
                 bool useCycleCounterZ80Scheduling = md_main.IsCycleCounterZ80SchedulingEnabled();
@@ -2776,8 +2778,21 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                         }
                     }
 
-                    md_main.FlushScheduledAudio();
-                    Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                    if (TracePerf)
+                    {
+                        long flushStart = Stopwatch.GetTimestamp();
+                        md_main.FlushScheduledAudio();
+                        audioFlushTicks += Stopwatch.GetTimestamp() - flushStart;
+
+                        long s32xStart = Stopwatch.GetTimestamp();
+                        Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                        s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
+                    }
+                    else
+                    {
+                        md_main.FlushScheduledAudio();
+                        Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                    }
                 }
 
                 if (TracePerf)
@@ -2786,6 +2801,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     _accVdpTicks += vdpTicks;
                     PerfHotspots.Add(PerfHotspot.CpuStep, cpuTicks);
                     PerfHotspots.Add(PerfHotspot.VdpRender, vdpTicks);
+                    PerfHotspots.Add(PerfHotspot.S32xSlice, s32xSliceTicks);
+                    PerfHotspots.Add(PerfHotspot.AudioFlush, audioFlushTicks);
                 }
 
                 pcAfter = md_m68k.g_reg_PC;
@@ -2813,7 +2830,16 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
                     for (int v = 0; v < vlines; v++)
                     {
                         _vdp.run(v);
-                        Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                        if (TracePerf)
+                        {
+                            long s32xStart = Stopwatch.GetTimestamp();
+                            Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                            PerfHotspots.Add(PerfHotspot.S32xSlice, Stopwatch.GetTimestamp() - s32xStart);
+                        }
+                        else
+                        {
+                            Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                        }
                     }
                 }
             }
@@ -2821,8 +2847,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             md_main.MaybeInjectMbx(frame);
             MaybeCaptainAmericaMailboxRecovery(frame);
             MaybeSonic2AudioRecovery(frame);
-            md_main.g_md_music?.FlushDacRateFrame(frame);
-            md_main.g_md_music?.FlushAudioStats(frame);
+            if (TracePerf)
+            {
+                long audioFrameStart = Stopwatch.GetTimestamp();
+                md_main.g_md_music?.FlushDacRateFrame(frame);
+                md_main.g_md_music?.FlushAudioStats(frame);
+                PerfHotspots.Add(PerfHotspot.AudioFrame, Stopwatch.GetTimestamp() - audioFrameStart);
+            }
+            else
+            {
+                md_main.g_md_music?.FlushDacRateFrame(frame);
+                md_main.g_md_music?.FlushAudioStats(frame);
+            }
             md_main.g_md_bus?.FlushZ80WinHist(frame);
             md_main.g_md_bus?.FlushZ80WinStat(frame);
             md_main.g_md_bus?.FlushMbx68kStat(frame);
@@ -2880,7 +2916,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         }
 
             if (!md_main.g_masterSystemMode && _sega32XCore != null)
-                _sega32XCore.FinishFrame();
+            {
+                if (TracePerf)
+                {
+                    long finishStart = Stopwatch.GetTimestamp();
+                    _sega32XCore.FinishFrame();
+                    PerfHotspots.Add(PerfHotspot.S32xFinish, Stopwatch.GetTimestamp() - finishStart);
+                }
+                else
+                {
+                    _sega32XCore.FinishFrame();
+                }
+            }
 
             if (TracePerf && _cpuReady && _cpu != null)
             {

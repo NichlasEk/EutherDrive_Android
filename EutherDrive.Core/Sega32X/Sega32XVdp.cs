@@ -22,6 +22,11 @@ internal sealed class Sega32XVdp
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_FB_WRITES"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool TraceRegisterWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_VDP_REG_WRITES"),
+            "1",
+            StringComparison.Ordinal);
     public const int FrameWidth = 320;
     public const int FrameHeight = 224;
     private const int WordsPerBuffer = 0x20000 / 2;
@@ -38,7 +43,7 @@ internal sealed class Sega32XVdp
     private readonly ushort[] _frameBuffer0 = new ushort[WordsPerBuffer];
     private readonly ushort[] _frameBuffer1 = new ushort[WordsPerBuffer];
     private readonly ushort[] _cram = new ushort[0x200 / 2];
-    [NonSerialized] private readonly ushort[] _renderedFrame = new ushort[FrameWidth * FrameHeight];
+    [NonSerialized] private readonly uint[] _renderedFrame = new uint[FrameWidth * FrameHeight];
 
     private bool _displayFrameBuffer;
     private bool _writeFrameBuffer = true;
@@ -55,6 +60,7 @@ internal sealed class Sega32XVdp
     private ushort _latchedScreenShift;
     private int _stateTraceCount;
     private int _frameBufferWriteTraceCount;
+    private int _registerWriteTraceCount;
 
     public ushort DisplayMode { get; private set; }
     public ushort ScreenShift { get; private set; }
@@ -85,6 +91,7 @@ internal sealed class Sega32XVdp
 
     public void WriteRegister(uint address, ushort value)
     {
+        ushort oldValue = ReadRegister(address & ~1u);
         switch (address & 0xF)
         {
             case 0x0:
@@ -112,6 +119,8 @@ internal sealed class Sega32XVdp
                 }
                 break;
         }
+
+        TraceRegisterWriteIfEnabled(address & 0xF, oldValue, ReadRegister(address & ~1u));
     }
 
     public void WriteHInterruptInterval(ushort value)
@@ -152,6 +161,7 @@ internal sealed class Sega32XVdp
         HInterruptInterval = 0;
         HInterruptInVBlank = false;
         _frameBufferWriteTraceCount = 0;
+        _registerWriteTraceCount = 0;
     }
 
     public void AdvanceFrameTiming(ulong sh2Ticks, ulong sh2TicksPerFrame, Sega32XSystemRegisters registers)
@@ -310,8 +320,8 @@ internal sealed class Sega32XVdp
 
     public void WriteFrameBufferByte(uint address, byte value, bool overwrite = false)
     {
-        // Byte writes behave like normal frame-buffer writes even in overwrite image space.
-        // The selective zero-byte semantics only apply to overwrite word writes.
+        // Match jgenesis/hardware semantics: zero byte writes are ignored for both
+        // normal frame buffer writes and overwrite-image writes.
         if (value == 0)
             return;
 
@@ -412,7 +422,7 @@ internal sealed class Sega32XVdp
             int row = y * stride;
             int sourceRow = y * FrameWidth;
             for (int x = 0; x < FrameWidth; x++)
-                WritePixel(output, row + (x * 4), ToBgra(_renderedFrame[sourceRow + x]));
+                WritePixel(output, row + (x * 4), 0xFF00_0000u | (_renderedFrame[sourceRow + x] & 0x00FF_FFFFu));
         }
     }
 
@@ -436,8 +446,8 @@ internal sealed class Sega32XVdp
             int sourceRow = y * FrameWidth;
             for (int x = 0; x < FrameWidth; x++)
             {
-                ushort pixel = _renderedFrame[sourceRow + x];
-                bool use32xPixel = (pixel & 0x8000) != 0;
+                uint pixel = _renderedFrame[sourceRow + x];
+                bool use32xPixel = (pixel & 0x8000_0000u) != 0;
                 int offset = row + (x * 4);
                 if (!outputFullyCoversFrame && (uint)(offset + 3) >= output.Length)
                     continue;
@@ -453,7 +463,7 @@ internal sealed class Sega32XVdp
                 if (!use32xPixel && mdHasVisiblePixel && !mdPixelIsBlack)
                     continue;
 
-                WritePixel(output, offset, ToBgra(pixel));
+                WritePixel(output, offset, 0xFF00_0000u | (pixel & 0x00FF_FFFFu));
                 wroteAnyPixel = true;
             }
         }
@@ -502,41 +512,46 @@ internal sealed class Sega32XVdp
         }
     }
 
-    private ushort GetRenderedPixel(Sega32XFrameBufferMode mode, ushort[] frameBuffer, int line, int x)
+    private uint GetRenderedPixel(Sega32XFrameBufferMode mode, ushort[] frameBuffer, int line, int x)
     {
-        ushort pixel = mode switch
+        return mode switch
         {
             Sega32XFrameBufferMode.PackedPixel => GetPackedPixel(frameBuffer, line, x),
             Sega32XFrameBufferMode.DirectColor => GetDirectColorPixel(frameBuffer, line, x),
             Sega32XFrameBufferMode.RunLength => GetRunLengthPixel(frameBuffer, line, x),
             _ => 0,
         };
-
-        return ApplyPriorityMask(pixel);
     }
 
-    private ushort GetPackedPixel(ushort[] frameBuffer, int line, int x)
+    private uint GetPackedPixel(ushort[] frameBuffer, int line, int x)
     {
         ushort lineAddress = frameBuffer[line % frameBuffer.Length];
+        int paletteIndex;
         if ((_latchedScreenShift & 0x0001) != 0)
         {
             int sourcePixel = x + 1;
             ushort word = frameBuffer[(lineAddress + (sourcePixel >> 1)) % frameBuffer.Length];
-            int paletteIndex = ((sourcePixel & 1) == 0) ? ((word >> 8) & 0xFF) : (word & 0xFF);
-            return _cram[paletteIndex];
+            paletteIndex = ((sourcePixel & 1) == 0) ? ((word >> 8) & 0xFF) : (word & 0xFF);
+        }
+        else
+        {
+            ushort packedWord = frameBuffer[(lineAddress + (x >> 1)) % frameBuffer.Length];
+            paletteIndex = (x & 1) == 0 ? ((packedWord >> 8) & 0xFF) : (packedWord & 0xFF);
         }
 
-        ushort packedWord = frameBuffer[(lineAddress + (x >> 1)) % frameBuffer.Length];
-        return _cram[(x & 1) == 0 ? ((packedWord >> 8) & 0xFF) : (packedWord & 0xFF)];
+        ushort color = _cram[paletteIndex];
+        return BuildRenderedPixel(color);
     }
 
-    private static ushort GetDirectColorPixel(ushort[] frameBuffer, int line, int x)
+    private uint GetDirectColorPixel(ushort[] frameBuffer, int line, int x)
     {
         ushort lineAddress = frameBuffer[line % frameBuffer.Length];
-        return frameBuffer[(lineAddress + x) % frameBuffer.Length];
+        ushort color = frameBuffer[(lineAddress + x) % frameBuffer.Length];
+        
+        return BuildRenderedPixel(color);
     }
 
-    private ushort GetRunLengthPixel(ushort[] frameBuffer, int line, int x)
+    private uint GetRunLengthPixel(ushort[] frameBuffer, int line, int x)
     {
         int pixel = 0;
         int readIndex = frameBuffer[line % frameBuffer.Length];
@@ -545,13 +560,21 @@ internal sealed class Sega32XVdp
             ushort word = frameBuffer[readIndex % frameBuffer.Length];
             readIndex++;
             int runLength = ((word >> 8) & 0xFF) + 1;
-            ushort color = _cram[word & 0xFF];
+            int paletteIndex = word & 0xFF;
             if (x < pixel + runLength)
-                return color;
+                return BuildRenderedPixel(_cram[paletteIndex]);
             pixel += runLength;
         }
 
         return 0;
+    }
+
+    private uint BuildRenderedPixel(ushort color)
+    {
+        ushort priorityColor = ApplyPriorityMask(color);
+        uint rgb = ToBgra(priorityColor) & 0x00FF_FFFFu;
+        uint flags = ((priorityColor & 0x8000u) != 0) ? 0x8000_0000u : 0u;
+        return rgb | flags;
     }
 
     private ushort ApplyPriorityMask(ushort pixel)
@@ -756,5 +779,21 @@ internal sealed class Sega32XVdp
         string target = ReferenceEquals(targetBuffer, _frameBuffer0) ? "fb0" : "fb1";
         EmitTraceLine(
             $"[S32X-FBWRITE] kind={kind} addr=0x{masked:X5} word=0x{((masked >> 1) & 0xFFFF):X4} value=0x{value:X4} target={target} disp={( _displayFrameBuffer ? 1 : 0)} write={( _writeFrameBuffer ? 1 : 0)}");
+    }
+
+    private void TraceRegisterWriteIfEnabled(uint registerOffset, ushort oldValue, ushort newValue)
+    {
+        if (!TraceRegisterWrites || _registerWriteTraceCount >= 128 || oldValue == newValue)
+            return;
+
+        // Focus on mode/swap state changes; autofill traffic is too noisy to be useful.
+        if (registerOffset != 0x0 && registerOffset != 0x2 && registerOffset != 0xA)
+            return;
+
+        _registerWriteTraceCount++;
+        EmitTraceLine(
+            $"[S32X-VDPREG] reg=0x{registerOffset:X1} old=0x{oldValue:X4} new=0x{newValue:X4} " +
+            $"disp=0x{DisplayMode:X4} fbctl=0x{FrameBufferControl:X4} front={(_displayFrameBuffer ? 1 : 0)} write={(_writeFrameBuffer ? 1 : 0)} " +
+            $"scanline={_scanline} mclk={_scanlineMclk}");
     }
 }
