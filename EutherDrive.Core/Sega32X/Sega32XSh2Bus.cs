@@ -77,6 +77,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     }
 
     public ulong CycleCounter { get; private set; }
+    public ulong CycleLimit { get; set; } = ulong.MaxValue;
+    public bool ShouldStopExecution => CycleCounter >= CycleLimit;
 
     public bool ResetAsserted => _core.Registers.ResetSh2;
     public byte InterruptLevel => _whichCpu == Sega32XCpu.Master
@@ -86,6 +88,12 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
 
     public void LoadState(BinaryReader reader) => StateBinarySerializer.ReadInto(reader, this);
+
+    public void ResetTimingState()
+    {
+        CycleCounter = 0;
+        CycleLimit = ulong.MaxValue;
+    }
 
     public bool TryTickDma()
     {
@@ -131,9 +139,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             Sega32XSh2Cpu otherCpu = _core.GetOtherCpu(_whichCpu);
             Sega32XSh2Bus otherBus = _core.GetOtherBus(_whichCpu);
             ulong limit = CycleCounter;
-            
-            // Execute in small chunks to maintain handshake precision while keeping performance.
-            // 1-by-1 is too slow (12 FPS), whole-budget is too coarse (no boot).
+
+            // Small chunks preserve mailbox handshakes without collapsing performance.
             const ulong ChunkSize = 10;
             while (otherBus.CycleCounter < limit)
             {
@@ -149,6 +156,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     public byte ReadByte(uint address, Sega32XSh2AccessContext context)
     {
+        uint addressSpace = address >> 29;
         switch (address >> 29)
         {
             case 2:
@@ -170,91 +178,22 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 return ReadInternalRegisterByte(address);
         }
 
-        uint masked = address & 0x1FFFFFFF;
-        if (TryReadCachedByte(address, out byte cachedByte))
+        if (addressSpace == 0 && TryReadCachedByte(address, out byte cachedByte))
         {
             CycleCounter += 1;
             return cachedByte;
         }
 
-        if (masked <= 0x00003FFF)
-        {
-            CycleCounter += 1;
-            byte value = ReadBackingByte(masked, context);
+        uint masked = address & 0x1FFFFFFF;
+        byte value = ReadBackingByte(masked, context);
+        if (addressSpace == 0)
             MaybeReplaceCache(address, context);
-            return value;
-        }
-
-        if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
-        {
-            CycleCounter += 1;
-            SyncIfCommPortAccessed(masked);
-            if (IsSh2VdpRegister(masked) && _core.Registers.VdpAccess != Sega32XAccess.Sh2)
-                return 0xFF;
-            if (IsSh2VdpRegister(masked))
-                CycleCounter += Sh2VdpCycles;
-            ushort word = IsSh2VdpRegister(masked)
-                ? _core.Bus.Vdp.ReadRegister(masked & ~1u)
-                : _core.Registers.Sh2Read(masked & ~1u, _whichCpu, _core.Bus.Vdp);
-            if (TraceBootRegisterReads && (masked & ~1u) == 0x00004000)
-            {
-                Console.WriteLine(
-                    $"[S32X-SH2BUS-{_whichCpu}] read8 addr=0x{masked:X8} word=0x{word:X4} aden={(_core.Registers.AdapterEnabled ? 1 : 0)} reset={(_core.Registers.ResetSh2 ? 1 : 0)}");
-            }
-            return (masked & 1) == 0 ? (byte)(word >> 8) : (byte)word;
-        }
-
-        if (masked >= 0x06000000 && masked < 0x06040000)
-        {
-            CycleCounter += 1 + Sh2SdramReadCycles;
-            int wordIndex = (int)((masked - 0x06000000) >> 1);
-            if ((uint)wordIndex < _core.Bus.Sdram.Length)
-            {
-                ushort value = _core.Bus.Sdram[wordIndex];
-                return (masked & 1) == 0 ? (byte)(value >> 8) : (byte)value;
-            }
-        }
-
-        if (masked >= 0x04000000 && masked < 0x06000000)
-        {
-            CycleCounter += 1 + Sh2FrameBufferReadCycles;
-            if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
-                return 0xFF;
-            ushort value = _core.Bus.Vdp.ReadFrameBufferWord(masked - 0x04000000);
-            return (masked & 1) == 0 ? (byte)(value >> 8) : (byte)value;
-        }
-
-        if (masked >= 0x02000000 && masked < 0x02400000)
-        {
-            CycleCounter += 1 + Sh2CartridgeCycles;
-            return _core.Bus.ReadSh2CartridgeByte(masked & 0x003FFFFF);
-        }
-
-        if (masked >= 0x00004030 && masked <= 0x0000403F)
-        {
-            CycleCounter += 1;
-            int wordIndex = (int)((masked - 0x00004030) >> 1);
-            if ((uint)wordIndex < _core.Bus.Sh2PwmRegisters.Length)
-            {
-                ushort value = _core.Bus.Sh2PwmRegisters[wordIndex];
-                return (masked & 1) == 0 ? (byte)(value >> 8) : (byte)value;
-            }
-        }
-
-        if (masked >= 0x00004200 && masked <= 0x000043FF)
-        {
-            CycleCounter += 1 + Sh2VdpCycles;
-            if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
-                return 0xFF;
-            ushort value = _core.Bus.Vdp.ReadCramWord(masked - 0x00004200);
-            return (masked & 1) == 0 ? (byte)(value >> 8) : (byte)value;
-        }
-
-        return 0;
+        return value;
     }
 
     public ushort ReadWord(uint address, Sega32XSh2AccessContext context)
     {
+        uint addressSpace = address >> 29;
         switch (address >> 29)
         {
             case 2:
@@ -276,83 +215,22 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 return ReadInternalRegisterWord(address);
         }
 
-        uint masked = address & 0x1FFFFFFF;
-        if (TryReadCachedWord(address, out ushort cachedWord))
+        if (addressSpace == 0 && TryReadCachedWord(address, out ushort cachedWord))
         {
             CycleCounter += 1;
             return cachedWord;
         }
 
-        if (masked <= 0x00003FFF)
-        {
-            CycleCounter += 1;
-            ushort value = ReadBackingWord(masked, context);
+        uint masked = address & 0x1FFFFFFF;
+        ushort value = ReadBackingWord(masked, context);
+        if (addressSpace == 0)
             MaybeReplaceCache(address, context);
-            return value;
-        }
-
-        if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
-        {
-            CycleCounter += 1;
-            SyncIfCommPortAccessed(masked);
-            if (IsSh2VdpRegister(masked) && _core.Registers.VdpAccess != Sega32XAccess.Sh2)
-                return 0xFFFF;
-            if (IsSh2VdpRegister(masked))
-                CycleCounter += Sh2VdpCycles;
-            ushort word = IsSh2VdpRegister(masked)
-                ? _core.Bus.Vdp.ReadRegister(masked & ~1u)
-                : _core.Registers.Sh2Read(masked & ~1u, _whichCpu, _core.Bus.Vdp);
-            if (TraceBootRegisterReads && (masked & ~1u) == 0x00004000)
-            {
-                Console.WriteLine(
-                    $"[S32X-SH2BUS-{_whichCpu}] read16 addr=0x{masked:X8} word=0x{word:X4} aden={(_core.Registers.AdapterEnabled ? 1 : 0)} reset={(_core.Registers.ResetSh2 ? 1 : 0)}");
-            }
-            return word;
-        }
-
-        if (masked >= 0x06000000 && masked < 0x06040000)
-        {
-            CycleCounter += 1 + Sh2SdramReadCycles;
-            int wordIndex = (int)((masked - 0x06000000) >> 1);
-            if ((uint)wordIndex < _core.Bus.Sdram.Length)
-                return _core.Bus.Sdram[wordIndex];
-        }
-
-        if (masked >= 0x04000000 && masked < 0x06000000)
-        {
-            CycleCounter += 1 + Sh2FrameBufferReadCycles;
-            if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
-                return 0xFFFF;
-            return _core.Bus.Vdp.ReadFrameBufferWord(masked - 0x04000000);
-        }
-
-        if (masked >= 0x02000000 && masked < 0x02400000)
-        {
-            CycleCounter += 1 + Sh2CartridgeCycles;
-            return _core.Bus.ReadSh2CartridgeWord(masked & 0x003FFFFE);
-        }
-
-        if (masked >= 0x00004030 && masked <= 0x0000403F)
-        {
-            CycleCounter += 1;
-            int wordIndex = (int)((masked - 0x00004030) >> 1);
-            if ((uint)wordIndex < _core.Bus.Sh2PwmRegisters.Length)
-                return _core.Bus.Sh2PwmRegisters[wordIndex];
-        }
-
-        if (masked >= 0x00004200 && masked <= 0x000043FF)
-        {
-            CycleCounter += 1 + Sh2VdpCycles;
-            if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
-                return 0xFFFF;
-            return _core.Bus.Vdp.ReadCramWord(masked - 0x00004200);
-        }
-
-        return 0;
+        return value;
     }
 
     public uint ReadLongword(uint address, Sega32XSh2AccessContext context)
     {
+        uint addressSpace = address >> 29;
         switch (address >> 29)
         {
             case 2:
@@ -374,27 +252,22 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 return ReadInternalRegisterLongword(address);
         }
 
-        if (TryReadCachedLongword(address, out uint cachedLong))
+        if (addressSpace == 0 && TryReadCachedLongword(address, out uint cachedLong))
         {
             CycleCounter += 1;
             return cachedLong;
         }
 
-        if ((address >> 29) == 0)
-        {
-            uint masked = address & 0x1FFFFFFF;
-            uint value = ReadBackingLongword(masked, context);
+        uint masked = address & 0x1FFFFFFF;
+        uint value = ReadBackingLongword(masked, context);
+        if (addressSpace == 0)
             MaybeReplaceCache(address, context);
-            return value;
-        }
-
-        ushort high = ReadWord(address & ~1u, context);
-        ushort low = ReadWord((address & ~1u) + 2, context);
-        return ((uint)high << 16) | low;
+        return value;
     }
 
     public void WriteByte(uint address, byte value, Sega32XSh2AccessContext context)
     {
+        uint addressSpace = address >> 29;
         switch (address >> 29)
         {
             case 2:
@@ -419,7 +292,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         }
 
         uint masked = address & 0x1FFFFFFF;
-        WriteThroughCacheByte(address, value);
+        if (addressSpace == 0)
+            WriteThroughCacheByte(address, value);
 
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
@@ -490,7 +364,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         if (masked >= 0x00004200 && masked <= 0x000043FF)
         {
-            CycleCounter += 1;
+            CycleCounter += 1 + Sh2VdpCycles;
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
             ushort current = _core.Bus.Vdp.ReadCramWord(masked - 0x00004200);
@@ -503,6 +377,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     public void WriteWord(uint address, ushort value, Sega32XSh2AccessContext context)
     {
+        uint addressSpace = address >> 29;
         switch (address >> 29)
         {
             case 2:
@@ -527,7 +402,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         }
 
         uint masked = address & 0x1FFFFFFF;
-        WriteThroughCacheWord(address, value);
+        if (addressSpace == 0)
+            WriteThroughCacheWord(address, value);
 
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
@@ -585,7 +461,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         if (masked >= 0x00004200 && masked <= 0x000043FF)
         {
-            CycleCounter += 1;
+            CycleCounter += 1 + Sh2VdpCycles;
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
             _core.Bus.Vdp.WriteCramWord(masked - 0x00004200, value);
@@ -594,6 +470,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     public void WriteLongword(uint address, uint value, Sega32XSh2AccessContext context)
     {
+        uint addressSpace = address >> 29;
         switch (address >> 29)
         {
             case 2:
@@ -618,8 +495,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 return;
         }
 
-        WriteThroughCacheLongword(address, value);
-        if ((address >> 29) == 0)
+        if (addressSpace == 0)
+            WriteThroughCacheLongword(address, value);
+
+        if (addressSpace == 0 || addressSpace == 1)
         {
             WriteBackingLongword(address & 0x1FFFFFFF, value, context);
             return;
@@ -1368,6 +1247,19 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         uint lineBase = address & 0x1FFFFFF0;
         int ramIndex = ((way << 10) | (entryIndex << 4)) >> 1;
+        if (lineBase >= 0x06000000 && lineBase < 0x06040000)
+        {
+            int wordIndex = (int)((lineBase - 0x06000000) >> 1);
+            for (int i = 0; i < 8; i++)
+            {
+                int sourceIndex = wordIndex + i;
+                _cacheDataArray[ramIndex++] = (uint)sourceIndex < _core.Bus.Sdram.Length
+                    ? _core.Bus.Sdram[sourceIndex]
+                    : (ushort)0;
+            }
+            return;
+        }
+
         for (int i = 0; i < 4; i++)
         {
             uint longword = ReadBackingLongword(lineBase + (uint)(i * 4), context);
@@ -1465,6 +1357,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     {
         if (masked <= 0x00003FFF)
         {
+            CycleCounter += 1;
             ReadOnlySpan<byte> bootRom = _whichCpu == Sega32XCpu.Master ? _core.MasterBootRom : _core.SlaveBootRom;
             if (masked + 1 < bootRom.Length)
                 return (ushort)((bootRom[(int)masked] << 8) | bootRom[(int)masked + 1]);
@@ -1473,32 +1366,50 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
+            CycleCounter += 1;
             SyncIfCommPortAccessed(masked);
             if (IsSh2VdpRegister(masked) && _core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return 0xFFFF;
-            return IsSh2VdpRegister(masked)
+            if (IsSh2VdpRegister(masked))
+                CycleCounter += Sh2VdpCycles;
+
+            ushort word = IsSh2VdpRegister(masked)
                 ? _core.Bus.Vdp.ReadRegister(masked & ~1u)
                 : _core.Registers.Sh2Read(masked & ~1u, _whichCpu, _core.Bus.Vdp);
+
+            if (TraceBootRegisterReads && (masked & ~1u) == 0x00004000)
+            {
+                Console.WriteLine(
+                    $"[S32X-SH2BUS-{_whichCpu}] read16 addr=0x{masked:X8} word=0x{word:X4} aden={(_core.Registers.AdapterEnabled ? 1 : 0)} reset={(_core.Registers.ResetSh2 ? 1 : 0)}");
+            }
+
+            return word;
         }
 
         if (masked >= 0x06000000 && masked < 0x06040000)
         {
+            CycleCounter += 1 + Sh2SdramReadCycles;
             int wordIndex = (int)((masked - 0x06000000) >> 1);
             return (uint)wordIndex < _core.Bus.Sdram.Length ? _core.Bus.Sdram[wordIndex] : (ushort)0;
         }
 
         if (masked >= 0x04000000 && masked < 0x06000000)
         {
+            CycleCounter += 1 + Sh2FrameBufferReadCycles;
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return 0xFFFF;
             return _core.Bus.Vdp.ReadFrameBufferWord(masked - 0x04000000);
         }
 
         if (masked >= 0x02000000 && masked < 0x02400000)
+        {
+            CycleCounter += 1 + Sh2CartridgeCycles;
             return _core.Bus.ReadSh2CartridgeWord(masked & 0x003FFFFE);
+        }
 
         if (masked >= 0x00004030 && masked <= 0x0000403F)
         {
+            CycleCounter += 1;
             int wordIndex = (int)((masked - 0x00004030) >> 1);
             if ((uint)wordIndex < _core.Bus.Sh2PwmRegisters.Length)
                 return _core.Bus.Sh2PwmRegisters[wordIndex];
@@ -1506,6 +1417,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         if (masked >= 0x00004200 && masked <= 0x000043FF)
         {
+            CycleCounter += 1 + Sh2VdpCycles;
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return 0xFFFF;
             return _core.Bus.Vdp.ReadCramWord(masked - 0x00004200);
@@ -1567,9 +1479,19 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
-            CycleCounter += 2 * (1 + 4); // FB Write cycles
-            _core.Bus.Vdp.WriteFrameBufferWord(masked - 0x04000000, (ushort)(value >> 16));
-            _core.Bus.Vdp.WriteFrameBufferWord((masked - 0x04000000) | 2, (ushort)value);
+            uint frameBufferAddress = masked - 0x04000000;
+
+            CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+            if (IsFrameBufferOverwrite(masked))
+                _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
+            else
+                _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
+
+            CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+            if (IsFrameBufferOverwrite(masked))
+                _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
+            else
+                _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
             return;
         }
 
@@ -1577,7 +1499,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
-            CycleCounter += 2;
+            CycleCounter += 2 * (1 + Sh2VdpCycles);
             _core.Bus.Vdp.WriteCramWord(masked - 0x00004200, (ushort)(value >> 16));
             _core.Bus.Vdp.WriteCramWord((masked - 0x00004200) | 2, (ushort)value);
             return;
@@ -1619,8 +1541,12 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
-            CycleCounter += 1 + 4; // FB Write
-            _core.Bus.Vdp.WriteFrameBufferWord(masked - 0x04000000, value);
+            CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+            uint frameBufferAddress = masked - 0x04000000;
+            if (IsFrameBufferOverwrite(masked))
+                _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, value);
+            else
+                _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, value);
             return;
         }
 
@@ -1628,7 +1554,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
-            CycleCounter += 1;
+            CycleCounter += 1 + Sh2VdpCycles;
             _core.Bus.Vdp.WriteCramWord(masked - 0x00004200, value);
         }
     }

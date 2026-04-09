@@ -33,6 +33,11 @@ internal sealed class Sega32XSh2Cpu
         Registers.StatusRegister = new Sega32XSh2StatusRegister { InterruptMask = ResetInterruptMask };
     }
 
+    public void ResetTimingState()
+    {
+        CycleCounter = 0;
+    }
+
     public void Execute(ulong ticks, ISega32XSh2Bus bus)
     {
         if (ticks == 0)
@@ -63,25 +68,34 @@ internal sealed class Sega32XSh2Cpu
             return;
         }
 
-        while (ticks > 0)
+        for (ulong i = 0; i < ticks; i++)
         {
-            if (bus.TryTickDma())
-                continue;
+            if (!bus.TryTickDma())
+                break;
+        }
 
-            if (!Registers.NextInstructionInDelaySlot)
-            {
-                byte externalInterruptLevel = bus.InterruptLevel;
-                if (externalInterruptLevel > Registers.StatusRegister.InterruptMask)
-                {
-                    uint vectorNumber = 64u + (uint)(externalInterruptLevel >> 1);
-                    HandleException(externalInterruptLevel, vectorNumber, bus);
-                    if (ticks > 5) ticks -= 5; else ticks = 0;
-                    if (ticks == 0) break;
-                }
-            }
-
+        if (Registers.NextInstructionInDelaySlot)
+        {
             ExecuteSingleInstruction(bus);
             ticks--;
+        }
+
+        if (!Registers.NextInstructionInDelaySlot)
+        {
+            byte externalInterruptLevel = bus.InterruptLevel;
+            if (externalInterruptLevel > Registers.StatusRegister.InterruptMask)
+            {
+                uint vectorNumber = 64u + (uint)(externalInterruptLevel >> 1);
+                HandleException(externalInterruptLevel, vectorNumber, bus);
+                return;
+            }
+        }
+
+        for (ulong i = 0; i < ticks; i++)
+        {
+            ExecuteSingleInstruction(bus);
+            if (bus.ShouldStopExecution)
+                return;
         }
     }
 
@@ -777,6 +791,8 @@ internal enum Sega32XSh2AccessContext
 
 internal interface ISega32XSh2Bus
 {
+    ulong CycleCounter { get; }
+    bool ShouldStopExecution { get; }
     bool ResetAsserted { get; }
     byte InterruptLevel { get; }
     byte ReadByte(uint address, Sega32XSh2AccessContext context);

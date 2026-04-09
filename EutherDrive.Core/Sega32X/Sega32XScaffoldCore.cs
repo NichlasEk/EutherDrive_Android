@@ -15,6 +15,7 @@ internal sealed class Sega32XScaffoldCore
     private readonly byte[] _slaveBootRom;
     private readonly Sega32XSh2Bus _masterBus;
     private readonly Sega32XSh2Bus _slaveBus;
+    private ulong _globalSh2Cycles;
     private bool _commPortSyncInProgress;
 
     public Sega32XScaffoldCore(byte[] romData, Sega32XSystemRegisters? sharedRegisters = null)
@@ -60,6 +61,11 @@ internal sealed class Sega32XScaffoldCore
         Registers.M68kWrite(0xA15100, 0x0003);
         MasterSh2.RequestReset();
         SlaveSh2.RequestReset();
+        MasterSh2.ResetTimingState();
+        SlaveSh2.ResetTimingState();
+        _masterBus.ResetTimingState();
+        _slaveBus.ResetTimingState();
+        _globalSh2Cycles = 0;
         FrameCounter = 0;
     }
 
@@ -144,6 +150,9 @@ internal sealed class Sega32XScaffoldCore
         _masterBus.LoadState(reader);
         _slaveBus.LoadState(reader);
         _commPortSyncInProgress = false;
+        _globalSh2Cycles = Math.Max(_globalSh2Cycles, Math.Max(_masterBus.CycleCounter, _slaveBus.CycleCounter));
+        _masterBus.CycleLimit = _globalSh2Cycles;
+        _slaveBus.CycleLimit = _globalSh2Cycles;
         Registers.UpdateInterruptLevels();
     }
 
