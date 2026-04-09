@@ -8,7 +8,7 @@ using Avalonia.Threading;
 
 namespace EutherDrive.Rendering;
 
-public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
+public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IOwnedBufferRenderSurface, IDisposable
 {
     private readonly OpenGlFrameControl _control = new();
 

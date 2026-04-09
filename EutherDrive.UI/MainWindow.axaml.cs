@@ -151,6 +151,7 @@ public partial class MainWindow : Window
     private IEmulatorCore? _pendingPresentCore;
     private int _pendingPresentQueued;
     private byte[] _glSwapPresentBuffer = Array.Empty<byte>();
+    private byte[] _swapPresentBuffer = Array.Empty<byte>();
 
     private string? _romPath;
     private string? _romLibraryPath;
@@ -7432,6 +7433,7 @@ public partial class MainWindow : Window
         _pendingPresentCore = null;
         _pendingPresentQueued = 0;
         _glSwapPresentBuffer = Array.Empty<byte>();
+        _swapPresentBuffer = Array.Empty<byte>();
         _psxInterlaceReconstructor.Reset();
         _lastCoreFrameId = -1;
         _presentTickCounter = 0;
@@ -7497,6 +7499,12 @@ public partial class MainWindow : Window
         if (_renderSurface is IAcceleratedRenderSurface glSurface
             && core is PsxAdapter psx
             && TryRenderPsxAcceleratedFrame(psx, glSurface, blitOptions, renderStart))
+        {
+            return;
+        }
+
+        if (_renderSurface is IOwnedBufferRenderSurface ownedBufferSurface
+            && TryRenderOwnedAcceleratedFrame(core, ownedBufferSurface, blitOptions, renderStart))
         {
             return;
         }
@@ -7664,6 +7672,89 @@ public partial class MainWindow : Window
 
         if (TraceUiPresent)
             Console.WriteLine($"[MainWindow] Present WxH={width}x{height} stride={srcStride} glswap=1");
+
+        if (!_earlyMagentaReported && _earlyMagentaTimer.IsRunning)
+        {
+            _earlyMagentaReported = true;
+            _earlyMagentaTimer.Stop();
+            if (TraceUiPresent)
+                Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
+        }
+
+        if (TraceUiProfile)
+            _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
+
+        return true;
+    }
+
+    private bool TryRenderOwnedAcceleratedFrame(
+        IEmulatorCore core,
+        IOwnedBufferRenderSurface ownedBufferSurface,
+        in FrameBlitOptions options,
+        long renderStart)
+    {
+        int width = 0;
+        int height = 0;
+        int srcStride = 0;
+        bool swapped = core switch
+        {
+            MdTracerAdapter md => md.TrySwapPresentationBuffer(ref _swapPresentBuffer, out width, out height, out srcStride),
+            SnesAdapter snes => snes.TrySwapPresentationBuffer(ref _swapPresentBuffer, out width, out height, out srcStride),
+            _ => false,
+        };
+        if (!swapped)
+            return false;
+
+        EnsureBitmapFromCore(width, height);
+        if (!ReferenceEquals(_renderSurface, ownedBufferSurface))
+            return false;
+
+        ApplyPsxAspectIfNeeded(core, width, height);
+
+        if (FrameBufferTraceEnabled)
+        {
+            _presentedFrames++;
+            Console.WriteLine($"[MainWindow] Present frame={_presentedFrames} size={width}x{height} stride={srcStride} bytes={srcStride * height} swap=1");
+        }
+
+        FrameBlitMetrics metrics = ownedBufferSurface.PresentOwnedBuffer(
+            _swapPresentBuffer,
+            width,
+            height,
+            srcStride,
+            options,
+            TracePerf);
+
+        if (TracePerf)
+        {
+            PerfHotspots.Add(PerfHotspot.UiLock, metrics.LockTicks);
+            PerfHotspots.Add(PerfHotspot.UiBlit, metrics.BlitTicks);
+        }
+
+        if (_renderSurface is IAcceleratedRenderSurface acceleratedSurface && acceleratedSurface.ShouldFallbackToBitmap(out string fallbackReason))
+        {
+            Console.WriteLine($"[MainWindow] Accelerated fallback -> bitmap: {fallbackReason}");
+            var bitmapSurface = new WriteableBitmapRenderSurface();
+            if (_renderSurface is IDisposable disposableRenderSurface)
+                disposableRenderSurface.Dispose();
+            else
+                _renderSurface.Reset();
+            _renderSurface = bitmapSurface;
+            _renderBackendFallbackReason = fallbackReason;
+            EnsureDesktopRenderViewAttached();
+            UpdateRenderBackendUi();
+            UpdatePresentationLayout();
+            _renderSurface.Present(
+                _swapPresentBuffer,
+                width,
+                height,
+                srcStride,
+                options,
+                TracePerf);
+        }
+
+        if (TraceUiPresent)
+            Console.WriteLine($"[MainWindow] Present WxH={width}x{height} stride={srcStride} swap=1");
 
         if (!_earlyMagentaReported && _earlyMagentaTimer.IsRunning)
         {
