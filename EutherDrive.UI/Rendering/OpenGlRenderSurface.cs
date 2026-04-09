@@ -8,7 +8,7 @@ using Avalonia.Threading;
 
 namespace EutherDrive.Rendering;
 
-public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IOwnedBufferRenderSurface, IDisposable
+public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
 {
     private readonly OpenGlFrameControl _control = new();
 
@@ -25,17 +25,6 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IOwnedBuffe
 
         long start = measurePerf ? Stopwatch.GetTimestamp() : 0;
         _control.UpdateFrame(source, width, height, srcStride, options);
-        long blitTicks = measurePerf ? Stopwatch.GetTimestamp() - start : 0;
-        return new FrameBlitMetrics(0, blitTicks);
-    }
-
-    public FrameBlitMetrics PresentOwnedBuffer(byte[] source, int width, int height, int srcStride, in FrameBlitOptions options, bool measurePerf)
-    {
-        if (source.Length == 0 || width <= 0 || height <= 0 || srcStride <= 0)
-            return FrameBlitMetrics.None;
-
-        long start = measurePerf ? Stopwatch.GetTimestamp() : 0;
-        _control.UpdateOwnedFrame(source, width, height, srcStride, options);
         long blitTicks = measurePerf ? Stopwatch.GetTimestamp() - start : 0;
         return new FrameBlitMetrics(0, blitTicks);
     }
@@ -257,30 +246,6 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IOwnedBuffe
                 _frameWidth = width;
                 _frameHeight = height;
                 _frameStride = dstStride;
-                _frameDirty = true;
-                ApplyOptionsLocked(options);
-            }
-
-            _presentCount++;
-            QueueRenderRequest();
-        }
-
-        public void UpdateOwnedFrame(byte[] source, int width, int height, int srcStride, in FrameBlitOptions options)
-        {
-            EnsureFrameSize(width, height);
-            int requiredBytes = checked(width * height * 4);
-            if (srcStride != width * 4 || source.Length < requiredBytes)
-            {
-                UpdateFrame(source.AsSpan(0, Math.Min(source.Length, requiredBytes)), width, height, srcStride, options);
-                return;
-            }
-
-            lock (_frameSync)
-            {
-                _frameBytes = source;
-                _frameWidth = width;
-                _frameHeight = height;
-                _frameStride = srcStride;
                 _frameDirty = true;
                 ApplyOptionsLocked(options);
             }
