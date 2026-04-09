@@ -38,6 +38,7 @@ internal sealed class Sega32XVdp
     private readonly ushort[] _frameBuffer0 = new ushort[WordsPerBuffer];
     private readonly ushort[] _frameBuffer1 = new ushort[WordsPerBuffer];
     private readonly ushort[] _cram = new ushort[0x200 / 2];
+    [NonSerialized] private readonly ushort[] _renderedFrame = new ushort[FrameWidth * FrameHeight];
 
     private bool _displayFrameBuffer;
     private bool _writeFrameBuffer = true;
@@ -141,6 +142,7 @@ internal sealed class Sega32XVdp
         _hInterruptCounter = 0;
         _latchedDisplayMode = 0;
         _latchedScreenShift = 0;
+        Array.Clear(_renderedFrame);
         DisplayMode = 0;
         ScreenShift = 0;
         AutoFillLength = 1;
@@ -220,6 +222,7 @@ internal sealed class Sega32XVdp
 
                 if (_scanline < ActiveScanlinesPerFrame && _scanlineMclk >= RenderLineMclkCycles)
                 {
+                    RenderScanline(_scanline);
                     _cyclesTillNextRender = MclkCyclesPerScanline + RenderLineMclkCycles - _scanlineMclk;
                 }
             }
@@ -227,6 +230,7 @@ internal sealed class Sega32XVdp
             {
                 if (_scanline < ActiveScanlinesPerFrame)
                 {
+                    RenderScanline(_scanline);
                     _cyclesTillNextRender = MclkCyclesPerScanline + RenderLineMclkCycles - _scanlineMclk;
                 }
             }
@@ -306,7 +310,9 @@ internal sealed class Sega32XVdp
 
     public void WriteFrameBufferByte(uint address, byte value, bool overwrite = false)
     {
-        if (value == 0 && !overwrite)
+        // Byte writes behave like normal frame-buffer writes even in overwrite image space.
+        // The selective zero-byte semantics only apply to overwrite word writes.
+        if (value == 0)
             return;
 
         ushort[] frameBuffer = GetWriteBuffer();
@@ -330,8 +336,16 @@ internal sealed class Sega32XVdp
     public void OverwriteFrameBufferWord(uint address, ushort value)
     {
         ushort[] frameBuffer = GetWriteBuffer();
-        frameBuffer[((address & 0x1FFFF) >> 1) % frameBuffer.Length] = value;
-        TraceFrameBufferWriteIfEnabled("ovr", address, value, frameBuffer);
+        int index = (int)(((address & 0x1FFFF) >> 1) % frameBuffer.Length);
+        ushort current = frameBuffer[index];
+        byte msb = (byte)(value >> 8);
+        byte lsb = (byte)value;
+        if (msb != 0)
+            current = (ushort)((current & 0x00FF) | (msb << 8));
+        if (lsb != 0)
+            current = (ushort)((current & 0xFF00) | lsb);
+        frameBuffer[index] = current;
+        TraceFrameBufferWriteIfEnabled("ovr", address, current, frameBuffer);
     }
 
     public ushort ReadCramWord(uint address)
@@ -352,8 +366,27 @@ internal sealed class Sega32XVdp
         if (mode == Sega32XFrameBufferMode.Blank)
             return;
 
-        ushort[] frameBuffer = GetDisplayBuffer();
-        TraceVdpStateIfEnabled(mode, frameBuffer, "render");
+        TraceVdpStateIfEnabled(mode, GetDisplayBuffer(), "render");
+        RenderRenderedFrameBgra(output, stride);
+    }
+
+    public void DebugRenderOtherBufferBgra(byte[] output, int stride)
+    {
+        ushort[] displayBuffer = GetDisplayBuffer();
+        ushort[] otherBuffer = ReferenceEquals(displayBuffer, _frameBuffer0) ? _frameBuffer1 : _frameBuffer0;
+        RenderBgraBuffer(output, stride, otherBuffer, tracePhase: null);
+    }
+
+    private void RenderBgraBuffer(byte[] output, int stride, ushort[] frameBuffer, string? tracePhase)
+    {
+        Array.Clear(output);
+
+        Sega32XFrameBufferMode mode = GetLatchedFrameBufferMode();
+        if (mode == Sega32XFrameBufferMode.Blank)
+            return;
+
+        if (!string.IsNullOrEmpty(tracePhase))
+            TraceVdpStateIfEnabled(mode, frameBuffer, tracePhase);
         for (int y = 0; y < FrameHeight; y++)
         {
             int row = y * stride;
@@ -372,6 +405,17 @@ internal sealed class Sega32XVdp
         }
     }
 
+    private void RenderRenderedFrameBgra(byte[] output, int stride)
+    {
+        for (int y = 0; y < FrameHeight; y++)
+        {
+            int row = y * stride;
+            int sourceRow = y * FrameWidth;
+            for (int x = 0; x < FrameWidth; x++)
+                WritePixel(output, row + (x * 4), ToBgra(_renderedFrame[sourceRow + x]));
+        }
+    }
+
     public bool CompositeBgraOver(byte[] output, int stride)
     {
         if (output.Length == 0 || stride <= 0)
@@ -381,16 +425,16 @@ internal sealed class Sega32XVdp
         if (mode == Sega32XFrameBufferMode.Blank)
             return false;
 
-        ushort[] frameBuffer = GetDisplayBuffer();
-        TraceVdpStateIfEnabled(mode, frameBuffer, "composite");
+        TraceVdpStateIfEnabled(mode, GetDisplayBuffer(), "composite");
         bool wroteAnyPixel = false;
 
         for (int y = 0; y < FrameHeight; y++)
         {
             int row = y * stride;
+            int sourceRow = y * FrameWidth;
             for (int x = 0; x < FrameWidth; x++)
             {
-                ushort pixel = GetRenderedPixel(mode, frameBuffer, y, x);
+                ushort pixel = _renderedFrame[sourceRow + x];
                 bool use32xPixel = (pixel & 0x8000) != 0;
                 int offset = row + (x * 4);
                 if ((uint)(offset + 3) >= output.Length)
@@ -413,6 +457,24 @@ internal sealed class Sega32XVdp
         }
 
         return wroteAnyPixel;
+    }
+
+    private void RenderScanline(int line)
+    {
+        int row = line * FrameWidth;
+        if ((uint)line >= ActiveScanlinesPerFrame)
+            return;
+
+        Sega32XFrameBufferMode mode = GetLatchedFrameBufferMode();
+        if (mode == Sega32XFrameBufferMode.Blank)
+        {
+            Array.Clear(_renderedFrame, row, FrameWidth);
+            return;
+        }
+
+        ushort[] frameBuffer = GetDisplayBuffer();
+        for (int x = 0; x < FrameWidth; x++)
+            _renderedFrame[row + x] = GetRenderedPixel(mode, frameBuffer, line, x);
     }
 
     private void RenderPackedLine(byte[] output, int row, ushort[] frameBuffer, int line)
