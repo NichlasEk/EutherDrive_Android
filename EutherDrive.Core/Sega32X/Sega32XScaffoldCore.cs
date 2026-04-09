@@ -120,6 +120,9 @@ internal sealed class Sega32XScaffoldCore
     public Sega32XSh2Bus GetOtherBus(Sega32XCpu whichCpu) =>
         whichCpu == Sega32XCpu.Master ? _slaveBus : _masterBus;
 
+    public Sega32XSh2Bus GetBus(Sega32XCpu whichCpu) =>
+        whichCpu == Sega32XCpu.Master ? _masterBus : _slaveBus;
+
     public void SaveState(BinaryWriter writer)
     {
         writer.Write(FrameCounter);
@@ -134,12 +137,13 @@ internal sealed class Sega32XScaffoldCore
     public void LoadState(BinaryReader reader)
     {
         FrameCounter = reader.ReadInt64();
-        _commPortSyncInProgress = reader.ReadBoolean();
+        _ = reader.ReadBoolean();
         Bus.LoadState(reader);
         MasterSh2.LoadState(reader);
         SlaveSh2.LoadState(reader);
         _masterBus.LoadState(reader);
         _slaveBus.LoadState(reader);
+        _commPortSyncInProgress = false;
         Registers.UpdateInterruptLevels();
     }
 
