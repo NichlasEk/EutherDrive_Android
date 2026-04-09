@@ -4,6 +4,22 @@ namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 {
+    private enum DmaAddressMode : uint
+    {
+        Fixed = 0,
+        AutoIncrement = 1,
+        AutoDecrement = 2,
+        Invalid = 3,
+    }
+
+    private enum DmaTransferUnit : uint
+    {
+        Byte = 0,
+        Word = 1,
+        Longword = 2,
+        SixteenByte = 3,
+    }
+
     private const int CacheDataArrayLengthWords = 4 * 1024 / 2;
     private const ulong Sh2CartridgeCycles = 7;
     private const ulong Sh2FrameBufferReadCycles = 4;
@@ -14,6 +30,11 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private static readonly bool TraceBootRegisterReads =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_BOOT_LOOP"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceDmaRegisters =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_DMA_REGS"),
             "1",
             StringComparison.Ordinal);
     [NonSerialized] private readonly Sega32XScaffoldCore _core;
@@ -39,6 +60,11 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private uint _breakAddressA;
     private uint _breakAddressB;
     private uint _dmaRegister;
+    private readonly uint[] _dmaSourceAddress = new uint[2];
+    private readonly uint[] _dmaDestinationAddress = new uint[2];
+    private readonly uint[] _dmaTransferCount = new uint[2];
+    private readonly ushort[] _dmaChannelControl = new ushort[2];
+    private ushort _dmaOperation;
     private uint _dmaVector0;
     private uint _dmaVector1;
     private ushort _freeRunCounterBase;
@@ -60,6 +86,37 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
 
     public void LoadState(BinaryReader reader) => StateBinarySerializer.ReadInto(reader, this);
+
+    public bool TryTickDma()
+    {
+        if ((_dmaOperation & 0x0001) == 0 || (_dmaOperation & 0x0004) != 0)
+            return false;
+
+        for (int channel = 0; channel < 2; channel++)
+        {
+            ushort control = _dmaChannelControl[channel];
+            if ((control & 0x0001) == 0 || (control & 0x0002) != 0)
+                continue;
+
+            bool autoRequest = (control & 0x0200) != 0;
+            if (!autoRequest)
+            {
+                bool dmaRequest = channel switch
+                {
+                    0 => !_core.Registers.Dma.Fifo.Sh2IsEmpty,
+                    _ => false,
+                };
+
+                if (!dmaRequest)
+                    continue;
+            }
+
+            TickDmaChannel(channel);
+            return true;
+        }
+
+        return false;
+    }
 
     private void SyncIfCommPortAccessed(uint maskedAddress)
     {
@@ -576,6 +633,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         CycleCounter += cycles;
     }
 
+    public ushort DebugReadCacheDataArrayWord(uint address) => ReadCacheDataArrayWord(address);
+
     private byte ReadCacheDataArrayByte(uint address)
     {
         ushort word = _cacheDataArray[((int)(address >> 1)) & (CacheDataArrayLengthWords - 1)];
@@ -616,7 +675,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     private byte ReadInternalRegisterByte(uint address)
     {
-        return address switch
+        if (TryReadDmaByte(address, out byte dmaByte))
+            return dmaByte;
+
+        byte value = address switch
         {
             0xFFFFFC17 => 0,
             >= 0xFFFFFE00 and <= 0xFFFFFE05 => _serialRegisters[address - 0xFFFFFE00],
@@ -637,11 +699,17 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             0xFFFFFEE5 => (byte)_vcrwdt,
             _ => 0,
         };
+
+        MaybeTraceDmaRegisterAccess("READ8", address, value);
+        return value;
     }
 
     private ushort ReadInternalRegisterWord(uint address)
     {
-        return address switch
+        if (TryReadDmaWord(address, out ushort dmaWord))
+            return dmaWord;
+
+        ushort value = address switch
         {
             0xFFFFFE60 => _iprb,
             0xFFFFFE62 => _vcra,
@@ -656,11 +724,17 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             0xFFFFFF62 => (ushort)_breakAddressB,
             _ => 0,
         };
+
+        MaybeTraceDmaRegisterAccess("READ16", address, value);
+        return value;
     }
 
     private uint ReadInternalRegisterLongword(uint address)
     {
-        return address switch
+        if (TryReadDmaLongword(address, out uint dmaValue))
+            return dmaValue;
+
+        uint value = address switch
         {
             >= 0xFFFFFF00 and <= 0xFFFFFF03 => _divuDividendHigh,
             >= 0xFFFFFF04 and <= 0xFFFFFF07 => _divuDividendLow,
@@ -674,10 +748,18 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             0xFFFFFFE0 => 0xA55A0001,
             _ => 0,
         };
+
+        MaybeTraceDmaRegisterAccess("READ32", address, value);
+        return value;
     }
 
     private void WriteInternalRegisterByte(uint address, byte value)
     {
+        if (TryWriteDmaByte(address, value))
+            return;
+
+        MaybeTraceDmaRegisterAccess("WRITE8", address, value);
+
         switch (address)
         {
             case >= 0xFFFFFE00 and <= 0xFFFFFE05:
@@ -731,6 +813,11 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     private void WriteInternalRegisterWord(uint address, ushort value)
     {
+        if (TryWriteDmaWord(address, value))
+            return;
+
+        MaybeTraceDmaRegisterAccess("WRITE16", address, value);
+
         switch (address)
         {
             case 0xFFFF8446:
@@ -779,6 +866,11 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     private void WriteInternalRegisterLongword(uint address, uint value)
     {
+        if (TryWriteDmaLongword(address, value))
+            return;
+
+        MaybeTraceDmaRegisterAccess("WRITE32", address, value);
+
         switch (address)
         {
             case >= 0xFFFFFF00 and <= 0xFFFFFF03:
@@ -837,6 +929,283 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _cacheControl = (byte)value;
                 if ((value & 0x10) != 0)
                     PurgeAllCache();
+                break;
+        }
+    }
+
+    private void MaybeTraceDmaRegisterAccess(string op, uint address, uint value)
+    {
+        if (!TraceDmaRegisters || !IsDmaInternalRegister(address))
+            return;
+
+        Console.WriteLine(
+            $"[S32X-SH2-DMAREG] cpu={_whichCpu} op={op} addr=0x{address:X8} value=0x{value:X8} cyc={CycleCounter}");
+    }
+
+    private static bool IsDmaInternalRegister(uint address)
+    {
+        return (address >= 0xFFFFFF80 && address <= 0xFFFFFFBF)
+            || address == 0xFFFFFFA0
+            || address == 0xFFFFFFA8;
+    }
+
+    private bool TryReadDmaByte(uint address, out byte value)
+    {
+        if (!TryReadDmaWord(address & ~1u, out ushort word))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = (address & 1) == 0 ? (byte)(word >> 8) : (byte)word;
+        return true;
+    }
+
+    private bool TryReadDmaWord(uint address, out ushort value)
+    {
+        if (!TryReadDmaLongword(address & ~3u, out uint longword))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = (address & 2) == 0 ? (ushort)(longword >> 16) : (ushort)longword;
+        return true;
+    }
+
+    private bool TryReadDmaLongword(uint address, out uint value)
+    {
+        switch (address)
+        {
+            case 0xFFFFFF80:
+                value = _dmaSourceAddress[0];
+                break;
+            case 0xFFFFFF84:
+                value = _dmaDestinationAddress[0];
+                break;
+            case 0xFFFFFF88:
+                value = _dmaTransferCount[0];
+                break;
+            case 0xFFFFFF8C:
+                value = _dmaChannelControl[0];
+                break;
+            case 0xFFFFFF90:
+                value = _dmaSourceAddress[1];
+                break;
+            case 0xFFFFFF94:
+                value = _dmaDestinationAddress[1];
+                break;
+            case 0xFFFFFF98:
+                value = _dmaTransferCount[1];
+                break;
+            case 0xFFFFFF9C:
+                value = _dmaChannelControl[1];
+                break;
+            case 0xFFFFFFA0:
+                value = _dmaVector0;
+                break;
+            case 0xFFFFFFA8:
+                value = _dmaVector1;
+                break;
+            case 0xFFFFFFB0:
+                value = _dmaOperation;
+                break;
+            default:
+                value = 0;
+                return false;
+        }
+
+        MaybeTraceDmaRegisterAccess("READ32", address, value);
+        return true;
+    }
+
+    private bool TryWriteDmaByte(uint address, byte value)
+    {
+        if (!TryReadDmaWord(address & ~1u, out ushort current))
+            return false;
+
+        ushort merged = (address & 1) == 0
+            ? (ushort)((current & 0x00FF) | (value << 8))
+            : (ushort)((current & 0xFF00) | value);
+        return TryWriteDmaWord(address & ~1u, merged);
+    }
+
+    private bool TryWriteDmaWord(uint address, ushort value)
+    {
+        if (!TryReadDmaLongword(address & ~3u, out uint current))
+            return false;
+
+        uint merged = (address & 2) == 0
+            ? (current & 0x0000FFFFu) | ((uint)value << 16)
+            : (current & 0xFFFF0000u) | value;
+        return TryWriteDmaLongword(address & ~3u, merged);
+    }
+
+    private bool TryWriteDmaLongword(uint address, uint value)
+    {
+        MaybeTraceDmaRegisterAccess("WRITE32", address, value);
+
+        switch (address)
+        {
+            case 0xFFFFFF80:
+                _dmaSourceAddress[0] = value;
+                return true;
+            case 0xFFFFFF84:
+                _dmaDestinationAddress[0] = value;
+                return true;
+            case 0xFFFFFF88:
+                _dmaTransferCount[0] = value & 0x00FF_FFFFu;
+                return true;
+            case 0xFFFFFF8C:
+                _dmaChannelControl[0] = WriteDmaChannelControl(_dmaChannelControl[0], value);
+                return true;
+            case 0xFFFFFF90:
+                _dmaSourceAddress[1] = value;
+                return true;
+            case 0xFFFFFF94:
+                _dmaDestinationAddress[1] = value;
+                return true;
+            case 0xFFFFFF98:
+                _dmaTransferCount[1] = value & 0x00FF_FFFFu;
+                return true;
+            case 0xFFFFFF9C:
+                _dmaChannelControl[1] = WriteDmaChannelControl(_dmaChannelControl[1], value);
+                return true;
+            case 0xFFFFFFA0:
+                _dmaVector0 = value;
+                return true;
+            case 0xFFFFFFA8:
+                _dmaVector1 = value;
+                return true;
+            case 0xFFFFFFB0:
+                _dmaOperation = WriteDmaOperation(_dmaOperation, value);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static ushort WriteDmaChannelControl(ushort current, uint value)
+    {
+        ushort next = (ushort)value;
+        // TE can be cleared by writes but not set directly.
+        if ((next & 0x0002) == 0)
+            current &= unchecked((ushort)~0x0002);
+        else
+            next = (ushort)(next & ~0x0002);
+
+        return (ushort)((next & ~0x0002) | (current & 0x0002));
+    }
+
+    private static ushort WriteDmaOperation(ushort current, uint value)
+    {
+        ushort next = (ushort)value;
+        // Address error flag is clear-only.
+        if ((next & 0x0004) == 0)
+            current &= unchecked((ushort)~0x0004);
+        else
+            next = (ushort)(next & ~0x0004);
+
+        return (ushort)((next & ~0x0004) | (current & 0x0004));
+    }
+
+    private void TickDmaChannel(int channel)
+    {
+        uint count = _dmaTransferCount[channel] & 0x00FF_FFFFu;
+        if (count == 0)
+        {
+            _dmaChannelControl[channel] |= 0x0002;
+            return;
+        }
+
+        DmaTransferUnit transferUnit = GetDmaTransferUnit(_dmaChannelControl[channel]);
+        switch (transferUnit)
+        {
+            case DmaTransferUnit.Byte:
+            {
+                uint source = _dmaSourceAddress[channel];
+                byte data = ReadByte(source, Sega32XSh2AccessContext.Data);
+                ApplyDmaSourceAddressMode(channel, 1);
+                uint destination = _dmaDestinationAddress[channel];
+                WriteByte(destination, data, Sega32XSh2AccessContext.Data);
+                ApplyDmaDestinationAddressMode(channel, 1);
+                _dmaTransferCount[channel] = (count - 1) & 0x00FF_FFFFu;
+                break;
+            }
+            case DmaTransferUnit.Word:
+            {
+                uint source = _dmaSourceAddress[channel];
+                ushort data = ReadWord(source, Sega32XSh2AccessContext.Data);
+                ApplyDmaSourceAddressMode(channel, 2);
+                uint destination = _dmaDestinationAddress[channel];
+                WriteWord(destination, data, Sega32XSh2AccessContext.Data);
+                ApplyDmaDestinationAddressMode(channel, 2);
+                _dmaTransferCount[channel] = (count - 1) & 0x00FF_FFFFu;
+                break;
+            }
+            case DmaTransferUnit.Longword:
+            {
+                uint source = _dmaSourceAddress[channel];
+                uint data = ReadLongword(source, Sega32XSh2AccessContext.Data);
+                ApplyDmaSourceAddressMode(channel, 4);
+                uint destination = _dmaDestinationAddress[channel];
+                WriteLongword(destination, data, Sega32XSh2AccessContext.Data);
+                ApplyDmaDestinationAddressMode(channel, 4);
+                _dmaTransferCount[channel] = (count - 1) & 0x00FF_FFFFu;
+                break;
+            }
+            case DmaTransferUnit.SixteenByte:
+            {
+                int transfers = (int)Math.Min(count, 4);
+                for (int i = 0; i < transfers; i++)
+                {
+                    uint source = _dmaSourceAddress[channel];
+                    uint data = ReadLongword(source, Sega32XSh2AccessContext.Data);
+                    _dmaSourceAddress[channel] += 4;
+                    uint destination = _dmaDestinationAddress[channel];
+                    WriteLongword(destination, data, Sega32XSh2AccessContext.Data);
+                    ApplyDmaDestinationAddressMode(channel, 4);
+                    count--;
+                    if (count == 0)
+                        break;
+                }
+
+                _dmaTransferCount[channel] = count & 0x00FF_FFFFu;
+                break;
+            }
+        }
+
+        if ((_dmaTransferCount[channel] & 0x00FF_FFFFu) == 0)
+            _dmaChannelControl[channel] |= 0x0002;
+    }
+
+    private static DmaTransferUnit GetDmaTransferUnit(ushort control)
+    {
+        return (DmaTransferUnit)((control >> 10) & 0x3);
+    }
+
+    private void ApplyDmaSourceAddressMode(int channel, uint size)
+    {
+        switch ((DmaAddressMode)((_dmaChannelControl[channel] >> 12) & 0x3))
+        {
+            case DmaAddressMode.AutoIncrement:
+                _dmaSourceAddress[channel] += size;
+                break;
+            case DmaAddressMode.AutoDecrement:
+                _dmaSourceAddress[channel] -= size;
+                break;
+        }
+    }
+
+    private void ApplyDmaDestinationAddressMode(int channel, uint size)
+    {
+        switch ((DmaAddressMode)((_dmaChannelControl[channel] >> 14) & 0x3))
+        {
+            case DmaAddressMode.AutoIncrement:
+                _dmaDestinationAddress[channel] += size;
+                break;
+            case DmaAddressMode.AutoDecrement:
+                _dmaDestinationAddress[channel] -= size;
                 break;
         }
     }

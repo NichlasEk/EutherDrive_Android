@@ -65,6 +65,9 @@ internal sealed class Sega32XSh2Cpu
 
         while (ticks > 0)
         {
+            if (bus.TryTickDma())
+                continue;
+
             if (!Registers.NextInstructionInDelaySlot)
             {
                 byte externalInterruptLevel = bus.InterruptLevel;
@@ -782,5 +785,6 @@ internal interface ISega32XSh2Bus
     void WriteByte(uint address, byte value, Sega32XSh2AccessContext context);
     void WriteWord(uint address, ushort value, Sega32XSh2AccessContext context);
     void WriteLongword(uint address, uint value, Sega32XSh2AccessContext context);
+    bool TryTickDma();
     void IncrementCycleCounter(ulong cycles);
 }
