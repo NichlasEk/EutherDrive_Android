@@ -878,18 +878,13 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private void AssociativePurge(uint address)
     {
         int entryIndex = CacheEntryIndex(address);
-        uint tag = address & 0x1FFFFC00;
-        ulong mask = 1UL << entryIndex;
-        
+        ulong mask = ~(1UL << entryIndex);
+
+        // Associative purge invalidates the whole cache line for this set, not just a matching tag.
         for (int way = 0; way < 4; way++)
-        {
-            if ((_cacheAddressValidBits[way] & mask) != 0 && _cacheAddressTags[entryIndex * 4 + way] == tag)
-            {
-                _cacheAddressValidBits[way] &= ~mask;
-                // LRU update not strictly required for purge but good for consistency
-                return;
-            }
-        }
+            _cacheAddressValidBits[way] &= mask;
+
+        _cacheAddressLruBits[entryIndex] = 0;
     }
 
     private void PurgeAllCache()
