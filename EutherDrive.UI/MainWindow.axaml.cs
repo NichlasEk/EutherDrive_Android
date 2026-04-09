@@ -6673,6 +6673,9 @@ public partial class MainWindow : Window
         if (core is PsxAdapter psx && psx.TryGetFramePerfSummary(out string psxSummary))
             return psxSummary;
 
+        if (core is MdTracerAdapter md && md.TryGetFramePerfSummary(out string mdSummary))
+            return mdSummary;
+
         return "Perf snapshot not implemented for this core.";
     }
 

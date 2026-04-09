@@ -201,6 +201,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     private int _lastGc1;
     private int _lastGc2;
     private readonly long[] _hotspotTicks = new long[(int)PerfHotspot.Count];
+    private volatile string _framePerfSummary =
+        "MD/32X perf unavailable. Start app/core with EUTHERDRIVE_TRACE_PERF=1 for detailed counters.";
 
     private static readonly int OutputSampleRate = ParseOutputSampleRate();
     private const int PsgChannels = 2;
@@ -3534,6 +3536,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         int gc1 = GC.CollectionCount(1);
         int gc2 = GC.CollectionCount(2);
 
+        string perfLine =
+            $"MD core:{avgFrameMs:0.00}ms CPU:{avgCpuMs:0.00}ms VDP:{avgVdpMs:0.00}ms GC0:{gc0 - _lastGc0} GC1:{gc1 - _lastGc1} GC2:{gc2 - _lastGc2}";
         Console.WriteLine($"[MdTracerAdapter] perf avg/frame={avgFrameMs:0.00}ms CPU={avgCpuMs:0.00}ms VDP={avgVdpMs:0.00}ms GC0={gc0 - _lastGc0} GC1={gc1 - _lastGc1} GC2={gc2 - _lastGc2}");
         PerfHotspots.SnapshotAndReset(_hotspotTicks);
         const int maxTop = 5;
@@ -3590,8 +3594,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
             sb.Append("ms");
         }
 
+        string hotspotLine = anyHotspot ? sb.ToString() : string.Empty;
         if (anyHotspot)
-            Console.WriteLine(sb.ToString());
+            Console.WriteLine(hotspotLine);
+
+        _framePerfSummary = string.IsNullOrWhiteSpace(hotspotLine)
+            ? perfLine
+            : $"{perfLine}\n{hotspotLine}";
 
         _accCpuTicks = 0;
         _accVdpTicks = 0;
@@ -3600,6 +3609,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
         _lastGc0 = gc0;
         _lastGc1 = gc1;
         _lastGc2 = gc2;
+    }
+
+    public bool TryGetFramePerfSummary(out string summary)
+    {
+        summary = _framePerfSummary;
+        return !string.IsNullOrWhiteSpace(summary);
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
