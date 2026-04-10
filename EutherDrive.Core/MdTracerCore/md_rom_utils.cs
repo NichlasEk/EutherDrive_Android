@@ -65,6 +65,9 @@ internal static class md_rom_utils
             return null;
 
         string upper = rawHeader.ToUpperInvariant();
+        if (TryDetectSingleHexRegion(upper, out ConsoleRegion? singleHexRegion))
+            return singleHexRegion;
+
         bool hasJ = upper.Contains('J');
         bool hasU = upper.Contains('U');
         bool hasE = upper.Contains('E');
@@ -81,6 +84,59 @@ internal static class md_rom_utils
             return ConsoleRegion.EU;
 
         return null;
+    }
+
+    private static bool TryDetectSingleHexRegion(string upper, out ConsoleRegion? region)
+    {
+        region = null;
+        if (string.IsNullOrWhiteSpace(upper))
+            return false;
+
+        string trimmed = upper.Trim();
+        if (trimmed.Length != 1)
+            return false;
+
+        char c = trimmed[0];
+        if (c == 'E')
+            return false;
+
+        if (!TryParseHexNibble(c, out byte mask))
+            return false;
+
+        bool supportsJapan = (mask & 0x1) != 0;
+        bool supportsUsa = (mask & 0x4) != 0;
+        bool supportsEurope = (mask & 0x8) != 0;
+        int matches = (supportsJapan ? 1 : 0) + (supportsUsa ? 1 : 0) + (supportsEurope ? 1 : 0);
+
+        region = matches switch
+        {
+            0 => null,
+            1 when supportsEurope => ConsoleRegion.EU,
+            1 when supportsUsa => ConsoleRegion.US,
+            1 when supportsJapan => ConsoleRegion.JP,
+            _ when supportsEurope => ConsoleRegion.EU,
+            _ when supportsUsa => ConsoleRegion.US,
+            _ => ConsoleRegion.JP
+        };
+        return true;
+    }
+
+    private static bool TryParseHexNibble(char c, out byte value)
+    {
+        value = 0;
+        if (c >= '0' && c <= '9')
+        {
+            value = (byte)(c - '0');
+            return true;
+        }
+
+        if (c >= 'A' && c <= 'F')
+        {
+            value = (byte)(10 + (c - 'A'));
+            return true;
+        }
+
+        return false;
     }
 
     private static bool ShouldRemoveCopierHeader(byte[] data)
