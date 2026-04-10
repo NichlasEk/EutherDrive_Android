@@ -44,6 +44,9 @@ namespace EutherDrive.Core.MdTracerCore
             if (g_game_shadowmap != null && g_game_shadowmap.Length > 0)
                 Array.Clear(g_game_shadowmap, 0, g_game_shadowmap.Length);
 
+            if (g_game_backdrop_used != null && g_game_backdrop_used.Length > 0)
+                Array.Fill(g_game_backdrop_used, true);
+
             if (g_game_screen != null && g_game_screen.Length > 0)
                 Array.Fill(g_game_screen, 0xFF000000u);
 

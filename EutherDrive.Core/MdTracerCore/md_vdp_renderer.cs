@@ -30,6 +30,7 @@ namespace EutherDrive.Core.MdTracerCore
         private uint[]         g_game_cmap = Array.Empty<uint>();
         private uint[]         g_game_primap = Array.Empty<uint>();
         private uint[]         g_game_shadowmap = Array.Empty<uint>();
+        private bool[]         g_game_backdrop_used = Array.Empty<bool>();
 
         // Snapshots (för “double buffering”/analys)
         private VDP_REGISTER    g_snap_register = new VDP_REGISTER();
@@ -186,20 +187,22 @@ namespace EutherDrive.Core.MdTracerCore
                  {
                      // Traditional behavior: fill with black
                      int outputLine = (outputLineOverride >= 0) ? outputLineOverride : GetOutputLineForScanline(g_scanline);
-                     if ((uint)outputLine < (uint)g_output_ysize)
-                     {
-                         int pos = outputLine * g_output_xsize;
-                         for (int x = 0; x < g_output_xsize; x++)
-                         {
-                             if (targetBuffer != null)
-                                 targetBuffer[pos++] = 0xFF000000u;
-                             else
-                                 g_game_screen[pos++] = 0xFF000000u;
-                         }
-                     }
-                 }
-             }
-        }
+	             if ((uint)outputLine < (uint)g_output_ysize)
+	                     {
+	                         int pos = outputLine * g_output_xsize;
+	                         for (int x = 0; x < g_output_xsize; x++)
+	                         {
+	                             if (targetBuffer != null)
+	                                 targetBuffer[pos++] = 0xFF000000u;
+	                             else
+	                                 g_game_screen[pos++] = 0xFF000000u;
+	                         }
+
+	                         Array.Fill(g_game_backdrop_used, true, outputLine * g_output_xsize, g_output_xsize);
+	                     }
+	                 }
+	             }
+	        }
 
         private void RenderSmsLine(int outputLineOverride = -1, uint[]? targetBuffer = null)
         {
@@ -223,15 +226,17 @@ namespace EutherDrive.Core.MdTracerCore
             int backdropIndex = 0x10 | (_smsRegs[7] & 0x0F);
             uint backdrop = (uint)backdropIndex < (uint)_smsPalette.Length ? _smsPalette[backdropIndex] : 0xFF000000u;
 
-            if (!displayEnabled)
-            {
-                for (int x = 0; x < width; x++)
-                    dest[pos + x] = 0xFF000000u;
-                return;
-            }
+	            if (!displayEnabled)
+	            {
+	                for (int x = 0; x < width; x++)
+	                    dest[pos + x] = 0xFF000000u;
+	                Array.Fill(g_game_backdrop_used, true, pos, width);
+	                return;
+	            }
 
-            for (int x = 0; x < width; x++)
-                dest[pos + x] = backdrop;
+	            for (int x = 0; x < width; x++)
+	                dest[pos + x] = backdrop;
+	            Array.Fill(g_game_backdrop_used, true, pos, width);
 
             int visibleHeight = smsDisplayHeight;
             if (smsLine < 0 || smsLine >= visibleHeight)
@@ -757,6 +762,11 @@ namespace EutherDrive.Core.MdTracerCore
                 Console.WriteLine($"[VDP-DEBUG] GetFrameBuffer called at frame {_frameCounter}, g_game_screen[0]=0x{g_game_screen[0]:X8}, length={g_game_screen.Length}");
             }
             return g_game_screen;
+        }
+
+        public bool[] GetBackdropUsageBuffer()
+        {
+            return g_game_backdrop_used;
         }
     }
 }

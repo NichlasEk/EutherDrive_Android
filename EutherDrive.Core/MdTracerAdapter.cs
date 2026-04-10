@@ -16,10 +16,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
 {
     private const int DefaultW = 320;
     private const int DefaultH = 224;
+    // jgenesis composites H32 Genesis in an expanded domain because 256 Genesis pixels map to
+    // 1280 subpixels while 32X pixels map to 4 subpixels each, with a +13 subpixel offset.
+    // 324 output pixels is the smallest whole-pixel surface that preserves that offseted span.
+    private const int S32xH32PresentationWidth = 324;
+    private const int S32xH32OffsetSubpixels = 13;
+    private const int S32xExpandedPixelWidth = 4;
+    private const int GenesisH32ExpandedPixelWidth = 5;
     private readonly md_vdp _vdp = new md_vdp();
 
     private byte[] _frameBufferFront = Array.Empty<byte>(); // BGRA till UI (read)
     private byte[] _frameBufferBack = Array.Empty<byte>(); // BGRA till UI (write)
+    private bool[] _s32xPresentationBackdropUsage = Array.Empty<bool>();
     private int _fbW, _fbH, _fbStride;
     private int _fbLogW = -1;
     private int _fbLogH = -1;
@@ -2499,7 +2507,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
 
     private void EnsureFramebufferInitialized(string reason)
     {
-        int w = _vdp.FrameWidth;
+        int w = GetPresentationFrameWidth();
         int h = _vdp.FrameHeight;
         if (w <= 0 || h <= 0)
         {
@@ -2522,6 +2530,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             _frameBufferFront = new byte[needed];
         if (_frameBufferBack.Length != needed)
             _frameBufferBack = new byte[needed];
+        if (_s32xPresentationBackdropUsage.Length != _fbW * _fbH)
+            _s32xPresentationBackdropUsage = new bool[_fbW * _fbH];
 
         if (FrameBufferTraceEnabled && _fbIdentityLogCount++ < 10)
         {
@@ -2529,6 +2539,42 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             int vdpId = vdpBuffer.Length == 0 ? 0 : RuntimeHelpers.GetHashCode(vdpBuffer);
             Console.WriteLine($"[MdTracerAdapter] Framebuffer source at {reason}: vdp=0x{vdpId:X8} length={vdpBuffer.Length}");
         }
+    }
+
+    private int GetPresentationFrameWidth()
+    {
+        int width = _vdp.FrameWidth;
+        if (width <= 0)
+            return DefaultW;
+
+        if (_sega32XCore != null && width == 256)
+            return S32xH32PresentationWidth;
+
+        return width;
+    }
+
+    private int GetS32xCompositeWidth()
+    {
+        if (_sega32XCore != null && _vdp.FrameWidth == 256)
+            return Sega32XVdp.FrameWidth;
+
+        int width = _vdp.FrameWidth;
+        return width > 0 ? width : DefaultW;
+    }
+
+    private bool UseExpandedS32xH32Presentation(int mdWidth)
+    {
+        return _sega32XCore != null
+            && mdWidth == 256
+            && _fbW >= S32xH32PresentationWidth;
+    }
+
+    private bool[] GetPresentationBackdropUsageBuffer()
+    {
+        if (UseExpandedS32xH32Presentation(_vdp.FrameWidth))
+            return _s32xPresentationBackdropUsage;
+
+        return _vdp.GetBackdropUsageBuffer();
     }
 
     private void DumpVectors()
@@ -3052,18 +3098,29 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             }
 
             ReadOnlySpan<uint> vdpSpan = vdpBuffer;
+            bool useExpandedS32xH32 = UseExpandedS32xH32Presentation(vdpWidth);
             long blitStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
-            BlitArgbToBgra8888(vdpSpan, _frameBufferBack, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
+            if (useExpandedS32xH32)
+            {
+                BlitArgbH32ExpandedToBgra8888(vdpSpan, _frameBufferBack, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
+                ExpandBackdropUsageToS32xH32Presentation(_vdp.GetBackdropUsageBuffer(), vdpWidth, vdpHeight, _s32xPresentationBackdropUsage);
+            }
+            else
+            {
+                BlitArgbToBgra8888(vdpSpan, _frameBufferBack, srcStridePixels: vdpWidth, srcWidth: vdpWidth, srcHeight: vdpHeight);
+            }
             if (TracePerf)
                 PerfHotspots.Add(PerfHotspot.VdpBlit, Stopwatch.GetTimestamp() - blitStart);
 
-            mdCoversEntireFrame = vdpWidth >= _fbW && vdpHeight >= _fbH;
+            mdCoversEntireFrame = useExpandedS32xH32 || (vdpWidth >= _fbW && vdpHeight >= _fbH);
             if (!mdCoversEntireFrame)
                 ClearFramebufferOutsideMdContent(vdpWidth, vdpHeight);
         }
         else
         {
             Array.Clear(_frameBufferBack, 0, _frameBufferBack.Length);
+            if (_s32xPresentationBackdropUsage.Length != 0)
+                Array.Fill(_s32xPresentationBackdropUsage, true);
         }
 
         long compositeStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
@@ -3093,6 +3150,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         if (_sega32XCore == null)
             return;
 
+        _sega32XCore.Bus.Vdp.SetHostDisplayWidth(GetS32xCompositeWidth());
+
         ulong ticks = baseTicksPerLine + ((ulong)line < remainderTicks ? 1UL : 0UL);
         if (ticks != 0)
             _sega32XCore.RunSlice(ticks);
@@ -3102,6 +3161,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     {
         if (_sega32XCore == null)
             return;
+
+        _sega32XCore.Bus.Vdp.SetHostDisplayWidth(GetS32xCompositeWidth());
 
         if (elapsedM68kCycles != 0)
             _sega32XCore.RunM68kCycles(elapsedM68kCycles);
@@ -3153,7 +3214,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         if (_sega32XCore?.Bus?.Vdp == null)
             return false;
 
-        return _sega32XCore.Bus.Vdp.CompositeBgraOver(_frameBufferBack, _fbStride);
+        return _sega32XCore.Bus.Vdp.CompositeBgraOver(
+            _frameBufferBack,
+            _fbStride,
+            GetPresentationBackdropUsageBuffer(),
+            _fbW);
     }
 
     private void ClearFramebufferOutsideMdContent(int contentWidth, int contentHeight)
@@ -3943,6 +4008,69 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             Console.WriteLine($"[MdTracerAdapter] DST sample b0={dst[0]:X2} g0={dst[1]:X2} r0={dst[2]:X2} a0={dst[3]:X2} " +
                               $"b1={dst[4]:X2} g1={dst[5]:X2} r1={dst[6]:X2} a1={dst[7]:X2}");
         }
+    }
+
+    private void BlitArgbH32ExpandedToBgra8888(ReadOnlySpan<uint> vdpSrc, Span<byte> dst, int srcStridePixels, int srcWidth, int srcHeight)
+    {
+        if (vdpSrc.Length == 0 || dst.Length == 0)
+            return;
+
+        int copyHeight = Math.Min(_fbH, srcHeight);
+        int copyWidth = _fbW;
+        if (copyHeight <= 0 || copyWidth <= 0)
+            return;
+
+        dst.Clear();
+
+        for (int y = 0; y < copyHeight; y++)
+        {
+            int srcRow = y * srcStridePixels;
+            int dstRow = y * _fbStride;
+            for (int x = 0; x < copyWidth; x++)
+            {
+                int srcX = MapH32PresentationPixelToGenesisPixel(x);
+                uint argb = ((uint)srcX < (uint)srcWidth) ? vdpSrc[srcRow + srcX] : 0xFF000000u;
+                int di = dstRow + (x * 4);
+                dst[di] = (byte)argb;
+                dst[di + 1] = (byte)(argb >> 8);
+                dst[di + 2] = (byte)(argb >> 16);
+                dst[di + 3] = (byte)(argb >> 24);
+            }
+        }
+    }
+
+    private void ExpandBackdropUsageToS32xH32Presentation(bool[] mdBackdropUsage, int srcWidth, int srcHeight, Span<bool> dst)
+    {
+        if (dst.Length == 0)
+            return;
+
+        dst.Fill(true);
+        if (mdBackdropUsage.Length == 0 || srcWidth <= 0 || srcHeight <= 0)
+            return;
+
+        int copyHeight = Math.Min(_fbH, srcHeight);
+        int copyWidth = _fbW;
+        for (int y = 0; y < copyHeight; y++)
+        {
+            int srcRow = y * srcWidth;
+            int dstRow = y * copyWidth;
+            for (int x = 0; x < copyWidth; x++)
+            {
+                int srcX = MapH32PresentationPixelToGenesisPixel(x);
+                if ((uint)srcX < (uint)srcWidth)
+                    dst[dstRow + x] = mdBackdropUsage[srcRow + srcX];
+            }
+        }
+    }
+
+    private static int MapH32PresentationPixelToGenesisPixel(int outputX)
+    {
+        int expandedX = (outputX * S32xExpandedPixelWidth) + (S32xExpandedPixelWidth / 2);
+        int genesisExpandedX = expandedX - S32xH32OffsetSubpixels;
+        if (genesisExpandedX < 0)
+            return -1;
+
+        return genesisExpandedX / GenesisH32ExpandedPixelWidth;
     }
 
     private static bool ShouldLogPerSecond(ref long lastTicks)

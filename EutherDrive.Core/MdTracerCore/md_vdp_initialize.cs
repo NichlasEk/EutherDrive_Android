@@ -25,10 +25,12 @@ namespace EutherDrive.Core.MdTracerCore
             g_game_cmap = new uint[DISPLAY_BUFSIZE];
             g_game_primap = new uint[DISPLAY_BUFSIZE];
             g_game_shadowmap = new uint[DISPLAY_BUFSIZE];
+            g_game_backdrop_used = new bool[DISPLAY_BUFSIZE];
             g_sprite_line_mask = new bool[DISPLAY_BUFSIZE];
 
             g_game_screen = new uint[DISPLAY_BUFSIZE];
             Array.Fill(g_game_screen, 0xFF000000u);
+            Array.Fill(g_game_backdrop_used, true);
             g_renderer_vram = new uint[VRAM_DATASIZE * 4];
             g_game_field_even = new uint[DISPLAY_BUFSIZE];
             g_game_field_odd = new uint[DISPLAY_BUFSIZE];

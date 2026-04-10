@@ -896,10 +896,10 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_base = outputLine * g_output_xsize;
                 int visibleWidth = g_display_xsize;
                 int outputWidth = g_output_xsize;
-                for (int wx = 0; wx < visibleWidth; wx++)
-                {
-                    uint bgColor = 0;
-                    uint bgPrio = 0;
+	                for (int wx = 0; wx < visibleWidth; wx++)
+	                {
+	                    uint bgColor = 0;
+	                    uint bgPrio = 0;
 
                     bool aOpaque = planeAColor[wx] != 0;
                     bool bOpaque = planeBColor[wx] != 0;
@@ -927,17 +927,20 @@ namespace EutherDrive.Core.MdTracerCore
                         bgPrio = planeBPrio[wx];
                     }
 
-                    uint w_colnum = bgColor != 0 ? bgColor : backColor;
-                    uint outPrio = bgPrio;
-                    if (!DisableSprites && spriteColor[wx] != 0 && (IgnoreSpritePriority || spritePrio[wx] >= bgPrio))
-                    {
-                        w_colnum = spriteColor[wx];
-                        outPrio = spritePrio[wx];
-                    }
+	                    bool usedBackdrop = bgColor == 0;
+	                    uint w_colnum = bgColor != 0 ? bgColor : backColor;
+	                    uint outPrio = bgPrio;
+	                    if (!DisableSprites && spriteColor[wx] != 0 && (IgnoreSpritePriority || spritePrio[wx] >= bgPrio))
+	                    {
+	                        w_colnum = spriteColor[wx];
+	                        outPrio = spritePrio[wx];
+	                        usedBackdrop = false;
+	                    }
 
-                    g_game_cmap[wx] = w_colnum;
-                    g_game_primap[wx] = outPrio;
-                    g_game_shadowmap[wx] = shadowEnabled ? 1u : 0u;
+	                    g_game_cmap[wx] = w_colnum;
+	                    g_game_primap[wx] = outPrio;
+	                    g_game_shadowmap[wx] = shadowEnabled ? 1u : 0u;
+	                    g_game_backdrop_used[w_base + wx] = usedBackdrop;
 
                     if (shadowEnabled && !DisableSprites && spriteShDelta[wx] != 0 && (IgnoreSpritePriority || spritePrio[wx] >= outPrio))
                     {
@@ -973,11 +976,12 @@ namespace EutherDrive.Core.MdTracerCore
                 if (outputWidth > visibleWidth)
                 {
                     uint borderColor = g_color[backColor];
-                    for (int wx = visibleWidth; wx < outputWidth; wx++)
-                    {
-                        destBuffer[w_base + wx] = borderColor;
-                    }
-                }
+	                    for (int wx = visibleWidth; wx < outputWidth; wx++)
+	                    {
+	                        destBuffer[w_base + wx] = borderColor;
+	                        g_game_backdrop_used[w_base + wx] = true;
+	                    }
+	                }
             }
         }
     }

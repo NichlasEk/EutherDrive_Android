@@ -68,6 +68,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         private void rendering_frame_snap()
         {
+            EnsureSnapshotBuffers();
             int w_vscroll_mask = (g_vdp_reg_11_2_vscroll == 1) ? 0x000f : 0xffff;
 
             g_snap_register.display_xsize   = g_display_xsize;
@@ -149,6 +150,55 @@ namespace EutherDrive.Core.MdTracerCore
                     Array.Clear(g_snap_line_snap[y].sprite_reverse,    count, tail);
                     Array.Clear(g_snap_line_snap[y].sprite_char,       count, tail);
                 }
+            }
+        }
+
+        private void EnsureSnapshotBuffers()
+        {
+            g_snap_register ??= new VDP_REGISTER();
+
+            if (g_snap_renderer_vram == null || g_snap_renderer_vram.Length != g_renderer_vram.Length)
+                g_snap_renderer_vram = new uint[g_renderer_vram.Length];
+            if (g_snap_color == null || g_snap_color.Length != g_color.Length)
+                g_snap_color = new uint[g_color.Length];
+            if (g_snap_color_shadow == null || g_snap_color_shadow.Length != g_color_shadow.Length)
+                g_snap_color_shadow = new uint[g_color_shadow.Length];
+            if (g_snap_color_highlight == null || g_snap_color_highlight.Length != g_color_highlight.Length)
+                g_snap_color_highlight = new uint[g_color_highlight.Length];
+
+            if (g_snap_line_snap == null || g_snap_line_snap.Length != g_line_snap.Length)
+                g_snap_line_snap = new VDP_LINE_SNAP[g_line_snap.Length];
+
+            for (int i = 0; i < g_snap_line_snap.Length; i++)
+            {
+                if (g_snap_line_snap[i].vscrollA == null || g_snap_line_snap[i].vscrollA.Length != VSRAM_DATASIZE)
+                    g_snap_line_snap[i].vscrollA = new int[VSRAM_DATASIZE];
+                if (g_snap_line_snap[i].vscrollB == null || g_snap_line_snap[i].vscrollB.Length != VSRAM_DATASIZE)
+                    g_snap_line_snap[i].vscrollB = new int[VSRAM_DATASIZE];
+
+                if (g_snap_line_snap[i].sprite_left == null || g_snap_line_snap[i].sprite_left.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_left = new int[MAX_SPRITE];
+                if (g_snap_line_snap[i].sprite_right == null || g_snap_line_snap[i].sprite_right.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_right = new int[MAX_SPRITE];
+                if (g_snap_line_snap[i].sprite_top == null || g_snap_line_snap[i].sprite_top.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_top = new int[MAX_SPRITE];
+                if (g_snap_line_snap[i].sprite_bottom == null || g_snap_line_snap[i].sprite_bottom.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_bottom = new int[MAX_SPRITE];
+                if (g_snap_line_snap[i].sprite_xcell_size == null || g_snap_line_snap[i].sprite_xcell_size.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_xcell_size = new int[MAX_SPRITE];
+                if (g_snap_line_snap[i].sprite_ycell_size == null || g_snap_line_snap[i].sprite_ycell_size.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_ycell_size = new int[MAX_SPRITE];
+                if (g_snap_line_snap[i].sprite_y_in_sprite == null || g_snap_line_snap[i].sprite_y_in_sprite.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_y_in_sprite = new int[MAX_SPRITE];
+
+                if (g_snap_line_snap[i].sprite_priority == null || g_snap_line_snap[i].sprite_priority.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_priority = new uint[MAX_SPRITE];
+                if (g_snap_line_snap[i].sprite_palette == null || g_snap_line_snap[i].sprite_palette.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_palette = new uint[MAX_SPRITE];
+                if (g_snap_line_snap[i].sprite_reverse == null || g_snap_line_snap[i].sprite_reverse.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_reverse = new uint[MAX_SPRITE];
+                if (g_snap_line_snap[i].sprite_char == null || g_snap_line_snap[i].sprite_char.Length != MAX_SPRITE)
+                    g_snap_line_snap[i].sprite_char = new uint[MAX_SPRITE];
             }
         }
 

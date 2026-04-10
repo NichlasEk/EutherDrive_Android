@@ -45,6 +45,7 @@ internal sealed class Sega32XVdp
     private readonly ushort[] _cram = new ushort[0x200 / 2];
     [NonSerialized] private readonly uint[] _renderedFrame = new uint[FrameWidth * FrameHeight];
 
+    private int _hostDisplayWidth = FrameWidth;
     private bool _displayFrameBuffer;
     private bool _writeFrameBuffer = true;
     private ulong _scanlineMclk;
@@ -75,6 +76,17 @@ internal sealed class Sega32XVdp
     public void SetRegion(ConsoleRegion region)
     {
         _scanlinesPerFrame = region == ConsoleRegion.EU ? 313 : 262;
+    }
+
+    public void SetHostDisplayWidth(int width)
+    {
+        if (width <= 0)
+        {
+            _hostDisplayWidth = FrameWidth;
+            return;
+        }
+
+        _hostDisplayWidth = Math.Min(FrameWidth, width);
     }
 
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
@@ -407,7 +419,7 @@ internal sealed class Sega32XVdp
         if (mode == Sega32XFrameBufferMode.Blank)
             return;
 
-        int outputWidth = Math.Min(FrameWidth, stride / 4);
+        int outputWidth = Math.Min(GetActiveFrameWidth(), stride / 4);
         int outputHeight = Math.Min(FrameHeight, output.Length / stride);
         if (outputWidth <= 0 || outputHeight <= 0)
             return;
@@ -434,7 +446,7 @@ internal sealed class Sega32XVdp
 
     private void RenderRenderedFrameBgra(byte[] output, int stride)
     {
-        int outputWidth = Math.Min(FrameWidth, stride / 4);
+        int outputWidth = Math.Min(GetActiveFrameWidth(), stride / 4);
         int outputHeight = Math.Min(FrameHeight, output.Length / stride);
         if (outputWidth <= 0 || outputHeight <= 0)
             return;
@@ -448,7 +460,7 @@ internal sealed class Sega32XVdp
         }
     }
 
-    public bool CompositeBgraOver(byte[] output, int stride)
+    public bool CompositeBgraOver(byte[] output, int stride, bool[]? mdBackdropUsed, int mdStridePixels)
     {
         if (output.Length == 0 || stride <= 0)
             return false;
@@ -458,7 +470,7 @@ internal sealed class Sega32XVdp
             return false;
 
         TraceVdpStateIfEnabled(mode, GetDisplayBuffer(), "composite");
-        int outputWidth = Math.Min(FrameWidth, stride / 4);
+        int outputWidth = Math.Min(GetActiveFrameWidth(), stride / 4);
         int outputHeight = Math.Min(FrameHeight, output.Length / stride);
         if (outputWidth <= 0 || outputHeight <= 0)
             return false;
@@ -474,15 +486,26 @@ internal sealed class Sega32XVdp
                 bool use32xPixel = (pixel & 0x8000_0000u) != 0;
                 int offset = row + (x * 4);
 
-                bool mdHasVisiblePixel = output[offset + 3] != 0;
-                bool mdPixelIsBlack = output[offset] == 0
-                    && output[offset + 1] == 0
-                    && output[offset + 2] == 0;
+                bool mdBackdropPixel = false;
+                if (mdBackdropUsed != null && mdStridePixels > 0)
+                {
+                    int mdIndex = (y * mdStridePixels) + x;
+                    if ((uint)mdIndex < (uint)mdBackdropUsed.Length)
+                        mdBackdropPixel = mdBackdropUsed[mdIndex];
+                }
+                else
+                {
+                    bool mdHasVisiblePixel = output[offset + 3] != 0;
+                    bool mdPixelIsBlack = output[offset] == 0
+                        && output[offset + 1] == 0
+                        && output[offset + 2] == 0;
 
-                // The MD presentation path currently emits opaque black for "empty" pixels.
-                // Until Genesis transparency is preserved through compositing, treat opaque black
-                // as transparent for low-priority 32X pixels so pure-32X scenes can appear.
-                if (!use32xPixel && mdHasVisiblePixel && !mdPixelIsBlack)
+                    // Fallback for callers that still feed the old opaque Genesis path without
+                    // backdrop usage metadata.
+                    mdBackdropPixel = !mdHasVisiblePixel || mdPixelIsBlack;
+                }
+
+                if (!use32xPixel && !mdBackdropPixel)
                     continue;
 
                 WritePixel(output, offset, 0xFF00_0000u | (pixel & 0x00FF_FFFFu));
@@ -506,9 +529,13 @@ internal sealed class Sega32XVdp
             return;
         }
 
+        int activeWidth = GetActiveFrameWidth();
         ushort[] frameBuffer = GetDisplayBuffer();
-        for (int x = 0; x < FrameWidth; x++)
-            _renderedFrame[row + x] = GetRenderedPixel(mode, frameBuffer, line, x);
+        for (int x = 0; x < activeWidth; x++)
+            _renderedFrame[row + x] = GetRenderedPixel(mode, frameBuffer, line, x, activeWidth);
+
+        if (activeWidth < FrameWidth)
+            Array.Clear(_renderedFrame, row + activeWidth, FrameWidth - activeWidth);
     }
 
     private void RenderPackedLine(byte[] output, int row, int width, ushort[] frameBuffer, int line)
@@ -535,13 +562,13 @@ internal sealed class Sega32XVdp
         }
     }
 
-    private uint GetRenderedPixel(Sega32XFrameBufferMode mode, ushort[] frameBuffer, int line, int x)
+    private uint GetRenderedPixel(Sega32XFrameBufferMode mode, ushort[] frameBuffer, int line, int x, int width)
     {
         return mode switch
         {
             Sega32XFrameBufferMode.PackedPixel => GetPackedPixel(frameBuffer, line, x),
             Sega32XFrameBufferMode.DirectColor => GetDirectColorPixel(frameBuffer, line, x),
-            Sega32XFrameBufferMode.RunLength => GetRunLengthPixel(frameBuffer, line, x),
+            Sega32XFrameBufferMode.RunLength => GetRunLengthPixel(frameBuffer, line, x, width),
             _ => 0,
         };
     }
@@ -574,11 +601,11 @@ internal sealed class Sega32XVdp
         return BuildRenderedPixel(color);
     }
 
-    private uint GetRunLengthPixel(ushort[] frameBuffer, int line, int x)
+    private uint GetRunLengthPixel(ushort[] frameBuffer, int line, int x, int width)
     {
         int pixel = 0;
         int readIndex = frameBuffer[line % frameBuffer.Length];
-        while (pixel < FrameWidth)
+        while (pixel < width)
         {
             ushort word = frameBuffer[readIndex % frameBuffer.Length];
             readIndex++;
@@ -656,6 +683,8 @@ internal sealed class Sega32XVdp
     private Sega32XFrameBufferMode GetFrameBufferMode() => (Sega32XFrameBufferMode)(DisplayMode & 0x0003);
 
     private Sega32XFrameBufferMode GetLatchedFrameBufferMode() => (Sega32XFrameBufferMode)(_latchedDisplayMode & 0x0003);
+
+    private int GetActiveFrameWidth() => _hostDisplayWidth > 0 ? _hostDisplayWidth : FrameWidth;
 
     private ushort ReadDisplayMode()
     {
