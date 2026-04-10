@@ -1386,6 +1386,7 @@ public partial class MainView : UserControl
             SnesAdapter snes => snes.GetTargetFps(ConsoleRegion.Auto),
             PceCdAdapter pce => pce.GetTargetFps(),
             PsxAdapter psx => psx.GetTargetFps(),
+            EutherDrive.Core.Sega32XAdapter s32x => s32x.GetTargetFps(),
             _ => DefaultTargetFrameRate
         };
     }

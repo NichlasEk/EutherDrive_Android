@@ -814,6 +814,8 @@ public partial class MainWindow : Window
             target = gba.GetTargetFps();
         else if (_core is PsxAdapter psx)
             target = psx.GetTargetFps();
+        else if (_core is EutherDrive.Core.Sega32XAdapter s32x)
+            target = s32x.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -2504,6 +2506,11 @@ public partial class MainWindow : Window
                         {
                             UpdateSegaCdRomInfo(segaCd, _romPath);
                         }
+                        else if (_core is EutherDrive.Core.Sega32XAdapter s32x)
+                        {
+                            UpdateSega32XRomInfo(s32x);
+                            Console.WriteLine(s32x.RomSummary ?? "32X ROM loaded.");
+                        }
                         _audioPullReady = true;
                         PrimePullAudio();
                         AddRecentRom(_romPath);
@@ -3151,6 +3158,23 @@ public partial class MainWindow : Window
             {
                 StatusText.Text = $"Region override set to {RegionOverride}.";
             }
+            return;
+        }
+
+        if (_core is EutherDrive.Core.Sega32XAdapter s32x)
+        {
+            s32x.SetRegionOverride(RegionOverride);
+            UpdateEmuTargetFps();
+            if (resetIfRunning && !string.IsNullOrWhiteSpace(_romPath))
+            {
+                s32x.Reset();
+                StatusText.Text = $"Region override set to {RegionOverride}. Reset applied.";
+            }
+            else if (resetIfRunning)
+            {
+                StatusText.Text = $"Region override set to {RegionOverride}.";
+            }
+            return;
         }
     }
 
@@ -3482,6 +3506,20 @@ public partial class MainWindow : Window
 
         var info = TryBuildPsxRomInfo(romPath);
         RomInfoText.Text = info ?? "PSX ROM loaded.";
+        UpdateRomRegionHint(ConsoleRegion.Auto);
+        _romRegionKey = null;
+        _romSegaCdKey = null;
+        _segaCdRamCartEnabled = false;
+        _segaCdLoadCdToRam = false;
+        _segaCdForceNoDisc = false;
+        UpdateSegaCdOptionsUi();
+    }
+
+    private void UpdateSega32XRomInfo(EutherDrive.Core.Sega32XAdapter adapter)
+    {
+        adapter.SetRegionOverride(RegionOverride);
+        if (RomInfoText != null)
+            RomInfoText.Text = adapter.RomSummary ?? "32X ROM loaded.";
         UpdateRomRegionHint(ConsoleRegion.Auto);
         _romRegionKey = null;
         _romSegaCdKey = null;

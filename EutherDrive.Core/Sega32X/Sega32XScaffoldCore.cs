@@ -32,6 +32,7 @@ internal sealed class Sega32XScaffoldCore
     private int _commWriteNextIndex;
     private ulong _globalSh2Cycles;
     private bool _commPortSyncInProgress;
+    private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
 
     public Sega32XScaffoldCore(byte[] romData, Sega32XSystemRegisters? sharedRegisters = null)
     {
@@ -54,6 +55,12 @@ internal sealed class Sega32XScaffoldCore
         SlaveSh2 = new Sega32XSh2Cpu("Slave");
         _masterBus = new Sega32XSh2Bus(this, Sega32XCpu.Master);
         _slaveBus = new Sega32XSh2Bus(this, Sega32XCpu.Slave);
+    }
+
+    public void SetRegionOverride(ConsoleRegion region)
+    {
+        _regionOverride = region;
+        Bus.Vdp.SetRegion(region);
     }
 
     public Sega32XSystemRegisters Registers { get; }
@@ -109,7 +116,7 @@ internal sealed class Sega32XScaffoldCore
         while (remaining > 0)
         {
             ulong eventMclk = Bus.Vdp.MclkCyclesUntilNextEvent(Registers.EitherHInterruptEnabled);
-            ulong eventTicks = (eventMclk * DefaultSh2InstructionsPerFrame + (Sega32XVdp.FrameMclkCycles - 1)) / Sega32XVdp.FrameMclkCycles;
+            ulong eventTicks = (eventMclk * DefaultSh2InstructionsPerFrame + (Bus.Vdp.FrameMclkCycles - 1)) / Bus.Vdp.FrameMclkCycles;
             if (eventTicks == 0)
                 eventTicks = 1;
 

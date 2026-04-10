@@ -20,6 +20,7 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
     private RomIdentity? _romIdentity;
     private string? _romSummary;
     private long _frameCounter;
+    private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
 
     public string? RomSummary => _romSummary;
     public RomIdentity? RomIdentity => _romIdentity;
@@ -27,7 +28,16 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
     public uint? DebugMasterProgramCounter => _core?.MasterSh2.Registers.ProgramCounter;
     public uint? DebugSlaveProgramCounter => _core?.SlaveSh2.Registers.ProgramCounter;
 
-    public double GetTargetFps() => 60.0;
+    public double GetTargetFps() => _regionOverride == ConsoleRegion.EU ? 50.0 : 60.0;
+
+    public void SetRegionOverride(ConsoleRegion region)
+    {
+        _regionOverride = region;
+        if (_core != null)
+        {
+            _core.SetRegionOverride(region);
+        }
+    }
 
     public void LoadRom(string path)
     {

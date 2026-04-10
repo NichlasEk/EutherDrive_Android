@@ -36,9 +36,9 @@ internal sealed class Sega32XVdp
     private const ulong RenderLineMclkCycles = 26 * 8;
     private const ulong DramRefreshStartMclkCycles = HBlankStartMclkCycles;
     private const ulong DramRefreshEndMclkCycles = HBlankStartMclkCycles + ((40 * 7) / 3);
-    private const int ScanlinesPerFrame = 262;
+    private int _scanlinesPerFrame = 262;
     private const int ActiveScanlinesPerFrame = 224;
-    public const ulong FrameMclkCycles = MclkCyclesPerScanline * ScanlinesPerFrame;
+    public ulong FrameMclkCycles => MclkCyclesPerScanline * (ulong)_scanlinesPerFrame;
 
     private readonly ushort[] _frameBuffer0 = new ushort[WordsPerBuffer];
     private readonly ushort[] _frameBuffer1 = new ushort[WordsPerBuffer];
@@ -71,6 +71,11 @@ internal sealed class Sega32XVdp
     public ushort HInterruptInterval { get; private set; }
     public bool HInterruptInVBlank { get; private set; }
     public bool Priority => (DisplayMode & 0x0080) != 0;
+    
+    public void SetRegion(ConsoleRegion region)
+    {
+        _scanlinesPerFrame = region == ConsoleRegion.EU ? 313 : 262;
+    }
 
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
 
@@ -227,12 +232,12 @@ internal sealed class Sega32XVdp
                     registers.NotifyVBlankStart();
                     _hInterruptThisLine = false;
                 }
-                else if (_scanline >= ScanlinesPerFrame)
+                else if (_scanline >= _scanlinesPerFrame)
                 {
                     _scanline = 0;
                     registers.NotifyVBlankEnd();
                 }
-                else if (_scanline == ScanlinesPerFrame - 1)
+                else if (_scanline == _scanlinesPerFrame - 1)
                 {
                     _hInterruptThisLine = true;
                 }
