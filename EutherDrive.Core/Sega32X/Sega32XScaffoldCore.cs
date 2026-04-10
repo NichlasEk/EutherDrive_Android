@@ -48,8 +48,7 @@ internal sealed class Sega32XScaffoldCore
         }
 
         Registers = sharedRegisters ?? new Sega32XSystemRegisters();
-        if (ExperimentalCommPollEnabled)
-            Registers.CommunicationPortWritten += OnCommunicationPortWritten;
+        Registers.CommunicationPortWritten += OnCommunicationPortWritten;
         Bus = new Sega32XBus(_romData, vectors, Registers, SyncSh2sForM68kCommAccess);
         MasterSh2 = new Sega32XSh2Cpu("Master");
         SlaveSh2 = new Sega32XSh2Cpu("Slave");
@@ -228,12 +227,6 @@ internal sealed class Sega32XScaffoldCore
 
     public bool TryConsumeRecentCommWrite(uint address, Sega32XCpu readerCpu, ulong readerM68kReferenceCyclesDone, out ushort value)
     {
-        if (!ExperimentalCommPollEnabled)
-        {
-            value = 0;
-            return false;
-        }
-
         Sega32XCommSource readerSource = ToCommSource(readerCpu);
 
         for (int offset = 1; offset <= CommWriteFifoSize; offset++)
@@ -304,7 +297,8 @@ internal sealed class Sega32XScaffoldCore
         _commWriteValid[index] = true;
         _commWriteNextIndex = (_commWriteNextIndex + 1) % CommWriteFifoSize;
 
-        WakeCommPollers(source, address);
+        if (ExperimentalCommPollEnabled)
+            WakeCommPollers(source, address);
     }
 
     private void WakeCommPollers(Sega32XCommSource source, uint address)

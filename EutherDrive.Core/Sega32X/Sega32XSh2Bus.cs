@@ -521,6 +521,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
             uint frameBufferAddress = masked - 0x04000000;
             _core.Bus.Vdp.WriteFrameBufferByte(frameBufferAddress, value, IsFrameBufferOverwrite(masked));
+            TracePcWatch("write8", masked, value, context);
+            TraceAddressWatch("write8", masked, value, context);
             return;
         }
 
@@ -630,6 +632,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, value);
             else
                 _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, value);
+            TracePcWatch("write16", masked, value, context);
+            TraceAddressWatch("write16", masked, value, context);
             return;
         }
 
@@ -1658,7 +1662,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             CycleCounter += 1 + Sh2FrameBufferReadCycles;
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return 0xFFFF;
-            return _core.Bus.Vdp.ReadFrameBufferWord(masked - 0x04000000);
+            ushort value = _core.Bus.Vdp.ReadFrameBufferWord(masked - 0x04000000);
+            TracePcWatch("read16", masked, value, context);
+            TraceAddressWatch("read16", masked, value, context);
+            return value;
         }
 
         if (masked >= 0x02000000 && masked < 0x02400000)
@@ -1704,6 +1711,14 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 ? _core.Bus.Vdp.ReadRegister((masked + 2) & ~1u)
                 : _core.Registers.Sh2Read((masked + 2) & ~1u, _whichCpu, _core.Bus.Vdp);
 
+            if (masked >= 0x00004020 && masked <= 0x0000402F)
+            {
+                if (_core.TryConsumeRecentCommWrite(masked & ~1u, _whichCpu, M68kReferenceCyclesDone, out ushort queuedHighWord))
+                    highWord = queuedHighWord;
+                if (_core.TryConsumeRecentCommWrite((masked + 2) & ~1u, _whichCpu, M68kReferenceCyclesDone, out ushort queuedLowWord))
+                    lowWord = queuedLowWord;
+            }
+
             return ((uint)highWord << 16) | lowWord;
         }
 
@@ -1723,7 +1738,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 return 0xFFFFFFFF;
             ushort highWord = _core.Bus.Vdp.ReadFrameBufferWord(masked - 0x04000000);
             ushort lowWord = _core.Bus.Vdp.ReadFrameBufferWord((masked - 0x04000000) | 2);
-            return ((uint)highWord << 16) | lowWord;
+            uint value = ((uint)highWord << 16) | lowWord;
+            TracePcWatch("read32", masked, value, context);
+            TraceAddressWatch("read32", masked, value, context);
+            return value;
         }
 
         if (masked >= 0x02000000 && masked < 0x02400000)
@@ -1793,6 +1811,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
             else
                 _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
+            TracePcWatch("write32", masked, value, context);
+            TraceAddressWatch("write32", masked, value, context);
             return;
         }
 
@@ -1848,6 +1868,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, value);
             else
                 _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, value);
+            TracePcWatch("write16", masked, value, context);
+            TraceAddressWatch("write16", masked, value, context);
             return;
         }
 
