@@ -752,6 +752,12 @@ class Program
                         $"first_nonzero=({hostStatsIn.FirstX},{hostStatsIn.FirstY}) frameCounter={md.FrameCounter ?? -1} " +
                         $"m68k=0x{md.GetM68kPc():X6} " +
                         $"mpc=0x{md.Debug32XMasterProgramCounter ?? 0:X8} spc=0x{md.Debug32XSlaveProgramCounter ?? 0:X8} fp=0x{hostLastFingerprint:X16}");
+                    if (md.Debug32XRenderedPixelStats is { } hostPixelStatsIn)
+                    {
+                        Console.WriteLine(
+                            $"[HEADLESS] 32X-host pixels transparent={hostPixelStatsIn.TransparentPixels} " +
+                            $"low={hostPixelStatsIn.LowPriorityPixels} high={hostPixelStatsIn.HighPriorityPixels}");
+                    }
                     if (hostTrace32XWords)
                     {
                         Console.WriteLine(
@@ -776,6 +782,12 @@ class Program
                                 $"m68k=0x{md.GetM68kPc():X6} " +
                                 $"mpc=0x{md.Debug32XMasterProgramCounter ?? 0:X8} spc=0x{md.Debug32XSlaveProgramCounter ?? 0:X8} " +
                                 $"fp=0x{hostFingerprint:X16} unchanged={hostUnchangedFrames}");
+                            if (md.Debug32XRenderedPixelStats is { } hostPixelStats)
+                            {
+                                Console.WriteLine(
+                                    $"[HEADLESS] Frame {frame}: 32x_host_pixels transparent={hostPixelStats.TransparentPixels} " +
+                                    $"low={hostPixelStats.LowPriorityPixels} high={hostPixelStats.HighPriorityPixels}");
+                            }
                             if (hostTrace32XWords)
                             {
                                 Console.WriteLine(
@@ -795,6 +807,12 @@ class Program
                         $"first_nonzero=({hostStatsOut.FirstX},{hostStatsOut.FirstY}) frameCounter={md.FrameCounter ?? -1} " +
                         $"m68k=0x{md.GetM68kPc():X6} " +
                         $"mpc=0x{md.Debug32XMasterProgramCounter ?? 0:X8} spc=0x{md.Debug32XSlaveProgramCounter ?? 0:X8} fp=0x{hostFinalFingerprint:X16}");
+                    if (md.Debug32XRenderedPixelStats is { } hostPixelStatsOut)
+                    {
+                        Console.WriteLine(
+                            $"[HEADLESS] 32X-host final pixels transparent={hostPixelStatsOut.TransparentPixels} " +
+                            $"low={hostPixelStatsOut.LowPriorityPixels} high={hostPixelStatsOut.HighPriorityPixels}");
+                    }
                     if (hostTrace32XWords)
                     {
                         Console.WriteLine(

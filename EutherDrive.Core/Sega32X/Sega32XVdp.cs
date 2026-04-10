@@ -12,6 +12,8 @@ internal enum Sega32XFrameBufferMode : ushort
 
 internal sealed class Sega32XVdp
 {
+    private const uint RenderedPixelPriorityFlag = 0x8000_0000u;
+    private const uint RenderedPixelTransparentFlag = 0x4000_0000u;
     private static readonly bool TraceState =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_VDP_STATE"),
@@ -73,6 +75,38 @@ internal sealed class Sega32XVdp
     public ushort HInterruptInterval { get; private set; }
     public bool HInterruptInVBlank { get; private set; }
     public bool Priority => (DisplayMode & 0x0080) != 0;
+
+    public (int TransparentPixels, int LowPriorityPixels, int HighPriorityPixels) DebugRenderedPixelStats()
+    {
+        int transparent = 0;
+        int lowPriority = 0;
+        int highPriority = 0;
+
+        int width = GetActiveFrameWidth();
+        int height = GetActiveScanlinesPerFrame();
+        for (int y = 0; y < height; y++)
+        {
+            int row = y * FrameWidth;
+            for (int x = 0; x < width; x++)
+            {
+                uint pixel = _renderedFrame[row + x];
+                if ((pixel & RenderedPixelTransparentFlag) != 0)
+                {
+                    transparent++;
+                }
+                else if ((pixel & RenderedPixelPriorityFlag) != 0)
+                {
+                    highPriority++;
+                }
+                else
+                {
+                    lowPriority++;
+                }
+            }
+        }
+
+        return (transparent, lowPriority, highPriority);
+    }
     
     public void SetRegion(ConsoleRegion region)
     {
@@ -457,7 +491,13 @@ internal sealed class Sega32XVdp
             int row = y * stride;
             int sourceRow = y * FrameWidth;
             for (int x = 0; x < outputWidth; x++)
-                WritePixel(output, row + (x * 4), 0xFF00_0000u | (_renderedFrame[sourceRow + x] & 0x00FF_FFFFu));
+            {
+                uint pixel = _renderedFrame[sourceRow + x];
+                if ((pixel & RenderedPixelTransparentFlag) != 0)
+                    continue;
+
+                WritePixel(output, row + (x * 4), 0xFF00_0000u | (pixel & 0x00FF_FFFFu));
+            }
         }
     }
 
@@ -484,7 +524,8 @@ internal sealed class Sega32XVdp
             for (int x = 0; x < outputWidth; x++)
             {
                 uint pixel = _renderedFrame[sourceRow + x];
-                bool use32xPixel = (pixel & 0x8000_0000u) != 0;
+                bool transparent32xPixel = (pixel & RenderedPixelTransparentFlag) != 0;
+                bool use32xPixel = (pixel & RenderedPixelPriorityFlag) != 0;
                 int offset = row + (x * 4);
 
                 bool mdBackdropPixel = false;
@@ -505,6 +546,9 @@ internal sealed class Sega32XVdp
                     // backdrop usage metadata.
                     mdBackdropPixel = !mdHasVisiblePixel || mdPixelIsBlack;
                 }
+
+                if (transparent32xPixel)
+                    continue;
 
                 if (!use32xPixel && !mdBackdropPixel)
                     continue;
@@ -532,11 +576,78 @@ internal sealed class Sega32XVdp
 
         int activeWidth = GetActiveFrameWidth();
         ushort[] frameBuffer = GetDisplayBuffer();
-        for (int x = 0; x < activeWidth; x++)
-            _renderedFrame[row + x] = GetRenderedPixel(mode, frameBuffer, line, x, activeWidth);
+
+        switch (mode)
+        {
+            case Sega32XFrameBufferMode.PackedPixel:
+                RenderPackedScanline(frameBuffer, line, activeWidth, row);
+                break;
+            case Sega32XFrameBufferMode.DirectColor:
+                RenderDirectColorScanline(frameBuffer, line, activeWidth, row);
+                break;
+            case Sega32XFrameBufferMode.RunLength:
+                RenderRunLengthScanline(frameBuffer, line, activeWidth, row);
+                break;
+        }
 
         if (activeWidth < FrameWidth)
             Array.Clear(_renderedFrame, row + activeWidth, FrameWidth - activeWidth);
+    }
+
+    private void RenderPackedScanline(ushort[] frameBuffer, int line, int width, int row)
+    {
+        ushort lineAddress = frameBuffer[line & 0xFF];
+        if ((_latchedScreenShift & 0x0001) != 0)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int sourcePixel = x + 1;
+                ushort word = frameBuffer[(lineAddress + (sourcePixel >> 1)) & 0xFFFF];
+                int paletteIndex = ((sourcePixel & 1) == 0) ? ((word >> 8) & 0xFF) : (word & 0xFF);
+                _renderedFrame[row + x] = BuildRenderedPixel(_cram[paletteIndex], paletteIndex == 0);
+            }
+        }
+        else
+        {
+            for (int x = 0; x < width; x += 2)
+            {
+                ushort word = frameBuffer[(lineAddress + (x >> 1)) & 0xFFFF];
+                int p1 = (word >> 8) & 0xFF;
+                int p2 = word & 0xFF;
+                _renderedFrame[row + x] = BuildRenderedPixel(_cram[p1], p1 == 0);
+                if (x + 1 < width)
+                    _renderedFrame[row + x + 1] = BuildRenderedPixel(_cram[p2], p2 == 0);
+            }
+        }
+    }
+
+    private void RenderDirectColorScanline(ushort[] frameBuffer, int line, int width, int row)
+    {
+        ushort lineAddress = frameBuffer[line & 0xFF];
+        for (int x = 0; x < width; x++)
+        {
+            ushort color = frameBuffer[(lineAddress + x) & 0xFFFF];
+            _renderedFrame[row + x] = BuildRenderedPixel(color, color == 0);
+        }
+    }
+
+    private void RenderRunLengthScanline(ushort[] frameBuffer, int line, int width, int row)
+    {
+        int x = 0;
+        int readIndex = frameBuffer[line & 0xFF];
+        while (x < width)
+        {
+            ushort word = frameBuffer[readIndex & 0xFFFF];
+            readIndex++;
+            int runLength = ((word >> 8) & 0xFF) + 1;
+            int paletteIndex = word & 0xFF;
+            uint pixel = BuildRenderedPixel(_cram[paletteIndex], paletteIndex == 0);
+            while (x < width && runLength-- > 0)
+            {
+                _renderedFrame[row + x] = pixel;
+                x++;
+            }
+        }
     }
 
     private void RenderPackedLine(byte[] output, int row, int width, ushort[] frameBuffer, int line)
@@ -549,7 +660,8 @@ internal sealed class Sega32XVdp
                 int sourcePixel = x + 1;
                 ushort word = frameBuffer[(lineAddress + (sourcePixel >> 1)) % frameBuffer.Length];
                 int paletteIndex = ((sourcePixel & 1) == 0) ? ((word >> 8) & 0xFF) : (word & 0xFF);
-                WritePixel(output, row + (x * 4), ToBgra(_cram[paletteIndex]));
+                if (paletteIndex != 0)
+                    WritePixel(output, row + (x * 4), ToBgra(_cram[paletteIndex]));
             }
             return;
         }
@@ -557,9 +669,15 @@ internal sealed class Sega32XVdp
         for (int x = 0; x < width; x += 2)
         {
             ushort word = frameBuffer[(lineAddress + (x >> 1)) % frameBuffer.Length];
-            WritePixel(output, row + (x * 4), ToBgra(_cram[(word >> 8) & 0xFF]));
+            int leftPaletteIndex = (word >> 8) & 0xFF;
+            if (leftPaletteIndex != 0)
+                WritePixel(output, row + (x * 4), ToBgra(_cram[leftPaletteIndex]));
             if (x + 1 < width)
-                WritePixel(output, row + ((x + 1) * 4), ToBgra(_cram[word & 0xFF]));
+            {
+                int rightPaletteIndex = word & 0xFF;
+                if (rightPaletteIndex != 0)
+                    WritePixel(output, row + ((x + 1) * 4), ToBgra(_cram[rightPaletteIndex]));
+            }
         }
     }
 
@@ -590,6 +708,9 @@ internal sealed class Sega32XVdp
             paletteIndex = (x & 1) == 0 ? ((packedWord >> 8) & 0xFF) : (packedWord & 0xFF);
         }
 
+        if (paletteIndex == 0)
+            return RenderedPixelTransparentFlag;
+
         ushort color = _cram[paletteIndex];
         return BuildRenderedPixel(color);
     }
@@ -598,7 +719,9 @@ internal sealed class Sega32XVdp
     {
         ushort lineAddress = frameBuffer[line % frameBuffer.Length];
         ushort color = frameBuffer[(lineAddress + x) % frameBuffer.Length];
-        
+        if ((color & 0x7FFF) == 0)
+            return RenderedPixelTransparentFlag;
+
         return BuildRenderedPixel(color);
     }
 
@@ -613,18 +736,28 @@ internal sealed class Sega32XVdp
             int runLength = ((word >> 8) & 0xFF) + 1;
             int paletteIndex = word & 0xFF;
             if (x < pixel + runLength)
-                return BuildRenderedPixel(_cram[paletteIndex]);
+                return paletteIndex == 0
+                    ? RenderedPixelTransparentFlag
+                    : BuildRenderedPixel(_cram[paletteIndex]);
             pixel += runLength;
         }
 
-        return 0;
+        return RenderedPixelTransparentFlag;
+    }
+
+    private uint BuildRenderedPixel(ushort color, bool transparent)
+    {
+        if (transparent)
+            return RenderedPixelTransparentFlag;
+
+        return BuildRenderedPixel(color);
     }
 
     private uint BuildRenderedPixel(ushort color)
     {
         ushort priorityColor = ApplyPriorityMask(color);
         uint rgb = ToBgra(priorityColor) & 0x00FF_FFFFu;
-        uint flags = ((priorityColor & 0x8000u) != 0) ? 0x8000_0000u : 0u;
+        uint flags = ((priorityColor & 0x8000u) != 0) ? RenderedPixelPriorityFlag : 0u;
         return rgb | flags;
     }
 
@@ -642,7 +775,8 @@ internal sealed class Sega32XVdp
         for (int x = 0; x < width; x++)
         {
             ushort color = frameBuffer[(lineAddress + x) & 0xFFFF];
-            WritePixel(output, row + (x * 4), ToBgra(color));
+            if ((color & 0x7FFF) != 0)
+                WritePixel(output, row + (x * 4), ToBgra(color));
         }
     }
 
@@ -656,10 +790,12 @@ internal sealed class Sega32XVdp
             ushort word = frameBuffer[readIndex & 0xFFFF];
             readIndex++;
             int runLength = ((word >> 8) & 0xFF) + 1;
-            uint bgra = ToBgra(_cram[word & 0xFF]);
+            int paletteIndex = word & 0xFF;
+            uint bgra = paletteIndex == 0 ? 0u : ToBgra(_cram[paletteIndex]);
             while (x < width && runLength-- > 0)
             {
-                WritePixel(output, row + (x * 4), bgra);
+                if (paletteIndex != 0)
+                    WritePixel(output, row + (x * 4), bgra);
                 x++;
             }
         }

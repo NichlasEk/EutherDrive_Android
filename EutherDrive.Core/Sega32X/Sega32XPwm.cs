@@ -35,6 +35,12 @@ internal sealed class Sega32XPwm
     private ushort _leftOutput;
     private ushort _rightOutput;
 
+    [NonSerialized] private double _leftDcBlockerX;
+    [NonSerialized] private double _leftDcBlockerY;
+    [NonSerialized] private double _rightDcBlockerX;
+    [NonSerialized] private double _rightDcBlockerY;
+    private const double DcBlockerR = 0.995;
+
     public ushort CycleRegister { get; private set; }
     public bool Dreq1 { get; private set; }
 
@@ -179,12 +185,21 @@ internal sealed class Sega32XPwm
             return;
 
         _audioCycleAccumulator += sh2Cycles * (ulong)Math.Max(_outputSampleRate, 1);
-        short leftSample = CurrentLeftPcmSample;
-        short rightSample = CurrentRightPcmSample;
+        double leftRaw = CurrentLeftRawAmplitude;
+        double rightRaw = CurrentRightRawAmplitude;
         while (_audioCycleAccumulator >= NominalSh2ClockHz)
         {
             _audioCycleAccumulator -= NominalSh2ClockHz;
-            AppendAudioSample(leftSample, rightSample);
+            
+            double leftY = leftRaw - _leftDcBlockerX + DcBlockerR * _leftDcBlockerY;
+            _leftDcBlockerX = leftRaw;
+            _leftDcBlockerY = leftY;
+
+            double rightY = rightRaw - _rightDcBlockerX + DcBlockerR * _rightDcBlockerY;
+            _rightDcBlockerX = rightRaw;
+            _rightDcBlockerY = rightY;
+
+            AppendAudioSample(SaturateToInt16((int)Math.Round(leftY)), SaturateToInt16((int)Math.Round(rightY)));
         }
     }
 
@@ -290,14 +305,14 @@ internal sealed class Sega32XPwm
         return sample;
     }
 
-    private short CurrentLeftPcmSample => OutputToPcm(LeftOutputDirection, _leftOutput, _rightOutput);
+    private double CurrentLeftRawAmplitude => OutputToRawAmplitude(LeftOutputDirection, _leftOutput, _rightOutput);
 
-    private short CurrentRightPcmSample => OutputToPcm(RightOutputDirection, _rightOutput, _leftOutput);
+    private double CurrentRightRawAmplitude => OutputToRawAmplitude(RightOutputDirection, _rightOutput, _leftOutput);
 
-    private short OutputToPcm(Sega32XPwmOutputDirection direction, ushort sameSideOutput, ushort oppositeSideOutput)
+    private double OutputToRawAmplitude(Sega32XPwmOutputDirection direction, ushort sameSideOutput, ushort oppositeSideOutput)
     {
         if (CountersStopped)
-            return 0;
+            return 0.0;
 
         ushort pulseWidth = direction switch
         {
@@ -306,23 +321,21 @@ internal sealed class Sega32XPwm
             _ => 0,
         };
 
-        return PulseWidthToPcm(pulseWidth);
+        return PulseWidthToRawAmplitude(pulseWidth);
     }
 
-    private short PulseWidthToPcm(ushort pulseWidth)
+    private double PulseWidthToRawAmplitude(ushort pulseWidth)
     {
-        if (CycleRegister == 1)
-            return 0;
+        if (CycleRegister <= 1)
+            return 0.0;
 
         ushort maxWidth = (ushort)(unchecked((ushort)(CycleRegister - 1)) & TwelveBitMask);
         if (maxWidth == 0)
-            return 0;
+            return 0.0;
 
         ushort clampedWidth = Math.Min(pulseWidth, maxWidth);
-        double divisor = 0.5 * maxWidth;
-        double normalized = (clampedWidth - divisor) / divisor;
-        int sample = (int)Math.Round(normalized * PwmLinearGain * short.MaxValue);
-        return SaturateToInt16(sample);
+        double normalized = (double)clampedWidth / maxWidth;
+        return normalized * PwmLinearGain * short.MaxValue;
     }
 
     private static short SaturateToInt16(int value)

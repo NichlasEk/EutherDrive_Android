@@ -178,11 +178,15 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 bool dmaRequest = channel switch
                 {
                     0 => !_core.Registers.Dma.Fifo.Sh2IsEmpty,
+                    1 => _core.Bus.Pwm.Dreq1,
                     _ => false,
                 };
 
                 if (!dmaRequest)
                     continue;
+                    
+                if (channel == 1)
+                    _core.Bus.Pwm.AcknowledgeDreq1();
             }
 
             TickDmaChannel(channel);
@@ -1755,6 +1759,14 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             return ((uint)highWord << 16) | lowWord;
         }
 
+        if (masked >= 0x00004030 && masked <= 0x0000403F)
+        {
+            CycleCounter += 2;
+            ushort highWord = _core.Bus.Pwm.ReadRegister(masked);
+            ushort lowWord = _core.Bus.Pwm.ReadRegister(masked + 2);
+            return ((uint)highWord << 16) | lowWord;
+        }
+
         if (masked >= 0x06000000 && masked < 0x06040000)
         {
             CycleCounter += 1 + Sh2SdramReadCycles;
@@ -1812,6 +1824,14 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _core.Registers.Sh2Write(masked & ~1u, (ushort)(value >> 16), _whichCpu, _core.Bus.Vdp);
                 _core.Registers.Sh2Write((masked + 2) & ~1u, (ushort)value, _whichCpu, _core.Bus.Vdp);
             }
+            return;
+        }
+
+        if (masked >= 0x00004030 && masked <= 0x0000403F)
+        {
+            CycleCounter += 2;
+            _core.Bus.Pwm.Sh2WriteRegister(masked, (ushort)(value >> 16));
+            _core.Bus.Pwm.Sh2WriteRegister(masked + 2, (ushort)value);
             return;
         }
 

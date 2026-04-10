@@ -1082,6 +1082,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     public string? Debug32XCommPorts => _sega32XCore == null
         ? null
         : $"0x{_sega32XCore.Registers.CommunicationPorts[0]:X4}/0x{_sega32XCore.Registers.CommunicationPorts[1]:X4}/0x{_sega32XCore.Registers.CommunicationPorts[2]:X4}/0x{_sega32XCore.Registers.CommunicationPorts[3]:X4}";
+    public (int TransparentPixels, int LowPriorityPixels, int HighPriorityPixels)? Debug32XRenderedPixelStats
+        => _sega32XCore?.Bus?.Vdp?.DebugRenderedPixelStats();
 
     public readonly struct MainInterruptDebugState
     {
