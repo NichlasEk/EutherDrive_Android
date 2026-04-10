@@ -262,6 +262,12 @@ internal sealed class Sega32XSystemRegisters
                 MasterInterrupts.CommandPending = (value & 0x0001) != 0;
                 SlaveInterrupts.CommandPending = (value & 0x0002) != 0;
                 UpdateInterruptLevels();
+                if (TraceM68kControlWrites)
+                {
+                    Console.WriteLine(
+                        $"[S32X-M68K-INT-WRITE] value=0x{value:X4} mcmd={(MasterInterrupts.CommandPending ? 1 : 0)} " +
+                        $"scmd={(SlaveInterrupts.CommandPending ? 1 : 0)}");
+                }
                 break;
             case 0xA15104:
                 M68kRomBank = (byte)(value & 0x0003);
@@ -459,8 +465,15 @@ internal sealed class Sega32XSystemRegisters
 
     private ushort ReadInterruptControl()
     {
-        return (ushort)(((SlaveInterrupts.CommandPending ? 1 : 0) << 1)
+        ushort value = (ushort)(((SlaveInterrupts.CommandPending ? 1 : 0) << 1)
             | (MasterInterrupts.CommandPending ? 1 : 0));
+        if (TraceM68kControlWrites)
+        {
+            Console.WriteLine(
+                $"[S32X-M68K-INT-READ] value=0x{value:X4} mcmd={(MasterInterrupts.CommandPending ? 1 : 0)} " +
+                $"scmd={(SlaveInterrupts.CommandPending ? 1 : 0)}");
+        }
+        return value;
     }
 
     private ushort ReadM68kDreqControl()

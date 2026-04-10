@@ -73,6 +73,7 @@ internal sealed class Sega32XScaffoldCore
     {
         Registers.Reset();
         Bus.Vdp.Reset();
+        Bus.Pwm.Reset();
         // Until the Genesis / 68000 side is wired in, bootstrap the 32X adapter into the
         // enabled state so the SH-2 boot ROMs can progress past the initial "adapter disabled"
         // sleep path.
@@ -81,8 +82,8 @@ internal sealed class Sega32XScaffoldCore
         SlaveSh2.RequestReset();
         MasterSh2.ResetTimingState();
         SlaveSh2.ResetTimingState();
-        _masterBus.ResetTimingState();
-        _slaveBus.ResetTimingState();
+        _masterBus.ResetState();
+        _slaveBus.ResetState();
         _globalSh2Cycles = 0;
         Array.Clear(_commWriteAddresses, 0, _commWriteAddresses.Length);
         Array.Clear(_commWriteValues, 0, _commWriteValues.Length);
@@ -124,6 +125,9 @@ internal sealed class Sega32XScaffoldCore
             while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
                 MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
 
+            _masterBus.TickPeripherals(slice);
+            _slaveBus.TickPeripherals(slice);
+            Bus.Pwm.Tick(slice, Registers);
             remaining -= slice;
         }
     }
@@ -150,6 +154,9 @@ internal sealed class Sega32XScaffoldCore
             while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
                 MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
 
+            _masterBus.TickPeripherals(elapsedSh2Cycles);
+            _slaveBus.TickPeripherals(elapsedSh2Cycles);
+            Bus.Pwm.Tick(elapsedSh2Cycles, Registers);
             // Keep the 32X side in the same time domain as the current MD host bridge:
             // M68K/SystemCycles are the master clock, and the 32X consumes time derived from that.
             Bus.Vdp.AdvanceMclk(sliceM68kCycles * NativeM68kDivider, Registers);

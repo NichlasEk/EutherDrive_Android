@@ -130,11 +130,20 @@ internal sealed class Sega32XSh2Cpu
         if (!Registers.NextInstructionInDelaySlot)
         {
             byte externalInterruptLevel = bus.InterruptLevel;
-            if (externalInterruptLevel > Registers.StatusRegister.InterruptMask)
+            byte internalInterruptLevel = bus.InternalInterruptLevel;
+            if (externalInterruptLevel > Registers.StatusRegister.InterruptMask
+                && externalInterruptLevel >= internalInterruptLevel)
             {
                 uint vectorNumber = 64u + (uint)(externalInterruptLevel >> 1);
                 _idleState = IdleState.None;
                 HandleException(externalInterruptLevel, vectorNumber, bus);
+                return;
+            }
+
+            if (internalInterruptLevel > Registers.StatusRegister.InterruptMask)
+            {
+                _idleState = IdleState.None;
+                HandleException(internalInterruptLevel, bus.InternalInterruptVectorNumber, bus);
                 return;
             }
         }
@@ -1179,6 +1188,8 @@ internal interface ISega32XSh2Bus
     bool ShouldStopExecution { get; }
     bool ResetAsserted { get; }
     byte InterruptLevel { get; }
+    byte InternalInterruptLevel { get; }
+    byte InternalInterruptVectorNumber { get; }
     byte ReadByte(uint address, Sega32XSh2AccessContext context);
     ushort ReadWord(uint address, Sega32XSh2AccessContext context);
     uint ReadLongword(uint address, Sega32XSh2AccessContext context);
@@ -1186,6 +1197,7 @@ internal interface ISega32XSh2Bus
     void WriteWord(uint address, ushort value, Sega32XSh2AccessContext context);
     void WriteLongword(uint address, uint value, Sega32XSh2AccessContext context);
     bool TryTickDma();
+    void TickPeripherals(ulong cycles);
     void IncrementCycleCounter(ulong cycles);
     void IncrementDetailCycleCounter(ulong cycles);
     bool TryPeekInstructionWord(uint address, out ushort value);

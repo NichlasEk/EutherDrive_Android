@@ -4,6 +4,11 @@ namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XBus
 {
+    private static readonly bool TraceSh2CartridgeWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_CART_WRITES"),
+            "1",
+            StringComparison.Ordinal);
     public const uint M68kVectorsStart = 0x000000;
     public const uint M68kVectorsEnd = 0x0000FF;
     public const uint M68kCartridgeStart = 0x000000;
@@ -20,6 +25,8 @@ internal sealed class Sega32XBus
     public const uint M68k32XIdEnd = 0xA130EF;
     public const uint M68kSystemRegistersStart = 0xA15100;
     public const uint M68kSystemRegistersEnd = 0xA1512F;
+    public const uint M68kPwmRegistersStart = 0xA15130;
+    public const uint M68kPwmRegistersEnd = 0xA1513F;
     public const uint M68kVdpRegistersStart = 0xA15180;
     public const uint M68kVdpRegistersEnd = 0xA1518F;
     public const uint M68kCramStart = 0xA15200;
@@ -38,18 +45,18 @@ internal sealed class Sega32XBus
         _syncSh2sForM68kCommAccess = syncSh2sForM68kCommAccess;
         Registers = registers;
         Vdp = new Sega32XVdp();
+        Pwm = new Sega32XPwm();
         Sdram = new ushort[256 * 1024 / 2];
         Sh2FrameBuffer = new ushort[0x20000 / 2];
         Sh2Cram = new ushort[0x200 / 2];
-        Sh2PwmRegisters = new ushort[0x10 / 2];
     }
 
     public Sega32XSystemRegisters Registers { get; }
     public Sega32XVdp Vdp { get; }
+    public Sega32XPwm Pwm { get; }
     public ushort[] Sdram { get; }
     public ushort[] Sh2FrameBuffer { get; }
     public ushort[] Sh2Cram { get; }
-    public ushort[] Sh2PwmRegisters { get; }
 
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
 
@@ -85,6 +92,12 @@ internal sealed class Sega32XBus
         if (address >= M68kSystemRegistersStart && address <= M68kSystemRegistersEnd)
         {
             ushort word = Registers.M68kRead(address & ~1u);
+            return (address & 1) == 0 ? (byte)(word >> 8) : (byte)word;
+        }
+
+        if (address >= M68kPwmRegistersStart && address <= M68kPwmRegistersEnd)
+        {
+            ushort word = Pwm.ReadRegister(address & ~1u);
             return (address & 1) == 0 ? (byte)(word >> 8) : (byte)word;
         }
 
@@ -144,6 +157,9 @@ internal sealed class Sega32XBus
         if (aligned >= M68kSystemRegistersStart && aligned <= M68kSystemRegistersEnd)
             return Registers.M68kRead(aligned);
 
+        if (aligned >= M68kPwmRegistersStart && aligned <= M68kPwmRegistersEnd)
+            return Pwm.ReadRegister(aligned);
+
         if (aligned >= M68kVdpRegistersStart && aligned <= M68kVdpRegistersEnd)
         {
             if (Registers.VdpAccess != Sega32XAccess.M68k)
@@ -180,10 +196,13 @@ internal sealed class Sega32XBus
         SyncSh2sIfTimingSensitiveRegisterAccessed(aligned);
 
         bool isSystemRegister = address >= M68kSystemRegistersStart && address <= M68kSystemRegistersEnd;
+        bool isPwmRegister = address >= M68kPwmRegistersStart && address <= M68kPwmRegistersEnd;
         bool isVdpRegister = address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd;
-        if (isSystemRegister || isVdpRegister)
+        if (isSystemRegister || isPwmRegister || isVdpRegister)
         {
-            ushort word = isVdpRegister ? Vdp.ReadRegister(aligned) : Registers.M68kRead(aligned);
+            ushort word = isVdpRegister ? Vdp.ReadRegister(aligned)
+                : isPwmRegister ? Pwm.ReadRegister(aligned)
+                : Registers.M68kRead(aligned);
             word = (address & 1) == 0
                 ? (ushort)((word & 0x00FF) | (value << 8))
                 : (ushort)((word & 0xFF00) | value);
@@ -193,6 +212,8 @@ internal sealed class Sega32XBus
                     return;
                 Vdp.WriteRegister(aligned, word);
             }
+            else if (isPwmRegister)
+                Pwm.M68kWriteRegister(aligned, word);
             else
                 Registers.M68kWrite(aligned, word);
 
@@ -240,6 +261,12 @@ internal sealed class Sega32XBus
 
             if (aligned == 0xA15102)
                 _syncSh2sForM68kCommAccess?.Invoke();
+            return;
+        }
+
+        if (aligned >= M68kPwmRegistersStart && aligned <= M68kPwmRegistersEnd)
+        {
+            Pwm.M68kWriteRegister(aligned, value);
             return;
         }
 
@@ -299,11 +326,11 @@ internal sealed class Sega32XBus
 
     public void WriteSh2CartridgeByte(uint romAddress, byte value)
     {
-        if (_cartridgeRom.Length == 0)
-            return;
-
-        uint index = romAddress % (uint)_cartridgeRom.Length;
-        _cartridgeRom[index] = value;
+        if (TraceSh2CartridgeWrites)
+        {
+            Console.WriteLine(
+                $"[S32X-CART-WRITE-IGNORED] addr=0x{(romAddress & 0x003FFFFF):X6} value=0x{value:X2}");
+        }
     }
 
     public void WriteSh2CartridgeWord(uint romAddress, ushort value)

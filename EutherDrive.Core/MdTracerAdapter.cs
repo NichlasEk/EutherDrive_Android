@@ -1500,6 +1500,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 {
                     var shared32XRegisters = new Sega32XSystemRegisters();
                     _sega32XCore = new Sega32XScaffoldCore(_rom, shared32XRegisters);
+                    _sega32XCore.Bus.Pwm.SetAudioOutputSampleRate(OutputSampleRate);
                     if (_sega32XCore.UseExperimentalCommPollModel)
                         shared32XRegisters.CommunicationPortWritten += On32XCommunicationPortWritten;
 
@@ -2400,6 +2401,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         _psgResampleCarry = 0;
         _ymResamplePhase = 0;
         _ymResampleHasCarry = false;
+        _sega32XCore?.Bus.Pwm.ResetAudioOutputState();
         _ymDcFilterL.Reset();
         _ymDcFilterR.Reset();
         _psgDcFilter.Reset();
@@ -2486,6 +2488,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             Array.Clear(_psgInternalBuffer, 0, _psgInternalBuffer.Length);
         if (_ymInternalBuffer.Length > 0)
             Array.Clear(_ymInternalBuffer, 0, _ymInternalBuffer.Length);
+        _sega32XCore?.Bus.Pwm.ResetAudioOutputState();
         _jgAudioFilter.Reset();
         _jgPsgPreResampleFilter?.Reset();
         _jgYmPreResampleFilter?.Reset();
@@ -4132,17 +4135,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         music.SetPsgNoiseGainPercent(Volatile.Read(ref _psgNoisePercent));
         bool wantPsg = !_psgDisabled;
         bool wantYm = _ymEnabled;
+        bool want32XPwm = _isSega32XRom && _sega32XCore != null;
         int psgMixPercent = Volatile.Read(ref _psgMixPercent);
         int ymMixPercent = Volatile.Read(ref _ymMixPercent);
         if (TraceAudioDebug && ShouldForceLogAudioPath())
         {
             Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBufferForFrames enter frames={frames} wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
         }
-        if (!wantPsg && !wantYm)
+        if (!wantPsg && !wantYm && !want32XPwm)
         {
             if (!_audioAllSourcesDisabledLogged)
             {
-                Console.WriteLine($"[AUDIO-MUTE] All MD sources disabled (wantPsg=0 wantYm=0) at frame={md_main.g_md_vdp?.FrameCounter ?? -1}");
+                Console.WriteLine(
+                    $"[AUDIO-MUTE] All MD/32X sources disabled (wantPsg=0 wantYm=0 wantPwm=0) at frame={md_main.g_md_vdp?.FrameCounter ?? -1}");
                 _audioAllSourcesDisabledLogged = true;
             }
             return ReadOnlySpan<short>.Empty;
@@ -4471,6 +4476,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         }
 
         MaybeDumpYmSilence(music, wantYm, ymPeak, ymNonZero);
+
+        if (want32XPwm)
+            _sega32XCore!.Bus.Pwm.MixAudioInto(_psgFrameBuffer.AsSpan(0, samples));
 
         ApplyMasterVolume(_psgFrameBuffer, samples);
         _mixLowPass?.Apply(_psgFrameBuffer, samples);

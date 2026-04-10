@@ -52,14 +52,13 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     [NonSerialized] private readonly Sega32XScaffoldCore _core;
     [NonSerialized] private readonly Sega32XCpu _whichCpu;
     private readonly ushort[] _cacheDataArray = new ushort[CacheDataArrayLengthWords];
-    private readonly byte[] _serialRegisters = new byte[6];
-    private readonly byte[] _freeRunTimerRegisters = new byte[10];
     private readonly uint[] _cacheAddressTags = new uint[CacheEntries * 4];
     private readonly ulong[] _cacheAddressValidBits = new ulong[4];
     private readonly byte[] _cacheAddressLruBits = new byte[CacheEntries];
+    private readonly Sega32XSh2SerialInterface _serial = new();
+    private readonly Sega32XSh2WatchdogTimer _watchdog = new();
+    private readonly Sega32XSh2FreeRunTimer _freeRunTimer = new();
     private byte _cacheControl;
-    private byte _watchdogControl;
-    private byte _watchdogCounter;
     private ushort _ipra;
     private ushort _iprb;
     private ushort _vcra;
@@ -79,8 +78,6 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private ushort _dmaOperation;
     private uint _dmaVector0;
     private uint _dmaVector1;
-    private ushort _freeRunCounterBase;
-    private ulong _freeRunCounterCycleBase;
     [NonSerialized] private ulong _schedulerCycleCounter;
     [NonSerialized] private uint _lastStablePollPc;
     [NonSerialized] private uint _lastStablePollAddress;
@@ -103,6 +100,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     public byte InterruptLevel => _whichCpu == Sega32XCpu.Master
         ? _core.Registers.MasterInterrupts.CurrentInterruptLevel
         : _core.Registers.SlaveInterrupts.CurrentInterruptLevel;
+    public byte InternalInterruptLevel => GetInternalInterrupt().Level;
+    public byte InternalInterruptVectorNumber => GetInternalInterrupt().VectorNumber;
 
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
 
@@ -119,6 +118,47 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         _schedulerCycleCounter = 0;
         CycleLimit = ulong.MaxValue;
         ResetStablePollTracking();
+    }
+
+    public void ResetState()
+    {
+        Array.Clear(_cacheDataArray, 0, _cacheDataArray.Length);
+        Array.Clear(_cacheAddressTags, 0, _cacheAddressTags.Length);
+        Array.Clear(_cacheAddressValidBits, 0, _cacheAddressValidBits.Length);
+        Array.Clear(_cacheAddressLruBits, 0, _cacheAddressLruBits.Length);
+        Array.Clear(_dmaSourceAddress, 0, _dmaSourceAddress.Length);
+        Array.Clear(_dmaDestinationAddress, 0, _dmaDestinationAddress.Length);
+        Array.Clear(_dmaTransferCount, 0, _dmaTransferCount.Length);
+        Array.Clear(_dmaChannelControl, 0, _dmaChannelControl.Length);
+        _serial.Reset();
+        _watchdog.Reset();
+        _freeRunTimer.Reset();
+        _cacheControl = 0;
+        _ipra = 0;
+        _iprb = 0;
+        _vcra = 0;
+        _vcrb = 0;
+        _vcrwdt = 0;
+        _divuControl = 0;
+        _divuDividendHigh = 0;
+        _divuDividendLow = 0;
+        _divuDivisor = 0;
+        _breakAddressA = 0;
+        _breakAddressB = 0;
+        _dmaRegister = 0;
+        _dmaOperation = 0;
+        _dmaVector0 = 0;
+        _dmaVector1 = 0;
+        ResetTimingState();
+    }
+
+    public void TickPeripherals(ulong cycles)
+    {
+        if (cycles == 0)
+            return;
+
+        _watchdog.Tick(cycles);
+        _serial.Tick(cycles, value => _core.GetOtherBus(_whichCpu).QueueSerialReceive(value));
     }
 
     public bool TryTickDma()
@@ -217,6 +257,36 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     }
 
     private Sega32XSh2Cpu CurrentCpu => _whichCpu == Sega32XCpu.Master ? _core.MasterSh2 : _core.SlaveSh2;
+
+    private byte SciPriority => (byte)(_iprb >> 12);
+    private byte WdtPriority => (byte)((_ipra >> 4) & 0x0F);
+    private byte SciRxOkVector => (byte)(_vcra & 0x7F);
+    private byte WdtVector => (byte)((_vcrwdt >> 8) & 0x7F);
+
+    private (byte Level, byte VectorNumber) GetInternalInterrupt()
+    {
+        byte level = 0;
+        byte vectorNumber = 0;
+
+        if (_serial.RxInterruptPending)
+        {
+            level = SciPriority;
+            vectorNumber = SciRxOkVector;
+        }
+
+        if (_watchdog.IntervalOverflowPending && WdtPriority > level)
+        {
+            level = WdtPriority;
+            vectorNumber = WdtVector;
+        }
+
+        return (level, vectorNumber);
+    }
+
+    private void QueueSerialReceive(byte value)
+    {
+        _serial.QueueReceive(value);
+    }
 
     private bool ShouldTracePcWatch(Sega32XSh2AccessContext context)
     {
@@ -536,14 +606,11 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (masked >= 0x00004030 && masked <= 0x0000403F)
         {
             CycleCounter += 1;
-            int wordIndex = (int)((masked - 0x00004030) >> 1);
-            if ((uint)wordIndex < _core.Bus.Sh2PwmRegisters.Length)
-            {
-                ushort current = _core.Bus.Sh2PwmRegisters[wordIndex];
-                _core.Bus.Sh2PwmRegisters[wordIndex] = (masked & 1) == 0
-                    ? (ushort)((current & 0x00FF) | (value << 8))
-                    : (ushort)((current & 0xFF00) | value);
-            }
+            ushort current = _core.Bus.Pwm.ReadRegister(masked & ~1u);
+            ushort merged = (masked & 1) == 0
+                ? (ushort)((current & 0x00FF) | (value << 8))
+                : (ushort)((current & 0xFF00) | value);
+            _core.Bus.Pwm.Sh2WriteRegister(masked & ~1u, merged);
             return;
         }
 
@@ -647,9 +714,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (masked >= 0x00004030 && masked <= 0x0000403F)
         {
             CycleCounter += 1;
-            int wordIndex = (int)((masked - 0x00004030) >> 1);
-            if ((uint)wordIndex < _core.Bus.Sh2PwmRegisters.Length)
-                _core.Bus.Sh2PwmRegisters[wordIndex] = value;
+            _core.Bus.Pwm.Sh2WriteRegister(masked, value);
             return;
         }
 
@@ -813,16 +878,16 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         byte value = address switch
         {
             0xFFFFFC17 => 0,
-            >= 0xFFFFFE00 and <= 0xFFFFFE05 => _serialRegisters[address - 0xFFFFFE00],
-            >= 0xFFFFFE10 and <= 0xFFFFFE19 => ReadFreeRunTimerRegister(address),
+            >= 0xFFFFFE00 and <= 0xFFFFFE05 => _serial.ReadRegister(address),
+            >= 0xFFFFFE10 and <= 0xFFFFFE19 => _freeRunTimer.ReadRegister(address, CycleCounter),
             0xFFFFFE60 => (byte)(_iprb >> 8),
             0xFFFFFE61 => (byte)_iprb,
             0xFFFFFE62 => (byte)(_vcra >> 8),
             0xFFFFFE63 => (byte)_vcra,
             0xFFFFFE64 => (byte)(_vcrb >> 8),
             0xFFFFFE65 => (byte)_vcrb,
-            0xFFFFFE80 => _watchdogControl,
-            0xFFFFFE81 => _watchdogCounter,
+            0xFFFFFE80 => _watchdog.ReadControl(),
+            0xFFFFFE81 => _watchdog.Counter,
             0xFFFFFE92 => _cacheControl,
             0xFFFFFE93 or >= 0xFFFFFE94 and <= 0xFFFFFE9F => 0,
             0xFFFFFEE2 => (byte)(_ipra >> 8),
@@ -895,10 +960,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         switch (address)
         {
             case >= 0xFFFFFE00 and <= 0xFFFFFE05:
-                _serialRegisters[address - 0xFFFFFE00] = value;
+                _serial.WriteRegister(address, value);
                 break;
             case >= 0xFFFFFE10 and <= 0xFFFFFE19:
-                WriteFreeRunTimerRegister(address, value);
+                _freeRunTimer.WriteRegister(address, value, CycleCounter);
                 break;
             case 0xFFFFFE60:
                 _iprb = (ushort)(value << 8);
@@ -965,8 +1030,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _vcrb = value;
                 break;
             case 0xFFFFFE80:
-                _watchdogControl = (byte)(value >> 8);
-                _watchdogCounter = (byte)value;
+                _watchdog.WriteControl(value);
                 break;
             case 0xFFFFFE92:
                 TraceCacheControlWrite("16", address, value);
@@ -1345,35 +1409,6 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         }
     }
 
-    private byte ReadFreeRunTimerRegister(uint address)
-    {
-        if (address is 0xFFFFFE12 or 0xFFFFFE13)
-        {
-            ushort frc = CurrentFreeRunCounter;
-            return address == 0xFFFFFE12 ? (byte)(frc >> 8) : (byte)frc;
-        }
-
-        return _freeRunTimerRegisters[address - 0xFFFFFE10];
-    }
-
-    private void WriteFreeRunTimerRegister(uint address, byte value)
-    {
-        _freeRunTimerRegisters[address - 0xFFFFFE10] = value;
-
-        if (address is 0xFFFFFE12 or 0xFFFFFE13)
-        {
-            ushort frc = CurrentFreeRunCounter;
-            frc = address == 0xFFFFFE12
-                ? (ushort)((frc & 0x00FF) | (value << 8))
-                : (ushort)((frc & 0xFF00) | value);
-            _freeRunCounterBase = frc;
-            _freeRunCounterCycleBase = CycleCounter;
-        }
-    }
-
-    private ushort CurrentFreeRunCounter =>
-        (ushort)(_freeRunCounterBase + ((CycleCounter - _freeRunCounterCycleBase) & 0xFFFF));
-
     private bool CacheEnabled => (_cacheControl & 0x01) != 0;
     private bool DisableInstructionReplacement => (_cacheControl & 0x02) != 0;
     private bool DisableDataReplacement => (_cacheControl & 0x04) != 0;
@@ -1677,9 +1712,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (masked >= 0x00004030 && masked <= 0x0000403F)
         {
             CycleCounter += 1;
-            int wordIndex = (int)((masked - 0x00004030) >> 1);
-            if ((uint)wordIndex < _core.Bus.Sh2PwmRegisters.Length)
-                return _core.Bus.Sh2PwmRegisters[wordIndex];
+            return _core.Bus.Pwm.ReadRegister(masked);
         }
 
         if (masked >= 0x00004200 && masked <= 0x000043FF)
