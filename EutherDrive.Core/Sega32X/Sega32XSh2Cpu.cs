@@ -7,6 +7,7 @@ internal sealed class Sega32XSh2Cpu
     private const int MaxUnsupportedLogs = 100_000;
     public string Name { get; }
     public Sega32XSh2Registers Registers { get; } = new();
+    public uint CurrentInstructionPc { get; private set; }
     public ulong CycleCounter { get; private set; }
     public bool ResetPending { get; set; } = true;
     private int _unsupportedLogCount;
@@ -119,25 +120,33 @@ internal sealed class Sega32XSh2Cpu
         Registers.NextProgramCounter = Registers.ProgramCounter + 2;
         Registers.NextInstructionInDelaySlot = false;
 
-        if (TryExecute(opcode, bus))
+        CurrentInstructionPc = pc;
+        try
         {
+            if (TryExecute(opcode, bus))
+            {
+                bus.IncrementCycleCounter(1);
+                CycleCounter += 1;
+                return;
+            }
+
+            if (_unsupportedLogCount < MaxUnsupportedLogs)
+            {
+                _unsupportedLogCount++;
+                EmitTraceLine($"[S32X-SH2-{Name}] illegal opcode 0x{opcode:X4} at PC=0x{pc:X8}");
+            }
+
+            Registers.ProgramCounter = pc;
+            Registers.NextProgramCounter = pc + 2;
+            Registers.NextInstructionInDelaySlot = false;
+            HandleException(null, 4, bus);
             bus.IncrementCycleCounter(1);
             CycleCounter += 1;
-            return;
         }
-
-        if (_unsupportedLogCount < MaxUnsupportedLogs)
+        finally
         {
-            _unsupportedLogCount++;
-            EmitTraceLine($"[S32X-SH2-{Name}] illegal opcode 0x{opcode:X4} at PC=0x{pc:X8}");
+            CurrentInstructionPc = 0;
         }
-
-        Registers.ProgramCounter = pc;
-        Registers.NextProgramCounter = pc + 2;
-        Registers.NextInstructionInDelaySlot = false;
-        HandleException(null, 4, bus);
-        bus.IncrementCycleCounter(1);
-        CycleCounter += 1;
     }
 
     private void HandleException(byte? interruptLevel, uint vectorNumber, ISega32XSh2Bus bus)

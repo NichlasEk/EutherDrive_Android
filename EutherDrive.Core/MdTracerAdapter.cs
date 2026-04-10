@@ -12,7 +12,7 @@ using EutherDrive.Core.Sega32X;
 
 namespace EutherDrive.Core;
 
-public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
+public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposable
 {
     private const int DefaultW = 320;
     private const int DefaultH = 224;
@@ -2412,6 +2412,25 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable
     }
 
     public void PowerCycleAndLoadRom(string path) => LoadRom(path);
+
+    public void Dispose()
+    {
+        lock (_stateLock)
+        {
+            lock (_loadLock)
+            {
+                _sega32XCore = null;
+                _isSega32XRom = false;
+                _bus = null;
+                _rom = null;
+                _cpu = null;
+                _cpuReady = false;
+                md_bus.Current = null;
+                EutherDrive.Core.MdTracerCore.md_bus.Current = null;
+                md_main.PowerCycleReset();
+            }
+        }
+    }
 
     public void HardFlushAudioState()
     {

@@ -6,6 +6,7 @@ internal sealed class Sega32XScaffoldCore
 {
     private static readonly ulong DefaultSh2InstructionsPerFrame = ParseInstructionBudget();
     private static readonly ulong DefaultSh2ExecutionSliceLength = ParseExecutionSliceLength();
+    private static readonly ulong DefaultM68kCommSyncSliceLength = ParseM68kCommSyncSliceLength();
     private static readonly bool TracePcWords =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_PC_WORDS"), "1", StringComparison.Ordinal);
     private static readonly string? TraceFilePath =
@@ -33,7 +34,7 @@ internal sealed class Sega32XScaffoldCore
         }
 
         Registers = sharedRegisters ?? new Sega32XSystemRegisters();
-        Bus = new Sega32XBus(_romData, vectors, Registers);
+        Bus = new Sega32XBus(_romData, vectors, Registers, SyncSh2sForM68kCommAccess);
         MasterSh2 = new Sega32XSh2Cpu("Master");
         SlaveSh2 = new Sega32XSh2Cpu("Slave");
         _masterBus = new Sega32XSh2Bus(this, Sega32XCpu.Master);
@@ -87,8 +88,16 @@ internal sealed class Sega32XScaffoldCore
 
             ulong slice = Math.Min(remaining, Math.Min(DefaultSh2ExecutionSliceLength, eventTicks));
             Bus.Vdp.AdvanceFrameTiming(slice, DefaultSh2InstructionsPerFrame, Registers);
-            SlaveSh2.Execute(slice, _slaveBus);
-            MasterSh2.Execute(slice, _masterBus);
+            _globalSh2Cycles += slice;
+            _slaveBus.CycleLimit = _globalSh2Cycles;
+            _masterBus.CycleLimit = _globalSh2Cycles;
+
+            while (_slaveBus.CycleCounter < _globalSh2Cycles)
+                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
+
+            while (_masterBus.CycleCounter < _globalSh2Cycles)
+                MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+
             remaining -= slice;
         }
     }
@@ -118,6 +127,37 @@ internal sealed class Sega32XScaffoldCore
     public void EndCommPortSync()
     {
         _commPortSyncInProgress = false;
+    }
+
+    public void SyncSh2sForM68kCommAccess()
+    {
+        if (!_commPortSyncInProgress)
+        {
+            if (!BeginCommPortSync())
+                return;
+        }
+        else
+        {
+            return;
+        }
+
+        ulong previousMasterLimit = _masterBus.CycleLimit;
+        ulong previousSlaveLimit = _slaveBus.CycleLimit;
+
+        try
+        {
+            ulong syncLimit = Math.Max(_masterBus.CycleCounter, _slaveBus.CycleCounter) + DefaultM68kCommSyncSliceLength;
+            _masterBus.CycleLimit = syncLimit;
+            _slaveBus.CycleLimit = syncLimit;
+            SlaveSh2.Execute(DefaultM68kCommSyncSliceLength, _slaveBus);
+            MasterSh2.Execute(DefaultM68kCommSyncSliceLength, _masterBus);
+        }
+        finally
+        {
+            _masterBus.CycleLimit = previousMasterLimit;
+            _slaveBus.CycleLimit = previousSlaveLimit;
+            EndCommPortSync();
+        }
     }
 
     public Sega32XSh2Cpu GetOtherCpu(Sega32XCpu whichCpu) =>
@@ -174,7 +214,21 @@ internal sealed class Sega32XScaffoldCore
         if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
             return parsed;
 
-        return 500;
+        // 500 is too conservative with the current cycle-based SH-2 accounting and stretches
+        // mailbox-heavy cold boots across many host frames. 5000 preserves VF/Cosmic behavior
+        // while letting Zaxxon reach the expected bootstrap state without appearing black.
+        return 5_000;
+    }
+
+    private static ulong ParseM68kCommSyncSliceLength()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_M68K_COMM_SYNC_SLICE");
+        if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
+            return parsed;
+
+        // A small same-line catch-up slice lets the SH-2s respond to tight 68k communication-port
+        // polling loops without paying the cost of globally finer interleaving.
+        return 128;
     }
 
     private void DumpWordsNearPc(string tag, uint pc)
@@ -184,13 +238,13 @@ internal sealed class Sega32XScaffoldCore
         {
             int baseIndex = (int)((pc - 0x06000000) >> 1);
             Console.Write(" words=");
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < 24; i++)
             {
                 int index = baseIndex + i;
                 if ((uint)index >= Bus.Sdram.Length)
                     break;
                 Console.Write($"{Bus.Sdram[index]:X4}");
-                if (i != 7)
+                if (i != 23)
                     Console.Write(' ');
             }
         }
@@ -199,14 +253,14 @@ internal sealed class Sega32XScaffoldCore
             ReadOnlySpan<byte> rom = tag == "M" ? MasterBootRom : SlaveBootRom;
             int offset = (int)(pc & ~1u);
             Console.Write(" words=");
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < 24; i++)
             {
                 int wordOffset = offset + (i * 2);
                 if (wordOffset + 1 >= rom.Length)
                     break;
                 ushort word = (ushort)((rom[wordOffset] << 8) | rom[wordOffset + 1]);
                 Console.Write($"{word:X4}");
-                if (i != 7)
+                if (i != 23)
                     Console.Write(' ');
             }
         }

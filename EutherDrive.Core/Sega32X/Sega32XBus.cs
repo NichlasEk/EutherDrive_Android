@@ -29,11 +29,13 @@ internal sealed class Sega32XBus
 
     [NonSerialized] private readonly byte[] _cartridgeRom;
     [NonSerialized] private readonly byte[] _m68kVectors;
+    [NonSerialized] private readonly Action? _syncSh2sForM68kCommAccess;
 
-    public Sega32XBus(byte[] cartridgeRom, byte[] m68kVectors, Sega32XSystemRegisters registers)
+    public Sega32XBus(byte[] cartridgeRom, byte[] m68kVectors, Sega32XSystemRegisters registers, Action? syncSh2sForM68kCommAccess = null)
     {
         _cartridgeRom = cartridgeRom;
         _m68kVectors = m68kVectors;
+        _syncSh2sForM68kCommAccess = syncSh2sForM68kCommAccess;
         Registers = registers;
         Vdp = new Sega32XVdp();
         Sdram = new ushort[256 * 1024 / 2];
@@ -59,6 +61,8 @@ internal sealed class Sega32XBus
 
     public byte ReadM68kByte(uint address)
     {
+        SyncSh2sIfCommPortAccessed(address & ~1u);
+
         if (address >= M68kVectorsStart && address <= M68kVectorsEnd)
         {
             if (Registers.AdapterEnabled)
@@ -117,6 +121,7 @@ internal sealed class Sega32XBus
     public ushort ReadM68kWord(uint address)
     {
         uint aligned = address & ~1u;
+        SyncSh2sIfCommPortAccessed(aligned);
         if (aligned >= M68kVectorsStart && aligned <= M68kVectorsEnd)
         {
             if (Registers.AdapterEnabled)
@@ -171,6 +176,8 @@ internal sealed class Sega32XBus
 
     public void WriteM68kByte(uint address, byte value)
     {
+        SyncSh2sIfCommPortAccessed(address & ~1u);
+
         bool isSystemRegister = address >= M68kSystemRegistersStart && address <= M68kSystemRegistersEnd;
         bool isVdpRegister = address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd;
         uint aligned = address & ~1u;
@@ -213,6 +220,8 @@ internal sealed class Sega32XBus
 
     public void WriteM68kWord(uint address, ushort value)
     {
+        SyncSh2sIfCommPortAccessed(address & ~1u);
+
         if ((address >= M68kSystemRegistersStart && address <= M68kSystemRegistersEnd)
             || (address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd))
         {
@@ -260,6 +269,16 @@ internal sealed class Sega32XBus
         byte msb = ReadCartridgeByte(romAddress);
         byte lsb = ReadCartridgeByte(romAddress + 1);
         return (ushort)((msb << 8) | lsb);
+    }
+
+    private void SyncSh2sIfCommPortAccessed(uint alignedAddress)
+    {
+        if (alignedAddress < M68kSystemRegistersStart || alignedAddress > M68kSystemRegistersEnd)
+            return;
+        if (alignedAddress < 0xA15120 || alignedAddress > 0xA1512F)
+            return;
+
+        _syncSh2sForM68kCommAccess?.Invoke();
     }
 
     public byte ReadSh2CartridgeByte(uint romAddress) => ReadCartridgeByte(romAddress);

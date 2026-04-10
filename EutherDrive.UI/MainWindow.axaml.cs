@@ -2391,6 +2391,7 @@ public partial class MainWindow : Window
             StopAudioEngine();
             StopHeartbeat();
             ResetPresentationState(clearBitmap: true);
+            DisposeCurrentCore();
             _frames = 0;
             _fpsSw.Restart();
             _earlyMagentaTimer.Restart();
@@ -5598,8 +5599,17 @@ public partial class MainWindow : Window
             SplashImage.IsVisible = true;
         StopHeartbeat();
         ResetPresentationState(clearBitmap: true);
+        DisposeCurrentCore();
         _toneTestRunning = false;
         _psgBlipRunning = false;
+    }
+
+    private void DisposeCurrentCore()
+    {
+        if (_core is IDisposable disposableCore)
+            disposableCore.Dispose();
+
+        _core = null;
     }
 
     private void BeginTrackedPlaySession(string? romPath)
