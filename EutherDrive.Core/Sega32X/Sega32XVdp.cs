@@ -402,21 +402,26 @@ internal sealed class Sega32XVdp
         if (mode == Sega32XFrameBufferMode.Blank)
             return;
 
+        int outputWidth = Math.Min(FrameWidth, stride / 4);
+        int outputHeight = Math.Min(FrameHeight, output.Length / stride);
+        if (outputWidth <= 0 || outputHeight <= 0)
+            return;
+
         if (!string.IsNullOrEmpty(tracePhase))
             TraceVdpStateIfEnabled(mode, frameBuffer, tracePhase);
-        for (int y = 0; y < FrameHeight; y++)
+        for (int y = 0; y < outputHeight; y++)
         {
             int row = y * stride;
             switch (mode)
             {
                 case Sega32XFrameBufferMode.PackedPixel:
-                    RenderPackedLine(output, row, frameBuffer, y);
+                    RenderPackedLine(output, row, outputWidth, frameBuffer, y);
                     break;
                 case Sega32XFrameBufferMode.DirectColor:
-                    RenderDirectColorLine(output, row, frameBuffer, y);
+                    RenderDirectColorLine(output, row, outputWidth, frameBuffer, y);
                     break;
                 case Sega32XFrameBufferMode.RunLength:
-                    RenderRunLengthLine(output, row, frameBuffer, y);
+                    RenderRunLengthLine(output, row, outputWidth, frameBuffer, y);
                     break;
             }
         }
@@ -424,11 +429,16 @@ internal sealed class Sega32XVdp
 
     private void RenderRenderedFrameBgra(byte[] output, int stride)
     {
-        for (int y = 0; y < FrameHeight; y++)
+        int outputWidth = Math.Min(FrameWidth, stride / 4);
+        int outputHeight = Math.Min(FrameHeight, output.Length / stride);
+        if (outputWidth <= 0 || outputHeight <= 0)
+            return;
+
+        for (int y = 0; y < outputHeight; y++)
         {
             int row = y * stride;
             int sourceRow = y * FrameWidth;
-            for (int x = 0; x < FrameWidth; x++)
+            for (int x = 0; x < outputWidth; x++)
                 WritePixel(output, row + (x * 4), 0xFF00_0000u | (_renderedFrame[sourceRow + x] & 0x00FF_FFFFu));
         }
     }
@@ -443,21 +453,21 @@ internal sealed class Sega32XVdp
             return false;
 
         TraceVdpStateIfEnabled(mode, GetDisplayBuffer(), "composite");
-        bool wroteAnyPixel = false;
-        int rowBytes = FrameWidth * 4;
-        bool outputFullyCoversFrame = output.Length >= (((FrameHeight - 1) * stride) + rowBytes);
+        int outputWidth = Math.Min(FrameWidth, stride / 4);
+        int outputHeight = Math.Min(FrameHeight, output.Length / stride);
+        if (outputWidth <= 0 || outputHeight <= 0)
+            return false;
 
-        for (int y = 0; y < FrameHeight; y++)
+        bool wroteAnyPixel = false;
+        for (int y = 0; y < outputHeight; y++)
         {
             int row = y * stride;
             int sourceRow = y * FrameWidth;
-            for (int x = 0; x < FrameWidth; x++)
+            for (int x = 0; x < outputWidth; x++)
             {
                 uint pixel = _renderedFrame[sourceRow + x];
                 bool use32xPixel = (pixel & 0x8000_0000u) != 0;
                 int offset = row + (x * 4);
-                if (!outputFullyCoversFrame && (uint)(offset + 3) >= output.Length)
-                    continue;
 
                 bool mdHasVisiblePixel = output[offset + 3] != 0;
                 bool mdPixelIsBlack = output[offset] == 0
@@ -496,12 +506,12 @@ internal sealed class Sega32XVdp
             _renderedFrame[row + x] = GetRenderedPixel(mode, frameBuffer, line, x);
     }
 
-    private void RenderPackedLine(byte[] output, int row, ushort[] frameBuffer, int line)
+    private void RenderPackedLine(byte[] output, int row, int width, ushort[] frameBuffer, int line)
     {
         ushort lineAddress = frameBuffer[line % frameBuffer.Length];
         if ((_latchedScreenShift & 0x0001) != 0)
         {
-            for (int x = 0; x < FrameWidth; x++)
+            for (int x = 0; x < width; x++)
             {
                 int sourcePixel = x + 1;
                 ushort word = frameBuffer[(lineAddress + (sourcePixel >> 1)) % frameBuffer.Length];
@@ -511,11 +521,12 @@ internal sealed class Sega32XVdp
             return;
         }
 
-        for (int x = 0; x < FrameWidth; x += 2)
+        for (int x = 0; x < width; x += 2)
         {
             ushort word = frameBuffer[(lineAddress + (x >> 1)) % frameBuffer.Length];
             WritePixel(output, row + (x * 4), ToBgra(_cram[(word >> 8) & 0xFF]));
-            WritePixel(output, row + ((x + 1) * 4), ToBgra(_cram[word & 0xFF]));
+            if (x + 1 < width)
+                WritePixel(output, row + ((x + 1) * 4), ToBgra(_cram[word & 0xFF]));
         }
     }
 
@@ -591,29 +602,29 @@ internal sealed class Sega32XVdp
         return pixel;
     }
 
-    private void RenderDirectColorLine(byte[] output, int row, ushort[] frameBuffer, int line)
+    private void RenderDirectColorLine(byte[] output, int row, int width, ushort[] frameBuffer, int line)
     {
         // Line addresses are stored at the beginning of the frame buffer (first 256 words)
         ushort lineAddress = frameBuffer[line & 0xFF];
-        for (int x = 0; x < FrameWidth; x++)
+        for (int x = 0; x < width; x++)
         {
             ushort color = frameBuffer[(lineAddress + x) & 0xFFFF];
             WritePixel(output, row + (x * 4), ToBgra(color));
         }
     }
 
-    private void RenderRunLengthLine(byte[] output, int row, ushort[] frameBuffer, int line)
+    private void RenderRunLengthLine(byte[] output, int row, int width, ushort[] frameBuffer, int line)
     {
         int x = 0;
         // Line addresses are stored at the beginning of the frame buffer (first 256 words)
         int readIndex = frameBuffer[line & 0xFF];
-        while (x < FrameWidth)
+        while (x < width)
         {
             ushort word = frameBuffer[readIndex & 0xFFFF];
             readIndex++;
             int runLength = ((word >> 8) & 0xFF) + 1;
             uint bgra = ToBgra(_cram[word & 0xFF]);
-            while (x < FrameWidth && runLength-- > 0)
+            while (x < width && runLength-- > 0)
             {
                 WritePixel(output, row + (x * 4), bgra);
                 x++;
