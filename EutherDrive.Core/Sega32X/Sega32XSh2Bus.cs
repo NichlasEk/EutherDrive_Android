@@ -28,7 +28,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private const ulong Sh2SdramReadCycles = 9;
     private const ulong Sh2SdramWriteCycles = 0;
     private static readonly ulong CommPortSyncChunkSize = ParseCommPortSyncChunkSize();
-    private static readonly int StableCommPollThreshold = ParseStableCommPollThreshold();
+    private static readonly int StableRegisterPollThreshold = ParseStableCommPollThreshold();
     private static readonly uint? TracePcWatchStart = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_PCWATCH_START");
     private static readonly uint? TracePcWatchEnd = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_PCWATCH_END");
     private static readonly uint? TraceAddressWatchStart = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_ADDRWATCH_START");
@@ -82,10 +82,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private ushort _freeRunCounterBase;
     private ulong _freeRunCounterCycleBase;
     [NonSerialized] private ulong _schedulerCycleCounter;
-    [NonSerialized] private uint _lastCommPollPc;
-    [NonSerialized] private uint _lastCommPollAddress;
-    [NonSerialized] private ushort _lastCommPollValue;
-    [NonSerialized] private int _stableCommPollCount;
+    [NonSerialized] private uint _lastStablePollPc;
+    [NonSerialized] private uint _lastStablePollAddress;
+    [NonSerialized] private ushort _lastStablePollValue;
+    [NonSerialized] private int _stablePollCount;
 
     public Sega32XSh2Bus(Sega32XScaffoldCore core, Sega32XCpu whichCpu)
     {
@@ -110,10 +110,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     {
         StateBinarySerializer.ReadInto(reader, this);
         _schedulerCycleCounter = CurrentCpu.CycleCounter;
-        _lastCommPollPc = 0;
-        _lastCommPollAddress = 0;
-        _lastCommPollValue = 0;
-        _stableCommPollCount = 0;
+        ResetStablePollTracking();
     }
 
     public void ResetTimingState()
@@ -121,10 +118,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         CycleCounter = 0;
         _schedulerCycleCounter = 0;
         CycleLimit = ulong.MaxValue;
-        _lastCommPollPc = 0;
-        _lastCommPollAddress = 0;
-        _lastCommPollValue = 0;
-        _stableCommPollCount = 0;
+        ResetStablePollTracking();
     }
 
     public bool TryTickDma()
@@ -265,38 +259,73 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             $"addr=0x{address:X8} value=0x{value:X8} ctx={context} cyc={CycleCounter}");
     }
 
-    private void MaybeIdleOnStableCommPoll(uint maskedAddress, ushort value)
+    private void MaybeShortCircuitStableRegisterPoll(uint maskedAddress, ushort value, Sega32XSh2AccessContext context)
     {
-        if (!_core.UseExperimentalCommPollModel)
+        if (context != Sega32XSh2AccessContext.Data)
             return;
 
-        if (StableCommPollThreshold <= 0 || CycleLimit == ulong.MaxValue || _schedulerCycleCounter >= CycleLimit)
+        if (StableRegisterPollThreshold <= 0 || CycleLimit == ulong.MaxValue || _schedulerCycleCounter >= CycleLimit)
             return;
 
         uint pc = CurrentCpu.CurrentInstructionPc;
         if (pc < 0x06000000 || pc >= 0x06040000)
         {
-            _stableCommPollCount = 0;
+            ResetStablePollTracking();
             return;
         }
 
-        if (pc == _lastCommPollPc && maskedAddress == _lastCommPollAddress && value == _lastCommPollValue)
-            _stableCommPollCount++;
+        if (!IsStablePollCandidate(maskedAddress, value))
+        {
+            ResetStablePollTracking();
+            return;
+        }
+
+        if (pc == _lastStablePollPc && maskedAddress == _lastStablePollAddress && value == _lastStablePollValue)
+            _stablePollCount++;
         else
-            _stableCommPollCount = 1;
+            _stablePollCount = 1;
 
-        _lastCommPollPc = pc;
-        _lastCommPollAddress = maskedAddress;
-        _lastCommPollValue = value;
+        _lastStablePollPc = pc;
+        _lastStablePollAddress = maskedAddress;
+        _lastStablePollValue = value;
 
-        if (_stableCommPollCount < StableCommPollThreshold)
+        if (_stablePollCount < StableRegisterPollThreshold)
             return;
 
-        // Tight SH-2 comm-port polling loops are effectively idle until another CPU or the
-        // 68k changes the port value. Skip the rest of the current slice once the exact same
-        // poll has repeated enough times; the next interleaved slice still observes updates.
-        CurrentCpu.EnterCommPoll(maskedAddress, value);
+        if (_core.UseExperimentalCommPollModel && IsCommPortRegister(maskedAddress))
+        {
+            CurrentCpu.EnterCommPoll(maskedAddress, value);
+            _schedulerCycleCounter = CycleLimit;
+            return;
+        }
+
+        SkipToCycleLimit();
+    }
+
+    private void SkipToCycleLimit()
+    {
+        if (_schedulerCycleCounter >= CycleLimit)
+            return;
+
+        ulong skippedCycles = CycleLimit - _schedulerCycleCounter;
         _schedulerCycleCounter = CycleLimit;
+        CycleCounter += skippedCycles;
+    }
+
+    private void ResetStablePollTracking()
+    {
+        _lastStablePollPc = 0;
+        _lastStablePollAddress = 0;
+        _lastStablePollValue = 0;
+        _stablePollCount = 0;
+    }
+
+    private static bool IsStablePollCandidate(uint maskedAddress, ushort value)
+    {
+        if (IsCommPortRegister(maskedAddress))
+            return true;
+
+        return (maskedAddress & ~1u) == 0x0000410A && (value & 0x0002) != 0;
     }
 
     public byte ReadByte(uint address, Sega32XSh2AccessContext context)
@@ -1604,8 +1633,9 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             {
                 if (_core.TryConsumeRecentCommWrite(masked & ~1u, _whichCpu, M68kReferenceCyclesDone, out ushort queuedWord))
                     word = queuedWord;
-                MaybeIdleOnStableCommPoll(masked & ~1u, word);
             }
+
+            MaybeShortCircuitStableRegisterPoll(masked & ~1u, word, context);
 
             if (TraceBootRegisterReads && (masked & ~1u) == 0x00004000)
             {
@@ -1831,6 +1861,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     }
 
     private static bool IsSh2SystemRegister(uint masked) => masked >= 0x00004000 && masked <= 0x0000402F;
+
+    private static bool IsCommPortRegister(uint masked) => masked >= 0x00004020 && masked <= 0x0000402F;
 
     private static bool IsSh2VdpRegister(uint masked) => masked >= 0x00004100 && masked <= 0x000041FF;
 
