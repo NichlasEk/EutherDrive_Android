@@ -528,7 +528,9 @@ internal sealed class Sega32XSh2Cpu
     private static ulong ParseDispatchLoopBatchLimit()
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_EMPTY_DISPATCH_BATCH");
-        return ulong.TryParse(raw, out ulong parsed) && parsed > 0 ? parsed : 8;
+        // 32 iterations keeps VF's empty dispatch poll responsive while preserving
+        // nearly all of the interpreter-overhead win from the batched fast path.
+        return ulong.TryParse(raw, out ulong parsed) && parsed > 0 ? parsed : 32;
     }
 
     private void MaybeTraceInstruction(uint pc, ushort opcode)
