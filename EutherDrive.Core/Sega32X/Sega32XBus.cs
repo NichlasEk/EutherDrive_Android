@@ -61,7 +61,7 @@ internal sealed class Sega32XBus
 
     public byte ReadM68kByte(uint address)
     {
-        SyncSh2sIfCommPortAccessed(address & ~1u);
+        SyncSh2sIfTimingSensitiveRegisterAccessed(address & ~1u);
 
         if (address >= M68kVectorsStart && address <= M68kVectorsEnd)
         {
@@ -121,7 +121,7 @@ internal sealed class Sega32XBus
     public ushort ReadM68kWord(uint address)
     {
         uint aligned = address & ~1u;
-        SyncSh2sIfCommPortAccessed(aligned);
+        SyncSh2sIfTimingSensitiveRegisterAccessed(aligned);
         if (aligned >= M68kVectorsStart && aligned <= M68kVectorsEnd)
         {
             if (Registers.AdapterEnabled)
@@ -176,11 +176,11 @@ internal sealed class Sega32XBus
 
     public void WriteM68kByte(uint address, byte value)
     {
-        SyncSh2sIfCommPortAccessed(address & ~1u);
+        uint aligned = address & ~1u;
+        SyncSh2sIfTimingSensitiveRegisterAccessed(aligned);
 
         bool isSystemRegister = address >= M68kSystemRegistersStart && address <= M68kSystemRegistersEnd;
         bool isVdpRegister = address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd;
-        uint aligned = address & ~1u;
         if (isSystemRegister || isVdpRegister)
         {
             ushort word = isVdpRegister ? Vdp.ReadRegister(aligned) : Registers.M68kRead(aligned);
@@ -195,6 +195,9 @@ internal sealed class Sega32XBus
             }
             else
                 Registers.M68kWrite(aligned, word);
+
+            if (aligned == 0xA15102)
+                _syncSh2sForM68kCommAccess?.Invoke();
             return;
         }
 
@@ -220,19 +223,23 @@ internal sealed class Sega32XBus
 
     public void WriteM68kWord(uint address, ushort value)
     {
-        SyncSh2sIfCommPortAccessed(address & ~1u);
+        uint aligned = address & ~1u;
+        SyncSh2sIfTimingSensitiveRegisterAccessed(aligned);
 
-        if ((address >= M68kSystemRegistersStart && address <= M68kSystemRegistersEnd)
-            || (address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd))
+        if ((aligned >= M68kSystemRegistersStart && aligned <= M68kSystemRegistersEnd)
+            || (aligned >= M68kVdpRegistersStart && aligned <= M68kVdpRegistersEnd))
         {
-            if (address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd)
+            if (aligned >= M68kVdpRegistersStart && aligned <= M68kVdpRegistersEnd)
             {
                 if (Registers.VdpAccess != Sega32XAccess.M68k)
                     return;
-                Vdp.WriteRegister(address & ~1u, value);
+                Vdp.WriteRegister(aligned, value);
             }
             else
-                Registers.M68kWrite(address & ~1u, value);
+                Registers.M68kWrite(aligned, value);
+
+            if (aligned == 0xA15102)
+                _syncSh2sForM68kCommAccess?.Invoke();
             return;
         }
 
@@ -271,10 +278,15 @@ internal sealed class Sega32XBus
         return (ushort)((msb << 8) | lsb);
     }
 
-    private void SyncSh2sIfCommPortAccessed(uint alignedAddress)
+    private void SyncSh2sIfTimingSensitiveRegisterAccessed(uint alignedAddress)
     {
         if (alignedAddress < M68kSystemRegistersStart || alignedAddress > M68kSystemRegistersEnd)
             return;
+        if (alignedAddress == 0xA15102)
+        {
+            _syncSh2sForM68kCommAccess?.Invoke();
+            return;
+        }
         if (alignedAddress < 0xA15120 || alignedAddress > 0xA1512F)
             return;
 

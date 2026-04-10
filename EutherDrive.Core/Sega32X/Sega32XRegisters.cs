@@ -14,6 +14,13 @@ internal enum Sega32XCpu
     Slave,
 }
 
+internal enum Sega32XCommSource
+{
+    M68k,
+    MasterSh2,
+    SlaveSh2,
+}
+
 internal sealed class Sega32XSh2Interrupts
 {
     public bool ResetPending { get; set; }
@@ -171,6 +178,7 @@ internal sealed class Sega32XSystemRegisters
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_DREQ"),
             "1",
             StringComparison.Ordinal);
+    public Action<Sega32XCommSource, uint, ushort>? CommunicationPortWritten { get; set; }
     public bool AdapterEnabled { get; private set; }
     public bool ResetSh2 { get; private set; }
     public Sega32XAccess VdpAccess { get; private set; }
@@ -320,7 +328,7 @@ internal sealed class Sega32XSystemRegisters
                 break;
             default:
                 if (address >= 0xA15120 && address <= 0xA1512F)
-                    WriteCommunicationPort(address, value);
+                    WriteCommunicationPort(address, value, Sega32XCommSource.M68k);
                 break;
         }
     }
@@ -389,7 +397,10 @@ internal sealed class Sega32XSystemRegisters
                 break;
             default:
                 if (address >= 0x4020 && address <= 0x402F)
-                    WriteCommunicationPort(address, value);
+                    WriteCommunicationPort(
+                        address,
+                        value,
+                        whichCpu == Sega32XCpu.Master ? Sega32XCommSource.MasterSh2 : Sega32XCommSource.SlaveSh2);
                 break;
         }
     }
@@ -509,16 +520,23 @@ internal sealed class Sega32XSystemRegisters
         return value;
     }
 
-    private void WriteCommunicationPort(uint address, ushort value)
+    private void WriteCommunicationPort(uint address, ushort value, Sega32XCommSource source)
     {
         int index = (int)((address >> 1) & 0x7);
+        ushort oldValue = CommunicationPorts[index];
         if (TraceCommPorts)
         {
-            ushort oldValue = CommunicationPorts[index];
-            string source = address >= 0xA15120 ? "M68K" : "SH2";
-            Console.WriteLine($"[S32X-COMM-WRITE] src={source} addr=0x{address:X8} idx={index} old=0x{oldValue:X4} new=0x{value:X4}");
+            string sourceName = source switch
+            {
+                Sega32XCommSource.M68k => "M68K",
+                Sega32XCommSource.MasterSh2 => "MSH2",
+                _ => "SSH2",
+            };
+            Console.WriteLine($"[S32X-COMM-WRITE] src={sourceName} addr=0x{address:X8} idx={index} old=0x{oldValue:X4} new=0x{value:X4}");
         }
         CommunicationPorts[index] = value;
+        if (oldValue != value)
+            CommunicationPortWritten?.Invoke(source, address & ~1u, value);
     }
 
     private Sega32XSh2Interrupts GetInterrupts(Sega32XCpu whichCpu)

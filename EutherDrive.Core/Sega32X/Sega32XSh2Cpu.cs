@@ -4,6 +4,13 @@ namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XSh2Cpu
 {
+    [Flags]
+    private enum IdleState : byte
+    {
+        None = 0,
+        CommPoll = 1 << 0,
+    }
+
     private const int MaxUnsupportedLogs = 100_000;
     public string Name { get; }
     public Sega32XSh2Registers Registers { get; } = new();
@@ -11,6 +18,9 @@ internal sealed class Sega32XSh2Cpu
     public ulong CycleCounter { get; private set; }
     public bool ResetPending { get; set; } = true;
     private int _unsupportedLogCount;
+    private IdleState _idleState;
+    private uint _commPollAddress;
+    private ushort _commPollValue;
 
     private static readonly byte ResetInterruptMask = 0x0F;
     private static readonly bool TraceBootLoop =
@@ -31,12 +41,39 @@ internal sealed class Sega32XSh2Cpu
     public void RequestReset()
     {
         ResetPending = true;
+        _idleState = IdleState.None;
         Registers.StatusRegister = new Sega32XSh2StatusRegister { InterruptMask = ResetInterruptMask };
     }
 
     public void ResetTimingState()
     {
         CycleCounter = 0;
+        _idleState = IdleState.None;
+        _commPollAddress = 0;
+        _commPollValue = 0;
+    }
+
+    public bool IsCommPolling => (_idleState & IdleState.CommPoll) != 0;
+
+    public void EnterCommPoll(uint address, ushort value)
+    {
+        _idleState |= IdleState.CommPoll;
+        _commPollAddress = address & ~1u;
+        _commPollValue = value;
+    }
+
+    public void ExitCommPoll()
+    {
+        _idleState &= ~IdleState.CommPoll;
+    }
+
+    public bool ShouldWakeOnCommWrite(uint address)
+    {
+        if (!IsCommPolling)
+            return false;
+
+        uint maskedAddress = address & ~1u;
+        return maskedAddress >= _commPollAddress && maskedAddress - _commPollAddress <= 3;
     }
 
     public void Execute(ulong ticks, ISega32XSh2Bus bus)
@@ -87,9 +124,17 @@ internal sealed class Sega32XSh2Cpu
             if (externalInterruptLevel > Registers.StatusRegister.InterruptMask)
             {
                 uint vectorNumber = 64u + (uint)(externalInterruptLevel >> 1);
+                _idleState = IdleState.None;
                 HandleException(externalInterruptLevel, vectorNumber, bus);
                 return;
             }
+        }
+
+        if (_idleState != IdleState.None)
+        {
+            bus.IncrementCycleCounter(ticks);
+            CycleCounter += ticks;
+            return;
         }
 
         for (ulong i = 0; i < ticks; i++)

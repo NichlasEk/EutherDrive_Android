@@ -78,6 +78,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private uint _captainAmericaMailboxLastSemState;
     private Sega32XScaffoldCore? _sega32XCore;
     private bool _isSega32XRom;
+    private int _s32xAccessDrivenM68kCycles;
 
     // Framebuffer analyzer for live debugging
     public FramebufferAnalyzer FbAnalyzer { get; } = null!;
@@ -131,6 +132,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private static readonly double[] PsgSincWindow = BuildBlackmanWindow(PsgSincTaps);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
+    private static readonly int S32xPeripheralAccessWordCycles =
+        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_ACCESS_SYNC_CYCLES", 4));
     private double _z80CycleMultiplier = ParseZ80CycleMultiplier();
     private static readonly int BootRecoverStallFrames = ParseBootRecoverStallFrames();
     private static readonly int BootRecoverWindowFrames = ParseBootRecoverWindowFrames();
@@ -1497,7 +1500,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 {
                     var shared32XRegisters = new Sega32XSystemRegisters();
                     _sega32XCore = new Sega32XScaffoldCore(_rom, shared32XRegisters);
-                    _bus.Attach32XBus(_sega32XCore.Bus);
+                    if (_sega32XCore.UseExperimentalCommPollModel)
+                        shared32XRegisters.CommunicationPortWritten += On32XCommunicationPortWritten;
+
+                    _bus.Attach32XBus(
+                        _sega32XCore.Bus,
+                        _sega32XCore.UseExperimentalSharedTimebase ? Sync32XOnM68k32XPeripheralAccess : null);
                     Console.WriteLine("[MdTracerAdapter] 32X host bridge enabled.");
                 }
                 else
@@ -2710,6 +2718,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 int cpuBudget = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
                 bool useCycleCounterZ80Scheduling = md_main.IsCycleCounterZ80SchedulingEnabled();
                 bool svpActive = md_main.g_md_bus?.OverrideBus is SvpBusOverride;
+                bool useExperimental32XTiming = _sega32XCore?.UseExperimentalSharedTimebase == true;
 
                 for (int v = 0; v < vlines; v++)
                 {
@@ -2763,6 +2772,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                     }
                     else
                     {
+                        int beforeCycles = md_m68k.g_clock_now;
                         if (TracePerf)
                         {
                             long cpuStart = Stopwatch.GetTimestamp();
@@ -2774,7 +2784,32 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                             _cpu.RunSome(budget: cpuBudget);
                         }
 
-                        md_main.AdvanceSystemCycles(cpuBudget, flushAudio: false);
+                        int ranCycles = md_m68k.g_clock_now - beforeCycles;
+                        if (ranCycles <= 0)
+                            ranCycles = cpuBudget;
+
+                        if (_sega32XCore != null && useExperimental32XTiming)
+                        {
+                            int remainingM68kCycles = ranCycles - _s32xAccessDrivenM68kCycles;
+                            if (remainingM68kCycles < 0)
+                                remainingM68kCycles = 0;
+
+                            if (TracePerf)
+                            {
+                                long s32xStart = Stopwatch.GetTimestamp();
+                                if (remainingM68kCycles != 0)
+                                    Run32XInterleavedLine((ulong)remainingM68kCycles);
+                                s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
+                            }
+                            else if (remainingM68kCycles != 0)
+                            {
+                                Run32XInterleavedLine((ulong)remainingM68kCycles);
+                            }
+
+                            _s32xAccessDrivenM68kCycles = 0;
+                        }
+
+                        md_main.AdvanceSystemCycles(ranCycles, flushAudio: false);
                     }
 
                     // Captain America can wedge in semaphore wait loops mid-frame;
@@ -2803,14 +2838,18 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                         md_main.FlushScheduledAudio();
                         audioFlushTicks += Stopwatch.GetTimestamp() - flushStart;
 
-                        long s32xStart = Stopwatch.GetTimestamp();
-                        Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
-                        s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
+                        if (_sega32XCore != null && !useExperimental32XTiming)
+                        {
+                            long s32xStart = Stopwatch.GetTimestamp();
+                            Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                            s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
+                        }
                     }
                     else
                     {
                         md_main.FlushScheduledAudio();
-                        Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                        if (_sega32XCore != null && !useExperimental32XTiming)
+                            Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
                     }
                 }
 
@@ -2846,18 +2885,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 // Fortfarande VDP-test tills vi kopplar VDP-register/IO
                 if (!SkipVdpRenderEnabled)
                 {
+                    int fallbackCpuBudget = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
                     for (int v = 0; v < vlines; v++)
                     {
                         _vdp.run(v);
                         if (TracePerf)
                         {
                             long s32xStart = Stopwatch.GetTimestamp();
-                            Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                            Run32XInterleavedLine((ulong)fallbackCpuBudget);
                             PerfHotspots.Add(PerfHotspot.S32xSlice, Stopwatch.GetTimestamp() - s32xStart);
                         }
                         else
                         {
-                            Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                            Run32XInterleavedLine((ulong)fallbackCpuBudget);
                         }
                     }
                 }
@@ -3053,6 +3093,56 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         ulong ticks = baseTicksPerLine + ((ulong)line < remainderTicks ? 1UL : 0UL);
         if (ticks != 0)
             _sega32XCore.RunSlice(ticks);
+    }
+
+    private void Run32XInterleavedLine(ulong elapsedM68kCycles)
+    {
+        if (_sega32XCore == null)
+            return;
+
+        if (elapsedM68kCycles != 0)
+            _sega32XCore.RunM68kCycles(elapsedM68kCycles);
+    }
+
+    private void Sync32XOnM68k32XPeripheralAccess(uint addr, int sizeBytes, bool write)
+    {
+        if (_sega32XCore == null)
+            return;
+
+        int accessCycles = EstimateS32xPeripheralAccessCycles(addr, sizeBytes, write);
+        if (accessCycles <= 0)
+            return;
+
+        _sega32XCore.RunM68kCycles((ulong)accessCycles);
+        _s32xAccessDrivenM68kCycles += accessCycles;
+    }
+
+    private void On32XCommunicationPortWritten(Sega32XCommSource source, uint addr, ushort value)
+    {
+        _bus?.Notify32XCommWrite(addr);
+    }
+
+    private static int EstimateS32xPeripheralAccessCycles(uint addr, int sizeBytes, bool write)
+    {
+        int words = sizeBytes >= 4 ? 2 : 1;
+        int cycles = S32xPeripheralAccessWordCycles * words;
+
+        if (addr >= Sega32XBus.M68kSystemRegistersStart && addr <= Sega32XBus.M68kSystemRegistersEnd)
+            return cycles;
+
+        if (addr >= Sega32XBus.M68k32XIdStart && addr <= Sega32XBus.M68k32XIdEnd)
+            return cycles;
+
+        if (addr >= Sega32XBus.M68kVdpRegistersStart && addr <= Sega32XBus.M68kVdpRegistersEnd)
+            return cycles;
+
+        if (addr >= Sega32XBus.M68kFrameBufferStart && addr <= Sega32XBus.M68kOverwriteImageEnd)
+            return write ? cycles : Math.Max(S32xPeripheralAccessWordCycles, cycles / 2);
+
+        if (addr >= Sega32XBus.M68kCramStart && addr <= Sega32XBus.M68kCramEnd)
+            return cycles;
+
+        return 0;
     }
 
     private bool TryPresent32XFrame()

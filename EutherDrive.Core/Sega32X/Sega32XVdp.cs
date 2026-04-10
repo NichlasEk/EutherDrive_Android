@@ -172,6 +172,13 @@ internal sealed class Sega32XVdp
         ulong scaled = _frameAdvanceRemainder + (FrameMclkCycles * sh2Ticks);
         ulong mclkAdvance = scaled / sh2TicksPerFrame;
         _frameAdvanceRemainder = scaled % sh2TicksPerFrame;
+        AdvanceMclk(mclkAdvance, registers);
+    }
+
+    public void AdvanceMclk(ulong mclkAdvance, Sega32XSystemRegisters registers)
+    {
+        if (mclkAdvance == 0)
+            return;
 
         if (_autoFillMclkRemaining > mclkAdvance)
             _autoFillMclkRemaining -= mclkAdvance;

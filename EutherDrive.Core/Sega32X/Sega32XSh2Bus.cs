@@ -21,6 +21,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     }
 
     private const int CacheDataArrayLengthWords = 4 * 1024 / 2;
+    private const ulong NativeSh2CyclesPerM68kCycle = 3;
     private const ulong Sh2CartridgeCycles = 7;
     private const ulong Sh2FrameBufferReadCycles = 4;
     private const ulong Sh2VdpCycles = 4;
@@ -80,6 +81,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private uint _dmaVector1;
     private ushort _freeRunCounterBase;
     private ulong _freeRunCounterCycleBase;
+    [NonSerialized] private ulong _schedulerCycleCounter;
     [NonSerialized] private uint _lastCommPollPc;
     [NonSerialized] private uint _lastCommPollAddress;
     [NonSerialized] private ushort _lastCommPollValue;
@@ -92,8 +94,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     }
 
     public ulong CycleCounter { get; private set; }
+    public ulong SchedulerCycleCounter => _schedulerCycleCounter;
     public ulong CycleLimit { get; set; } = ulong.MaxValue;
-    public bool ShouldStopExecution => CycleCounter >= CycleLimit;
+    public bool ShouldStopExecution => _schedulerCycleCounter >= CycleLimit;
+    public ulong M68kReferenceCyclesDone => (_schedulerCycleCounter + (NativeSh2CyclesPerM68kCycle - 1)) / NativeSh2CyclesPerM68kCycle;
 
     public bool ResetAsserted => _core.Registers.ResetSh2;
     public byte InterruptLevel => _whichCpu == Sega32XCpu.Master
@@ -105,6 +109,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     public void LoadState(BinaryReader reader)
     {
         StateBinarySerializer.ReadInto(reader, this);
+        _schedulerCycleCounter = CurrentCpu.CycleCounter;
         _lastCommPollPc = 0;
         _lastCommPollAddress = 0;
         _lastCommPollValue = 0;
@@ -114,6 +119,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     public void ResetTimingState()
     {
         CycleCounter = 0;
+        _schedulerCycleCounter = 0;
         CycleLimit = ulong.MaxValue;
         _lastCommPollPc = 0;
         _lastCommPollAddress = 0;
@@ -164,13 +170,13 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         {
             Sega32XSh2Cpu otherCpu = _core.GetOtherCpu(_whichCpu);
             Sega32XSh2Bus otherBus = _core.GetOtherBus(_whichCpu);
-            ulong limit = Math.Min(CycleLimit, CycleCounter);
-            if (otherBus.CycleCounter >= limit)
+            ulong limit = Math.Min(CycleLimit, _schedulerCycleCounter);
+            if (otherBus.SchedulerCycleCounter >= limit)
                 return;
 
-            while (otherBus.CycleCounter < limit)
+            while (otherBus.SchedulerCycleCounter < limit)
             {
-                ulong toRun = Math.Min(CommPortSyncChunkSize, limit - otherBus.CycleCounter);
+                ulong toRun = Math.Min(CommPortSyncChunkSize, limit - otherBus.SchedulerCycleCounter);
                 otherCpu.Execute(toRun, otherBus);
             }
         }
@@ -261,7 +267,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     private void MaybeIdleOnStableCommPoll(uint maskedAddress, ushort value)
     {
-        if (StableCommPollThreshold <= 0 || CycleLimit == ulong.MaxValue || CycleCounter >= CycleLimit)
+        if (!_core.UseExperimentalCommPollModel)
+            return;
+
+        if (StableCommPollThreshold <= 0 || CycleLimit == ulong.MaxValue || _schedulerCycleCounter >= CycleLimit)
             return;
 
         uint pc = CurrentCpu.CurrentInstructionPc;
@@ -286,7 +295,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         // Tight SH-2 comm-port polling loops are effectively idle until another CPU or the
         // 68k changes the port value. Skip the rest of the current slice once the exact same
         // poll has repeated enough times; the next interleaved slice still observes updates.
-        CycleCounter = CycleLimit;
+        CurrentCpu.EnterCommPoll(maskedAddress, value);
+        _schedulerCycleCounter = CycleLimit;
     }
 
     public byte ReadByte(uint address, Sega32XSh2AccessContext context)
@@ -667,6 +677,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     public void IncrementCycleCounter(ulong cycles)
     {
         CycleCounter += cycles;
+        _schedulerCycleCounter += cycles;
     }
 
     public ushort DebugReadCacheDataArrayWord(uint address) => ReadCacheDataArrayWord(address);
@@ -1538,7 +1549,11 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 : _core.Registers.Sh2Read(masked & ~1u, _whichCpu, _core.Bus.Vdp);
 
             if (masked >= 0x00004020 && masked <= 0x0000402F)
+            {
+                if (_core.TryConsumeRecentCommWrite(masked & ~1u, _whichCpu, M68kReferenceCyclesDone, out ushort queuedWord))
+                    word = queuedWord;
                 MaybeIdleOnStableCommPoll(masked & ~1u, word);
+            }
 
             if (TraceBootRegisterReads && (masked & ~1u) == 0x00004000)
             {
@@ -1591,6 +1606,25 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     private uint ReadBackingLongword(uint masked, Sega32XSh2AccessContext context)
     {
+        if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
+        {
+            CycleCounter += 2;
+            SyncIfCommPortAccessed(masked);
+            if (IsSh2VdpRegister(masked) && _core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                return 0xFFFFFFFF;
+            if (IsSh2VdpRegister(masked))
+                CycleCounter += 2 * Sh2VdpCycles;
+
+            ushort highWord = IsSh2VdpRegister(masked)
+                ? _core.Bus.Vdp.ReadRegister(masked & ~1u)
+                : _core.Registers.Sh2Read(masked & ~1u, _whichCpu, _core.Bus.Vdp);
+            ushort lowWord = IsSh2VdpRegister(masked + 2)
+                ? _core.Bus.Vdp.ReadRegister((masked + 2) & ~1u)
+                : _core.Registers.Sh2Read((masked + 2) & ~1u, _whichCpu, _core.Bus.Vdp);
+
+            return ((uint)highWord << 16) | lowWord;
+        }
+
         if (masked >= 0x06000000 && masked < 0x06040000)
         {
             CycleCounter += 1 + Sh2SdramReadCycles;
@@ -1626,6 +1660,28 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     private void WriteBackingLongword(uint masked, uint value, Sega32XSh2AccessContext context)
     {
+        if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
+        {
+            CycleCounter += 2;
+            SyncIfCommPortAccessed(masked);
+            if (IsSh2VdpRegister(masked) && _core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                return;
+            if (IsSh2VdpRegister(masked))
+                CycleCounter += 2 * Sh2VdpCycles;
+
+            if (IsSh2VdpRegister(masked))
+            {
+                _core.Bus.Vdp.WriteRegister(masked & ~1u, (ushort)(value >> 16));
+                _core.Bus.Vdp.WriteRegister((masked + 2) & ~1u, (ushort)value);
+            }
+            else
+            {
+                _core.Registers.Sh2Write(masked & ~1u, (ushort)(value >> 16), _whichCpu, _core.Bus.Vdp);
+                _core.Registers.Sh2Write((masked + 2) & ~1u, (ushort)value, _whichCpu, _core.Bus.Vdp);
+            }
+            return;
+        }
+
         if (masked >= 0x06000000 && masked < 0x06040000)
         {
             CycleCounter += 1 + Sh2SdramWriteCycles;
