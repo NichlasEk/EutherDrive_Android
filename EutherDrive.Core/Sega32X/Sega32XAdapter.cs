@@ -7,7 +7,7 @@ namespace EutherDrive.Core;
 public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
 {
     private const int FrameWidth = 320;
-    private const int FrameHeight = 224;
+    private const int FrameHeight = Sega32X.Sega32XVdp.FrameHeight;
     private const int FrameStride = FrameWidth * 4;
     private const int OutputSampleRate = 44100;
     private const int OutputChannels = 2;
@@ -97,7 +97,7 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
         width = FrameWidth;
-        height = FrameHeight;
+        height = _core?.Bus?.Vdp?.ActiveFrameHeight ?? FrameHeight;
         stride = FrameStride;
         return _frameBuffer;
     }

@@ -28,7 +28,7 @@ internal sealed class Sega32XVdp
             "1",
             StringComparison.Ordinal);
     public const int FrameWidth = 320;
-    public const int FrameHeight = 224;
+    public const int FrameHeight = 240;
     private const int WordsPerBuffer = 0x20000 / 2;
     private const ulong MclkCyclesPerScanline = 3420;
     private const ulong HBlankStartMclkCycles = 343 * 8;
@@ -37,7 +37,8 @@ internal sealed class Sega32XVdp
     private const ulong DramRefreshStartMclkCycles = HBlankStartMclkCycles;
     private const ulong DramRefreshEndMclkCycles = HBlankStartMclkCycles + ((40 * 7) / 3);
     private int _scanlinesPerFrame = 262;
-    private const int ActiveScanlinesPerFrame = 224;
+    private const int ActiveScanlinesPerFrameV28 = 224;
+    private const int ActiveScanlinesPerFrameV30 = 240;
     public ulong FrameMclkCycles => MclkCyclesPerScanline * (ulong)_scanlinesPerFrame;
 
     private readonly ushort[] _frameBuffer0 = new ushort[WordsPerBuffer];
@@ -237,7 +238,7 @@ internal sealed class Sega32XVdp
                 _scanlineMclk -= MclkCyclesPerScanline;
                 _scanline++;
 
-                if (_scanline == ActiveScanlinesPerFrame)
+                if (_scanline == GetActiveScanlinesPerFrame())
                 {
                     _displayFrameBuffer = (FrameBufferControl & 0x0001) != 0;
                     _writeFrameBuffer = !_displayFrameBuffer;
@@ -254,7 +255,7 @@ internal sealed class Sega32XVdp
                     _hInterruptThisLine = true;
                 }
 
-                if (_scanline < ActiveScanlinesPerFrame && _scanlineMclk >= RenderLineMclkCycles)
+                if (_scanline < GetActiveScanlinesPerFrame() && _scanlineMclk >= RenderLineMclkCycles)
                 {
                     RenderScanline(_scanline);
                     _cyclesTillNextRender = MclkCyclesPerScanline + RenderLineMclkCycles - _scanlineMclk;
@@ -262,7 +263,7 @@ internal sealed class Sega32XVdp
             }
             else if (prevScanlineMclk < RenderLineMclkCycles && _scanlineMclk >= RenderLineMclkCycles)
             {
-                if (_scanline < ActiveScanlinesPerFrame)
+                if (_scanline < GetActiveScanlinesPerFrame())
                 {
                     RenderScanline(_scanline);
                     _cyclesTillNextRender = MclkCyclesPerScanline + RenderLineMclkCycles - _scanlineMclk;
@@ -420,7 +421,7 @@ internal sealed class Sega32XVdp
             return;
 
         int outputWidth = Math.Min(GetActiveFrameWidth(), stride / 4);
-        int outputHeight = Math.Min(FrameHeight, output.Length / stride);
+        int outputHeight = Math.Min(GetActiveScanlinesPerFrame(), output.Length / stride);
         if (outputWidth <= 0 || outputHeight <= 0)
             return;
 
@@ -447,7 +448,7 @@ internal sealed class Sega32XVdp
     private void RenderRenderedFrameBgra(byte[] output, int stride)
     {
         int outputWidth = Math.Min(GetActiveFrameWidth(), stride / 4);
-        int outputHeight = Math.Min(FrameHeight, output.Length / stride);
+        int outputHeight = Math.Min(GetActiveScanlinesPerFrame(), output.Length / stride);
         if (outputWidth <= 0 || outputHeight <= 0)
             return;
 
@@ -471,7 +472,7 @@ internal sealed class Sega32XVdp
 
         TraceVdpStateIfEnabled(mode, GetDisplayBuffer(), "composite");
         int outputWidth = Math.Min(GetActiveFrameWidth(), stride / 4);
-        int outputHeight = Math.Min(FrameHeight, output.Length / stride);
+        int outputHeight = Math.Min(GetActiveScanlinesPerFrame(), output.Length / stride);
         if (outputWidth <= 0 || outputHeight <= 0)
             return false;
 
@@ -519,7 +520,7 @@ internal sealed class Sega32XVdp
     private void RenderScanline(int line)
     {
         int row = line * FrameWidth;
-        if ((uint)line >= ActiveScanlinesPerFrame)
+        if ((uint)line >= GetActiveScanlinesPerFrame())
             return;
 
         Sega32XFrameBufferMode mode = GetLatchedFrameBufferMode();
@@ -686,6 +687,8 @@ internal sealed class Sega32XVdp
 
     private int GetActiveFrameWidth() => _hostDisplayWidth > 0 ? _hostDisplayWidth : FrameWidth;
 
+    public int ActiveFrameHeight => GetActiveScanlinesPerFrame();
+
     private ushort ReadDisplayMode()
     {
         return (ushort)(0x8000 | (Priority ? 0x0080 : 0) | (DisplayMode & 0x0043));
@@ -706,7 +709,7 @@ internal sealed class Sega32XVdp
             | (_displayFrameBuffer ? 1 : 0));
     }
 
-    private bool InVBlank() => _scanline >= ActiveScanlinesPerFrame;
+    private bool InVBlank() => _scanline >= GetActiveScanlinesPerFrame();
 
     private bool InHBlank() => !(_scanlineMclk >= HBlankEndMclkCycles && _scanlineMclk < HBlankStartMclkCycles);
 
@@ -767,7 +770,7 @@ internal sealed class Sega32XVdp
             return;
 
         _stateTraceCount++;
-        int lineCount = Math.Min(8, FrameHeight);
+        int lineCount = Math.Min(8, GetActiveScanlinesPerFrame());
         string[] lines = new string[lineCount];
         for (int i = 0; i < lineCount; i++)
             lines[i] = $"L{i}=0x{frameBuffer[i]:X4}";
@@ -789,7 +792,7 @@ internal sealed class Sega32XVdp
             cramWords[i] = $"{_cram[i]:X4}";
 
         ushort[] otherBuffer = ReferenceEquals(frameBuffer, _frameBuffer0) ? _frameBuffer1 : _frameBuffer0;
-        int otherLineCount = Math.Min(8, FrameHeight);
+        int otherLineCount = Math.Min(8, GetActiveScanlinesPerFrame());
         string[] otherLines = new string[otherLineCount];
         for (int i = 0; i < otherLineCount; i++)
             otherLines[i] = $"W{i}=0x{otherBuffer[i]:X4}";
@@ -847,5 +850,12 @@ internal sealed class Sega32XVdp
             $"[S32X-VDPREG] reg=0x{registerOffset:X1} old=0x{oldValue:X4} new=0x{newValue:X4} " +
             $"disp=0x{DisplayMode:X4} fbctl=0x{FrameBufferControl:X4} front={(_displayFrameBuffer ? 1 : 0)} write={(_writeFrameBuffer ? 1 : 0)} " +
             $"scanline={_scanline} mclk={_scanlineMclk}");
+    }
+
+    private int GetActiveScanlinesPerFrame()
+    {
+        return (DisplayMode & 0x0040) != 0
+            ? ActiveScanlinesPerFrameV30
+            : ActiveScanlinesPerFrameV28;
     }
 }
