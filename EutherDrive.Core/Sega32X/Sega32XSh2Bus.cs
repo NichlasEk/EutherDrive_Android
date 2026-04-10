@@ -680,6 +680,58 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         _schedulerCycleCounter += cycles;
     }
 
+    public void IncrementDetailCycleCounter(ulong cycles)
+    {
+        CycleCounter += cycles;
+    }
+
+    public bool TryPeekInstructionWord(uint address, out ushort value)
+    {
+        uint addressSpace = address >> 29;
+        uint masked = address & 0x1FFFFFFF;
+
+        if (addressSpace is not 0 and not 1)
+        {
+            value = 0;
+            return false;
+        }
+
+        if (masked <= 0x00003FFF)
+        {
+            ReadOnlySpan<byte> bootRom = _whichCpu == Sega32XCpu.Master ? _core.MasterBootRom : _core.SlaveBootRom;
+            if (masked + 1 >= bootRom.Length)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = (ushort)((bootRom[(int)masked] << 8) | bootRom[(int)masked + 1]);
+            return true;
+        }
+
+        if (masked >= 0x06000000 && masked < 0x06040000)
+        {
+            int wordIndex = (int)((masked - 0x06000000) >> 1);
+            if ((uint)wordIndex >= _core.Bus.Sdram.Length)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = _core.Bus.Sdram[wordIndex];
+            return true;
+        }
+
+        if (masked >= 0x02000000 && masked < 0x02400000)
+        {
+            value = _core.Bus.ReadSh2CartridgeWord(masked & 0x003FFFFE);
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
     public ushort DebugReadCacheDataArrayWord(uint address) => ReadCacheDataArrayWord(address);
 
     private byte ReadCacheDataArrayByte(uint address)
