@@ -44,12 +44,14 @@ public sealed class RomPickerDialog : Window
     private readonly Func<string, RomPickerStats> _statsProvider;
     private readonly ObservableCollection<RomPickerEntry> _entries = new();
     private readonly List<RomPickerEntry> _allEntries = new();
+    private readonly List<RomPickerEntry> _romSearchEntries = new();
     private readonly TextBox _pathText;
     private readonly TextBox _romLibraryText;
     private readonly TextBox _coverCacheText;
     private readonly TextBox _statusText;
     private readonly TextBlock _coverSyncStatusText;
     private readonly TextBox _searchBox;
+    private readonly TextBox _romSearchBox;
     private readonly ComboBox _sortCombo;
     private readonly ComboBox _starsFilterCombo;
     private readonly ListBox _listBox;
@@ -66,6 +68,7 @@ public sealed class RomPickerDialog : Window
     private Bitmap? _coverPreviewBitmap;
     private Task? _coverSyncTask;
     private CancellationTokenSource? _coverSyncCts;
+    private CancellationTokenSource? _romSearchCts;
     private string? _coverSyncLibraryPath;
     private Task? _coverDeltaSyncTask;
     private string? _coverDeltaSyncLibraryPath;
@@ -74,6 +77,8 @@ public sealed class RomPickerDialog : Window
     private Dictionary<string, CoverIndexEntry> _coverIndexByHash = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, CoverDatEntry> _coverDatCache = new(StringComparer.OrdinalIgnoreCase);
     private bool _coverIndexDirty;
+    private bool _romSearchInProgress;
+    private bool _suppressSelectionStatus;
 
     public string? SelectedPath { get; private set; }
     public string? RomLibraryPath => _romLibraryPath;
@@ -165,6 +170,13 @@ public sealed class RomPickerDialog : Window
             MinWidth = 220
         };
         _searchBox.TextChanged += (_, _) => ApplyFilters();
+
+        _romSearchBox = new TextBox
+        {
+            Watermark = "Search ROM library",
+            MinWidth = 320
+        };
+        _romSearchBox.TextChanged += (_, _) => StartRomLibrarySearch();
 
         _sortCombo = new ComboBox
         {
@@ -350,6 +362,7 @@ public sealed class RomPickerDialog : Window
                             _pathText,
                             _romLibraryText,
                             _coverCacheText,
+                            _romSearchBox,
                             new Grid
                             {
                                 ColumnDefinitions = new ColumnDefinitions("*,Auto"),
@@ -523,7 +536,8 @@ public sealed class RomPickerDialog : Window
 
         _openButton.IsEnabled = true;
         _openButton.Content = entry.IsDirectory ? "Enter" : "Open";
-        _statusText.Text = entry.DetailText;
+        if (!_suppressSelectionStatus)
+            _statusText.Text = entry.DetailText;
         UpdateCoverPreview(entry);
     }
 
@@ -595,6 +609,8 @@ public sealed class RomPickerDialog : Window
         ReloadCoverIndex();
         SetIdleCoverSyncStatus();
         _statusText.Text = $"ROM library set to {_romLibraryPath}";
+        if (IsRomLibrarySearchActive)
+            StartRomLibrarySearch();
         StartCoverDeltaSyncIfNeeded();
     }
 
@@ -640,12 +656,6 @@ public sealed class RomPickerDialog : Window
             }
 
             ApplyFilters();
-            _statusText.Text = _entries.Count == 0
-                ? "No ROMs or directories found here."
-                : $"{_entries.Count} entries in {_currentDirectory}";
-            _listBox.SelectedItem = _entries.FirstOrDefault();
-            if (_listBox.SelectedItem == null)
-                UpdateCoverPreview(null);
         }
         catch (Exception ex)
         {
@@ -664,6 +674,8 @@ public sealed class RomPickerDialog : Window
 
     private void ApplyFilters()
     {
+        UpdateSearchUi();
+
         string search = _searchBox.Text?.Trim() ?? string.Empty;
         int minStars = _starsFilterCombo.SelectedIndex switch
         {
@@ -675,7 +687,9 @@ public sealed class RomPickerDialog : Window
             _ => 0
         };
 
-        IEnumerable<RomPickerEntry> items = _allEntries.Where(entry =>
+        IEnumerable<RomPickerEntry> sourceEntries = IsRomLibrarySearchActive ? _romSearchEntries : _allEntries;
+
+        IEnumerable<RomPickerEntry> items = sourceEntries.Where(entry =>
             search.Length == 0
             || entry.Name.Contains(search, StringComparison.OrdinalIgnoreCase)
             || entry.DetailText.Contains(search, StringComparison.OrdinalIgnoreCase));
@@ -714,17 +728,213 @@ public sealed class RomPickerDialog : Window
             RomPickerEntry? newSelected = _entries.FirstOrDefault(entry => string.Equals(entry.FullPath, selectedPath, StringComparison.OrdinalIgnoreCase));
             if (newSelected != null)
             {
-                _listBox.SelectedItem = newSelected;
+                _suppressSelectionStatus = true;
+                try
+                {
+                    _listBox.SelectedItem = newSelected;
+                }
+                finally
+                {
+                    _suppressSelectionStatus = false;
+                }
+
+                UpdateVisibleStatusText();
                 return;
             }
         }
 
-        _listBox.SelectedItem = _entries.FirstOrDefault();
-        Dispatcher.UIThread.Post(() =>
+        _suppressSelectionStatus = true;
+        try
         {
+            _listBox.SelectedItem = _entries.FirstOrDefault();
+        }
+        finally
+        {
+            _suppressSelectionStatus = false;
+        }
+
+        if (_listBox.SelectedItem == null)
+            UpdateCoverPreview(null);
+
+        UpdateVisibleStatusText();
+    }
+
+    private bool IsRomLibrarySearchActive
+        => !string.IsNullOrWhiteSpace(_romSearchBox.Text);
+
+    private void StartRomLibrarySearch()
+    {
+        _romSearchCts?.Cancel();
+        _romSearchCts = null;
+
+        string query = _romSearchBox.Text?.Trim() ?? string.Empty;
+        if (query.Length == 0)
+        {
+            _romSearchInProgress = false;
+            _romSearchEntries.Clear();
+            ApplyFilters();
+            return;
+        }
+
+        string? romLibraryPath = NormalizeDirectoryPath(_romLibraryPath);
+        if (string.IsNullOrWhiteSpace(romLibraryPath) || !Directory.Exists(romLibraryPath))
+        {
+            _romSearchInProgress = false;
+            _romSearchEntries.Clear();
+            ApplyFilters();
+            _statusText.Text = "Set a ROM library folder to search across all ROMs.";
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _romSearchCts = cts;
+        _romSearchInProgress = true;
+        _romSearchEntries.Clear();
+        ApplyFilters();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(180, cts.Token);
+                List<RomPickerEntry> matches = BuildRomSearchEntries(romLibraryPath, query, cts.Token);
+
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    if (cts.IsCancellationRequested)
+                        return;
+
+                    if (!string.Equals(_romSearchBox.Text?.Trim(), query, StringComparison.Ordinal))
+                        return;
+
+                    _romSearchEntries.Clear();
+                    _romSearchEntries.AddRange(matches);
+                    _romSearchInProgress = false;
+                    ApplyFilters();
+                });
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    if (!cts.IsCancellationRequested)
+                    {
+                        _romSearchInProgress = false;
+                        _statusText.Text = $"ROM search failed: {ex.Message}";
+                    }
+                });
+            }
+        });
+    }
+
+    private List<RomPickerEntry> BuildRomSearchEntries(string romLibraryPath, string query, CancellationToken cancellationToken)
+    {
+        var matches = new List<RomPickerEntry>();
+
+        foreach (string romPath in EnumerateRomFiles(romLibraryPath))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsRomSearchMatch(romLibraryPath, romPath, query))
+                continue;
+
+            RomPickerStats stats = _statsProvider(romPath);
+            matches.Add(new RomPickerEntry(
+                Path.GetFileName(romPath),
+                romPath,
+                IsDirectory: false,
+                Stars: stats.Stars,
+                DetailText: BuildRomSearchDetailText(romLibraryPath, romPath, stats.DetailText))
+            {
+                LaunchCount = stats.LaunchCount,
+                PlaySeconds = stats.PlaySeconds
+            });
+        }
+
+        return matches;
+    }
+
+    private static bool IsRomSearchMatch(string romLibraryPath, string romPath, string query)
+    {
+        string fileName = Path.GetFileName(romPath);
+        if (fileName.Contains(query, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string stem = Path.GetFileNameWithoutExtension(romPath);
+        if (stem.Contains(query, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string relativePath = Path.GetRelativePath(romLibraryPath, romPath);
+        return relativePath.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRomSearchDetailText(string romLibraryPath, string romPath, string statsDetailText)
+    {
+        string relativePath = Path.GetRelativePath(romLibraryPath, romPath);
+        string? relativeDirectory = Path.GetDirectoryName(relativePath);
+        if (string.IsNullOrWhiteSpace(relativeDirectory) || relativeDirectory == ".")
+            return statsDetailText;
+
+        return $"{relativeDirectory} • {statsDetailText}";
+    }
+
+    private void UpdateSearchUi()
+    {
+        bool hasRomLibrary = !string.IsNullOrWhiteSpace(_romLibraryPath) && Directory.Exists(_romLibraryPath!);
+        _romSearchBox.IsEnabled = hasRomLibrary;
+        _romSearchBox.Watermark = hasRomLibrary
+            ? "Search ROM library"
+            : "Set ROM library to enable ROM search";
+        ToolTip.SetTip(_romSearchBox, hasRomLibrary
+            ? _romLibraryPath
+            : "Set a ROM library folder to search across all ROMs.");
+
+        _searchBox.Watermark = IsRomLibrarySearchActive
+            ? "Filter ROM search results"
+            : "Search in current folder";
+    }
+
+    private void UpdateVisibleStatusText()
+    {
+        if (IsRomLibrarySearchActive)
+        {
+            string query = _romSearchBox.Text?.Trim() ?? string.Empty;
+            string searchRoot = _romLibraryPath ?? _currentDirectory;
+
+            if (_romSearchInProgress)
+            {
+                _statusText.Text = $"Searching ROM library for \"{query}\"...";
+                return;
+            }
+
             if (_entries.Count == 0)
-                _statusText.Text = "No entries match the current search/filter.";
-        }, DispatcherPriority.Background);
+            {
+                _statusText.Text = $"No ROMs match \"{query}\" in {searchRoot}";
+                return;
+            }
+
+            _statusText.Text = _entries.Count == 1
+                ? $"1 ROM match in {searchRoot}"
+                : $"{_entries.Count} ROM matches in {searchRoot}";
+            return;
+        }
+
+        if (_allEntries.Count == 0)
+        {
+            _statusText.Text = "No ROMs or directories found here.";
+            return;
+        }
+
+        if (_entries.Count == 0)
+        {
+            _statusText.Text = "No entries match the current search/filter.";
+            return;
+        }
+
+        _statusText.Text = $"{_entries.Count} entries in {_currentDirectory}";
     }
 
     private static bool IsSupportedRomFile(string path)
@@ -742,6 +952,11 @@ public sealed class RomPickerDialog : Window
         bool exists = hasValue && Directory.Exists(_romLibraryPath!);
         _romsButton.IsEnabled = hasValue;
         ToolTip.SetTip(_romsButton, hasValue ? _romLibraryPath : "ROM library folder is not set.");
+
+        if (!exists && IsRomLibrarySearchActive)
+            _romSearchBox.Text = string.Empty;
+
+        UpdateSearchUi();
 
         _romLibraryText.Text = hasValue
             ? exists
@@ -2551,6 +2766,7 @@ public sealed class RomPickerDialog : Window
     protected override void OnClosed(EventArgs e)
     {
         _coverSyncCts?.Cancel();
+        _romSearchCts?.Cancel();
         SaveCoverIndexIfDirty();
         DisposeCoverPreviewBitmap();
         base.OnClosed(e);
