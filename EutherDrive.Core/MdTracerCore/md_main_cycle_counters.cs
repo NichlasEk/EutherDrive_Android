@@ -118,11 +118,11 @@ internal static partial class md_main
     private const double GenesisMclkPalHz = 53_203_424.0;
     private const bool UseMdCycleCounters = true;
     private static readonly bool UseCycleCounterZ80Scheduling =
-        ReadEnvDefaultOn("EUTHERDRIVE_MD_Z80_COUNTER_SCHED", defaultValue: false);
+        ReadEnvDefaultOn("EUTHERDRIVE_MD_Z80_COUNTER_SCHED", defaultValue: true);
     private static readonly bool UseCycleCounterYmDrive =
-        ReadEnvDefaultOn("EUTHERDRIVE_MD_YM_COUNTER_DRIVE", defaultValue: false);
+        ReadEnvDefaultOn("EUTHERDRIVE_MD_YM_COUNTER_DRIVE", defaultValue: true);
     private static readonly bool UseCycleCounterPsgDrive =
-        ReadEnvDefaultOn("EUTHERDRIVE_MD_PSG_COUNTER_DRIVE", defaultValue: false);
+        ReadEnvDefaultOn("EUTHERDRIVE_MD_PSG_COUNTER_DRIVE", defaultValue: true);
     private static readonly bool TraceMdCycleCounters =
         ReadEnvFlag("EUTHERDRIVE_TRACE_MD_CYCLE_COUNTERS");
     private static readonly int TraceMdCycleCountersEvery =

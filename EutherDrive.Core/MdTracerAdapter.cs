@@ -1038,7 +1038,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         {
             return value;
         }
-        return 1.0;
+        return 0.85;
     }
 
     public RomInfo RomInfo { get; private set; } = new RomInfo();
